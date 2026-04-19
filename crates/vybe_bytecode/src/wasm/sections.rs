@@ -10,57 +10,14 @@ pub fn collect_rt_imports(_chunks: &[Chunk]) -> Vec<(&'static str, &'static str)
     let mut needed: Vec<(&str, &str)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    // Full set of standard WASM "wasm:js-*" builtins used by the emitter
-    // for boxing/unboxing, string manipulation, and type testing.
-    // Spec refs: js-string-builtins + js-primitive-builtins proposals.
-    let js_builtins: &[(&str, &str)] = &[
-        // js-number — full Stage-1 surface
-        ("wasm:js-number", "fromF64"),
-        ("wasm:js-number", "fromI32"),
-        ("wasm:js-number", "fromU32"),
-        ("wasm:js-number", "toF64"),
-        ("wasm:js-number", "toI32"),
-        ("wasm:js-number", "toU32"),
-        ("wasm:js-number", "test"),
-        ("wasm:js-number", "testI32"),
-        ("wasm:js-number", "testU32"),
-
-        // js-string — full js-string-builtins surface
-        ("wasm:js-string", "test"),
-        ("wasm:js-string", "cast"),
-        ("wasm:js-string", "concat"),
-        ("wasm:js-string", "equals"),
-        ("wasm:js-string", "compare"),
-        ("wasm:js-string", "length"),
-        ("wasm:js-string", "charCodeAt"),
-        ("wasm:js-string", "codePointAt"),
-        ("wasm:js-string", "fromCharCode"),
-        ("wasm:js-string", "fromCodePoint"),
-        ("wasm:js-string", "substring"),
-        ("wasm:js-string", "intoCharCodeArray"),
-        ("wasm:js-string", "fromCharCodeArray"),
-        // js-primitive-builtins extension: string formatting of numbers
-        ("wasm:js-string", "fromI32"),
-        ("wasm:js-string", "fromU32"),
-        ("wasm:js-string", "fromI64"),
-        ("wasm:js-string", "fromU64"),
-        ("wasm:js-string", "fromF64"),
-
-        // js-boolean
-        ("wasm:js-boolean", "test"),
-        ("wasm:js-boolean", "cast"),
-
-        // js-undefined
-        ("wasm:js-undefined", "test"),
-
-        // js-symbol
-        ("wasm:js-symbol", "test"),
-        ("wasm:js-symbol", "equals"),
-
-        // js-bigint
-        ("wasm:js-bigint", "test"),
-    ];
-    for &(module, name) in js_builtins {
+    // Aggregate function imports from every proposal module. Each
+    // proposal owns its slice of imports and types (see the
+    // per-proposal modules directly under `wasm/`).
+    for name in super::js_string_builtins::IMPORTS {
+        let key = (super::js_string_builtins::MODULE, *name);
+        if seen.insert(key) { needed.push(key); }
+    }
+    for &(module, name) in super::js_primitive_builtins::FUNC_IMPORTS {
         let key = (module, name);
         if seen.insert(key) { needed.push(key); }
     }
@@ -81,11 +38,10 @@ pub const JS_GLOBAL_TRUE:      u32 = 1;
 pub const JS_GLOBAL_FALSE:     u32 = 2;
 
 pub fn rt_globals() -> &'static [(&'static str, &'static str)] {
-    &[
-        ("wasm:js-undefined", "value"),
-        ("wasm:js-boolean",   "true"),
-        ("wasm:js-boolean",   "false"),
-    ]
+    // Sourced from the js-primitive-builtins proposal module so the
+    // two places stay in lock-step. The indices here (0, 1, 2) must
+    // match `JS_GLOBAL_UNDEFINED`/`TRUE`/`FALSE` constants above.
+    super::js_primitive_builtins::GLOBAL_IMPORTS
 }
 
 pub fn encode_import_section(chunks: &[Chunk], rt_imports: &[(&str, &str)], func_type_base: u32) -> Vec<u8> {
@@ -136,10 +92,26 @@ pub fn encode_func_section(chunks: &[Chunk], import_count: usize, func_type_base
 }
 
 pub fn encode_memory_section() -> Vec<u8> {
+    // Default: single non-shared memory, 1 page min, no max.
+    encode_memory_section_with(1, None, false)
+}
+
+/// Memory-section encoder with explicit limits and `shared` flag.
+/// `shared = true` requires a max page count (enforced here) and sets
+/// the limits flag byte to 0x03 per the threads proposal.
+pub fn encode_memory_section_with(min_pages: u32, max_pages: Option<u32>, shared: bool) -> Vec<u8> {
     let mut out = Vec::new();
-    write_leb128_u32(&mut out, 1);
-    out.push(0x00); // no max
-    write_leb128_u32(&mut out, 1); // 1 page
+    write_leb128_u32(&mut out, 1); // one memory
+    // Limits flags: bit 0 = has max, bit 1 = shared.
+    let has_max = max_pages.is_some() || shared;
+    let flags: u8 = (if has_max { 0x01 } else { 0x00 })
+                  | (if shared  { 0x02 } else { 0x00 });
+    out.push(flags);
+    write_leb128_u32(&mut out, min_pages);
+    if has_max {
+        let max = max_pages.unwrap_or(min_pages.max(1));
+        write_leb128_u32(&mut out, max);
+    }
     out
 }
 
@@ -202,12 +174,33 @@ pub fn encode_global_section(globals: &[String]) -> Vec<u8> {
 }
 
 pub fn encode_table_section(chunks: &[Chunk], _import_count: usize) -> Vec<u8> {
+    // Single funcref table for `call_indirect` dispatch. reference-types
+    // lets us declare multiple tables, but emitting one nothing uses is
+    // the same kind of dead-weight noise we just pruned from imports.
+    // An opt-in helper (`encode_table_section_with`) is available when a
+    // chunk actually wants an extra externref table.
     let mut out = Vec::new();
     let table_size = chunks.len() as u32;
-    write_leb128_u32(&mut out, 1); // 1 table
-    out.push(0x70); // funcref
-    out.push(0x00); // no max
-    write_leb128_u32(&mut out, table_size); // min = number of chunk functions
+    write_leb128_u32(&mut out, 1);         // 1 table
+    out.push(0x70);                        // funcref
+    out.push(0x00);                        // no max
+    write_leb128_u32(&mut out, table_size);
+    out
+}
+
+/// Emit a table section that additionally declares `extra_externref`
+/// externref-typed tables (each with zero min-size, no max). Kept
+/// private to the reference-types module in documentation but exported
+/// so downstream tools can opt in.
+pub fn encode_table_section_with(chunks: &[Chunk], extra_externref: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    let table_size = chunks.len() as u32;
+    let total = 1u32 + extra_externref;
+    write_leb128_u32(&mut out, total);
+    out.push(0x70); out.push(0x00); write_leb128_u32(&mut out, table_size);
+    for _ in 0..extra_externref {
+        out.push(0x6F); out.push(0x00); write_leb128_u32(&mut out, 0);
+    }
     out
 }
 
@@ -259,4 +252,73 @@ pub fn emit_unbox_f64(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&s
 /// Unbox externref to i32 via wasm:js-number toI32.
 pub fn emit_unbox_i32(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>) {
     emit_import_call(body, rt_idx, "wasm:js-number", "toI32");
+}
+
+/// Box an i32 interpreted as unsigned into externref via
+/// `wasm:js-number.fromU32`. JS sees a non-negative Number.
+pub fn emit_box_u32(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>) {
+    emit_import_call(body, rt_idx, "wasm:js-number", "fromU32");
+}
+
+/// Unbox externref to i32 **interpreted as unsigned** via
+/// `wasm:js-number.toU32`. Used for compiler-emitted unsigned math.
+pub fn emit_unbox_u32(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>) {
+    emit_import_call(body, rt_idx, "wasm:js-number", "toU32");
+}
+
+/// Narrow numeric type test via `wasm:js-number.testI32`. Leaves i32 on
+/// the stack (1 if the value is a Number representable as i32, else 0).
+pub fn emit_test_i32(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>) {
+    emit_import_call(body, rt_idx, "wasm:js-number", "testI32");
+}
+
+/// Same as `testI32` but checks non-negative u32 range.
+pub fn emit_test_u32(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>) {
+    emit_import_call(body, rt_idx, "wasm:js-number", "testU32");
+}
+
+/// Unbox externref to i32 via `wasm:js-boolean.cast`. Valid only when
+/// the value has already tested as a JS boolean — host traps otherwise.
+pub fn emit_unbox_bool(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>) {
+    emit_import_call(body, rt_idx, "wasm:js-boolean", "cast");
+}
+
+/// String format of an i32 via `wasm:js-string.fromI32`. Consumes i32,
+/// produces externref (a JS string). Mirrors `String(n)` in JS.
+pub fn emit_str_from_i32(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>) {
+    emit_import_call(body, rt_idx, "wasm:js-string", "fromI32");
+}
+
+/// Unsigned-i32 → string via `wasm:js-string.fromU32`.
+pub fn emit_str_from_u32(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>) {
+    emit_import_call(body, rt_idx, "wasm:js-string", "fromU32");
+}
+
+/// i64 → string via `wasm:js-string.fromI64`.
+pub fn emit_str_from_i64(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>) {
+    emit_import_call(body, rt_idx, "wasm:js-string", "fromI64");
+}
+
+/// Unsigned-i64 → string via `wasm:js-string.fromU64`.
+pub fn emit_str_from_u64(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>) {
+    emit_import_call(body, rt_idx, "wasm:js-string", "fromU64");
+}
+
+/// f64 → string via `wasm:js-string.fromF64`. Matches `String(n)` when
+/// `n` is a finite JS Number.
+pub fn emit_str_from_f64(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>) {
+    emit_import_call(body, rt_idx, "wasm:js-string", "fromF64");
+}
+
+/// Validating string cast — `wasm:js-string.cast`. Traps if the value
+/// isn't a string. Equivalent to `(stringref) <: anyref` in spec terms.
+pub fn emit_str_cast(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>) {
+    emit_import_call(body, rt_idx, "wasm:js-string", "cast");
+}
+
+/// Symbol identity check — `wasm:js-symbol.equals`. Consumes two
+/// externrefs, produces i32 (1 if same symbol, 0 otherwise). Traps if
+/// either operand isn't a symbol.
+pub fn emit_symbol_equals(body: &mut Vec<u8>, rt_idx: &std::collections::HashMap<(&str, &str), usize>) {
+    emit_import_call(body, rt_idx, "wasm:js-symbol", "equals");
 }

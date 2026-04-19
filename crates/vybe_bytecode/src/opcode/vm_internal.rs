@@ -146,6 +146,21 @@ impl Op {
     pub const REF_IS_UNDEFINED: Op  = Op::new(0xFF, 0x73);
     pub const REF_IS_SYMBOL: Op     = Op::new(0xFF, 0x74);
     pub const REF_IS_BIGINT: Op     = Op::new(0xFF, 0x75);
+    // Narrow numeric type tests + unsigned coercions + string formatting
+    // (js-primitive-builtins wiring). These give compilers direct access
+    // to the declared `wasm:js-*` imports for efficient interop.
+    pub const REF_IS_I32: Op        = Op::new(0xFF, 0x76); // wasm:js-number.testI32
+    pub const REF_IS_U32: Op        = Op::new(0xFF, 0x77); // wasm:js-number.testU32
+    pub const NUM_BOX_U32: Op       = Op::new(0xFF, 0x78); // i32 → externref via fromU32
+    pub const NUM_UNBOX_U32: Op     = Op::new(0xFF, 0x79); // externref → i32 via toU32
+    pub const BOOL_CAST: Op         = Op::new(0xFF, 0x7A); // externref → i32 via js-boolean.cast
+    pub const STR_CAST: Op          = Op::new(0xFF, 0x7B); // externref → externref (validates)
+    pub const STR_FROM_I32: Op      = Op::new(0xFF, 0x7C);
+    pub const STR_FROM_U32: Op      = Op::new(0xFF, 0x7D);
+    pub const STR_FROM_I64: Op      = Op::new(0xFF, 0x7E);
+    pub const STR_FROM_U64: Op      = Op::new(0xFF, 0x7F);
+    pub const STR_FROM_F64: Op      = Op::new(0xFF, 0x80);
+    pub const SYMBOL_EQ: Op         = Op::new(0xFF, 0x81); // (sym, sym) → bool via js-symbol.equals
 }
 
 opcode_category! {
@@ -289,4 +304,17 @@ opcode_category! {
     [0x73] ref_is_undefined => None, "ref.is_undefined";
     [0x74] ref_is_symbol => None, "ref.is_symbol";
     [0x75] ref_is_bigint => None, "ref.is_bigint";
+    // Narrow numeric tests + unsigned coercions + string formatting
+    [0x76] ref_is_i32 => None, "ref.is_i32";
+    [0x77] ref_is_u32 => None, "ref.is_u32";
+    [0x78] num_box_u32 => None, "num.box_u32";
+    [0x79] num_unbox_u32 => None, "num.unbox_u32";
+    [0x7A] bool_cast => None, "bool.cast";
+    [0x7B] str_cast => None, "string.cast";
+    [0x7C] str_from_i32 => None, "string.from_i32";
+    [0x7D] str_from_u32 => None, "string.from_u32";
+    [0x7E] str_from_i64 => None, "string.from_i64";
+    [0x7F] str_from_u64 => None, "string.from_u64";
+    [0x80] str_from_f64 => None, "string.from_f64";
+    [0x81] symbol_eq => None, "symbol.eq";
 }

@@ -16,6 +16,118 @@ use crate::value::Value;
 use crate::opcode::OperandFormat;
 
 
+/// A try/catch region extracted from the bytecode.
+///
+/// The compiler emits:
+/// ```text
+/// TRY_START catch_off fin_off  ; 6 bytes
+///   ...body...
+/// TRY_END                       ; 2 bytes
+/// [else body]
+/// BR skip_to_finally            ; 4 bytes; target = after_ip
+///   ...catch dispatch + body...
+/// after_ip:
+/// ```
+///
+/// We translate that to a structural WASM try_table:
+/// ```wasm
+/// block $after (void)
+///   block $catch (result externref)
+///     try_table (catch $vybe_exception $catch)
+///       ...body...
+///     end
+///     br $after            ;; skip catch on normal path
+///   end $catch             ;; exception externref on stack (from tag param)
+///   ...catch handler...
+/// end $after
+/// ```
+#[derive(Clone, Copy)]
+struct TryRegion {
+    /// Byte offset of the TRY_START opcode in the source chunk.
+    try_start_pos: usize,
+    /// Byte offset of the matching TRY_END opcode.
+    try_end_pos: usize,
+    /// Byte offset where catch-dispatch code begins (just after the
+    /// compiler-emitted BR that skips catch on success).
+    catch_ip: usize,
+    /// Byte offset where normal control flow resumes after the whole
+    /// try region (target of the skip-BR).
+    after_ip: usize,
+}
+
+/// Walk the bytecode collecting try regions keyed by TRY_START offset.
+///
+/// Each catch_ip must be preceded by a 4-byte BR instruction; we use
+/// that BR's target to locate `after_ip`. If the BR isn't where we
+/// expect, the region is skipped (emitter falls back to nop-ing the
+/// try markers, preserving pre-exception-handling behavior).
+fn collect_try_regions(chunk: &Chunk) -> std::collections::HashMap<usize, TryRegion> {
+    let mut regions = std::collections::HashMap::new();
+    let mut ip = 0;
+    while ip + 1 < chunk.code.len() {
+        let Some(op) = Op::decode(chunk.code[ip], chunk.code[ip + 1]) else {
+            ip += 2; continue;
+        };
+        if op == Op::TRY_START {
+            let op_pos = ip;
+            // Read i16 catch_offset immediately after the 2-byte opcode.
+            let catch_off = ((chunk.code[ip + 2] as i16) << 8)
+                          | (chunk.code[ip + 3] as i16 & 0xFF);
+            // finally_offset at ip+4..ip+6 — reserved, unused for now.
+            let operands_end = ip + 6;
+            // catch_ip is relative to the byte *after* the 4 operand
+            // bytes (the VM reads both u16s before adding the offset).
+            let catch_ip = (operands_end as i64 + catch_off as i64) as usize;
+            ip = operands_end;
+
+            // Find the matching TRY_END (nested TRY_STARTs count).
+            let mut depth = 1i32;
+            let mut try_end_pos: Option<usize> = None;
+            let mut scan = ip;
+            while scan + 1 < chunk.code.len() {
+                let Some(inner) = Op::decode(chunk.code[scan], chunk.code[scan + 1]) else {
+                    scan += 2; continue;
+                };
+                if inner == Op::TRY_START {
+                    depth += 1;
+                    scan += opcode_size(inner, &chunk.code, scan);
+                    continue;
+                }
+                if inner == Op::TRY_END {
+                    depth -= 1;
+                    if depth == 0 { try_end_pos = Some(scan); break; }
+                    scan += opcode_size(inner, &chunk.code, scan);
+                    continue;
+                }
+                scan += opcode_size(inner, &chunk.code, scan);
+            }
+
+            if let Some(te_pos) = try_end_pos {
+                // Verify the 4 bytes before catch_ip are a BR opcode.
+                if catch_ip >= 4 && catch_ip <= chunk.code.len() {
+                    let br_pos = catch_ip - 4;
+                    let is_br = chunk.code[br_pos] == Op::BR.prefix()
+                             && chunk.code[br_pos + 1] == Op::BR.sub();
+                    if is_br {
+                        let br_off = ((chunk.code[br_pos + 2] as i16) << 8)
+                                   | (chunk.code[br_pos + 3] as i16 & 0xFF);
+                        let after_ip = (catch_ip as i64 + br_off as i64) as usize;
+                        regions.insert(op_pos, TryRegion {
+                            try_start_pos: op_pos,
+                            try_end_pos: te_pos,
+                            catch_ip,
+                            after_ip,
+                        });
+                    }
+                }
+            }
+        } else {
+            ip += opcode_size(op, &chunk.code, ip);
+        }
+    }
+    regions
+}
+
 /// Count how many temp locals a chunk needs for stack manipulation.
 /// Returns 0, 1, or 2 depending on which ops are used.
 fn count_temp_locals(chunk: &Chunk) -> u32 {
@@ -112,23 +224,147 @@ pub fn encode_code_section(chunks: &[Chunk], rt_imports: &[(&str, &str)], type_c
         // Structured control flow: the compiler now emits BLOCK/LOOP/END/BR_LABEL/BR_IF_LABEL.
         // The WASM emitter just passes them through — no relooper needed.
 
+        // Pre-pass: identify try regions so we can wrap them in proper
+        // structural WASM try_table blocks (exception-handling proposal).
+        // Five events, keyed by bytecode offset, drive the emission:
+        //   try_start → emit `block $after; block $catch; try_table …`
+        //   try_end   → close try_table (an `else` body, if any, follows
+        //               normally and runs inside $catch, unprotected)
+        //   skip_br   → rewrite the compiler's BR to `br 1` (to $after)
+        //   catch_ip  → close $catch (exception externref on stack)
+        //   after_ip  → close $after
+        let try_regions = collect_try_regions(chunk);
+        let mut try_start_events: std::collections::HashMap<usize, TryRegion> =
+            std::collections::HashMap::new();
+        let mut try_end_events: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
+        let mut skip_br_events: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
+        let mut catch_ip_events: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
+        let mut after_ip_events: std::collections::HashMap<usize, usize> =
+            std::collections::HashMap::new();
+        for (_pos, region) in &try_regions {
+            try_start_events.insert(region.try_start_pos, *region);
+            try_end_events.insert(region.try_end_pos);
+            skip_br_events.insert(region.catch_ip - 4);
+            catch_ip_events.insert(region.catch_ip);
+            *after_ip_events.entry(region.after_ip).or_insert(0) += 1;
+        }
+
         // Translate opcodes
         let mut ip = 0;
         while ip < chunk.code.len() {
+            // Emit the $catch end marker when we land on a catch_ip.
+            if catch_ip_events.contains(&ip) {
+                body.push(0x0B); // end $catch — exception externref on stack
+            }
+            // Emit any $after closes — at after_ip the whole try region
+            // is done. Nested regions may pile up here.
+            if let Some(n) = after_ip_events.get(&ip) {
+                for _ in 0..*n { body.push(0x0B); }
+            }
+
             if ip + 1 >= chunk.code.len() { break; }
             let op = match Op::decode(chunk.code[ip], chunk.code[ip + 1]) {
                 Some(op) => op,
                 None => { ip += 2; continue; }
             };
+
+            // TRY_START → open structural blocks.
+            if op == Op::TRY_START && try_start_events.contains_key(&ip) {
+                body.push(0x02); body.push(TYPE_VOID);        // block $after
+                body.push(0x02); body.push(TYPE_EXTERNREF);   // block $catch (result externref)
+                body.push(0x1F);                              // try_table
+                body.push(TYPE_VOID);                         // block type: void
+                write_leb128_u32(&mut body, 1);               // 1 catch clause
+                body.push(0x00);                              // variant: catch (tag, label)
+                write_leb128_u32(&mut body, super::exception_handling::VYBE_EXCEPTION_TAG);
+                write_leb128_u32(&mut body, 0);               // label 0 = $catch
+                ip += 6;
+                continue;
+            }
+            // TRY_END → close try_table. An `else` body (Python/Ruby) runs
+            // inside $catch, unprotected, between this point and skip_br.
+            if op == Op::TRY_END && try_end_events.contains(&ip) {
+                body.push(0x0B); // end (closes try_table)
+                ip += 2;
+                continue;
+            }
+            // Skip-BR (compiler-emitted BR that jumps over catch on the
+            // success path) → replace with `br $after`.
+            if op == Op::BR && skip_br_events.contains(&ip) {
+                body.push(0x0C); write_leb128_u32(&mut body, 1);
+                ip += 4;
+                continue;
+            }
             ip += 2;
 
             if op.prefix() == 0x00 && !op.is_vm_internal() {
                 emit_core_op(&mut body, op, chunk, &mut ip, &rt_idx, temp_local_idx, has_temp, type_ctx, global_map, host_import_count);
             } else if op.prefix() == 0xFB {
                 emit_gc_op(&mut body, op, chunk, &mut ip, &rt_idx, type_ctx, temp_local_idx);
-            } else if op.prefix() >= 0xFC && op.prefix() <= 0xFE {
+            } else if op.prefix() == 0xFC {
+                // 0xFC-prefix ops per the bulk-memory / reference-types spec
+                // need specific trailing immediates that aren't captured by
+                // our `operand_format` in bytecode. Translate each case.
                 body.push(op.prefix());
                 write_leb128_u32(&mut body, op.sub() as u32);
+                match op {
+                    Op::MEMORY_INIT => {
+                        // spec: data_idx, memory_idx
+                        let data_idx = chunk.code[ip]; ip += 1;
+                        write_leb128_u32(&mut body, data_idx as u32);
+                        write_leb128_u32(&mut body, 0); // memory index 0
+                    }
+                    Op::DATA_DROP => {
+                        let data_idx = chunk.code[ip]; ip += 1;
+                        write_leb128_u32(&mut body, data_idx as u32);
+                    }
+                    Op::MEMORY_COPY => {
+                        // spec: dst_mem, src_mem (both 0 for single memory)
+                        write_leb128_u32(&mut body, 0);
+                        write_leb128_u32(&mut body, 0);
+                    }
+                    Op::MEMORY_FILL => {
+                        write_leb128_u32(&mut body, 0); // memory index 0
+                    }
+                    Op::TABLE_INIT => {
+                        let elem_idx = chunk.code[ip]; ip += 1;
+                        write_leb128_u32(&mut body, elem_idx as u32);
+                        write_leb128_u32(&mut body, 0); // table index 0
+                    }
+                    Op::ELEM_DROP => {
+                        let elem_idx = chunk.code[ip]; ip += 1;
+                        write_leb128_u32(&mut body, elem_idx as u32);
+                    }
+                    Op::TABLE_COPY => {
+                        let table_idx = chunk.code[ip]; ip += 1;
+                        write_leb128_u32(&mut body, table_idx as u32); // dst table
+                        write_leb128_u32(&mut body, table_idx as u32); // src table
+                    }
+                    Op::TABLE_GROW | Op::TABLE_SIZE | Op::TABLE_FILL => {
+                        let table_idx = chunk.code[ip]; ip += 1;
+                        write_leb128_u32(&mut body, table_idx as u32);
+                    }
+                    _ => {
+                        ip += op.operand_format().fixed_size();
+                    }
+                }
+            } else if op.prefix() >= 0xFD && op.prefix() <= 0xFE {
+                body.push(op.prefix());
+                write_leb128_u32(&mut body, op.sub() as u32);
+                ip += op.operand_format().fixed_size();
+            } else if op.prefix() == 0xDD {
+                // Relaxed-SIMD proposal — internal prefix 0xDD with
+                // sub-values 0x00..=0x13 maps to WASM `0xFD` prefix and
+                // LEB128 sub-opcode `0x100 + sub` (relaxed-simd assigns
+                // the two-byte spec values starting at 0x100).
+                body.push(0xFD);
+                write_leb128_u32(
+                    &mut body,
+                    crate::opcode::relaxed_simd::spec_sub(op.sub()),
+                );
                 ip += op.operand_format().fixed_size();
             } else {
                 emit_vm_internal_op(&mut body, op, chunk, &mut ip, &rt_idx, temp_local_idx, type_ctx);
@@ -244,6 +480,23 @@ fn emit_core_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize,
             }
         }
         _ if op == Op::HALT => { body.push(0x0F); } // return (not unreachable — _start should return cleanly)
+        // Exception-handling proposal. THROW takes the exception value
+        // from TOS and raises it via the single `$vybe_exception` tag
+        // (declared in the tag section). The tag's signature is
+        // `(externref) -> ()`, so the throw consumes the externref
+        // already on the stack — no additional packing needed.
+        //
+        // THROW_REF is spec'd to take an `exnref` off the stack; since
+        // our value type is externref (not exnref), we re-throw through
+        // the same tag to stay within the single-tag design.
+        _ if op == Op::THROW => {
+            body.push(0x08); // throw
+            write_leb128_u32(body, super::exception_handling::VYBE_EXCEPTION_TAG);
+        }
+        _ if op == Op::THROW_REF => {
+            body.push(0x08);
+            write_leb128_u32(body, super::exception_handling::VYBE_EXCEPTION_TAG);
+        }
         // ref.null needs heaptype byte — can't just emit op.sub()
         _ if op == Op::NULL => { body.push(0xD0); body.push(0x6F); } // ref.null externref
         // ref.is_null produces i32 — box it since our value representation is externref
@@ -502,6 +755,12 @@ fn emit_gc_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize, _rt_idx
             body.push(0xFB); write_leb128_u32(body, op.sub() as u32);
             // TODO: emit proper heap type reference
         }
+        _ if op == Op::REF_EQ => {
+            // (externref, externref) → i32. Result is a WASM primitive i32;
+            // re-box as externref to fit our universal value ABI.
+            body.push(0xFB); write_leb128_u32(body, op.sub() as u32);
+            emit_box_i32(body, _rt_idx);
+        }
         _ if op == Op::BR_ON_CAST || op == Op::BR_ON_CAST_FAIL => {
             *ip += op.operand_format().fixed_size();
             body.push(0xFB); write_leb128_u32(body, op.sub() as u32);
@@ -650,6 +909,57 @@ fn emit_vm_internal_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize
         }
         _ if op == Op::REF_IS_BIGINT => {
             emit_import_call(body, rt_idx, "wasm:js-bigint", "test");
+            emit_box_i32(body, rt_idx);
+        }
+        _ if op == Op::REF_IS_I32 => {
+            super::sections::emit_test_i32(body, rt_idx);
+            emit_box_i32(body, rt_idx);
+        }
+        _ if op == Op::REF_IS_U32 => {
+            super::sections::emit_test_u32(body, rt_idx);
+            emit_box_i32(body, rt_idx);
+        }
+        _ if op == Op::NUM_BOX_U32 => {
+            // Top of stack is a boxed i32 — unbox, rebox as u32 for the host.
+            emit_unbox_i32(body, rt_idx);
+            super::sections::emit_box_u32(body, rt_idx);
+        }
+        _ if op == Op::NUM_UNBOX_U32 => {
+            super::sections::emit_unbox_u32(body, rt_idx);
+            emit_box_i32(body, rt_idx);
+        }
+        _ if op == Op::BOOL_CAST => {
+            super::sections::emit_unbox_bool(body, rt_idx);
+            emit_box_i32(body, rt_idx);
+        }
+        _ if op == Op::STR_CAST => {
+            super::sections::emit_str_cast(body, rt_idx);
+        }
+        _ if op == Op::STR_FROM_I32 => {
+            emit_unbox_i32(body, rt_idx);
+            super::sections::emit_str_from_i32(body, rt_idx);
+        }
+        _ if op == Op::STR_FROM_U32 => {
+            emit_unbox_i32(body, rt_idx);
+            super::sections::emit_str_from_u32(body, rt_idx);
+        }
+        _ if op == Op::STR_FROM_I64 => {
+            // i64 is stored boxed as i32 in our ABI; widen via extend_s.
+            emit_unbox_i32(body, rt_idx);
+            body.push(0xAC); // i64.extend_i32_s
+            super::sections::emit_str_from_i64(body, rt_idx);
+        }
+        _ if op == Op::STR_FROM_U64 => {
+            emit_unbox_i32(body, rt_idx);
+            body.push(0xAD); // i64.extend_i32_u
+            super::sections::emit_str_from_u64(body, rt_idx);
+        }
+        _ if op == Op::STR_FROM_F64 => {
+            emit_unbox_f64(body, rt_idx);
+            super::sections::emit_str_from_f64(body, rt_idx);
+        }
+        _ if op == Op::SYMBOL_EQ => {
+            super::sections::emit_symbol_equals(body, rt_idx);
             emit_box_i32(body, rt_idx);
         }
         _ if op == Op::TRUE => {

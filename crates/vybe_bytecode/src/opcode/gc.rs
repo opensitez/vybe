@@ -15,6 +15,7 @@ impl Op {
     pub const ARRAY_LENGTH: Op      = Op::new(0xFB, 0x0F);
     pub const ARRAY_FILL: Op        = Op::new(0xFB, 0x10);
     pub const ARRAY_COPY: Op        = Op::new(0xFB, 0x11);
+    pub const REF_EQ: Op            = Op::new(0xFB, 0x13);
     pub const REF_TEST: Op          = Op::new(0xFB, 0x14);
     pub const REF_CAST: Op          = Op::new(0xFB, 0x16);
     pub const BR_ON_CAST: Op        = Op::new(0xFB, 0x18);
@@ -39,6 +40,7 @@ opcode_category! {
     [0x0F] array_length => None, "array.len";
     [0x10] array_fill => None, "array.fill";
     [0x11] array_copy => None, "array.copy";
+    [0x13] ref_eq => None, "ref.eq";
     [0x14] ref_test => U16, "ref.test";
     [0x16] ref_cast => U16, "ref.cast";
     [0x18] br_on_cast => U16_I16, "br_on_cast";

@@ -12,6 +12,22 @@ pub mod types;
 pub mod sections;
 pub mod code;
 pub mod reader;
+// ── Per-proposal modules ────────────────────────────────────────────────
+// Each file implements one WebAssembly proposal end-to-end: the imports
+// it declares, the opcodes it emits, the custom sections it produces.
+pub mod reference_types;
+pub mod extended_name_section;
+pub mod compilation_hints;
+pub mod js_string_builtins;
+pub mod js_primitive_builtins;
+pub mod esm_integration;
+pub mod gc;
+pub mod simd;
+pub mod threads;
+pub mod bulk_memory;
+pub mod exception_handling;
+pub mod tail_call;
+pub mod multi_value;
 
 use encoding::*;
 use crate::Chunk;
@@ -50,6 +66,14 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
     // Memory section
     write_section(&mut out, SECTION_MEMORY, &sections::encode_memory_section());
 
+    // Tag section (exception-handling proposal) — emits a single
+    // `$vybe_exception (param externref)` tag used by every `throw`.
+    // Binary order: memsec → tagsec → globalsec.
+    if exception_handling::module_uses_exceptions(chunks) {
+        write_section(&mut out, SECTION_TAG,
+            &exception_handling::encode_tag_section(type_ctx.exception_type_idx));
+    }
+
     // Global section — indexed externref globals
     if !globals.is_empty() {
         write_section(&mut out, SECTION_GLOBAL, &sections::encode_global_section(&globals));
@@ -63,6 +87,38 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
 
     // Code section
     write_section(&mut out, SECTION_CODE, &code::encode_code_section(chunks, &rt_imports, &type_ctx, &global_map));
+
+    // ── Trailing custom sections ─────────────────────────────────────
+    // The standard `"name"` custom section (extended-name-section proposal) —
+    // gives DevTools / profilers readable identifiers.
+    let name_payload = extended_name_section::encode_name_section_payload(chunks, &rt_imports, &type_ctx);
+    if !name_payload.is_empty() {
+        let mut sec = Vec::new();
+        write_name(&mut sec, "name");
+        sec.extend_from_slice(&name_payload);
+        write_section(&mut out, SECTION_CUSTOM, &sec);
+    }
+
+    // Compilation-hints proposal — tell the engine which functions to
+    // optimize first. Skip the section when no hints apply.
+    if let Some(co_payload) = compilation_hints::encode_compilation_order_payload(chunks, rt_imports.len()) {
+        let mut sec = Vec::new();
+        write_name(&mut sec, compilation_hints::COMPILATION_ORDER_SECTION_NAME);
+        sec.extend_from_slice(&co_payload);
+        write_section(&mut out, SECTION_CUSTOM, &sec);
+    }
+    if let Some(bh_payload) = compilation_hints::encode_branch_hint_payload(chunks, rt_imports.len()) {
+        let mut sec = Vec::new();
+        write_name(&mut sec, compilation_hints::BRANCH_HINT_SECTION_NAME);
+        sec.extend_from_slice(&bh_payload);
+        write_section(&mut out, SECTION_CUSTOM, &sec);
+    }
+    if let Some(in_payload) = compilation_hints::encode_inlining_payload(chunks, rt_imports.len()) {
+        let mut sec = Vec::new();
+        write_name(&mut sec, compilation_hints::INLINING_SECTION_NAME);
+        sec.extend_from_slice(&in_payload);
+        write_section(&mut out, SECTION_CUSTOM, &sec);
+    }
 
     out
 }

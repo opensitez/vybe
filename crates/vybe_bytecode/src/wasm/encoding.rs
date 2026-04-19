@@ -18,6 +18,7 @@ pub const SECTION_MEMORY: u8 = 5;
 pub const SECTION_GLOBAL: u8 = 6;
 pub const SECTION_EXPORT: u8 = 7;
 pub const SECTION_CODE: u8 = 10;
+pub const SECTION_TAG: u8 = 13;   // exception-handling proposal
 
 // Value types
 pub const TYPE_FUNC: u8 = 0x60;

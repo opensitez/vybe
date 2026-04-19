@@ -65,11 +65,11 @@ impl Op {
     pub const F64X2_DIV: Op         = Op::new(0xFD, 0xF3);
     pub const F64X2_MIN: Op         = Op::new(0xFD, 0xF4);
     pub const F64X2_MAX: Op         = Op::new(0xFD, 0xF5);
-    // Relaxed SIMD (placeholder sub-opcodes — real WASM values > 255)
-    pub const F32X4_RELAXED_MADD: Op  = Op::new(0xFD, 0xFA);
-    pub const F32X4_RELAXED_NMADD: Op = Op::new(0xFD, 0xFB);
-    pub const F64X2_RELAXED_MADD: Op  = Op::new(0xFD, 0xFC);
-    pub const F64X2_RELAXED_NMADD: Op = Op::new(0xFD, 0xFD);
+    // Relaxed-SIMD proposal opcodes live at WASM sub-values 0x100..=0x113 —
+    // outside the u8 range the `Op(u16)` representation allows in the 0xFD
+    // prefix. They are declared under the internal prefix 0xDD
+    // (see `opcode/relaxed_simd.rs`) and the WASM emitter rewrites them
+    // back to `0xFD + LEB128(0x100 + sub)` at binary time.
 }
 
 opcode_category! {
@@ -133,8 +133,9 @@ opcode_category! {
     [0xF3] f64x2_div => None, "f64x2.div";
     [0xF4] f64x2_min => None, "f64x2.min";
     [0xF5] f64x2_max => None, "f64x2.max";
-    [0xFA] f32x4_relaxed_madd => None, "f32x4.relaxed_madd";
-    [0xFB] f32x4_relaxed_nmadd => None, "f32x4.relaxed_nmadd";
-    [0xFC] f64x2_relaxed_madd => None, "f64x2.relaxed_madd";
-    [0xFD] f64x2_relaxed_nmadd => None, "f64x2.relaxed_nmadd";
+    // Sub-values 0xF8..=0xFF are reserved for the MVP convert/trunc-sat
+    // family (f32x4.convert_i32x4_{s,u}, i32x4.trunc_sat_f64x2_*, …); we
+    // haven't wired them up yet but DO NOT collide with them by placing
+    // relaxed-SIMD entries in that range — those live under the 0xDD
+    // internal prefix in `relaxed_simd.rs`.
 }

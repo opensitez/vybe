@@ -1,0 +1,68 @@
+//! # exception-handling proposal
+//!
+//! Spec: <https://github.com/WebAssembly/exception-handling>.
+//! Adds `try_table`, `throw`, `throw_ref`, tags, and catch handlers.
+//! The proposal has been through several revisions — our emitter
+//! targets the **"new EH"** (`try_table`) variant accepted in 2023.
+//!
+//! ## Status in Vybe
+//!
+//! | Feature                | Status | Notes |
+//! |------------------------|--------|-------|
+//! | `try_start` / `try_end` (VM-internal variant) | ✅ | Used by compilers emitting structured try/except |
+//! | `try_table`            | ✅ | Emitted by wrapping TRY_START/TRY_END regions in structural blocks with `catch_all_ref` |
+//! | `throw`                | ✅ | Emitted as `throw $vybe_exception` — VM uses its handler stack |
+//! | `throw_ref`            | ✅ | Shares the single `$vybe_exception` tag (externref param) |
+//! | Tag section            | ✅ | One tag `$vybe_exception (param externref)` declared |
+//!
+//! All exceptions carry a single externref payload (the exception
+//! object). Type-based catch dispatch happens inside the catch
+//! handler's bytecode (matching on `__exception_type` field), not at
+//! the WASM tag level — this lets us share one tag across every
+//! language without a combinatorial type explosion.
+
+use crate::Chunk;
+use super::encoding::*;
+
+pub const IMPORTS: &[(&str, &str)] = &[];
+pub const GLOBAL_IMPORTS: &[(&str, &str)] = &[];
+pub fn custom_sections(_chunks: &[Chunk]) -> Vec<(&'static str, Vec<u8>)> { Vec::new() }
+
+/// Tag index of the single `$vybe_exception` tag in the emitted module.
+/// Every `throw` in the emitted .wasm references this tag.
+pub const VYBE_EXCEPTION_TAG: u32 = 0;
+
+/// Encode the tag section (section id 13) declaring the single
+/// `$vybe_exception (param externref)` tag. `exception_type_idx` is
+/// the type index (in the type section) for the tag's signature —
+/// see `WasmTypeContext::exception_type_idx`.
+pub fn encode_tag_section(exception_type_idx: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    write_leb128_u32(&mut out, 1);          // 1 tag declaration
+    out.push(0x00);                          // attribute: exception
+    write_leb128_u32(&mut out, exception_type_idx);
+    out
+}
+
+/// Does this chunk (or any chunk in the module) actually need the
+/// exception-handling infrastructure? If no compiler emitted any
+/// `throw` or try region, we can skip the tag section entirely.
+pub fn module_uses_exceptions(chunks: &[Chunk]) -> bool {
+    for chunk in chunks {
+        let mut ip = 0;
+        while ip + 1 < chunk.code.len() {
+            if let Some(op) = crate::opcode::Op::decode(chunk.code[ip], chunk.code[ip + 1]) {
+                if op == crate::opcode::Op::THROW
+                    || op == crate::opcode::Op::THROW_REF
+                    || op == crate::opcode::Op::TRY_START
+                {
+                    return true;
+                }
+                ip += super::code::opcode_size(op, &chunk.code, ip);
+            } else {
+                ip += 2;
+            }
+        }
+    }
+    false
+}

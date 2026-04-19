@@ -11,6 +11,13 @@
 //! - `0xFE`: Threads proposal
 //! - `0xFF`: VM-internal (not WASM — lowered in .wasm output)
 //!
+//! Non-WASM prefixes used as a compact internal representation for
+//! proposals whose spec sub-values exceed the u8 range we reserve for
+//! the `sub` byte:
+//! - `0xDD`: Relaxed-SIMD (spec sub-values `0x100..=0x113` — emitted as
+//!           `0xFD + LEB128(0x100 + sub)` in binary). See
+//!           `opcode/relaxed_simd.rs` and `wasm/code.rs` emitter.
+//!
 //! Opcodes are defined in category files (core.rs, gc.rs, etc.) as `pub const` values.
 //! Adding an opcode = one line in one file.
 
@@ -18,6 +25,7 @@ mod core_ops;
 mod gc;
 mod misc;
 mod simd;
+pub mod relaxed_simd;
 mod threads;
 mod vm_internal;
 
@@ -69,6 +77,7 @@ impl Op {
     pub fn operand_format(self) -> OperandFormat {
         match self.prefix() {
             0x00 => core_ops::operand_format(self.sub()),
+            0xDD => relaxed_simd::operand_format(self.sub()),
             0xFB => gc::operand_format(self.sub()),
             0xFC => misc::operand_format(self.sub()),
             0xFD => simd::operand_format(self.sub()),
@@ -82,6 +91,7 @@ impl Op {
     pub fn wasm_name_opt(self) -> Option<&'static str> {
         match self.prefix() {
             0x00 => core_ops::name(self.sub()),
+            0xDD => relaxed_simd::name(self.sub()),
             0xFB => gc::name(self.sub()),
             0xFC => misc::name(self.sub()),
             0xFD => simd::name(self.sub()),

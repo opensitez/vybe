@@ -31,6 +31,9 @@ pub struct WasmTypeContext {
     pub gc_type_count: u32,
     /// arity → WASM type index for (externref * arity) -> externref
     pub func_type_by_arity: std::collections::HashMap<u8, u32>,
+    /// Type index for `(externref) -> ()` — the shape required by the
+    /// tag section's exception tag (exception-handling proposal).
+    pub exception_type_idx: u32,
 }
 
 impl WasmTypeContext {
@@ -63,6 +66,7 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
         func_type_base: 0,
         gc_type_count: 0,
         func_type_by_arity: std::collections::HashMap::new(),
+        exception_type_idx: 0,
     };
 
     // Collect TypeEntry definitions from chunk 0
@@ -74,6 +78,7 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
     // For each TypeEntry: 2 types (described struct + descriptor struct)
     // Then: 1 array type
     // Then: function types for imports + chunks
+    // Then: 1 exception type `(externref) -> ()` for the tag section
     let gc_struct_pairs = type_entries.len() as u32;
     let array_count = 1u32;
     let func_count = (import_count + chunks.len()) as u32;
@@ -82,8 +87,11 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
     ctx.gc_type_count = gc_type_count;
     ctx.array_type_idx = gc_struct_pairs * 2;
     ctx.func_type_base = gc_type_count;
+    // Exception type sits after every chunk function type.
+    ctx.exception_type_idx = gc_type_count + func_count;
 
-    let total = gc_type_count + func_count;
+    let exception_type_count = 1u32;
+    let total = gc_type_count + func_count + exception_type_count;
     write_leb128_u32(&mut out, total);
 
     // ── GC struct types with custom descriptors ──
@@ -177,212 +185,24 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
         write_leb128_u32(&mut out, 1);
         out.push(TYPE_EXTERNREF);
     }
-    // Runtime imports: typed signatures based on module:name
+    // Runtime imports: each proposal module owns the signatures for
+    // its own (module, name) pairs. Query them in order, falling back
+    // to `(… ) -> externref` for anything unrecognised.
     for &(module, name) in rt_imports {
         out.push(TYPE_FUNC);
-        match (module, name) {
-            ("wasm:js-number", "fromI32") => {
-                write_leb128_u32(&mut out, 1); // 1 param
-                out.push(TYPE_I32);
-                write_leb128_u32(&mut out, 1); // 1 result
-                out.push(TYPE_EXTERNREF);
-            }
-            ("wasm:js-number", "fromF64") => {
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_F64);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_EXTERNREF);
-            }
-            ("wasm:js-number", "toF64") => {
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_EXTERNREF);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_F64);
-            }
-            ("wasm:js-number", "toI32") => {
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_EXTERNREF);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_I32);
-            }
-            ("wasm:js-string", "test") | ("wasm:js-boolean", "test") | ("wasm:js-undefined", "test") => {
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_EXTERNREF);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_I32);
-            }
-            ("wasm:js-string", "concat") => {
-                write_leb128_u32(&mut out, 2);
-                out.push(TYPE_EXTERNREF);
-                out.push(TYPE_EXTERNREF);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_EXTERNREF);
-            }
-            // wasm:js-number test: (externref) -> i32
-            ("wasm:js-number", "test") => {
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_EXTERNREF);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_I32);
-            }
-            // wasm:js-string operations with typed signatures
-            ("wasm:js-string", "equals") | ("wasm:js-string", "compare") => {
-                write_leb128_u32(&mut out, 2);
-                out.push(TYPE_EXTERNREF);
-                out.push(TYPE_EXTERNREF);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_I32);
-            }
-            ("wasm:js-string", "length") => {
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_EXTERNREF);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_I32);
-            }
-            ("wasm:js-string", "charCodeAt") => {
-                write_leb128_u32(&mut out, 2);
-                out.push(TYPE_EXTERNREF);
-                out.push(TYPE_I32);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_I32);
-            }
-            ("wasm:js-string", "fromCharCode") => {
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_I32);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_EXTERNREF);
-            }
-            ("wasm:js-string", "substring") => {
-                write_leb128_u32(&mut out, 3);
-                out.push(TYPE_EXTERNREF);
-                out.push(TYPE_I32);
-                out.push(TYPE_I32);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_EXTERNREF);
-            }
-            // ── js-string-builtins additions ───────────────────────────
-            // cast: (externref) -> stringref / externref (validates)
-            ("wasm:js-string", "cast") => {
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_EXTERNREF);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_EXTERNREF);
-            }
-            // fromCodePoint: (i32) -> externref
-            ("wasm:js-string", "fromCodePoint") => {
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_I32);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_EXTERNREF);
-            }
-            // codePointAt: (externref, i32) -> i32
-            ("wasm:js-string", "codePointAt") => {
-                write_leb128_u32(&mut out, 2);
-                out.push(TYPE_EXTERNREF);
-                out.push(TYPE_I32);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_I32);
-            }
-            // intoCharCodeArray: (externref, arrayref, i32) -> i32  (we simplify
-            // to (externref, externref, i32) -> i32 for externref-array host)
-            ("wasm:js-string", "intoCharCodeArray") => {
-                write_leb128_u32(&mut out, 3);
-                out.push(TYPE_EXTERNREF);
-                out.push(TYPE_EXTERNREF);
-                out.push(TYPE_I32);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_I32);
-            }
-            // fromCharCodeArray: (arrayref, i32, i32) -> externref
-            ("wasm:js-string", "fromCharCodeArray") => {
-                write_leb128_u32(&mut out, 3);
-                out.push(TYPE_EXTERNREF);
-                out.push(TYPE_I32);
-                out.push(TYPE_I32);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_EXTERNREF);
-            }
-            // js-primitive-builtins extensions — number → string formatting
-            ("wasm:js-string", "fromI32")
-            | ("wasm:js-string", "fromU32") => {
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_I32);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_EXTERNREF);
-            }
-            ("wasm:js-string", "fromI64")
-            | ("wasm:js-string", "fromU64") => {
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_I64);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_EXTERNREF);
-            }
-            ("wasm:js-string", "fromF64") => {
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_F64);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_EXTERNREF);
-            }
-
-            // ── js-number unsigned variants ────────────────────────────
-            ("wasm:js-number", "fromU32") => {
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_I32);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_EXTERNREF);
-            }
-            ("wasm:js-number", "toU32") => {
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_EXTERNREF);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_I32);
-            }
-            ("wasm:js-number", "testI32") | ("wasm:js-number", "testU32") => {
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_EXTERNREF);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_I32);
-            }
-
-            // ── js-boolean.cast — (externref) -> i32 ──────────────────
-            ("wasm:js-boolean", "cast") => {
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_EXTERNREF);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_I32);
-            }
-
-            // ── js-symbol ──────────────────────────────────────────────
-            ("wasm:js-symbol", "test") => {
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_EXTERNREF);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_I32);
-            }
-            ("wasm:js-symbol", "equals") => {
-                write_leb128_u32(&mut out, 2);
-                out.push(TYPE_EXTERNREF);
-                out.push(TYPE_EXTERNREF);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_I32);
-            }
-
-            // ── js-bigint ──────────────────────────────────────────────
-            ("wasm:js-bigint", "test") => {
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_EXTERNREF);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_I32);
-            }
-
-            _ => {
-                // Default for unknown vybe:rt calls: () -> externref
-                write_leb128_u32(&mut out, 0);
-                write_leb128_u32(&mut out, 1);
-                out.push(TYPE_EXTERNREF);
-            }
+        let handled = if module == super::js_string_builtins::MODULE {
+            super::js_string_builtins::write_signature(&mut out, name)
+        } else {
+            super::js_primitive_builtins::write_signature(&mut out, module, name)
+        };
+        if !handled {
+            // Default for unknown calls: () -> externref
+            write_leb128_u32(&mut out, 0);
+            write_leb128_u32(&mut out, 1);
+            out.push(TYPE_EXTERNREF);
         }
     }
+
 
     for (i, chunk) in chunks.iter().enumerate() {
         let type_idx = ctx.func_type_base + import_count as u32 + i as u32;
@@ -391,11 +211,20 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
         let param_count = chunk.arity as u32;
         write_leb128_u32(&mut out, param_count);
         for _ in 0..param_count { out.push(TYPE_EXTERNREF); }
-        write_leb128_u32(&mut out, 1);
-        out.push(TYPE_EXTERNREF);
+        // Multi-value proposal: chunks may return more than one externref.
+        let result_count = (chunk.result_arity as u32).max(1);
+        write_leb128_u32(&mut out, result_count);
+        for _ in 0..result_count { out.push(TYPE_EXTERNREF); }
         // Record first type index seen for each arity (for call_ref/call_indirect dispatch)
         ctx.func_type_by_arity.entry(chunk.arity).or_insert(type_idx);
     }
+
+    // Exception tag type — `(externref) -> ()` per the exception-handling
+    // proposal. The tag section references this type index.
+    out.push(TYPE_FUNC);
+    write_leb128_u32(&mut out, 1);        // 1 param
+    out.push(TYPE_EXTERNREF);
+    write_leb128_u32(&mut out, 0);        // 0 results
 
     (out, ctx)
 }

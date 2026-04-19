@@ -105,12 +105,15 @@ fn decode_standard_wasm(
             .map(|(n, _)| n.clone())
             .unwrap_or_else(|| format!("func_{}", i));
 
-        // Get arity from type section
-        let arity = types.get(func_idx).map(|(params, _)| params.len() as u8).unwrap_or(0);
+        // Get arity + result arity from the function's type signature.
+        let (arity, result_arity) = types.get(func_idx)
+            .map(|(params, results)| (params.len() as u8, (results.len() as u8).max(1)))
+            .unwrap_or((0, 1));
 
         // Translate WASM opcodes to our Chunk format
         let wasm_code = &code_sec[cpos..body_end.saturating_sub(1)]; // -1 for trailing 'end'
         let mut chunk = translate_wasm_to_chunk(wasm_code, &name, arity, local_count, import_func_count);
+        chunk.result_arity = result_arity;
         chunk.emit_op(Op::RETURN, 0);
         chunks.push(chunk);
 
