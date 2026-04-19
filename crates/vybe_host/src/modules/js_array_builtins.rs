@@ -95,49 +95,57 @@ fn register_constructors(vm: &mut VM) {
         }),
     );
 
-    // of(count: i32, values_array: externref) -> Array
-    // Spec says `Array.of(...values)` — variadic. We take a count + an
-    // array of values so WASM callers can marshal an arbitrary
-    // argument list. The compiler does the flattening at call site.
+    // of(...values) -> Array
+    //
+    // Spec: `Array.of(...values)` — variadic. Each positional arg becomes an
+    // element. Unlike `new Array(n)` which allocates a length, `Array.of(n)`
+    // is always a 1-element array `[n]`.
     vm.register_host_fn(
         "wasm:js-array",
         "of",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let n = args.first().map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
-            let source = args.get(1);
-            let mut out = Vec::with_capacity(n);
-            if let Some(Value::Object(src)) = source {
-                let s = src.lock().unwrap();
-                if let ObjectKind::Array(ref elems) = s.kind {
-                    for v in elems.iter().take(n) {
-                        out.push(v.clone());
-                    }
-                }
-            }
-            while out.len() < n {
-                out.push(Value::Null);
-            }
-            make_array(out)
+            make_array(args.to_vec())
         }),
     );
 
-    // from(iterable: externref, mapFn: externref_or_null) -> Array
-    // Accepts any iterable: arrays, array-likes, string, Map, Set, ...
-    // MVP: only handle arrays (loop); callback is ignored in this
-    // minimum-viable handler. Full iterable protocol support lands when
-    // Phase B12 (iterator helpers) arrives.
+    // from(src, mapFn?) -> Array
+    //
+    // Spec: `Array.from(iterable, mapFn)`. Accepts arrays, strings, and
+    // array-like objects (anything with `length` and numeric keys). When a
+    // `mapFn` is supplied it's invoked as `mapFn(value, index)` via the
+    // host's `invoke` callback and the result replaces each element.
     vm.register_host_fn(
         "wasm:js-array",
         "from",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let mut out = Vec::new();
-            if let Some(Value::Object(src)) = args.first() {
-                let s = src.lock().unwrap();
-                if let ObjectKind::Array(ref elems) = s.kind {
-                    out.reserve(elems.len());
-                    for v in elems.iter() {
-                        out.push(v.clone());
+            match args.first() {
+                Some(Value::Object(src)) => {
+                    let s = src.lock().unwrap();
+                    if let ObjectKind::Array(ref elems) = s.kind {
+                        out.extend(elems.iter().cloned());
+                    } else if let Some(len_val) = s.properties.get("length") {
+                        let len = len_val.as_f64().max(0.0) as usize;
+                        for i in 0..len {
+                            let key = i.to_string();
+                            out.push(s.properties.get(&key).cloned().unwrap_or(Value::Undefined));
+                        }
                     }
+                }
+                Some(Value::String(s)) => {
+                    for c in s.chars() {
+                        out.push(Value::String(Arc::from(c.to_string().as_str())));
+                    }
+                }
+                _ => {}
+            }
+            if let Some(mapper) = args.get(1) {
+                if !matches!(mapper, Value::Null | Value::Undefined) {
+                    let mut mapped = Vec::with_capacity(out.len());
+                    for (i, v) in out.iter().enumerate() {
+                        mapped.push(ctx.invoke(mapper, &[v.clone(), Value::F64(i as f64)]));
+                    }
+                    out = mapped;
                 }
             }
             make_array(out)
@@ -168,45 +176,67 @@ fn register_constructors(vm: &mut VM) {
 // ── Property access ────────────────────────────────────────────────────
 
 fn register_property_access(vm: &mut VM) {
-    // get(arr, i) -> value (undefined if OOB — spec class 3)
+    // get(arr_or_obj, key) -> value
+    //
+    // Primary use is `Array.prototype`-style integer indexing, but this
+    // import is also the landing pad for `dict.has` / `hasOwnProperty`
+    // / `in` compiled through compiler_common. Accepts plain objects to
+    // satisfy those callers without requiring a second import.
     vm.register_host_fn(
         "wasm:js-array",
         "get",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let i = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
-            if i < 0 {
-                return Value::Undefined;
-            }
-            if let Some(arr) = array_of(args, 0) {
-                let o = arr.lock().unwrap();
+            let key = args.get(1).cloned().unwrap_or(Value::Undefined);
+            if let Some(Value::Object(obj)) = args.first() {
+                let o = obj.lock().unwrap();
                 if let ObjectKind::Array(ref v) = o.kind {
+                    let i = key.as_i32();
+                    if i < 0 {
+                        return Value::Undefined;
+                    }
                     return v.get(i as usize).cloned().unwrap_or(Value::Undefined);
                 }
+                let key_str = match &key {
+                    Value::String(s) => s.to_string(),
+                    other => format!("{}", other),
+                };
+                if let Some(v) = o.properties.get(&key_str) {
+                    return v.clone();
+                }
+                return Value::Undefined;
             }
             Value::Undefined
         }),
     );
 
-    // set(arr, i, v) -> () — extends with null-fill when i >= length
+    // set(arr_or_obj, key, v) -> () — extends arrays with null-fill when
+    // key >= length; stores into plain objects by string key.
     vm.register_host_fn(
         "wasm:js-array",
         "set",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let i = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
-            if i < 0 {
-                return Value::Null;
-            }
+            let key = args.get(1).cloned().unwrap_or(Value::Undefined);
             let val = args.get(2).cloned().unwrap_or(Value::Null);
-            if let Some(arr) = array_of(args, 0) {
-                let mut o = arr.lock().unwrap();
+            if let Some(Value::Object(obj)) = args.first() {
+                let mut o = obj.lock().unwrap();
                 if let ObjectKind::Array(ref mut v) = o.kind {
+                    let i = key.as_i32();
+                    if i < 0 {
+                        return Value::Null;
+                    }
                     let idx = i as usize;
                     while v.len() <= idx {
                         v.push(Value::Null);
                     }
                     v[idx] = val;
+                    sync_length(&mut o);
+                } else {
+                    let key_str = match &key {
+                        Value::String(s) => s.to_string(),
+                        other => format!("{}", other),
+                    };
+                    o.properties.insert(key_str, val);
                 }
-                sync_length(&mut o);
             }
             Value::Null
         }),
@@ -251,20 +281,24 @@ fn register_property_access(vm: &mut VM) {
         }),
     );
 
-    // at(arr, i) -> value — negative indexing handled at language layer
-    // (this handler receives an already-normalized non-negative i32)
+    // at(arr, i) -> value
+    //
+    // `Array.prototype.at` — negative indices relative to length, undefined
+    // when OOB. String `.at()` routes through `wasm:js-value.invokeMethod`.
     vm.register_host_fn(
         "wasm:js-array",
         "at",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let i = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
-            if i < 0 {
-                return Value::Undefined;
-            }
             if let Some(arr) = array_of(args, 0) {
                 let o = arr.lock().unwrap();
                 if let ObjectKind::Array(ref v) = o.kind {
-                    return v.get(i as usize).cloned().unwrap_or(Value::Undefined);
+                    let len = v.len() as i32;
+                    let idx = if i < 0 { len + i } else { i };
+                    if idx < 0 || idx >= len {
+                        return Value::Undefined;
+                    }
+                    return v.get(idx as usize).cloned().unwrap_or(Value::Undefined);
                 }
             }
             Value::Undefined
@@ -348,12 +382,14 @@ fn register_mutators(vm: &mut VM) {
         }),
     );
 
-    // unshift(arr, v) -> i32 new_length (frozen → current length, no insert)
+    // unshift(arr, v1, v2, ...) -> i32 new_length
+    //
+    // Spec: inserts all v_i at the head in order, so `[3,4,5].unshift(1,2)`
+    // yields `[1,2,3,4,5]`. Frozen arrays just return the current length.
     vm.register_host_fn(
         "wasm:js-array",
         "unshift",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let val = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
                 if is_frozen(&arr) {
                     let o = arr.lock().unwrap();
@@ -364,7 +400,9 @@ fn register_mutators(vm: &mut VM) {
                 }
                 let mut o = arr.lock().unwrap();
                 let len = if let ObjectKind::Array(ref mut v) = o.kind {
-                    v.insert(0, val);
+                    for (i, val) in args.iter().skip(1).enumerate() {
+                        v.insert(i, val.clone());
+                    }
                     v.len() as i32
                 } else {
                     0
@@ -376,24 +414,18 @@ fn register_mutators(vm: &mut VM) {
         }),
     );
 
-    // splice(arr, start, deleteCount, items_array) -> deleted_array
+    // splice(arr, start, deleteCount, ...items) -> deleted_array
+    //
+    // Spec: items come through as variadic individual args, not a wrapped
+    // array. `arr.splice(1, 0, 2, 3)` inserts 2 and 3 at index 1 and
+    // deletes 0; args[3..] hold the items.
     vm.register_host_fn(
         "wasm:js-array",
         "splice",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
             let del = args.get(2).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
-            let items: Vec<Value> = match args.get(3) {
-                Some(Value::Object(o)) => {
-                    let lock = o.lock().unwrap();
-                    if let ObjectKind::Array(ref v) = lock.kind {
-                        v.clone()
-                    } else {
-                        Vec::new()
-                    }
-                }
-                _ => Vec::new(),
-            };
+            let items: Vec<Value> = args.iter().skip(3).cloned().collect();
             let mut deleted = Vec::new();
             if let Some(arr) = array_of(args, 0) {
                 let mut o = arr.lock().unwrap();
@@ -503,6 +535,10 @@ fn register_mutators(vm: &mut VM) {
 
 fn register_non_mutators(vm: &mut VM) {
     // slice(arr, start, end) -> new_arr
+    //
+    // Array-only per ECMA-262. String slicing goes through
+    // `wasm:js-value.invokeMethod` (or `wasm:js-string.slice` under the
+    // js-string-builtins proposal when v8 hosts it).
     vm.register_host_fn(
         "wasm:js-array",
         "slice",
@@ -597,29 +633,35 @@ fn register_non_mutators(vm: &mut VM) {
         }),
     );
 
-    // includes(arr, value, fromIndex) -> i32 (bool)
+    // includes(arr_or_obj, value, fromIndex) -> bool
+    //
+    // Primary: `Array.prototype.includes` (SameValueZero comparison). Also
+    // the landing pad for the compiled `x in y` operator when `y` is a
+    // plain object — we check own-property membership for that case.
+    // String `.includes(...)` routes through `wasm:js-value.invokeMethod`.
     vm.register_host_fn(
         "wasm:js-array",
         "includes",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let needle = args.get(1).cloned().unwrap_or(Value::Undefined);
             let from = args.get(2).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
-            if let Some(arr) = array_of(args, 0) {
-                let o = arr.lock().unwrap();
+            if let Some(Value::Object(obj)) = args.first() {
+                let o = obj.lock().unwrap();
                 if let ObjectKind::Array(ref v) = o.kind {
                     for elem in v.iter().skip(from) {
-                        // `includes` uses SameValueZero: NaN == NaN,
-                        // -0 === +0. `strict_equals` already implements
-                        // === which doesn't match NaN; SameValueZero
-                        // differs on NaN only. Spec-correct
-                        // implementation would special-case NaN here.
                         if elem.eq(&needle) {
-                            return Value::I32(1);
+                            return Value::Bool(true);
                         }
                     }
+                    return Value::Bool(false);
                 }
+                let key_str = match &needle {
+                    Value::String(s) => s.to_string(),
+                    other => format!("{}", other),
+                };
+                return Value::Bool(o.properties.contains_key(&key_str));
             }
-            Value::I32(0)
+            Value::Bool(false)
         }),
     );
 

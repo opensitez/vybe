@@ -31,6 +31,7 @@ pub mod dotnet;
 pub mod dispatch;
 pub mod type_registry;
 pub mod canonical;
+pub mod invoke;
 
 pub use target::Target;
 pub use type_registry::CompileTimeTypes;

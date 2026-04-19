@@ -134,7 +134,11 @@ impl Compiler {
 
         self.emit(Op::NULL);
         self.emit(Op::HALT);
-        let locals = self.scope().next_slot;
+        // Take the max of the scope's highest slot and whatever raw local
+        // slots compiler_common helpers (e.g. `invoke::emit_invoke_method`)
+        // reserved directly on the chunk — those bypass `Scope` but still
+        // need the VM to reserve slots at call-frame entry.
+        let locals = self.scope().next_slot.max(self.chunks[0].local_count);
         self.chunks[0].local_count = locals;
         common::bundle::finalize_with_stdlib(&mut self.chunks);
         Ok(self.chunks)
@@ -1773,10 +1777,18 @@ impl Compiler {
             // new_length (ECMA-262), not arr, so we stash arr in a
             // scope-local and reload each iteration.
             let line = self.line;
+            // Reserve the 16 rest-arg slots before allocating `__rest_arr` so
+            // the accumulator doesn't overwrite an incoming rest argument.
+            // (The VM parks overflow args in slots rest_slot..rest_slot+argc-arity;
+            // without this reservation, `__rest_arr` landed on the second rest arg,
+            // triggering a self-referential push loop.)
+            let max_rest = 16u16;
+            for i in 1..max_rest {
+                self.scope_mut().define(&format!("__rest_reserved_{}", i));
+            }
             common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
             let rest_arr = self.scope_mut().define("__rest_arr");
             self.emit_u16(Op::LOCAL_SET, rest_arr); self.emit(Op::DROP);
-            let max_rest = 16u16;
             let mut done_patches: Vec<usize> = Vec::new();
             for i in 0..max_rest {
                 let slot = rest_slot + i;
@@ -1826,7 +1838,7 @@ impl Compiler {
             common::functions::emit_function_epilogue(&mut self.chunks[func_idx], line);
         }
 
-        let locals = self.scope().next_slot;
+        let locals = self.scope().next_slot.max(self.chunks[func_idx].local_count);
         self.chunks[func_idx].local_count = locals;
         let uvs = self.scopes.last().unwrap().upvalues.clone();
         self.scopes.pop();
@@ -1989,7 +2001,7 @@ impl Compiler {
                             common::functions::emit_function_epilogue(&mut self.chunks[ci], line);
                         }
 
-                        let locals = self.scope().next_slot;
+                        let locals = self.scope().next_slot.max(self.chunks[ci].local_count);
                         self.chunks[ci].local_count = locals;
                         self.scopes.pop();
                         self.current = saved;
@@ -2041,7 +2053,7 @@ impl Compiler {
                             self.emit(Op::RETURN);
                         }
 
-                        let locals = self.scope().next_slot;
+                        let locals = self.scope().next_slot.max(self.chunks[ci].local_count);
                         self.chunks[ci].local_count = locals;
                         self.scopes.pop();
                         self.current = saved;
@@ -2077,7 +2089,7 @@ impl Compiler {
 
                         let line = self.line;
                         common::functions::emit_function_epilogue(&mut self.chunks[ci], line);
-                        let locals = self.scope().next_slot;
+                        let locals = self.scope().next_slot.max(self.chunks[ci].local_count);
                         self.chunks[ci].local_count = locals;
                         self.scopes.pop();
                         self.current = saved;
@@ -2491,7 +2503,7 @@ impl Compiler {
         common::classes::emit_instanceof_chain(&mut self.chunks, self.current, this_slot, name, line);
         common::classes::emit_constructor_return(self.chunk(), this_slot, line);
 
-        let locals = self.scope().next_slot;
+        let locals = self.scope().next_slot.max(self.chunks[ctor_idx].local_count);
         self.chunks[ctor_idx].local_count = locals;
         self.scopes.pop();
         self.current = saved_cur;
@@ -3737,11 +3749,13 @@ impl Compiler {
                                         return Ok(());
                                     }
                                     "join" => {
-                                        // th.Join() → thread_join opcode (blocks until thread completes)
+                                        // th.Join() → thread_join opcode (blocks until thread
+                                        // completes, pushes exit code). Leave the exit code on
+                                        // stack — the statement wrapper at StmtKind::Expr adds
+                                        // its own DROP.
                                         self.emit_var_get(&local);
                                         let line = self.line;
                                         common::threading::emit_thread_join(self.chunk(), line);
-                                        self.emit(Op::DROP);
                                         return Ok(());
                                     }
                                     "waitforexit" => {
@@ -3975,6 +3989,17 @@ impl Compiler {
                         let name = name.clone();
                         self.emit_common(&name, line);
                     }
+                    BuiltinEmit::Invoke(method_name) => {
+                        let line = self.line;
+                        let name = method_name.clone();
+                        common::invoke::emit_invoke_method(
+                            &mut self.chunks,
+                            self.current,
+                            &name,
+                            arg_exprs.len() as u8,
+                            line,
+                        );
+                    }
                     _ => {}
                 }
                 return Ok(());
@@ -4119,10 +4144,22 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, result_slot);
                     }
                     "includes" => {
-                        // contains expects [needle, haystack]
-                        self.emit_u16(Op::LOCAL_GET, fn_slot); // needle (search value)
-                        self.emit_u16(Op::LOCAL_GET, arr_slot); // haystack (array)
-                        common::collections::emit_contains(&mut self.chunks, self.current, line);
+                        // `x.includes(v)` — polymorphic: arrays do element
+                        // membership, strings do substring search, user
+                        // objects fall through to their own method. Route
+                        // through `wasm:js-value.invokeMethod` so the
+                        // emitted wasm stays spec-compliant on v8 where
+                        // String.prototype.includes and Array.prototype.includes
+                        // are distinct methods on distinct prototypes.
+                        self.emit_u16(Op::LOCAL_GET, arr_slot);
+                        self.emit_u16(Op::LOCAL_GET, fn_slot);
+                        common::invoke::emit_invoke_method(
+                            &mut self.chunks,
+                            self.current,
+                            "includes",
+                            1,
+                            line,
+                        );
                     }
                     "sort" => {
                         // JS sort(comparatorFn?) — 2-arg comparator or default
@@ -4491,7 +4528,7 @@ impl Compiler {
             common::functions::emit_function_epilogue(&mut self.chunks[ci], line);
         }
 
-        let locals = self.scope().next_slot;
+        let locals = self.scope().next_slot.max(self.chunks[ci].local_count);
         self.chunks[ci].local_count = locals;
         let uvs = self.scopes.last().unwrap().upvalues.clone();
         self.scopes.pop();
@@ -4589,11 +4626,28 @@ impl Compiler {
             BinOp::UShr => self.emit(Op::I32_SHR_U),
             BinOp::Concat => { let l = self.line; common::strings::emit_str_concat(self.chunk(), l); }
             BinOp::In => {
-                // `x in arr` → contains(arr, x). Stack: [needle, haystack] (correct for VM).
-                let l = self.line; common::collections::emit_contains(&mut self.chunks, self.current, l);
+                // `x in y` — JS: is `x` a property key / array index of `y`.
+                // Walker pushes `[x, y]`; `wasm:js-array.includes(y, x)` wants
+                // `[y, x]`. No SWAP opcode, so stash through local slots.
+                // The import is polymorphic (strings, arrays, plain objects).
+                let l = self.line;
+                let t_y = self.scope_mut().define("__in_y");
+                let t_x = self.scope_mut().define("__in_x");
+                self.emit_u16(Op::LOCAL_SET, t_y); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, t_x); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, t_y);
+                self.emit_u16(Op::LOCAL_GET, t_x);
+                common::collections::emit_contains(&mut self.chunks, self.current, l);
             }
             BinOp::NotIn => {
-                let l = self.line; common::collections::emit_contains(&mut self.chunks, self.current, l);
+                let l = self.line;
+                let t_y = self.scope_mut().define("__nin_y");
+                let t_x = self.scope_mut().define("__nin_x");
+                self.emit_u16(Op::LOCAL_SET, t_y); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, t_x); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, t_y);
+                self.emit_u16(Op::LOCAL_GET, t_x);
+                common::collections::emit_contains(&mut self.chunks, self.current, l);
                 self.emit(Op::DYN_NOT);
             }
             BinOp::InstanceOf => {
@@ -4794,6 +4848,14 @@ impl Compiler {
                     self.emit_u8(Op::CALL_REF, args.len() as u8);
                 }
                 BuiltinEmit::Noop => {
+                    self.emit(Op::NULL);
+                }
+                BuiltinEmit::Invoke(_) => {
+                    // `invoke:` is only meaningful for value-method calls
+                    // (receiver in hand). In the free-function path the
+                    // profile shouldn't use it — emit null so misconfigured
+                    // profiles fail loudly via type checks rather than
+                    // silent wrong behaviour.
                     self.emit(Op::NULL);
                 }
             }

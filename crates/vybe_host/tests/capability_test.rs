@@ -1,8 +1,7 @@
 use vybe_bytecode::*;
 use vybe_bytecode::value::*;
 use vybe_host::{Capabilities, Capability, register_with_capabilities};
-use std::rc::Rc;
-use std::cell::RefCell;
+use std::sync::{Arc, Mutex};
 
 // ============================================================
 // Capability preset tests
@@ -238,10 +237,10 @@ fn blocked_host_call_returns_undefined() {
     // Build a chunk that tries to call a filesystem function
     let mut chunk = Chunk::new("<test>");
     // Try to call wasi:filesystem readFile — it shouldn't be registered
-    let ci = chunk.add_constant(Value::String(Rc::from("test.txt")));
+    let ci = chunk.add_constant(Value::String(std::sync::Arc::from("test.txt")));
     chunk.emit_op_u16(Op::CONST, ci, 0);
     // Try global_get for a filesystem function — returns Undefined
-    let fn_name = chunk.add_constant(Value::String(Rc::from("readfile")));
+    let fn_name = chunk.add_constant(Value::String(std::sync::Arc::from("readfile")));
     chunk.emit_op_u16(Op::GLOBAL_GET, fn_name, 0);
     // The function doesn't exist, so we get Undefined
     chunk.emit_op(Op::REF_IS_NULL, 0); // Undefined is null-ish
@@ -259,20 +258,20 @@ fn blocked_host_call_returns_undefined() {
 #[test]
 fn sandbox_console_capture() {
     let mut vm = VM::new();
-    let output: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();
 
     register_with_capabilities(&mut vm, &Capabilities::safe());
     // Override console.log to capture output
-    vm.register_host_fn("wasi:cli", "log", Box::new(move |args: &[Value]| {
+    vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
         let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
-        out.borrow_mut().push(parts.join(" "));
+        out.lock().unwrap().push(parts.join(" "));
         Value::Null
     }));
 
     // Build a simple chunk: push "hello sandbox", call console.log
     let mut chunk = Chunk::new("<test>");
-    let msg = chunk.add_constant(Value::String(Rc::from("hello sandbox")));
+    let msg = chunk.add_constant(Value::String(std::sync::Arc::from("hello sandbox")));
     chunk.emit_op_u16(Op::CONST, msg, 0);
     let log_idx = chunk.add_import("wasi:cli", "log");
     chunk.emit_op_u16(Op::CALL_IMPORT, log_idx, 0);
@@ -281,5 +280,5 @@ fn sandbox_console_capture() {
     chunk.emit_op(Op::HALT, 0);
 
     vm.run(vec![chunk]).unwrap();
-    assert_eq!(*output.borrow(), vec!["hello sandbox"]);
+    assert_eq!(*output.lock().unwrap(), vec!["hello sandbox"]);
 }

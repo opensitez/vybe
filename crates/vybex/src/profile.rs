@@ -205,6 +205,12 @@ pub enum BuiltinEmit {
     StrLength,
     /// Emit nothing (no-op, e.g. randomize, free)
     Noop,
+    /// Dynamic method dispatch via `wasm:js-value.invokeMethod`.
+    /// Used for methods with polymorphic receiver types (JS `str.slice` vs
+    /// `arr.slice`) — runtime picks the right implementation based on the
+    /// receiver. Args are compiled as `[receiver, arg1, ..., argN]` and
+    /// the emitter splices in the method name.
+    Invoke(String),
 }
 
 impl LanguageProfile {
@@ -379,6 +385,7 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
             _ if s.starts_with("intrinsic:") => Some(BuiltinEmit::Intrinsic(s["intrinsic:".len()..].to_string())),
             _ if s.starts_with("common:") => Some(BuiltinEmit::Common(s["common:".len()..].to_string())),
             _ if s.starts_with("stdlib:") => Some(BuiltinEmit::Stdlib(s["stdlib:".len()..].to_string())),
+            _ if s.starts_with("invoke:") => Some(BuiltinEmit::Invoke(s["invoke:".len()..].to_string())),
             _ => None,
         }
     }

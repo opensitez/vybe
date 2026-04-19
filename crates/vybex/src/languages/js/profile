@@ -230,47 +230,55 @@ queueMicrotask       = { emit = "noop",                          min_args = 1, m
 
 [value_methods]
 
-# String instance methods (use compiler_common::strings)
-toUpperCase   = { emit = "common:strings.to_upper",   min_args = 0, max_args = 0 }
-toLowerCase   = { emit = "common:strings.to_lower",   min_args = 0, max_args = 0 }
-trim          = { emit = "common:strings.trim",        min_args = 0, max_args = 0 }
-trimStart     = { emit = "opcode:str_trim_start",      min_args = 0, max_args = 0 }
-trimEnd       = { emit = "opcode:str_trim_end",        min_args = 0, max_args = 0 }
-startsWith    = { emit = "opcode:str_starts_with",     min_args = 1, max_args = 2 }
-endsWith      = { emit = "opcode:str_ends_with",       min_args = 1, max_args = 2 }
-charAt        = { emit = "opcode:str_char_at",         min_args = 1, max_args = 1 }
-charCodeAt    = { emit = "opcode:str_char_code_at",    min_args = 1, max_args = 1 }
-substring     = { emit = "common:strings.substring",   min_args = 1, max_args = 2 }
-split         = { emit = "common:strings.split",       min_args = 1, max_args = 2 }
-replace       = { emit = "common:strings.replace",     min_args = 2, max_args = 2 }
-replaceAll    = { emit = "common:strings.replace",     min_args = 2, max_args = 2 }
-repeat        = { emit = "opcode:str_repeat",          min_args = 1, max_args = 1 }
-padStart      = { emit = "opcode:str_pad_start",       min_args = 1, max_args = 2 }
-padEnd        = { emit = "opcode:str_pad_end",         min_args = 1, max_args = 2 }
-indexOf       = { emit = "common:strings.index_of",    min_args = 1, max_args = 2 }
-lastIndexOf   = { emit = "opcode:str_last_index_of",   min_args = 1, max_args = 2 }
-includes      = { emit = "opcode:str_includes",        min_args = 1, max_args = 1 }
+# JS value methods — polymorphic receiver (string OR array OR user object).
+# Dispatched at runtime through `wasm:js-value.invokeMethod` so the right
+# implementation is picked based on the receiver's actual type. This mirrors
+# how native v8 resolves `x.method(...)` through the prototype chain.
+#
+# For statically-typed receivers (VB `As String`, C# `List<T>`, …) the other
+# language profiles emit the typed import directly — cheaper, no runtime
+# dispatch. JS can't do that without full type inference, so everything
+# routes through the shim.
+toUpperCase   = { emit = "invoke:toUpperCase",   min_args = 0, max_args = 0 }
+toLowerCase   = { emit = "invoke:toLowerCase",   min_args = 0, max_args = 0 }
+trim          = { emit = "invoke:trim",          min_args = 0, max_args = 0 }
+trimStart     = { emit = "invoke:trimStart",     min_args = 0, max_args = 0 }
+trimEnd       = { emit = "invoke:trimEnd",       min_args = 0, max_args = 0 }
+startsWith    = { emit = "invoke:startsWith",    min_args = 1, max_args = 2 }
+endsWith      = { emit = "invoke:endsWith",      min_args = 1, max_args = 2 }
+charAt        = { emit = "invoke:charAt",        min_args = 1, max_args = 1 }
+charCodeAt    = { emit = "invoke:charCodeAt",    min_args = 1, max_args = 1 }
+substring     = { emit = "invoke:substring",    min_args = 1, max_args = 2 }
+split         = { emit = "invoke:split",        min_args = 1, max_args = 2 }
+replace       = { emit = "invoke:replace",       min_args = 2, max_args = 2 }
+replaceAll    = { emit = "invoke:replaceAll",    min_args = 2, max_args = 2 }
+repeat        = { emit = "invoke:repeat",        min_args = 1, max_args = 1 }
+padStart      = { emit = "invoke:padStart",      min_args = 1, max_args = 2 }
+padEnd        = { emit = "invoke:padEnd",        min_args = 1, max_args = 2 }
+indexOf       = { emit = "invoke:indexOf",       min_args = 1, max_args = 2 }
+lastIndexOf   = { emit = "invoke:lastIndexOf",   min_args = 1, max_args = 2 }
+includes      = { emit = "invoke:includes",      min_args = 1, max_args = 2 }
+slice         = { emit = "invoke:slice",         min_args = 0, max_args = 2 }
+at            = { emit = "invoke:at",            min_args = 1, max_args = 1 }
+concat        = { emit = "invoke:concat",        min_args = 1, max_args = 255 }
 match         = { emit = "host:vybe:string:match",     min_args = 1, max_args = 1 }
 search        = { emit = "host:vybe:string:search",    min_args = 1, max_args = 1 }
-toString      = { emit = "stdlib:tostring",            min_args = 0, max_args = 0 }
+toString      = { emit = "invoke:toString",      min_args = 0, max_args = 0 }
 toFixed       = { emit = "host:vybe:convert:toFixed",  min_args = 0, max_args = 1 }
 
-# Array instance methods (use compiler_common::collections)
+# Array instance methods — mutators only; polymorphic methods go through
+# `invoke:*` above. These are array-only per ECMA-262 so we emit the
+# typed import directly.
 push          = { emit = "common:collections.push",    min_args = 1, max_args = 255 }
 pop           = { emit = "common:collections.pop",     min_args = 0, max_args = 0 }
-shift         = { emit = "common:collections.shift",         min_args = 0, max_args = 0 }
+shift         = { emit = "common:collections.shift",   min_args = 0, max_args = 0 }
 reverse       = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
 join          = { emit = "common:collections.join",    min_args = 0, max_args = 1 }
-concat        = { emit = "stdlib:concat",               min_args = 1, max_args = 255 }
-fill          = { emit = "host:wasm:js-array:fill",         min_args = 1, max_args = 3 }
-
-# Array instance methods — host calls (more complex than single opcode)
-unshift       = { emit = "host:wasm:js-array:unshift",    min_args = 1, max_args = 255 }
-splice        = { emit = "host:wasm:js-array:splice",     min_args = 1, max_args = 255 }
-flat          = { emit = "host:wasm:js-array:flat",        min_args = 0, max_args = 1 }
-slice         = { emit = "host:wasm:js-array:slice",       min_args = 0, max_args = 2 }
-at            = { emit = "host:wasm:js-array:at",          min_args = 1, max_args = 1 }
-entries       = { emit = "host:vybe:array:enumerate",   min_args = 0, max_args = 0 }
+fill          = { emit = "host:wasm:js-array:fill",    min_args = 1, max_args = 3 }
+unshift       = { emit = "host:wasm:js-array:unshift", min_args = 1, max_args = 255 }
+splice        = { emit = "host:wasm:js-array:splice",  min_args = 1, max_args = 255 }
+flat          = { emit = "host:wasm:js-array:flat",    min_args = 0, max_args = 1 }
+entries       = { emit = "host:vybe:array:enumerate",  min_args = 0, max_args = 0 }
 
 # Map/Set size property
 size              = { emit = "intrinsic:map_size",       min_args = 0, max_args = 0 }

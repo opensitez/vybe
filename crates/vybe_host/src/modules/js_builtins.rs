@@ -34,9 +34,13 @@ fn register_js_string(vm: &mut VM) {
     }));
 
     // length(externref) -> i32
+    //
+    // Spec: `String.prototype.length` returns UTF-16 code-unit count, not
+    // byte count. "héllo" is 5 code units even though it's 6 UTF-8 bytes.
+    // Astral-plane chars (>U+FFFF) count as 2 code units each.
     vm.register_host_fn("wasm:js-string", "length", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         match args.first() {
-            Some(Value::String(s)) => Value::I32(s.len() as i32),
+            Some(Value::String(s)) => Value::I32(s.encode_utf16().count() as i32),
             _ => Value::I32(0),
         }
     }));

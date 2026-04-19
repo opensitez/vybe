@@ -45,6 +45,7 @@ pub mod js_typedarray_builtins;
 pub mod js_json_builtins;
 pub mod js_structured_clone;
 pub mod js_fixedarray_builtins;
+pub mod js_invoke;
 
 use vybe_bytecode::{VM, Value, HostContext};
 use std::collections::HashSet;
@@ -400,6 +401,7 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
     js_json_builtins::register(vm);
     js_structured_clone::register(vm);
     js_fixedarray_builtins::register(vm);
+    js_invoke::register(vm);
 
     // Capability-gated modules
     if caps.has(Capability::Console) {
