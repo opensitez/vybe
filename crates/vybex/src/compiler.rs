@@ -1169,9 +1169,10 @@ impl Compiler {
                         self.emit_const(Value::F64(1.0));
                         self.emit(Op::DYN_ADD);
                         self.emit_u16(Op::LOCAL_SET, new_len_slot); self.emit(Op::DROP);
-                        // new = array_new_default(new_len)
+                        // new = wasm:js-array.newWithLength(new_len)
                         self.emit_u16(Op::LOCAL_GET, new_len_slot);
-                        self.emit(Op::ARRAY_NEW_DEFAULT);
+                        let new_idx = self.import("wasm:js-array", "newWithLength");
+                        self.emit_host_call(new_idx, 1);
                         self.emit_u16(Op::LOCAL_SET, new_slot); self.emit(Op::DROP);
 
                         // Iterate old array with the canonical for-in helper.
@@ -1190,14 +1191,15 @@ impl Compiler {
                         self.emit(Op::DROP);
                         let after = self.emit_jump(Op::BR);
                         self.patch_jump(in_bounds);
-                        // in bounds: new[idx] = element
-                        // Stack currently has [element]. Build [new, idx, element].
+                        // in bounds: wasm:js-array.set(new, idx, element).
+                        // Stack currently has [element].
                         let elem_slot = self.scope_mut().define("__redim_el");
                         self.emit_u16(Op::LOCAL_SET, elem_slot); self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, new_slot);
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
                         self.emit_u16(Op::LOCAL_GET, elem_slot);
-                        self.emit(Op::ARRAY_SET);
+                        let set_idx = self.import("wasm:js-array", "set");
+                        self.emit_host_call(set_idx, 3);
                         self.emit(Op::DROP);
                         self.patch_jump(after);
 
@@ -1208,10 +1210,14 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, new_slot);
                         self.emit_var_set(array);
                     } else {
+                        // ReDim arr(N) — non-preserving. N is the upper
+                        // bound; length is N+1. Route through
+                        // wasm:js-array.newWithLength (Phase D2).
                         self.compile_expr(size_expr)?;
                         self.emit_const(Value::F64(1.0));
                         self.emit(Op::DYN_ADD);
-                        self.emit(Op::ARRAY_NEW_DEFAULT);
+                        let new_idx = self.import("wasm:js-array", "newWithLength");
+                        self.emit_host_call(new_idx, 1);
                         self.emit_var_set(array);
                     }
                 }
@@ -1440,12 +1446,15 @@ impl Compiler {
                 if let Some(ref init_expr) = decl.init {
                     self.compile_expr(init_expr)?;
                 } else if let Some(ref bounds) = decl.array_bounds {
-                    // Array with bounds: Dim arr(N)
+                    // Array with bounds: Dim arr(N) — N is the UPPER bound,
+                    // so the array length is N+1. Route through
+                    // wasm:js-array.newWithLength per Phase D2.
                     if let Some(size_expr) = bounds.first() {
                         self.compile_expr(size_expr)?;
                         self.emit_const(Value::F64(1.0));
                         self.emit(Op::DYN_ADD);
-                        self.emit(Op::ARRAY_NEW_DEFAULT);
+                        let new_idx = self.import("wasm:js-array", "newWithLength");
+                        self.emit_host_call(new_idx, 1);
                     } else {
                         self.emit(Op::NULL);
                     }

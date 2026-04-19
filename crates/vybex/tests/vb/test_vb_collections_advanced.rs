@@ -134,7 +134,6 @@ End Module
 }
 
 #[test]
-#[ignore = "pending dynamic-runtime migration — see dynamicruntime_support.md Phase D2 (VB)"]
 fn array_declaration() {
     let out = run_vb(r#"
 Module M
@@ -171,7 +170,6 @@ End Module
 }
 
 #[test]
-#[ignore = "pending dynamic-runtime migration — see dynamicruntime_support.md Phase D2 (VB)"]
 fn redim_array() {
     let out = run_vb(r#"
 Module M

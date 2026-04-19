@@ -1014,7 +1014,6 @@ Console.WriteLine(p.second)
 /// KNOWN BUG: Array indexed assignment fails with "null is not callable"
 /// (same root cause as b74_array_operations).
 #[test]
-#[ignore = "pending dynamic-runtime migration — see dynamicruntime_support.md Phase D2 (VB)"]
 fn f49_object_in_array_access_via_index() {
     let out = run_vb(r#"
 Public Class Item
@@ -1492,7 +1491,6 @@ Console.WriteLine(2 ^ 10)
 /// KNOWN BUG: Dim arr(4) As Integer with indexed assignment arr(i) = value
 /// fails with "null is not callable" — array index assignment syntax issue.
 #[test]
-#[ignore = "pending dynamic-runtime migration — see dynamicruntime_support.md Phase D2 (VB)"]
 fn b74_array_operations() {
     let out = run_vb(r#"
 Dim arr(4) As Integer
