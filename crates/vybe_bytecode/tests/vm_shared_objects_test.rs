@@ -1,7 +1,7 @@
 /// Tests for shared-everything threads: shared GC object access.
 
 use vybe_bytecode::{VM, Value, Chunk, Op};
-use std::rc::Rc;
+use std::sync::Arc;
 
 #[test]
 fn shared_new_creates_typed_object() {
@@ -23,7 +23,7 @@ fn shared_new_creates_typed_object() {
     let result = vm.run(vec![chunk]).unwrap();
     match &result {
         Value::Object(obj) => {
-            let o = obj.borrow();
+            let o = obj.lock().unwrap();
             assert_eq!(o.type_id, tid);
             assert_eq!(o.fields.len(), 2); // x, y
         }

@@ -88,22 +88,25 @@ fn capture_pre_migration_baseline() {
 
     // ── Array ops (current VM opcodes — will go away in Phase E) ──
 
-    let push_get = run_and_time("array.push + array.length", |chunk| {
+    let push_get = run_and_time("wasm:js-array.push + length", |chunk| {
         chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, 0);
         let arr_slot = 0;
         chunk.local_count = chunk.local_count.max(1);
         chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, 0);
         chunk.emit_op(Op::DROP, 0);
+        // One-time import setup (chunks[0]).
+        let push_idx = chunk.add_import("wasm:js-array", "push");
 
         emit_loop(chunk, |c| {
             c.emit_op_u16(Op::LOCAL_GET, arr_slot, 0);
             let v = c.add_constant(Value::I32(42));
             c.emit_op_u16(Op::CONST, v, 0);
-            c.emit_op(Op::ARRAY_PUSH, 0);
+            c.emit_op_u16(Op::CALL_IMPORT, push_idx, 0);
+            c.emit(2u8, 0);
             c.emit_op(Op::DROP, 0);
         });
     });
-    println!("| `ARRAY_PUSH` (opcode) | {:.1} |", push_get);
+    println!("| `wasm:js-array.push` (import) | {:.1} |", push_get);
 
     let get_read = run_and_time("array.get (pre-populated)", |chunk| {
         // Pre-populate with one element

@@ -400,7 +400,9 @@ pub fn emit_range_targeted(chunks: &mut [Chunk], current: usize, arg_count: u8, 
 
             chunk.emit_op_u16(Op::LOCAL_GET, result_local, line);
             chunk.emit_op_u16(Op::LOCAL_GET, i_local, line);
-            chunk.emit_op(Op::ARRAY_PUSH, line);
+            let push_idx = chunk.add_import("wasm:js-array", "push");
+            chunk.emit_op_u16(Op::CALL_IMPORT, push_idx, line);
+            chunk.emit(2u8, line);
             chunk.emit_op(Op::DROP, line);
 
             chunk.emit_op_u16(Op::LOCAL_GET, i_local, line);

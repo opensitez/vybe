@@ -2,7 +2,7 @@
 
 use vybe_bytecode::{VM, Value, Chunk, Op};
 use vybe_bytecode::chunk::ConstExpr;
-use std::rc::Rc;
+use std::sync::Arc;
 
 // ── Extended Const Expressions ──────────────────────────────
 
@@ -14,7 +14,7 @@ fn global_init_literal() {
     chunk.add_global_init("PI", ConstExpr::Value(Value::F64(3.14159)));
 
     // Read the global
-    let name = chunk.add_constant(Value::String(Rc::from("PI")));
+    let name = chunk.add_constant(Value::String(Arc::from("PI")));
     chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
     chunk.emit_op(Op::HALT, 0);
 
@@ -35,7 +35,7 @@ fn global_init_add() {
         Box::new(ConstExpr::Value(Value::I32(50))),
     ));
 
-    let name = chunk.add_constant(Value::String(Rc::from("OFFSET")));
+    let name = chunk.add_constant(Value::String(Arc::from("OFFSET")));
     chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
     chunk.emit_op(Op::HALT, 0);
 
@@ -56,7 +56,7 @@ fn global_init_mul() {
         Box::new(ConstExpr::Value(Value::I32(256))),
     ));
 
-    let name = chunk.add_constant(Value::String(Rc::from("TABLE")));
+    let name = chunk.add_constant(Value::String(Arc::from("TABLE")));
     chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
     chunk.emit_op(Op::HALT, 0);
 
@@ -81,7 +81,7 @@ fn global_init_chain() {
         Box::new(ConstExpr::GlobalGet("A".into())),
     ));
 
-    let name = chunk.add_constant(Value::String(Rc::from("C")));
+    let name = chunk.add_constant(Value::String(Arc::from("C")));
     chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
     chunk.emit_op(Op::HALT, 0);
 
@@ -108,7 +108,7 @@ fn global_init_runtime_opcode() {
     });
     chunk.emit_op_u16(Op::GLOBAL_INIT, 1, 0); // init Y (index 1)
 
-    let name = chunk.add_constant(Value::String(Rc::from("Y")));
+    let name = chunk.add_constant(Value::String(Arc::from("Y")));
     chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
     chunk.emit_op(Op::HALT, 0);
 
@@ -137,7 +137,7 @@ fn cont_new_typed_stores_tag() {
     let result = vm.run(vec![chunk]).unwrap();
     match &result {
         Value::Object(obj) => {
-            let o = obj.borrow();
+            let o = obj.lock().unwrap();
             assert_eq!(o.properties.get("__cont_tag").unwrap().as_i32(), tag_idx as i32);
             let yt = o.properties.get("__cont_yield_type").map(|v| format!("{}", v)).unwrap_or_default();
             assert_eq!(yt, "i32");
@@ -169,7 +169,7 @@ fn string_as_ref_passthrough() {
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
 
-    let s = chunk.add_constant(Value::String(Rc::from("hello")));
+    let s = chunk.add_constant(Value::String(Arc::from("hello")));
     chunk.emit_op_u16(Op::CONST, s, 0);
     chunk.emit_op(Op::STRING_AS_REF, 0);
     chunk.emit_op(Op::HALT, 0);
@@ -187,7 +187,7 @@ fn string_from_ref_passthrough() {
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
 
-    let s = chunk.add_constant(Value::String(Rc::from("world")));
+    let s = chunk.add_constant(Value::String(Arc::from("world")));
     chunk.emit_op_u16(Op::CONST, s, 0);
     chunk.emit_op(Op::STRING_AS_REF, 0);
     chunk.emit_op(Op::STRING_FROM_REF, 0);
@@ -207,7 +207,7 @@ fn string_ref_eq_same_rc() {
     chunk.local_count = 2;
 
     // Push the same constant twice — same Rc
-    let s = chunk.add_constant(Value::String(Rc::from("shared")));
+    let s = chunk.add_constant(Value::String(Arc::from("shared")));
     chunk.emit_op_u16(Op::CONST, s, 0);
     chunk.emit_op(Op::DUP, 0);
     chunk.emit_op(Op::STRING_REF_EQ, 0);
@@ -223,9 +223,9 @@ fn string_ref_eq_different_rc() {
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 2;
 
-    // Two different Rc<str> with same content
-    let s1 = chunk.add_constant(Value::String(Rc::from("test")));
-    let s2 = chunk.add_constant(Value::String(Rc::from("test")));
+    // Two different Arc<str> with same content
+    let s1 = chunk.add_constant(Value::String(Arc::from("test")));
+    let s2 = chunk.add_constant(Value::String(Arc::from("test")));
     chunk.emit_op_u16(Op::CONST, s1, 0);
     chunk.emit_op_u16(Op::CONST, s2, 0);
     chunk.emit_op(Op::STRING_REF_EQ, 0);

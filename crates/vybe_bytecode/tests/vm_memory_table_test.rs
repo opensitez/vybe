@@ -1,7 +1,7 @@
 /// Tests for memory operations, table operations, and WASM binary I/O.
 
 use vybe_bytecode::{VM, Value, Chunk, Op};
-use std::rc::Rc;
+use std::sync::Arc;
 
 // ============================================================
 // MEMORY OPERATIONS
@@ -213,15 +213,15 @@ fn function_in_separate_chunk_callable() {
 
     let mut f = Chunk::new("add");
     f.arity = 2;
-    f.local_count = 3; // slot 0=callee, 1=a, 2=b
+    f.local_count = 2; // slot 0=a, 1=b (WASM convention)
+    f.emit_op_u16(Op::LOCAL_GET, 0, 0);
     f.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    f.emit_op_u16(Op::LOCAL_GET, 2, 0);
     f.emit_op(Op::DYN_ADD, 0);
     f.emit_op(Op::RETURN, 0);
 
     let mut main = Chunk::new("<script>");
     main.local_count = 1;
-    let name = main.add_constant(Value::String(Rc::from("add")));
+    let name = main.add_constant(Value::String(Arc::from("add")));
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
     main.emit_op_u16(Op::GLOBAL_SET, name, 0);
@@ -246,40 +246,30 @@ fn multiple_chunks_cross_call() {
     // Chunk 1: double(x) = x * 2
     let mut double = Chunk::new("double");
     double.arity = 1;
-    double.local_count = 2;
-    double.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    double.local_count = 1;
+    double.emit_op_u16(Op::LOCAL_GET, 0, 0);
     let two = double.add_constant(Value::F64(2.0));
     double.emit_op_u16(Op::CONST, two, 0);
     double.emit_op(Op::F64_MUL, 0);
     double.emit_op(Op::RETURN, 0);
 
-    // Chunk 2: quad(x) = double(double(x))
+    // Chunk 2: quad(x) = double(x) (simplified — just verifies cross-chunk
+    // call returns correctly; avoids the swap gymnastics from the original
+    // version that had `quad` dropping its second call and returning the
+    // first).
     let mut quad = Chunk::new("quad");
     quad.arity = 1;
-    quad.local_count = 2;
-    let dbl_name = quad.add_constant(Value::String(Rc::from("double")));
-    // double(x)
+    quad.local_count = 1;
+    let dbl_name = quad.add_constant(Value::String(Arc::from("double")));
     quad.emit_op_u16(Op::GLOBAL_GET, dbl_name, 0);
-    quad.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    quad.emit_op_u16(Op::LOCAL_GET, 0, 0);
     quad.emit_op_u8(Op::CALL, 1, 0);
-    // double(result)
-    let dbl_name2 = quad.add_constant(Value::String(Rc::from("double")));
-    quad.emit_op_u16(Op::GLOBAL_GET, dbl_name2, 0);
-    // swap: need func below result
-    let _tmp = 2u16; // local slot 2 as temp
-    quad.local_count = 3;
-    // Actually: result is on stack, global_get pushed func above it
-    // Stack: [result, double_fn] — need [double_fn, result]
-    // Just do it the other way: get func first, then get result from local
-    // This is getting complicated for a test. Simpler: store intermediate.
-    // Let me just call double(x) and return, for simplicity.
-    quad.emit_op(Op::DROP, 0); // drop the second global_get
-    quad.emit_op(Op::RETURN, 0); // return double(x) — which is 2*x
+    quad.emit_op(Op::RETURN, 0);
 
     let mut main = Chunk::new("<script>");
     main.local_count = 1;
-    let d_name = main.add_constant(Value::String(Rc::from("double")));
-    let q_name = main.add_constant(Value::String(Rc::from("quad")));
+    let d_name = main.add_constant(Value::String(Arc::from("double")));
+    let q_name = main.add_constant(Value::String(Arc::from("quad")));
     // Register double
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
@@ -323,8 +313,8 @@ fn call_indirect_vm_function() {
     main.emit(0, 0); // 0 upvalues
 
     // Get __table_idx from the function object
-    let idx_name = main.add_constant(Value::String(Rc::from("__table_idx")));
-    main.emit(Op::DUP as u8, 0);
+    let idx_name = main.add_constant(Value::String(Arc::from("__table_idx")));
+    main.emit_op(Op::DUP, 0);
     main.emit_op_u16(Op::STRUCT_GET, idx_name, 0);
 
     // Stack: [func_obj, table_idx]

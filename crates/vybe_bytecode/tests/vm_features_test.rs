@@ -1,6 +1,6 @@
 use vybe_bytecode::*;
 use vybe_bytecode::value::*;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::cell::RefCell;
 
 fn make_vm_with_chunk(build: impl FnOnce(&mut Chunk)) -> VM {
@@ -162,7 +162,7 @@ fn call_indirect_basic() {
     script.emit_op_u16(Op::REF_FUNC, 1, 0);
     script.emit(0, 0); // 0 upvalues
     // Store result (closure) as global "add_fn"
-    let add_name = script.add_constant(Value::String(Rc::from("add_fn")));
+    let add_name = script.add_constant(Value::String(Arc::from("add_fn")));
     script.emit_op_u16(Op::GLOBAL_SET, add_name, 0);
     script.emit_op(Op::DROP, 0);
 
@@ -178,7 +178,7 @@ fn call_indirect_basic() {
     let mut vm = VM::new();
     // Put the add function in the func_table
     let func = Function { name: Some("add".into()), arity: 2, chunk_index: 1, upvalues: vec![] };
-    let func_val = Value::Object(Rc::new(RefCell::new(Object {
+    let func_val = Value::Object(Arc::new(std::sync::Mutex::new(Object {
         properties: std::collections::HashMap::new(),
         kind: ObjectKind::Function(func),
         type_id: 0, fields: Vec::new(),
@@ -199,8 +199,8 @@ fn type_registry_method_dispatch() {
     let mut vm = VM::new();
 
     // Register a host function
-    vm.register_host_fn("test", "greet", Box::new(|_args: &[Value]| {
-        Value::String(Rc::from("hello from vtable"))
+    vm.register_host_fn("test", "greet", Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
+        Value::String(Arc::from("hello from vtable"))
     }));
 
     // Create a type with a method
@@ -211,8 +211,8 @@ fn type_registry_method_dispatch() {
 
     // Create an object with that type_id
     let mut obj = Object::new_typed(type_id);
-    obj.properties.insert("__type".into(), Value::String(Rc::from("MyType")));
-    let obj_val = Value::Object(Rc::new(RefCell::new(obj)));
+    obj.properties.insert("__type".into(), Value::String(Arc::from("MyType")));
+    let obj_val = Value::Object(Arc::new(std::sync::Mutex::new(obj)));
 
     // Resolve "greet" method through type registry
     let method = vm.resolve_property(&obj_val, "greet").unwrap();
@@ -223,8 +223,8 @@ fn type_registry_method_dispatch() {
 fn type_registry_inheritance() {
     let mut vm = VM::new();
 
-    vm.register_host_fn("test", "base_method", Box::new(|_| Value::String(Rc::from("base"))));
-    vm.register_host_fn("test", "child_method", Box::new(|_| Value::String(Rc::from("child"))));
+    vm.register_host_fn("test", "base_method", Box::new(|_, _| Value::String(Arc::from("base"))));
+    vm.register_host_fn("test", "child_method", Box::new(|_, _| Value::String(Arc::from("child"))));
 
     let base_fn = *vm.host_registry.get(&("test".into(), "base_method".into())).unwrap();
     let child_fn = *vm.host_registry.get(&("test".into(), "child_method".into())).unwrap();

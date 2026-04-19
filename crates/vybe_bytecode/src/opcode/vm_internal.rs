@@ -82,15 +82,14 @@ impl Op {
     pub const STR_INTO_CHAR_CODES: Op = Op::new(0xFF, 0x40);
     pub const STR_FROM_CHAR_CODES: Op = Op::new(0xFF, 0x41);
     // Array builtins (host imports in .wasm output)
-    pub const ARRAY_PUSH: Op        = Op::new(0xFF, 0x42);
-    pub const ARRAY_POP: Op         = Op::new(0xFF, 0x43);
-    pub const ARRAY_SLICE: Op       = Op::new(0xFF, 0x44);
-    pub const ARRAY_JOIN: Op        = Op::new(0xFF, 0x45);
-    pub const ARRAY_REVERSE: Op     = Op::new(0xFF, 0x46);
-    pub const ARRAY_CONTAINS: Op    = Op::new(0xFF, 0x47);
-    pub const ARRAY_INDEX_OF: Op    = Op::new(0xFF, 0x48);
-    pub const ARRAY_CONCAT: Op      = Op::new(0xFF, 0x49);
-    pub const ARRAY_SHIFT: Op       = Op::new(0xFF, 0x4A);
+    // REMOVED (Phase E): the 9 `0xFF` ARRAY_* opcodes for dynamic array
+    // mutation (push, pop, slice, join, reverse, contains, indexOf,
+    // concat, shift — used to live at 0xFF 0x42–0x4A). They were Vybe-
+    // specific and NOT in any WASM proposal. All callers now go through
+    // `wasm:js-array.*` imports via `common::collections::*`. The opcode
+    // IDs 0x42–0x4A are left vacant (not reused) so any legacy bytecode
+    // that still carries them fails decode loudly rather than silently
+    // aliasing to something else.
     // Stack switching (proposal not finalized)
     pub const CONT_NEW: Op          = Op::new(0xFF, 0x4B);
     pub const SUSPEND: Op           = Op::new(0xFF, 0x4C);

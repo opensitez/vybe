@@ -1,7 +1,7 @@
 /// Tests for Component Model: canon_lift, canon_lower, type_import, type_export.
 
 use vybe_bytecode::{VM, Value, Chunk, Op, TypeDef};
-use std::rc::Rc;
+use std::sync::Arc;
 
 #[test]
 fn canon_lift_stamps_type_id() {
@@ -14,8 +14,8 @@ fn canon_lift_stamps_type_id() {
     chunk.local_count = 2;
 
     // Create a plain object (type_id = 0)
-    let name_c = chunk.add_constant(Value::String(Rc::from("name")));
-    let val_c = chunk.add_constant(Value::String(Rc::from("Rex")));
+    let name_c = chunk.add_constant(Value::String(Arc::from("name")));
+    let val_c = chunk.add_constant(Value::String(Arc::from("Rex")));
     chunk.emit_op_u16(Op::CONST, val_c, 0);
     chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 1, 0);
 
@@ -27,7 +27,7 @@ fn canon_lift_stamps_type_id() {
     let result = vm.run(vec![chunk]).unwrap();
     match &result {
         Value::Object(obj) => {
-            let o = obj.borrow();
+            let o = obj.lock().unwrap();
             assert_eq!(o.type_id, tid, "canon_lift should stamp type_id");
         }
         other => panic!("expected Object, got {:?}", other),

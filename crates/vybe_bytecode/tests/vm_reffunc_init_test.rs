@@ -1,7 +1,7 @@
 use vybe_bytecode::*;
 use vybe_bytecode::chunk::*;
 use vybe_bytecode::value::ObjectKind;
-use std::rc::Rc;
+use std::sync::Arc;
 
 #[test]
 fn global_init_reffunc_creates_function() {
@@ -12,7 +12,7 @@ fn global_init_reffunc_creates_function() {
         name: "__test_fn".to_string(),
         init: ConstExpr::RefFunc(1),
     });
-    let name_c = script.add_constant(Value::String(Rc::from("__test_fn")));
+    let name_c = script.add_constant(Value::String(Arc::from("__test_fn")));
     script.emit_op_u16(opcode::Op::GLOBAL_GET, name_c, 0);
     script.emit_op(opcode::Op::HALT, 0);
 
@@ -26,7 +26,7 @@ fn global_init_reffunc_creates_function() {
     let result = vm.run(vec![script, func_chunk]).unwrap();
     match &result {
         Value::Object(obj) => {
-            let o = obj.borrow();
+            let o = obj.lock().unwrap();
             assert!(matches!(&o.kind, ObjectKind::Function(_)), "should be a Function, got {:?}", o.kind);
         }
         other => panic!("expected Function object, got {:?}", other),

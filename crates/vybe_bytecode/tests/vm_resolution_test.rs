@@ -2,7 +2,7 @@
 
 use vybe_bytecode::{VM, Value, Chunk, Op};
 use vybe_bytecode::value::{Object, ObjectKind};
-use std::rc::Rc;
+use std::sync::Arc;
 use std::cell::RefCell;
 
 // ============================================================
@@ -12,7 +12,7 @@ use std::cell::RefCell;
 #[test]
 fn import_resolution_basic() {
     let mut vm = VM::new();
-    vm.register_host_fn("test", "add", Box::new(|args: &[Value]| {
+    vm.register_host_fn("test", "add", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
         Value::F64(args.first().map(|v| v.as_f64()).unwrap_or(0.0)
                  + args.get(1).map(|v| v.as_f64()).unwrap_or(0.0))
     }));
@@ -50,10 +50,10 @@ fn import_unresolved_errors_gracefully() {
 #[test]
 fn import_multiple_modules_correct_dispatch() {
     let mut vm = VM::new();
-    vm.register_host_fn("math", "double", Box::new(|args: &[Value]| {
+    vm.register_host_fn("math", "double", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
         Value::F64(args[0].as_f64() * 2.0)
     }));
-    vm.register_host_fn("str", "len", Box::new(|args: &[Value]| {
+    vm.register_host_fn("str", "len", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
         Value::F64(format!("{}", args[0]).len() as f64)
     }));
 
@@ -63,7 +63,7 @@ fn import_multiple_modules_correct_dispatch() {
     chunk.imports.push(vybe_bytecode::chunk::Import { module: "str".into(), name: "len".into() });
 
     // Call str.len("hello") — should be import 1, not 0
-    let s = chunk.add_constant(Value::String(Rc::from("hello")));
+    let s = chunk.add_constant(Value::String(Arc::from("hello")));
     chunk.emit_op_u16(Op::CONST, s, 0);
     chunk.emit_op(Op::CALL_IMPORT, 0);
     chunk.emit(0, 0); chunk.emit(1, 0); // import_idx = 1 (str.len)
@@ -77,10 +77,10 @@ fn import_multiple_modules_correct_dispatch() {
 #[test]
 fn import_same_module_different_functions() {
     let mut vm = VM::new();
-    vm.register_host_fn("math", "add", Box::new(|args: &[Value]| {
+    vm.register_host_fn("math", "add", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
         Value::F64(args[0].as_f64() + args[1].as_f64())
     }));
-    vm.register_host_fn("math", "mul", Box::new(|args: &[Value]| {
+    vm.register_host_fn("math", "mul", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
         Value::F64(args[0].as_f64() * args[1].as_f64())
     }));
 
@@ -119,7 +119,7 @@ fn global_get_missing_returns_undefined() {
     let mut vm = VM::new();
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    let idx = chunk.add_constant(Value::String(Rc::from("nonexistent")));
+    let idx = chunk.add_constant(Value::String(Arc::from("nonexistent")));
     chunk.emit_op_u16(Op::GLOBAL_GET, idx, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = vm.run(vec![chunk]).unwrap();
@@ -131,7 +131,7 @@ fn global_set_then_get_roundtrip() {
     let mut vm = VM::new();
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    let name = chunk.add_constant(Value::String(Rc::from("x")));
+    let name = chunk.add_constant(Value::String(Arc::from("x")));
     let val = chunk.add_constant(Value::F64(42.0));
     chunk.emit_op_u16(Op::CONST, val, 0);
     chunk.emit_op_u16(Op::GLOBAL_SET, name, 0);
@@ -147,7 +147,7 @@ fn globals_persist_after_run() {
     let mut vm = VM::new();
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    let name = chunk.add_constant(Value::String(Rc::from("saved")));
+    let name = chunk.add_constant(Value::String(Arc::from("saved")));
     let val = chunk.add_constant(Value::F64(99.0));
     chunk.emit_op_u16(Op::CONST, val, 0);
     chunk.emit_op_u16(Op::GLOBAL_SET, name, 0);
@@ -164,7 +164,7 @@ fn globals_persist_across_multiple_runs() {
     // Run 1: set x = 10
     let mut c1 = Chunk::new("<script>");
     c1.local_count = 1;
-    let n1 = c1.add_constant(Value::String(Rc::from("x")));
+    let n1 = c1.add_constant(Value::String(Arc::from("x")));
     let v1 = c1.add_constant(Value::F64(10.0));
     c1.emit_op_u16(Op::CONST, v1, 0);
     c1.emit_op_u16(Op::GLOBAL_SET, n1, 0);
@@ -176,7 +176,7 @@ fn globals_persist_across_multiple_runs() {
     // Run 2: read x
     let mut c2 = Chunk::new("<script>");
     c2.local_count = 1;
-    let n2 = c2.add_constant(Value::String(Rc::from("x")));
+    let n2 = c2.add_constant(Value::String(Arc::from("x")));
     c2.emit_op_u16(Op::GLOBAL_GET, n2, 0);
     c2.emit_op(Op::HALT, 0);
     let result = vm.run(vec![c2]).unwrap();
@@ -192,7 +192,7 @@ fn struct_set_returns_value() {
     let mut vm = VM::new();
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    let prop = chunk.add_constant(Value::String(Rc::from("x")));
+    let prop = chunk.add_constant(Value::String(Arc::from("x")));
     let val = chunk.add_constant(Value::F64(42.0));
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, 0);
     chunk.emit_op_u16(Op::CONST, val, 0);
@@ -207,7 +207,7 @@ fn struct_get_missing_returns_null() {
     let mut vm = VM::new();
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    let prop = chunk.add_constant(Value::String(Rc::from("missing")));
+    let prop = chunk.add_constant(Value::String(Arc::from("missing")));
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, 0);
     chunk.emit_op_u16(Op::STRUCT_GET, prop, 0);
     chunk.emit_op(Op::HALT, 0);
@@ -269,8 +269,8 @@ fn invoke_function_defined_in_run() {
     let mut vm = VM::new();
     let mut f = Chunk::new("double");
     f.arity = 1;
-    f.local_count = 2; // slot 0 = callee, slot 1 = arg
-    f.emit_op_u16(Op::LOCAL_GET, 1, 0); // arg is at slot 1
+    f.local_count = 1; // slot 0 = arg (WASM convention)
+    f.emit_op_u16(Op::LOCAL_GET, 0, 0); // arg is at slot 0
     let two = f.add_constant(Value::F64(2.0));
     f.emit_op_u16(Op::CONST, two, 0);
     f.emit_op(Op::F64_MUL, 0);
@@ -278,7 +278,7 @@ fn invoke_function_defined_in_run() {
 
     let mut main = Chunk::new("<script>");
     main.local_count = 1;
-    let name = main.add_constant(Value::String(Rc::from("double")));
+    let name = main.add_constant(Value::String(Arc::from("double")));
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
     main.emit_op_u16(Op::GLOBAL_SET, name, 0);
@@ -295,14 +295,14 @@ fn invoke_function_defined_in_run() {
 #[test]
 fn invoke_host_fn_via_value() {
     let mut vm = VM::new();
-    vm.register_host_fn("t", "greet", Box::new(|args: &[Value]| {
-        Value::String(Rc::from(format!("hi {}", args[0]).as_str()))
+    vm.register_host_fn("t", "greet", Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+        Value::String(Arc::from(format!("hi {}", args[0]).as_str()))
     }));
     let idx = *vm.host_registry.get(&("t".into(), "greet".into())).unwrap();
     let mut obj = Object::new();
     obj.kind = ObjectKind::HostFunction(idx);
-    let host_val = Value::Object(Rc::new(RefCell::new(obj)));
-    let result = vm.invoke(&host_val, &[Value::String(Rc::from("world"))]).unwrap();
+    let host_val = Value::Object(Arc::new(std::sync::Mutex::new(obj)));
+    let result = vm.invoke(&host_val, &[Value::String(Arc::from("world"))]).unwrap();
     assert_eq!(format!("{}", result), "hi world");
 }
 
@@ -312,7 +312,7 @@ fn invoke_multiple_times_globals_accumulate() {
     let mut f = Chunk::new("inc");
     f.arity = 0;
     f.local_count = 0;
-    let name = f.add_constant(Value::String(Rc::from("n")));
+    let name = f.add_constant(Value::String(Arc::from("n")));
     let one = f.add_constant(Value::F64(1.0));
     f.emit_op_u16(Op::GLOBAL_GET, name, 0);
     f.emit_op_u16(Op::CONST, one, 0);
@@ -322,8 +322,8 @@ fn invoke_multiple_times_globals_accumulate() {
 
     let mut main = Chunk::new("<script>");
     main.local_count = 1;
-    let n = main.add_constant(Value::String(Rc::from("n")));
-    let fn_name = main.add_constant(Value::String(Rc::from("inc")));
+    let n = main.add_constant(Value::String(Arc::from("n")));
+    let fn_name = main.add_constant(Value::String(Arc::from("inc")));
     let zero = main.add_constant(Value::F64(0.0));
     main.emit_op_u16(Op::CONST, zero, 0);
     main.emit_op_u16(Op::GLOBAL_SET, n, 0);
@@ -351,10 +351,10 @@ fn method_on_object_via_struct_get_call() {
     // method: takes (this), returns this.x + 1
     let mut method = Chunk::new("getX");
     method.arity = 1;
-    method.local_count = 2; // slot 0 = callee, slot 1 = this
-    let x = method.add_constant(Value::String(Rc::from("x")));
+    method.local_count = 1; // slot 0 = this (WASM convention)
+    let x = method.add_constant(Value::String(Arc::from("x")));
     let one = method.add_constant(Value::F64(1.0));
-    method.emit_op_u16(Op::LOCAL_GET, 1, 0); // this is at slot 1
+    method.emit_op_u16(Op::LOCAL_GET, 0, 0); // this is at slot 0
     method.emit_op_u16(Op::STRUCT_GET, x, 0);
     method.emit_op_u16(Op::CONST, one, 0);
     method.emit_op(Op::DYN_ADD, 0);
@@ -362,8 +362,8 @@ fn method_on_object_via_struct_get_call() {
 
     let mut main = Chunk::new("<script>");
     main.local_count = 2;
-    let x2 = main.add_constant(Value::String(Rc::from("x")));
-    let gx = main.add_constant(Value::String(Rc::from("getX")));
+    let x2 = main.add_constant(Value::String(Arc::from("x")));
+    let gx = main.add_constant(Value::String(Arc::from("getX")));
     let ten = main.add_constant(Value::F64(10.0));
 
     // obj = {}
@@ -398,10 +398,12 @@ fn method_on_object_via_struct_get_call() {
 
 #[test]
 fn single_byte_opcode_encodes_correctly() {
+    // Uniform (prefix, sub) encoding: core WASM ops live under prefix 0x00,
+    // with `sub` holding the WASM opcode byte. Op::NULL = 0xD0 (ref.null).
     let op = Op::NULL;
-    let (b1, b2) = op.encode();
-    assert!(b2.is_none(), "Single-byte opcodes should have no second byte");
-    assert!(b1 < 0xFE, "Single-byte opcodes should be < 0xFE");
+    let (prefix, sub) = op.encode();
+    assert_eq!(prefix, 0x00, "Core spec ops use prefix 0x00");
+    assert_eq!(sub, 0xD0, "ref.null opcode byte is 0xD0");
 }
 
 #[test]
@@ -419,7 +421,7 @@ fn extended_opcode_executes() {
     let mut vm = VM::new();
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    let s = chunk.add_constant(Value::String(Rc::from("hello")));
+    let s = chunk.add_constant(Value::String(Arc::from("hello")));
     chunk.emit_op_u16(Op::CONST, s, 0);
     chunk.emit_op(Op::STR_LENGTH, 0);
     chunk.emit_op(Op::HALT, 0);
@@ -434,9 +436,9 @@ fn extended_opcode_executes() {
 #[test]
 fn host_fn_registered_before_run() {
     let mut vm = VM::new();
-    vm.register_host_fn("a", "f1", Box::new(|_| Value::F64(1.0)));
-    vm.register_host_fn("a", "f2", Box::new(|_| Value::F64(2.0)));
-    vm.register_host_fn("b", "f3", Box::new(|_| Value::F64(3.0)));
+    vm.register_host_fn("a", "f1", Box::new(|_, _| Value::F64(1.0)));
+    vm.register_host_fn("a", "f2", Box::new(|_, _| Value::F64(2.0)));
+    vm.register_host_fn("b", "f3", Box::new(|_, _| Value::F64(3.0)));
 
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;

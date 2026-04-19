@@ -1,7 +1,7 @@
 /// Tests for multi-memory support.
 
 use vybe_bytecode::{VM, Value, Chunk, Op};
-use std::rc::Rc;
+use std::sync::Arc;
 
 #[test]
 fn memory_init_creates_new_memory() {

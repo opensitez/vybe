@@ -3,7 +3,7 @@
 use vybe_bytecode::{VM, Value, Chunk, Op, TypeDef};
 use vybe_bytecode::typedef::Method;
 use vybe_bytecode::chunk::TypeEntry;
-use std::rc::Rc;
+use std::sync::Arc;
 
 // ── Interface Registration ──────────────────────────────────
 
@@ -262,7 +262,7 @@ fn ref_test_interface_in_vm() {
     chunk.emit_op(Op::SHARED_NEW, 0);
 
     // ref_test against "ianimal"
-    let type_name = chunk.add_constant(Value::String(Rc::from("ianimal")));
+    let type_name = chunk.add_constant(Value::String(Arc::from("ianimal")));
     chunk.emit_op_u16(Op::REF_TEST, type_name, 0);
     chunk.emit_op(Op::HALT, 0);
 

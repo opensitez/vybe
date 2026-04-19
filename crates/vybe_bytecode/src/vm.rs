@@ -747,6 +747,12 @@ impl VM {
         if chunks.is_empty() {
             return Ok(Value::Null);
         }
+        // Preserve globals / chunks / type registry across runs, but discard
+        // per-execution state (stale frames/stack from a previous run would
+        // leave the next run's HALT stuck on an inner-frame path).
+        self.close_upvalues(0);
+        self.stack.clear();
+        self.frames.clear();
         let script_idx = self.chunks.len(); // offset for new chunks
         // Offset ref_func indices in the new chunks so they point to correct positions
         let mut adjusted = chunks;
@@ -3441,90 +3447,14 @@ impl VM {
                     } else { 0 };
                     self.push(Value::I32(len))?;
                 }
-                _ if op == Op::ARRAY_PUSH => {
-                    let val = self.pop(); let arr = self.pop();
-                    if let Value::Object(obj) = &arr {
-                        let mut o = obj.lock().unwrap();
-                        if let ObjectKind::Array(ref mut a) = o.kind { a.push(val); }
-                    }
-                    self.push(arr)?;
-                }
-                _ if op == Op::ARRAY_POP => {
-                    let arr = self.pop();
-                    let val = if let Value::Object(obj) = &arr {
-                        let mut o = obj.lock().unwrap();
-                        if let ObjectKind::Array(ref mut a) = o.kind { a.pop().unwrap_or(Value::Null) }
-                        else { Value::Null }
-                    } else { Value::Null };
-                    self.push(val)?;
-                }
-                _ if op == Op::ARRAY_SLICE => {
-                    let end = self.pop().as_i32(); let start = self.pop().as_i32();
-                    let arr = self.pop();
-                    let result = if let Value::Object(obj) = &arr {
-                        let o = obj.lock().unwrap();
-                        if let ObjectKind::Array(a) = &o.kind {
-                            let len = a.len() as i32;
-                            let s = if start < 0 { (len + start).max(0) as usize } else { start.min(len) as usize };
-                            let e = if end < 0 { (len + end).max(0) as usize } else { end.min(len) as usize };
-                            let sliced: Vec<Value> = a[s..e.max(s)].to_vec();
-                            Value::Object(Arc::new(Mutex::new(Object::new_array(sliced))))
-                        } else { Value::Null }
-                    } else { Value::Null };
-                    self.push(result)?;
-                }
-                _ if op == Op::ARRAY_JOIN => {
-                    let delim = self.pop(); let arr = self.pop();
-                    let r = if let (Value::Object(obj), Value::String(d)) = (&arr, &delim) {
-                        let o = obj.lock().unwrap();
-                        if let ObjectKind::Array(a) = &o.kind {
-                            let parts: Vec<String> = a.iter().map(|v| format!("{}", v)).collect();
-                            Arc::from(parts.join(d.as_ref()).as_str())
-                        } else { Arc::from("") }
-                    } else { Arc::from("") };
-                    self.push(Value::String(r))?;
-                }
-                _ if op == Op::ARRAY_REVERSE => {
-                    let arr = self.pop();
-                    if let Value::Object(obj) = &arr {
-                        let mut o = obj.lock().unwrap();
-                        if let ObjectKind::Array(ref mut a) = o.kind { a.reverse(); }
-                    }
-                    self.push(arr)?;
-                }
-                _ if op == Op::ARRAY_CONTAINS => {
-                    // Compare compiles: left(needle) then right(haystack)
-                    // Stack: [needle, haystack]. Pop: haystack (TOS), needle.
-                    let haystack = self.pop();
-                    let needle = self.pop();
-                    let found = match (&haystack, &needle) {
-                        // String containment: "lo" in "hello"
-                        (Value::String(h), Value::String(n)) => h.contains(n.as_ref()),
-                        // Array containment: 2 in [1,2,3]
-                        (Value::Object(obj), _) => {
-                            let o = obj.lock().unwrap();
-                            if let ObjectKind::Array(a) = &o.kind {
-                                a.iter().any(|v| v.eq(&needle))
-                            } else {
-                                // Dict/object containment: check if key exists
-                                let key = format!("{}", needle);
-                                o.properties.contains_key(&key)
-                            }
-                        }
-                        _ => false,
-                    };
-                    self.push(Value::Bool(found))?;
-                }
-                _ if op == Op::ARRAY_INDEX_OF => {
-                    let needle = self.pop(); let arr = self.pop();
-                    let idx = if let Value::Object(obj) = &arr {
-                        let o = obj.lock().unwrap();
-                        if let ObjectKind::Array(a) = &o.kind {
-                            a.iter().position(|v| v.eq(&needle)).map(|p| p as i32).unwrap_or(-1)
-                        } else { -1 }
-                    } else { -1 };
-                    self.push(Value::I32(idx))?;
-                }
+                // REMOVED (Phase E): the 9 non-spec `0xFF` ARRAY_* dispatch
+                // arms — ARRAY_PUSH / POP / SLICE / JOIN / REVERSE /
+                // CONTAINS / INDEX_OF (here) and ARRAY_CONCAT / SHIFT
+                // (below). All callers migrated to `wasm:js-array.*`
+                // imports (Vybe handlers in vybe_host, native on v8 via
+                // JS glue, polyfill on wasmtime). Any bytecode still
+                // carrying these opcode bytes will hit the "unknown op"
+                // path at `Op::decode`'s None branch and trap cleanly.
 
                 // WASM GC array ops
                 _ if op == Op::ARRAY_NEW_DEFAULT => {
@@ -3570,30 +3500,9 @@ impl VM {
                         }
                     }
                 }
-                _ if op == Op::ARRAY_CONCAT => {
-                    let b = self.pop();
-                    let a = self.pop();
-                    let mut result = Vec::new();
-                    if let Value::Object(obj) = &a {
-                        let o = obj.lock().unwrap();
-                        if let ObjectKind::Array(arr) = &o.kind { result.extend(arr.iter().cloned()); }
-                    }
-                    if let Value::Object(obj) = &b {
-                        let o = obj.lock().unwrap();
-                        if let ObjectKind::Array(arr) = &o.kind { result.extend(arr.iter().cloned()); }
-                    }
-                    self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(result)))))?;
-                }
-                _ if op == Op::ARRAY_SHIFT => {
-                    let arr = self.pop();
-                    let val = if let Value::Object(obj) = &arr {
-                        let mut o = obj.lock().unwrap();
-                        if let ObjectKind::Array(ref mut a) = o.kind {
-                            if a.is_empty() { Value::Null } else { a.remove(0) }
-                        } else { Value::Null }
-                    } else { Value::Null };
-                    self.push(val)?;
-                }
+                // ARRAY_CONCAT and ARRAY_SHIFT removed with the cluster
+                // above — both were the non-spec `0xFF` variants. Use
+                // `wasm:js-array.concat` / `wasm:js-array.shift` instead.
 
                 // -- Stack Switching (wasm stack-switching proposal) --
                 _ if op == Op::CONT_NEW => {

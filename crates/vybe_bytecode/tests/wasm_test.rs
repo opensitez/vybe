@@ -1,6 +1,6 @@
 use vybe_bytecode::*;
 use vybe_bytecode::value::*;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::cell::RefCell;
 
 // ============================================================
@@ -179,6 +179,7 @@ fn i32_div_and_rem() {
 
 #[test]
 fn i32_div_by_zero() {
+    // WASM spec: i32.div_s with zero divisor traps ("integer divide by zero").
     let mut chunk = Chunk::new("test");
     let c10 = chunk.add_constant(Value::I32(10));
     let c0 = chunk.add_constant(Value::I32(0));
@@ -187,9 +188,9 @@ fn i32_div_by_zero() {
     chunk.emit_op(Op::I32_DIV_S, 0);
     chunk.emit_op(Op::HALT, 0);
 
-    // Should return 0, not crash
-    let result = run_chunks(vec![chunk]);
-    match result { Value::I32(0) => {} _ => panic!("Expected I32(0), got {:?}", result) }
+    let mut vm = VM::new();
+    let err = vm.run(vec![chunk]).expect_err("expected trap");
+    assert!(err.message.contains("divide by zero"), "got: {}", err.message);
 }
 
 #[test]
@@ -699,7 +700,7 @@ fn wasm_writer_magic() {
 #[test]
 fn str_length_op() {
     let mut chunk = Chunk::new("test");
-    let cs = chunk.add_constant(Value::String(Rc::from("hello")));
+    let cs = chunk.add_constant(Value::String(Arc::from("hello")));
     chunk.emit_op_u16(Op::CONST, cs, 0);
     chunk.emit_op(Op::STR_LENGTH, 0);
     chunk.emit_op(Op::HALT, 0);
@@ -710,7 +711,7 @@ fn str_length_op() {
 #[test]
 fn str_to_upper_lower() {
     let mut chunk = Chunk::new("test");
-    let cs = chunk.add_constant(Value::String(Rc::from("Hello")));
+    let cs = chunk.add_constant(Value::String(Arc::from("Hello")));
     chunk.emit_op_u16(Op::CONST, cs, 0);
     chunk.emit_op(Op::STR_TO_UPPER, 0);
     chunk.emit_op(Op::HALT, 0);
@@ -736,8 +737,8 @@ fn str_char_code_and_from() {
 #[test]
 fn str_index_of_op() {
     let mut chunk = Chunk::new("test");
-    let cs = chunk.add_constant(Value::String(Rc::from("hello world")));
-    let cn = chunk.add_constant(Value::String(Rc::from("world")));
+    let cs = chunk.add_constant(Value::String(Arc::from("hello world")));
+    let cn = chunk.add_constant(Value::String(Arc::from("world")));
     chunk.emit_op_u16(Op::CONST, cs, 0);
     chunk.emit_op_u16(Op::CONST, cn, 0);
     chunk.emit_op(Op::STR_INDEX_OF, 0);
@@ -749,7 +750,7 @@ fn str_index_of_op() {
 #[test]
 fn str_substring_op() {
     let mut chunk = Chunk::new("test");
-    let cs = chunk.add_constant(Value::String(Rc::from("hello world")));
+    let cs = chunk.add_constant(Value::String(Arc::from("hello world")));
     let c0 = chunk.add_constant(Value::I32(0));
     let c5 = chunk.add_constant(Value::I32(5));
     chunk.emit_op_u16(Op::CONST, cs, 0);
@@ -764,9 +765,9 @@ fn str_substring_op() {
 #[test]
 fn str_replace_op() {
     let mut chunk = Chunk::new("test");
-    let cs = chunk.add_constant(Value::String(Rc::from("hello world")));
-    let co = chunk.add_constant(Value::String(Rc::from("world")));
-    let cn = chunk.add_constant(Value::String(Rc::from("rust")));
+    let cs = chunk.add_constant(Value::String(Arc::from("hello world")));
+    let co = chunk.add_constant(Value::String(Arc::from("world")));
+    let cn = chunk.add_constant(Value::String(Arc::from("rust")));
     chunk.emit_op_u16(Op::CONST, cs, 0);
     chunk.emit_op_u16(Op::CONST, co, 0);
     chunk.emit_op_u16(Op::CONST, cn, 0);
@@ -779,8 +780,8 @@ fn str_replace_op() {
 #[test]
 fn str_split_op() {
     let mut chunk = Chunk::new("test");
-    let cs = chunk.add_constant(Value::String(Rc::from("a,b,c")));
-    let cd = chunk.add_constant(Value::String(Rc::from(",")));
+    let cs = chunk.add_constant(Value::String(Arc::from("a,b,c")));
+    let cd = chunk.add_constant(Value::String(Arc::from(",")));
     chunk.emit_op_u16(Op::CONST, cs, 0);
     chunk.emit_op_u16(Op::CONST, cd, 0);
     chunk.emit_op(Op::STR_SPLIT, 0);
@@ -793,7 +794,7 @@ fn str_split_op() {
 #[test]
 fn str_trim_op() {
     let mut chunk = Chunk::new("test");
-    let cs = chunk.add_constant(Value::String(Rc::from("  hello  ")));
+    let cs = chunk.add_constant(Value::String(Arc::from("  hello  ")));
     chunk.emit_op_u16(Op::CONST, cs, 0);
     chunk.emit_op(Op::STR_TRIM, 0);
     chunk.emit_op(Op::STR_LENGTH, 0);
@@ -805,8 +806,8 @@ fn str_trim_op() {
 #[test]
 fn str_starts_ends_contains() {
     let mut chunk = Chunk::new("test");
-    let cs = chunk.add_constant(Value::String(Rc::from("hello world")));
-    let cp = chunk.add_constant(Value::String(Rc::from("hello")));
+    let cs = chunk.add_constant(Value::String(Arc::from("hello world")));
+    let cp = chunk.add_constant(Value::String(Arc::from("hello")));
     chunk.emit_op_u16(Op::CONST, cs, 0);
     chunk.emit_op_u16(Op::CONST, cp, 0);
     chunk.emit_op(Op::STR_STARTS_WITH, 0);
@@ -835,55 +836,20 @@ fn array_length_op() {
     match result { Value::I32(3) => {} _ => panic!("Expected I32(3), got {:?}", result) }
 }
 
-#[test]
-fn array_push_pop() {
-    let mut chunk = Chunk::new("test");
-    // Create [10, 20]
-    let c10 = chunk.add_constant(Value::I32(10));
-    let c20 = chunk.add_constant(Value::I32(20));
-    let c30 = chunk.add_constant(Value::I32(30));
-    chunk.emit_op_u16(Op::CONST, c10, 0);
-    chunk.emit_op_u16(Op::CONST, c20, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
-    // push 30
-    chunk.emit_op_u16(Op::CONST, c30, 0);
-    chunk.emit_op(Op::ARRAY_PUSH, 0);
-    // pop → should get 30
-    chunk.emit_op(Op::ARRAY_POP, 0);
-    chunk.emit_op(Op::HALT, 0);
-    let result = run_chunks(vec![chunk]);
-    match result { Value::I32(30) => {} _ => panic!("Expected I32(30), got {:?}", result) }
-}
 
 #[test]
 fn array_new_default_op() {
+    // Spec: `array.new_default $typeidx` takes a u16 typeidx immediate.
     let mut chunk = Chunk::new("test");
     let c5 = chunk.add_constant(Value::I32(5));
     chunk.emit_op_u16(Op::CONST, c5, 0);
-    chunk.emit_op(Op::ARRAY_NEW_DEFAULT, 0);
+    chunk.emit_op_u16(Op::ARRAY_NEW_DEFAULT, 0, 0);
     chunk.emit_op(Op::ARRAY_LENGTH, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
     match result { Value::I32(5) => {} _ => panic!("Expected I32(5), got {:?}", result) }
 }
 
-#[test]
-fn array_concat_op() {
-    let mut chunk = Chunk::new("test");
-    let c1 = chunk.add_constant(Value::I32(1));
-    let c2 = chunk.add_constant(Value::I32(2));
-    let c3 = chunk.add_constant(Value::I32(3));
-    chunk.emit_op_u16(Op::CONST, c1, 0);
-    chunk.emit_op_u16(Op::CONST, c2, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
-    chunk.emit_op_u16(Op::CONST, c3, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 1, 0);
-    chunk.emit_op(Op::ARRAY_CONCAT, 0);
-    chunk.emit_op(Op::ARRAY_LENGTH, 0);
-    chunk.emit_op(Op::HALT, 0);
-    let result = run_chunks(vec![chunk]);
-    match result { Value::I32(3) => {} _ => panic!("Expected I32(3), got {:?}", result) }
-}
 
 // ============================================================
 // SIMD (i32x4)
@@ -1035,8 +1001,8 @@ fn i31ref_negative() {
 #[test]
 fn ref_cast_success() {
     let mut chunk = Chunk::new("test");
-    let cs = chunk.add_constant(Value::String(Rc::from("hello")));
-    let ct = chunk.add_constant(Value::String(Rc::from("string")));
+    let cs = chunk.add_constant(Value::String(Arc::from("hello")));
+    let ct = chunk.add_constant(Value::String(Arc::from("string")));
     chunk.emit_op_u16(Op::CONST, cs, 0);
     chunk.emit_op_u16(Op::REF_CAST, ct, 0);
     // Should not trap — value stays on stack
@@ -1057,8 +1023,8 @@ fn call_ref_basic() {
     // Chunk 1: double function (x → x * 2)
     let mut double_chunk = Chunk::new("double");
     double_chunk.arity = 1;
-    double_chunk.local_count = 2;
-    double_chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    double_chunk.local_count = 1;
+    double_chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
     let c2 = double_chunk.add_constant(Value::F64(2.0));
     double_chunk.emit_op_u16(Op::CONST, c2, 0);
     double_chunk.emit_op(Op::F64_MUL, 0);
@@ -1108,11 +1074,11 @@ fn memory64_grow_and_load() {
 
 fn make_promise(id: u64, state: &str, value: Value) -> Value {
     let mut obj = Object::new();
-    obj.properties.insert("__type".into(), Value::String(Rc::from("Promise")));
+    obj.properties.insert("__type".into(), Value::String(Arc::from("Promise")));
     obj.properties.insert("__id".into(), Value::F64(id as f64));
-    obj.properties.insert("__state".into(), Value::String(Rc::from(state)));
+    obj.properties.insert("__state".into(), Value::String(Arc::from(state)));
     obj.properties.insert("__value".into(), value);
-    Value::Object(Rc::new(RefCell::new(obj)))
+    Value::Object(Arc::new(std::sync::Mutex::new(obj)))
 }
 
 #[test]
@@ -1120,8 +1086,8 @@ fn jspi_resolved_promise_returns_immediately() {
     // Host function returns an already-resolved promise.
     // JSPI should extract the value without suspending.
     let mut vm = VM::new();
-    vm.register_host_fn("test", "fetch_sync", Box::new(|_args: &[Value]| {
-        make_promise(1, "fulfilled", Value::String(Rc::from("data from server")))
+    vm.register_host_fn("test", "fetch_sync", Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
+        make_promise(1, "fulfilled", Value::String(Arc::from("data from server")))
     }));
 
     let mut chunk = Chunk::new("<test>");
@@ -1147,7 +1113,7 @@ fn jspi_non_promise_passes_through() {
     // Host function returns a plain value (not a promise).
     // JSPI should pass it through unchanged.
     let mut vm = VM::new();
-    vm.register_host_fn("test", "compute", Box::new(|_args: &[Value]| {
+    vm.register_host_fn("test", "compute", Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
         Value::I32(42)
     }));
 
@@ -1166,7 +1132,7 @@ fn jspi_pending_promise_suspends() {
     // Host function returns a pending promise.
     // JSPI should suspend the fiber and return a special error.
     let mut vm = VM::new();
-    vm.register_host_fn("test", "slow_fetch", Box::new(|_args: &[Value]| {
+    vm.register_host_fn("test", "slow_fetch", Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
         make_promise(99, "pending", Value::Null)
     }));
 
@@ -1192,21 +1158,21 @@ fn jspi_pending_promise_suspends() {
 fn jspi_suspend_then_resume() {
     // Full JSPI cycle: host returns pending → suspend → resolve → resume.
     let mut vm = VM::new();
-    let output: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let output: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
     let out = output.clone();
 
-    vm.register_host_fn("test", "log", Box::new(move |args: &[Value]| {
-        out.borrow_mut().push(format!("{}", args.first().unwrap_or(&Value::Null)));
+    vm.register_host_fn("test", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+        out.lock().unwrap().push(format!("{}", args.first().unwrap_or(&Value::Null)));
         Value::Null
     }));
-    vm.register_host_fn("test", "async_load", Box::new(|_args: &[Value]| {
+    vm.register_host_fn("test", "async_load", Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
         make_promise(42, "pending", Value::Null)
     }));
 
     let mut chunk = Chunk::new("<test>");
 
     // Step 1: log "before"
-    let msg1 = chunk.add_constant(Value::String(Rc::from("before")));
+    let msg1 = chunk.add_constant(Value::String(Arc::from("before")));
     chunk.emit_op_u16(Op::CONST, msg1, 0);
     let log_idx = chunk.add_import("test", "log");
     chunk.emit_op_u16(Op::CALL_IMPORT, log_idx, 0);
@@ -1224,7 +1190,7 @@ fn jspi_suspend_then_resume() {
     chunk.emit_op(Op::DROP, 0);
 
     // Step 4: log "after"
-    let msg2 = chunk.add_constant(Value::String(Rc::from("after")));
+    let msg2 = chunk.add_constant(Value::String(Arc::from("after")));
     chunk.emit_op_u16(Op::CONST, msg2, 0);
     chunk.emit_op_u16(Op::CALL_IMPORT, log_idx, 0);
     chunk.emit(1, 0);
@@ -1235,14 +1201,14 @@ fn jspi_suspend_then_resume() {
     // Run — should suspend at async_load
     let result = vm.run(vec![chunk]);
     assert!(result.is_err());
-    assert_eq!(*output.borrow(), vec!["before"]);
+    assert_eq!(*output.lock().unwrap(), vec!["before"]);
     assert!(vm.has_pending_jspi());
 
     // Resolve the promise — this resumes execution
-    vm.jspi_resolve(42, Value::String(Rc::from("loaded data"))).unwrap();
+    vm.jspi_resolve(42, Value::String(Arc::from("loaded data"))).unwrap();
 
     // Now "after" should have been logged
-    assert_eq!(*output.borrow(), vec!["before", "loaded data", "after"]);
+    assert_eq!(*output.lock().unwrap(), vec!["before", "loaded data", "after"]);
     assert!(!vm.has_pending_jspi());
 }
 
@@ -1251,11 +1217,11 @@ fn jspi_promise_suspend_opcode() {
     // Test the promise_suspend opcode with a fulfilled promise
     let mut chunk = Chunk::new("<test>");
     // Create a fulfilled promise manually via constants
-    let type_k = chunk.add_constant(Value::String(Rc::from("__type")));
-    let type_v = chunk.add_constant(Value::String(Rc::from("Promise")));
-    let state_k = chunk.add_constant(Value::String(Rc::from("__state")));
-    let state_v = chunk.add_constant(Value::String(Rc::from("fulfilled")));
-    let value_k = chunk.add_constant(Value::String(Rc::from("__value")));
+    let type_k = chunk.add_constant(Value::String(Arc::from("__type")));
+    let type_v = chunk.add_constant(Value::String(Arc::from("Promise")));
+    let state_k = chunk.add_constant(Value::String(Arc::from("__state")));
+    let state_v = chunk.add_constant(Value::String(Arc::from("fulfilled")));
+    let value_k = chunk.add_constant(Value::String(Arc::from("__value")));
     let value_v = chunk.add_constant(Value::I32(99));
 
     // Build object: {__type: "Promise", __state: "fulfilled", __value: 99}

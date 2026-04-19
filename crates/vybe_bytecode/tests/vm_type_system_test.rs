@@ -9,7 +9,7 @@
 
 use vybe_bytecode::{VM, Value, Chunk, Op, TypeDef, Method};
 use vybe_bytecode::value::{Object, ObjectKind};
-use std::rc::Rc;
+use std::sync::Arc;
 use std::cell::RefCell;
 
 // ============================================================
@@ -93,7 +93,7 @@ fn test_method_resolution_own_type() {
     let mut vm = VM::new();
 
     // Register a host function
-    vm.register_host_fn("test", "listAdd", Box::new(|_| Value::Null));
+    vm.register_host_fn("test", "listAdd", Box::new(|_, _| Value::Null));
     let host_idx = *vm.host_registry.get(&("test".to_string(), "listAdd".to_string())).unwrap();
 
     // Register List type with an "add" method
@@ -114,7 +114,7 @@ fn test_method_resolution_own_type() {
 fn test_method_resolution_inherited() {
     let mut vm = VM::new();
 
-    vm.register_host_fn("test", "toString", Box::new(|_| Value::String(Rc::from("str"))));
+    vm.register_host_fn("test", "toString", Box::new(|_, _| Value::String(Arc::from("str"))));
     let to_string_idx = *vm.host_registry.get(&("test".to_string(), "toString".to_string())).unwrap();
 
     // Add toString to Object (type 0)
@@ -136,9 +136,9 @@ fn test_method_resolution_inherited() {
 fn test_method_resolution_override() {
     let mut vm = VM::new();
 
-    vm.register_host_fn("test", "base_count", Box::new(|_| Value::F64(0.0)));
+    vm.register_host_fn("test", "base_count", Box::new(|_, _| Value::F64(0.0)));
     let base_fn = *vm.host_registry.get(&("test".to_string(), "base_count".to_string())).unwrap();
-    vm.register_host_fn("test", "list_count", Box::new(|_| Value::F64(42.0)));
+    vm.register_host_fn("test", "list_count", Box::new(|_, _| Value::F64(42.0)));
     let override_fn = *vm.host_registry.get(&("test".to_string(), "list_count".to_string())).unwrap();
 
     // Object has a count method
@@ -170,14 +170,14 @@ fn test_method_resolution_override() {
 
 fn make_typed_object(type_name: &str) -> Value {
     let mut obj = Object::new();
-    obj.properties.insert("__type".into(), Value::String(Rc::from(type_name)));
-    Value::Object(Rc::new(RefCell::new(obj)))
+    obj.properties.insert("__type".into(), Value::String(Arc::from(type_name)));
+    Value::Object(Arc::new(std::sync::Mutex::new(obj)))
 }
 
 fn make_typed_object_with_id(type_id: usize, type_name: &str) -> Value {
     let mut obj = Object::new_typed(type_id);
-    obj.properties.insert("__type".into(), Value::String(Rc::from(type_name)));
-    Value::Object(Rc::new(RefCell::new(obj)))
+    obj.properties.insert("__type".into(), Value::String(Arc::from(type_name)));
+    Value::Object(Arc::new(std::sync::Mutex::new(obj)))
 }
 
 #[test]
@@ -194,7 +194,7 @@ fn test_ref_test_opcode_with_type_string() {
     let const_idx = chunk.add_constant(obj);
     chunk.emit_op_u16(Op::CONST, const_idx, 0);
     // ref_test with "control" type name
-    let type_name_idx = chunk.add_constant(Value::String(Rc::from("control")));
+    let type_name_idx = chunk.add_constant(Value::String(Arc::from("control")));
     chunk.emit_op_u16(Op::REF_TEST, type_name_idx, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -213,7 +213,7 @@ fn test_ref_test_opcode_with_type_id() {
     let obj = make_typed_object_with_id(button_id, "Button");
     let const_idx = chunk.add_constant(obj);
     chunk.emit_op_u16(Op::CONST, const_idx, 0);
-    let type_name_idx = chunk.add_constant(Value::String(Rc::from("control")));
+    let type_name_idx = chunk.add_constant(Value::String(Arc::from("control")));
     chunk.emit_op_u16(Op::REF_TEST, type_name_idx, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -233,7 +233,7 @@ fn test_ref_test_opcode_negative() {
     let obj = make_typed_object("List");
     let const_idx = chunk.add_constant(obj);
     chunk.emit_op_u16(Op::CONST, const_idx, 0);
-    let type_name_idx = chunk.add_constant(Value::String(Rc::from("button")));
+    let type_name_idx = chunk.add_constant(Value::String(Arc::from("button")));
     chunk.emit_op_u16(Op::REF_TEST, type_name_idx, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -250,15 +250,15 @@ fn test_ref_test_with_js_types_array() {
     // Create an object with __types = ["Animal", "Dog"]
     let mut obj = Object::new();
     let types_arr = Object::new_array(vec![
-        Value::String(Rc::from("Animal")),
-        Value::String(Rc::from("Dog")),
+        Value::String(Arc::from("Animal")),
+        Value::String(Arc::from("Dog")),
     ]);
-    obj.properties.insert("__types".into(), Value::Object(Rc::new(RefCell::new(types_arr))));
-    obj.properties.insert("__type".into(), Value::String(Rc::from("Dog")));
+    obj.properties.insert("__types".into(), Value::Object(Arc::new(std::sync::Mutex::new(types_arr))));
+    obj.properties.insert("__type".into(), Value::String(Arc::from("Dog")));
 
-    let const_idx = chunk.add_constant(Value::Object(Rc::new(RefCell::new(obj))));
+    let const_idx = chunk.add_constant(Value::Object(Arc::new(std::sync::Mutex::new(obj))));
     chunk.emit_op_u16(Op::CONST, const_idx, 0);
-    let type_name_idx = chunk.add_constant(Value::String(Rc::from("animal")));
+    let type_name_idx = chunk.add_constant(Value::String(Arc::from("animal")));
     chunk.emit_op_u16(Op::REF_TEST, type_name_idx, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -272,9 +272,9 @@ fn test_ref_test_primitives() {
 
     // String is "string"
     let mut chunk = Chunk::new("<test>");
-    let str_idx = chunk.add_constant(Value::String(Rc::from("hello")));
+    let str_idx = chunk.add_constant(Value::String(Arc::from("hello")));
     chunk.emit_op_u16(Op::CONST, str_idx, 0);
-    let type_name_idx = chunk.add_constant(Value::String(Rc::from("string")));
+    let type_name_idx = chunk.add_constant(Value::String(Arc::from("string")));
     chunk.emit_op_u16(Op::REF_TEST, type_name_idx, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -291,7 +291,7 @@ fn test_resource_table_basic() {
     use vybe_bytecode::ResourceTable;
 
     let mut table = ResourceTable::new();
-    let handle = table.create(1, Value::String(Rc::from("data")));
+    let handle = table.create(1, Value::String(Arc::from("data")));
     assert!(table.is_valid(handle));
 
     let borrowed = table.borrow(handle).unwrap();

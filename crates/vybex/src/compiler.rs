@@ -3601,8 +3601,16 @@ impl Compiler {
         }
 
         // ── Builtin check: Ident("print") ───────────────────────────
+        // Skip for user-defined functions: a VB `Function Echo(...)` must
+        // dispatch to the user's chunk, not to the cross-language `echo →
+        // wasi:cli.log` import shortcut.
         if let ExprKind::Ident(name) = &callee.kind {
-            if self.try_compile_builtin(name, &arg_exprs)? { return Ok(()); }
+            let shadows_builtin = self.defined_functions.contains(name)
+                || (!self.case_sensitive
+                    && self.defined_functions.iter().any(|g| g.eq_ignore_ascii_case(name)));
+            if !shadows_builtin && self.try_compile_builtin(name, &arg_exprs)? {
+                return Ok(());
+            }
         }
 
         // ── Builtin check: Member("Console.WriteLine") ─────────────
@@ -4290,7 +4298,9 @@ impl Compiler {
         if let ExprKind::Ident(name) = &callee.kind {
             let is_known_func = self.defined_functions.contains(name)
                 || (!self.case_sensitive && self.defined_functions.iter().any(|g| g.eq_ignore_ascii_case(name)));
-            if self.try_compile_builtin(name, &arg_exprs)? { return Ok(()); }
+            if !is_known_func && self.try_compile_builtin(name, &arg_exprs)? {
+                return Ok(());
+            }
 
             // VB array access: `arr(idx)` when `arr` is a known data variable
             // (local OR top-level global from `Dim arr(5)`) and is NOT a

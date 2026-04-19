@@ -3,31 +3,31 @@
 
 use vybe_bytecode::*;
 use vybe_bytecode::value::{Object, ObjectKind};
-use std::rc::Rc;
+use std::sync::Arc;
 use std::cell::RefCell;
 
 /// Simulate what Python `{"name": "Rex", "age": 3}` compiles to
 fn make_python_dict() -> Value {
     let mut obj = Object::new();
-    obj.properties.insert("name".into(), Value::String(Rc::from("Rex")));
+    obj.properties.insert("name".into(), Value::String(Arc::from("Rex")));
     obj.properties.insert("age".into(), Value::I32(3));
-    Value::Object(Rc::new(RefCell::new(obj)))
+    Value::Object(Arc::new(std::sync::Mutex::new(obj)))
 }
 
 /// Simulate what JS `{name: "Rex", age: 3}` compiles to
 fn make_js_object() -> Value {
     let mut obj = Object::new();
-    obj.properties.insert("name".into(), Value::String(Rc::from("Rex")));
+    obj.properties.insert("name".into(), Value::String(Arc::from("Rex")));
     obj.properties.insert("age".into(), Value::I32(3));
-    Value::Object(Rc::new(RefCell::new(obj)))
+    Value::Object(Arc::new(std::sync::Mutex::new(obj)))
 }
 
 /// Simulate what VB `New With {.Name = "Rex", .Age = 3}` compiles to
 fn make_vb_object() -> Value {
     let mut obj = Object::new();
-    obj.properties.insert("name".into(), Value::String(Rc::from("Rex")));
+    obj.properties.insert("name".into(), Value::String(Arc::from("Rex")));
     obj.properties.insert("age".into(), Value::I32(3));
-    Value::Object(Rc::new(RefCell::new(obj)))
+    Value::Object(Arc::new(std::sync::Mutex::new(obj)))
 }
 
 #[test]
@@ -36,8 +36,8 @@ fn python_dict_equals_js_object() {
     let js = make_js_object();
     // Both should have identical structure
     if let (Value::Object(a), Value::Object(b)) = (&py, &js) {
-        let a = a.borrow();
-        let b = b.borrow();
+        let a = a.lock().unwrap();
+        let b = b.lock().unwrap();
         assert_eq!(a.properties.get("name").unwrap().to_string(), b.properties.get("name").unwrap().to_string());
         assert_eq!(a.properties.get("age").unwrap().as_i32(), b.properties.get("age").unwrap().as_i32());
         assert_eq!(a.properties.len(), b.properties.len());
@@ -55,9 +55,9 @@ fn js_can_read_python_dict_fields() {
     // Create dict like Python does (struct_new + struct_set)
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, 0);
     chunk.emit_op(Op::DUP, 0);
-    let name_val = chunk.add_constant(Value::String(Rc::from("Rex")));
+    let name_val = chunk.add_constant(Value::String(Arc::from("Rex")));
     chunk.emit_op_u16(Op::CONST, name_val, 0);
-    let name_key = chunk.add_constant(Value::String(Rc::from("name")));
+    let name_key = chunk.add_constant(Value::String(Arc::from("name")));
     chunk.emit_op_u16(Op::STRUCT_SET, name_key, 0);
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
@@ -65,7 +65,7 @@ fn js_can_read_python_dict_fields() {
 
     // Read like JS does (struct_get)
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    let get_name = chunk.add_constant(Value::String(Rc::from("name")));
+    let get_name = chunk.add_constant(Value::String(Arc::from("name")));
     chunk.emit_op_u16(Op::STRUCT_GET, get_name, 0);
     chunk.emit_op(Op::HALT, 0);
 
@@ -85,9 +85,9 @@ fn python_can_read_js_object_fields() {
     // JS-style object creation
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, 0);
     chunk.emit_op(Op::DUP, 0);
-    let val = chunk.add_constant(Value::String(Rc::from("hello")));
+    let val = chunk.add_constant(Value::String(Arc::from("hello")));
     chunk.emit_op_u16(Op::CONST, val, 0);
-    let key = chunk.add_constant(Value::String(Rc::from("msg")));
+    let key = chunk.add_constant(Value::String(Arc::from("msg")));
     chunk.emit_op_u16(Op::STRUCT_SET, key, 0);
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
@@ -95,7 +95,7 @@ fn python_can_read_js_object_fields() {
 
     // Python-style dict access
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    let get_key = chunk.add_constant(Value::String(Rc::from("msg")));
+    let get_key = chunk.add_constant(Value::String(Arc::from("msg")));
     chunk.emit_op_u16(Op::STRUCT_GET, get_key, 0);
     chunk.emit_op(Op::HALT, 0);
 
@@ -125,9 +125,9 @@ fn typed_class_across_languages() {
 
     // Set fields via struct_set (VB way)
     chunk.emit_op(Op::DUP, 0);
-    let name_val = chunk.add_constant(Value::String(Rc::from("Rex")));
+    let name_val = chunk.add_constant(Value::String(Arc::from("Rex")));
     chunk.emit_op_u16(Op::CONST, name_val, 0);
-    let name_key = chunk.add_constant(Value::String(Rc::from("name")));
+    let name_key = chunk.add_constant(Value::String(Arc::from("name")));
     chunk.emit_op_u16(Op::STRUCT_SET, name_key, 0);
     chunk.emit_op(Op::DROP, 0);
 
@@ -136,7 +136,7 @@ fn typed_class_across_languages() {
 
     // Python-style: read field with struct_get
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    let get_name = chunk.add_constant(Value::String(Rc::from("name")));
+    let get_name = chunk.add_constant(Value::String(Arc::from("name")));
     chunk.emit_op_u16(Op::STRUCT_GET, get_name, 0);
     chunk.emit_op(Op::HALT, 0);
 
@@ -160,7 +160,7 @@ fn ref_test_works_across_languages() {
     chunk.emit_op(Op::SHARED_NEW, 0);
 
     // Python-style: ref_test against "dog"
-    let type_name = chunk.add_constant(Value::String(Rc::from("dog")));
+    let type_name = chunk.add_constant(Value::String(Arc::from("dog")));
     chunk.emit_op_u16(Op::REF_TEST, type_name, 0);
     chunk.emit_op(Op::HALT, 0);
 
@@ -186,7 +186,7 @@ fn inheritance_works_across_languages() {
     chunk.emit_op(Op::SHARED_NEW, 0);
 
     // Check if Dog is-a Animal
-    let type_name = chunk.add_constant(Value::String(Rc::from("animal")));
+    let type_name = chunk.add_constant(Value::String(Arc::from("animal")));
     chunk.emit_op_u16(Op::REF_TEST, type_name, 0);
     chunk.emit_op(Op::HALT, 0);
 
@@ -212,7 +212,7 @@ fn interface_works_across_languages() {
     chunk.emit_op_u16(Op::CONST, tid, 0);
     chunk.emit_op(Op::SHARED_NEW, 0);
 
-    let type_name = chunk.add_constant(Value::String(Rc::from("ianimal")));
+    let type_name = chunk.add_constant(Value::String(Arc::from("ianimal")));
     chunk.emit_op_u16(Op::REF_TEST, type_name, 0);
     chunk.emit_op(Op::HALT, 0);
 
@@ -229,7 +229,7 @@ fn array_from_any_language_is_same() {
 
     // [1, "two", true] — same across Python/JS/VB/C#/Dart
     let v1 = chunk.add_constant(Value::I32(1));
-    let v2 = chunk.add_constant(Value::String(Rc::from("two")));
+    let v2 = chunk.add_constant(Value::String(Arc::from("two")));
     chunk.emit_op_u16(Op::CONST, v1, 0);
     chunk.emit_op_u16(Op::CONST, v2, 0);
     chunk.emit_op(Op::TRUE, 0);
@@ -277,7 +277,7 @@ fn cls_case_resolution_at_link_time() {
         constructor_chunk: None,
     });
     // Add "Name" as a constant (simulates C# accessing obj.Name)
-    cs_script.add_constant(Value::String(Rc::from("Name")));
+    cs_script.add_constant(Value::String(Arc::from("Name")));
 
     let cs_comp = Component {
         name: "csharp-app".into(),
@@ -295,9 +295,9 @@ fn cls_case_resolution_at_link_time() {
     vb_script.emit_op(Op::NULL, 0);
     vb_script.emit_op(Op::HALT, 0);
     // VB's constant pool has lowercased "name" from VB compiler
-    let name_idx = vb_script.add_constant(Value::String(Rc::from("name")));
-    let breed_idx = vb_script.add_constant(Value::String(Rc::from("breed")));
-    let bark_idx = vb_script.add_constant(Value::String(Rc::from("bark")));
+    let name_idx = vb_script.add_constant(Value::String(Arc::from("name")));
+    let breed_idx = vb_script.add_constant(Value::String(Arc::from("breed")));
+    let bark_idx = vb_script.add_constant(Value::String(Arc::from("bark")));
 
     let vb_comp = Component {
         name: "vb-app".into(),
@@ -336,7 +336,7 @@ fn cls_case_preserves_case_sensitive_languages() {
     js_script.local_count = 1;
     js_script.emit_op(Op::NULL, 0);
     js_script.emit_op(Op::HALT, 0);
-    js_script.add_constant(Value::String(Rc::from("firstName")));
+    js_script.add_constant(Value::String(Arc::from("firstName")));
 
     let js_comp = Component {
         name: "js-app".into(),
@@ -353,7 +353,7 @@ fn cls_case_preserves_case_sensitive_languages() {
     py_script.local_count = 1;
     py_script.emit_op(Op::NULL, 0);
     py_script.emit_op(Op::HALT, 0);
-    py_script.add_constant(Value::String(Rc::from("first_name")));
+    py_script.add_constant(Value::String(Arc::from("first_name")));
 
     let py_comp = Component {
         name: "py-app".into(),
@@ -378,11 +378,11 @@ fn cls_case_preserves_case_sensitive_languages() {
 
 #[test]
 fn string_identity_is_shared() {
-    // Same Rc<str> across components = pointer equality
-    let s = Value::String(Rc::from("shared"));
+    // Same Arc<str> across components = pointer equality
+    let s = Value::String(Arc::from("shared"));
     let s2 = s.clone(); // same Rc
     match (&s, &s2) {
-        (Value::String(a), Value::String(b)) => assert!(Rc::ptr_eq(a, b)),
+        (Value::String(a), Value::String(b)) => assert!(Arc::ptr_eq(a, b)),
         _ => panic!(),
     }
 }
