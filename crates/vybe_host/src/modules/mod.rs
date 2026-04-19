@@ -159,6 +159,28 @@ pub fn register_all(vm: &mut VM) {
                         ObjectKind::HostFunction(idx) => {
                             eprintln!("  [HostFunction] idx={}", idx);
                         }
+                        ObjectKind::Map(m) => {
+                            eprintln!("  [Map] size={}", m.len());
+                            for (j, (k, v)) in m.iter().enumerate().take(20) {
+                                eprintln!("    [{}] {} => {}", j, k, v);
+                            }
+                        }
+                        ObjectKind::Set(s) => {
+                            eprintln!("  [Set] size={}", s.len());
+                            for (j, v) in s.iter().enumerate().take(20) {
+                                eprintln!("    [{}] {}", j, v);
+                            }
+                        }
+                        ObjectKind::ArrayBuffer(ab) => {
+                            let bytes = ab.bytes.lock().unwrap();
+                            eprintln!("  [ArrayBuffer] byteLength={} resizable={} detached={}",
+                                bytes.len(), ab.resizable, ab.detached);
+                        }
+                        ObjectKind::TypedArray(ta) => {
+                            eprintln!("  [TypedArray] elem={:?} length={} byteOffset={} byteLength={}",
+                                ta.elem, ta.length, ta.byte_offset,
+                                ta.length * ta.elem.bytes_per_element());
+                        }
                         ObjectKind::Ordinary => {
                             eprintln!("  [Ordinary]");
                         }

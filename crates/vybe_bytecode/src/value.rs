@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, Weak};
 
 /// A universal VM value. Language-agnostic — no coercion rules here.
@@ -91,6 +92,10 @@ impl Value {
                 match &obj.kind {
                     ObjectKind::Ordinary => "object",
                     ObjectKind::Array(_) => "array",
+                    ObjectKind::Map(_) => "map",
+                    ObjectKind::Set(_) => "set",
+                    ObjectKind::ArrayBuffer(_) => "arraybuffer",
+                    ObjectKind::TypedArray(_) => "typedarray",
                     ObjectKind::Function(_) => "function",
                     ObjectKind::HostFunction(_) => "function",
                 }
@@ -146,6 +151,153 @@ impl Value {
     }
 }
 
+// ── SameValueZero-style hashing / equality ──────────────────────────────
+//
+// `PartialEq + Eq + Hash` on `Value` implement the JS `Map` / `Set` key
+// semantics (ECMA-262 §7.2.11 SameValueZero):
+//
+//   * `NaN` compares equal to itself (only case where this differs
+//     from the usual `===` contract).
+//   * `-0` and `+0` are considered the same key (no sign distinction
+//     in `Map` keys — `Object.is` is the exception that differs).
+//   * Numeric values across `I32` / `I64` / `F64` with the same
+//     integral value hash and compare the same bucket so that
+//     `map.set(1.0, v); map.get(1)` works as a JS programmer expects.
+//   * Strings compare by content, `Arc` clones hash to the same bucket.
+//   * `Object` / `Symbol` / `WeakRef` compare by pointer identity,
+//     matching v8's behavior for object keys.
+//
+// These impls are REQUIRED for `indexmap::IndexMap<Value, Value>`
+// backing the `ObjectKind::Map` / `ObjectKind::Set` variants
+// (Phase B4 of `dynamicruntime_support.md`).
+
+impl std::cmp::PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        Value::same_value_zero(self, other)
+    }
+}
+
+impl std::cmp::Eq for Value {}
+
+impl Value {
+    /// ECMA-262 §7.2.11 SameValueZero — the algorithm used for
+    /// `Array.prototype.includes`, `Map` key equality, `Set` member
+    /// equality. Differs from `===` (strict equality) only in that
+    /// `NaN` is equal to itself. Differs from `Object.is` in that
+    /// `-0` and `+0` are equal here but distinct under `Object.is`.
+    pub fn same_value_zero(a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::Null, Value::Null) => true,
+            (Value::Undefined, Value::Undefined) => true,
+            (Value::Bool(x), Value::Bool(y)) => x == y,
+
+            // Numeric cross-type coercion — a JS user writes
+            // `map.set(1, "a")` and expects `map.get(1.0)` to return it.
+            (Value::I32(x), Value::I32(y)) => x == y,
+            (Value::I64(x), Value::I64(y)) => x == y,
+            (Value::I32(x), Value::I64(y)) => (*x as i64) == *y,
+            (Value::I64(x), Value::I32(y)) => *x == (*y as i64),
+            (Value::F64(x), Value::F64(y)) => {
+                if x.is_nan() && y.is_nan() { true } else { x == y }
+            }
+            (Value::I32(x), Value::F64(y)) => !y.is_nan() && (*x as f64) == *y,
+            (Value::F64(x), Value::I32(y)) => !x.is_nan() && *x == (*y as f64),
+            (Value::I64(x), Value::F64(y)) => !y.is_nan() && (*x as f64) == *y,
+            (Value::F64(x), Value::I64(y)) => !x.is_nan() && *x == (*y as f64),
+
+            (Value::String(x), Value::String(y)) => x == y,
+            (Value::BigInt(x), Value::BigInt(y)) => x == y,
+            (Value::V128(x), Value::V128(y)) => x == y,
+
+            // Pointer identity for reference types.
+            (Value::Object(x), Value::Object(y)) => Arc::ptr_eq(x, y),
+            (Value::Symbol(x), Value::Symbol(y)) => Arc::ptr_eq(x, y),
+            (Value::WeakRef(x), Value::WeakRef(y)) => Weak::ptr_eq(x, y),
+
+            _ => false,
+        }
+    }
+}
+
+impl Hash for Value {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Consistency with `PartialEq::eq` above:
+        // any two values that compare equal must hash to the same
+        // bucket. Numeric cross-type equality means I32(1), I64(1),
+        // and F64(1.0) all hash as the same i64 under one tag.
+        match self {
+            Value::Null => 0u8.hash(state),
+            Value::Undefined => 1u8.hash(state),
+            Value::Bool(b) => {
+                2u8.hash(state);
+                b.hash(state);
+            }
+            Value::I32(n) => {
+                3u8.hash(state);
+                (*n as i64).hash(state);
+            }
+            Value::I64(n) => {
+                3u8.hash(state);
+                n.hash(state);
+            }
+            Value::F64(n) => {
+                3u8.hash(state);
+                if n.is_nan() {
+                    // All NaN bit-patterns must hash the same so
+                    // SameValueZero's NaN === NaN equality stays
+                    // consistent.
+                    i64::MIN.hash(state);
+                } else if *n == 0.0 {
+                    // -0.0 / +0.0 collapse to same bucket.
+                    0i64.hash(state);
+                } else if n.fract() == 0.0
+                    && *n >= i64::MIN as f64
+                    && *n <= i64::MAX as f64
+                {
+                    // Integral float — hash as the i64 it equals,
+                    // so F64(5.0) and I32(5) share a bucket.
+                    (*n as i64).hash(state);
+                } else {
+                    // Non-integral float — use a separate subspace
+                    // keyed by the raw bit pattern. A non-integral
+                    // f64 can never equal an i32/i64, so no
+                    // cross-bucket collision risk.
+                    u8::MAX.hash(state);
+                    n.to_bits().hash(state);
+                }
+            }
+            Value::String(s) => {
+                5u8.hash(state);
+                s.hash(state);
+            }
+            Value::Object(o) => {
+                6u8.hash(state);
+                (Arc::as_ptr(o) as usize).hash(state);
+            }
+            Value::WeakRef(w) => {
+                // Hash by the weak pointer's raw address. `Weak::as_ptr`
+                // stays stable across upgrade/drop transitions.
+                7u8.hash(state);
+                (Weak::as_ptr(w) as usize).hash(state);
+            }
+            Value::V128(bytes) => {
+                8u8.hash(state);
+                bytes.hash(state);
+            }
+            Value::Symbol(s) => {
+                9u8.hash(state);
+                // `Arc<str>` is a fat pointer; cast through a thin
+                // pointer to get a stable usize identity.
+                (Arc::as_ptr(s) as *const u8 as usize).hash(state);
+            }
+            Value::BigInt(n) => {
+                10u8.hash(state);
+                n.hash(state);
+            }
+        }
+    }
+}
+
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -168,6 +320,26 @@ impl fmt::Display for Value {
                     ObjectKind::Array(elems) => {
                         let parts: Vec<String> = elems.iter().map(|v| format!("{}", v)).collect();
                         write!(f, "{}", parts.join(","))
+                    }
+                    ObjectKind::Map(m) => {
+                        // ECMA-262 §24.1.3.13: no canonical toString for
+                        // Map; v8 shows "[object Map]". Match that.
+                        let _ = m;
+                        write!(f, "[object Map]")
+                    }
+                    ObjectKind::Set(s) => {
+                        let _ = s;
+                        write!(f, "[object Set]")
+                    }
+                    ObjectKind::ArrayBuffer(ab) => {
+                        let _ = ab;
+                        write!(f, "[object ArrayBuffer]")
+                    }
+                    ObjectKind::TypedArray(ta) => {
+                        // Spec: typed arrays toString as comma-joined elements.
+                        // MVP: tag-only — proper toString lives in the handler.
+                        let _ = ta;
+                        write!(f, "[object TypedArray]")
                     }
                     ObjectKind::Function(func) => {
                         write!(f, "[function {}]", func.name.as_deref().unwrap_or("anonymous"))
@@ -206,10 +378,125 @@ pub struct Object {
     pub fields: Vec<Value>,
 }
 
+/// Backing state for an `ObjectKind::ArrayBuffer`. Carries the bytes
+/// plus the resizability / detachment metadata required by
+/// ECMA-262 §25.1 (`ArrayBuffer`) and §25.2 (`SharedArrayBuffer`).
+///
+/// `bytes` is stored as `Arc<Mutex<Vec<u8>>>` so that `DataView` and
+/// `TypedArray` views can share the underlying storage — a write
+/// through any view is observable via every other view on the same
+/// buffer, matching the JS spec contract.
+#[derive(Debug, Clone)]
+pub struct ArrayBufferState {
+    pub bytes: Arc<Mutex<Vec<u8>>>,
+    pub max_byte_length: usize,
+    pub resizable: bool,
+    /// True if `transfer()` has rendered this buffer unusable.
+    pub detached: bool,
+    /// True for `SharedArrayBuffer`. Affects whether cross-thread
+    /// writes are allowed; the MVP implementation doesn't yet enforce
+    /// this differently from a non-shared buffer.
+    pub shared: bool,
+}
+
+/// Element type of a typed-array view — discriminates the 11
+/// ECMA-262 §23.2 typed-array variants. Determines both the bytes
+/// per element and the sign-extension / clamping / float-conversion
+/// applied when reading or writing elements.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum TypedElemKind {
+    /// Int8Array — signed 8-bit; get sign-extends
+    I8,
+    /// Uint8Array — unsigned 8-bit; get zero-extends
+    U8,
+    /// Uint8ClampedArray — unsigned 8-bit; set clamps to [0, 255]
+    U8Clamped,
+    /// Int16Array
+    I16,
+    /// Uint16Array
+    U16,
+    /// Int32Array
+    I32,
+    /// Uint32Array — stored as i32; unsigned interpretation at language boundary
+    U32,
+    /// Float32Array
+    F32,
+    /// Float64Array
+    F64,
+    /// BigInt64Array — elements are i64
+    BigI64,
+    /// BigUint64Array — stored as i64; unsigned interpretation at language boundary
+    BigU64,
+}
+
+impl TypedElemKind {
+    pub fn bytes_per_element(self) -> usize {
+        match self {
+            TypedElemKind::I8 | TypedElemKind::U8 | TypedElemKind::U8Clamped => 1,
+            TypedElemKind::I16 | TypedElemKind::U16 => 2,
+            TypedElemKind::I32 | TypedElemKind::U32 | TypedElemKind::F32 => 4,
+            TypedElemKind::F64 | TypedElemKind::BigI64 | TypedElemKind::BigU64 => 8,
+        }
+    }
+}
+
+/// A `TypedArray` view over an `ArrayBuffer`. `buffer` is the shared
+/// byte storage from the underlying `ObjectKind::ArrayBuffer`;
+/// writes through this view are observable from any other view
+/// (`DataView` or other `TypedArray`) on the same buffer.
+///
+/// `length` is in **elements**, not bytes. `byte_offset` is the view's
+/// starting byte within the buffer.
+#[derive(Debug, Clone)]
+pub struct TypedArrayState {
+    pub elem: TypedElemKind,
+    pub buffer: Arc<Mutex<Vec<u8>>>,
+    /// Reference to the owning ArrayBuffer object, kept so property
+    /// accessors (`.buffer`) return the same externref the user
+    /// created the view from.
+    pub buffer_obj: Arc<Mutex<Object>>,
+    pub byte_offset: usize,
+    pub length: usize,
+}
+
 #[derive(Debug, Clone)]
 pub enum ObjectKind {
+    /// Plain JS `Object` — property-bag (via the enclosing
+    /// `Object::properties` HashMap). Also the fallback for any value
+    /// shape that doesn't warrant a dedicated variant.
     Ordinary,
+    /// Dense integer-indexed array — JS `Array`, Python `list`, Ruby
+    /// `Array`, Dart `List`, VB `ReDim` array, C# `List<T>`, COBOL
+    /// `OCCURS DEPENDING ON`.
     Array(Vec<Value>),
+    /// Insertion-ordered key→value map with O(1) lookup — JS `Map`,
+    /// Python `dict`, Ruby `Hash`, Dart `Map`, C# `Dictionary`,
+    /// PHP `array` (PHP uses this *via* `ObjectKind::Ordinary` for
+    /// JS-object semantics; when strictly a JS `Map` the compiler
+    /// picks this variant instead).
+    ///
+    /// Dynamic-runtime Phase B4: replaces the previous
+    /// tagged-property-bag MVP. Keys use `SameValueZero` semantics
+    /// via `Value`'s `Hash + Eq` impls.
+    Map(indexmap::IndexMap<Value, Value>),
+    /// Insertion-ordered set of unique values with O(1) membership —
+    /// JS `Set`, Python `set`, Ruby `Set`, Dart `Set`, C# `HashSet`.
+    /// Members use SameValueZero equality (see `Map` above).
+    Set(indexmap::IndexSet<Value>),
+    /// Raw byte buffer — JS `ArrayBuffer`, Python `bytes` / `bytearray`
+    /// backing. Packed `Vec<u8>` gives us 8× memory density over the
+    /// previous "Vec of `Value::I32` boxed bytes" MVP and lets
+    /// TypedArray views re-interpret bytes at native speed.
+    ArrayBuffer(ArrayBufferState),
+    /// View over an `ArrayBuffer` — JS `Int8Array` / `Uint8Array` /
+    /// `Uint8ClampedArray` / `Int16Array` / `Uint16Array` /
+    /// `Int32Array` / `Uint32Array` / `Float32Array` /
+    /// `Float64Array` / `BigInt64Array` / `BigUint64Array` per
+    /// ECMA-262 §23.2.
+    ///
+    /// Writes through this view mutate the shared buffer bytes;
+    /// other views of the same buffer see the change immediately.
+    TypedArray(TypedArrayState),
     Function(Function),
     /// A reference to a host function by its index in the VM's host_fns table.
     HostFunction(usize),

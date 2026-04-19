@@ -4,68 +4,60 @@
 //! `crates/vybe_bytecode/src/wasm/js_arraybuffer_builtins.rs` per
 //! ECMA-262 §25.1 / §25.2 / §25.3.
 //!
-//! Storage: an `Object` with `__vybe_bytes` = `Vec<u8>` carried as a
-//! property, and metadata properties tracking byteLength / resizable
-//! flags. Phase B4 will upgrade to dedicated `ObjectKind::ArrayBuffer`
-//! / `DataView` variants with proper byte-slice backing.
+//! ## Storage (Phase B4)
 //!
-//! ## Byte storage convention
+//! `ObjectKind::ArrayBuffer(ArrayBufferState)` where `bytes` is an
+//! `Arc<Mutex<Vec<u8>>>`. The shared `Arc` lets `DataView` and
+//! every `TypedArray` view reference the **same byte storage** —
+//! writes through any view are observable through every other view,
+//! matching ECMA-262's buffer-sharing contract.
 //!
-//! We hold bytes as `Vec<u8>` inside an `Arc<Mutex<Vec<u8>>>` wrapped
-//! in a `Value::Object` whose `ObjectKind` is `Ordinary`. The magic
-//! property `__vybe_bytes_handle` is an i64 index into a VM-side
-//! storage pool. For MVP simplicity we instead embed the Vec directly
-//! via a side-channel stored in properties — this works because our
-//! value model allows arbitrary nested values.
+//! Migrated from the previous "Vec of `Value::I32`-boxed bytes" MVP.
+//! Memory density: 8× denser (1 byte vs 8 bytes per `Value::I32` on
+//! 64-bit). Read / write speed: native byte slicing instead of a
+//! two-level indirection through Values.
 //!
-//! Alternatively we could reuse `ObjectKind::Array(Vec<Value>)` with
-//! each byte stored as a `Value::I32`. That's simpler and
-//! functionally equivalent for MVP — opting for it here to avoid
-//! adding a new `ObjectKind` variant before Phase B4.
+//! DataView still uses `ObjectKind::Ordinary` with properties
+//! carrying buffer / offset / length — a dedicated
+//! `ObjectKind::DataView` variant lands in the next B4 sub-pass,
+//! but the performance story is already driven by the shared-byte
+//! backing we put in place here.
 //!
 //! See `JS_BUILTIN_CONVENTIONS.md` for marshaling rules.
 
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::value::{Object, ObjectKind, Value};
+use vybe_bytecode::value::{ArrayBufferState, Object, ObjectKind, Value};
 use vybe_bytecode::{HostContext, VM};
 
-const AB_TAG: &str = "__vybe_js_arraybuffer";
-const SAB_TAG: &str = "__vybe_js_sharedarraybuffer";
 const DV_TAG: &str = "__vybe_js_dataview";
-const AB_MAX_PROP: &str = "__vybe_ab_max";
-const AB_RESIZABLE_PROP: &str = "__vybe_ab_resizable";
-const AB_DETACHED_PROP: &str = "__vybe_ab_detached";
 const DV_BUFFER_PROP: &str = "__vybe_dv_buffer";
 const DV_OFFSET_PROP: &str = "__vybe_dv_offset";
 const DV_LENGTH_PROP: &str = "__vybe_dv_length";
 
-fn new_arraybuffer(byte_length: i32, max_byte_length: i32, resizable: bool) -> Value {
-    // Bytes stored as Array of I32 values (one per byte). Simple and
-    // avoids introducing a new ObjectKind.
-    let bytes: Vec<Value> = (0..byte_length.max(0)).map(|_| Value::I32(0)).collect();
-    let mut obj = Object::new_array(bytes);
-    obj.properties.insert(AB_TAG.into(), Value::I32(1));
-    obj.properties.insert("byteLength".into(), Value::I32(byte_length.max(0)));
-    obj.properties.insert(AB_MAX_PROP.into(), Value::I32(max_byte_length));
-    obj.properties.insert(AB_RESIZABLE_PROP.into(), Value::I32(if resizable { 1 } else { 0 }));
-    obj.properties.insert(AB_DETACHED_PROP.into(), Value::I32(0));
-    Value::Object(Arc::new(Mutex::new(obj)))
-}
+// ── ArrayBuffer / SharedArrayBuffer construction ──────────────────────
 
-fn new_sharedarraybuffer(byte_length: i32, max_byte_length: i32, growable: bool) -> Value {
-    let bytes: Vec<Value> = (0..byte_length.max(0)).map(|_| Value::I32(0)).collect();
-    let mut obj = Object::new_array(bytes);
-    obj.properties.insert(SAB_TAG.into(), Value::I32(1));
-    obj.properties.insert("byteLength".into(), Value::I32(byte_length.max(0)));
-    obj.properties.insert(AB_MAX_PROP.into(), Value::I32(max_byte_length));
-    obj.properties.insert(AB_RESIZABLE_PROP.into(), Value::I32(if growable { 1 } else { 0 }));
+fn new_arraybuffer(byte_length: i32, max_byte_length: i32, resizable: bool, shared: bool) -> Value {
+    let n = byte_length.max(0) as usize;
+    let max = max_byte_length.max(byte_length).max(0) as usize;
+    let bytes = Arc::new(Mutex::new(vec![0u8; n]));
+    let state = ArrayBufferState {
+        bytes,
+        max_byte_length: max,
+        resizable,
+        detached: false,
+        shared,
+    };
+    let mut obj = Object::new();
+    obj.kind = ObjectKind::ArrayBuffer(state);
+    obj.properties.insert("byteLength".into(), Value::I32(n as i32));
+    obj.properties.insert("maxByteLength".into(), Value::I32(max as i32));
     Value::Object(Arc::new(Mutex::new(obj)))
 }
 
 fn is_arraybuffer(args: &[Value], idx: usize) -> Option<Arc<Mutex<Object>>> {
     if let Some(Value::Object(obj)) = args.get(idx) {
         let o = obj.lock().unwrap();
-        if o.properties.get(AB_TAG).is_some() || o.properties.get(SAB_TAG).is_some() {
+        if matches!(o.kind, ObjectKind::ArrayBuffer(_)) {
             drop(o);
             return Some(obj.clone());
         }
@@ -73,13 +65,14 @@ fn is_arraybuffer(args: &[Value], idx: usize) -> Option<Arc<Mutex<Object>>> {
     None
 }
 
-fn ab_byte_length(obj: &Arc<Mutex<Object>>) -> i32 {
+/// Read-only snapshot of the buffer's current byte length. Call with
+/// the object lock released.
+fn ab_byte_length_of(obj: &Arc<Mutex<Object>>) -> usize {
     let o = obj.lock().unwrap();
-    if let ObjectKind::Array(ref v) = o.kind {
-        v.len() as i32
-    } else {
-        0
+    if let ObjectKind::ArrayBuffer(ref state) = o.kind {
+        return state.bytes.lock().unwrap().len();
     }
+    0
 }
 
 pub fn register(vm: &mut VM) {
@@ -94,20 +87,20 @@ fn register_arraybuffer(vm: &mut VM) {
     vm.register_host_fn("wasm:js-arraybuffer", "new",
         Box::new(|_ctx, args| {
             let n = args.first().map(|v| v.as_i32()).unwrap_or(0);
-            new_arraybuffer(n, n, false)
+            new_arraybuffer(n, n, false, false)
         }));
 
     vm.register_host_fn("wasm:js-arraybuffer", "newResizable",
         Box::new(|_ctx, args| {
             let n = args.first().map(|v| v.as_i32()).unwrap_or(0);
             let max = args.get(1).map(|v| v.as_i32()).unwrap_or(n);
-            new_arraybuffer(n, max, true)
+            new_arraybuffer(n, max, true, false)
         }));
 
     vm.register_host_fn("wasm:js-arraybuffer", "byteLength",
         Box::new(|_ctx, args| {
             if let Some(ab) = is_arraybuffer(args, 0) {
-                return Value::I32(ab_byte_length(&ab));
+                return Value::I32(ab_byte_length_of(&ab) as i32);
             }
             Value::I32(0)
         }));
@@ -116,7 +109,9 @@ fn register_arraybuffer(vm: &mut VM) {
         Box::new(|_ctx, args| {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 let o = ab.lock().unwrap();
-                return o.properties.get(AB_MAX_PROP).cloned().unwrap_or(Value::I32(0));
+                if let ObjectKind::ArrayBuffer(ref state) = o.kind {
+                    return Value::I32(state.max_byte_length as i32);
+                }
             }
             Value::I32(0)
         }));
@@ -125,7 +120,9 @@ fn register_arraybuffer(vm: &mut VM) {
         Box::new(|_ctx, args| {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 let o = ab.lock().unwrap();
-                return o.properties.get(AB_RESIZABLE_PROP).cloned().unwrap_or(Value::I32(0));
+                if let ObjectKind::ArrayBuffer(ref state) = o.kind {
+                    return Value::I32(if state.resizable { 1 } else { 0 });
+                }
             }
             Value::I32(0)
         }));
@@ -134,7 +131,9 @@ fn register_arraybuffer(vm: &mut VM) {
         Box::new(|_ctx, args| {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 let o = ab.lock().unwrap();
-                return o.properties.get(AB_DETACHED_PROP).cloned().unwrap_or(Value::I32(0));
+                if let ObjectKind::ArrayBuffer(ref state) = o.kind {
+                    return Value::I32(if state.detached { 1 } else { 0 });
+                }
             }
             Value::I32(0)
         }));
@@ -145,23 +144,26 @@ fn register_arraybuffer(vm: &mut VM) {
                 let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
                 let end = args.get(2).map(|v| v.as_i32()).unwrap_or(i32::MAX);
                 let o = ab.lock().unwrap();
-                if let ObjectKind::Array(ref bytes) = o.kind {
-                    let len = bytes.len() as i32;
+                if let ObjectKind::ArrayBuffer(ref state) = o.kind {
+                    let src = state.bytes.lock().unwrap();
+                    let len = src.len() as i32;
                     let s = start.max(0).min(len) as usize;
                     let e = end.max(0).min(len) as usize;
-                    let new_bytes: Vec<Value> = if s < e {
-                        bytes[s..e].to_vec()
-                    } else {
-                        Vec::new()
+                    let slice: Vec<u8> = if s < e { src[s..e].to_vec() } else { Vec::new() };
+                    drop(src);
+                    let slice_len = slice.len();
+                    let new_state = ArrayBufferState {
+                        bytes: Arc::new(Mutex::new(slice)),
+                        max_byte_length: slice_len,
+                        resizable: false,
+                        detached: false,
+                        shared: false,
                     };
-                    let new_len = new_bytes.len() as i32;
-                    let mut out = Object::new_array(new_bytes);
-                    out.properties.insert(AB_TAG.into(), Value::I32(1));
-                    out.properties.insert("byteLength".into(), Value::I32(new_len));
-                    out.properties.insert(AB_MAX_PROP.into(), Value::I32(new_len));
-                    out.properties.insert(AB_RESIZABLE_PROP.into(), Value::I32(0));
-                    out.properties.insert(AB_DETACHED_PROP.into(), Value::I32(0));
-                    return Value::Object(Arc::new(Mutex::new(out)));
+                    let mut new_obj = Object::new();
+                    new_obj.kind = ObjectKind::ArrayBuffer(new_state);
+                    new_obj.properties.insert("byteLength".into(), Value::I32(slice_len as i32));
+                    new_obj.properties.insert("maxByteLength".into(), Value::I32(slice_len as i32));
+                    return Value::Object(Arc::new(Mutex::new(new_obj)));
                 }
             }
             Value::Null
@@ -172,13 +174,17 @@ fn register_arraybuffer(vm: &mut VM) {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 let new_len = args.get(1).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
                 let mut o = ab.lock().unwrap();
-                // Per spec: resize fails (throws) on non-resizable. MVP: silent no-op.
-                if !matches!(o.properties.get(AB_RESIZABLE_PROP), Some(Value::I32(n)) if *n != 0) {
+                let ObjectKind::ArrayBuffer(ref mut state) = o.kind else {
+                    return Value::Null;
+                };
+                // Per ECMA-262 §25.1.5.3: RangeError when non-resizable
+                // or exceeds maxByteLength. MVP: silent no-op.
+                if !state.resizable || new_len > state.max_byte_length {
                     return Value::Null;
                 }
-                if let ObjectKind::Array(ref mut bytes) = o.kind {
-                    bytes.resize(new_len, Value::I32(0));
-                }
+                let mut bytes = state.bytes.lock().unwrap();
+                bytes.resize(new_len, 0);
+                drop(bytes);
                 o.properties.insert("byteLength".into(), Value::I32(new_len as i32));
             }
             Value::Null
@@ -186,73 +192,86 @@ fn register_arraybuffer(vm: &mut VM) {
 
     vm.register_host_fn("wasm:js-arraybuffer", "transfer",
         Box::new(|_ctx, args| {
-            // transfer(ab, newByteLength_or_-1) -> new ArrayBuffer;
-            // original becomes detached per spec.
             if let Some(ab) = is_arraybuffer(args, 0) {
-                let mut o = ab.lock().unwrap();
-                let bytes_taken: Vec<Value> = if let ObjectKind::Array(ref mut b) = o.kind {
-                    std::mem::take(b)
-                } else {
-                    Vec::new()
-                };
-                o.properties.insert(AB_DETACHED_PROP.into(), Value::I32(1));
-                o.properties.insert("byteLength".into(), Value::I32(0));
                 let requested = args.get(1).map(|v| v.as_i32()).unwrap_or(-1);
+                let mut o = ab.lock().unwrap();
+                let taken_bytes = if let ObjectKind::ArrayBuffer(ref mut state) = o.kind {
+                    let mut src = state.bytes.lock().unwrap();
+                    let taken = std::mem::take(&mut *src);
+                    drop(src);
+                    state.detached = true;
+                    taken
+                } else {
+                    return Value::Null;
+                };
+                o.properties.insert("byteLength".into(), Value::I32(0));
                 drop(o);
-                let target_len = if requested < 0 { bytes_taken.len() as i32 } else { requested };
-                let mut new_bytes = bytes_taken;
-                new_bytes.resize(target_len.max(0) as usize, Value::I32(0));
-                let mut new_ab = Object::new_array(new_bytes);
-                new_ab.properties.insert(AB_TAG.into(), Value::I32(1));
-                new_ab.properties.insert("byteLength".into(), Value::I32(target_len.max(0)));
-                new_ab.properties.insert(AB_MAX_PROP.into(), Value::I32(target_len.max(0)));
-                new_ab.properties.insert(AB_RESIZABLE_PROP.into(), Value::I32(0));
-                new_ab.properties.insert(AB_DETACHED_PROP.into(), Value::I32(0));
-                return Value::Object(Arc::new(Mutex::new(new_ab)));
+
+                let target_len = if requested < 0 { taken_bytes.len() } else { requested.max(0) as usize };
+                let mut new_bytes = taken_bytes;
+                new_bytes.resize(target_len, 0);
+                let new_state = ArrayBufferState {
+                    bytes: Arc::new(Mutex::new(new_bytes)),
+                    max_byte_length: target_len,
+                    resizable: false,
+                    detached: false,
+                    shared: false,
+                };
+                let mut new_obj = Object::new();
+                new_obj.kind = ObjectKind::ArrayBuffer(new_state);
+                new_obj.properties.insert("byteLength".into(), Value::I32(target_len as i32));
+                new_obj.properties.insert("maxByteLength".into(), Value::I32(target_len as i32));
+                return Value::Object(Arc::new(Mutex::new(new_obj)));
             }
             Value::Null
         }));
 
     vm.register_host_fn("wasm:js-arraybuffer", "transferToFixedLength",
         Box::new(|_ctx, args| {
-            // Same as transfer but always produces non-resizable.
-            // Our `transfer` already does that for MVP — alias.
+            // Same as transfer() for MVP — both produce non-resizable.
             if let Some(ab) = is_arraybuffer(args, 0) {
-                let mut o = ab.lock().unwrap();
-                let bytes_taken: Vec<Value> = if let ObjectKind::Array(ref mut b) = o.kind {
-                    std::mem::take(b)
-                } else {
-                    Vec::new()
-                };
-                o.properties.insert(AB_DETACHED_PROP.into(), Value::I32(1));
-                o.properties.insert("byteLength".into(), Value::I32(0));
                 let requested = args.get(1).map(|v| v.as_i32()).unwrap_or(-1);
+                let mut o = ab.lock().unwrap();
+                let taken_bytes = if let ObjectKind::ArrayBuffer(ref mut state) = o.kind {
+                    let mut src = state.bytes.lock().unwrap();
+                    let taken = std::mem::take(&mut *src);
+                    drop(src);
+                    state.detached = true;
+                    taken
+                } else {
+                    return Value::Null;
+                };
+                o.properties.insert("byteLength".into(), Value::I32(0));
                 drop(o);
-                let target_len = if requested < 0 { bytes_taken.len() as i32 } else { requested };
-                let mut new_bytes = bytes_taken;
-                new_bytes.resize(target_len.max(0) as usize, Value::I32(0));
-                let mut new_ab = Object::new_array(new_bytes);
-                new_ab.properties.insert(AB_TAG.into(), Value::I32(1));
-                new_ab.properties.insert("byteLength".into(), Value::I32(target_len.max(0)));
-                new_ab.properties.insert(AB_MAX_PROP.into(), Value::I32(target_len.max(0)));
-                new_ab.properties.insert(AB_RESIZABLE_PROP.into(), Value::I32(0));
-                new_ab.properties.insert(AB_DETACHED_PROP.into(), Value::I32(0));
-                return Value::Object(Arc::new(Mutex::new(new_ab)));
+
+                let target_len = if requested < 0 { taken_bytes.len() } else { requested.max(0) as usize };
+                let mut new_bytes = taken_bytes;
+                new_bytes.resize(target_len, 0);
+                let new_state = ArrayBufferState {
+                    bytes: Arc::new(Mutex::new(new_bytes)),
+                    max_byte_length: target_len,
+                    resizable: false,
+                    detached: false,
+                    shared: false,
+                };
+                let mut new_obj = Object::new();
+                new_obj.kind = ObjectKind::ArrayBuffer(new_state);
+                new_obj.properties.insert("byteLength".into(), Value::I32(target_len as i32));
+                new_obj.properties.insert("maxByteLength".into(), Value::I32(target_len as i32));
+                return Value::Object(Arc::new(Mutex::new(new_obj)));
             }
             Value::Null
         }));
 
     vm.register_host_fn("wasm:js-arraybuffer", "isView",
         Box::new(|_ctx, args| {
-            // True for DataView or any typed-array view.
             if let Some(Value::Object(obj)) = args.first() {
                 let o = obj.lock().unwrap();
                 if o.properties.get(DV_TAG).is_some() {
                     return Value::I32(1);
                 }
-                // Typed arrays will be tagged `__vybe_js_typedarray_*`;
-                // MVP returns 0 for them and Phase B10 handlers add
-                // the check once typed-array tagging lands.
+                // Phase B4 continuation: check ObjectKind::TypedArray
+                // once that variant lands.
             }
             Value::I32(0)
         }));
@@ -264,20 +283,20 @@ fn register_sharedarraybuffer(vm: &mut VM) {
     vm.register_host_fn("wasm:js-sharedarraybuffer", "new",
         Box::new(|_ctx, args| {
             let n = args.first().map(|v| v.as_i32()).unwrap_or(0);
-            new_sharedarraybuffer(n, n, false)
+            new_arraybuffer(n, n, false, true)
         }));
 
     vm.register_host_fn("wasm:js-sharedarraybuffer", "newGrowable",
         Box::new(|_ctx, args| {
             let n = args.first().map(|v| v.as_i32()).unwrap_or(0);
             let max = args.get(1).map(|v| v.as_i32()).unwrap_or(n);
-            new_sharedarraybuffer(n, max, true)
+            new_arraybuffer(n, max, true, true)
         }));
 
     vm.register_host_fn("wasm:js-sharedarraybuffer", "byteLength",
         Box::new(|_ctx, args| {
             if let Some(ab) = is_arraybuffer(args, 0) {
-                return Value::I32(ab_byte_length(&ab));
+                return Value::I32(ab_byte_length_of(&ab) as i32);
             }
             Value::I32(0)
         }));
@@ -286,7 +305,9 @@ fn register_sharedarraybuffer(vm: &mut VM) {
         Box::new(|_ctx, args| {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 let o = ab.lock().unwrap();
-                return o.properties.get(AB_MAX_PROP).cloned().unwrap_or(Value::I32(0));
+                if let ObjectKind::ArrayBuffer(ref state) = o.kind {
+                    return Value::I32(state.max_byte_length as i32);
+                }
             }
             Value::I32(0)
         }));
@@ -295,7 +316,9 @@ fn register_sharedarraybuffer(vm: &mut VM) {
         Box::new(|_ctx, args| {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 let o = ab.lock().unwrap();
-                return o.properties.get(AB_RESIZABLE_PROP).cloned().unwrap_or(Value::I32(0));
+                if let ObjectKind::ArrayBuffer(ref state) = o.kind {
+                    return Value::I32(if state.resizable { 1 } else { 0 });
+                }
             }
             Value::I32(0)
         }));
@@ -306,22 +329,26 @@ fn register_sharedarraybuffer(vm: &mut VM) {
                 let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
                 let end = args.get(2).map(|v| v.as_i32()).unwrap_or(i32::MAX);
                 let o = ab.lock().unwrap();
-                if let ObjectKind::Array(ref bytes) = o.kind {
-                    let len = bytes.len() as i32;
+                if let ObjectKind::ArrayBuffer(ref state) = o.kind {
+                    let src = state.bytes.lock().unwrap();
+                    let len = src.len() as i32;
                     let s = start.max(0).min(len) as usize;
                     let e = end.max(0).min(len) as usize;
-                    let new_bytes: Vec<Value> = if s < e {
-                        bytes[s..e].to_vec()
-                    } else {
-                        Vec::new()
+                    let slice: Vec<u8> = if s < e { src[s..e].to_vec() } else { Vec::new() };
+                    let slice_len = slice.len();
+                    drop(src);
+                    let new_state = ArrayBufferState {
+                        bytes: Arc::new(Mutex::new(slice)),
+                        max_byte_length: slice_len,
+                        resizable: false,
+                        detached: false,
+                        shared: true,
                     };
-                    let new_len = new_bytes.len() as i32;
-                    let mut out = Object::new_array(new_bytes);
-                    out.properties.insert(SAB_TAG.into(), Value::I32(1));
-                    out.properties.insert("byteLength".into(), Value::I32(new_len));
-                    out.properties.insert(AB_MAX_PROP.into(), Value::I32(new_len));
-                    out.properties.insert(AB_RESIZABLE_PROP.into(), Value::I32(0));
-                    return Value::Object(Arc::new(Mutex::new(out)));
+                    let mut new_obj = Object::new();
+                    new_obj.kind = ObjectKind::ArrayBuffer(new_state);
+                    new_obj.properties.insert("byteLength".into(), Value::I32(slice_len as i32));
+                    new_obj.properties.insert("maxByteLength".into(), Value::I32(slice_len as i32));
+                    return Value::Object(Arc::new(Mutex::new(new_obj)));
                 }
             }
             Value::Null
@@ -332,15 +359,18 @@ fn register_sharedarraybuffer(vm: &mut VM) {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 let new_len = args.get(1).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
                 let mut o = ab.lock().unwrap();
-                if !matches!(o.properties.get(AB_RESIZABLE_PROP), Some(Value::I32(n)) if *n != 0) {
-                    return Value::Null;
-                }
-                if let ObjectKind::Array(ref mut bytes) = o.kind {
-                    // `grow` is spec'd to only allow growth, not shrink.
-                    if new_len >= bytes.len() {
-                        bytes.resize(new_len, Value::I32(0));
-                        o.properties.insert("byteLength".into(), Value::I32(new_len as i32));
+                if let ObjectKind::ArrayBuffer(ref mut state) = o.kind {
+                    // Spec: only grow-in-place, never shrink.
+                    if !state.resizable || new_len > state.max_byte_length {
+                        return Value::Null;
                     }
+                    let mut bytes = state.bytes.lock().unwrap();
+                    if new_len >= bytes.len() {
+                        bytes.resize(new_len, 0);
+                    }
+                    let new_byte_len = bytes.len() as i32;
+                    drop(bytes);
+                    o.properties.insert("byteLength".into(), Value::I32(new_byte_len));
                 }
             }
             Value::Null
@@ -371,75 +401,56 @@ fn is_dataview(args: &[Value], idx: usize) -> Option<Arc<Mutex<Object>>> {
     None
 }
 
-/// Copy bytes from the DataView's backing ArrayBuffer into a Vec<u8>
-/// for the given offset+count. Returns None on out-of-bounds.
-fn dv_read_bytes(dv: &Arc<Mutex<Object>>, offset: i32, count: usize) -> Option<Vec<u8>> {
+/// Resolve the DataView's (buffer_arc, base_offset, view_length) for
+/// a byte-range operation. Returns None if the view is misshapen.
+fn dv_resolve(dv: &Arc<Mutex<Object>>) -> Option<(Arc<Mutex<Vec<u8>>>, usize, usize)> {
     let o = dv.lock().unwrap();
     let base_offset = match o.properties.get(DV_OFFSET_PROP) {
-        Some(Value::I32(n)) => *n,
+        Some(Value::I32(n)) => *n as usize,
         _ => 0,
     };
     let view_len = match o.properties.get(DV_LENGTH_PROP) {
-        Some(Value::I32(n)) => *n,
+        Some(Value::I32(n)) => *n as usize,
         _ => 0,
     };
-    if offset < 0 || (offset as usize + count) > view_len as usize {
-        return None;
-    }
-    let buffer = match o.properties.get(DV_BUFFER_PROP).cloned() {
+    let buffer_obj = match o.properties.get(DV_BUFFER_PROP).cloned() {
         Some(Value::Object(b)) => b,
         _ => return None,
     };
     drop(o);
-    let buf = buffer.lock().unwrap();
-    if let ObjectKind::Array(ref bytes) = buf.kind {
-        let abs_offset = (base_offset + offset) as usize;
-        let mut out = Vec::with_capacity(count);
-        for i in abs_offset..abs_offset + count {
-            if let Some(Value::I32(b)) = bytes.get(i) {
-                out.push(*b as u8);
-            } else {
-                return None;
-            }
-        }
-        Some(out)
+    let buf_o = buffer_obj.lock().unwrap();
+    if let ObjectKind::ArrayBuffer(ref state) = buf_o.kind {
+        Some((state.bytes.clone(), base_offset, view_len))
     } else {
         None
     }
 }
 
-fn dv_write_bytes(dv: &Arc<Mutex<Object>>, offset: i32, bytes: &[u8]) -> bool {
-    let o = dv.lock().unwrap();
-    let base_offset = match o.properties.get(DV_OFFSET_PROP) {
-        Some(Value::I32(n)) => *n,
-        _ => 0,
-    };
-    let view_len = match o.properties.get(DV_LENGTH_PROP) {
-        Some(Value::I32(n)) => *n,
-        _ => 0,
-    };
-    if offset < 0 || (offset as usize + bytes.len()) > view_len as usize {
+fn dv_read_bytes(dv: &Arc<Mutex<Object>>, offset: i32, count: usize) -> Option<Vec<u8>> {
+    let (bytes_arc, base, view_len) = dv_resolve(dv)?;
+    if offset < 0 || (offset as usize + count) > view_len {
+        return None;
+    }
+    let bytes = bytes_arc.lock().unwrap();
+    let abs = base + offset as usize;
+    if abs + count > bytes.len() {
+        return None;
+    }
+    Some(bytes[abs..abs + count].to_vec())
+}
+
+fn dv_write_bytes(dv: &Arc<Mutex<Object>>, offset: i32, payload: &[u8]) -> bool {
+    let Some((bytes_arc, base, view_len)) = dv_resolve(dv) else { return false; };
+    if offset < 0 || (offset as usize + payload.len()) > view_len {
         return false;
     }
-    let buffer = match o.properties.get(DV_BUFFER_PROP).cloned() {
-        Some(Value::Object(b)) => b,
-        _ => return false,
-    };
-    drop(o);
-    let mut buf = buffer.lock().unwrap();
-    if let ObjectKind::Array(ref mut arr) = buf.kind {
-        let abs_offset = (base_offset + offset) as usize;
-        for (i, &b) in bytes.iter().enumerate() {
-            let idx = abs_offset + i;
-            if idx >= arr.len() {
-                return false;
-            }
-            arr[idx] = Value::I32(b as i32);
-        }
-        true
-    } else {
-        false
+    let mut bytes = bytes_arc.lock().unwrap();
+    let abs = base + offset as usize;
+    if abs + payload.len() > bytes.len() {
+        return false;
     }
+    bytes[abs..abs + payload.len()].copy_from_slice(payload);
+    true
 }
 
 fn register_dataview(vm: &mut VM) {
@@ -448,11 +459,10 @@ fn register_dataview(vm: &mut VM) {
             let buffer = args.first().cloned().unwrap_or(Value::Null);
             let byte_offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
             let byte_length_req = args.get(2).map(|v| v.as_i32()).unwrap_or(-1);
-            // Compute default byteLength if omitted (= buffer.byteLength - offset)
             let buffer_len = if let Value::Object(b) = &buffer {
                 let o = b.lock().unwrap();
-                if let ObjectKind::Array(ref bytes) = o.kind {
-                    bytes.len() as i32
+                if let ObjectKind::ArrayBuffer(ref state) = o.kind {
+                    state.bytes.lock().unwrap().len() as i32
                 } else {
                     0
                 }
@@ -494,7 +504,8 @@ fn register_dataview(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    // Getters
+    // Single-byte getters/setters (no endianness operand per spec)
+
     vm.register_host_fn("wasm:js-dataview", "getInt8",
         Box::new(|_ctx, args| {
             let offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
@@ -545,7 +556,6 @@ fn register_dataview(vm: &mut VM) {
     getter_multibyte!("getFloat32", 4, f32, f32::from_le_bytes, f32::from_be_bytes, |v| Value::F64(v as f64));
     getter_multibyte!("getFloat64", 8, f64, f64::from_le_bytes, f64::from_be_bytes, |v| Value::F64(v));
 
-    // Setters
     vm.register_host_fn("wasm:js-dataview", "setInt8",
         Box::new(|_ctx, args| {
             let offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);

@@ -16,3 +16,4 @@ vybe_widgets = { workspace = true, optional = true }
 regex = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }
+indexmap = { workspace = true }
