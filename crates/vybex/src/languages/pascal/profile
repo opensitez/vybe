@@ -130,10 +130,10 @@ typename      = { emit = "intrinsic:classname",            min_args = 1, max_arg
 
 # ── Array operations ─────────────────────────────────────────────────────────
 
-setlength     = { emit = "host:vybe:array:newWithLength",  min_args = 2, max_args = 2 }
-append        = { emit = "host:vybe:array:push",           min_args = 2, max_args = 2 }
+setlength     = { emit = "host:wasm:js-array:newWithLength",  min_args = 2, max_args = 2 }
+append        = { emit = "host:wasm:js-array:push",           min_args = 2, max_args = 2 }
 sort          = { emit = "stdlib:sort_in_place",          min_args = 1, max_args = 1 }
-reverse       = { emit = "host:vybe:array:reverse",        min_args = 1, max_args = 1 }
+reverse       = { emit = "host:wasm:js-array:reverse",        min_args = 1, max_args = 1 }
 
 # ── Object lifecycle ─────────────────────────────────────────────────────────
 

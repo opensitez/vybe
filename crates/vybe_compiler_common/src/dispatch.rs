@@ -27,70 +27,73 @@ use crate::{collections, dict, strings, threading};
 
 /// Handle common ops that need only a chunk and line.
 /// Returns `true` if `name` was recognized and emitted, `false` otherwise.
-pub fn emit_common(name: &str, chunk: &mut Chunk, line: u32) -> bool {
+pub fn emit_common(name: &str, chunks: &mut [Chunk], current: usize, line: u32) -> bool {
     match name {
         // ── Dict ops ──
         "dict.set_dynamic" => {
+            let chunk = &mut chunks[current];
             dict::emit_set_dynamic(chunk, line);
             chunk.emit_op(Op::NULL, line); // void return
         }
-        "dict.get_dynamic" => dict::emit_get_dynamic(chunk, line),
-        "dict.has" => dict::emit_method_has(chunk, line),
-        "dict.delete" => dict::emit_method_delete(chunk, line),
-        "dict.clear" => dict::emit_method_clear_stack(chunk, line),
-        "dict.size" => dict::emit_method_size(chunk, line),
-        "dict.keys" => dict::emit_keys(chunk, line),
-        "dict.values" => dict::emit_values(chunk, line),
-        "dict.new" => dict::emit_new(chunk, line),
+        "dict.get_dynamic" => dict::emit_get_dynamic(&mut chunks[current], line),
+        "dict.has" => dict::emit_method_has(&mut chunks[current], line),
+        "dict.delete" => dict::emit_method_delete(&mut chunks[current], line),
+        "dict.clear" => dict::emit_method_clear_stack(&mut chunks[current], line),
+        "dict.size" => dict::emit_method_size(&mut chunks[current], line),
+        "dict.keys" => dict::emit_keys(&mut chunks[current], line),
+        "dict.values" => dict::emit_values(&mut chunks[current], line),
+        "dict.new" => dict::emit_new(&mut chunks[current], line),
 
-        // ── Collection ops ──
-        "collections.push" => collections::emit_push(chunk, line),
-        "collections.pop" => collections::emit_pop(chunk, line),
-        "collections.length" => collections::emit_len(chunk, line),
-        "collections.get" => collections::emit_get(chunk, line),
-        "collections.set" => collections::emit_set(chunk, line),
-        "collections.contains" => collections::emit_contains(chunk, line),
-        "collections.index_of" => collections::emit_index_of(chunk, line),
-        "collections.sorted" => collections::emit_sorted(chunk, line),
-        "collections.reverse" => collections::emit_reverse(chunk, line),
-        "collections.join" => collections::emit_join(chunk, line),
-        "collections.slice" => collections::emit_slice(chunk, line),
-        "collections.new" => collections::emit_array_new(chunk, 0, line),
+        // ── Collection ops (route through wasm:js-array imports;
+        // `chunks` slice lets the helper register on chunks[0] while
+        // emitting code on chunks[current]). ──
+        "collections.push" => collections::emit_push(chunks, current, line),
+        "collections.pop" => collections::emit_pop(chunks, current, line),
+        "collections.length" => collections::emit_len(chunks, current, line),
+        "collections.get" => collections::emit_get(chunks, current, line),
+        "collections.set" => collections::emit_set(chunks, current, line),
+        "collections.contains" => collections::emit_contains(chunks, current, line),
+        "collections.index_of" => collections::emit_index_of(chunks, current, line),
+        "collections.sorted" => collections::emit_sorted(chunks, current, line),
+        "collections.reverse" => collections::emit_reverse(chunks, current, line),
+        "collections.join" => collections::emit_join(chunks, current, line),
+        "collections.slice" => collections::emit_slice(chunks, current, line),
+        "collections.new" => collections::emit_array_new(chunks, current, 0, line),
 
         // ── String ops ──
-        "strings.length" => strings::emit_length(chunk, line),
-        "strings.to_upper" => strings::emit_to_upper(chunk, line),
-        "strings.to_lower" => strings::emit_to_lower(chunk, line),
-        "strings.trim" => strings::emit_trim(chunk, line),
-        "strings.substring" => strings::emit_substring(chunk, line),
-        "strings.replace" => strings::emit_replace(chunk, line),
-        "strings.split" => strings::emit_split(chunk, line),
-        "strings.index_of" => strings::emit_index_of(chunk, line),
-        "strings.concat" => strings::emit_concat(chunk, 2, line),
+        "strings.length" => strings::emit_length(&mut chunks[current], line),
+        "strings.to_upper" => strings::emit_to_upper(&mut chunks[current], line),
+        "strings.to_lower" => strings::emit_to_lower(&mut chunks[current], line),
+        "strings.trim" => strings::emit_trim(&mut chunks[current], line),
+        "strings.substring" => strings::emit_substring(&mut chunks[current], line),
+        "strings.replace" => strings::emit_replace(&mut chunks[current], line),
+        "strings.split" => strings::emit_split(&mut chunks[current], line),
+        "strings.index_of" => strings::emit_index_of(&mut chunks[current], line),
+        "strings.concat" => strings::emit_concat(&mut chunks[current], 2, line),
 
         // ── Expression ops ──
-        "expressions.undefined" => crate::expressions::emit_undefined(chunk, line),
-        "expressions.i32_not" => crate::expressions::emit_i32_not(chunk, line),
-        "expressions.f64_mod" => crate::expressions::emit_f64_mod(chunk, line),
-        "expressions.bool_not" => crate::expressions::emit_bool_not(chunk, line),
+        "expressions.undefined" => crate::expressions::emit_undefined(&mut chunks[current], line),
+        "expressions.i32_not" => crate::expressions::emit_i32_not(&mut chunks[current], line),
+        "expressions.f64_mod" => crate::expressions::emit_f64_mod(&mut chunks[current], line),
+        "expressions.bool_not" => crate::expressions::emit_bool_not(&mut chunks[current], line),
 
         // ── Threading ops ──
         // Real WASM threading opcodes (wasi-threads proposal):
         // thread_spawn, thread_join, memory atomic_*. NOT host calls — these
         // run unchanged on any standard WASM runtime that supports the
         // threads proposal.
-        "threading.task_run" => threading::emit_task_run(chunk, line),
-        "threading.thread_new" => threading::emit_thread_new(chunk, line),
-        "threading.thread_spawn" => threading::emit_thread_spawn(chunk, line),
-        "threading.thread_join" => threading::emit_thread_join(chunk, line),
-        "threading.atomic_load" => threading::emit_atomic_load(chunk, line),
-        "threading.atomic_store" => threading::emit_atomic_store(chunk, line),
-        "threading.atomic_add" => threading::emit_atomic_add(chunk, line),
-        "threading.atomic_sub" => threading::emit_atomic_sub(chunk, line),
-        "threading.atomic_xchg" => threading::emit_atomic_xchg(chunk, line),
-        "threading.atomic_cmpxchg" => threading::emit_atomic_cmpxchg(chunk, line),
-        "threading.atomic_fence" => threading::emit_atomic_fence(chunk, line),
-        "threading.suspend" => threading::emit_suspend(chunk, line),
+        "threading.task_run" => threading::emit_task_run(&mut chunks[current], line),
+        "threading.thread_new" => threading::emit_thread_new(&mut chunks[current], line),
+        "threading.thread_spawn" => threading::emit_thread_spawn(&mut chunks[current], line),
+        "threading.thread_join" => threading::emit_thread_join(&mut chunks[current], line),
+        "threading.atomic_load" => threading::emit_atomic_load(&mut chunks[current], line),
+        "threading.atomic_store" => threading::emit_atomic_store(&mut chunks[current], line),
+        "threading.atomic_add" => threading::emit_atomic_add(&mut chunks[current], line),
+        "threading.atomic_sub" => threading::emit_atomic_sub(&mut chunks[current], line),
+        "threading.atomic_xchg" => threading::emit_atomic_xchg(&mut chunks[current], line),
+        "threading.atomic_cmpxchg" => threading::emit_atomic_cmpxchg(&mut chunks[current], line),
+        "threading.atomic_fence" => threading::emit_atomic_fence(&mut chunks[current], line),
+        "threading.suspend" => threading::emit_suspend(&mut chunks[current], line),
 
         _ => return false,
     }

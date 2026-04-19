@@ -48,13 +48,13 @@ bytes           = { emit = "host:vybe:convert:toBytes",     min_args = 0, max_ar
 
 len             = { emit = "str_length",                    min_args = 1, max_args = 1 }
 range           = { emit = "host:vybe:array:range",         min_args = 1, max_args = 3 }
-list            = { emit = "host:vybe:array:from",          min_args = 0, max_args = 1 }
-tuple           = { emit = "host:vybe:array:from",          min_args = 0, max_args = 1 }
+list            = { emit = "host:wasm:js-array:from",          min_args = 0, max_args = 1 }
+tuple           = { emit = "host:wasm:js-array:from",          min_args = 0, max_args = 1 }
 dict            = { emit = "host:vybe:object:create",       min_args = 0, max_args = 1 }
-set             = { emit = "host:vybe:array:from",          min_args = 0, max_args = 1 }
-frozenset       = { emit = "host:vybe:array:from",          min_args = 0, max_args = 1 }
-sorted          = { emit = "host:vybe:array:sorted",        min_args = 1, max_args = 3 }
-reversed        = { emit = "host:vybe:array:reversed",      min_args = 1, max_args = 1 }
+set             = { emit = "host:wasm:js-array:from",          min_args = 0, max_args = 1 }
+frozenset       = { emit = "host:wasm:js-array:from",          min_args = 0, max_args = 1 }
+sorted          = { emit = "host:wasm:js-array:toSorted",        min_args = 1, max_args = 3 }
+reversed        = { emit = "host:wasm:js-array:reversed",      min_args = 1, max_args = 1 }
 enumerate       = { emit = "host:vybe:array:enumerate",     min_args = 1, max_args = 2 }
 zip             = { emit = "host:vybe:array:zip",           min_args = 2, max_args = 255 }
 map             = { emit = "host:vybe:array:map",           min_args = 2, max_args = 255 }

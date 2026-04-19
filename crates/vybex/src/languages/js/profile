@@ -113,8 +113,8 @@ String              = { emit = "host:vybe:convert:toStr",         min_args = 1, 
 # ── Array static methods ─────────────────────────────────────────────────────
 
 "Array.isArray"     = { emit = "opcode:ref_is_array",             min_args = 1, max_args = 1 }
-"Array.from"        = { emit = "host:vybe:array:from",            min_args = 1, max_args = 3 }
-"Array.of"          = { emit = "host:vybe:array:of",              min_args = 0, max_args = 255 }
+"Array.from"        = { emit = "host:wasm:js-array:from",            min_args = 1, max_args = 3 }
+"Array.of"          = { emit = "host:wasm:js-array:of",              min_args = 0, max_args = 255 }
 
 # ── Object static methods ────────────────────────────────────────────────────
 
@@ -262,14 +262,14 @@ shift         = { emit = "opcode:array_shift",         min_args = 0, max_args = 
 reverse       = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
 join          = { emit = "common:collections.join",    min_args = 0, max_args = 1 }
 concat        = { emit = "stdlib:concat",               min_args = 1, max_args = 255 }
-fill          = { emit = "host:vybe:array:fill",         min_args = 1, max_args = 3 }
+fill          = { emit = "host:wasm:js-array:fill",         min_args = 1, max_args = 3 }
 
 # Array instance methods — host calls (more complex than single opcode)
-unshift       = { emit = "host:vybe:array:unshift",    min_args = 1, max_args = 255 }
-splice        = { emit = "host:vybe:array:splice",     min_args = 1, max_args = 255 }
-flat          = { emit = "host:vybe:array:flat",        min_args = 0, max_args = 1 }
-slice         = { emit = "host:vybe:array:slice",       min_args = 0, max_args = 2 }
-at            = { emit = "host:vybe:array:at",          min_args = 1, max_args = 1 }
+unshift       = { emit = "host:wasm:js-array:unshift",    min_args = 1, max_args = 255 }
+splice        = { emit = "host:wasm:js-array:splice",     min_args = 1, max_args = 255 }
+flat          = { emit = "host:wasm:js-array:flat",        min_args = 0, max_args = 1 }
+slice         = { emit = "host:wasm:js-array:slice",       min_args = 0, max_args = 2 }
+at            = { emit = "host:wasm:js-array:at",          min_args = 1, max_args = 1 }
 entries       = { emit = "host:vybe:array:enumerate",   min_args = 0, max_args = 0 }
 
 # Map/Set size property

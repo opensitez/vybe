@@ -1,4 +1,25 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
+
+// ── Runtime validation — Phase D "all PHP arrays use wasm:js-array" ──
+#[test] fn array_literal_runtime() {
+    let out = run_prints("<?php\n$a = [10, 20, 30];\necho $a[0]; echo $a[1]; echo $a[2];\n");
+    assert_eq!(out, vec!["10", "20", "30"]);
+}
+
+#[test] fn array_append_runtime() {
+    let out = run_prints("<?php\n$a = [1, 2];\n$a[] = 3;\n$a[] = 4;\necho count($a); echo $a[2]; echo $a[3];\n");
+    assert_eq!(out, vec!["4", "3", "4"]);
+}
+
+#[test] fn array_push_pop_runtime() {
+    let out = run_prints("<?php\n$a = [1, 2, 3];\narray_push($a, 4, 5);\n$v = array_pop($a);\necho count($a); echo $v;\n");
+    assert_eq!(out, vec!["4", "5"]);
+}
+
+#[test] fn array_length_count_runtime() {
+    let out = run_prints("<?php\n$a = [10, 20, 30];\necho count($a);\n");
+    assert_eq!(out, vec!["3"]);
+}
 
 // ── Array creation ──────────────────────────────────────────
 #[test] fn array_indexed() { compile_ok("<?php $a = [1, 2, 3]; echo $a[0];"); }

@@ -40,7 +40,7 @@ warn            = { emit = "print",                         min_args = 1, max_ar
 "Integer"       = { emit = "host:vybe:convert:cint",        min_args = 1, max_args = 2 }
 "Float"         = { emit = "host:vybe:convert:cdbl",        min_args = 1, max_args = 1 }
 "String"        = { emit = "stdlib:tostring",                min_args = 1, max_args = 1 }
-"Array"         = { emit = "host:vybe:array:from",           min_args = 1, max_args = 1 }
+"Array"         = { emit = "host:wasm:js-array:from",           min_args = 1, max_args = 1 }
 
 # ── Math (WASM opcodes) ─────────────────────────────────────────────────────
 
@@ -109,7 +109,7 @@ to_s            = { emit = "stdlib:tostring",               min_args = 0, max_ar
 to_str          = { emit = "stdlib:tostring",               min_args = 0, max_args = 0 }
 to_i            = { emit = "host:vybe:convert:cint",        min_args = 0, max_args = 0 }
 to_f            = { emit = "host:vybe:convert:cdbl",        min_args = 0, max_args = 0 }
-to_a            = { emit = "host:vybe:array:from",          min_args = 0, max_args = 0 }
+to_a            = { emit = "host:wasm:js-array:from",          min_args = 0, max_args = 0 }
 to_sym          = { emit = "stdlib:tostring",               min_args = 0, max_args = 0 }
 inspect         = { emit = "stdlib:tostring",               min_args = 0, max_args = 0 }
 freeze          = { emit = "noop_receiver",                 min_args = 0, max_args = 0 }
@@ -147,7 +147,7 @@ shift           = { emit = "opcode:array_shift",            min_args = 0, max_ar
 unshift         = { emit = "intrinsic:array_unshift",       min_args = 1, max_args = 255 }
 prepend         = { emit = "intrinsic:array_unshift",       min_args = 1, max_args = 255 }
 # first/last normalized to Index(expr, 0/-1) in walker — pure bytecode
-flatten         = { emit = "host:vybe:array:flatten",       min_args = 0, max_args = 1 }
+flatten         = { emit = "host:wasm:js-array:flatten",       min_args = 0, max_args = 1 }
 compact         = { emit = "host:vybe:array:compact",       min_args = 0, max_args = 0 }
 uniq            = { emit = "host:vybe:array:uniq",          min_args = 0, max_args = 0 }
 min             = { emit = "host:vybe:array:min",           min_args = 0, max_args = 0 }

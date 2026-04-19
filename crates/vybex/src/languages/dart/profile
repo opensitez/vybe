@@ -103,8 +103,8 @@ codeUnitAt    = { emit = "opcode:str_char_code_at",    min_args = 1, max_args = 
 # Array/List instance methods
 add           = { emit = "common:collections.push",    min_args = 1, max_args = 1 }
 removeLast    = { emit = "common:collections.pop",     min_args = 0, max_args = 0 }
-insert        = { emit = "host:vybe:array:splice",     min_args = 2, max_args = 2 }
-sublist       = { emit = "host:vybe:array:slice",      min_args = 1, max_args = 2 }
+insert        = { emit = "host:wasm:js-array:splice",     min_args = 2, max_args = 2 }
+sublist       = { emit = "host:wasm:js-array:slice",      min_args = 1, max_args = 2 }
 join          = { emit = "common:collections.join",    min_args = 0, max_args = 1 }
 reversed      = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
 toList        = { emit = "noop",                       min_args = 0, max_args = 0 }

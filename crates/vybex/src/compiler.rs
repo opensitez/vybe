@@ -1169,10 +1169,9 @@ impl Compiler {
                         self.emit_const(Value::F64(1.0));
                         self.emit(Op::DYN_ADD);
                         self.emit_u16(Op::LOCAL_SET, new_len_slot); self.emit(Op::DROP);
-                        // new = wasm:js-array.newWithLength(new_len)
+                        // new = newWithLength(new_len) via common::collections
                         self.emit_u16(Op::LOCAL_GET, new_len_slot);
-                        let new_idx = self.import("wasm:js-array", "newWithLength");
-                        self.emit_host_call(new_idx, 1);
+                        common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
                         self.emit_u16(Op::LOCAL_SET, new_slot); self.emit(Op::DROP);
 
                         // Iterate old array with the canonical for-in helper.
@@ -1191,15 +1190,15 @@ impl Compiler {
                         self.emit(Op::DROP);
                         let after = self.emit_jump(Op::BR);
                         self.patch_jump(in_bounds);
-                        // in bounds: wasm:js-array.set(new, idx, element).
+                        // in bounds: new[idx] = element via common::collections::emit_set.
                         // Stack currently has [element].
                         let elem_slot = self.scope_mut().define("__redim_el");
                         self.emit_u16(Op::LOCAL_SET, elem_slot); self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, new_slot);
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
                         self.emit_u16(Op::LOCAL_GET, elem_slot);
-                        let set_idx = self.import("wasm:js-array", "set");
-                        self.emit_host_call(set_idx, 3);
+                        common::collections::emit_set(&mut self.chunks, self.current, line);
+                        // emit_set preserves [val] — drop it.
                         self.emit(Op::DROP);
                         self.patch_jump(after);
 
@@ -1211,13 +1210,13 @@ impl Compiler {
                         self.emit_var_set(array);
                     } else {
                         // ReDim arr(N) — non-preserving. N is the upper
-                        // bound; length is N+1. Route through
-                        // wasm:js-array.newWithLength (Phase D2).
+                        // bound; length is N+1. Emit through
+                        // `common::collections` (Phase D2).
+                        let line = self.line;
                         self.compile_expr(size_expr)?;
                         self.emit_const(Value::F64(1.0));
                         self.emit(Op::DYN_ADD);
-                        let new_idx = self.import("wasm:js-array", "newWithLength");
-                        self.emit_host_call(new_idx, 1);
+                        common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
                         self.emit_var_set(array);
                     }
                 }
@@ -1447,14 +1446,15 @@ impl Compiler {
                     self.compile_expr(init_expr)?;
                 } else if let Some(ref bounds) = decl.array_bounds {
                     // Array with bounds: Dim arr(N) — N is the UPPER bound,
-                    // so the array length is N+1. Route through
-                    // wasm:js-array.newWithLength per Phase D2.
+                    // so the array length is N+1. Emit through
+                    // `common::collections` so the provider is swappable
+                    // in one place (Phase D2).
                     if let Some(size_expr) = bounds.first() {
+                        let line = self.line;
                         self.compile_expr(size_expr)?;
                         self.emit_const(Value::F64(1.0));
                         self.emit(Op::DYN_ADD);
-                        let new_idx = self.import("wasm:js-array", "newWithLength");
-                        self.emit_host_call(new_idx, 1);
+                        common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
                     } else {
                         self.emit(Op::NULL);
                     }
@@ -1547,7 +1547,7 @@ impl Compiler {
                             ArrayPatternElem::Pattern(BindingPattern::Ident(name), default) => {
                                 self.emit_u16(Op::LOCAL_GET, arr_slot);
                                 self.emit_const(Value::F64(i as f64));
-                                self.emit(Op::ARRAY_GET);
+                                { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
                                 if let Some(def) = default {
                                     self.emit(Op::DUP);
                                     self.emit(Op::REF_IS_NULL);
@@ -1565,9 +1565,9 @@ impl Compiler {
                                 self.emit_const(Value::F64(i as f64));
                                 // end = arr.length
                                 self.emit_u16(Op::LOCAL_GET, arr_slot);
-                                self.emit(Op::ARRAY_LENGTH);
+                                { let l = self.line; common::collections::emit_len(&mut self.chunks, self.current, l); }
                                 let line = self.line;
-                                common::collections::emit_slice(self.chunk(), line);
+                                common::collections::emit_slice(&mut self.chunks, self.current, line);
                                 let slot = self.scope_mut().define(name);
                                 self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
                             }
@@ -1631,23 +1631,46 @@ impl Compiler {
                 self.emit(Op::DROP);
             }
             ExprKind::Index { object, index } => {
+                // PHP `$arr[] = v` — empty bracket with null index is the
+                // auto-append form; route through collections::emit_push.
+                // Every emit here goes via common::collections so the
+                // provider (wasm:js-array / vybe:array / polyfill) is
+                // swappable in one place.
+                let is_append = matches!(
+                    &index.kind,
+                    ExprKind::Lit(crate::ast::Literal::Null)
+                );
+                let line = self.line;
                 let tmp = self.scope_mut().define("__tmp");
                 self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
-                self.compile_expr(object)?;
-                self.compile_expr(index)?;
-                self.emit_u16(Op::LOCAL_GET, tmp);
-                self.emit(Op::ARRAY_SET);
-                self.emit(Op::DROP);
+                if is_append {
+                    self.compile_expr(object)?;
+                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    common::collections::emit_push(&mut self.chunks, self.current, line);
+                    // wasm:js-array.push leaves [new_length]; drop it.
+                    self.emit(Op::DROP);
+                } else {
+                    self.compile_expr(object)?;
+                    self.compile_expr(index)?;
+                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    common::collections::emit_set(&mut self.chunks, self.current, line);
+                    // wasm:js-array.set leaves [null]; drop it.
+                    self.emit(Op::DROP);
+                }
             }
             // VB: arr(idx) = val — Call used as index because () is both call and index
             ExprKind::Call { callee, args, .. } if args.len() == 1 => {
+                // VB `arr(idx) = val` — Call used as index-set because () is
+                // both call and index in VB syntax. Route through
+                // wasm:js-array.set per Phase D.
                 let tmp = self.scope_mut().define("__tmp");
                 self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
                 self.compile_expr(callee)?;
                 self.compile_expr(&args[0].value)?;
                 self.emit_u16(Op::LOCAL_GET, tmp);
-                self.emit(Op::ARRAY_SET);
-                self.emit(Op::DROP);
+                let l = self.line;
+                common::collections::emit_set(&mut self.chunks, self.current, l);
+                self.emit(Op::DROP); // drop returned null
             }
             ExprKind::Destructure(pattern) => {
                 // Destructuring assignment
@@ -1675,16 +1698,16 @@ impl Compiler {
                                 ArrayPatternElem::Pattern(BindingPattern::Ident(name), _) => {
                                     self.emit_u16(Op::LOCAL_GET, arr_slot);
                                     self.emit_const(Value::F64(i as f64));
-                                    self.emit(Op::ARRAY_GET);
+                                    { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
                                     self.emit_var_set(name);
                                 }
                                 ArrayPatternElem::Rest(name) => {
                                     self.emit_u16(Op::LOCAL_GET, arr_slot);
                                     self.emit_const(Value::F64(i as f64));
                                     self.emit_u16(Op::LOCAL_GET, arr_slot);
-                                    self.emit(Op::ARRAY_LENGTH);
+                                    { let l = self.line; common::collections::emit_len(&mut self.chunks, self.current, l); }
                                     let line = self.line;
-                                    common::collections::emit_slice(self.chunk(), line);
+                                    common::collections::emit_slice(&mut self.chunks, self.current, line);
                                     self.emit_var_set(name);
                                 }
                                 _ => {}
@@ -1745,7 +1768,14 @@ impl Compiler {
             let rest_slot = self.scope().resolve(rest_name).unwrap();
             // Build array from slots rest_slot..rest_slot+16, stopping at null.
             // Pattern per slot: if local[N] is null → jump to done; else arr.push(local[N])
-            self.emit_u16(Op::ARRAY_NEW_FIXED, 0); // arr on stack
+            // Build rest array via `common::collections` so the provider
+            // is swappable in one place. `wasm:js-array.push` returns
+            // new_length (ECMA-262), not arr, so we stash arr in a
+            // scope-local and reload each iteration.
+            let line = self.line;
+            common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+            let rest_arr = self.scope_mut().define("__rest_arr");
+            self.emit_u16(Op::LOCAL_SET, rest_arr); self.emit(Op::DROP);
             let max_rest = 16u16;
             let mut done_patches: Vec<usize> = Vec::new();
             for i in 0..max_rest {
@@ -1753,12 +1783,14 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, slot);
                 self.emit(Op::REF_IS_NULL);
                 done_patches.push(self.emit_jump(Op::BR_IF_TRUE)); // null → done
+                self.emit_u16(Op::LOCAL_GET, rest_arr);
                 self.emit_u16(Op::LOCAL_GET, slot);
-                self.emit(Op::ARRAY_PUSH); // arr.push(val) → arr stays on stack
+                common::collections::emit_push(&mut self.chunks, self.current, line);
+                self.emit(Op::DROP); // drop new_length
             }
-            // All done_patches land here — arr is on stack
             for p in done_patches { self.patch_jump(p); }
-            // Store array into rest_slot
+            // Store rest array back into the rest_slot param position.
+            self.emit_u16(Op::LOCAL_GET, rest_arr);
             self.emit_u16(Op::LOCAL_SET, rest_slot);
             self.emit(Op::DROP);
         }
@@ -2812,7 +2844,7 @@ impl Compiler {
                 } else {
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
-                    self.emit(Op::ARRAY_GET);
+                    { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
                 }
             }
 
@@ -2971,48 +3003,28 @@ impl Compiler {
 
             // ── Array literal ───────────────────────────────────────────
             ExprKind::Array(elements) => {
-                let has_spread = elements.iter().any(|e| e.spread);
-                if !has_spread {
-                    // Simple case: no spread, all elements go into array_new
-                    for elem in elements {
+                // Array literals funnel through `common::collections` so
+                // every language and every array-literal site emits the
+                // same import shape. Changing the provider (wasm:js-array
+                // → vybe:array → polyfill) happens in ONE file, not here.
+                // Keyed elements (PHP `['k' => v]`) still drop the key on
+                // this path — full associative semantics route through
+                // `wasm:js-object` and are a separate follow-up.
+                let line = self.line;
+                common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+                for elem in elements {
+                    if elem.spread {
+                        // Spread: `concat(current, other)` returns a NEW
+                        // array which replaces the one on TOS.
                         self.compile_expr(&elem.value)?;
-                    }
-                    let line = self.line;
-                    self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, elements.len() as u16, line);
-                } else {
-                    // Spread case: build segments and concat.
-                    // Collect non-spread elements into an array_new, then
-                    // for each spread, concat with the spread array.
-                    let line = self.line;
-                    let mut pending_non_spread: usize = 0;
-                    let mut have_result = false;
-                    for elem in elements {
-                        if elem.spread {
-                            // Flush pending non-spread elements
-                            if pending_non_spread > 0 {
-                                self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, pending_non_spread as u16, line);
-                                if have_result { self.emit(Op::ARRAY_CONCAT); }
-                                have_result = true;
-                                pending_non_spread = 0;
-                            }
-                            // Compile the spread value (an array)
-                            self.compile_expr(&elem.value)?;
-                            if have_result { self.emit(Op::ARRAY_CONCAT); }
-                            have_result = true;
-                        } else {
-                            self.compile_expr(&elem.value)?;
-                            pending_non_spread += 1;
-                        }
-                    }
-                    // Flush remaining non-spread elements
-                    if pending_non_spread > 0 {
-                        self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, pending_non_spread as u16, line);
-                        if have_result { self.emit(Op::ARRAY_CONCAT); }
-                        have_result = true;
-                    }
-                    if !have_result {
-                        // Empty array
-                        self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+                        common::collections::emit_concat(&mut self.chunks, self.current, line);
+                    } else {
+                        // DUP keeps the array on TOS; push returns the
+                        // new length, which we drop.
+                        self.emit(Op::DUP);
+                        self.compile_expr(&elem.value)?;
+                        common::collections::emit_push(&mut self.chunks, self.current, line);
+                        self.emit(Op::DROP);
                     }
                 }
             }
@@ -3056,7 +3068,8 @@ impl Compiler {
                                 let keys_key = self.str_const("__keys");
                                 self.emit_u16(Op::STRUCT_GET, keys_key);
                                 self.emit_const(Value::String(Arc::from(k.as_str())));
-                                self.emit(Op::ARRAY_PUSH);
+                                let l = self.line;
+                                common::collections::emit_push(&mut self.chunks, self.current, l);
                                 self.emit(Op::DROP);
                             } else {
                                 // Dynamic key — save key for __keys tracking
@@ -3064,14 +3077,16 @@ impl Compiler {
                                 self.emit(Op::DUP); // [dict, val, key, key]
                                 let key_tmp = self.scope_mut().define("__obj_dyn_key");
                                 self.emit_u16(Op::LOCAL_SET, key_tmp); self.emit(Op::DROP);
-                                self.emit(Op::ARRAY_SET);
-                                self.emit(Op::DROP);
+                                let l = self.line;
+                                common::collections::emit_set(&mut self.chunks, self.current, l);
+                                self.emit(Op::DROP); // drop returned null
                                 // Track dynamic key in __keys
                                 self.emit(Op::DUP);
                                 let keys_key = self.str_const("__keys");
                                 self.emit_u16(Op::STRUCT_GET, keys_key);
                                 self.emit_u16(Op::LOCAL_GET, key_tmp);
-                                self.emit(Op::ARRAY_PUSH);
+                                let l = self.line;
+                                common::collections::emit_push(&mut self.chunks, self.current, l);
                                 self.emit(Op::DROP);
                             }
                         }
@@ -3086,7 +3101,8 @@ impl Compiler {
                             let keys_key = self.str_const("__keys");
                             self.emit_u16(Op::STRUCT_GET, keys_key);
                             self.emit_const(Value::String(Arc::from(name.as_str())));
-                            self.emit(Op::ARRAY_PUSH);
+                            let l = self.line;
+                            common::collections::emit_push(&mut self.chunks, self.current, l);
                             self.emit(Op::DROP);
                         }
                         ObjectProperty::Spread(expr) => {
@@ -3138,21 +3154,23 @@ impl Compiler {
                             self.emit(Op::DROP);
                         }
                         ObjectProperty::Computed { key, value } => {
-                            // array_set expects [obj, key, val] → val
+                            // wasm:js-array.set expects [obj, key, val] → null
                             self.emit(Op::DUP);
                             self.compile_expr(key)?;
                             self.emit(Op::DUP); // save key for __keys
                             let key_tmp = self.scope_mut().define("__obj_comp_key");
                             self.emit_u16(Op::LOCAL_SET, key_tmp); self.emit(Op::DROP);
                             self.compile_expr(value)?;
-                            self.emit(Op::ARRAY_SET);
-                            self.emit(Op::DROP);
+                            let l = self.line;
+                            common::collections::emit_set(&mut self.chunks, self.current, l);
+                            self.emit(Op::DROP); // drop returned null
                             // Track in __keys
                             self.emit(Op::DUP);
                             let keys_key = self.str_const("__keys");
                             self.emit_u16(Op::STRUCT_GET, keys_key);
                             self.emit_u16(Op::LOCAL_GET, key_tmp);
-                            self.emit(Op::ARRAY_PUSH);
+                            let l = self.line;
+                            common::collections::emit_push(&mut self.chunks, self.current, l);
                             self.emit(Op::DROP);
                         }
                     }
@@ -3346,10 +3364,11 @@ impl Compiler {
                         cond_skip = Some(self.emit_jump(Op::BR_IF_FALSE));
                     }
 
-                    // Push element
+                    // Push element via wasm:js-array.push.
                     self.emit_u16(Op::LOCAL_GET, result_slot);
                     self.compile_expr(element)?;
-                    self.emit(Op::ARRAY_PUSH);
+                    let l = self.line;
+                    common::collections::emit_push(&mut self.chunks, self.current, l);
                     self.emit(Op::DROP);
 
                     if let Some(skip) = cond_skip { self.patch_jump(skip); }
@@ -3450,7 +3469,7 @@ impl Compiler {
                 self.compile_expr(start)?;
                 self.compile_expr(end)?;
                 let line = self.line;
-                common::collections::emit_range(&mut self.chunks[self.current], 2, line);
+                common::collections::emit_range(&mut self.chunks, self.current, 2, line);
             }
 
             // ── StaticAccess (PHP) ──────────────────────────────────────
@@ -3462,7 +3481,7 @@ impl Compiler {
                     self.emit_u16(Op::STRUCT_GET, idx);
                 } else {
                     self.compile_expr(member)?;
-                    self.emit(Op::ARRAY_GET);
+                    { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
                 }
             }
 
@@ -3994,7 +4013,7 @@ impl Compiler {
                             let loop_start = self.chunks[self.current].current_offset();
                             self.emit_u16(Op::LOCAL_GET, idx_slot);
                             self.emit_u16(Op::LOCAL_GET, arr_slot);
-                            self.emit(Op::ARRAY_LENGTH);
+                            { let l = self.line; common::collections::emit_len(&mut self.chunks, self.current, l); }
                             self.emit(Op::DYN_LT);
                             let exit_jump = self.emit_jump(Op::BR_IF_FALSE);
                             // acc = fn(acc, arr[i])
@@ -4002,7 +4021,7 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, result_slot);
                             self.emit_u16(Op::LOCAL_GET, arr_slot);
                             self.emit_u16(Op::LOCAL_GET, idx_slot);
-                            self.emit(Op::ARRAY_GET);
+                            { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
                             self.emit_u8(Op::CALL_REF, 2);
                             self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
                             // i++
@@ -4074,7 +4093,7 @@ impl Compiler {
                         // contains expects [needle, haystack]
                         self.emit_u16(Op::LOCAL_GET, fn_slot); // needle (search value)
                         self.emit_u16(Op::LOCAL_GET, arr_slot); // haystack (array)
-                        common::collections::emit_contains(self.chunk(), line);
+                        common::collections::emit_contains(&mut self.chunks, self.current, line);
                     }
                     "sort" => {
                         // JS sort(comparatorFn?) — 2-arg comparator or default
@@ -4115,7 +4134,7 @@ impl Compiler {
                     "indexOf" | "indexof" => {
                         self.emit_u16(Op::LOCAL_GET, arr_slot);
                         self.emit_u16(Op::LOCAL_GET, fn_slot); // search value
-                        common::collections::emit_index_of(self.chunk(), line);
+                        common::collections::emit_index_of(&mut self.chunks, self.current, line);
                     }
                     "flatMap" | "flatmap" => {
                         // arr.flatMap(fn) = arr.map(fn).flat()
@@ -4135,18 +4154,18 @@ impl Compiler {
                         } else {
                             // acc = arr[len-1]
                             self.emit_u16(Op::LOCAL_GET, arr_slot);
-                            self.emit(Op::ARRAY_LENGTH);
+                            { let l = self.line; common::collections::emit_len(&mut self.chunks, self.current, l); }
                             self.emit_const(Value::I32(1));
                             self.emit(Op::F64_SUB);
                             self.emit_u16(Op::LOCAL_SET, idx_slot); self.emit(Op::DROP);
                             self.emit_u16(Op::LOCAL_GET, arr_slot);
                             self.emit_u16(Op::LOCAL_GET, idx_slot);
-                            self.emit(Op::ARRAY_GET);
+                            { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
                             self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
                         }
                         // Start from len-1 (or len-2 if no initial)
                         self.emit_u16(Op::LOCAL_GET, arr_slot);
-                        self.emit(Op::ARRAY_LENGTH);
+                        { let l = self.line; common::collections::emit_len(&mut self.chunks, self.current, l); }
                         self.emit_const(Value::I32(1));
                         self.emit(Op::F64_SUB);
                         if arg_exprs.get(1).is_none() {
@@ -4164,7 +4183,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, result_slot);
                         self.emit_u16(Op::LOCAL_GET, arr_slot);
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
-                        self.emit(Op::ARRAY_GET);
+                        { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
                         self.emit_u8(Op::CALL_REF, 2);
                         self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
                         // i--
@@ -4270,7 +4289,7 @@ impl Compiler {
                 if is_local || is_global_var {
                     self.emit_var_get(name);
                     self.compile_expr(arg_exprs[0])?;
-                    self.emit(Op::ARRAY_GET);
+                    { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
                     return Ok(());
                 }
             }
@@ -4306,34 +4325,35 @@ impl Compiler {
             let has_spread = args.iter().any(|a| a.spread);
             if has_spread {
                 // Spread args: build a flat args array, then spread onto
-                // stack and call. For known-length arrays we can compute
-                // the arity at compile time; for dynamic arrays we use
-                // the callee's declared arity.
+                // stack and call. Stash the accumulator in a local so
+                // `wasm:js-array.push` (returns new length per
+                // ECMA-262) and `wasm:js-array.concat` (returns new
+                // array) can both drive the same pattern.
                 let line = self.line;
-                // Build flat args array [arg0, arg1, ...spread, argN, ...]
-                // array_push returns the array; array_concat returns the
-                // merged array. Both leave the array on TOS — no drop needed.
-                self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+                let args_slot = self.scope_mut().define("__spread_args");
+                common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+                self.emit_u16(Op::LOCAL_SET, args_slot); self.emit(Op::DROP);
                 let mut known_len: Option<usize> = Some(0);
                 for a in args {
                     if a.spread {
+                        // new_arr = concat(args, spread)
+                        self.emit_u16(Op::LOCAL_GET, args_slot);
                         self.compile_expr(&a.value)?;
-                        self.emit(Op::ARRAY_CONCAT);
+                        common::collections::emit_concat(&mut self.chunks, self.current, line);
+                        self.emit_u16(Op::LOCAL_SET, args_slot); self.emit(Op::DROP);
                         if let ExprKind::Array(elems) = &a.value.kind {
                             if let Some(ref mut k) = known_len { *k += elems.len(); }
                         } else {
                             known_len = None;
                         }
                     } else {
+                        self.emit_u16(Op::LOCAL_GET, args_slot);
                         self.compile_expr(&a.value)?;
-                        self.emit(Op::ARRAY_PUSH);
-                        // array_push returns the array — keep it for next push/concat
+                        common::collections::emit_push(&mut self.chunks, self.current, line);
+                        self.emit(Op::DROP); // drop new_length returned by push
                         if let Some(ref mut k) = known_len { *k += 1; }
                     }
                 }
-                // [argsArray] → save, push fn, spread, call
-                let args_slot = self.scope_mut().define("__spread_args");
-                self.emit_u16(Op::LOCAL_SET, args_slot); self.emit(Op::DROP);
                 self.emit_var_get(name);
                 self.emit_u16(Op::LOCAL_GET, args_slot);
                 self.emit(Op::SPREAD);
@@ -4380,11 +4400,17 @@ impl Compiler {
             }
         }
 
-        // Rest param preamble (same as compile_function_decl)
+        // Rest param preamble (same as compile_function_decl).
+        // Accumulator pattern: stash arr in rest_slot and reload each
+        // iteration so `wasm:js-array.push` (returns new length per
+        // ECMA-262) cleanly drives the push loop.
         if has_rest {
             let rest_name = &params.last().unwrap().name;
             let rest_slot = self.scope().resolve(rest_name).unwrap();
-            self.emit_u16(Op::ARRAY_NEW_FIXED, 0);
+            let line = self.line;
+            let rest_arr = self.scope_mut().define("__rest_arr");
+            common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+            self.emit_u16(Op::LOCAL_SET, rest_arr); self.emit(Op::DROP);
             let max_rest = 16u16;
             let mut done_patches: Vec<usize> = Vec::new();
             for i in 0..max_rest {
@@ -4392,10 +4418,13 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, slot);
                 self.emit(Op::REF_IS_NULL);
                 done_patches.push(self.emit_jump(Op::BR_IF_TRUE));
+                self.emit_u16(Op::LOCAL_GET, rest_arr);
                 self.emit_u16(Op::LOCAL_GET, slot);
-                self.emit(Op::ARRAY_PUSH);
+                common::collections::emit_push(&mut self.chunks, self.current, line);
+                self.emit(Op::DROP); // drop new_length
             }
             for p in done_patches { self.patch_jump(p); }
+            self.emit_u16(Op::LOCAL_GET, rest_arr);
             self.emit_u16(Op::LOCAL_SET, rest_slot);
             self.emit(Op::DROP);
         }
@@ -4530,10 +4559,10 @@ impl Compiler {
             BinOp::Concat => { let l = self.line; common::strings::emit_str_concat(self.chunk(), l); }
             BinOp::In => {
                 // `x in arr` → contains(arr, x). Stack: [needle, haystack] (correct for VM).
-                let l = self.line; common::collections::emit_contains(self.chunk(), l);
+                let l = self.line; common::collections::emit_contains(&mut self.chunks, self.current, l);
             }
             BinOp::NotIn => {
-                let l = self.line; common::collections::emit_contains(self.chunk(), l);
+                let l = self.line; common::collections::emit_contains(&mut self.chunks, self.current, l);
                 self.emit(Op::DYN_NOT);
             }
             BinOp::InstanceOf => {
@@ -4612,15 +4641,16 @@ impl Compiler {
         // (`Array.Empty()`, `Array.IsArray()`, etc.) which hits
         // different code paths (namespace + member access).
         if name == "Array" && args.len() == 2 {
-            // Emit: newWithLength(count) → arr
-            //       loop i=0..count-1: wasm:js-array.set(arr, i, init)
-            // Leaves the constructed array on TOS.
+            // COBOL's OCCURS walker emits `Array(count, init)`. Emit:
+            //   newWithLength(count)  — via common::collections
+            //   fill(arr, init, 0, MAX)  — via common::collections
+            // All emits route through compiler_common so the provider
+            // (wasm:js-array / vybe:array / polyfill) is swappable in
+            // one place.
             self.compile_expr(args[0])?;  // push count
-            let new_idx = self.import("wasm:js-array", "newWithLength");
-            self.emit_host_call(new_idx, 1);
+            common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
             // Array is now on TOS. If the init is null-ish, we're done
-            // (newWithLength already null-fills). Only emit the fill
-            // loop when the init isn't null / undefined.
+            // (newWithLength already null-fills).
             let init_is_null = matches!(
                 &args[1].kind,
                 ExprKind::Lit(crate::ast::Literal::Null)
@@ -4629,24 +4659,16 @@ impl Compiler {
             if init_is_null {
                 return Ok(true);
             }
-            // Use wasm:js-array.fill(arr, value, start, end) — spec-spec
-            // behavior fills the whole range when start=0 and end=-1
-            // (our handler treats MAX as end-of-array).
             // Stack: [arr]. Dup first so we still have the result.
             self.emit(Op::DUP);
-            // Evaluate init.
             self.compile_expr(args[1])?;
-            // start = 0
             let zero_k = self.chunks[self.current].add_constant(vybe_bytecode::Value::I32(0));
             self.emit_u16(Op::CONST, zero_k);
-            // end = i32::MAX (handler clamps to length)
             let max_k = self.chunks[self.current].add_constant(vybe_bytecode::Value::I32(i32::MAX));
             self.emit_u16(Op::CONST, max_k);
-            let fill_idx = self.import("wasm:js-array", "fill");
-            self.emit_host_call(fill_idx, 4);
-            // fill returns the array; drop the duplicate on the stack
-            // (fill's result IS the array, so the one we dup'd earlier
-            // remains on TOS).
+            common::collections::emit_fill(&mut self.chunks, self.current, line);
+            // fill returns the array; drop the dup'd copy — the pre-dup
+            // copy stays on TOS as the expression's value.
             self.emit(Op::DROP);
             return Ok(true);
         }
@@ -4669,7 +4691,7 @@ impl Compiler {
             } else {
                 // Compile args, then dispatch to canonical emitter
                 for a in args { self.compile_expr(a)?; }
-                common::canonical::emit_canonical(canonical_op, self.chunk(), line);
+                common::canonical::emit_canonical(canonical_op, &mut self.chunks, self.current, line);
                 return Ok(true);
             }
         }
@@ -4769,7 +4791,7 @@ impl Compiler {
         }
         // Then the pure (chunk + line) common ops.
         let line2 = line;
-        let handled = common::dispatch::emit_common(name, self.chunk(), line2);
+        let handled = common::dispatch::emit_common(name, &mut self.chunks, self.current, line2);
         if !handled {
             eprintln!("Unknown common emit: {}", name);
         }
@@ -4929,7 +4951,7 @@ impl Compiler {
             "str_compare" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::STR_COMPARE); } }
             "str_split" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::STR_SPLIT); } }
             "str_repeat" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::STR_REPEAT); } }
-            "array_join" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::ARRAY_JOIN); } }
+            "array_join" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; { let l = self.line; common::collections::emit_join(&mut self.chunks, self.current, l); } } }
             // setTimeout/setInterval — emit Op::SET_TIMER directly. Old JS
             // compiler did this inline; the profile now routes through
             // `opcode:set_timer` so the dispatch lives here.
@@ -4946,6 +4968,85 @@ impl Compiler {
                     self.emit(Op::I32_CONST_0);
                 }
                 self.emit(Op::SET_TIMER);
+            }
+            // Array primitives — every caller dispatches through
+            // `common::collections::*`, which now routes to `wasm:js-array.*`
+            // imports (Phase D). Keep the arg-evaluation and stack shape
+            // details here; the emit itself lives in compiler_common so
+            // the identical surface is used by every language.
+            "array_length" => {
+                if let Some(first) = args.first() {
+                    self.compile_expr(first)?;
+                    common::collections::emit_len(&mut self.chunks, self.current, line);
+                } else {
+                    self.emit_const(Value::I32(0));
+                }
+            }
+            "array_push" => {
+                // PHP `array_push($a, v1, v2, ...)` — push each value.
+                // Returns the new length (of the last push).
+                if let Some(arr) = args.first() {
+                    if args.len() == 1 {
+                        self.compile_expr(arr)?;
+                        common::collections::emit_len(&mut self.chunks, self.current, line);
+                    } else {
+                        let tail = args.len() - 1;
+                        for (i, v) in args[1..].iter().enumerate() {
+                            self.compile_expr(arr)?;
+                            self.compile_expr(v)?;
+                            common::collections::emit_push(&mut self.chunks, self.current, line);
+                            // Drop intermediate lengths; the final one
+                            // is the expression's value.
+                            if i != tail - 1 { self.emit(Op::DROP); }
+                        }
+                    }
+                } else {
+                    self.emit_const(Value::I32(0));
+                }
+            }
+            "array_pop" => {
+                if let Some(first) = args.first() {
+                    self.compile_expr(first)?;
+                    common::collections::emit_pop(&mut self.chunks, self.current, line);
+                } else {
+                    self.emit(Op::NULL);
+                }
+            }
+            "array_shift" => {
+                if let Some(first) = args.first() {
+                    self.compile_expr(first)?;
+                    common::collections::emit_shift(&mut self.chunks, self.current, line);
+                } else {
+                    self.emit(Op::NULL);
+                }
+            }
+            "array_reverse" => {
+                if let Some(first) = args.first() {
+                    self.compile_expr(first)?;
+                    common::collections::emit_reverse(&mut self.chunks, self.current, line);
+                } else {
+                    self.emit(Op::NULL);
+                }
+            }
+            "array_concat" => {
+                if args.is_empty() {
+                    common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+                } else {
+                    self.compile_expr(args[0])?;
+                    for v in &args[1..] {
+                        self.compile_expr(v)?;
+                        common::collections::emit_concat(&mut self.chunks, self.current, line);
+                    }
+                }
+            }
+            "array_index_of" => {
+                if args.len() >= 2 {
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    common::collections::emit_index_of(&mut self.chunks, self.current, line);
+                } else {
+                    self.emit_const(Value::I32(-1));
+                }
             }
             _ => { self.emit(Op::NULL); }
         }
@@ -4964,7 +5065,7 @@ impl Compiler {
             }
             "ubound" => {
                 self.compile_expr(args[0])?;
-                common::collections::emit_len(self.chunk(), line);
+                common::collections::emit_len(&mut self.chunks, self.current, line);
                 self.emit_const(Value::I32(1));
                 self.emit(Op::I32_SUB);
             }
@@ -5088,7 +5189,7 @@ impl Compiler {
             "map_size" => {
                 self.compile_expr(args[0])?;
                 common::dict::emit_keys(self.chunk(), line);
-                common::collections::emit_len(self.chunk(), line);
+                common::collections::emit_len(&mut self.chunks, self.current, line);
             }
             "array_at" => {
                 // .at() supports negative indices for both arrays and strings.
@@ -5162,7 +5263,7 @@ impl Compiler {
                 } else {
                     self.emit_const(Value::String(Arc::from("")));
                 }
-                self.emit(Op::ARRAY_JOIN);
+                { let l = self.line; common::collections::emit_join(&mut self.chunks, self.current, l); }
             }
 
             // ── Pascal ordinal/array intrinsics (canonical compiler_common ops) ──
@@ -5170,7 +5271,7 @@ impl Compiler {
             "high" => {
                 // High(arr) → __len__(arr) - 1
                 self.compile_expr(args[0])?;
-                common::collections::emit_len(self.chunk(), line);
+                common::collections::emit_len(&mut self.chunks, self.current, line);
                 self.emit_const(Value::I32(1));
                 self.emit(Op::I32_SUB);
             }

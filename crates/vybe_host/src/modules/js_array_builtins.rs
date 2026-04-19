@@ -212,16 +212,23 @@ fn register_property_access(vm: &mut VM) {
         }),
     );
 
-    // length(arr) -> i32
+    // length(arr) -> i32 — ECMA-262 §23.1.3.12. Strict Array/TypedArray
+    // only; strings use `wasm:js-string.length` per the js-string-builtins
+    // proposal. Polymorphic callers (e.g. our `__len__` canonical) must
+    // type-dispatch before selecting the import.
     vm.register_host_fn(
         "wasm:js-array",
         "length",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            if let Some(arr) = array_of(args, 0) {
-                let o = arr.lock().unwrap();
-                if let ObjectKind::Array(ref v) = o.kind {
-                    return Value::I32(v.len() as i32);
-                }
+            if let Some(Value::Object(o)) = args.first() {
+                let lock = o.lock().unwrap();
+                return match &lock.kind {
+                    ObjectKind::Array(v) => Value::I32(v.len() as i32),
+                    ObjectKind::TypedArray(t) => Value::I32(t.length as i32),
+                    _ => lock.properties.get("length")
+                        .map(|v| Value::I32(v.as_i32()))
+                        .unwrap_or(Value::I32(0)),
+                };
             }
             Value::I32(0)
         }),

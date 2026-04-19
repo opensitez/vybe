@@ -1364,19 +1364,29 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<Expression, String> {
 }
 
 fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span) -> Result<Expression, String> {
+    // The grammar wraps all variants in a non-silent `postfix_op` rule, so
+    // pest yields a `postfix_op` pair whose single child is the actual
+    // op rule (`method_call_op`, `inc_dec_op`, etc.). Unwrap once so the
+    // match below sees the real rule; otherwise every postfix silently
+    // falls through to the `_ => Ok(receiver)` arm (dropping `$i++`,
+    // `$obj->foo(...)`, `$arr[0]`, …).
+    let op = if matches!(op.as_rule(), Rule::postfix_op) {
+        op.into_inner().next().ok_or("empty postfix_op")?
+    } else {
+        op
+    };
     let rule = op.as_rule();
     match rule {
         Rule::method_call_op => {
-            let mut inner = op.into_inner();
-            let arrow = inner.next();
-            let null_safe = arrow.map(|a| a.as_str() == "?->").unwrap_or(false);
             // The grammar emits: ("?->"|"->") ~ member_name ~ "(" ~ arg_list? ~ ")"
             // The literal "->" / "?->" appears as a non-rule token, so
-            // pest doesn't yield it as a child pair. Skip ahead until
-            // we find the member_name.
+            // pest does NOT yield it as a child pair. Detect null-safe
+            // from the outer pair's source text instead of trying to
+            // read it from inner pairs.
+            let null_safe = op.as_str().trim_start().starts_with("?->");
             let mut name_pair: Option<Pair<Rule>> = None;
             let mut arg_list_pair: Option<Pair<Rule>> = None;
-            for p in inner {
+            for p in op.into_inner() {
                 match p.as_rule() {
                     Rule::member_name => name_pair = Some(p),
                     Rule::arg_list => arg_list_pair = Some(p),
@@ -1401,26 +1411,19 @@ fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span) -> Result<Ex
             ))
         }
         Rule::property_access_op => {
-            let mut inner = op.into_inner();
-            // Same shape — first pair is member_name (the arrow is silent).
-            let _ = inner.next(); // arrow placeholder, may not be present
-            let name_pair = inner.next().or_else(|| inner.next());
-            let name = name_pair
-                .ok_or("property_access_op: missing name")?
-                .into_inner().next().unwrap().as_str().to_string();
-            // Detect null_safe by re-reading the original match string?
-            // Pest doesn't preserve the literal "?->" if it's not a
-            // captured rule. We'd need to extract it from `op.as_str()`.
-            // (Doing exactly that.)
-            // Reconstruct null_safe from the original substring:
-            // We don't have access to op.as_str() here since we
-            // consumed `op`, but pest's `Pair` allows `as_str()` which
-            // gives the matched substring. Move that check up before consume.
+            // Grammar: ("?->"|"->") ~ member_name. The arrow is a
+            // literal token (pest does not yield it as a child pair),
+            // so the only inner rule pair is `member_name`. Read
+            // null_safe from the outer pair's source text.
+            let null_safe = op.as_str().trim_start().starts_with("?->");
+            let name_pair = op.into_inner().next()
+                .ok_or("property_access_op: missing name")?;
+            let name = name_pair.into_inner().next().unwrap().as_str().to_string();
             Ok(Expression::with_span(
                 ExprKind::Member {
                     object: Box::new(receiver),
                     field: name,
-                    null_safe: false, // TODO: detect ?->
+                    null_safe,
                 },
                 span.clone(),
             ))

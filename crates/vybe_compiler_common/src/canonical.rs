@@ -74,20 +74,19 @@ impl CanonicalOp {
 /// Emit the bytecode for a canonical operation.
 /// The args must already be on the stack in the correct order.
 ///
-/// For ops that need stdlib globals (like `__str__`), this emits direct compiler_common
-/// calls — no host dependencies, pure WASM bytecode.
-pub fn emit_canonical(op: CanonicalOp, chunk: &mut Chunk, line: u32) {
+/// Takes `chunks` + `current` because `__len__` compiles to a
+/// `wasm:js-array.length` / `wasm:js-string.length` runtime dispatch
+/// and the import must register on `chunks[0]` (the module-level
+/// imports section) while the code emits on `chunks[current]`.
+pub fn emit_canonical(op: CanonicalOp, chunks: &mut [Chunk], current: usize, line: u32) {
     match op {
-        CanonicalOp::Len => collections::emit_len(chunk, line),
+        CanonicalOp::Len => collections::emit_len(chunks, current, line),
         CanonicalOp::Str => {
             // __vybe_tostring is populated by bundle::finalize_with_stdlib.
-            // Caller is responsible for ensuring func ref is on stack BEFORE arg.
-            // Since this emitter is called AFTER args are pushed, we use the host import
-            // path which the bundler aliases to the stdlib chunk for pure WASM.
-            strings::emit_to_string(chunk, line);
+            strings::emit_to_string(&mut chunks[current], line);
         }
-        CanonicalOp::Upper => strings::emit_to_upper(chunk, line),
-        CanonicalOp::Lower => strings::emit_to_lower(chunk, line),
-        CanonicalOp::Trim => strings::emit_trim(chunk, line),
+        CanonicalOp::Upper => strings::emit_to_upper(&mut chunks[current], line),
+        CanonicalOp::Lower => strings::emit_to_lower(&mut chunks[current], line),
+        CanonicalOp::Trim => strings::emit_trim(&mut chunks[current], line),
     }
 }

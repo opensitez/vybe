@@ -113,7 +113,10 @@ pub struct VM {
     /// Registry: (module, name) → index into host_fns.
     pub host_registry: HashMap<(String, String), usize>,
     /// Import resolution table: import_index → resolved target.
-    /// WASM-aligned: imports can resolve to host functions OR component-exported functions.
+    /// WASM-aligned: a single `.wasm` module has one imports section shared
+    /// by every function inside. Vybe represents one module as many chunks
+    /// (one per function) but they all share the same imports list, which
+    /// the compiler stores on `chunks[0]` by convention.
     import_table: Vec<ImportTarget>,
     /// Exception handler stack (WASM exception proposal).
     exception_handlers: Vec<ExceptionHandler>,
