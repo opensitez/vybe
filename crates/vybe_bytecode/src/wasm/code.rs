@@ -450,13 +450,22 @@ fn emit_core_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize,
         _ if op == Op::I32_STORE8 || op == Op::I64_STORE8 => { body.push(op.sub()); body.push(0x00); body.push(0x00); }
         _ if op == Op::I32_STORE16 || op == Op::I64_STORE16 => { body.push(op.sub()); body.push(0x01); body.push(0x00); }
         _ if op == Op::I64_STORE32 => { body.push(op.sub()); body.push(0x02); body.push(0x00); }
-        // WASM global.get/set — resolved to indexed globals via global_map
+        // WASM global.get/set — resolved to indexed globals via global_map.
+        // WASM global indices are module-wide: imported globals come first
+        // (indices 0..imported_globals_count), user globals follow. The
+        // `rt_globals()` list (UNDEFINED/TRUE/FALSE from
+        // js-primitive-builtins) accounts for the 3 imported ones, so
+        // user-global idx N in the bytecode maps to WASM idx N +
+        // imported_globals_count. Without this offset, `global.set 0`
+        // would target the first imported `wasm:js-*` global (immutable)
+        // and v8 correctly rejects it.
         _ if op == Op::GLOBAL_GET => {
             let name_idx = read_u16(&chunk.code, ip);
             if let Some(crate::value::Value::String(name)) = chunk.constants.get(name_idx as usize) {
                 if let Some(&gidx) = global_map.get(name.as_ref()) {
+                    let wasm_gidx = gidx + crate::wasm::sections::rt_globals().len() as u32;
                     body.push(0x23); // global.get
-                    write_leb128_u32(body, gidx);
+                    write_leb128_u32(body, wasm_gidx);
                 } else {
                     body.push(0xD0); body.push(0x6F); // ref.null extern (unknown global)
                 }
@@ -468,11 +477,12 @@ fn emit_core_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize,
             let name_idx = read_u16(&chunk.code, ip);
             if let Some(crate::value::Value::String(name)) = chunk.constants.get(name_idx as usize) {
                 if let Some(&gidx) = global_map.get(name.as_ref()) {
+                    let wasm_gidx = gidx + crate::wasm::sections::rt_globals().len() as u32;
                     // Stack has [value]. global.set consumes it — but our VM keeps it.
                     // Use local.tee pattern: tee to keep value, then global.set
                     body.push(0x22); write_leb128_u32(body, temp_idx); // local.tee $temp
                     body.push(0x24); // global.set
-                    write_leb128_u32(body, gidx);
+                    write_leb128_u32(body, wasm_gidx);
                     body.push(0x20); write_leb128_u32(body, temp_idx); // restore value
                 } else {
                     // Unknown global — just keep value on stack

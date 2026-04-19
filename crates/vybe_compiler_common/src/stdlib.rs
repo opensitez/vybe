@@ -19,104 +19,45 @@
 use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
 
-/// Build all stdlib chunks. Returns (chunks, export_map) where export_map
-/// maps function name → chunk index offset (caller adds their base offset).
-pub fn build_stdlib() -> StdLib {
+/// Build all stdlib chunks. Each chunk registers any `wasm:js-array.*`
+/// imports on the passed `imports` chunk (= user program's
+/// `chunks[0]`, the module-level imports section per WASM semantics).
+/// Returns the stdlib chunks + their export names, in matching order;
+/// caller appends the chunks to its own vec.
+pub fn build_stdlib(imports: &mut Chunk) -> StdLib {
     let mut chunks = Vec::new();
     let mut exports = Vec::new();
 
-    // Each function is a separate chunk with a name.
-    // The compiler emits `ref_func <idx>` or `call <idx>` to invoke them.
-
-    chunks.push(build_range());
-    exports.push("__stdlib_range");
-
-    chunks.push(build_sorted());
-    exports.push("__stdlib_sorted");
-
-    chunks.push(build_sort_in_place());
-    exports.push("__stdlib_sort_in_place");
-
-    chunks.push(build_sort_with_comparator());
-    exports.push("__stdlib_sort_with_comparator");
-
-    chunks.push(build_sort_by_key());
-    exports.push("__stdlib_sort_by_key");
-
-    chunks.push(build_reversed());
-    exports.push("__stdlib_reversed");
-
-    chunks.push(build_enumerate());
-    exports.push("__stdlib_enumerate");
-
-    chunks.push(build_zip());
-    exports.push("__stdlib_zip");
-
-    chunks.push(build_sum());
-    exports.push("__stdlib_sum");
-
-    chunks.push(build_min());
-    exports.push("__stdlib_min");
-
-    chunks.push(build_max());
-    exports.push("__stdlib_max");
-
-    chunks.push(build_pow());
-    exports.push("__stdlib_pow");
-
-    chunks.push(build_to_string());
-    exports.push("__stdlib_tostring");
-
-    chunks.push(build_str_count());
-    exports.push("__stdlib_count");
-
-    chunks.push(build_is_numeric());
-    exports.push("__stdlib_isnumeric");
-
-    chunks.push(build_splice());
-    exports.push("__stdlib_splice");
-
-    chunks.push(build_floor());
-    exports.push("__stdlib_floor");
-
-    chunks.push(build_slice());
-    exports.push("__stdlib_slice");
-
-    chunks.push(build_keys());
-    exports.push("__stdlib_keys");
-
-    chunks.push(build_has_property());
-    exports.push("__stdlib_hasproperty");
-
-    chunks.push(build_assign());
-    exports.push("__stdlib_assign");
-
-    chunks.push(build_instance_of());
-    exports.push("__stdlib_instanceof");
-
-    chunks.push(build_delete_property());
-    exports.push("__stdlib_deleteproperty");
-
-    chunks.push(build_array_from());
-    exports.push("__stdlib_from");
-
-    chunks.push(build_redim());
-    exports.push("__stdlib_redim");
-
-    chunks.push(build_slice_step());
-    exports.push("__stdlib_slicestep");
-
-    chunks.push(build_dyn_mul());
-    exports.push("__stdlib_dynmul");
-
-    chunks.push(build_concat());
-    exports.push("__stdlib_concat");
-
-    chunks.push(build_string_raw());
-    exports.push("__stdlib_string_raw");
-
-    chunks.push(build_fmod());
-    exports.push("__stdlib_fmod");
+    chunks.push(build_range(imports));             exports.push("__stdlib_range");
+    chunks.push(build_sorted(imports));            exports.push("__stdlib_sorted");
+    chunks.push(build_sort_in_place(imports));     exports.push("__stdlib_sort_in_place");
+    chunks.push(build_sort_with_comparator(imports)); exports.push("__stdlib_sort_with_comparator");
+    chunks.push(build_sort_by_key(imports));       exports.push("__stdlib_sort_by_key");
+    chunks.push(build_reversed(imports));          exports.push("__stdlib_reversed");
+    chunks.push(build_enumerate(imports));         exports.push("__stdlib_enumerate");
+    chunks.push(build_zip(imports));               exports.push("__stdlib_zip");
+    chunks.push(build_sum(imports));               exports.push("__stdlib_sum");
+    chunks.push(build_min(imports));               exports.push("__stdlib_min");
+    chunks.push(build_max(imports));               exports.push("__stdlib_max");
+    chunks.push(build_pow(imports));               exports.push("__stdlib_pow");
+    chunks.push(build_to_string(imports));         exports.push("__stdlib_tostring");
+    chunks.push(build_str_count(imports));         exports.push("__stdlib_count");
+    chunks.push(build_is_numeric(imports));        exports.push("__stdlib_isnumeric");
+    chunks.push(build_splice(imports));            exports.push("__stdlib_splice");
+    chunks.push(build_floor(imports));             exports.push("__stdlib_floor");
+    chunks.push(build_slice(imports));             exports.push("__stdlib_slice");
+    chunks.push(build_keys(imports));              exports.push("__stdlib_keys");
+    chunks.push(build_has_property(imports));      exports.push("__stdlib_hasproperty");
+    chunks.push(build_assign(imports));            exports.push("__stdlib_assign");
+    chunks.push(build_instance_of(imports));       exports.push("__stdlib_instanceof");
+    chunks.push(build_delete_property(imports));   exports.push("__stdlib_deleteproperty");
+    chunks.push(build_array_from(imports));        exports.push("__stdlib_from");
+    chunks.push(build_redim(imports));             exports.push("__stdlib_redim");
+    chunks.push(build_slice_step(imports));        exports.push("__stdlib_slicestep");
+    chunks.push(build_dyn_mul(imports));           exports.push("__stdlib_dynmul");
+    chunks.push(build_concat(imports));            exports.push("__stdlib_concat");
+    chunks.push(build_string_raw(imports));        exports.push("__stdlib_string_raw");
+    chunks.push(build_fmod(imports));              exports.push("__stdlib_fmod");
 
     StdLib { chunks, exports }
 }
@@ -127,55 +68,52 @@ pub struct StdLib {
 }
 
 impl StdLib {
-    /// Get chunk index for a stdlib function by name.
-    /// Returns offset relative to stdlib base (caller adds their chunk offset).
     pub fn get(&self, name: &str) -> Option<usize> {
         self.exports.iter().position(|&n| n == name)
     }
 }
 
 // ── range(start, stop, step) → array ────────────────────────
-// Uses: array_new, array_push, i32_add, dyn_lt, br_if_false, loop
-fn build_range() -> Chunk {
+// Every dynamic-array op routes through `common::collections::emit_*`
+// so the emitted bytecode imports `wasm:js-array.*` — works natively on
+// v8, on Vybe (registered handlers), and on plain wasmtime with the
+// polyfill module. Raw ARRAY_* opcodes are Vybe-only and have been
+// removed.
+fn build_range(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_range");
     c.arity = 3; // start, stop, step
-    c.local_count = 4; // start(0) + stop(1) + step(2) + result(3)
+    c.local_count = 4;
     let start = 0u16;
     let stop = 1;
     let step = 2;
     let result = 3;
 
     // result = []
-    c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, 0);
+    crate::collections::emit_array_new_into(imports, &mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
     c.emit_op(Op::DROP, 0);
 
-    // i = start (local 1 already has it, but copy for clarity — it IS local 1)
-    // Loop: while i < stop (for positive step) or i > stop (negative step)
-    // For simplicity, always check i < stop (works for positive step, which is 99% of usage)
     let block_p = c.emit_block(0);
     let (loop_p, _) = c.emit_loop_s(0);
-    // condition: i < stop
     c.emit_op_u16(Op::LOCAL_GET, start, 0);
     c.emit_op_u16(Op::LOCAL_GET, stop, 0);
     c.emit_op(Op::DYN_LT, 0);
     c.emit_op(Op::DYN_NOT, 0);
-    c.emit_br_if(1, 0); // exit loop (depth 1 = block)
+    c.emit_br_if(1, 0);
 
-    // result.push(i)
+    // result.push(i) — push returns new_length (ECMA-262); drop it.
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op_u16(Op::LOCAL_GET, start, 0);
-    c.emit_op(Op::ARRAY_PUSH, 0);
+    crate::collections::emit_push_into(imports, &mut c, 0);
     c.emit_op(Op::DROP, 0);
 
-    // i += step
     c.emit_op_u16(Op::LOCAL_GET, start, 0);
     c.emit_op_u16(Op::LOCAL_GET, step, 0);
     c.emit_op(Op::DYN_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, start, 0);
     c.emit_op(Op::DROP, 0);
 
-    c.emit_br(0, 0); // continue loop (depth 0 = loop)
+    c.emit_br(0, 0);
     c.emit_end(0); c.patch_loop(loop_p);
     c.emit_end(0); c.patch_block(block_p);
 
@@ -185,7 +123,7 @@ fn build_range() -> Chunk {
 }
 
 // ── sorted(array) → array (insertion sort — O(n²) but works) ──
-fn build_sorted() -> Chunk {
+fn build_sorted(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_sorted");
     c.arity = 1;
     c.local_count = 6; // arr(0) + result(1) + i(2) + j(3) + len(4) + key(5)
@@ -201,13 +139,13 @@ fn build_sorted() -> Chunk {
     c.emit_op(Op::I32_CONST_0, 0);
     let max = c.add_constant(Value::I32(i32::MAX));
     c.emit_op_u16(Op::CONST, max, 0);
-    c.emit_op(Op::ARRAY_SLICE, 0);
+    crate::collections::emit_slice_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
     c.emit_op(Op::DROP, 0);
 
     // len = result.length
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
-    c.emit_op(Op::ARRAY_LENGTH, 0);
+    crate::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -227,7 +165,7 @@ fn build_sorted() -> Chunk {
     // key = result[i]
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, key, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -249,7 +187,7 @@ fn build_sorted() -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_GET, key, 0);
     c.emit_op(Op::DYN_GT, 0);
     c.emit_op(Op::DYN_NOT, 0);
@@ -263,8 +201,8 @@ fn build_sorted() -> Chunk {
     // Now stack: [result, j+1] — need value = result[j]
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
-    c.emit_op(Op::ARRAY_SET, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
+    crate::collections::emit_set_into(imports, &mut c, 0);
     c.emit_op(Op::DROP, 0);
 
     // j -= 1
@@ -284,7 +222,7 @@ fn build_sorted() -> Chunk {
     c.emit_op(Op::I32_CONST_1, 0);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_GET, key, 0);
-    c.emit_op(Op::ARRAY_SET, 0);
+    crate::collections::emit_set_into(imports, &mut c, 0);
     c.emit_op(Op::DROP, 0);
 
     // i += 1
@@ -311,7 +249,7 @@ fn build_sorted() -> Chunk {
 //
 // Insertion sort is O(n²) but small and works on arbitrary value comparisons
 // via dyn_gt. Higher-perf algorithms can be added behind the same name later.
-fn build_sort_in_place() -> Chunk {
+fn build_sort_in_place(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_sort_in_place");
     c.arity = 1;
     c.local_count = 5; // arr(0) + i(1) + j(2) + len(3) + key(4)
@@ -323,7 +261,7 @@ fn build_sort_in_place() -> Chunk {
 
     // len = arr.length
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op(Op::ARRAY_LENGTH, 0);
+    crate::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -343,7 +281,7 @@ fn build_sort_in_place() -> Chunk {
     // key = arr[i]
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, key, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -365,7 +303,7 @@ fn build_sort_in_place() -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_GET, key, 0);
     c.emit_op(Op::DYN_GT, 0);
     c.emit_op(Op::DYN_NOT, 0);
@@ -378,8 +316,8 @@ fn build_sort_in_place() -> Chunk {
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
-    c.emit_op(Op::ARRAY_SET, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
+    crate::collections::emit_set_into(imports, &mut c, 0);
     c.emit_op(Op::DROP, 0);
 
     // j -= 1
@@ -399,7 +337,7 @@ fn build_sort_in_place() -> Chunk {
     c.emit_op(Op::I32_CONST_1, 0);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_GET, key, 0);
-    c.emit_op(Op::ARRAY_SET, 0);
+    crate::collections::emit_set_into(imports, &mut c, 0);
     c.emit_op(Op::DROP, 0);
 
     // i += 1
@@ -426,7 +364,7 @@ fn build_sort_in_place() -> Chunk {
 //   zero     → equal (no swap)
 //   positive → b before a (swap)
 // This is the standard JS `Array.sort(compareFn)` contract.
-fn build_sort_with_comparator() -> Chunk {
+fn build_sort_with_comparator(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_sort_with_comparator");
     c.arity = 2;
     c.local_count = 6; // arr(0) + cmp(1) + i(2) + j(3) + len(4) + key(5)
@@ -439,7 +377,7 @@ fn build_sort_with_comparator() -> Chunk {
 
     // len = arr.length
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op(Op::ARRAY_LENGTH, 0);
+    crate::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -459,7 +397,7 @@ fn build_sort_with_comparator() -> Chunk {
     // key = arr[i]
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, key, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -483,7 +421,7 @@ fn build_sort_with_comparator() -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, cmp, 0);
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_GET, key, 0);
     c.emit_op_u8(Op::CALL_REF, 2, 0);
     // result > 0 → swap needed
@@ -499,8 +437,8 @@ fn build_sort_with_comparator() -> Chunk {
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
-    c.emit_op(Op::ARRAY_SET, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
+    crate::collections::emit_set_into(imports, &mut c, 0);
     c.emit_op(Op::DROP, 0);
 
     // j -= 1
@@ -520,7 +458,7 @@ fn build_sort_with_comparator() -> Chunk {
     c.emit_op(Op::I32_CONST_1, 0);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_GET, key, 0);
-    c.emit_op(Op::ARRAY_SET, 0);
+    crate::collections::emit_set_into(imports, &mut c, 0);
     c.emit_op(Op::DROP, 0);
 
     // i += 1
@@ -540,7 +478,7 @@ fn build_sort_with_comparator() -> Chunk {
 }
 
 // ── reversed(array) → array ─────────────────────────────────
-fn build_reversed() -> Chunk {
+fn build_reversed(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_reversed");
     c.arity = 1;
     c.local_count = 3; // arr(0) + result(1) + i(2)
@@ -549,13 +487,13 @@ fn build_reversed() -> Chunk {
     let i = 2;
 
     // result = []
-    c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, 0);
+    crate::collections::emit_array_new_into(imports, &mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
     c.emit_op(Op::DROP, 0);
 
     // i = arr.length - 1
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op(Op::ARRAY_LENGTH, 0);
+    crate::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op(Op::I32_CONST_1, 0);
     c.emit_op(Op::I32_SUB, 0);
     c.emit_op_u16(Op::LOCAL_SET, i, 0);
@@ -572,8 +510,8 @@ fn build_reversed() -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
-    c.emit_op(Op::ARRAY_PUSH, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
+    crate::collections::emit_push_into(imports, &mut c, 0);
     c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
@@ -592,7 +530,7 @@ fn build_reversed() -> Chunk {
 }
 
 // ── enumerate(array) → [[0,a],[1,b],...] ────────────────────
-fn build_enumerate() -> Chunk {
+fn build_enumerate(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_enumerate");
     c.arity = 1;
     c.local_count = 4; // arr(0) + result(1) + i(2) + len(3)
@@ -601,12 +539,12 @@ fn build_enumerate() -> Chunk {
     let i = 2;
     let len = 3;
 
-    c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, 0);
+    crate::collections::emit_array_new_into(imports, &mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
     c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op(Op::ARRAY_LENGTH, 0);
+    crate::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -628,9 +566,9 @@ fn build_enumerate() -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, i, 0);      // i
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::ARRAY_GET, 0);             // arr[i]
-    c.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);      // pair = [i, arr[i]]
-    c.emit_op(Op::ARRAY_PUSH, 0);            // result.push(pair)
+    crate::collections::emit_get_into(imports, &mut c, 0);             // arr[i]
+    crate::collections::emit_array_pair_into(imports, &mut c, 0);      // pair = [i, arr[i]]
+    crate::collections::emit_push_into(imports, &mut c, 0);            // result.push(pair)
     c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
@@ -649,7 +587,7 @@ fn build_enumerate() -> Chunk {
 }
 
 // ── zip(a, b) → [[a0,b0],[a1,b1],...] ──────────────────────
-fn build_zip() -> Chunk {
+fn build_zip(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_zip");
     c.arity = 2;
     c.local_count = 5; // a(0) + b(1) + result(2) + i(3) + len(4)
@@ -659,13 +597,13 @@ fn build_zip() -> Chunk {
     let i = 3;
     let len = 4;
 
-    c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, 0);
+    crate::collections::emit_array_new_into(imports, &mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
     c.emit_op(Op::DROP, 0);
 
     // len = min(a.length, b.length) — use a.length for simplicity
     c.emit_op_u16(Op::LOCAL_GET, a, 0);
-    c.emit_op(Op::ARRAY_LENGTH, 0);
+    crate::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -685,12 +623,12 @@ fn build_zip() -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op_u16(Op::LOCAL_GET, a, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_GET, b, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
-    c.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
-    c.emit_op(Op::ARRAY_PUSH, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
+    crate::collections::emit_array_pair_into(imports, &mut c, 0);
+    crate::collections::emit_push_into(imports, &mut c, 0);
     c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
@@ -709,7 +647,7 @@ fn build_zip() -> Chunk {
 }
 
 // ── sum(array) → number ─────────────────────────────────────
-fn build_sum() -> Chunk {
+fn build_sum(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_sum");
     c.arity = 1;
     c.local_count = 4; // arr(0) + total(1) + i(2) + len(3)
@@ -723,7 +661,7 @@ fn build_sum() -> Chunk {
     c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op(Op::ARRAY_LENGTH, 0);
+    crate::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -742,7 +680,7 @@ fn build_sum() -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, total, 0);
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op(Op::DYN_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, total, 0);
     c.emit_op(Op::DROP, 0);
@@ -763,7 +701,7 @@ fn build_sum() -> Chunk {
 }
 
 // ── min(array) → value ──────────────────────────────────────
-fn build_min() -> Chunk {
+fn build_min(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_min");
     c.arity = 1;
     c.local_count = 4; // arr(0) + best(1) + i(2) + len(3)
@@ -775,12 +713,12 @@ fn build_min() -> Chunk {
     // best = arr[0]
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op(Op::I32_CONST_0, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, best, 0);
     c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op(Op::ARRAY_LENGTH, 0);
+    crate::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -801,14 +739,14 @@ fn build_min() -> Chunk {
     let skip_block_p = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_GET, best, 0);
     c.emit_op(Op::DYN_LT, 0);
     c.emit_op(Op::DYN_NOT, 0);
     c.emit_br_if(0, 0); // skip if NOT less than
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, best, 0);
     c.emit_op(Op::DROP, 0);
     c.emit_end(0); c.patch_block(skip_block_p);
@@ -829,7 +767,7 @@ fn build_min() -> Chunk {
 }
 
 // ── max(array) → value ──────────────────────────────────────
-fn build_max() -> Chunk {
+fn build_max(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_max");
     c.arity = 1;
     c.local_count = 4;
@@ -840,12 +778,12 @@ fn build_max() -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op(Op::I32_CONST_0, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, best, 0);
     c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op(Op::ARRAY_LENGTH, 0);
+    crate::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -864,14 +802,14 @@ fn build_max() -> Chunk {
     let skip_block_p = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_GET, best, 0);
     c.emit_op(Op::DYN_GT, 0);
     c.emit_op(Op::DYN_NOT, 0);
     c.emit_br_if(0, 0); // skip if NOT greater than
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, best, 0);
     c.emit_op(Op::DROP, 0);
     c.emit_end(0); c.patch_block(skip_block_p);
@@ -892,7 +830,7 @@ fn build_max() -> Chunk {
 }
 
 // ── pow(base, exp) → number (integer exponent by repeated mul) ──
-fn build_pow() -> Chunk {
+fn build_pow(imports: &mut Chunk) -> Chunk {
     // Bytecode-only fallback for `pow(base, exp)`. Handles INTEGER exponents
     // (positive, zero, negative) using a multiply loop. Fractional exponents
     // require floating-point exp/log which WASM doesn't have as standard
@@ -977,7 +915,7 @@ fn build_pow() -> Chunk {
 
 // ── toString(value) → string ────────────────────────────────
 // "" + value triggers dyn_add string coercion in the VM
-fn build_to_string() -> Chunk {
+fn build_to_string(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_tostring");
     c.arity = 1;
     c.local_count = 1;
@@ -992,7 +930,7 @@ fn build_to_string() -> Chunk {
 
 // ── count(haystack, needle) → int ───────────────────────────
 // Count non-overlapping occurrences using substring + indexOf loop
-fn build_str_count() -> Chunk {
+fn build_str_count(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_count");
     c.arity = 2;
     c.local_count = 4;
@@ -1049,7 +987,7 @@ fn build_str_count() -> Chunk {
 // ── splice(arr, index, deleteCount) → removed_elements ──────
 // Returns array of removed elements. Mutates arr by removing elements.
 // Pure bytecode: build new array from arr[0:index] + arr[index+deleteCount:end]
-fn build_splice() -> Chunk {
+fn build_splice(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_splice");
     c.arity = 3;
     c.local_count = 6; // arr(0) + index(1) + delete_count(2) + result(3) + i(4) + end(5)
@@ -1061,7 +999,7 @@ fn build_splice() -> Chunk {
     let end = 5;
 
     // result = [] (removed elements)
-    c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, 0);
+    crate::collections::emit_array_new_into(imports, &mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, result_local, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -1087,8 +1025,8 @@ fn build_splice() -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, result_local, 0);
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
-    c.emit_op(Op::ARRAY_PUSH, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
+    crate::collections::emit_push_into(imports, &mut c, 0);
     c.emit_op(Op::DROP, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
@@ -1109,7 +1047,7 @@ fn build_splice() -> Chunk {
 
 // ── isNumeric(value) → bool ─────────────────────────────────
 // Check if value is a number type using ref_typeof opcode.
-fn build_is_numeric() -> Chunk {
+fn build_is_numeric(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_isnumeric");
     c.arity = 1;
     c.local_count = 1; // val(0)
@@ -1149,7 +1087,7 @@ fn build_is_numeric() -> Chunk {
 }
 
 // ── floor(n) → int — wraps f64_floor opcode ────────────────
-fn build_floor() -> Chunk {
+fn build_floor(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_floor");
     c.arity = 1;
     c.local_count = 1;
@@ -1160,7 +1098,7 @@ fn build_floor() -> Chunk {
 }
 
 // ── slice(arr, start, end) → array — wraps array_slice opcode
-fn build_slice() -> Chunk {
+fn build_slice(imports: &mut Chunk) -> Chunk {
     // Polymorphic slice: handles BOTH strings and arrays. The walker doesn't
     // know whether `obj[1..3]` operates on a string or an array, so the
     // canonical slice helper does a runtime type check via `ref_is_string`
@@ -1194,14 +1132,14 @@ fn build_slice() -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, obj, 0);
     c.emit_op_u16(Op::LOCAL_GET, start, 0);
     c.emit_op_u16(Op::LOCAL_GET, end, 0);
-    c.emit_op(Op::ARRAY_SLICE, 0);
+    crate::collections::emit_slice_into(imports, &mut c, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
 
 // ── keys(obj) → array of string keys ────────────────────────
 // Iterates object properties, collects non-internal keys.
-fn build_keys() -> Chunk {
+fn build_keys(imports: &mut Chunk) -> Chunk {
     // Can't iterate properties in pure bytecode without host support.
     // Use dict_keys host call pattern — but that's what we're trying to avoid.
     // Fallback: return empty array. On Vybe, host fn handles it.
@@ -1209,19 +1147,19 @@ fn build_keys() -> Chunk {
     c.arity = 1;
     c.local_count = 1;
     // Return empty array as fallback (properties aren't enumerable in pure WASM)
-    c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, 0);
+    crate::collections::emit_array_new_into(imports, &mut c, 0, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
 
 // ── hasProperty(obj, key) → bool ────────────────────────────
-fn build_has_property() -> Chunk {
+fn build_has_property(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_hasproperty");
     c.arity = 2;
     c.local_count = 2;
     c.emit_op_u16(Op::LOCAL_GET, 0, 0); // obj
     c.emit_op_u16(Op::LOCAL_GET, 1, 0); // key
-    c.emit_op(Op::ARRAY_GET, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op(Op::REF_IS_NULL, 0);
     c.emit_op(Op::DYN_NOT, 0);
     c.emit_op(Op::RETURN, 0);
@@ -1229,7 +1167,7 @@ fn build_has_property() -> Chunk {
 }
 
 // ── assign(target, source) → target with source props merged ─
-fn build_assign() -> Chunk {
+fn build_assign(imports: &mut Chunk) -> Chunk {
     // Can't iterate source properties in pure bytecode.
     // Fallback: return target unchanged.
     let mut c = Chunk::new("__stdlib_assign");
@@ -1241,7 +1179,7 @@ fn build_assign() -> Chunk {
 }
 
 // ── instanceOf(obj, type_name) → bool ───────────────────────
-fn build_instance_of() -> Chunk {
+fn build_instance_of(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_instanceof");
     c.arity = 2;
     c.local_count = 2;
@@ -1250,7 +1188,7 @@ fn build_instance_of() -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 0, 0); // obj
     let type_key = c.add_constant(Value::String(std::sync::Arc::from("__type")));
     c.emit_op_u16(Op::CONST, type_key, 0);
-    c.emit_op(Op::ARRAY_GET, 0); // obj["__type"]
+    crate::collections::emit_get_into(imports, &mut c, 0); // obj["__type"]
     c.emit_op_u16(Op::LOCAL_GET, 1, 0); // type_name
     c.emit_op(Op::STR_EQUALS, 0);
     c.emit_op(Op::RETURN, 0);
@@ -1258,7 +1196,7 @@ fn build_instance_of() -> Chunk {
 }
 
 // ── deleteProperty(obj, key) → bool ─────────────────────────
-fn build_delete_property() -> Chunk {
+fn build_delete_property(imports: &mut Chunk) -> Chunk {
     // Can't delete properties in pure bytecode. Set to null as fallback.
     let mut c = Chunk::new("__stdlib_deleteproperty");
     c.arity = 2;
@@ -1266,7 +1204,7 @@ fn build_delete_property() -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 0, 0); // obj
     c.emit_op_u16(Op::LOCAL_GET, 1, 0); // key
     c.emit_op(Op::NULL, 0);             // value = null
-    c.emit_op(Op::ARRAY_SET, 0);
+    crate::collections::emit_set_into(imports, &mut c, 0);
     c.emit_op(Op::DROP, 0);
     c.emit_op(Op::TRUE, 0);
     c.emit_op(Op::RETURN, 0);
@@ -1274,7 +1212,7 @@ fn build_delete_property() -> Chunk {
 }
 
 // ── from(iterable) → array copy ─────────────────────────────
-fn build_array_from() -> Chunk {
+fn build_array_from(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_from");
     c.arity = 1;
     c.local_count = 1;
@@ -1283,13 +1221,13 @@ fn build_array_from() -> Chunk {
     c.emit_op(Op::I32_CONST_0, 0);
     let max = c.add_constant(Value::I32(i32::MAX));
     c.emit_op_u16(Op::CONST, max, 0);
-    c.emit_op(Op::ARRAY_SLICE, 0);
+    crate::collections::emit_slice_into(imports, &mut c, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
 
 // ── redim(arr, new_size) → resized array ────────────────────
-fn build_redim() -> Chunk {
+fn build_redim(imports: &mut Chunk) -> Chunk {
     // Create new array of new_size, copy elements from old
     let mut c = Chunk::new("__stdlib_redim");
     c.arity = 2;
@@ -1297,18 +1235,18 @@ fn build_redim() -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 0, 0); // arr
     c.emit_op(Op::I32_CONST_0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0); // new_size
-    c.emit_op(Op::ARRAY_SLICE, 0);
+    crate::collections::emit_slice_into(imports, &mut c, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
 
 // ── sliceStep(arr, start, end, step) → array ─────────────────
-fn build_slice_step() -> Chunk {
+fn build_slice_step(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_slicestep");
     c.arity = 4;
     c.local_count = 7; // arr(0) start(1) end(2) step(3) result(4) i(5) cond(6)
     let zero = c.add_constant(Value::I32(0));
-    c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, 0);
+    crate::collections::emit_array_new_into(imports, &mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, 4, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, 5, 0);
@@ -1356,14 +1294,14 @@ fn build_slice_step() -> Chunk {
     c.emit_br_if(0, 0); // skip push if i < 0
     c.emit_op_u16(Op::LOCAL_GET, 5, 0);
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    c.emit_op(Op::ARRAY_LENGTH, 0);
+    crate::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op(Op::DYN_GE, 0);
     c.emit_br_if(0, 0); // skip push if i >= length
     c.emit_op_u16(Op::LOCAL_GET, 4, 0);
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 5, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
-    c.emit_op(Op::ARRAY_PUSH, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
+    crate::collections::emit_push_into(imports, &mut c, 0);
     c.emit_op(Op::DROP, 0);
     c.emit_end(0); c.patch_block(skip_block_p);
 
@@ -1380,7 +1318,7 @@ fn build_slice_step() -> Chunk {
 }
 
 // ── dynMul(a, b) → string repeat or numeric multiply ─────────
-fn build_dyn_mul() -> Chunk {
+fn build_dyn_mul(imports: &mut Chunk) -> Chunk {
     use std::sync::Arc;
     let mut c = Chunk::new("__stdlib_dynmul");
     c.arity = 2;
@@ -1426,7 +1364,7 @@ fn build_dyn_mul() -> Chunk {
 // 1-arg function that extracts the sort key from each element.
 // `OrderBy(x => x)` is identity (plain sort). `OrderBy(x => x.name)`
 // sorts by the name property.
-fn build_sort_by_key() -> Chunk {
+fn build_sort_by_key(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_sort_by_key");
     c.arity = 2;
     c.local_count = 7; // arr(0) + keyFn(1) + i(2) + j(3) + len(4) + key(5) + keyVal(6)
@@ -1440,7 +1378,7 @@ fn build_sort_by_key() -> Chunk {
 
     // len = arr.length
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op(Op::ARRAY_LENGTH, 0);
+    crate::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -1460,7 +1398,7 @@ fn build_sort_by_key() -> Chunk {
     // key = arr[i]
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, key, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -1491,7 +1429,7 @@ fn build_sort_by_key() -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, key_fn, 0);
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u8(Op::CALL_REF, 1, 0);
     c.emit_op_u16(Op::LOCAL_GET, key_val, 0);
     c.emit_op(Op::DYN_GT, 0);
@@ -1505,8 +1443,8 @@ fn build_sort_by_key() -> Chunk {
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, j, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
-    c.emit_op(Op::ARRAY_SET, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
+    crate::collections::emit_set_into(imports, &mut c, 0);
     c.emit_op(Op::DROP, 0);
 
     // j -= 1
@@ -1526,7 +1464,7 @@ fn build_sort_by_key() -> Chunk {
     c.emit_op(Op::I32_CONST_1, 0);
     c.emit_op(Op::I32_ADD, 0);
     c.emit_op_u16(Op::LOCAL_GET, key, 0);
-    c.emit_op(Op::ARRAY_SET, 0);
+    crate::collections::emit_set_into(imports, &mut c, 0);
     c.emit_op(Op::DROP, 0);
 
     // i += 1
@@ -1548,7 +1486,7 @@ fn build_sort_by_key() -> Chunk {
 // ── concat(a, b) → polymorphic concat ───────────────────────
 // If `a` is a string, do str_concat. If `a` is an array, do array_concat.
 // Runtime dispatch using ref_is_string. Pure WASM bytecode.
-fn build_concat() -> Chunk {
+fn build_concat(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_concat");
     c.arity = 2; // a, b
     c.local_count = 2; // a(0) + b(1)
@@ -1573,7 +1511,7 @@ fn build_concat() -> Chunk {
     // Array path: array_concat(a, b)
     c.emit_op_u16(Op::LOCAL_GET, a, 0);
     c.emit_op_u16(Op::LOCAL_GET, b, 0);
-    c.emit_op(Op::ARRAY_CONCAT, 0);
+    crate::collections::emit_concat_into(imports, &mut c, 0);
     c.emit_op(Op::RETURN, 0);
 
     c
@@ -1584,7 +1522,7 @@ fn build_concat() -> Chunk {
 // strings[0] + values[0] + strings[1] + values[1] + ... + strings[N]
 // Since this is called as a tagged template, strings is an array and
 // values are individual args. With rest params, values is already an array.
-fn build_string_raw() -> Chunk {
+fn build_string_raw(imports: &mut Chunk) -> Chunk {
     use std::sync::Arc;
 
     let mut c = Chunk::new("__stdlib_string_raw");
@@ -1604,7 +1542,7 @@ fn build_string_raw() -> Chunk {
 
     // len = strings.length
     c.emit_op_u16(Op::LOCAL_GET, strings, 0);
-    c.emit_op(Op::ARRAY_LENGTH, 0);
+    crate::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, len, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -1626,7 +1564,7 @@ fn build_string_raw() -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op_u16(Op::LOCAL_GET, strings, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op(Op::STR_CONCAT, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
     c.emit_op(Op::DROP, 0);
@@ -1635,7 +1573,7 @@ fn build_string_raw() -> Chunk {
     let skip_val_p = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, values, 0);
-    c.emit_op(Op::ARRAY_LENGTH, 0);
+    crate::collections::emit_len_into(imports, &mut c, 0);
     c.emit_op(Op::DYN_LT, 0);
     c.emit_op(Op::DYN_NOT, 0);
     c.emit_br_if(0, 0); // skip if i >= values.length
@@ -1643,7 +1581,7 @@ fn build_string_raw() -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op_u16(Op::LOCAL_GET, values, 0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
+    crate::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op(Op::STR_CONCAT, 0); // dyn_add would also work since result is string
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
     c.emit_op(Op::DROP, 0);
@@ -1669,7 +1607,7 @@ fn build_string_raw() -> Chunk {
 // ── fmod(a, b) → a % b (floating-point remainder) ──────────
 // WASM has no f64.rem. Pure bytecode: a - trunc(a/b) * b.
 // Host can override __vybe_fmod with native fmod for performance.
-fn build_fmod() -> Chunk {
+fn build_fmod(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_fmod");
     c.arity = 2; // a, b
     c.local_count = 2; // a(0) + b(1)

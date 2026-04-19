@@ -96,39 +96,31 @@ pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str
 /// ```
 ///
 /// Stack: unchanged
-pub fn emit_instanceof_chain(chunk: &mut Chunk, this_slot: u16, class_name: &str, line: u32) {
-    let types_key = chunk.add_constant(Value::String(Arc::from("__types")));
+pub fn emit_instanceof_chain(chunks: &mut [Chunk], current: usize, this_slot: u16, class_name: &str, line: u32) {
+    let types_key = chunks[current].add_constant(Value::String(Arc::from("__types")));
 
-    // [this]
-    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    // [this, this]
-    chunk.emit_op(Op::DUP, line);
-    // [this, types_or_null]
-    chunk.emit_op_u16(Op::STRUCT_GET, types_key, line);
-    // [this, types_or_null, types_or_null]
-    chunk.emit_op(Op::DUP, line);
-    // [this, types_or_null, bool]
-    chunk.emit_op(Op::REF_IS_NULL, line);
-    // br_if_false → skip past array creation when __types already exists
-    // Use emit_jump for correct offset handling (2-byte opcode + 2-byte placeholder)
-    let skip_jump = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    // [this, null] — null path: drop null and create empty array
-    chunk.emit_op(Op::DROP, line);
-    // [this, []]
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
-    // Patch the forward jump to land here
-    chunk.patch_jump(skip_jump);
+    // Stack: []
+    chunks[current].emit_op_u16(Op::LOCAL_GET, this_slot, line);  // [this]
+    chunks[current].emit_op(Op::DUP, line);                        // [this, this]
+    chunks[current].emit_op_u16(Op::STRUCT_GET, types_key, line);  // [this, types_or_null]
+    chunks[current].emit_op(Op::DUP, line);                        // [this, tn, tn]
+    chunks[current].emit_op(Op::REF_IS_NULL, line);                // [this, tn, bool]
+    let skip_jump = chunks[current].emit_jump(Op::BR_IF_FALSE, line); // consumes bool
+    chunks[current].emit_op(Op::DROP, line);                       // [this] (drop the null)
+    crate::collections::emit_array_new(chunks, current, 0, line);  // [this, []]
+    chunks[current].patch_jump(skip_jump);                         // skip lands here; [this, array]
 
-    // skip: [this, array]
-    let name_const = chunk.add_constant(Value::String(Arc::from(class_name)));
-    // [this, array, "class_name"]
-    chunk.emit_op_u16(Op::CONST, name_const, line);
-    // [this, array_with_name]
-    chunk.emit_op(Op::ARRAY_PUSH, line);
-    // struct_set expects [obj, val] → stores this.__types = array_with_name
-    chunk.emit_op_u16(Op::STRUCT_SET, types_key, line);
-    // drop the result left by struct_set
-    chunk.emit_op(Op::DROP, line);
+    // Push class_name onto array while preserving array on stack.
+    // wasm:js-array.push is [arr, val] → [new_length], so DUP the array
+    // first: [this, array] → [this, array, array] → push → [this, array, len] → drop.
+    chunks[current].emit_op(Op::DUP, line);                        // [this, array, array]
+    let name_const = chunks[current].add_constant(Value::String(Arc::from(class_name)));
+    chunks[current].emit_op_u16(Op::CONST, name_const, line);      // [this, array, array, name]
+    crate::collections::emit_push(chunks, current, line);          // [this, array, len]
+    chunks[current].emit_op(Op::DROP, line);                       // [this, array]
+    // struct_set: [this, array] → sets this.__types = array, leaves array on stack.
+    chunks[current].emit_op_u16(Op::STRUCT_SET, types_key, line);  // [array]
+    chunks[current].emit_op(Op::DROP, line);                       // []
 }
 
 // ── Method binding ──────────────────────────────────────────────────────

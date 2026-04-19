@@ -31,18 +31,17 @@ pub fn emit_common(name: &str, chunks: &mut [Chunk], current: usize, line: u32) 
     match name {
         // ── Dict ops ──
         "dict.set_dynamic" => {
-            let chunk = &mut chunks[current];
-            dict::emit_set_dynamic(chunk, line);
-            chunk.emit_op(Op::NULL, line); // void return
+            dict::emit_set_dynamic(chunks, current, line);
+            chunks[current].emit_op(Op::NULL, line); // void return
         }
-        "dict.get_dynamic" => dict::emit_get_dynamic(&mut chunks[current], line),
-        "dict.has" => dict::emit_method_has(&mut chunks[current], line),
-        "dict.delete" => dict::emit_method_delete(&mut chunks[current], line),
-        "dict.clear" => dict::emit_method_clear_stack(&mut chunks[current], line),
-        "dict.size" => dict::emit_method_size(&mut chunks[current], line),
-        "dict.keys" => dict::emit_keys(&mut chunks[current], line),
-        "dict.values" => dict::emit_values(&mut chunks[current], line),
-        "dict.new" => dict::emit_new(&mut chunks[current], line),
+        "dict.get_dynamic" => dict::emit_get_dynamic(chunks, current, line),
+        "dict.has" => dict::emit_method_has(chunks, current, line),
+        "dict.delete" => dict::emit_method_delete(chunks, current, line),
+        "dict.clear" => dict::emit_method_clear_stack(chunks, current, line),
+        "dict.size" => dict::emit_method_size(chunks, current, line),
+        "dict.keys" => dict::emit_keys(chunks, current, line),
+        "dict.values" => dict::emit_values(chunks, current, line),
+        "dict.new" => dict::emit_new(chunks, current, line),
 
         // ── Collection ops (route through wasm:js-array imports;
         // `chunks` slice lets the helper register on chunks[0] while

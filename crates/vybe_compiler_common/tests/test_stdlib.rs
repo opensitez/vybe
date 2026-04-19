@@ -9,7 +9,7 @@ fn run_with_stdlib(script: Chunk) -> Value {
     let mut vm = VM::new();
     vybe_host::register_all(&mut vm);
 
-    let stdlib = build_stdlib();
+    let stdlib = build_stdlib(&mut script);
     let stdlib_base = 1; // script is chunk 0, stdlib starts at 1
     let mut all_chunks = vec![script];
     all_chunks.extend(stdlib.chunks);
@@ -20,7 +20,7 @@ fn run_with_stdlib(script: Chunk) -> Value {
 
 #[test]
 fn stdlib_range_basic() {
-    let stdlib = build_stdlib();
+    let stdlib = build_stdlib(&mut script);
     let range_idx = stdlib.get("__stdlib_range").unwrap();
     let chunk_idx = range_idx + 1; // +1 because script is chunk 0
 
@@ -47,7 +47,7 @@ fn stdlib_range_basic() {
 
 #[test]
 fn stdlib_range_step() {
-    let stdlib = build_stdlib();
+    let stdlib = build_stdlib(&mut script);
     let range_idx = stdlib.get("__stdlib_range").unwrap() + 1;
 
     let mut script = Chunk::new("<script>");
@@ -74,7 +74,7 @@ fn stdlib_range_step() {
 
 #[test]
 fn stdlib_sum() {
-    let stdlib = build_stdlib();
+    let stdlib = build_stdlib(&mut script);
     let sum_idx = stdlib.get("__stdlib_sum").unwrap() + 1;
 
     let mut script = Chunk::new("<script>");
@@ -133,7 +133,7 @@ fn stdlib_sum() {
 
 #[test]
 fn stdlib_reversed() {
-    let stdlib = build_stdlib();
+    let stdlib = build_stdlib(&mut script);
     let rev_idx = stdlib.get("__stdlib_reversed").unwrap() + 1;
 
     let mut script = Chunk::new("<script>");
@@ -168,7 +168,7 @@ fn stdlib_reversed() {
 
 #[test]
 fn stdlib_sorted() {
-    let stdlib = build_stdlib();
+    let stdlib = build_stdlib(&mut script);
     let sort_idx = stdlib.get("__stdlib_sorted").unwrap() + 1;
 
     let mut script = Chunk::new("<script>");
@@ -201,7 +201,7 @@ fn stdlib_sorted() {
 
 #[test]
 fn stdlib_sorted_preserves_original() {
-    let stdlib = build_stdlib();
+    let stdlib = build_stdlib(&mut script);
     let sort_idx = stdlib.get("__stdlib_sorted").unwrap() + 1;
 
     let mut script = Chunk::new("<script>");
@@ -237,7 +237,7 @@ fn stdlib_sorted_preserves_original() {
 
 #[test]
 fn stdlib_min() {
-    let stdlib = build_stdlib();
+    let stdlib = build_stdlib(&mut script);
     let min_idx = stdlib.get("__stdlib_min").unwrap() + 1;
 
     let mut script = Chunk::new("<script>");
@@ -265,7 +265,7 @@ fn stdlib_min() {
 
 #[test]
 fn stdlib_max() {
-    let stdlib = build_stdlib();
+    let stdlib = build_stdlib(&mut script);
     let max_idx = stdlib.get("__stdlib_max").unwrap() + 1;
 
     let mut script = Chunk::new("<script>");
@@ -295,7 +295,7 @@ fn stdlib_max() {
 
 #[test]
 fn stdlib_pow() {
-    let stdlib = build_stdlib();
+    let stdlib = build_stdlib(&mut script);
     let pow_idx = stdlib.get("__stdlib_pow").unwrap() + 1;
 
     let mut script = Chunk::new("<script>");
@@ -319,7 +319,7 @@ fn stdlib_pow() {
 
 #[test]
 fn stdlib_enumerate() {
-    let stdlib = build_stdlib();
+    let stdlib = build_stdlib(&mut script);
     let enum_idx = stdlib.get("__stdlib_enumerate").unwrap() + 1;
 
     let mut script = Chunk::new("<script>");
@@ -351,7 +351,7 @@ fn stdlib_enumerate() {
 
 #[test]
 fn stdlib_zip() {
-    let stdlib = build_stdlib();
+    let stdlib = build_stdlib(&mut script);
     let zip_idx = stdlib.get("__stdlib_zip").unwrap() + 1;
 
     let mut script = Chunk::new("<script>");
@@ -392,7 +392,7 @@ fn stdlib_zip() {
 
 #[test]
 fn stdlib_has_all_functions() {
-    let stdlib = build_stdlib();
+    let stdlib = build_stdlib(&mut script);
     assert_eq!(stdlib.chunks.len(), 24);
     assert!(stdlib.get("__stdlib_range").is_some());
     assert!(stdlib.get("__stdlib_sorted").is_some());

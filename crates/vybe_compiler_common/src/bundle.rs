@@ -111,7 +111,10 @@ pub fn emit_stdlib_preamble(script: &mut Chunk, stdlib_base: usize) {
 
 /// Append stdlib chunks to program chunks. Call AFTER compilation is done.
 pub fn append_stdlib_chunks(program_chunks: &mut Vec<Chunk>) {
-    let stdlib = build_stdlib();
+    let stdlib = {
+        let (first, _rest) = program_chunks.split_at_mut(1);
+        build_stdlib(&mut first[0])
+    };
     program_chunks.extend(stdlib.chunks);
 }
 
@@ -141,8 +144,18 @@ pub fn emit_call_invoke(chunk: &mut Chunk, argc: u8, line: u32) {
 pub fn finalize_with_stdlib(chunks: &mut Vec<Chunk>) {
     use vybe_bytecode::chunk::{GlobalInit, ConstExpr};
 
-    let stdlib = crate::stdlib::build_stdlib();
     let stdlib_base = chunks.len();
+    // Build stdlib chunks with their imports registered on `chunks[0]`
+    // (the module-level imports section — single per WASM module).
+    // Same dependency surface as user code → stdlib becomes a true
+    // cross-runtime polyfill: on Vybe the chunks are swapped for
+    // native handlers; on v8 their `wasm:js-array.*` imports resolve
+    // to native `Array.prototype.*`; on wasmtime the Phase-C polyfill
+    // supplies the imports.
+    let stdlib = {
+        let (first, _rest) = chunks.split_at_mut(1);
+        crate::stdlib::build_stdlib(&mut first[0])
+    };
 
     for (i, &(chunk_name, global_name)) in MAPPINGS.iter().enumerate() {
         if stdlib.exports.iter().any(|&n| n == chunk_name) {

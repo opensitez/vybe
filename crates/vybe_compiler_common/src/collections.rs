@@ -34,6 +34,21 @@ fn emit_import_call(chunks: &mut [Chunk], current: usize, module: &str, name: &s
     c.emit(argc, line);
 }
 
+/// Two-chunk variant for callers that have the imports chunk and the
+/// code chunk as separate owned objects (notably stdlib.rs, where
+/// `build_*` functions build a fresh local Chunk and later append it
+/// to the program's chunks vec).
+///
+/// Same invariant as `emit_import_call`: imports register on the
+/// passed `imports` chunk (caller ensures that's the module-level
+/// imports chunk = `chunks[0]` of the final program), and the
+/// CALL_IMPORT opcode emits in `code`.
+fn emit_import_call_into(imports: &mut Chunk, code: &mut Chunk, module: &str, name: &str, argc: u8, line: u32) {
+    let idx = imports.add_import(module, name);
+    code.emit_op_u16(Op::CALL_IMPORT, idx, line);
+    code.emit(argc, line);
+}
+
 /// Create an empty array (common case). Stack: [] → [array] via
 /// `wasm:js-array.newWithLength(0)`.
 ///
@@ -163,6 +178,136 @@ pub fn emit_shift(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Array fill. Stack: [array, value, start, end] → [array] via `wasm:js-array.fill`.
 pub fn emit_fill(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_import_call(chunks, current, "wasm:js-array", "fill", 4, line);
+}
+
+/// Pack two values from stack into a new two-element array.
+/// Stack: [v1, v2] → [array_of_two]. Used by dict building etc.
+/// See `emit_array_pair_into` for the two-chunk variant.
+pub fn emit_array_pair(chunks: &mut [Chunk], current: usize, line: u32) {
+    let v2 = chunks[current].local_count;
+    let v1 = chunks[current].local_count + 1;
+    chunks[current].local_count += 2;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, v2, line); chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, v1, line); chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op(Op::I32_CONST_0, line);
+    emit_import_call(chunks, current, "wasm:js-array", "newWithLength", 1, line);
+    chunks[current].emit_op(Op::DUP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v1, line);
+    emit_import_call(chunks, current, "wasm:js-array", "push", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op(Op::DUP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v2, line);
+    emit_import_call(chunks, current, "wasm:js-array", "push", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+}
+
+// ── Two-chunk `_into` variants ─────────────────────────────────
+//
+// For callers that hold the imports chunk and the code chunk as
+// separate owned objects — stdlib.rs is the main consumer (its
+// `build_*` functions build a fresh local Chunk and return it).
+// Each one mirrors the slice-based API above.
+
+/// `wasm:js-array.newWithLength(0)` → empty Array on `code`'s stack.
+/// Import registers on `imports`.
+pub fn emit_array_new_into(imports: &mut Chunk, code: &mut Chunk, count: u16, line: u32) {
+    if count == 0 {
+        code.emit_op(Op::I32_CONST_0, line);
+        emit_import_call_into(imports, code, "wasm:js-array", "newWithLength", 1, line);
+    } else {
+        code.emit_op_u16(Op::ARRAY_NEW_FIXED, count, line);
+    }
+}
+
+pub fn emit_new_with_length_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    emit_import_call_into(imports, code, "wasm:js-array", "newWithLength", 1, line);
+}
+
+pub fn emit_len_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    code.emit_op(Op::DUP, line);
+    code.emit_op(Op::REF_IS_STRING, line);
+    let to_str = code.emit_jump(Op::BR_IF_TRUE, line);
+    emit_import_call_into(imports, code, "wasm:js-array", "length", 1, line);
+    let end = code.emit_jump(Op::BR, line);
+    code.patch_jump(to_str);
+    emit_import_call_into(imports, code, "wasm:js-string", "length", 1, line);
+    code.patch_jump(end);
+}
+
+pub fn emit_push_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    emit_import_call_into(imports, code, "wasm:js-array", "push", 2, line);
+}
+
+pub fn emit_pop_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    emit_import_call_into(imports, code, "wasm:js-array", "pop", 1, line);
+}
+
+pub fn emit_get_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    emit_import_call_into(imports, code, "wasm:js-array", "get", 2, line);
+}
+
+pub fn emit_set_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    emit_import_call_into(imports, code, "wasm:js-array", "set", 3, line);
+}
+
+pub fn emit_slice_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    emit_import_call_into(imports, code, "wasm:js-array", "slice", 3, line);
+}
+
+pub fn emit_join_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    emit_import_call_into(imports, code, "wasm:js-array", "join", 2, line);
+}
+
+pub fn emit_reverse_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    emit_import_call_into(imports, code, "wasm:js-array", "reverse", 1, line);
+}
+
+pub fn emit_contains_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    emit_import_call_into(imports, code, "wasm:js-array", "includes", 2, line);
+}
+
+pub fn emit_index_of_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    emit_import_call_into(imports, code, "wasm:js-array", "indexOf", 2, line);
+}
+
+pub fn emit_concat_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    emit_import_call_into(imports, code, "wasm:js-array", "concat", 2, line);
+}
+
+pub fn emit_shift_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    emit_import_call_into(imports, code, "wasm:js-array", "shift", 1, line);
+}
+
+pub fn emit_fill_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    emit_import_call_into(imports, code, "wasm:js-array", "fill", 4, line);
+}
+
+/// Pack two values from stack into a new two-element array.
+/// Stack: [v1, v2] → [array_of_two]. Used by stdlib for `[k, v]` /
+/// `[i, arr[i]]` pair construction — the one pattern without a single
+/// `wasm:js-array.*` equivalent. Allocates 2 scratch slots via
+/// `chunk.local_count` (safe in stdlib because these chunks don't
+/// share slot space with a scope).
+pub fn emit_array_pair_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
+    let v2 = code.local_count;
+    let v1 = code.local_count + 1;
+    code.local_count += 2;
+    // Stack: [v1, v2] — stash both into temp slots (peek-set + drop).
+    code.emit_op_u16(Op::LOCAL_SET, v2, line); code.emit_op(Op::DROP, line);
+    code.emit_op_u16(Op::LOCAL_SET, v1, line); code.emit_op(Op::DROP, line);
+    // arr = wasm:js-array.newWithLength(0)
+    code.emit_op(Op::I32_CONST_0, line);
+    emit_import_call_into(imports, code, "wasm:js-array", "newWithLength", 1, line);
+    // arr.push(v1)
+    code.emit_op(Op::DUP, line);
+    code.emit_op_u16(Op::LOCAL_GET, v1, line);
+    emit_import_call_into(imports, code, "wasm:js-array", "push", 2, line);
+    code.emit_op(Op::DROP, line);
+    // arr.push(v2)
+    code.emit_op(Op::DUP, line);
+    code.emit_op_u16(Op::LOCAL_GET, v2, line);
+    emit_import_call_into(imports, code, "wasm:js-array", "push", 2, line);
+    code.emit_op(Op::DROP, line);
 }
 
 // ── Host imports (higher-level operations) ──────────────────

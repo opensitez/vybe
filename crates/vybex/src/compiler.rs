@@ -541,7 +541,7 @@ impl Compiler {
             // ── While (compiler_common::loops) ─────────────────────────
             StmtKind::While { cond, body, else_body } => {
                 let line = self.line;
-                let lp = common::loops::emit_loop_start(self.chunk(), line);
+                let lp = common::loops::emit_loop_start(&mut self.chunks, self.current, line);
                 // block + loop = 2 label stack entries
                 let break_depth = self.label_depth + 1; // block is first (break target)
                 let continue_depth = self.label_depth + 2; // loop is second (continue target)
@@ -550,12 +550,12 @@ impl Compiler {
                 self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth });
                 self.compile_expr(cond)?;
                 let line = self.line;
-                common::loops::emit_loop_cond(self.chunk(), line);
+                common::loops::emit_loop_cond(&mut self.chunks, self.current, line);
                 for s in body { self.compile_stmt(s)?; }
                 self.loops.pop();
                 let lp = self.loop_states.pop().unwrap();
                 let line = self.line;
-                common::loops::emit_loop_end(self.chunk(), lp, line);
+                common::loops::emit_loop_end(&mut self.chunks, self.current, lp, line);
                 self.label_depth -= 2; // block + loop closed
                 if let Some(else_stmts) = else_body {
                     for s in else_stmts { self.compile_stmt(s)?; }
@@ -579,7 +579,7 @@ impl Compiler {
                     self.emit(Op::TRUE);
                 }
                 let line = self.line;
-                common::loops::emit_loop_cond(self.chunk(), line);
+                common::loops::emit_loop_cond(&mut self.chunks, self.current, line);
                 // Body block for continue-to-update
                 let body_block = if update.is_some() {
                     let bp = self.chunk().emit_block(line);
@@ -625,7 +625,7 @@ impl Compiler {
                 let idx_slot = self.scope_mut().define("__forin_idx");
                 let line = self.line;
                 let lp = common::loops::emit_for_in_start(
-                    &mut self.chunks[self.current], arr_slot, idx_slot, line,
+                    &mut self.chunks, self.current, arr_slot, idx_slot, line,
                 );
                 // for_in_start emits: block + loop + cond + block $body = 3 labels
                 let break_depth = self.label_depth + 1; // outer block
@@ -639,7 +639,7 @@ impl Compiler {
                 self.loops.pop();
                 let lp = self.loop_states.pop().unwrap();
                 common::loops::emit_for_in_end(
-                    &mut self.chunks[self.current], idx_slot, lp, line,
+                    &mut self.chunks, self.current, idx_slot, lp, line,
                 );
                 self.label_depth -= 3;
                 if let Some(else_stmts) = else_body {
@@ -650,7 +650,7 @@ impl Compiler {
             // ── DoWhile (compiler_common::loops) ────────────────────────
             StmtKind::DoWhile { body, cond, until } => {
                 let line = self.line;
-                let lp = common::loops::emit_do_loop_start(self.chunk(), line);
+                let lp = common::loops::emit_do_loop_start(&mut self.chunks, self.current, line);
                 let break_depth = self.label_depth + 1;
                 let continue_depth = self.label_depth + 2;
                 self.label_depth += 2;
@@ -661,7 +661,7 @@ impl Compiler {
                 self.loops.pop();
                 let lp = self.loop_states.pop().unwrap();
                 let line = self.line;
-                common::loops::emit_do_loop_end(self.chunk(), lp, *until, line);
+                common::loops::emit_do_loop_end(&mut self.chunks, self.current, lp, *until, line);
                 self.label_depth -= 2;
             }
 
@@ -1178,7 +1178,7 @@ impl Compiler {
                         // The helper leaves [element] on the stack each pass
                         // and exposes the index in `idx_slot`.
                         let lp = common::loops::emit_for_in_start(
-                            self.chunk(), old_slot, idx_slot, line);
+                            &mut self.chunks, self.current, old_slot, idx_slot, line);
                         // Stack: [element]. If idx >= new_len, drop and break
                         // (don't write past the new array). Otherwise
                         // new[idx] = element.
@@ -1203,7 +1203,7 @@ impl Compiler {
                         self.patch_jump(after);
 
                         common::loops::emit_for_in_end(
-                            self.chunk(), idx_slot, lp, line);
+                            &mut self.chunks, self.current, idx_slot, lp, line);
 
                         // arr = new
                         self.emit_u16(Op::LOCAL_GET, new_slot);
@@ -2488,7 +2488,7 @@ impl Compiler {
         }
 
         // Finalize: instanceof chain
-        common::classes::emit_instanceof_chain(self.chunk(), this_slot, name, line);
+        common::classes::emit_instanceof_chain(&mut self.chunks, self.current, this_slot, name, line);
         common::classes::emit_constructor_return(self.chunk(), this_slot, line);
 
         let locals = self.scope().next_slot;
@@ -3053,7 +3053,7 @@ impl Compiler {
             // right answer.
             ExprKind::Object(props) => {
                 let line = self.line;
-                common::dict::emit_new(&mut self.chunks[self.current], line);
+                common::dict::emit_new(&mut self.chunks, self.current, line);
                 for prop in props {
                     match prop {
                         ObjectProperty::KeyValue { key, value } => {
@@ -3346,7 +3346,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
                     let idx_slot = self.scope_mut().define("__comp_idx");
                     let lp = common::loops::emit_for_in_start(
-                        &mut self.chunks[self.current], arr_slot, idx_slot, line,
+                        &mut self.chunks, self.current, arr_slot, idx_slot, line,
                     );
                     // Bind loop var
                     let var_name = match &gen.target.kind {
@@ -3374,7 +3374,7 @@ impl Compiler {
                     if let Some(skip) = cond_skip { self.patch_jump(skip); }
 
                     common::loops::emit_for_in_end(
-                        &mut self.chunks[self.current], idx_slot, lp, line,
+                        &mut self.chunks, self.current, idx_slot, lp, line,
                     );
                 }
 
@@ -3991,11 +3991,11 @@ impl Compiler {
                 match field_lower.as_str() {
                     "map" => {
                         // emit_map leaves result on stack
-                        common::loops::emit_map(self.chunk(), fn_slot, arr_slot, result_slot, idx_slot, line);
+                        common::loops::emit_map(&mut self.chunks, self.current, fn_slot, arr_slot, result_slot, idx_slot, line);
                     }
                     "filter" => {
                         let elem_slot = self.scope_mut().define("__hof_elem");
-                        common::loops::emit_filter(self.chunk(), fn_slot, arr_slot, result_slot, idx_slot, elem_slot, line);
+                        common::loops::emit_filter(&mut self.chunks, self.current, fn_slot, arr_slot, result_slot, idx_slot, elem_slot, line);
                     }
                     "reduce" => {
                         // reduce(fn, initial?) — initial is second arg.
@@ -4034,24 +4034,24 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, result_slot);
                         } else {
                             // No initial: emit_reduce starts from arr[0], i=1
-                            common::loops::emit_reduce(self.chunk(), fn_slot, arr_slot, result_slot, idx_slot, line);
+                            common::loops::emit_reduce(&mut self.chunks, self.current, fn_slot, arr_slot, result_slot, idx_slot, line);
                         }
                     }
                     "forEach" | "foreach" => {
-                        common::loops::emit_foreach(self.chunk(), fn_slot, arr_slot, idx_slot, line);
+                        common::loops::emit_foreach(&mut self.chunks, self.current, fn_slot, arr_slot, idx_slot, line);
                     }
                     "some" => {
-                        common::loops::emit_any_every(self.chunk(), fn_slot, arr_slot, idx_slot, true, line);
+                        common::loops::emit_any_every(&mut self.chunks, self.current, fn_slot, arr_slot, idx_slot, true, line);
                     }
                     "every" => {
-                        common::loops::emit_any_every(self.chunk(), fn_slot, arr_slot, idx_slot, false, line);
+                        common::loops::emit_any_every(&mut self.chunks, self.current, fn_slot, arr_slot, idx_slot, false, line);
                     }
                     "find" => {
                         // find uses includes pattern but returns element not bool
                         self.emit(Op::NULL);
                         self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
                         let lp = common::loops::emit_for_in_start(
-                            self.chunk(), arr_slot, idx_slot, line);
+                            &mut self.chunks, self.current, arr_slot, idx_slot, line);
                         let elem_slot = self.scope_mut().define("__find_elem");
                         self.emit_u16(Op::LOCAL_SET, elem_slot); self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
@@ -4063,7 +4063,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
                         let brk = self.emit_jump(Op::BR);
                         self.patch_jump(skip);
-                        common::loops::emit_for_in_end(self.chunk(), idx_slot, lp, line);
+                        common::loops::emit_for_in_end(&mut self.chunks, self.current, idx_slot, lp, line);
                         self.patch_jump(brk);
                         self.emit_u16(Op::LOCAL_GET, result_slot);
                     }
@@ -4072,7 +4072,7 @@ impl Compiler {
                         self.emit_const(Value::I32(-1));
                         self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
                         let lp = common::loops::emit_for_in_start(
-                            self.chunk(), arr_slot, idx_slot, line);
+                            &mut self.chunks, self.current, arr_slot, idx_slot, line);
                         let elem_slot = self.scope_mut().define("__findi_elem");
                         self.emit_u16(Op::LOCAL_SET, elem_slot); self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
@@ -4085,7 +4085,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
                         let brk = self.emit_jump(Op::BR);
                         self.patch_jump(skip);
-                        common::loops::emit_for_in_end(self.chunk(), idx_slot, lp, line);
+                        common::loops::emit_for_in_end(&mut self.chunks, self.current, idx_slot, lp, line);
                         self.patch_jump(brk);
                         self.emit_u16(Op::LOCAL_GET, result_slot);
                     }
@@ -4140,7 +4140,7 @@ impl Compiler {
                         // arr.flatMap(fn) = arr.map(fn).flat()
                         // First emit map: result[i] = fn(arr[i])
                         let mapped_slot = self.scope_mut().define("__flatmap_mapped");
-                        common::loops::emit_map(self.chunk(), fn_slot, arr_slot, mapped_slot, idx_slot, line);
+                        common::loops::emit_map(&mut self.chunks, self.current, fn_slot, arr_slot, mapped_slot, idx_slot, line);
                         // Now the mapped array is on stack. Flatten it one level.
                         let flat_idx = self.import("vybe:array", "flat");
                         self.emit_const(Value::I32(1));  // depth = 1
@@ -5188,7 +5188,7 @@ impl Compiler {
             }
             "map_size" => {
                 self.compile_expr(args[0])?;
-                common::dict::emit_keys(self.chunk(), line);
+                common::dict::emit_keys(&mut self.chunks, self.current, line);
                 common::collections::emit_len(&mut self.chunks, self.current, line);
             }
             "array_at" => {
