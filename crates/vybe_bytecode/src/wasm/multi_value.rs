@@ -8,23 +8,17 @@
 //!
 //! | Feature                         | Status |
 //! |---------------------------------|--------|
-//! | Multi-result function types     | ⚠  Our ABI is `(externref*) -> externref` — multi-result never emitted |
-//! | Multi-result block types        | ⚠  Blocks use type `externref` or `void` only |
-//! | Multi-result control flow       | ❌ |
+//! | Multi-result function types     | ✅ `chunk.result_arity` drives the type-section signature |
+//! | Multi-result function returns   | ✅ `RETURN` pops N values and surfaces them on the caller stack |
+//! | Multi-result block / loop types | ✅ `emit_block_typed(n)` / `emit_loop_typed(n)` register a `() -> externref^N` blocktype |
+//! | Multi-result IF types           | ⚠  Only via block/loop so far — no dedicated IF helper |
 //!
-//! We don't currently exploit multi-value on the emit side — every
-//! chunk returns exactly one externref, and all blocks / loops are
-//! either `void` or `(result externref)`. The type-section encoder in
-//! `types.rs` does correctly handle multi-result function types (the
-//! format allows a `vec(valtype)` for results), so adding multi-value
-//! support would be additive: nothing to undo.
-//!
-//! ## Why not?
-//!
-//! Our universal-externref representation makes multi-value mostly
-//! unnecessary — returns are already dynamic. The one legitimate use
-//! (returning both success + status from a host call) could be added
-//! per-import in the future.
+//! Pathway: a compiler sets `chunk.result_arity = N` (for function
+//! multi-return) or calls `emit_block_typed(line, N)` / `emit_loop_typed`
+//! (for multi-result blocks). The type section auto-registers the
+//! required `() -> externref^N` function types — see `types.rs`'s block
+//! pre-scan. The code emitter writes the corresponding typeidx
+//! blocktype (signed-LEB128) per the spec.
 
 use crate::Chunk;
 

@@ -23,6 +23,13 @@ partial_classes = true
 auto_base_call = true
 auto_init_methods = ["InitializeComponent"]  # auto-call in ctor if class defines it
 dynamic_add = true
+# C#: `return (a, b);` with `ValueTuple` syntax maps to WASM multi-value
+# at the ABI boundary. Destructure-side (`var (a, b) = f();`) isn't in
+# the grammar yet, so today only the callee-side saving applies —
+# non-destructure callers get the N values auto-repacked into an array.
+# When/if tuple-deconstruction lands in the grammar, the existing
+# `detect_multi_value_receive` path will light up automatically.
+multi_value_tuple_returns = true
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — bare global function calls and dotted static calls

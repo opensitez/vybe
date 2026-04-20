@@ -179,6 +179,7 @@ fn load_js_profile() -> vybex::profile::LanguageProfile {
         dynamic_add: true,
         commonjs_require: true,
         partial_classes: false,
+        multi_value_tuple_returns: false,
         byref_boxing: false,
         with_block: false,
         new_with_initializer: false,

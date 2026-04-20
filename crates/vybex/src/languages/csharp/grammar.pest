@@ -173,6 +173,11 @@ delegate_declaration = {
 statement = _{
     empty_statement
     | block_statement
+    // `var (a, b) = f();` — tuple deconstruction declaration. Listed
+    // before `local_var_declaration` so the `(` token is committed to
+    // the deconstruction parse before the general `var name = expr;`
+    // path consumes `var`.
+    | tuple_deconstruction_decl
     | local_var_declaration
     | if_statement
     | for_statement
@@ -201,6 +206,14 @@ local_var_declaration = {
 }
 
 var_kw = @{ "var" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// `var (a, b, c) = expr;` — tuple deconstruction declaration.
+// Introduces N fresh locals and destructures an N-tuple into them.
+// Pairs with the compiler's multi-value receive path when the RHS is
+// a direct call to a multi-return function.
+tuple_deconstruction_decl = {
+    var_kw ~ "(" ~ ident_name ~ ("," ~ ident_name)+ ~ ")" ~ "=" ~ expression ~ ";"
+}
 
 // ── If ──────────────────────────────────────────────────────────────────────
 
@@ -522,7 +535,21 @@ string_literal = @{
 // ── Type names ──────────────────────────────────────────────────────────────
 
 type_name = {
-    base_type ~ generic_type_args? ~ nullable_marker? ~ array_rank*
+    tuple_type
+    | base_type ~ generic_type_args? ~ nullable_marker? ~ array_rank*
+}
+
+// C# tuple type: `(int, string)` or `(int x, string y)`. Element names
+// are accepted but discarded — they're documentation, not part of
+// the lowered type. At least 2 elements (1-element form collides with
+// parenthesized type expressions).
+tuple_type = {
+    "(" ~ tuple_type_element ~ ("," ~ tuple_type_element)+ ~ ","? ~ ")"
+    ~ nullable_marker? ~ array_rank*
+}
+
+tuple_type_element = {
+    base_type ~ generic_type_args? ~ nullable_marker? ~ array_rank* ~ ident_name?
 }
 
 base_type = @{

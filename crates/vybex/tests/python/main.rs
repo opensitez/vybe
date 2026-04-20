@@ -16,3 +16,4 @@ mod test_syntax;
 mod test_classes_extended;
 mod test_comprehensions;
 mod test_error_handling;
+mod test_multi_value;

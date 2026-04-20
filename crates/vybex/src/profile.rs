@@ -71,6 +71,12 @@ pub struct LanguageProfile {
     /// VB: merge Partial Class declarations before compiling.
     pub partial_classes: bool,
 
+    /// Python: a function whose every `return` is a same-arity tuple
+    /// literal compiles to WASM multi-value — callee pushes N values,
+    /// caller destructures directly off the stack. Avoids the heap
+    /// tuple allocation for the common `return a, b` / `a, b = f()` idiom.
+    pub multi_value_tuple_returns: bool,
+
     /// VB: ByRef args wrapped in single-element arrays for call-by-reference.
     pub byref_boxing: bool,
 
@@ -333,6 +339,8 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         .and_then(|v| v.as_bool()).unwrap_or(false);
     let partial_classes = compiler.get("partial_classes")
         .and_then(|v| v.as_bool()).unwrap_or(false);
+    let multi_value_tuple_returns = compiler.get("multi_value_tuple_returns")
+        .and_then(|v| v.as_bool()).unwrap_or(false);
     let byref_boxing = compiler.get("byref_boxing")
         .and_then(|v| v.as_bool()).unwrap_or(false);
     let with_block = compiler.get("with_block")
@@ -493,7 +501,7 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         enum_as_ordinals, case_sensitive, string_indexing,
         array_upper_bound_inclusive, parens_for_index, entry_point,
         hoist_var, dynamic_add, commonjs_require,
-        partial_classes, byref_boxing, with_block,
+        partial_classes, multi_value_tuple_returns, byref_boxing, with_block,
         new_with_initializer, new_from_initializer, linq_queries, switch_fallthrough,
         auto_base_call, auto_init_methods,
         builtins, intrinsics, namespaces, known_types,

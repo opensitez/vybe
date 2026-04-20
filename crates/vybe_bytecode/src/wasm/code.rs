@@ -433,8 +433,29 @@ fn emit_core_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize,
         _ if op == Op::END => {
             body.push(0x0B); // end
         }
-        _ if op == Op::BLOCK => { let _ = read_u16(&chunk.code, ip); body.push(op.sub()); body.push(TYPE_VOID); }
-        _ if op == Op::LOOP => { let _ = read_u16(&chunk.code, ip); body.push(op.sub()); body.push(TYPE_VOID); }
+        _ if op == Op::BLOCK || op == Op::LOOP => {
+            // Our bytecode block header is (u16 end_offset, u8 result_count).
+            // Translate result_count to WASM blocktype:
+            //   0 → 0x40 (void)
+            //   1 → 0x6F (externref)
+            //   N → signed-LEB128 typeidx referencing a shared `() -> externref^N`
+            //       function type registered by types.rs.
+            let _ = read_u16(&chunk.code, ip);
+            let result_count = chunk.code[*ip]; *ip += 1;
+            body.push(op.sub());
+            match result_count {
+                0 => body.push(TYPE_VOID),
+                1 => body.push(TYPE_EXTERNREF),
+                n => {
+                    let tidx = *type_ctx.block_type_by_results.get(&n)
+                        .expect("block multi-value type was not pre-registered");
+                    // blocktype typeidx is encoded as signed LEB128 (s33) —
+                    // use the i32 writer so large indices don't collide with
+                    // the negative-valued single-valtype encodings.
+                    write_leb128_i32(body, tidx as i32);
+                }
+            }
+        }
         _ if op == Op::MEMORY_SIZE || op == Op::MEMORY_GROW => { body.push(op.sub()); body.push(0x00); }
         // Memory load/store with alignment + offset
         _ if op == Op::I32_LOAD || op == Op::F32_LOAD => { body.push(op.sub()); body.push(0x02); body.push(0x00); }

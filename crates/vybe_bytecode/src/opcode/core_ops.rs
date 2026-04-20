@@ -172,8 +172,12 @@ impl Op {
 opcode_category! {
     // Control
     [0x00] unreachable => None, "unreachable";
-    [0x02] block => U16, "block";
-    [0x03] r#loop => U16, "loop";
+    // block / loop carry (u16 end_offset, u8 result_count). The VM
+    // only needs end_offset for label_stack bookkeeping; the count
+    // tells the WASM emitter whether to write `void` (0), single
+    // externref (1), or a shared function-type blocktype (>=2).
+    [0x02] block => U16_U8, "block";
+    [0x03] r#loop => U16_U8, "loop";
     [0x08] throw => None, "throw";
     [0x0A] throw_ref => None, "throw_ref";
     [0x0B] end => None, "end";

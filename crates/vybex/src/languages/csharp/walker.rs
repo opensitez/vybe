@@ -85,6 +85,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             StmtKind::Block(stmts)
         }
         Rule::local_var_declaration => walk_local_var(pair)?,
+        Rule::tuple_deconstruction_decl => walk_tuple_deconstruction(pair)?,
         Rule::if_statement => walk_if(pair)?,
         Rule::for_statement => walk_for(pair)?,
         Rule::foreach_statement => walk_foreach(pair)?,
@@ -189,6 +190,31 @@ fn walk_using(pair: Pair<Rule>) -> Result<Import, String> {
 }
 
 // ── Variable declaration ────────────────────────────────────────────────────
+
+/// `var (a, b) = f();` → `Assign { targets: [Destructure(Array([a, b]))], value: f() }`.
+/// The compiler's multi-value receive path auto-defines any unresolved
+/// idents as new locals inside a function, so a single `Assign` statement
+/// is enough — no separate `VarDecl` is needed.
+fn walk_tuple_deconstruction(pair: Pair<Rule>) -> Result<StmtKind, String> {
+    let mut idents: Vec<String> = Vec::new();
+    let mut value: Option<Expression> = None;
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::var_kw => {}
+            Rule::ident_name => idents.push(p.as_str().to_string()),
+            Rule::expression => {
+                value = Some(walk_expression(p)?);
+            }
+            _ => {}
+        }
+    }
+    let value = value.ok_or("tuple deconstruction missing RHS")?;
+    let patterns: Vec<ArrayPatternElem> = idents.into_iter()
+        .map(|n| ArrayPatternElem::Pattern(BindingPattern::Ident(n), None))
+        .collect();
+    let target = Expression::new(ExprKind::Destructure(DestructurePattern::Array(patterns)));
+    Ok(StmtKind::Assign { targets: vec![target], value })
+}
 
 fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();

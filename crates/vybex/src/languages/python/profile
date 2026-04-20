@@ -18,6 +18,11 @@ case_sensitive = true
 string_indexing = "zero_based"
 base_keyword = "super"
 dynamic_add = true
+# Route `return a, b` / `a, b = f()` through WASM multi-value — a
+# uniform-tuple-return function gets chunk.result_arity = N set and
+# callers destructure straight off the stack instead of materialising
+# a heap tuple. See compiler/mod.rs `collect_multi_return_functions`.
+multi_value_tuple_returns = true
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — bare global function calls

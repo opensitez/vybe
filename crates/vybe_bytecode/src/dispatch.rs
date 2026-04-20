@@ -505,16 +505,29 @@ impl VM {
                     let argc = self.read_byte() as usize;
                     self.call_value(argc)?;
                 }
+                // Multi-value RETURN: the current chunk declares how many
+                // results it produces via `result_arity` (defaults to 1 —
+                // the single-value baseline). We pop N values from the
+                // top of the stack, unwind the frame, then push them back
+                // onto the caller's stack in original order. When the
+                // outermost frame unwinds we surface the last value as
+                // the "final" return (callers that want every value can
+                // read them off the stack before the frame is popped;
+                // `Ok(...)` is a scalar channel).
                 _ if op == Op::RETURN => {
-                    let result = self.pop();
+                    let frame_chunk = self.frame().chunk_index;
+                    let n = (self.chunks[frame_chunk].result_arity as usize).max(1);
+                    let split = self.stack.len().saturating_sub(n);
+                    let mut results: Vec<Value> = self.stack.split_off(split);
                     let base = self.frame().base;
                     self.close_upvalues(base);
                     self.frames.pop();
                     if self.frames.is_empty() || self.frames.len() < min_depth {
-                        return Ok(result);
+                        let last = results.pop().unwrap_or(Value::Null);
+                        return Ok(last);
                     }
                     self.stack.truncate(base);
-                    self.push(result)?;
+                    for r in results { self.push(r)?; }
                 }
                 _ if op == Op::REF_FUNC => {
                     let func_idx = self.read_u16() as usize;
@@ -1612,11 +1625,13 @@ impl VM {
                 // -- Block/loop structured control --
                 _ if op == Op::BLOCK => {
                     let end_offset = self.read_u16() as usize;
+                    let _result_count = self.read_byte();
                     let ip = self.frame().ip;
                     self.label_stack.push(LabelEntry { target: ip + end_offset, is_loop: false });
                 }
                 _ if op == Op::LOOP => {
                     let _body_size = self.read_u16();
+                    let _result_count = self.read_byte();
                     let ip = self.frame().ip;
                     self.label_stack.push(LabelEntry { target: ip, is_loop: true });
                 }

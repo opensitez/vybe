@@ -235,6 +235,19 @@ impl Compiler {
                     self.patch_jump(end);
                 } else {
                     self.compile_call(callee, args)?;
+                    // Multi-value result repack: when the callee is one of
+                    // the pre-scanned multi-return functions, CALL leaves
+                    // N values on the stack. A destructure-assign consumes
+                    // them directly (see `detect_multi_value_receive` in
+                    // compiler/mod.rs, which bypasses this branch); every
+                    // other use site — `r = f()`, `print(f())`, `f() + g()`
+                    // — expects a single value, so we re-pack here.
+                    if let ExprKind::Ident(name) = &callee.kind {
+                        let cname = self.canon(name);
+                        if let Some(&n) = self.multi_return_functions.get(&cname) {
+                            self.pack_multi_value_result(n);
+                        }
+                    }
                 }
             }
 

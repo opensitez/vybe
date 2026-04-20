@@ -38,6 +38,10 @@ pub struct WasmTypeContext {
     pub gc_type_count: u32,
     /// arity → WASM type index for (externref * arity) -> externref
     pub func_type_by_arity: std::collections::HashMap<u8, u32>,
+    /// Block-result count → WASM type index for `() -> externref^N`.
+    /// Populated only for N >= 2; multi-value block headers reference
+    /// these as their `blocktype` (signed-LEB128 typeidx).
+    pub block_type_by_results: std::collections::HashMap<u8, u32>,
     /// Type index for `(externref) -> ()` — the shape required by the
     /// tag section's exception tag (exception-handling proposal).
     pub exception_type_idx: u32,
@@ -75,6 +79,7 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
         func_type_base: 0,
         gc_type_count: 0,
         func_type_by_arity: std::collections::HashMap::new(),
+        block_type_by_results: std::collections::HashMap::new(),
         exception_type_idx: 0,
     };
 
@@ -89,6 +94,7 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
     // all resolve as forward references within a single recursive block.
     // Then: 3 array types (each its own implicit singleton rec group)
     // Then: function types for imports + chunks
+    // Then: N multi-value block types (one per distinct block `result_count >= 2`)
     // Then: 1 exception type `(externref) -> ()` for the tag section
     let gc_struct_pairs = type_entries.len() as u32;
     let array_count = 3u32;
@@ -99,7 +105,32 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
     ctx.string_array_type_idx  = gc_struct_pairs * 2 + 1;
     ctx.byte_array_type_idx    = gc_struct_pairs * 2 + 2;
     ctx.func_type_base = gc_type_count;
-    ctx.exception_type_idx = gc_type_count + func_count;
+
+    // Pre-scan chunks for BLOCK/LOOP result counts >= 2. Each distinct
+    // count gets its own `() -> externref^N` function type, which the
+    // block/loop emission references as a typeidx blocktype.
+    let mut block_result_counts: std::collections::BTreeSet<u8> =
+        std::collections::BTreeSet::new();
+    for chunk in chunks {
+        let code = &chunk.code;
+        let mut bip = 0;
+        while bip + 1 < code.len() {
+            if let Some(op) = crate::opcode::Op::decode(code[bip], code[bip + 1]) {
+                if op == crate::opcode::Op::BLOCK || op == crate::opcode::Op::LOOP {
+                    // Operand layout: prefix (1) + sub (1) + u16 offset (2) + u8 count (1) = 6
+                    if bip + 5 < code.len() {
+                        let count = code[bip + 4];
+                        if count >= 2 { block_result_counts.insert(count); }
+                    }
+                }
+                bip += super::code::opcode_size(op, code, bip);
+            } else {
+                bip += 2;
+            }
+        }
+    }
+    let block_type_count = block_result_counts.len() as u32;
+    ctx.exception_type_idx = gc_type_count + func_count + block_type_count;
 
     // Populate the name→typeidx maps up front so the supertype link in
     // each subtype can resolve a parent that appears later in the same
@@ -128,7 +159,7 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
     // 1 exception type.
     let exception_type_count = 1u32;
     let rec_group_count = if gc_struct_pairs > 0 { 1u32 } else { 0u32 };
-    let total = rec_group_count + array_count + func_count + exception_type_count;
+    let total = rec_group_count + array_count + func_count + block_type_count + exception_type_count;
     write_leb128_u32(&mut out, total);
 
     // ── GC struct types: one rec group of (described, descriptor) pairs ──
@@ -277,6 +308,20 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
         for _ in 0..result_count { out.push(TYPE_EXTERNREF); }
         // Record first type index seen for each arity (for call_ref/call_indirect dispatch)
         ctx.func_type_by_arity.entry(chunk.arity).or_insert(type_idx);
+    }
+
+    // Block multi-value types: one `() -> externref^N` per distinct
+    // block/loop `result_count >= 2` found in the pre-scan. Index is
+    // recorded in `ctx.block_type_by_results` for the code emitter to
+    // look up when writing a typeidx blocktype.
+    let block_type_base = ctx.func_type_base + import_count as u32 + chunks.len() as u32;
+    for (i, &count) in block_result_counts.iter().enumerate() {
+        let tidx = block_type_base + i as u32;
+        ctx.block_type_by_results.insert(count, tidx);
+        out.push(TYPE_FUNC);
+        write_leb128_u32(&mut out, 0);            // 0 params
+        write_leb128_u32(&mut out, count as u32); // N results
+        for _ in 0..count { out.push(TYPE_EXTERNREF); }
     }
 
     // Exception tag type — `(externref) -> ()` per the exception-handling

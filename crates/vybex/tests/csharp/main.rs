@@ -35,3 +35,4 @@ mod test_strings_advanced;
 mod test_interfaces_generics;
 mod test_modern_features;
 mod test_common_patterns;
+mod test_multi_value;

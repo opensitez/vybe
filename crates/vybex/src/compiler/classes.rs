@@ -30,6 +30,13 @@ impl Compiler {
         // `vybe.jspi` custom section — JS hosts wrap promising exports
         // via `WebAssembly.promising(...)` at load time.
         chunk.is_async = is_async;
+        // Multi-value tuple returns: if the pre-scan marked this function
+        // as a same-arity multi-tuple-return, stamp its result_arity here
+        // so the WASM type section emits `(externref^N) -> (externref^N)`
+        // and the VM's RETURN knows to pop N values off the stack.
+        if let Some(&n) = self.multi_return_functions.get(&cname) {
+            chunk.result_arity = n;
+        }
         self.chunks.push(chunk);
         self.scopes.push(Scope::new_function());
         let saved = self.current;

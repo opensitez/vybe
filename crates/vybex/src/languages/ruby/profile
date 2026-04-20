@@ -19,6 +19,12 @@ case_sensitive = true
 string_indexing = "zero_based"
 base_keyword = "super"
 dynamic_add = true
+# Same idiom as Python: `return a, b` / `x, y = f()` → WASM multi-value.
+# Ruby's walker emits a `Tuple` AST node (not `Array`) for multi-expr
+# returns specifically so the compiler pre-scan recognises the pattern.
+# Non-destructure callers (`r = f()`) get the N values auto-repacked
+# into an array by `compile_expr` for `Call`, preserving Ruby semantics.
+multi_value_tuple_returns = true
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — bare global function calls

@@ -238,22 +238,38 @@ impl Chunk {
 
     // ── Structured control flow (WASM-compatible) ──────────────────────
 
-    /// Emit BLOCK with placeholder end_offset. Returns patch position.
-    /// Caller emits block body, then calls patch_block + emit_end.
+    /// Emit BLOCK with placeholder end_offset and a `result_count` byte
+    /// (0 = void, 1 = single externref, >=2 = multi-value using a shared
+    /// function-type blocktype in the WASM binary). Returns patch
+    /// position of the u16 end_offset. Caller patches it after the body.
     pub fn emit_block(&mut self, line: u32) -> usize {
+        self.emit_block_typed(line, 0)
+    }
+
+    /// Explicit-result-count variant of `emit_block`.
+    pub fn emit_block_typed(&mut self, line: u32, result_count: u8) -> usize {
         self.emit_op(Op::BLOCK, line);
         self.emit(0x00, line);
         self.emit(0x00, line);
-        self.code.len() - 2 // position of the u16 end_offset
+        let patch = self.code.len() - 2;
+        self.emit(result_count, line);
+        patch
     }
 
-    /// Emit LOOP with placeholder body_size. Returns (patch_pos, loop_start).
-    /// loop_start is the ip AFTER the LOOP instruction (where br depth=0 restarts).
+    /// Emit LOOP with placeholder body_size and a zero result_count.
+    /// Returns (patch_pos, loop_start). `loop_start` is the ip AFTER the
+    /// LOOP header (where depth=0 branches restart).
     pub fn emit_loop_s(&mut self, line: u32) -> (usize, usize) {
+        self.emit_loop_typed(line, 0)
+    }
+
+    /// Explicit-result-count variant of `emit_loop_s`.
+    pub fn emit_loop_typed(&mut self, line: u32, result_count: u8) -> (usize, usize) {
         self.emit_op(Op::LOOP, line);
         self.emit(0x00, line);
         self.emit(0x00, line);
         let patch = self.code.len() - 2;
+        self.emit(result_count, line);
         let start = self.code.len();
         (patch, start)
     }
@@ -263,9 +279,12 @@ impl Chunk {
         self.emit_op(Op::END, line);
     }
 
-    /// Patch a BLOCK's end_offset: distance from after the BLOCK operand to the END.
+    /// Patch a BLOCK/LOOP's `end_offset`: distance from the first instruction
+    /// of the body (i.e. just past the u8 `result_count`) to `code.len()`.
+    /// `patch_pos` points at the u16 offset's first byte, so the body
+    /// starts at `patch_pos + 3` (u16 = 2 bytes, result_count = 1 byte).
     pub fn patch_block(&mut self, patch_pos: usize) {
-        let end_offset = self.code.len() - (patch_pos + 2);
+        let end_offset = self.code.len() - (patch_pos + 3);
         self.code[patch_pos] = (end_offset >> 8) as u8;
         self.code[patch_pos + 1] = (end_offset & 0xff) as u8;
     }

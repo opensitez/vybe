@@ -2445,6 +2445,83 @@ fn multi_value_result_arity_round_trips() {
 }
 
 #[test]
+fn multi_value_block_emits_typeidx_blocktype() {
+    // A chunk with a block that leaves 2 values on the stack should
+    // cause the emitter to register a `() -> externref^2` function
+    // type and reference it as the block's typeidx blocktype. We look
+    // for that specific function-type signature in the type section
+    // AND for a `0x02 <positive typeidx>` byte pair in the code.
+    let mut script = Chunk::new("<script>");
+    script.emit_op(Op::NULL, 0);
+    script.emit_op(Op::RETURN, 0);
+
+    let mut fun = Chunk::new("with_multi_block");
+    fun.arity = 0;
+    let bp = fun.emit_block_typed(0, 2);   // 2-result block
+    let k  = fun.add_constant(Value::F64(42.0));
+    fun.emit_op_u16(Op::CONST, k, 0);
+    fun.emit_op_u16(Op::CONST, k, 0);
+    fun.emit_op(Op::END, 0);
+    fun.patch_block(bp);
+    fun.emit_op(Op::DROP, 0);
+    fun.emit_op(Op::DROP, 0);
+    fun.emit_op(Op::NULL, 0);
+    fun.emit_op(Op::RETURN, 0);
+
+    let wasm = vybe_bytecode::wasm::write_wasm(&vec![script, fun]);
+
+    // Type section should contain a `(func () -> externref externref)`
+    // declaration: 0x60 0x00 0x02 0x6F 0x6F.
+    let mut pos = 8;
+    let mut multi_type_present = false;
+    while pos < wasm.len() {
+        let section_id = wasm[pos]; pos += 1;
+        let (size, r) = decode_leb128_u32(&wasm[pos..]); pos += r;
+        if section_id == 1 {
+            let end = pos + size as usize;
+            let pat = [0x60u8, 0x00, 0x02, 0x6F, 0x6F];
+            multi_type_present = wasm[pos..end].windows(pat.len()).any(|w| w == pat);
+            break;
+        }
+        pos += size as usize;
+    }
+    assert!(multi_type_present, "multi-result block did not register `() -> externref^2` type");
+}
+
+#[test]
+fn multi_value_return_pushes_n_results_on_caller_stack() {
+    // A callee declares result_arity=3, pushes three constants, and
+    // RETURNs. The caller must see all three on its stack afterwards —
+    // verified by summing them via DYN_ADD and asserting the total.
+    let mut callee = Chunk::new("triple");
+    callee.arity = 0;
+    callee.result_arity = 3;
+    let one  = callee.add_constant(Value::F64(1.0));
+    let ten  = callee.add_constant(Value::F64(10.0));
+    let hund = callee.add_constant(Value::F64(100.0));
+    callee.emit_op_u16(Op::CONST, one, 0);
+    callee.emit_op_u16(Op::CONST, ten, 0);
+    callee.emit_op_u16(Op::CONST, hund, 0);
+    callee.emit_op(Op::RETURN, 0);
+
+    let mut script = Chunk::new("<script>");
+    // Build a callable closure that wraps chunk index 1 (callee), call
+    // it with 0 args, then sum the three results that land on the stack.
+    script.emit_op_u16(Op::REF_FUNC, 1, 0);
+    script.emit(0, 0); // uv_count = 0
+    script.emit_op_u8(Op::CALL, 0, 0);
+    // Stack now holds [100, 10, 1] — sum them to 111.
+    script.emit_op(Op::DYN_ADD, 0);
+    script.emit_op(Op::DYN_ADD, 0);
+    script.emit_op(Op::RETURN, 0);
+
+    let mut vm = VM::new();
+    let result = vm.run(vec![script, callee]).unwrap();
+    assert_eq!(result.as_f64(), 111.0,
+        "multi-value RETURN should leave all 3 callee results on caller stack");
+}
+
+#[test]
 fn shared_memory_section_emits_shared_flag() {
     // Direct-call the shared-memory encoder — we don't use it from the
     // default pipeline because no compiler requests shared memory.
@@ -2552,7 +2629,7 @@ fn compilation_hints_branch_and_inlining_sections_present_for_loopy_code() {
     fun.arity = 0;
     let zero = fun.add_constant(Value::I32(0));
     fun.emit_op_u16(Op::CONST, zero, 0);
-    fun.emit_op_u16(Op::LOOP, 0, 0);
+    fun.emit_loop_s(0);
     fun.emit_op(Op::DUP, 0);
     fun.emit_op_u8(Op::BR_IF_LABEL, 0, 0);  // back-edge inside loop
     fun.emit_op(Op::END, 0);

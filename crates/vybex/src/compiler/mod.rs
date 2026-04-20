@@ -84,6 +84,12 @@ pub struct Compiler {
     current_class: Option<String>,
     /// Label for the next loop to be pushed (set by StmtKind::Labeled).
     pending_label: Option<String>,
+    /// Functions whose every explicit `Return` carries an `ExprKind::Tuple`
+    /// of the same arity. Populated by a pre-pass before any function is
+    /// compiled so both callee (set `chunk.result_arity`, push N values
+    /// without packing) and caller (destructure directly off the stack)
+    /// can agree on the multi-value ABI at emit time.
+    multi_return_functions: HashMap<String, u8>,
 }
 
 impl Compiler {
@@ -108,6 +114,7 @@ impl Compiler {
             pending_classes: HashMap::new(),
             current_class: None,
             pending_label: None,
+            multi_return_functions: HashMap::new(),
         }
     }
 
@@ -135,6 +142,14 @@ impl Compiler {
             module.body.clone()
         };
 
+        // Multi-value pre-scan: any function whose every explicit `Return`
+        // is a same-arity tuple literal is a candidate for the WASM
+        // multi-value ABI. We only opt in when the language profile
+        // requests it — other languages keep tuple-as-heap-object semantics.
+        if self.profile.multi_value_tuple_returns {
+            self.collect_multi_return_functions(&merged_body);
+        }
+
         for stmt in &merged_body {
             self.compile_stmt(stmt)?;
         }
@@ -160,6 +175,103 @@ impl Compiler {
         self.chunks[0].local_count = locals;
         common::bundle::finalize_with_stdlib(&mut self.chunks);
         Ok(self.chunks)
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Multi-value tuple returns (opt-in via `multi_value_tuple_returns`)
+    // ════════════════════════════════════════════════════════════════════════
+
+    /// Arity of the currently-compiling function if the pre-scan tagged
+    /// it multi-return, else `None`. Driven off `current_func_name` so
+    /// it automatically tracks function boundaries without a parallel
+    /// stack.
+    fn current_multi_return_arity(&self) -> Option<u8> {
+        let name = self.current_func_name.as_deref()?;
+        self.multi_return_functions.get(name).copied()
+    }
+
+    /// Emit the CALL for a multi-value receive context *without* the
+    /// trailing repack that `compile_expr` would normally add. The
+    /// destructure path consumes the N raw stack values directly.
+    pub(super) fn compile_call_raw(&mut self, value: &Expression) -> Result<(), String> {
+        if let ExprKind::Call { callee, args, .. } = &value.kind {
+            self.compile_call(callee, args)
+        } else {
+            self.compile_expr(value)
+        }
+    }
+
+    /// Pack the top-N stack values — produced by a multi-value CALL —
+    /// into a single array/tuple so downstream uses see the expected
+    /// single-value semantics. The last pushed value becomes element
+    /// `n-1`; order matches what a destructure would assign.
+    pub(super) fn pack_multi_value_result(&mut self, n: u8) {
+        let line = self.line;
+        // Reserve N consecutive slots via the existing scope helper —
+        // `emit_pack_n` stashes each stack value into a slot, then
+        // rebuilds the array from those slots in declaration order.
+        let mut first = 0u16;
+        for i in 0..n {
+            let s = self.scope_mut().define("__mv_pack");
+            if i == 0 { first = s; }
+        }
+        common::collections::emit_pack_n(&mut self.chunks, self.current, n as u16, first, line);
+    }
+
+    /// Return `Some((N, [ident...]))` when `targets`/`value` match the
+    /// "multi-value receive" shape:
+    ///   * exactly one target, a tuple-destructure of N plain identifiers
+    ///   * value is a direct `Ident(name)` call to a function the pre-scan
+    ///     tagged multi-return with matching arity N
+    /// For any other shape we return `None` and fall through to the
+    /// existing heap-tuple destructuring path.
+    fn detect_multi_value_receive(&self, targets: &[Expression], value: &Expression)
+        -> Option<(u8, Vec<String>)>
+    {
+        if targets.len() != 1 { return None; }
+        let idents = match &targets[0].kind {
+            ExprKind::Destructure(DestructurePattern::Array(pats)) => {
+                let mut names = Vec::with_capacity(pats.len());
+                for p in pats {
+                    match p {
+                        ArrayPatternElem::Pattern(BindingPattern::Ident(n), _) => {
+                            names.push(n.clone());
+                        }
+                        _ => return None,
+                    }
+                }
+                names
+            }
+            _ => return None,
+        };
+        let (callee_name, _args) = match &value.kind {
+            ExprKind::Call { callee, args, .. } => {
+                match &callee.kind {
+                    ExprKind::Ident(n) => (self.canon(n), args),
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        };
+        let n = *self.multi_return_functions.get(&callee_name)?;
+        if n as usize != idents.len() { return None; }
+        Some((n, idents))
+    }
+
+    /// Walk top-level function declarations and record every function
+    /// whose explicit `Return` statements all carry a tuple literal of
+    /// the same arity. Those functions opt into the WASM multi-value
+    /// ABI: callee sets `chunk.result_arity = N` and pushes the tuple
+    /// elements unpacked; caller destructures directly off the stack.
+    fn collect_multi_return_functions(&mut self, stmts: &[Statement]) {
+        for stmt in stmts {
+            if let StmtKind::FunctionDecl { name, body, .. } = &stmt.kind {
+                if let Some(arity) = uniform_tuple_return_arity(body) {
+                    let cname = self.canon(name);
+                    self.multi_return_functions.insert(cname, arity);
+                }
+            }
+        }
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -486,10 +598,40 @@ impl Compiler {
 
             // ── Assignment ──────────────────────────────────────────────
             StmtKind::Assign { targets, value } => {
-                self.compile_expr(value)?;
-                for (i, target) in targets.iter().enumerate() {
-                    if i < targets.len() - 1 { self.emit(Op::DUP); }
-                    self.compile_assign_target(target)?;
+                // Multi-value receive: `a, b, c = callee(...)` where the
+                // callee is a direct identifier call to a function the
+                // pre-scan marked multi-return with matching arity. We
+                // skip the heap-tuple alloc: compile the call, then let
+                // each destructured element LOCAL_SET off the stack.
+                if let Some((_arity, idents)) = self.detect_multi_value_receive(targets, value) {
+                    // Compile the call inline so the Call-expression path
+                    // in `expressions.rs` does NOT re-pack the results —
+                    // we want the raw N values on the stack for direct
+                    // destructuring.
+                    self.compile_call_raw(value)?;
+                    // Stack now holds [v0, v1, …, v(N-1)] with v(N-1) at
+                    // TOS. Reverse assignment maps v_i to the i-th target.
+                    // Inside a function, a fresh ident that doesn't already
+                    // resolve should become a new local — C#'s
+                    // `var (a, b) = f();` introduces new names, and this
+                    // lets the walker emit a single Assign statement
+                    // without juggling a Block + VarDecl pair.
+                    let in_function = self.scopes.len() > 1;
+                    for name in idents.iter().rev() {
+                        if in_function
+                            && self.scope().resolve(name).is_none()
+                            && (self.case_sensitive || self.scope().resolve_ci(name).is_none())
+                        {
+                            self.scope_mut().define(name);
+                        }
+                        self.emit_var_set(name);
+                    }
+                } else {
+                    self.compile_expr(value)?;
+                    for (i, target) in targets.iter().enumerate() {
+                        if i < targets.len() - 1 { self.emit(Op::DUP); }
+                        self.compile_assign_target(target)?;
+                    }
                 }
             }
 
@@ -879,6 +1021,21 @@ impl Compiler {
 
             // ── Return ──────────────────────────────────────────────────
             StmtKind::Return(val) => {
+                // Multi-value path: `return a, b, c` in a function the
+                // pre-scan marked as multi-return. We push each element
+                // separately (no heap tuple allocation) and let the VM's
+                // `RETURN` pop N values per `chunk.result_arity`.
+                let multi_n = self.current_multi_return_arity();
+                if let (Some(n), Some(v)) = (multi_n, val) {
+                    if let ExprKind::Tuple(elems) = &v.kind {
+                        if elems.len() == n as usize {
+                            for elem in elems { self.compile_expr(elem)?; }
+                            self.emit(Op::RETURN);
+                            return Ok(());
+                        }
+                    }
+                }
+
                 if let Some(v) = val {
                     self.compile_expr(v)?;
                 } else if let Some(rs) = self.current_result_slot {
@@ -2709,6 +2866,84 @@ impl Compiler {
 /// for VB injects `Me.__control_name = "<lower class name>"` immediately
 /// after the implicit `MyBase.New()` so the canonical control name is
 /// stamped before any property writes mirror to gui state.
+/// Return `Some(N)` if every explicit `Return` in `body` carries an
+/// `ExprKind::Tuple` literal of the same N elements. Returns `None` if
+/// the body has no explicit returns, a return with no value, a return
+/// with a non-tuple value, or tuples of mismatched arity. Recurses into
+/// nested control-flow bodies (if/loops/try) but **not** into nested
+/// function declarations — those are separate scopes.
+fn uniform_tuple_return_arity(body: &[Statement]) -> Option<u8> {
+    let mut arity: Option<u8> = None;
+    let mut saw_any = false;
+    fn walk(stmts: &[Statement], arity: &mut Option<u8>, saw_any: &mut bool) -> bool {
+        for s in stmts {
+            match &s.kind {
+                StmtKind::Return(Some(expr)) => {
+                    *saw_any = true;
+                    if let ExprKind::Tuple(elems) = &expr.kind {
+                        let n = elems.len();
+                        if n < 2 || n > 255 { return false; }
+                        match arity {
+                            None => *arity = Some(n as u8),
+                            Some(a) if *a as usize == n => {}
+                            _ => return false,
+                        }
+                    } else {
+                        return false;
+                    }
+                }
+                StmtKind::Return(None) => { *saw_any = true; return false; }
+                StmtKind::If { then_body, elifs, else_body, .. } => {
+                    if !walk(then_body, arity, saw_any) { return false; }
+                    for (_, b) in elifs {
+                        if !walk(b, arity, saw_any) { return false; }
+                    }
+                    if let Some(b) = else_body {
+                        if !walk(b, arity, saw_any) { return false; }
+                    }
+                }
+                StmtKind::While { body, else_body, .. }
+                | StmtKind::ForIn { body, else_body, .. } => {
+                    if !walk(body, arity, saw_any) { return false; }
+                    if let Some(b) = else_body {
+                        if !walk(b, arity, saw_any) { return false; }
+                    }
+                }
+                StmtKind::For { body, .. } | StmtKind::DoWhile { body, .. }
+                | StmtKind::With { body, .. } | StmtKind::Using { body, .. } => {
+                    if !walk(body, arity, saw_any) { return false; }
+                }
+                StmtKind::Try { body, catches, else_body, finally } => {
+                    if !walk(body, arity, saw_any) { return false; }
+                    for c in catches {
+                        if !walk(&c.body, arity, saw_any) { return false; }
+                    }
+                    if let Some(b) = else_body {
+                        if !walk(b, arity, saw_any) { return false; }
+                    }
+                    if let Some(b) = finally {
+                        if !walk(b, arity, saw_any) { return false; }
+                    }
+                }
+                StmtKind::Block(b) => {
+                    if !walk(b, arity, saw_any) { return false; }
+                }
+                StmtKind::Labeled { body, .. } => {
+                    if !walk(std::slice::from_ref(body.as_ref()), arity, saw_any) {
+                        return false;
+                    }
+                }
+                // Nested function / class declarations are their own scopes.
+                StmtKind::FunctionDecl { .. } | StmtKind::ClassDecl { .. } => {}
+                _ => {}
+            }
+        }
+        true
+    }
+    if !walk(body, &mut arity, &mut saw_any) { return None; }
+    if saw_any { arity } else { None }
+}
+
 fn is_identity_stamp(stmt: &Statement) -> bool {
     if let StmtKind::Assign { targets, .. } = &stmt.kind {
         if targets.len() == 1 {

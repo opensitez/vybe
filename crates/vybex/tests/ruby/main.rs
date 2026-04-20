@@ -7,3 +7,4 @@ mod test_builtins;
 mod test_programs;
 mod test_operators;
 mod test_debug;
+mod test_multi_value;

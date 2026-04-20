@@ -788,10 +788,13 @@ fn walk_return(pair: Pair<Rule>) -> Result<StmtKind, String> {
             }
         }
     }
+    // Ruby `return a, b` semantically returns an Array, but we model
+    // it as `ExprKind::Tuple` so the compiler's multi-value pre-scan
+    // can recognise the uniform-arity pattern. Tuple and Array lower
+    // to the same `wasm:js-array` packed representation — the AST
+    // distinction is purely to drive the multi-value opt-in.
     let expr = if exprs.len() > 1 {
-        Some(Expression::new(ExprKind::Array(
-            exprs.into_iter().map(|e| ArrayElement { key: None, value: e, spread: false, by_ref: false }).collect()
-        )))
+        Some(Expression::new(ExprKind::Tuple(exprs)))
     } else {
         exprs.into_iter().next()
     };
