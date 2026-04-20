@@ -1,6 +1,6 @@
-//! Common AST targeting WASM bytecode via vybe_compiler_common.
+//! Common AST targeting WASM bytecode via the [`crate::emitter`] module.
 //!
-//! Maps to compiler_common modules:
+//! Maps to emitter modules:
 //!   classes    → ClassDecl, ClassMember, Property
 //!   functions  → FunctionDecl, Param, Lambda
 //!   collections → Array, ForIn, destructuring

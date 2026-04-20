@@ -3,6 +3,7 @@ pub mod modules;
 pub mod controls;
 pub mod namespaces;
 pub mod builtin_types;
+pub mod stdlib_aliases;
 
 #[cfg(feature = "gui")]
 pub mod gui_state;

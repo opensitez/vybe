@@ -27,7 +27,7 @@
 //! it linearly.
 
 use crate::compiler::Compiler;
-use vybe_compiler_common as common;
+use crate::emitter as common;
 use common::dotnet::classes::{dotnet_classes, builder, DotnetClass, MethodTarget};
 use common::dotnet::classes::builder::{SetterBinding, MethodBinding};
 

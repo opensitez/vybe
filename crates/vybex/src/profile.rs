@@ -148,7 +148,7 @@ pub enum StringIndexing {
 /// Namespace resolution configuration.
 #[derive(Debug, Clone, Default)]
 pub struct NamespaceConfig {
-    /// Use .NET BCL resolution from vybe_compiler_common::dotnet.
+    /// Use .NET BCL resolution from crate::emitter::dotnet.
     /// When true, the compiler uses dotnet::namespace_roots(), dotnet::default_interface_imports(),
     /// dotnet::resolve_dotted_name(), etc. — the full .NET resolution pipeline.
     pub use_dotnet: bool,

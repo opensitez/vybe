@@ -11,7 +11,6 @@ gui_forms = ["gui"]
 
 [dependencies]
 vybe_bytecode = { workspace = true }
-vybe_compiler_common = { workspace = true }
 vybe_widgets = { workspace = true, optional = true }
 regex = { workspace = true }
 sqlx = { workspace = true }

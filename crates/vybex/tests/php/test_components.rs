@@ -56,7 +56,7 @@ class Item implements Printable {
 // ── Cross-language exception compatibility ──────────────────
 #[test]
 fn canonical_exception_names() {
-    use vybe_compiler_common::errors::canonical_exception_name;
+    use vybex::emitter::errors::canonical_exception_name;
     assert_eq!(canonical_exception_name("RuntimeException"), "RuntimeError");
     assert_eq!(canonical_exception_name("ValueError"), "ValueError");
     assert_eq!(canonical_exception_name("TypeError"), "TypeError");

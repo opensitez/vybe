@@ -455,7 +455,7 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
 /// corresponding registered host fn (if any). Idempotent — safe to call
 /// multiple times.
 pub fn override_stdlib_globals_with_host_fns(vm: &mut VM) {
-    for &(module, name, global_name) in vybe_compiler_common::bundle::IMPORT_ALIASES {
+    for &(module, name, global_name) in crate::stdlib_aliases::IMPORT_ALIASES {
         if let Some(&idx) = vm.host_registry.get(&(module.to_string(), name.to_string())) {
             if let Some(host_val) = vm.func_table.get(idx).cloned() {
                 vm.globals.insert(global_name.to_string(), host_val);
