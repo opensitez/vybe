@@ -1,6 +1,6 @@
 //! # exception-handling proposal
 //!
-//! Spec: <https://github.com/WebAssembly/exception-handling>.
+//! Spec: `proposals/spec/proposals/exception-handling/`.
 //! Adds `try_table`, `throw`, `throw_ref`, tags, and catch handlers.
 //! The proposal has been through several revisions — our emitter
 //! targets the **"new EH"** (`try_table`) variant accepted in 2023.

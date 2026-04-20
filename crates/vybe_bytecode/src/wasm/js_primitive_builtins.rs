@@ -1,6 +1,6 @@
 //! # js-primitive-builtins proposal
 //!
-//! Spec: <https://github.com/WebAssembly/js-primitive-builtins>. Extends
+//! Spec: `proposals/js-primitive-builtins/`. Extends
 //! js-string-builtins with imports for the remaining JS primitives:
 //! `number`, `boolean`, `undefined`, `symbol`, `bigint`. This module is
 //! the **single source of truth** for everything under the modules:

@@ -1,6 +1,6 @@
 //! # extended-name-section proposal
 //!
-//! Spec: <https://github.com/WebAssembly/extended-name-section>. Extends
+//! Spec: `proposals/extended-name-section/`. Extends
 //! the standard custom `"name"` section (originally only module / func /
 //! local / type / field / tag names) with subsections for:
 //!

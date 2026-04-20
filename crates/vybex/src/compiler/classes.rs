@@ -15,6 +15,7 @@ impl Compiler {
     pub(super) fn compile_function_decl(
         &mut self, name: &str, params: &[Param], return_type: &Option<String>,
         body: &[Statement], _is_sub: bool, _is_generator: bool, handles: &[String],
+        is_async: bool,
     ) -> Result<(), String> {
         let cname = self.canon(name);
         self.defined_globals.insert(cname.clone());
@@ -24,7 +25,11 @@ impl Compiler {
         let has_rest = params.last().map_or(false, |p| p.is_rest);
         let arity: u8 = if has_rest { 255 } else { params.len() as u8 };
         let func_idx = self.chunks.len();
-        let chunk = common::functions::create_function_chunk(name, arity);
+        let mut chunk = common::functions::create_function_chunk(name, arity);
+        // Mark the chunk so the WASM emitter can list it in the
+        // `vybe.jspi` custom section — JS hosts wrap promising exports
+        // via `WebAssembly.promising(...)` at load time.
+        chunk.is_async = is_async;
         self.chunks.push(chunk);
         self.scopes.push(Scope::new_function());
         let saved = self.current;

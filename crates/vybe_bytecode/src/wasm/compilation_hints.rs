@@ -1,6 +1,6 @@
 //! # compilation-hints proposal
 //!
-//! Spec: <https://github.com/WebAssembly/compilation-hints>. Adds
+//! Spec: `proposals/compilation-hints/`. Adds
 //! optional custom sections under the `metadata.code.*` namespace that
 //! tell a WASM engine how to prioritize compilation / optimization of
 //! the module. They are **pure performance hints** — semantics-preserving.

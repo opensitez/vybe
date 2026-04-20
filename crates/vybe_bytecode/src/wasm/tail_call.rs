@@ -1,6 +1,6 @@
 //! # tail-call proposal
 //!
-//! Spec: <https://github.com/WebAssembly/tail-call>. Adds
+//! Spec: `proposals/spec/proposals/tail-call/`. Adds
 //! `return_call` (0x12), `return_call_indirect` (0x13), and
 //! `return_call_ref` (`0xFC 0x15`) — tail-call variants that reuse the
 //! caller's frame, enabling unbounded mutual recursion without stack

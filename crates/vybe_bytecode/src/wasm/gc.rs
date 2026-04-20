@@ -1,7 +1,6 @@
 //! # gc proposal
 //!
-//! Spec: <https://github.com/WebAssembly/gc> (in-tree at
-//! `proposals/gc/proposals/gc/MVP.md`). Adds garbage-collected reference
+//! Spec: `proposals/gc/proposals/gc/MVP.md`. Adds garbage-collected reference
 //! types + casts + struct/array ops. Prefix `0xFB`, plus four
 //! core-prefix extensions (`ref.eq`, `ref.as_non_null`, `br_on_null`,
 //! `br_on_non_null`).

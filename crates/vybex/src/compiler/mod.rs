@@ -946,8 +946,8 @@ impl Compiler {
             }
 
             // ── Function declaration ────────────────────────────────────
-            StmtKind::FunctionDecl { name, params, return_type, body, modifiers: _, handles, is_async: _, is_generator, is_sub } => {
-                self.compile_function_decl(name, params, return_type, body, *is_sub, *is_generator, handles)?;
+            StmtKind::FunctionDecl { name, params, return_type, body, modifiers: _, handles, is_async, is_generator, is_sub } => {
+                self.compile_function_decl(name, params, return_type, body, *is_sub, *is_generator, handles, *is_async)?;
             }
 
             // ── Class declaration ───────────────────────────────────────

@@ -690,15 +690,51 @@ impl VM {
                 // arrays of packed element types (i8/i16). Our array model
                 // is externref-only, so no packing conversion is needed:
                 // both behave identically to `array.get`.
+                // `array.get_s $t` / `array.get_u $t` — packed-array read.
+                // Spec applies these only to arrays whose field type is
+                // packed (i8 / i16); the byte value is sign-extended (S)
+                // or zero-extended (U) to i32. We honour that on typed
+                // storage (TypedArray / ArrayBuffer) and fall back to a
+                // plain read for Value arrays.
                 _ if op == Op::ARRAY_GET_S || op == Op::ARRAY_GET_U => {
                     let _typeidx = self.read_u16();
+                    let is_signed = op == Op::ARRAY_GET_S;
                     let idx = self.pop().as_i32().max(0) as usize;
                     let arr = self.pop();
                     let val = if let Value::Object(obj) = arr {
                         let o = obj.lock().unwrap();
-                        if let ObjectKind::Array(ref elems) = o.kind {
-                            elems.get(idx).cloned().unwrap_or(Value::Null)
-                        } else { Value::Null }
+                        match &o.kind {
+                            ObjectKind::TypedArray(ta) => {
+                                let buf = ta.buffer.lock().unwrap();
+                                let bpe = ta.elem.bytes_per_element();
+                                let base = ta.byte_offset + idx * bpe;
+                                match bpe {
+                                    1 => {
+                                        let b = buf.get(base).copied().unwrap_or(0);
+                                        let v = if is_signed { (b as i8) as i32 } else { b as i32 };
+                                        Value::I32(v)
+                                    }
+                                    2 => {
+                                        let lo = buf.get(base).copied().unwrap_or(0) as u16;
+                                        let hi = buf.get(base + 1).copied().unwrap_or(0) as u16;
+                                        let raw = lo | (hi << 8);
+                                        let v = if is_signed { (raw as i16) as i32 } else { raw as i32 };
+                                        Value::I32(v)
+                                    }
+                                    _ => Value::Null,
+                                }
+                            }
+                            ObjectKind::ArrayBuffer(ab) => {
+                                let buf = ab.bytes.lock().unwrap();
+                                let b = buf.get(idx).copied().unwrap_or(0);
+                                let v = if is_signed { (b as i8) as i32 } else { b as i32 };
+                                Value::I32(v)
+                            }
+                            ObjectKind::Array(elems) => {
+                                elems.get(idx).cloned().unwrap_or(Value::Null)
+                            }
+                            _ => Value::Null,
+                        }
                     } else { Value::Null };
                     self.push(val)?;
                 }
@@ -726,6 +762,55 @@ impl VM {
                 _ if op == Op::STRUCT_NEW_DEFAULT => {
                     let _typeidx = self.read_u16();
                     self.push(Value::Object(Arc::new(Mutex::new(Object::new()))))?;
+                }
+                // ── Custom Descriptors proposal ───────────────────────────
+                // See `proposals/custom-descriptors/`.
+                //
+                // `struct.new_desc $t`   — [field_0 .. field_{N-1}, descriptor]
+                //                          → [ref to $t with descriptor attached]
+                // `struct.new_default_desc $t` — [descriptor]
+                //                                → [default-initialised ref with descriptor]
+                // `ref.get_desc $t`      — [ref] → [descriptor]
+                //
+                // Vybe's VM doesn't use descriptors for method dispatch at
+                // runtime (we go through TypeRegistry / __type properties),
+                // but we honour the opcodes so emitted .wasm that leans on
+                // descriptor semantics stays correct on engines that do.
+                // Descriptors are stashed in the object's `__descriptor`
+                // property slot — reading them back via REF_GET_DESC just
+                // returns whatever was stamped at construction.
+                _ if op == Op::STRUCT_NEW_DESC => {
+                    let _typeidx = self.read_u16();
+                    let descriptor = self.pop();
+                    // Pop N field values — spec takes exactly the type's
+                    // declared field count, but our VM treats all fields
+                    // as an untyped blob, so we snapshot whatever's on the
+                    // stack that came in with STRUCT_NEW-style pairing is
+                    // not used here (descriptor variant is lightweight).
+                    // Users driving this opcode directly push a single
+                    // descriptor + zero fields; languages that need fields
+                    // prefer STRUCT_NEW.
+                    let mut obj = Object::new();
+                    obj.properties.insert("__descriptor".into(), descriptor);
+                    self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
+                }
+                _ if op == Op::STRUCT_NEW_DEFAULT_DESC => {
+                    let _typeidx = self.read_u16();
+                    let descriptor = self.pop();
+                    let mut obj = Object::new();
+                    obj.properties.insert("__descriptor".into(), descriptor);
+                    self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
+                }
+                _ if op == Op::REF_GET_DESC => {
+                    let _typeidx = self.read_u16();
+                    let val = self.pop();
+                    let desc = if let Value::Object(o) = &val {
+                        o.lock().unwrap().properties
+                            .get("__descriptor").cloned().unwrap_or(Value::Null)
+                    } else {
+                        Value::Null
+                    };
+                    self.push(desc)?;
                 }
                 // `struct.get_s $t i` / `struct.get_u $t i` — packed field
                 // variants. Our structs have externref fields only, so
@@ -977,26 +1062,47 @@ impl VM {
                     }
                     // Value stays on stack (cast is a no-op if it passes)
                 }
+                // `br_on_cast l ht` / `br_on_cast_fail l ht` — structured
+                // branch keyed off a runtime type test. Operand is
+                // (u16 type-name-idx, u8 label-depth), matching BR_LABEL's
+                // label-stack discipline so the VM can honour the branch
+                // without a parallel byte-offset table.
                 _ if op == Op::BR_ON_CAST => {
                     let type_name_idx = self.read_u16();
-                    let offset = self.read_i16();
+                    let depth = self.read_byte() as usize;
                     let target_name = self.constant_str(type_name_idx);
                     let val = self.peek(0).clone();
                     if self.test_type(&val, &target_name) {
-                        // Type matches: branch (value stays on stack)
-                        let ip = self.frame().ip as i64 + offset as i64;
-                        self.frame_mut().ip = ip as usize;
+                        if let Some(entry) = self.label_stack.iter().rev().nth(depth) {
+                            let target = entry.target;
+                            let is_loop = entry.is_loop;
+                            self.frames.last_mut().unwrap().ip = target;
+                            let len = self.label_stack.len();
+                            if is_loop {
+                                self.label_stack.truncate(len - depth);
+                            } else {
+                                self.label_stack.truncate(len - depth - 1);
+                            }
+                        }
                     }
-                    // Type doesn't match: fall through (value stays on stack)
                 }
                 _ if op == Op::BR_ON_CAST_FAIL => {
                     let type_name_idx = self.read_u16();
-                    let offset = self.read_i16();
+                    let depth = self.read_byte() as usize;
                     let target_name = self.constant_str(type_name_idx);
                     let val = self.peek(0).clone();
                     if !self.test_type(&val, &target_name) {
-                        let ip = self.frame().ip as i64 + offset as i64;
-                        self.frame_mut().ip = ip as usize;
+                        if let Some(entry) = self.label_stack.iter().rev().nth(depth) {
+                            let target = entry.target;
+                            let is_loop = entry.is_loop;
+                            self.frames.last_mut().unwrap().ip = target;
+                            let len = self.label_stack.len();
+                            if is_loop {
+                                self.label_stack.truncate(len - depth);
+                            } else {
+                                self.label_stack.truncate(len - depth - 1);
+                            }
+                        }
                     }
                 }
 

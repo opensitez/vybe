@@ -1,6 +1,6 @@
 //! # esm-integration proposal
 //!
-//! Spec: <https://github.com/WebAssembly/esm-integration>. Allows a
+//! Spec: `proposals/esm-integration/`. Allows a
 //! `.wasm` module to be loaded directly by a JS host via
 //! `import { … } from "./module.wasm"`. This proposal is **mostly a JS
 //! host concern** — it says nothing about WASM bytecode format. The

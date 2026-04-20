@@ -1,6 +1,6 @@
 //! # reference-types proposal
 //!
-//! Spec: <https://github.com/WebAssembly/reference-types> (merged into core
+//! Spec: `proposals/reference-types/` (merged into core
 //! WASM spec in 2022 — no longer strictly a "proposal"). Adds:
 //!
 //! * Two new reference types: `externref` (0x6F) and `funcref` (0x70)

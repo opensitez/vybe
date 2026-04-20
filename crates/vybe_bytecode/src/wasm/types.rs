@@ -23,11 +23,18 @@ pub struct WasmTypeContext {
     pub desc_type_indices: std::collections::HashMap<String, u32>,
     /// type_name → vec of field names in order (for field index lookup)
     pub struct_fields: std::collections::HashMap<String, Vec<String>>,
-    /// WASM type index for the dynamic array type
+    /// WASM type index for the dynamic array type — `(array (mut externref))`.
+    /// Used for every `Value`-typed array in Vybe's uniform representation.
     pub array_type_idx: u32,
+    /// WASM type index for `(array (mut i16))` — UTF-16 code-unit arrays.
+    /// Strings-as-GC-array (inline string) path will reference this.
+    pub string_array_type_idx: u32,
+    /// WASM type index for `(array (mut i8))` — byte arrays. Backs
+    /// `Uint8Array` / `Int8Array` when we inline TypedArrays.
+    pub byte_array_type_idx: u32,
     /// First function type index (after GC types)
     pub func_type_base: u32,
-    /// Total number of GC types (structs + descriptors + array)
+    /// Total number of GC types (structs + descriptors + array types)
     pub gc_type_count: u32,
     /// arity → WASM type index for (externref * arity) -> externref
     pub func_type_by_arity: std::collections::HashMap<u8, u32>,
@@ -63,6 +70,8 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
         desc_type_indices: std::collections::HashMap::new(),
         struct_fields: std::collections::HashMap::new(),
         array_type_idx: 0,
+        string_array_type_idx: 0,
+        byte_array_type_idx: 0,
         func_type_base: 0,
         gc_type_count: 0,
         func_type_by_arity: std::collections::HashMap::new(),
@@ -75,27 +84,26 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
         .unwrap_or_default();
 
     // Layout:
-    // For each TypeEntry: 2 types (described struct + descriptor struct)
-    // Then: 1 array type
+    // One big rec group holding every described/descriptor pair so that
+    // parent/child subtype links and described↔descriptor back-pointers
+    // all resolve as forward references within a single recursive block.
+    // Then: 3 array types (each its own implicit singleton rec group)
     // Then: function types for imports + chunks
     // Then: 1 exception type `(externref) -> ()` for the tag section
     let gc_struct_pairs = type_entries.len() as u32;
-    let array_count = 1u32;
+    let array_count = 3u32;
     let func_count = (import_count + chunks.len()) as u32;
-    // Each TypeEntry produces 2 types in a rec group
     let gc_type_count = gc_struct_pairs * 2 + array_count;
     ctx.gc_type_count = gc_type_count;
-    ctx.array_type_idx = gc_struct_pairs * 2;
+    ctx.array_type_idx         = gc_struct_pairs * 2;
+    ctx.string_array_type_idx  = gc_struct_pairs * 2 + 1;
+    ctx.byte_array_type_idx    = gc_struct_pairs * 2 + 2;
     ctx.func_type_base = gc_type_count;
-    // Exception type sits after every chunk function type.
     ctx.exception_type_idx = gc_type_count + func_count;
 
-    let exception_type_count = 1u32;
-    let total = gc_type_count + func_count + exception_type_count;
-    write_leb128_u32(&mut out, total);
-
-    // ── GC struct types with custom descriptors ──
-    // Each TypeEntry becomes a rec group of (described, descriptor)
+    // Populate the name→typeidx maps up front so the supertype link in
+    // each subtype can resolve a parent that appears later in the same
+    // rec group.
     for (i, te) in type_entries.iter().enumerate() {
         let described_idx = (i as u32) * 2;
         let descriptor_idx = (i as u32) * 2 + 1;
@@ -103,44 +111,96 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
         ctx.struct_type_indices.insert(name_lower.clone(), described_idx);
         ctx.desc_type_indices.insert(name_lower.clone(), descriptor_idx);
         ctx.struct_fields.insert(name_lower, te.fields.clone());
+    }
 
-        // Described struct: (descriptor $desc_idx) (struct (field (mut externref))*)
-        // Binary: CD_SUB_FINAL 0_supertypes CD_DESCRIPTOR desc_idx GC_STRUCT field_count fields...
-        out.push(CD_SUB_FINAL);
-        write_leb128_u32(&mut out, 0); // 0 supertypes (TODO: use te.parent)
-        out.push(CD_DESCRIPTOR);
-        write_leb128_u32(&mut out, descriptor_idx);
-        out.push(GC_STRUCT);
-        write_leb128_u32(&mut out, te.fields.len() as u32);
-        for _ in &te.fields {
-            out.push(TYPE_EXTERNREF);
-            out.push(GC_MUT);
-        }
-
-        // Descriptor struct: (describes $described_idx) (struct (field $proto externref) (field $method funcref)*)
-        // Binary: CD_SUB_FINAL 0_supertypes CD_DESCRIBES described_idx GC_STRUCT field_count fields...
-        out.push(CD_SUB_FINAL);
-        write_leb128_u32(&mut out, 0);
-        out.push(CD_DESCRIBES);
-        write_leb128_u32(&mut out, described_idx);
-        out.push(GC_STRUCT);
-        let desc_field_count = 1 + te.methods.len(); // proto + methods
-        write_leb128_u32(&mut out, desc_field_count as u32);
-        // First field: JS prototype (externref, immutable)
-        out.push(TYPE_EXTERNREF);
-        out.push(GC_IMMUT);
-        // Method fields: funcref for each method
-        for _ in &te.methods {
-            out.push(TYPE_FUNCREF);
-            out.push(GC_IMMUT);
+    // Types with children must be left "open" (`sub`) rather than
+    // `sub final` so their subtypes can extend them.
+    let mut has_children: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    for te in &type_entries {
+        if !te.parent.is_empty() {
+            has_children.insert(te.parent.to_lowercase());
         }
     }
 
-    // ── Array type ──
-    // (array (mut externref)) — for dynamic arrays
-    out.push(GC_ARRAY);
-    out.push(TYPE_EXTERNREF);
-    out.push(GC_MUT);
+    // Section header: number of top-level rectypes. One big rec group
+    // for the struct pairs (if any) + 3 array singletons + func types +
+    // 1 exception type.
+    let exception_type_count = 1u32;
+    let rec_group_count = if gc_struct_pairs > 0 { 1u32 } else { 0u32 };
+    let total = rec_group_count + array_count + func_count + exception_type_count;
+    write_leb128_u32(&mut out, total);
+
+    // ── GC struct types: one rec group of (described, descriptor) pairs ──
+    if gc_struct_pairs > 0 {
+        out.push(GC_REC);
+        write_leb128_u32(&mut out, gc_struct_pairs * 2);
+
+        for (i, te) in type_entries.iter().enumerate() {
+            let described_idx = (i as u32) * 2;
+            let descriptor_idx = (i as u32) * 2 + 1;
+            let name_lower = te.name.to_lowercase();
+
+            // Opening byte: `sub final` (0x4F) if no subtype extends this,
+            // else `sub` (0x50) leaving the type open for extension.
+            let described_final = !has_children.contains(&name_lower);
+            let sub_byte = if described_final { CD_SUB_FINAL } else { 0x50 };
+
+            // Described struct subtype. Supertype count = 1 when parent
+            // is named and resolvable, else 0. Parent's described typeidx
+            // is the supertype link (the descriptor-struct side mirrors
+            // by linking to the parent's descriptor).
+            out.push(sub_byte);
+            let parent_lower = te.parent.to_lowercase();
+            if let Some(&parent_idx) = ctx.struct_type_indices.get(&parent_lower) {
+                write_leb128_u32(&mut out, 1);
+                write_leb128_u32(&mut out, parent_idx);
+            } else {
+                write_leb128_u32(&mut out, 0);
+            }
+            out.push(CD_DESCRIPTOR);
+            write_leb128_u32(&mut out, descriptor_idx);
+            out.push(GC_STRUCT);
+            write_leb128_u32(&mut out, te.fields.len() as u32);
+            for _ in &te.fields {
+                out.push(TYPE_EXTERNREF);
+                out.push(GC_MUT);
+            }
+
+            // Descriptor struct subtype — same supertype story but keyed
+            // off the parent's descriptor index.
+            out.push(sub_byte);
+            if let Some(&parent_desc_idx) = ctx.desc_type_indices.get(&parent_lower) {
+                write_leb128_u32(&mut out, 1);
+                write_leb128_u32(&mut out, parent_desc_idx);
+            } else {
+                write_leb128_u32(&mut out, 0);
+            }
+            out.push(CD_DESCRIBES);
+            write_leb128_u32(&mut out, described_idx);
+            out.push(GC_STRUCT);
+            let desc_field_count = 1 + te.methods.len();
+            write_leb128_u32(&mut out, desc_field_count as u32);
+            out.push(TYPE_EXTERNREF);
+            out.push(GC_IMMUT);
+            for _ in &te.methods {
+                out.push(TYPE_FUNCREF);
+                out.push(GC_IMMUT);
+            }
+        }
+    }
+
+    // ── Array types ──
+    // Three flavours declared in the order the context recorded above:
+    //   array_type_idx        → (array (mut externref)) — dynamic Value arrays
+    //   string_array_type_idx → (array (mut i16))       — UTF-16 strings
+    //   byte_array_type_idx   → (array (mut i8))        — byte / TypedArray backing
+    // Packed types (i8 / i16) are only valid as array/struct field storage
+    // types, not as top-level value types — they're emitted with the
+    // `PACKED_*` byte tags per the GC proposal.
+    out.push(GC_ARRAY); out.push(TYPE_EXTERNREF); out.push(GC_MUT);
+    out.push(GC_ARRAY); out.push(PACKED_I16);     out.push(GC_MUT);
+    out.push(GC_ARRAY); out.push(PACKED_I8);      out.push(GC_MUT);
 
     // ── Function types ──
     // ── Function types with proper signatures ──

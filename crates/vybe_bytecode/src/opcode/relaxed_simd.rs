@@ -1,6 +1,6 @@
 //! Relaxed-SIMD proposal opcodes.
 //!
-//! Spec: <https://github.com/WebAssembly/relaxed-simd>.
+//! Spec: `proposals/spec/proposals/relaxed-simd/`.
 //! The proposal assigns these to the `0xFD` SIMD prefix but at sub-values
 //! `0x100..=0x113` — outside the u8 range used by the base `Op(u16)`
 //! representation. We sidestep that by storing them under an internal

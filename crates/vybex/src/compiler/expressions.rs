@@ -929,9 +929,9 @@ impl Compiler {
 
             // ── FunctionExpr (JS) ───────────────────────────────────────
             ExprKind::FunctionExpr(stmt) => {
-                if let StmtKind::FunctionDecl { name, params, return_type, body, is_sub, is_generator, handles, .. } = &stmt.kind {
+                if let StmtKind::FunctionDecl { name, params, return_type, body, is_sub, is_generator, handles, is_async, .. } = &stmt.kind {
                     let fn_name = if name.is_empty() { "__anon_fn" } else { name };
-                    self.compile_function_decl(fn_name, params, return_type, body, *is_sub, *is_generator, handles)?;
+                    self.compile_function_decl(fn_name, params, return_type, body, *is_sub, *is_generator, handles, *is_async)?;
                     self.emit_var_get(fn_name);
                 } else {
                     self.emit(Op::NULL);

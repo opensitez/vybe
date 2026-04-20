@@ -1,6 +1,6 @@
 //! # multi-value proposal
 //!
-//! Spec: <https://github.com/WebAssembly/multi-value>. Allows
+//! Spec: `proposals/multi-value/`. Allows
 //! functions, blocks, and control instructions to produce multiple
 //! results rather than at-most-one. Merged into core WASM in 2020.
 //!

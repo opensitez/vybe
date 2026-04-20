@@ -38,6 +38,26 @@ pub const GC_REC: u8 = 0x4E;        // -0x32: recursive type group
 pub const GC_MUT: u8 = 0x01;        // mutable field
 pub const GC_IMMUT: u8 = 0x00;      // immutable field
 
+// Packed types — valid only as array/struct field storage type, not
+// as a top-level value type. Per WASM GC proposal.
+pub const PACKED_I8: u8  = 0x78;    // -0x08
+pub const PACKED_I16: u8 = 0x77;    // -0x09
+
+// Abstract heap types (GC proposal). Used as the heaptype operand of
+// `ref.test`, `ref.cast`, `br_on_cast` — single-byte encodings when
+// the target is an abstract type (rather than a concrete typeidx).
+// See `proposals/gc/proposals/gc/MVP.md` §Reference types.
+pub const HT_NOFUNC: u8    = 0x73;  // -0x0D
+pub const HT_NOEXTERN: u8  = 0x72;  // -0x0E
+pub const HT_NONE: u8      = 0x71;  // -0x0F (nullref)
+pub const HT_FUNC: u8      = 0x70;  // -0x10 (funcref)
+pub const HT_EXTERN: u8    = 0x6F;  // -0x11 (externref)
+pub const HT_ANY: u8       = 0x6E;  // -0x12 (anyref)
+pub const HT_EQ: u8        = 0x6D;  // -0x13 (eqref)
+pub const HT_I31: u8       = 0x6C;  // -0x14 (i31ref)
+pub const HT_STRUCT: u8    = 0x6B;  // -0x15 (structref)
+pub const HT_ARRAY: u8     = 0x6A;  // -0x16 (arrayref)
+
 // ── Section writing ─────────────────────────────────────────────────────
 
 pub fn write_section(out: &mut Vec<u8>, id: u8, data: &[u8]) {

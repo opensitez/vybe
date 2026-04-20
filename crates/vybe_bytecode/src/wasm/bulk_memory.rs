@@ -1,6 +1,6 @@
 //! # bulk-memory-operations proposal
 //!
-//! Spec: <https://github.com/WebAssembly/bulk-memory-operations>.
+//! Spec: `proposals/spec/proposals/bulk-memory-operations/`.
 //! Adds bulk operations on memory and tables:
 //! `memory.init`, `memory.copy`, `memory.fill`, `data.drop`,
 //! `table.init`, `table.copy`, `elem.drop`. All under prefix `0xFC`.

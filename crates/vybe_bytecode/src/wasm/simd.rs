@@ -1,6 +1,6 @@
 //! # simd proposal
 //!
-//! Spec: <https://github.com/WebAssembly/simd>. 128-bit vector
+//! Spec: `proposals/spec/proposals/simd/`. 128-bit vector
 //! instructions. Prefix `0xFD`. The opcodes themselves are declared in
 //! `opcode/simd.rs`; the emitter lowers them via the generic
 //! "prefix-and-sub" fall-through in `code.rs` (SIMD ops are just

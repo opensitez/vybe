@@ -1,6 +1,6 @@
 //! # js-string-builtins proposal
 //!
-//! Spec: <https://github.com/WebAssembly/js-string-builtins>. Standard
+//! Spec: `proposals/js-string-builtins/`. Standard
 //! imports under the `wasm:js-string` namespace that let WASM code
 //! manipulate JS strings without round-tripping through glue code.
 //!
