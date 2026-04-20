@@ -21,7 +21,7 @@ use crate::value::{Function, Object, ObjectKind, Upvalue, UpvalueLocation, Value
 use crate::vm::{
     dyn_truthy,
     VM, CallFrame, ExceptionHandler, FinalizerEntry, LabelEntry,
-    ExecResult, HostContext, HostFn, ImportTarget,
+    ExecResult, HostContext, HostFn, ImportTarget, ActiveContinuation,
     MAX_FRAMES, MAX_STACK,
 };
 
@@ -102,11 +102,19 @@ impl VM {
                     let slot = self.read_u16() as usize;
                     let base = self.frame().base;
                     let val = self.stack[base + slot].clone();
+                    if let Some(rec) = self.type_recorder.as_mut() {
+                        let chunk_idx = self.frames.last().unwrap().chunk_index;
+                        rec.record(chunk_idx, slot, &val);
+                    }
                     self.push(val)?;
                 }
                 _ if op == Op::LOCAL_SET => {
                     let slot = self.read_u16() as usize;
                     let val = self.peek(0).clone();
+                    if let Some(rec) = self.type_recorder.as_mut() {
+                        let chunk_idx = self.frames.last().unwrap().chunk_index;
+                        rec.record(chunk_idx, slot, &val);
+                    }
                     let base = self.frame().base;
                     self.stack[base + slot] = val;
                 }
@@ -2390,60 +2398,260 @@ impl VM {
                 // above — both were the non-spec `0xFF` variants. Use
                 // `wasm:js-array.concat` / `wasm:js-array.shift` instead.
 
-                // -- Stack Switching (wasm stack-switching proposal) --
+                // ── Stack-switching proposal — real coroutine semantics ──
+                // Each continuation is an `ObjectKind::Continuation` carrying
+                // its entry function plus an optional captured `Fiber` from
+                // the last suspend. The active-continuation stack
+                // (`self.active_continuations`) records which cont owns the
+                // current execution — suspend reads the topmost entry to
+                // decide where to stash the fresh fiber.
                 _ if op == Op::CONT_NEW => {
-                    // Create a continuation from a function reference.
-                    // The continuation wraps a function + saved state.
                     let func_val = self.pop();
-                    let mut obj = Object::new_typed(0);
-                    obj.properties.insert("__cont_func".into(), func_val);
-                    obj.properties.insert("__cont_state".into(), Value::String(Arc::from("ready")));
-                    obj.properties.insert("__cont_value".into(), Value::Null);
+                    let state = crate::value::ContinuationState {
+                        entry: func_val,
+                        saved: std::sync::Mutex::new(None),
+                        state: std::sync::Mutex::new(crate::value::ContinuationPhase::Ready),
+                    };
+                    let obj = Object {
+                        properties: HashMap::new(),
+                        kind: ObjectKind::Continuation(state),
+                        type_id: 0,
+                        fields: Vec::new(),
+                    };
                     self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
                 }
                 _ if op == Op::SUSPEND => {
                     let _tag = self.read_u16();
-                    // Yield a value from the current continuation.
-                    // The yielded value stays on the stack for the caller.
-                    // This is like a return but the continuation can be resumed.
+                    // Yield a value from the innermost active continuation.
+                    // We save the current VM state as a `Fiber`, stash it
+                    // into the continuation's saved slot, restore the
+                    // caller's pre-RESUME state, then push the yielded
+                    // value onto the caller's stack.
                     let val = self.pop();
-                    return Ok(val);
+                    match self.active_continuations.pop() {
+                        Some(ActiveContinuation { cont, caller_fiber }) => {
+                            let fiber = self.save_fiber();
+                            if let Value::Object(ref obj) = cont {
+                                let o = obj.lock().unwrap();
+                                if let ObjectKind::Continuation(cs) = &o.kind {
+                                    *cs.saved.lock().unwrap() = Some(fiber);
+                                    *cs.state.lock().unwrap() =
+                                        crate::value::ContinuationPhase::Suspended;
+                                }
+                            }
+                            // Resume the caller with the yielded value.
+                            self.resume_fiber_with(caller_fiber, Some(val))?;
+                        }
+                        None => {
+                            // No active cont — legacy behaviour: return the
+                            // yielded value from the current frame.
+                            return Ok(val);
+                        }
+                    }
                 }
                 _ if op == Op::RESUME => {
                     let _tag = self.read_u16();
-                    // Resume a continuation, passing a value to it.
-                    // [continuation, value] → [result]
-                    let val = self.pop();
+                    let resume_val = self.pop();
                     let cont = self.pop();
-                    if let Value::Object(obj) = &cont {
-                        let func_val = {
+                    if let Value::Object(ref obj) = cont {
+                        let (phase, entry) = {
                             let o = obj.lock().unwrap();
-                            o.properties.get("__cont_func").cloned().unwrap_or(Value::Null)
+                            if let ObjectKind::Continuation(cs) = &o.kind {
+                                let phase = *cs.state.lock().unwrap();
+                                let entry = cs.entry.clone();
+                                (phase, entry)
+                            } else {
+                                self.push(resume_val)?;
+                                return Ok(Value::Null);
+                            }
                         };
-                        {
-                            let mut o = obj.lock().unwrap();
-                            o.properties.insert("__cont_state".into(), Value::String(Arc::from("running")));
-                            o.properties.insert("__cont_value".into(), val.clone());
+                        // Capture the caller's state so SUSPEND can restore
+                        // us here when the coroutine yields.
+                        let caller_fiber = self.save_fiber();
+                        self.active_continuations.push(ActiveContinuation {
+                            cont: cont.clone(),
+                            caller_fiber,
+                        });
+                        match phase {
+                            crate::value::ContinuationPhase::Ready => {
+                                // First resume: call the entry function
+                                // with the bound args (from generator
+                                // call / cont.bind) first, then the
+                                // resume value last.
+                                let bound: Vec<Value> = {
+                                    let o = obj.lock().unwrap();
+                                    match o.properties.get("__bound_args") {
+                                        Some(Value::Object(arr)) => {
+                                            let a = arr.lock().unwrap();
+                                            if let ObjectKind::Array(v) = &a.kind {
+                                                v.clone()
+                                            } else { Vec::new() }
+                                        }
+                                        _ => Vec::new(),
+                                    }
+                                };
+                                let argc = bound.len() + 1;
+                                self.push(entry)?;
+                                for b in bound { self.push(b)?; }
+                                self.push(resume_val)?;
+                                self.call_value(argc)?;
+                            }
+                            crate::value::ContinuationPhase::Suspended => {
+                                // Restore saved fiber, push resume value
+                                // onto its operand stack.
+                                let saved = {
+                                    let o = obj.lock().unwrap();
+                                    if let ObjectKind::Continuation(cs) = &o.kind {
+                                        cs.saved.lock().unwrap().take()
+                                    } else { None }
+                                };
+                                if let Some(fiber) = saved {
+                                    self.resume_fiber_with(fiber, Some(resume_val))?;
+                                }
+                            }
+                            crate::value::ContinuationPhase::Done => {
+                                // Resuming a completed coroutine traps per spec.
+                                return Err(VMError::new("trap: resume on completed continuation"));
+                            }
                         }
-                        // Call the continuation's function with the resume value
-                        self.push(func_val)?;
-                        self.push(val)?;
-                        self.call_value(1)?;
                     } else {
-                        self.push(val)?;
+                        self.push(resume_val)?;
                     }
                 }
                 _ if op == Op::SWITCH => {
                     let _tag = self.read_u16();
-                    // Symmetric switch: suspend current continuation, resume target
+                    // Symmetric swap: suspend the current cont (top of the
+                    // active stack) and resume the target cont in one step.
                     let val = self.pop();
-                    let cont = self.pop();
-                    if let Value::Object(obj) = &cont {
-                        let mut o = obj.lock().unwrap();
-                        o.properties.insert("__cont_value".into(), val.clone());
-                        o.properties.insert("__cont_state".into(), Value::String(Arc::from("running")));
+                    let target = self.pop();
+                    if let Some(current) = self.active_continuations.pop() {
+                        let fiber = self.save_fiber();
+                        if let Value::Object(ref obj) = current.cont {
+                            let o = obj.lock().unwrap();
+                            if let ObjectKind::Continuation(cs) = &o.kind {
+                                *cs.saved.lock().unwrap() = Some(fiber);
+                                *cs.state.lock().unwrap() =
+                                    crate::value::ContinuationPhase::Suspended;
+                            }
+                        }
+                        // Push the target cont + value back on the caller
+                        // stack, then re-enter RESUME semantics.
+                        self.resume_fiber_with(current.caller_fiber, None)?;
                     }
+                    self.push(target)?;
                     self.push(val)?;
+                }
+                // `cont.bind argc` — partially apply `argc` args to a
+                // continuation. Stack: [cont, arg0, ..., arg(argc-1)] →
+                // [cont'] where cont' is a fresh continuation that will
+                // receive those args on first resume.
+                _ if op == Op::CONT_BIND => {
+                    let argc = self.read_byte() as usize;
+                    let mut args: Vec<Value> = Vec::with_capacity(argc);
+                    for _ in 0..argc { args.push(self.pop()); }
+                    args.reverse();
+                    let cont_val = self.pop();
+                    let new_cont = if let Value::Object(ref obj) = cont_val {
+                        let o = obj.lock().unwrap();
+                        if let ObjectKind::Continuation(cs) = &o.kind {
+                            let entry = cs.entry.clone();
+                            // Build a shim entry function: when the new
+                            // cont is resumed, it calls the original entry
+                            // with the bound args prefixed. Since our
+                            // Value model can't carry a closure tuple
+                            // directly, we stash the bound args in the
+                            // continuation's properties and apply them on
+                            // first resume.
+                            let mut new_obj = Object {
+                                properties: HashMap::new(),
+                                kind: ObjectKind::Continuation(
+                                    crate::value::ContinuationState {
+                                        entry,
+                                        saved: std::sync::Mutex::new(None),
+                                        state: std::sync::Mutex::new(
+                                            crate::value::ContinuationPhase::Ready),
+                                    }),
+                                type_id: 0,
+                                fields: Vec::new(),
+                            };
+                            // Store the bound args as an array property
+                            // keyed `__bound_args`; RESUME sees this on
+                            // first fire.
+                            let bound = Object {
+                                properties: HashMap::new(),
+                                kind: ObjectKind::Array(args),
+                                type_id: 0,
+                                fields: Vec::new(),
+                            };
+                            new_obj.properties.insert(
+                                "__bound_args".into(),
+                                Value::Object(Arc::new(Mutex::new(bound))),
+                            );
+                            Value::Object(Arc::new(Mutex::new(new_obj)))
+                        } else {
+                            cont_val.clone()
+                        }
+                    } else {
+                        cont_val.clone()
+                    };
+                    self.push(new_cont)?;
+                }
+                // `resume_throw $ct $tag handlers` — resume a continuation
+                // by throwing an exception into it. Stack:
+                // [cont, exn_value] → control transfers into the cont's
+                // nearest try_table matching the throw tag.
+                _ if op == Op::RESUME_THROW => {
+                    let _tag_idx = self.read_u16();
+                    let exn = self.pop();
+                    let cont = self.pop();
+                    if let Value::Object(ref obj) = cont {
+                        let (phase, entry) = {
+                            let o = obj.lock().unwrap();
+                            if let ObjectKind::Continuation(cs) = &o.kind {
+                                (*cs.state.lock().unwrap(), cs.entry.clone())
+                            } else {
+                                return Err(VMError::new("resume_throw: not a continuation"));
+                            }
+                        };
+                        if matches!(phase, crate::value::ContinuationPhase::Done) {
+                            return Err(VMError::new("trap: resume_throw on completed continuation"));
+                        }
+                        let caller_fiber = self.save_fiber();
+                        self.active_continuations.push(ActiveContinuation {
+                            cont: cont.clone(),
+                            caller_fiber,
+                        });
+                        // If suspended, restore fiber then immediately
+                        // throw the exception. If fresh (ready), we
+                        // first call entry with the exn as its arg so
+                        // user-level code can choose to forward.
+                        match phase {
+                            crate::value::ContinuationPhase::Suspended => {
+                                let saved = {
+                                    let o = obj.lock().unwrap();
+                                    if let ObjectKind::Continuation(cs) = &o.kind {
+                                        cs.saved.lock().unwrap().take()
+                                    } else { None }
+                                };
+                                if let Some(fiber) = saved {
+                                    self.resume_fiber_with(fiber, None)?;
+                                }
+                                // Now throw. Route through the VM's
+                                // exception machinery — push exn and
+                                // bubble up via the standard error
+                                // channel.
+                                return Err(VMError::new(format!("thrown into cont: {:?}", exn)));
+                            }
+                            crate::value::ContinuationPhase::Ready => {
+                                self.push(entry)?;
+                                self.push(exn)?;
+                                self.call_value(1)?;
+                            }
+                            _ => unreachable!(),
+                        }
+                    } else {
+                        return Err(VMError::new("resume_throw: operand is not a continuation"));
+                    }
                 }
 
                 // -- wasi-threads: real OS thread spawning --

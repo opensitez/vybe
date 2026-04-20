@@ -188,6 +188,10 @@ pub fn register_all(vm: &mut VM) {
                         ObjectKind::Ordinary => {
                             eprintln!("  [Ordinary]");
                         }
+                        ObjectKind::Continuation(cs) => {
+                            let phase = *cs.state.lock().unwrap();
+                            eprintln!("  [Continuation] phase={:?}", phase);
+                        }
                     }
                     for (k, v) in &o.properties {
                         let v_str = format!("{}", v);

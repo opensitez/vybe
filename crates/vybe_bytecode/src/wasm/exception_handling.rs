@@ -32,15 +32,27 @@ pub fn custom_sections(_chunks: &[Chunk]) -> Vec<(&'static str, Vec<u8>)> { Vec:
 /// Every `throw` in the emitted .wasm references this tag.
 pub const VYBE_EXCEPTION_TAG: u32 = 0;
 
-/// Encode the tag section (section id 13) declaring the single
-/// `$vybe_exception (param externref)` tag. `exception_type_idx` is
-/// the type index (in the type section) for the tag's signature —
-/// see `WasmTypeContext::exception_type_idx`.
+/// Encode the tag section (section id 13). Always declares the
+/// `$vybe_exception (param externref)` tag for the exception-handling
+/// proposal, and — if `suspend_tag_type_idx` is non-zero — an
+/// additional `$vybe_suspend (param externref) (result externref)` tag
+/// for the stack-switching proposal.
 pub fn encode_tag_section(exception_type_idx: u32) -> Vec<u8> {
+    encode_tag_section_with(exception_type_idx, None)
+}
+
+/// Full-control tag section encoder. Pass `Some(typeidx)` for the
+/// suspend/resume tag to declare it alongside the exception tag.
+pub fn encode_tag_section_with(exception_type_idx: u32, suspend_tag_type_idx: Option<u32>) -> Vec<u8> {
     let mut out = Vec::new();
-    write_leb128_u32(&mut out, 1);          // 1 tag declaration
-    out.push(0x00);                          // attribute: exception
+    let count = if suspend_tag_type_idx.is_some() { 2u32 } else { 1u32 };
+    write_leb128_u32(&mut out, count);
+    out.push(0x00);
     write_leb128_u32(&mut out, exception_type_idx);
+    if let Some(idx) = suspend_tag_type_idx {
+        out.push(0x00);
+        write_leb128_u32(&mut out, idx);
+    }
     out
 }
 

@@ -104,6 +104,11 @@ fn stringify_object(obj: &Arc<Mutex<Object>>, visited: &mut HashSet<usize>) -> S
                 // nested in Object/Array); top-level returns undefined.
                 "null".to_string()
             }
+            ObjectKind::Continuation(_) => {
+                // Continuations don't serialize — match the function
+                // treatment above (no enumerable own data).
+                "null".to_string()
+            }
             ObjectKind::Ordinary => {
                 stringify_ordinary(&o, visited)
             }

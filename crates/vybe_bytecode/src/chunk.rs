@@ -115,6 +115,12 @@ pub struct Chunk {
     /// it's informational only — the runtime already knows via
     /// `PROMISE_SUSPEND` opcodes in the body.
     pub is_async: bool,
+    /// When true, `call_value` on a function bound to this chunk
+    /// returns a fresh generator continuation instead of executing the
+    /// body. Compilers set this for `def` with `yield`, `function*`,
+    /// C# `yield return`, Ruby `Enumerator::new`, Dart `sync*`. Lowers
+    /// to WASM stack-switching `cont.new` at emit time.
+    pub is_generator: bool,
 }
 
 impl Chunk {
@@ -135,6 +141,7 @@ impl Chunk {
             continuation_tags: Vec::new(),
             result_arity: 1,
             is_async: false,
+            is_generator: false,
         }
     }
 

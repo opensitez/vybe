@@ -12,10 +12,12 @@ pub mod types;
 pub mod sections;
 pub mod code;
 pub mod reader;
+pub mod wat;
 // ── Per-proposal modules ────────────────────────────────────────────────
 // Each file implements one WebAssembly proposal end-to-end: the imports
 // it declares, the opcodes it emits, the custom sections it produces.
 pub mod reference_types;
+pub mod stack_switching;
 pub mod extended_name_section;
 pub mod compilation_hints;
 pub mod jspi;
@@ -82,12 +84,19 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
     // Memory section
     write_section(&mut out, SECTION_MEMORY, &sections::encode_memory_section());
 
-    // Tag section (exception-handling proposal) — emits a single
-    // `$vybe_exception (param externref)` tag used by every `throw`.
-    // Binary order: memsec → tagsec → globalsec.
-    if exception_handling::module_uses_exceptions(chunks) {
+    // Tag section (exception-handling + stack-switching proposals).
+    // Always emits the `$vybe_exception (param externref)` tag when
+    // the module uses `throw`, and additionally declares the
+    // `$vybe_suspend (param externref) (result externref)` tag when
+    // any `CONT_NEW` / `SUSPEND` / `RESUME` / `SWITCH` op appears.
+    let emit_exception_tag = exception_handling::module_uses_exceptions(chunks);
+    if emit_exception_tag || type_ctx.uses_stack_switching {
+        let suspend_idx = if type_ctx.uses_stack_switching {
+            Some(type_ctx.suspend_tag_type_idx)
+        } else { None };
         write_section(&mut out, SECTION_TAG,
-            &exception_handling::encode_tag_section(type_ctx.exception_type_idx));
+            &exception_handling::encode_tag_section_with(
+                type_ctx.exception_type_idx, suspend_idx));
     }
 
     // Global section — indexed externref globals

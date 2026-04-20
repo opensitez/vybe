@@ -14,7 +14,7 @@ impl Compiler {
 
     pub(super) fn compile_function_decl(
         &mut self, name: &str, params: &[Param], return_type: &Option<String>,
-        body: &[Statement], _is_sub: bool, _is_generator: bool, handles: &[String],
+        body: &[Statement], _is_sub: bool, is_generator: bool, handles: &[String],
         is_async: bool,
     ) -> Result<(), String> {
         let cname = self.canon(name);
@@ -30,6 +30,12 @@ impl Compiler {
         // `vybe.jspi` custom section — JS hosts wrap promising exports
         // via `WebAssembly.promising(...)` at load time.
         chunk.is_async = is_async;
+        // Generators: when the source marked the function as a
+        // generator (Python `yield`, JS `function*`, C# `yield return`),
+        // stamp the chunk so the VM wraps invocations in a
+        // `Continuation` instead of executing the body inline. The
+        // body itself was compiled with `SUSPEND` at each yield site.
+        chunk.is_generator = is_generator;
         // Multi-value tuple returns: if the pre-scan marked this function
         // as a same-arity multi-tuple-return, stamp its result_arity here
         // so the WASM type section emits `(externref^N) -> (externref^N)`

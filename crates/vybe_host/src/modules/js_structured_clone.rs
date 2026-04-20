@@ -72,12 +72,12 @@ fn clone_object(obj: &Arc<Mutex<Object>>, seen: &mut HashMap<usize, Value>) -> V
         KindTag::TypedArray => clone_typedarray(obj, id, seen),
         // Per spec: functions, host functions — DataCloneError.
         // MVP returns null.
-        KindTag::Function | KindTag::HostFunction => Value::Null,
+        KindTag::Function | KindTag::HostFunction | KindTag::Continuation => Value::Null,
     }
 }
 
 enum KindTag {
-    Ordinary, Array, Map, Set, ArrayBuffer, TypedArray, Function, HostFunction,
+    Ordinary, Array, Map, Set, ArrayBuffer, TypedArray, Function, HostFunction, Continuation,
 }
 
 fn kind_discriminant(k: &ObjectKind) -> KindTag {
@@ -90,6 +90,7 @@ fn kind_discriminant(k: &ObjectKind) -> KindTag {
         ObjectKind::TypedArray(_) => KindTag::TypedArray,
         ObjectKind::Function(_) => KindTag::Function,
         ObjectKind::HostFunction(_) => KindTag::HostFunction,
+        ObjectKind::Continuation(_) => KindTag::Continuation,
     }
 }
 

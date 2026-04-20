@@ -169,6 +169,15 @@ impl Op {
     pub const NULL_FUNC: Op         = Op::new(0xFF, 0x82); // → 0xD0 0x70
     pub const NULL_ANY: Op          = Op::new(0xFF, 0x83); // → 0xD0 0x6E
     pub const NULL_NONE: Op         = Op::new(0xFF, 0x84); // → 0xD0 0x71
+    // ── Stack-switching proposal extras ─────────────────────────────
+    // `cont.bind` partially applies args to a continuation; emits
+    // `0xE1 <src_cont_typeidx> <dst_cont_typeidx>`. `resume_throw`
+    // resumes a continuation by throwing an exception tag into it
+    // instead of passing a value; emits `0xE4 <cont_typeidx>
+    // <tagidx> <handler-count=0>`. Both are VM-internal in our
+    // bytecode (prefix 0xFF) and lower to the spec bytes on emit.
+    pub const CONT_BIND: Op         = Op::new(0xFF, 0x85);
+    pub const RESUME_THROW: Op      = Op::new(0xFF, 0x86);
 }
 
 opcode_category! {
@@ -186,6 +195,8 @@ opcode_category! {
     [0x82] null_func => None, "ref.null_func";
     [0x83] null_any => None, "ref.null_any";
     [0x84] null_none => None, "ref.null_none";
+    [0x85] cont_bind => U8, "cont.bind";
+    [0x86] resume_throw => U16, "resume_throw";
     // Immediate values
     [0x09] r#true => None, "true";
     [0x0A] r#false => None, "false";

@@ -45,6 +45,19 @@ pub struct WasmTypeContext {
     /// Type index for `(externref) -> ()` — the shape required by the
     /// tag section's exception tag (exception-handling proposal).
     pub exception_type_idx: u32,
+    /// Type index of the suspend/resume tag type
+    /// `(tag (param externref) (result externref))` — used by the
+    /// stack-switching proposal's `suspend` / `resume` when the
+    /// module contains any `CONT_NEW` op. Zero if unused.
+    pub suspend_tag_type_idx: u32,
+    /// Continuation type index — `(cont $ft)` wrapping the shared
+    /// single-arg single-result fiber function signature. Zero if
+    /// the module doesn't use stack switching.
+    pub continuation_type_idx: u32,
+    /// Whether any `CONT_NEW` / `SUSPEND` / `RESUME` / `SWITCH` op
+    /// was observed in the bytecode. Drives whether we emit the
+    /// continuation type, the suspend tag, and the tag-section entry.
+    pub uses_stack_switching: bool,
 }
 
 impl WasmTypeContext {
@@ -81,6 +94,9 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
         func_type_by_arity: std::collections::HashMap::new(),
         block_type_by_results: std::collections::HashMap::new(),
         exception_type_idx: 0,
+        suspend_tag_type_idx: 0,
+        continuation_type_idx: 0,
+        uses_stack_switching: false,
     };
 
     // Collect TypeEntry definitions from chunk 0
@@ -130,7 +146,47 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
         }
     }
     let block_type_count = block_result_counts.len() as u32;
-    ctx.exception_type_idx = gc_type_count + func_count + block_type_count;
+
+    // Pre-scan for stack-switching usage. Any CONT_NEW/SUSPEND/RESUME/
+    // SWITCH opcode triggers the emission of:
+    //   * one suspend tag type `(func (param externref) (result externref))`
+    //   * one continuation type `(cont <suspend-tag-func-type>)`
+    //   * the matching tag section entry
+    let uses_stack_switching = chunks.iter().any(|chunk| {
+        let code = &chunk.code;
+        let mut bip = 0;
+        while bip + 1 < code.len() {
+            if let Some(op) = crate::opcode::Op::decode(code[bip], code[bip + 1]) {
+                if matches!(op,
+                    o if o == crate::opcode::Op::CONT_NEW
+                      || o == crate::opcode::Op::CONT_NEW_TYPED
+                      || o == crate::opcode::Op::CONT_BIND
+                      || o == crate::opcode::Op::SUSPEND
+                      || o == crate::opcode::Op::SUSPEND_TYPED
+                      || o == crate::opcode::Op::RESUME
+                      || o == crate::opcode::Op::RESUME_TYPED
+                      || o == crate::opcode::Op::RESUME_THROW
+                      || o == crate::opcode::Op::SWITCH
+                ) {
+                    return true;
+                }
+                bip += super::code::opcode_size(op, code, bip);
+            } else {
+                bip += 2;
+            }
+        }
+        false
+    });
+    ctx.uses_stack_switching = uses_stack_switching;
+    let stack_switching_type_count: u32 = if uses_stack_switching { 2 } else { 0 };
+
+    // Index layout: [gc] [func] [block] [suspend_tag_func] [continuation] [exception]
+    let ss_base = gc_type_count + func_count + block_type_count;
+    if uses_stack_switching {
+        ctx.suspend_tag_type_idx = ss_base;
+        ctx.continuation_type_idx = ss_base + 1;
+    }
+    ctx.exception_type_idx = ss_base + stack_switching_type_count;
 
     // Populate the name→typeidx maps up front so the supertype link in
     // each subtype can resolve a parent that appears later in the same
@@ -158,8 +214,11 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
     // for the struct pairs (if any) + 3 array singletons + func types +
     // 1 exception type.
     let exception_type_count = 1u32;
+    // Stack-switching introduces 2 extra types when used: one func type
+    // for the suspend/resume tag, one continuation type wrapping it.
+    let ss_extra_types = stack_switching_type_count;
     let rec_group_count = if gc_struct_pairs > 0 { 1u32 } else { 0u32 };
-    let total = rec_group_count + array_count + func_count + block_type_count + exception_type_count;
+    let total = rec_group_count + array_count + func_count + block_type_count + ss_extra_types + exception_type_count;
     write_leb128_u32(&mut out, total);
 
     // ── GC struct types: one rec group of (described, descriptor) pairs ──
@@ -322,6 +381,22 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
         write_leb128_u32(&mut out, 0);            // 0 params
         write_leb128_u32(&mut out, count as u32); // N results
         for _ in 0..count { out.push(TYPE_EXTERNREF); }
+    }
+
+    // Stack-switching: suspend/resume tag func type + continuation type.
+    // A suspend yields an externref and resumes with an externref, so the
+    // tag's signature is `(func (param externref) (result externref))`.
+    // The continuation type `(cont $ft)` wraps that func type.
+    if uses_stack_switching {
+        // (func (param externref) (result externref))
+        out.push(TYPE_FUNC);
+        write_leb128_u32(&mut out, 1); // 1 param
+        out.push(TYPE_EXTERNREF);
+        write_leb128_u32(&mut out, 1); // 1 result
+        out.push(TYPE_EXTERNREF);
+        // (cont $ft) — prefix + funcidx
+        out.push(super::stack_switching::CONT_TYPE_PREFIX);
+        write_leb128_u32(&mut out, ctx.suspend_tag_type_idx);
     }
 
     // Exception tag type — `(externref) -> ()` per the exception-handling

@@ -29,6 +29,70 @@ pub enum Value {
     BigInt(i64),
 }
 
+/// Compact tag identifying the `Value` variant — a small integer that
+/// indexes into per-slot counter arrays in the VM's type recorder.
+/// Keep in sync with the variants above; new variants append to the
+/// end so existing counter indices stay stable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum ValueTag {
+    Null = 0,
+    Undefined = 1,
+    Bool = 2,
+    I32 = 3,
+    I64 = 4,
+    F64 = 5,
+    String = 6,
+    Object = 7,
+    WeakRef = 8,
+    V128 = 9,
+    Symbol = 10,
+    BigInt = 11,
+}
+
+impl ValueTag {
+    pub const COUNT: usize = 12;
+    pub fn as_usize(self) -> usize { self as usize }
+    pub fn name(self) -> &'static str {
+        match self {
+            ValueTag::Null => "Null",
+            ValueTag::Undefined => "Undefined",
+            ValueTag::Bool => "Bool",
+            ValueTag::I32 => "I32",
+            ValueTag::I64 => "I64",
+            ValueTag::F64 => "F64",
+            ValueTag::String => "String",
+            ValueTag::Object => "Object",
+            ValueTag::WeakRef => "WeakRef",
+            ValueTag::V128 => "V128",
+            ValueTag::Symbol => "Symbol",
+            ValueTag::BigInt => "BigInt",
+        }
+    }
+}
+
+impl Value {
+    /// Compact tag identifying this variant. Used by the type recorder
+    /// to index into per-slot counter arrays — avoids a HashMap-per-slot
+    /// and keeps recording cheap enough to leave on during test runs.
+    pub fn tag(&self) -> ValueTag {
+        match self {
+            Value::Null => ValueTag::Null,
+            Value::Undefined => ValueTag::Undefined,
+            Value::Bool(_) => ValueTag::Bool,
+            Value::I32(_) => ValueTag::I32,
+            Value::I64(_) => ValueTag::I64,
+            Value::F64(_) => ValueTag::F64,
+            Value::String(_) => ValueTag::String,
+            Value::Object(_) => ValueTag::Object,
+            Value::WeakRef(_) => ValueTag::WeakRef,
+            Value::V128(_) => ValueTag::V128,
+            Value::Symbol(_) => ValueTag::Symbol,
+            Value::BigInt(_) => ValueTag::BigInt,
+        }
+    }
+}
+
 impl Value {
     /// Extract f64 or panic. VM arithmetic ops require the compiler
     /// to have already ensured the operand is numeric.
@@ -98,6 +162,7 @@ impl Value {
                     ObjectKind::TypedArray(_) => "typedarray",
                     ObjectKind::Function(_) => "function",
                     ObjectKind::HostFunction(_) => "function",
+                    ObjectKind::Continuation(_) => "continuation",
                 }
             }
             Value::V128(_) => "v128",
@@ -345,6 +410,7 @@ impl fmt::Display for Value {
                         write!(f, "[function {}]", func.name.as_deref().unwrap_or("anonymous"))
                     }
                     ObjectKind::HostFunction(idx) => write!(f, "[host function {}]", idx),
+                    ObjectKind::Continuation(_) => write!(f, "[continuation]"),
                     ObjectKind::Ordinary => write!(f, "[object]"),
                 }
             }
@@ -500,6 +566,50 @@ pub enum ObjectKind {
     Function(Function),
     /// A reference to a host function by its index in the VM's host_fns table.
     HostFunction(usize),
+    /// WASM stack-switching continuation — a coroutine. Holds the entry
+    /// function (to call on first resume) and the saved fiber state
+    /// (when paused). Each suspend captures the current VM state into
+    /// `saved`; each resume either calls `entry` (fresh) or restores
+    /// `saved` (paused).
+    Continuation(ContinuationState),
+}
+
+/// Runtime state for an `ObjectKind::Continuation`. Tracks the entry
+/// function, the fiber captured mid-suspend, and the lifecycle state.
+#[derive(Debug)]
+pub struct ContinuationState {
+    /// Function the continuation wraps. Called once on the first
+    /// resume; after that, the coroutine lives entirely in `saved`.
+    pub entry: Value,
+    /// Mid-suspend fiber — stack + frames + open upvalues. `None` when
+    /// the continuation has never run or has finished.
+    pub saved: std::sync::Mutex<Option<crate::fiber::Fiber>>,
+    /// Lifecycle. `ready` = never resumed; `suspended` = paused
+    /// mid-execution; `done` = entry returned normally, no further
+    /// resumes allowed.
+    pub state: std::sync::Mutex<ContinuationPhase>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContinuationPhase {
+    Ready,
+    Suspended,
+    Done,
+}
+
+impl Clone for ContinuationState {
+    /// Continuations are identity-like — cloning produces an
+    /// independent skeleton with the same entry but a fresh saved
+    /// slot. In practice `ObjectKind` cloning happens rarely for
+    /// continuations and any caller that does it gets a logically
+    /// fresh coroutine.
+    fn clone(&self) -> Self {
+        ContinuationState {
+            entry: self.entry.clone(),
+            saved: std::sync::Mutex::new(None),
+            state: std::sync::Mutex::new(ContinuationPhase::Ready),
+        }
+    }
 }
 
 impl Object {

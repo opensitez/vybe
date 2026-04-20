@@ -2,6 +2,7 @@ pub mod opcode;
 pub mod value;
 pub mod chunk;
 pub mod vm;
+pub mod type_recorder;
 // `impl VM` partials — extracted from vm.rs for readability. Each file is
 // its own `impl VM { ... }` block operating on the same struct defined in
 // vm.rs. Private to the crate; external consumers keep using `VM::*`.

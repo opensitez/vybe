@@ -28,7 +28,7 @@
 //! | Typed `select t`            | ✅ `Op::SELECT_T` → `0x1C 0x01 0x6F` (single externref result) |
 //! | `table.grow`                | ✅ `TABLE_GROW` opcode; routes through tableidx |
 //! | `table.size`                | ✅ `TABLE_SIZE` opcode |
-//! | `table.fill`                | ✅ `TABLE_FILL` opcode |
+//! | `table.fill`     Th           | ✅ `TABLE_FILL` opcode |
 //! | `table.copy` / `table.init` | ✅ `TABLE_COPY` / `TABLE_INIT` opcodes (overlap-safe; copy operates on func_table) |
 //! | Multiple tables             | ✅ `extra_tables` on VM; `table_ref`/`table_mut` route by tableidx. Emission-side multi-table declarations still go through `encode_table_section_with` (opt-in). |
 //! | Typed function references `(ref null $typeidx)` | ❌ function signatures always use `externref`. A Value ABI refactor is needed before funcref-typed params/locals can be emitted. |

@@ -65,6 +65,28 @@ impl VM {
         Ok(())
     }
 
+    /// Restore a saved fiber as the current VM state without kicking
+    /// the execution loop. Used by the stack-switching dispatch so
+    /// SUSPEND can return to the caller's exact pre-RESUME snapshot
+    /// (stack + frames + upvalues) while the outer dispatch loop
+    /// continues executing from the restored `ip`. If `push_value` is
+    /// `Some`, it's pushed onto the restored stack — that's the
+    /// yielded value the caller of RESUME sees.
+    pub(crate) fn resume_fiber_with(&mut self, fiber: Fiber, push_value: Option<Value>)
+        -> Result<(), VMError>
+    {
+        self.stack = fiber.stack;
+        self.frames = fiber.frames.into_iter().map(|f| CallFrame {
+            chunk_index: f.chunk_index,
+            ip: f.ip,
+            base: f.base,
+            upvalues: f.upvalues,
+        }).collect();
+        self.open_upvalues = fiber.open_upvalues;
+        if let Some(val) = push_value { self.push(val)?; }
+        Ok(())
+    }
+
     /// Resume a suspended fiber — restore its state and continue execution.
     pub(crate) fn resume_fiber(&mut self, fiber: Fiber) -> Result<Value, VMError> {
         // Restore state from fiber

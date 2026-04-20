@@ -82,6 +82,15 @@ pub(crate) struct CallFrame {
     pub(crate) upvalues: Vec<Arc<Mutex<Upvalue>>>,
 }
 
+/// Record of a live continuation on the VM's active-continuation
+/// stack. Each entry owns the continuation `Value` plus the caller's
+/// pre-RESUME `Fiber` — that's what we restore on suspend.
+#[derive(Debug)]
+pub(crate) struct ActiveContinuation {
+    pub cont: crate::value::Value,
+    pub caller_fiber: crate::fiber::Fiber,
+}
+
 /// Exception handler entry — pushed by try_start, popped by try_end or catch.
 #[derive(Debug, Clone)]
 pub(crate) struct ExceptionHandler {
@@ -140,6 +149,18 @@ pub struct VM {
     /// `extra_tables[N-1]`; index 0 is `func_table`. Tables are lazily
     /// created: compilers that only use table 0 never allocate here.
     pub extra_tables: Vec<Vec<Value>>,
+    /// Optional per-slot value-type recorder. `Some` enables the
+    /// LOCAL_SET / LOCAL_GET hooks to tally which `Value` variants
+    /// flow through each local, feeding the anyref/ABI migration with
+    /// concrete measurements of how much typed-slot lowering can save.
+    /// Off by default — zero dispatch cost when `None`.
+    pub type_recorder: Option<crate::type_recorder::TypeRecorder>,
+    /// Stack-switching: continuations currently running. Each `RESUME`
+    /// pushes an entry (with the caller's pre-resume fiber); `SUSPEND`
+    /// pops the topmost entry, captures the runnable fiber into the
+    /// continuation's `saved` slot, and restores the caller. Empty when
+    /// no coroutine is active.
+    pub(crate) active_continuations: Vec<ActiveContinuation>,
     /// Block label stack for structured control flow.
     pub(crate) label_stack: Vec<LabelEntry>,
     /// Callback invoker for host functions (cached allocation).
@@ -201,6 +222,23 @@ impl VM {
         else { self.extra_tables.get_mut(idx - 1) }
     }
 
+    /// Turn on per-slot value-type recording for the next `run`.
+    /// Passing `false` disables and discards any existing recorder.
+    pub fn record_types(&mut self, enabled: bool) {
+        self.type_recorder = if enabled {
+            Some(crate::type_recorder::TypeRecorder::new())
+        } else {
+            None
+        };
+    }
+
+    /// Take ownership of the current type recorder (leaving `None` in
+    /// place). Useful for producing a report after a run without
+    /// holding a mutable borrow of the VM for the whole analysis.
+    pub fn take_type_record(&mut self) -> Option<crate::type_recorder::TypeRecorder> {
+        self.type_recorder.take()
+    }
+
     pub fn new() -> Self {
         VM {
             chunks: Vec::new(),
@@ -219,6 +257,8 @@ impl VM {
             active_memory: 0,
             func_table: Vec::new(),
             extra_tables: Vec::new(),
+            type_recorder: None,
+            active_continuations: Vec::new(),
             label_stack: Vec::new(),
             callback_invoker: None,
             strict_isolation: false,

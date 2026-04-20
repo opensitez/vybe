@@ -1217,6 +1217,64 @@ fn emit_vm_internal_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize
             super::sections::emit_symbol_equals(body, rt_idx);
             emit_box_i32(body, rt_idx);
         }
+
+        // ── Stack-switching proposal ─────────────────────────────────────
+        // The VM opcodes live at the internal 0xFF prefix; the WASM
+        // binary uses the spec bytes 0xE0..=0xE5 (core prefix). Each
+        // emission references the shared continuation type and suspend
+        // tag registered in `types.rs`.
+        _ if op == Op::CONT_NEW || op == Op::CONT_NEW_TYPED => {
+            // `cont.new $ct` — bytecode operand (if any) is a VM-internal
+            // tag index we don't map to WASM; spec byte needs the
+            // continuation type index from the type section.
+            if op == Op::CONT_NEW_TYPED { let _ = read_u16(&chunk.code, ip); }
+            body.push(super::stack_switching::OP_CONT_NEW);
+            write_leb128_u32(body, type_ctx.continuation_type_idx);
+        }
+        _ if op == Op::SUSPEND || op == Op::SUSPEND_TYPED => {
+            // `suspend $tag` — our single suspend/resume tag is at index 1
+            // (exception tag is at 0 unless the module has no exceptions,
+            // but if stack-switching is in use we always declare both).
+            let _ = read_u16(&chunk.code, ip); // discard bytecode tag idx
+            body.push(super::stack_switching::OP_SUSPEND);
+            // Tag section order: [exception, suspend] when stack-switching
+            // is active; the suspend tag is at tagidx 1.
+            write_leb128_u32(body, 1);
+        }
+        _ if op == Op::RESUME || op == Op::RESUME_TYPED => {
+            // `resume $ct (handler)*` — simplest valid form: zero
+            // handlers, which traps on any tag suspension encountered
+            // below. Strict engines will accept an empty handler vec.
+            let _ = read_u16(&chunk.code, ip);
+            body.push(super::stack_switching::OP_RESUME);
+            write_leb128_u32(body, type_ctx.continuation_type_idx);
+            write_leb128_u32(body, 0); // 0 handlers
+        }
+        _ if op == Op::SWITCH => {
+            // `switch $ct $tag` — symmetric coroutine swap.
+            let _ = read_u16(&chunk.code, ip);
+            body.push(super::stack_switching::OP_SWITCH);
+            write_leb128_u32(body, type_ctx.continuation_type_idx);
+            write_leb128_u32(body, 1); // suspend tag
+        }
+        _ if op == Op::CONT_BIND => {
+            // `cont.bind $ct1 $ct2` — both typeidx operands reference
+            // continuation types. With a single shared continuation
+            // type on our side, we use the same index for both.
+            let _argc = chunk.code[*ip]; *ip += 1;
+            body.push(super::stack_switching::OP_CONT_BIND);
+            write_leb128_u32(body, type_ctx.continuation_type_idx);
+            write_leb128_u32(body, type_ctx.continuation_type_idx);
+        }
+        _ if op == Op::RESUME_THROW => {
+            // `resume_throw $ct $tag handlers` — tag is our single
+            // exception tag (0); no handlers.
+            let _ = read_u16(&chunk.code, ip);
+            body.push(super::stack_switching::OP_RESUME_THROW);
+            write_leb128_u32(body, type_ctx.continuation_type_idx);
+            write_leb128_u32(body, 0); // exception tag idx
+            write_leb128_u32(body, 0); // handler count
+        }
         _ if op == Op::TRUE => {
             // `global.get $js_true` — produces an actual JS `true` boolean,
             // not a boxed `1` (which previously confused `typeof` on the

@@ -104,6 +104,52 @@ impl VM {
         }
 
         let chunk_index = func.chunk_index;
+        // Generator intercept: if the target chunk is flagged as a
+        // generator, calling it doesn't enter the body — we build a
+        // `Continuation` bound to a reified Function value and the
+        // passed-through args, push it on the stack, and return. The
+        // caller drives the generator by RESUMEing the continuation.
+        if self.chunks[chunk_index].is_generator {
+            use crate::value::{ContinuationState, ContinuationPhase};
+            // Collect args — they'll be bound into the continuation.
+            let mut args: Vec<Value> = Vec::with_capacity(argc);
+            for _ in 0..argc { args.push(self.pop()); }
+            args.reverse();
+            // Re-wrap the Function value so entry can re-call it later.
+            let fn_obj = Object {
+                properties: HashMap::new(),
+                kind: ObjectKind::Function(func.clone()),
+                type_id: 0,
+                fields: Vec::new(),
+            };
+            let entry = Value::Object(Arc::new(Mutex::new(fn_obj)));
+            let state = ContinuationState {
+                entry,
+                saved: std::sync::Mutex::new(None),
+                state: std::sync::Mutex::new(ContinuationPhase::Ready),
+            };
+            let mut cont = Object {
+                properties: HashMap::new(),
+                kind: ObjectKind::Continuation(state),
+                type_id: 0,
+                fields: Vec::new(),
+            };
+            if !args.is_empty() {
+                // Stash bound args so the first RESUME can re-push them.
+                let bound = Object {
+                    properties: HashMap::new(),
+                    kind: ObjectKind::Array(args),
+                    type_id: 0,
+                    fields: Vec::new(),
+                };
+                cont.properties.insert(
+                    "__bound_args".into(),
+                    Value::Object(Arc::new(Mutex::new(bound))),
+                );
+            }
+            self.push(Value::Object(Arc::new(Mutex::new(cont))))?;
+            return Ok(());
+        }
         let arity = func.arity as usize;
         // WASM-compliant: slot 0 = first arg (not callee).
         // The caller must remove the callee from the stack before this call.

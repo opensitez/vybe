@@ -367,7 +367,24 @@ fn walk_func_def(pair: Pair<Rule>, is_async: bool, decorators: Vec<Expression>) 
 
     // Generator function: transform yield statements into eager collection.
     // def gen(): yield 1; yield 2 → def gen(): __gen_result = []; __gen_result.append(1); ...; return __gen_result
-    if body_has_yield(&body) {
+    // Generators: two lowering paths, chosen by the function's
+    // decorator list.
+    //   * Default — eager-list rewrite: yields append to a list that
+    //     is returned at the end, so `for v in gen()` iterates the
+    //     list via the standard for-in protocol. Backwards-compatible
+    //     with the existing generator test suite.
+    //   * `@generator` decorator — true lazy generator via the
+    //     stack-switching proposal: the function compiles with
+    //     `is_generator = true`, calls return a `Continuation`, and
+    //     each `yield` compiles to a `SUSPEND` opcode. Consuming
+    //     requires explicit `RESUME` (or a future iterator-protocol-
+    //     aware for-in) — no automatic eager materialisation.
+    let has_yield = body_has_yield(&body);
+    let wants_true_generator = decorators.iter().any(|d| match &d.kind {
+        ExprKind::Ident(n) => n.eq_ignore_ascii_case("generator"),
+        _ => false,
+    });
+    if has_yield && !wants_true_generator {
         body = rewrite_generator_body(body);
     }
 
@@ -379,7 +396,7 @@ fn walk_func_def(pair: Pair<Rule>, is_async: bool, decorators: Vec<Expression>) 
         modifiers: Modifiers { decorators, ..Default::default() },
         handles: Vec::new(),
         is_async,
-        is_generator: false,
+        is_generator: has_yield && wants_true_generator,
         is_sub: false,
     })
 }
