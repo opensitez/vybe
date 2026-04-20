@@ -18,6 +18,7 @@ pub mod reader;
 pub mod reference_types;
 pub mod extended_name_section;
 pub mod compilation_hints;
+pub mod jspi;
 pub mod js_string_builtins;
 pub mod js_primitive_builtins;
 // JS standard collection surface — Phase B of the dynamic-runtime
@@ -132,6 +133,17 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
         let mut sec = Vec::new();
         write_name(&mut sec, compilation_hints::INLINING_SECTION_NAME);
         sec.extend_from_slice(&in_payload);
+        write_section(&mut out, SECTION_CUSTOM, &sec);
+    }
+
+    // JSPI custom section — `vybe.jspi` lists promising exports (wasm
+    // function indices) that a JS host should wrap with
+    // `WebAssembly.promising(...)` at load time so that Vybe's async
+    // functions return real Promises across the JS boundary.
+    if let Some(jspi_payload) = jspi::encode_payload(chunks, rt_imports.len()) {
+        let mut sec = Vec::new();
+        write_name(&mut sec, jspi::SECTION_NAME);
+        sec.extend_from_slice(&jspi_payload);
         write_section(&mut out, SECTION_CUSTOM, &sec);
     }
 

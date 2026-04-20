@@ -103,6 +103,18 @@ pub struct Chunk {
     /// WASM emitter then declares the function type with that many
     /// externref results.
     pub result_arity: u8,
+    /// JSPI: this function is `async` in its source language. The
+    /// compiler sets this flag when compiling an `async function` /
+    /// `async def` / `Async Function`. The WASM emitter writes a
+    /// `vybe.jspi` custom section listing every async chunk so a JS
+    /// host can wrap the corresponding export with
+    /// `WebAssembly.promising(fn)` and therefore have it return a real
+    /// JS Promise that resolves when the Vybe fiber completes. Non-Vybe
+    /// WASM engines ignore unknown custom sections, so setting this on
+    /// a sync function is at worst no-op on those engines. On Vybe VM
+    /// it's informational only — the runtime already knows via
+    /// `PROMISE_SUSPEND` opcodes in the body.
+    pub is_async: bool,
 }
 
 impl Chunk {
@@ -122,6 +134,7 @@ impl Chunk {
             global_inits: Vec::new(),
             continuation_tags: Vec::new(),
             result_arity: 1,
+            is_async: false,
         }
     }
 
