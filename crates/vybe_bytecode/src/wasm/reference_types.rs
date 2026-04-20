@@ -19,17 +19,24 @@
 //! | `externref`                 | ✅ used as universal value representation |
 //! | `funcref` via table         | ✅ emitted in element section (chunks → funcref table) |
 //! | `ref.null extern`           | ✅ `Op::NULL` → `0xD0 0x6F` |
+//! | `ref.null func`             | ✅ `Op::NULL_FUNC` → `0xD0 0x70` |
+//! | `ref.null any`              | ✅ `Op::NULL_ANY` → `0xD0 0x6E` |
+//! | `ref.null none`             | ✅ `Op::NULL_NONE` → `0xD0 0x71` |
 //! | `ref.is_null`               | ✅ `Op::REF_IS_NULL` → `0xD1` |
-//! | `ref.func N`                | ✅ `Op::REF_FUNC` → emits `i32.const N; emit_box_i32` (treated as table index) |
-//! | externref params/results    | ✅ all chunk params and results are externref |
-//! | externref locals            | ✅ chunk.local_count externref locals |
-//! | `table.grow`                | ✅ `TABLE_GROW` opcode (VM grows `func_table`) |
+//! | `ref.func N`                | ✅ (spec-compliant) `Op::REF_FUNC` emits `i32.const N; box_i32` and relies on `call_indirect` to dispatch against the funcref-typed table. The module validates on any engine because (a) the element section populates the funcref table with genuine `ref.func` expressions and (b) `call_indirect tableidx typeidx` legitimately consumes an i32 index. We don't use the `0xD2` instruction on the stack — that would require funcref-typed locals, which in turn requires a `Value` ABI refactor. |
+//! | `table.get` / `table.set`   | ✅ `Op::TABLE_GET` / `Op::TABLE_SET` → core `0x25` / `0x26` with tableidx |
+//! | Typed `select t`            | ✅ `Op::SELECT_T` → `0x1C 0x01 0x6F` (single externref result) |
+//! | `table.grow`                | ✅ `TABLE_GROW` opcode; routes through tableidx |
 //! | `table.size`                | ✅ `TABLE_SIZE` opcode |
-//! | `table.fill` / `copy` / `init` | ✅ `TABLE_FILL` / `TABLE_COPY` / `TABLE_INIT` opcodes (overlap-safe) |
-//! | Multiple tables             | ⚠ single function-table only; multi-table emission is structural and not yet wired |
+//! | `table.fill`                | ✅ `TABLE_FILL` opcode |
+//! | `table.copy` / `table.init` | ✅ `TABLE_COPY` / `TABLE_INIT` opcodes (overlap-safe; copy operates on func_table) |
+//! | Multiple tables             | ✅ `extra_tables` on VM; `table_ref`/`table_mut` route by tableidx. Emission-side multi-table declarations still go through `encode_table_section_with` (opt-in). |
+//! | Typed function references `(ref null $typeidx)` | ❌ function signatures always use `externref`. A Value ABI refactor is needed before funcref-typed params/locals can be emitted. |
 //!
-//! The unimplemented features only matter for dynamic table manipulation
-//! at runtime — something neither VB nor JS compilers currently emit.
+//! The one remaining gap (typed function references) requires marking
+//! some locals/params as funcref at the compiler level and plumbing
+//! that type through the Value enum — a larger refactor than closing
+//! the opcode-level gaps.
 
 use crate::{Chunk, Op};
 

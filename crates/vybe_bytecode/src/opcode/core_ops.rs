@@ -27,12 +27,16 @@ impl Op {
     pub const RETURN_CALL_REF: Op   = Op::new(0x00, 0x15);
     pub const DROP: Op              = Op::new(0x00, 0x1A);
     pub const SELECT: Op            = Op::new(0x00, 0x1B);
+    pub const SELECT_T: Op          = Op::new(0x00, 0x1C);
     pub const TRY_TABLE: Op         = Op::new(0x00, 0x1F);
     // Variables
     pub const LOCAL_GET: Op         = Op::new(0x00, 0x20);
     pub const LOCAL_SET: Op         = Op::new(0x00, 0x21);
     pub const GLOBAL_GET: Op        = Op::new(0x00, 0x23);
     pub const GLOBAL_SET: Op        = Op::new(0x00, 0x24);
+    // Reference-types table access (core prefix).
+    pub const TABLE_GET: Op         = Op::new(0x00, 0x25);
+    pub const TABLE_SET: Op         = Op::new(0x00, 0x26);
     // Memory load
     pub const I32_LOAD: Op          = Op::new(0x00, 0x28);
     pub const I64_LOAD: Op          = Op::new(0x00, 0x29);
@@ -193,12 +197,20 @@ opcode_category! {
     [0x15] return_call_ref => U8, "return_call_ref";
     [0x1A] drop => None, "drop";
     [0x1B] select => None, "select";
+    // Typed select carries a `vec(valtype)` — currently always 1 externref
+    // for our uniform ABI, so the operand is encoded inline in the emitter
+    // rather than carried by the bytecode.
+    [0x1C] select_t => None, "select_t";
     [0x1F] try_table => TryTable, "try_table";
     // Variables
     [0x20] local_get => U16, "local.get";
     [0x21] local_set => U16, "local.set";
     [0x23] global_get => U16, "global.get";
     [0x24] global_set => U16, "global.set";
+    // Reference-types table access (core prefix). Operand is a u8 table
+    // index — Vybe's single function-table is index 0.
+    [0x25] table_get => U8, "table.get";
+    [0x26] table_set => U8, "table.set";
     // Memory load
     [0x28] i32_load => None, "i32.load";
     [0x29] i64_load => None, "i64.load";

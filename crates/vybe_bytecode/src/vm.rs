@@ -132,8 +132,14 @@ pub struct VM {
     pub(crate) extra_memories: Vec<Vec<u8>>,
     /// Currently selected memory index (for load/store ops). Default 0.
     pub(crate) active_memory: usize,
-    /// Function table (WASM MVP) — for call_indirect.
+    /// Function table (WASM MVP) — for call_indirect. Also accessible
+    /// as table index 0 via the reference-types table ops.
     pub func_table: Vec<Value>,
+    /// Additional reference-typed tables for the reference-types /
+    /// multi-table proposal. Index N (N >= 1) lives at
+    /// `extra_tables[N-1]`; index 0 is `func_table`. Tables are lazily
+    /// created: compilers that only use table 0 never allocate here.
+    pub extra_tables: Vec<Vec<Value>>,
     /// Block label stack for structured control flow.
     pub(crate) label_stack: Vec<LabelEntry>,
     /// Callback invoker for host functions (cached allocation).
@@ -183,6 +189,18 @@ pub(crate) struct LabelEntry {
 }
 
 impl VM {
+    /// Immutable borrow of the table at `tableidx`. Index 0 maps to
+    /// `func_table`; indexes 1.. map to `extra_tables`.
+    pub(crate) fn table_ref(&self, idx: usize) -> Option<&Vec<Value>> {
+        if idx == 0 { Some(&self.func_table) }
+        else { self.extra_tables.get(idx - 1) }
+    }
+    /// Mutable borrow of the table at `tableidx`.
+    pub(crate) fn table_mut(&mut self, idx: usize) -> Option<&mut Vec<Value>> {
+        if idx == 0 { Some(&mut self.func_table) }
+        else { self.extra_tables.get_mut(idx - 1) }
+    }
+
     pub fn new() -> Self {
         VM {
             chunks: Vec::new(),
@@ -200,6 +218,7 @@ impl VM {
             extra_memories: Vec::new(),
             active_memory: 0,
             func_table: Vec::new(),
+            extra_tables: Vec::new(),
             label_stack: Vec::new(),
             callback_invoker: None,
             strict_isolation: false,

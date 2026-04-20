@@ -403,6 +403,41 @@ impl VM {
                     let val1 = self.pop();
                     self.push(if cond != 0 { val1 } else { val2 })?;
                 }
+                // Typed select (`select t`): same runtime semantics as
+                // untyped select; the result-type vec is a validation-time
+                // hint. The emitter writes `0x1C <count> <valtype>*`; VM
+                // side just pops and picks.
+                _ if op == Op::SELECT_T => {
+                    let cond = self.pop().as_i32();
+                    let val2 = self.pop();
+                    let val1 = self.pop();
+                    self.push(if cond != 0 { val1 } else { val2 })?;
+                }
+
+                // Reference-types `table.get tbl` — pop i32 index, push
+                // the table slot as a value. Table 0 is `func_table`
+                // (the function-reference table). Tables 1+ live in
+                // `extra_tables` for the multi-table proposal.
+                _ if op == Op::TABLE_GET => {
+                    let table_idx = self.read_byte() as usize;
+                    let idx = self.pop().as_i32() as usize;
+                    let table = self.table_ref(table_idx);
+                    let val = table.and_then(|t| t.get(idx).cloned()).unwrap_or(Value::Null);
+                    self.push(val)?;
+                }
+                // `table.set tbl` — pop value + i32 index, write into
+                // table. Trap on out-of-bounds index per spec.
+                _ if op == Op::TABLE_SET => {
+                    let table_idx = self.read_byte() as usize;
+                    let val = self.pop();
+                    let idx = self.pop().as_i32() as usize;
+                    let table = self.table_mut(table_idx)
+                        .ok_or_else(|| VMError::new("trap: table.set unknown table"))?;
+                    if idx >= table.len() {
+                        return Err(VMError::new("trap: table.set out of bounds"));
+                    }
+                    table[idx] = val;
+                }
 
                 // -- i32 rotation and bit counting --
                 _ if op == Op::I32_ROTL => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(Value::I32(a.rotate_left(b & 0x1f) as i32))?; }
@@ -892,7 +927,10 @@ impl VM {
                 }
 
                 // -- Immediates --
-                _ if op == Op::NULL => self.push(Value::Null)?,
+                _ if op == Op::NULL
+                    || op == Op::NULL_FUNC
+                    || op == Op::NULL_ANY
+                    || op == Op::NULL_NONE => self.push(Value::Null)?,
                 _ if op == Op::UNDEFINED => self.push(Value::Undefined)?,
                 _ if op == Op::SYMBOL => {
                     // Each `SYMBOL` execution produces a *fresh* identity
@@ -1902,30 +1940,38 @@ impl VM {
                     self.push(Value::I32(mem_idx as i32))?;
                 }
                 // ── reference-types: table operations ─────────────────
-                // Each op reads a `u8 table_idx` operand per spec.
-                // We keep `self.func_table` as table 0; any other index
-                // traps (we don't allocate extra tables at VM init).
+                // Each op reads a `u8 table_idx` operand per spec. Tables
+                // route through `table_ref`/`table_mut` so the multi-table
+                // proposal works: index 0 maps to `func_table`, indexes
+                // 1+ map to lazily-created `extra_tables`.
                 _ if op == Op::TABLE_SIZE => {
-                    let _table_idx = self.read_byte();
-                    self.push(Value::I32(self.func_table.len() as i32))?;
+                    let tidx = self.read_byte() as usize;
+                    let size = self.table_ref(tidx).map_or(0, |t| t.len()) as i32;
+                    self.push(Value::I32(size))?;
                 }
                 _ if op == Op::TABLE_GROW => {
-                    let _table_idx = self.read_byte();
+                    let tidx = self.read_byte() as usize;
                     let delta = self.pop().as_i32().max(0) as usize;
                     let init = self.pop();
-                    let old_size = self.func_table.len();
-                    let new_size = old_size.saturating_add(delta);
-                    self.func_table.resize(new_size, init);
-                    self.push(Value::I32(old_size as i32))?;
+                    if let Some(table) = self.table_mut(tidx) {
+                        let old_size = table.len();
+                        let new_size = old_size.saturating_add(delta);
+                        table.resize(new_size, init);
+                        self.push(Value::I32(old_size as i32))?;
+                    } else {
+                        self.push(Value::I32(-1))?;
+                    }
                 }
                 _ if op == Op::TABLE_FILL => {
-                    let _table_idx = self.read_byte();
+                    let tidx = self.read_byte() as usize;
                     let count = self.pop().as_i32().max(0) as usize;
                     let value = self.pop();
                     let dst = self.pop().as_i32().max(0) as usize;
-                    let end = (dst + count).min(self.func_table.len());
-                    for i in dst..end {
-                        self.func_table[i] = value.clone();
+                    if let Some(table) = self.table_mut(tidx) {
+                        let end = (dst + count).min(table.len());
+                        for i in dst..end {
+                            table[i] = value.clone();
+                        }
                     }
                 }
                 _ if op == Op::TABLE_COPY => {

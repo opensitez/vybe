@@ -160,6 +160,15 @@ impl Op {
     pub const STR_FROM_U64: Op      = Op::new(0xFF, 0x7F);
     pub const STR_FROM_F64: Op      = Op::new(0xFF, 0x80);
     pub const SYMBOL_EQ: Op         = Op::new(0xFF, 0x81); // (sym, sym) → bool via js-symbol.equals
+    // ── Reference-types: typed `ref.null` variants ──────────────────
+    // The core `NULL` op emits `ref.null extern` (0xD0 0x6F). These
+    // emit `ref.null func` / `ref.null any` / `ref.null none` so the
+    // null can be stored in slots typed anything other than externref.
+    // Runtime semantics are identical — every variant pushes
+    // `Value::Null`. The distinction is purely in the WASM binary.
+    pub const NULL_FUNC: Op         = Op::new(0xFF, 0x82); // → 0xD0 0x70
+    pub const NULL_ANY: Op          = Op::new(0xFF, 0x83); // → 0xD0 0x6E
+    pub const NULL_NONE: Op         = Op::new(0xFF, 0x84); // → 0xD0 0x71
 }
 
 opcode_category! {
@@ -174,6 +183,9 @@ opcode_category! {
     [0x06] br_if_null => I16, "br_if_null";
     [0x07] br_label => U8, "br_label";
     [0x08] br_if_label => U8, "br_if_label";
+    [0x82] null_func => None, "ref.null_func";
+    [0x83] null_any => None, "ref.null_any";
+    [0x84] null_none => None, "ref.null_none";
     // Immediate values
     [0x09] r#true => None, "true";
     [0x0A] r#false => None, "false";

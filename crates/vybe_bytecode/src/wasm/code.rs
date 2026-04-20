@@ -525,8 +525,32 @@ fn emit_core_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize,
             body.push(0x08);
             write_leb128_u32(body, super::exception_handling::VYBE_EXCEPTION_TAG);
         }
-        // ref.null needs heaptype byte — can't just emit op.sub()
-        _ if op == Op::NULL => { body.push(0xD0); body.push(0x6F); } // ref.null externref
+        // Reference-types `table.get tbl` / `table.set tbl` (core prefix).
+        // Bytecode carries a single-byte table index; WASM binary uses a
+        // LEB128 tableidx, so we widen on the way out.
+        _ if op == Op::TABLE_GET => {
+            let tbl = chunk.code[*ip]; *ip += 1;
+            body.push(0x25);
+            write_leb128_u32(body, tbl as u32);
+        }
+        _ if op == Op::TABLE_SET => {
+            let tbl = chunk.code[*ip]; *ip += 1;
+            body.push(0x26);
+            write_leb128_u32(body, tbl as u32);
+        }
+        // Typed `select t` (0x1C): same stack semantics as untyped
+        // `select` but carries a `vec(valtype)` operand. Our uniform ABI
+        // always selects among externref values, so we emit the canonical
+        // `[1 × externref]` result-type vector inline.
+        _ if op == Op::SELECT_T => {
+            body.push(0x1C);
+            write_leb128_u32(body, 1);   // 1 result type
+            body.push(TYPE_EXTERNREF);
+        }
+        // `ref.null extern` — core opcode path. Typed variants
+        // (NULL_FUNC / NULL_ANY / NULL_NONE) use the 0xFF prefix and
+        // lower in `emit_vm_internal_op`.
+        _ if op == Op::NULL => { body.push(0xD0); body.push(HT_EXTERN); }
         // ref.is_null produces i32 — box it since our value representation is externref
         _ if op == Op::REF_IS_NULL => {
             body.push(0xD1); // ref.is_null → i32
@@ -1100,7 +1124,10 @@ fn emit_vm_internal_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize
                 }
             }
         }
-        _ if op == Op::NULL => { body.push(0xD0); body.push(0x6F); } // ref.null externref
+        _ if op == Op::NULL      => { body.push(0xD0); body.push(HT_EXTERN); }
+        _ if op == Op::NULL_FUNC => { body.push(0xD0); body.push(HT_FUNC); }
+        _ if op == Op::NULL_ANY  => { body.push(0xD0); body.push(HT_ANY); }
+        _ if op == Op::NULL_NONE => { body.push(0xD0); body.push(HT_NONE); }
         _ if op == Op::UNDEFINED => {
             // `global.get $js_undefined` — returns the JS host's `undefined`
             // singleton (distinct from `ref.null extern`). The import is
