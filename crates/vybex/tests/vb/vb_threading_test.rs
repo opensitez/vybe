@@ -68,6 +68,21 @@ End Module
 }
 
 #[test]
+fn task_delay_transitions_to_completed() {
+    let out = run_vb(r#"
+Module Program
+    Sub Main()
+        Dim d = Task.Delay(100)
+        Console.WriteLine(d.IsCompleted)
+        Thread.Sleep(150)
+        Console.WriteLine(d.IsCompleted)
+    End Sub
+End Module
+"#);
+    assert_eq!(out, vec!["false", "true"], "Task.Delay should complete asynchronously");
+}
+
+#[test]
 fn thread_new_and_start() {
     let out = run_vb(r#"
 Module Program

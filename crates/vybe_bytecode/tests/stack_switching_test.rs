@@ -249,6 +249,50 @@ fn generator_chunk_returns_continuation_on_call() {
 }
 
 #[test]
+fn fiber_roundtrip_preserves_label_stack_and_continuations() {
+    // Regression check for the JSPI-/coroutine-interaction wiring:
+    // save_fiber + resume_fiber_with must round-trip the VM's label
+    // stack AND the active-continuation stack so that a generator
+    // suspended inside a `while` (pushes label entries) or nested
+    // inside another coroutine (pushes cont entries) restores to
+    // the exact shape it was captured at.
+    use vybe_bytecode::vm::LabelEntry;
+    let mut vm = VM::new();
+    vm.label_stack.push(LabelEntry { target: 123, is_loop: false });
+    vm.label_stack.push(LabelEntry { target: 456, is_loop: true });
+    // Build a dummy Continuation object so we have a Value to stash
+    // in active_continuations (field is pub(crate); constructed via
+    // a round-trip through CONT_NEW).
+    let mut chunk = Chunk::new("<script>");
+    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_op(Op::CONT_NEW, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let cont = vm.run(vec![chunk]).unwrap();
+    // Re-set VM state for the fiber test.
+    let mut vm = VM::new();
+    vm.label_stack.push(LabelEntry { target: 42, is_loop: true });
+    vm.active_continuations.push(
+        vybe_bytecode::vm::ActiveContinuation {
+            cont,
+            caller_fiber: vybe_bytecode::fiber::Fiber::new(
+                Vec::new(), Vec::new(), Vec::new()),
+            mode: vybe_bytecode::vm::ResumeMode::Iterator,
+        }
+    );
+
+    let fiber = vm.save_fiber();
+    assert_eq!(fiber.label_stack.len(), 1);
+    assert_eq!(fiber.active_continuations.len(), 1);
+    assert!(vm.label_stack.is_empty());
+    assert!(vm.active_continuations.is_empty());
+
+    vm.resume_fiber_with(fiber, None).unwrap();
+    assert_eq!(vm.label_stack.len(), 1);
+    assert_eq!(vm.active_continuations.len(), 1);
+    assert_eq!(vm.label_stack[0].target, 42);
+}
+
+#[test]
 fn suspend_without_active_continuation_falls_back_to_return() {
     // Running SUSPEND with no RESUME above it should just return the
     // yielded value — this preserves the legacy behaviour so existing

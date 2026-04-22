@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use vybe_bytecode::value::{
     ArrayBufferState, Object, ObjectKind, TypedArrayState, Value,
 };
-use vybe_bytecode::{HostContext, VM};
+use vybe_bytecode::VM;
 
 pub fn register(vm: &mut VM) {
     vm.register_host_fn("wasm:js-structured-clone", "clone",

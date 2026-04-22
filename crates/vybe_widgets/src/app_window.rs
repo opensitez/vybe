@@ -21,6 +21,12 @@ use softbuffer::{Context, Surface};
 
 use crate::layout::{MouseEvent, MouseEventKind, MouseButton, KeyEvent};
 
+fn gui_trace_enabled() -> bool {
+    std::env::var("VYBE_GUI_TRACE")
+        .map(|value| !matches!(value.as_str(), "" | "0" | "false" | "False"))
+        .unwrap_or(false)
+}
+
 /// Trait for GUI applications built on the vybe_widgets toolkit.
 ///
 /// The toolkit handles all window management, event translation, and surface
@@ -210,6 +216,16 @@ impl<A: Application> ApplicationHandler for AppWindowInner<A> {
                     shift: mods.shift_key(),
                     alt: mods.alt_key(),
                 };
+                if gui_trace_enabled() {
+                    eprintln!(
+                        "[gui] window.cursor_moved physical=({:.1},{:.1}) logical=({:.1},{:.1}) scale={:.2}",
+                        position.x,
+                        position.y,
+                        event.x,
+                        event.y,
+                        scale,
+                    );
+                }
                 if self.app.handle_mouse(event) {
                     if let Some(w) = &self.window {
                         w.request_redraw();
@@ -248,6 +264,18 @@ impl<A: Application> ApplicationHandler for AppWindowInner<A> {
                     shift: mods.shift_key(),
                     alt: mods.alt_key(),
                 };
+                if gui_trace_enabled() {
+                    eprintln!(
+                        "[gui] window.mouse_input state={:?} button={:?} logical=({:.1},{:.1}) physical=({:.1},{:.1}) scale={:.2}",
+                        state,
+                        button,
+                        event.x,
+                        event.y,
+                        self.mouse_pos.0,
+                        self.mouse_pos.1,
+                        scale,
+                    );
+                }
                 if self.app.handle_mouse(event) {
                     if let Some(w) = &self.window {
                         w.request_redraw();

@@ -2,7 +2,7 @@
 /// parameters, ref/out, static methods, enums, const/readonly,
 /// array/list algorithms, math operations, type casting, for/foreach/while patterns.
 
-use super::helpers::run_csharp;
+use super::helpers::{compile_csharp_to_wasm, extract_imports, run_csharp};
 
 // ===================================================================
 // PARAMS ARRAYS
@@ -219,6 +219,37 @@ Console.WriteLine(Math.Round(3.7));
 Console.WriteLine(Math.Floor(3.7));
 Console.WriteLine(Math.Ceiling(3.2));
 "#), &["3", "7", "4", "3", "4"]);
+}
+
+#[test] fn math_portable_stdlib_functions() {
+    assert_eq!(run_csharp(r#"
+Console.WriteLine(Math.Sin(0));
+Console.WriteLine(Math.Cos(0));
+Console.WriteLine(Math.Tan(0));
+Console.WriteLine(Math.Asin(0));
+Console.WriteLine(Math.Acos(1));
+Console.WriteLine(Math.Atan(0));
+Console.WriteLine(Math.Atan2(0, 1));
+Console.WriteLine(Math.Log(1));
+Console.WriteLine(Math.Log10(100));
+Console.WriteLine(Math.Exp(0));
+Console.WriteLine(Math.Sign(-5));
+Console.WriteLine(Math.Clamp(15, 0, 10));
+"#), &["0", "1", "0", "0", "0", "0", "0", "0", "2", "1", "-1", "10"]);
+}
+
+#[test] fn math_wasm_imports_avoid_vybe_math() {
+    let wasm = compile_csharp_to_wasm(r#"
+Console.WriteLine(Math.Sin(0));
+Console.WriteLine(Math.Log(1));
+Console.WriteLine(Math.Exp(0));
+Console.WriteLine(Math.Clamp(15, 0, 10));
+"#);
+    let imports = extract_imports(&wasm);
+    assert!(!imports.iter().any(|(module, name)| module == "vybe:math" && ["sin", "log", "exp", "clamp"].contains(&name.as_str())),
+        "expected portable math lowering, found vybe:math imports: {:?}", imports);
+    assert!(imports.iter().any(|(module, name)| module == "env" && name == "sin"),
+        "expected stdlib/env import for sin, imports were {:?}", imports);
 }
 
 // ===================================================================

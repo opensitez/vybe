@@ -178,6 +178,14 @@ impl Op {
     // bytecode (prefix 0xFF) and lower to the spec bytes on emit.
     pub const CONT_BIND: Op         = Op::new(0xFF, 0x85);
     pub const RESUME_THROW: Op      = Op::new(0xFF, 0x86);
+    /// Iterator-protocol resume: `[cont] → [value, has_more_i32]`.
+    /// Advances the continuation one step via the stack-switching
+    /// machinery, then reports whether the cont is still Suspended
+    /// (1) or has completed (0). Drives `for v in gen()` loops in
+    /// languages whose generator is opt-in via stack switching.
+    /// VM-only; not emitted to the WASM binary (the for-in expansion
+    /// uses core ops only on the wire).
+    pub const GEN_NEXT: Op          = Op::new(0xFF, 0x87);
 }
 
 opcode_category! {
@@ -197,6 +205,7 @@ opcode_category! {
     [0x84] null_none => None, "ref.null_none";
     [0x85] cont_bind => U8, "cont.bind";
     [0x86] resume_throw => U16, "resume_throw";
+    [0x87] gen_next => None, "gen.next";
     // Immediate values
     [0x09] r#true => None, "true";
     [0x0A] r#false => None, "false";

@@ -127,6 +127,9 @@ fn resolve_imports(module: &mut Module, lang: &Language, base_dir: &Path) {
             ImportKind::Wildcard { path, .. } => path.clone(),
         };
         let resolved = base_dir.join(&path_str);
+        if !should_resolve_source_import(&path_str, &resolved) {
+            continue;
+        }
         let source = match std::fs::read_to_string(&resolved) {
             Ok(s) => s,
             Err(e) => {
@@ -147,4 +150,27 @@ fn resolve_imports(module: &mut Module, lang: &Language, base_dir: &Path) {
     }
     prepend.append(&mut module.body);
     module.body = prepend;
+}
+
+fn should_resolve_source_import(path_str: &str, resolved: &Path) -> bool {
+    if resolved.exists() {
+        return true;
+    }
+
+    if path_str.starts_with('.') || path_str.starts_with('/') || path_str.starts_with('~') {
+        return true;
+    }
+
+    if path_str.contains('/') || path_str.contains('\\') {
+        return true;
+    }
+
+    matches!(
+        resolved.extension().and_then(|ext| ext.to_str()).map(|ext| ext.to_ascii_lowercase()),
+        Some(ext)
+            if matches!(
+                ext.as_str(),
+                "vb" | "cs" | "js" | "ts" | "py" | "php" | "rb" | "dart" | "pas" | "cob" | "for" | "f90" | "wasm"
+            )
+    )
 }

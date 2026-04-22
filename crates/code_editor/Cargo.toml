@@ -1,8 +1,9 @@
 [package]
 name = "code_editor"
-version = "0.1.0"
-edition = "2021"
-authors = ["you"]
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
 
 [dependencies]
 # Core crates for the pure-Rust prototype. Pin versions as needed.

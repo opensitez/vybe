@@ -71,19 +71,19 @@ decodeURI               = { emit = "host:vybe:convert:decodeURIComponent",    mi
 
 # ── Math — host calls ───────────────────────────────────────────────────────
 
-"Math.pow"          = { emit = "host:vybe:math:pow",      min_args = 2, max_args = 2 }
-"Math.sin"          = { emit = "host:vybe:math:sin",      min_args = 1, max_args = 1 }
-"Math.cos"          = { emit = "host:vybe:math:cos",      min_args = 1, max_args = 1 }
-"Math.tan"          = { emit = "host:vybe:math:tan",      min_args = 1, max_args = 1 }
-"Math.asin"         = { emit = "host:vybe:math:asin",     min_args = 1, max_args = 1 }
-"Math.acos"         = { emit = "host:vybe:math:acos",     min_args = 1, max_args = 1 }
-"Math.atan"         = { emit = "host:vybe:math:atan",     min_args = 1, max_args = 1 }
-"Math.atan2"        = { emit = "host:vybe:math:atan2",    min_args = 2, max_args = 2 }
-"Math.log"          = { emit = "host:vybe:math:log",      min_args = 1, max_args = 1 }
+"Math.pow"          = { emit = "stdlib:pow",      min_args = 2, max_args = 2 }
+"Math.sin"          = { emit = "stdlib:sin",      min_args = 1, max_args = 1 }
+"Math.cos"          = { emit = "stdlib:cos",      min_args = 1, max_args = 1 }
+"Math.tan"          = { emit = "stdlib:tan",      min_args = 1, max_args = 1 }
+"Math.asin"         = { emit = "stdlib:asin",     min_args = 1, max_args = 1 }
+"Math.acos"         = { emit = "stdlib:acos",     min_args = 1, max_args = 1 }
+"Math.atan"         = { emit = "stdlib:atan",     min_args = 1, max_args = 1 }
+"Math.atan2"        = { emit = "stdlib:atan2",    min_args = 2, max_args = 2 }
+"Math.log"          = { emit = "stdlib:log",      min_args = 1, max_args = 1 }
 "Math.log2"         = { emit = "host:vybe:math:log2",     min_args = 1, max_args = 1 }
-"Math.log10"        = { emit = "host:vybe:math:log10",    min_args = 1, max_args = 1 }
-"Math.exp"          = { emit = "host:vybe:math:exp",      min_args = 1, max_args = 1 }
-"Math.sign"         = { emit = "host:vybe:math:sign",     min_args = 1, max_args = 1 }
+"Math.log10"        = { emit = "stdlib:log10",    min_args = 1, max_args = 1 }
+"Math.exp"          = { emit = "stdlib:exp",      min_args = 1, max_args = 1 }
+"Math.sign"         = { emit = "stdlib:sign",     min_args = 1, max_args = 1 }
 "Math.random"       = { emit = "host:wasi:random:random",  min_args = 0, max_args = 0 }
 "Math.hypot"        = { emit = "host:vybe:math:hypot",    min_args = 2, max_args = 2 }
 "Math.cbrt"         = { emit = "host:vybe:math:cbrt",     min_args = 1, max_args = 1 }
@@ -197,12 +197,12 @@ queueMicrotask       = { emit = "noop",                          min_args = 1, m
 
 # ── net module ───────────────────────────────────────────────────────────────
 
-"net.createConnection" = { emit = "host:vybe:net:tcpConnect",      min_args = 1, max_args = 2 }
-"net.connect"          = { emit = "host:vybe:net:tcpConnect",      min_args = 1, max_args = 2 }
-"net.createServer"     = { emit = "host:vybe:net:tcpListenerNew",  min_args = 0, max_args = 1 }
-"dgram.createSocket"   = { emit = "host:vybe:net:udpNew",          min_args = 1, max_args = 1 }
-"dns.resolve"          = { emit = "host:vybe:net:dnsResolve",      min_args = 1, max_args = 1 }
-"dns.lookup"           = { emit = "host:vybe:net:dnsResolve",      min_args = 1, max_args = 1 }
+"net.createConnection" = { emit = "host:dotnet:sockets:tcpClientNew",   min_args = 1, max_args = 2 }
+"net.connect"          = { emit = "host:dotnet:sockets:tcpClientNew",   min_args = 1, max_args = 2 }
+"net.createServer"     = { emit = "host:dotnet:sockets:tcpListenerNew", min_args = 0, max_args = 1 }
+"dgram.createSocket"   = { emit = "host:dotnet:sockets:udpClientNew",   min_args = 1, max_args = 1 }
+"dns.resolve"          = { emit = "host:dotnet:net:dnsGetHostAddresses", min_args = 1, max_args = 1 }
+"dns.lookup"           = { emit = "host:dotnet:net:dnsGetHostAddresses", min_args = 1, max_args = 1 }
 
 # ── child_process module ─────────────────────────────────────────────────────
 
@@ -349,9 +349,9 @@ random          = "wasi:random"
 http            = "wasi:http"
 https           = "wasi:http"
 crypto          = "vybe:crypto"
-net             = "vybe:net"
-tls             = "vybe:net"
-dgram           = "vybe:net"
+net             = "dotnet:sockets"
+tls             = "dotnet:sockets"
+dgram           = "dotnet:sockets"
 path            = "wasi:filesystem"
 os              = "wasi:cli"
 child_process   = "vybe:types"

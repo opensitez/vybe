@@ -148,7 +148,7 @@ struct WasmLabel {
 fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count: u32, _import_count: usize) -> Chunk {
     let mut chunk = Chunk::new(name);
     chunk.arity = arity;
-    chunk.local_count = 1 + arity as u16 + wasm_local_count as u16;
+    chunk.local_count = arity as u16 + wasm_local_count as u16;
 
     let mut pos = 0;
     let mut label_stack: Vec<WasmLabel> = Vec::new();
@@ -280,23 +280,23 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
                 chunk.emit_op_u8(Op::CALL, idx as u8, 0);
             }
 
-            // local.get — offset by 1 (our slot 0 = implicit fn)
+            // local.get — slot 0 is the first argument, matching the VM.
             0x20 => {
                 let (idx, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
-                chunk.emit_op_u16(Op::LOCAL_GET, (idx as u16) + 1, 0);
+                chunk.emit_op_u16(Op::LOCAL_GET, idx as u16, 0);
             }
             // local.set
             0x21 => {
                 let (idx, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
-                chunk.emit_op_u16(Op::LOCAL_SET, (idx as u16) + 1, 0);
+                chunk.emit_op_u16(Op::LOCAL_SET, idx as u16, 0);
             }
             // local.tee
             0x22 => {
                 let (idx, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
-                chunk.emit_op_u16(Op::LOCAL_SET, (idx as u16) + 1, 0);
+                chunk.emit_op_u16(Op::LOCAL_SET, idx as u16, 0);
             }
 
             // i32.const → add to constant pool as F64

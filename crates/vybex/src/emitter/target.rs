@@ -37,9 +37,14 @@ impl Target {
                 "vybe:rt".into(), "vybe:collections".into(), "vybe:json".into(),
                 "vybe:regex".into(), "vybe:crypto".into(), "vybe:threading".into(),
                 "vybe:database".into(), "vybe:net".into(), "vybe:xml".into(),
-                "vybe:drawing".into(),
+                "vybe:drawing".into(), "dotnet:io".into(), "dotnet:net".into(), "dotnet:sockets".into(),
                 "wasi:cli".into(), "wasi:filesystem".into(), "wasi:http".into(),
                 "wasi:random".into(), "wasi:clocks".into(),
+                "wasi:io/streams".into(), "wasi:io/poll".into(),
+                "wasi:sockets/network".into(), "wasi:sockets/instance-network".into(),
+                "wasi:sockets/tcp".into(), "wasi:sockets/tcp-create-socket".into(),
+                "wasi:sockets/udp".into(), "wasi:sockets/udp-create-socket".into(),
+                "wasi:sockets/ip-name-lookup".into(),
             ],
         }
     }
@@ -63,6 +68,11 @@ impl Target {
             available_modules: vec![
                 "wasi:cli".into(), "wasi:filesystem".into(), "wasi:http".into(),
                 "wasi:random".into(), "wasi:clocks".into(),
+                "wasi:io/streams".into(), "wasi:io/poll".into(),
+                "wasi:sockets/network".into(), "wasi:sockets/instance-network".into(),
+                "wasi:sockets/tcp".into(), "wasi:sockets/tcp-create-socket".into(),
+                "wasi:sockets/udp".into(), "wasi:sockets/udp-create-socket".into(),
+                "wasi:sockets/ip-name-lookup".into(),
             ],
         }
     }

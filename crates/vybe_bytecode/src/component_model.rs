@@ -1,8 +1,8 @@
-//! Component Model resource patterns for WASM GC integration.
+//! Component Model resource and class patterns for WASM GC integration.
 //!
-//! This module extends the Component Model (component.rs) with resource types,
-//! which represent opaque handles to host-managed state. Resources follow the
-//! WASM Component Model's `resource` pattern:
+//! This module extends the Component Model (component.rs) with richer typed
+//! descriptors for both resources and classes. Resources follow the WASM
+//! Component Model's `resource` pattern:
 //!
 //! - A resource has a constructor, methods, and a destructor (drop).
 //! - Resources are owned — they have a single owner and are dropped when the owner
@@ -57,11 +57,86 @@ pub struct ResourceMethod {
     pub results: Vec<super::component::ValType>,
 }
 
+/// A class type definition in the Component Model.
+/// Classes model user/framework objects with inheritance, fields,
+/// properties, methods, and constructors.
+#[derive(Debug, Clone)]
+pub struct ClassType {
+    /// Class name (e.g. "Form", "Button", "StringBuilder")
+    pub name: String,
+    /// Optional parent class name.
+    pub parent: Option<String>,
+    /// Plain instance fields that do not mirror into the host.
+    pub fields: Vec<String>,
+    /// Properties, potentially backed by host getter/setter calls.
+    pub properties: Vec<PropertyDef>,
+    /// Instance or static methods.
+    pub methods: Vec<MethodDef>,
+    /// Constructor definition.
+    pub constructor: Option<ConstructorDef>,
+    /// Optional destructor/finalizer-like method.
+    pub destructor: Option<MethodDef>,
+}
+
+/// A property on a class type.
+#[derive(Debug, Clone)]
+pub struct PropertyDef {
+    pub name: String,
+    pub setter: Option<HostTarget>,
+    pub getter: Option<HostTarget>,
+}
+
+/// A method on a class type.
+#[derive(Debug, Clone)]
+pub struct MethodDef {
+    pub name: String,
+    pub is_static: bool,
+    /// User-visible arity. For instance methods this excludes the implicit `this`.
+    pub arity: u8,
+    pub body: MethodBody,
+}
+
+/// The body for a class method.
+#[derive(Debug, Clone)]
+pub enum MethodBody {
+    /// Method implemented by an emitted chunk index.
+    UserChunk(usize),
+    /// Method forwards to a host function.
+    HostCall(HostTarget),
+    /// Method lowers through a shared compiler-side emitter.
+    Common(String),
+}
+
+/// Constructor definition for a class type.
+#[derive(Debug, Clone)]
+pub struct ConstructorDef {
+    pub arity: u8,
+    /// Optional backing that materializes the runtime object.
+    pub backing: Option<ConstructorTarget>,
+}
+
+/// A constructor backing can either be a host import or a canonical
+/// compiler-side common emit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConstructorTarget {
+    Host(HostTarget),
+    Common(String),
+}
+
+/// A host target resolved by the linker against registered host exports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostTarget {
+    pub module: String,
+    pub name: String,
+}
+
 /// A component import/export kind — extends the basic Component with resource support.
 #[derive(Debug, Clone)]
 pub enum ComponentItemKind {
     /// A function import/export
     Function(super::component::FuncSig),
+    /// A class type import/export
+    Class(ClassType),
     /// A resource type import/export
     Resource(ResourceType),
     /// A type alias (e.g., `type handle = u32`)
@@ -107,6 +182,8 @@ pub struct ComponentDescriptor {
     pub imports: Vec<ComponentImport>,
     /// Typed exports (functions + resources + types)
     pub exports: Vec<ComponentExport>,
+    /// Class types defined by this component.
+    pub classes: Vec<ClassType>,
     /// Resource types defined by this component
     pub resources: Vec<ResourceType>,
 }
@@ -117,8 +194,14 @@ impl ComponentDescriptor {
             name: name.into(),
             imports: Vec::new(),
             exports: Vec::new(),
+            classes: Vec::new(),
             resources: Vec::new(),
         }
+    }
+
+    /// Add a class type definition to this component.
+    pub fn add_class(&mut self, class: ClassType) {
+        self.classes.push(class);
     }
 
     /// Add a resource type definition to this component.
@@ -132,6 +215,15 @@ impl ComponentDescriptor {
             interface: interface.into(),
             name: name.into(),
             kind: ComponentItemKind::Function(sig),
+        });
+    }
+
+    /// Add a class import.
+    pub fn add_import_class(&mut self, interface: &str, name: &str, class: ClassType) {
+        self.imports.push(ComponentImport {
+            interface: interface.into(),
+            name: name.into(),
+            kind: ComponentItemKind::Class(class),
         });
     }
 
@@ -150,6 +242,15 @@ impl ComponentDescriptor {
             interface: interface.into(),
             name: name.into(),
             kind: ComponentItemKind::Function(sig),
+        });
+    }
+
+    /// Add a class export.
+    pub fn add_export_class(&mut self, interface: &str, name: &str, class: ClassType) {
+        self.exports.push(ComponentExport {
+            interface: interface.into(),
+            name: name.into(),
+            kind: ComponentItemKind::Class(class),
         });
     }
 
@@ -176,6 +277,134 @@ impl ComponentDescriptor {
             }
         }
         names
+    }
+
+    /// Get all class types (defined + imported + exported).
+    pub fn all_class_names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.classes.iter().map(|c| c.name.as_str()).collect();
+        for imp in &self.imports {
+            if let ComponentItemKind::Class(class) = &imp.kind {
+                names.push(&class.name);
+            }
+        }
+        for exp in &self.exports {
+            if let ComponentItemKind::Class(class) = &exp.kind {
+                names.push(&class.name);
+            }
+        }
+        names
+    }
+}
+
+impl ClassType {
+    pub fn new(name: impl Into<String>) -> Self {
+        ClassType {
+            name: name.into(),
+            parent: None,
+            fields: Vec::new(),
+            properties: Vec::new(),
+            methods: Vec::new(),
+            constructor: None,
+            destructor: None,
+        }
+    }
+
+    pub fn with_parent(mut self, parent: impl Into<String>) -> Self {
+        self.parent = Some(parent.into());
+        self
+    }
+
+    pub fn with_field(mut self, field: impl Into<String>) -> Self {
+        self.fields.push(field.into());
+        self
+    }
+
+    pub fn with_property(mut self, property: PropertyDef) -> Self {
+        self.properties.push(property);
+        self
+    }
+
+    pub fn with_method(mut self, method: MethodDef) -> Self {
+        self.methods.push(method);
+        self
+    }
+
+    pub fn with_constructor(mut self, constructor: ConstructorDef) -> Self {
+        self.constructor = Some(constructor);
+        self
+    }
+
+    pub fn with_destructor(mut self, destructor: MethodDef) -> Self {
+        self.destructor = Some(destructor);
+        self
+    }
+}
+
+impl PropertyDef {
+    pub fn new(name: impl Into<String>) -> Self {
+        PropertyDef {
+            name: name.into(),
+            setter: None,
+            getter: None,
+        }
+    }
+
+    pub fn with_setter(mut self, setter: HostTarget) -> Self {
+        self.setter = Some(setter);
+        self
+    }
+
+    pub fn with_getter(mut self, getter: HostTarget) -> Self {
+        self.getter = Some(getter);
+        self
+    }
+}
+
+impl MethodDef {
+    pub fn new(name: impl Into<String>, arity: u8, body: MethodBody) -> Self {
+        MethodDef {
+            name: name.into(),
+            is_static: false,
+            arity,
+            body,
+        }
+    }
+
+    pub fn static_method(name: impl Into<String>, arity: u8, body: MethodBody) -> Self {
+        MethodDef {
+            name: name.into(),
+            is_static: true,
+            arity,
+            body,
+        }
+    }
+}
+
+impl ConstructorDef {
+    pub fn new(arity: u8) -> Self {
+        ConstructorDef {
+            arity,
+            backing: None,
+        }
+    }
+
+    pub fn with_backing(mut self, backing: HostTarget) -> Self {
+        self.backing = Some(ConstructorTarget::Host(backing));
+        self
+    }
+
+    pub fn with_common_backing(mut self, emit: impl Into<String>) -> Self {
+        self.backing = Some(ConstructorTarget::Common(emit.into()));
+        self
+    }
+}
+
+impl HostTarget {
+    pub fn new(module: impl Into<String>, name: impl Into<String>) -> Self {
+        HostTarget {
+            module: module.into(),
+            name: name.into(),
+        }
     }
 }
 
@@ -401,6 +630,30 @@ mod tests {
         assert!(comp.resources[0].constructor.is_some());
         assert!(comp.resources[0].destructor.is_some());
 
+        let button_class = ClassType::new("Button")
+            .with_parent("Control")
+            .with_field("Text")
+            .with_property(
+                PropertyDef::new("Enabled")
+                    .with_setter(HostTarget::new("vybe:gui", "controlSetProperty"))
+            )
+            .with_method(MethodDef::new(
+                "PerformClick",
+                0,
+                MethodBody::HostCall(HostTarget::new("vybe:gui", "buttonPerformClick")),
+            ))
+            .with_constructor(
+                ConstructorDef::new(0)
+                    .with_backing(HostTarget::new("vybe:gui", "new_Button"))
+            );
+
+        comp.add_class(button_class.clone());
+        assert_eq!(comp.classes.len(), 1);
+        assert_eq!(comp.classes[0].name, "Button");
+        assert_eq!(comp.classes[0].parent.as_deref(), Some("Control"));
+        assert_eq!(comp.classes[0].properties.len(), 1);
+        assert_eq!(comp.classes[0].methods.len(), 1);
+
         // Add imports/exports
         comp.add_import_fn("wasi:io/streams", "read", FuncSig {
             name: "read".into(),
@@ -414,8 +667,12 @@ mod tests {
             results: vec![ValType::I32],
         });
 
-        assert_eq!(comp.imports.len(), 1);
-        assert_eq!(comp.exports.len(), 1);
+        comp.add_import_class("dotnet.System.Windows.Forms", "Button", button_class.clone());
+        comp.add_export_class("dotnet.System.Windows.Forms", "Button", button_class);
+
+        assert_eq!(comp.imports.len(), 2);
+        assert_eq!(comp.exports.len(), 2);
         assert_eq!(comp.all_resource_names(), vec!["FileHandle"]);
+        assert_eq!(comp.all_class_names(), vec!["Button", "Button", "Button"]);
     }
 }

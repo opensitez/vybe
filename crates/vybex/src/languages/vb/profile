@@ -59,6 +59,7 @@ linq_queries = true                    # LINQ query syntax compiled to method ch
 "console.readline"    = { emit = "host:wasi:cli:readLine",   min_args = 0, max_args = 0 }
 "msgbox"              = { emit = "host:vybe:gui:msgBox",     min_args = 1, max_args = 3 }
 "inputbox"            = { emit = "host:vybe:gui:msgBox",     min_args = 1, max_args = 3 }
+"messagebox.show"     = { emit = "host:vybe:gui:msgBox",     min_args = 1, max_args = 3 }
 "debug.print"         = { emit = "host:wasi:cli:log",        min_args = 0, max_args = 255 }
 
 # ── Type Conversions ─────────────────────────────────────────────────────────
@@ -148,6 +149,34 @@ cos        = { emit = "host:vybe:math:cos",    min_args = 1, max_args = 1 }
 tan        = { emit = "host:vybe:math:tan",    min_args = 1, max_args = 1 }
 atn        = { emit = "host:vybe:math:atan",   min_args = 1, max_args = 1 }
 atan       = { emit = "host:vybe:math:atan",   min_args = 1, max_args = 1 }
+pow                 = { emit = "stdlib:pow",    min_args = 2, max_args = 2 }
+"math.pow"          = { emit = "stdlib:pow",    min_args = 2, max_args = 2 }
+"system.math.pow"   = { emit = "stdlib:pow",    min_args = 2, max_args = 2 }
+"math.log10"        = { emit = "stdlib:log10",  min_args = 1, max_args = 1 }
+"system.math.log10" = { emit = "stdlib:log10",  min_args = 1, max_args = 1 }
+"math.log2"         = { emit = "host:vybe:math:log2", min_args = 1, max_args = 1 }
+"math.log"          = { emit = "host:vybe:math:log", min_args = 1, max_args = 2 }
+"system.math.log"   = { emit = "host:vybe:math:log", min_args = 1, max_args = 2 }
+"math.sin"          = { emit = "stdlib:sin",    min_args = 1, max_args = 1 }
+"math.cos"          = { emit = "stdlib:cos",    min_args = 1, max_args = 1 }
+"math.tan"          = { emit = "stdlib:tan",    min_args = 1, max_args = 1 }
+"math.asin"         = { emit = "stdlib:asin",   min_args = 1, max_args = 1 }
+"math.acos"         = { emit = "stdlib:acos",   min_args = 1, max_args = 1 }
+"math.atan"         = { emit = "stdlib:atan",   min_args = 1, max_args = 1 }
+"math.atan2"        = { emit = "stdlib:atan2",  min_args = 2, max_args = 2 }
+"system.math.asin"  = { emit = "stdlib:asin",   min_args = 1, max_args = 1 }
+"system.math.acos"  = { emit = "stdlib:acos",   min_args = 1, max_args = 1 }
+"system.math.atan"  = { emit = "stdlib:atan",   min_args = 1, max_args = 1 }
+"math.exp"          = { emit = "stdlib:exp",    min_args = 1, max_args = 1 }
+"math.sign"         = { emit = "stdlib:sign",          min_args = 1, max_args = 1 }
+"math.sinh"         = { emit = "stdlib:sinh",  min_args = 1, max_args = 1 }
+"math.cosh"         = { emit = "stdlib:cosh",  min_args = 1, max_args = 1 }
+"math.tanh"         = { emit = "stdlib:tanh",  min_args = 1, max_args = 1 }
+"system.math.sinh"  = { emit = "stdlib:sinh",  min_args = 1, max_args = 1 }
+"system.math.cosh"  = { emit = "stdlib:cosh",  min_args = 1, max_args = 1 }
+"system.math.tanh"  = { emit = "stdlib:tanh",  min_args = 1, max_args = 1 }
+"math.clamp"        = { emit = "stdlib:clamp",         min_args = 3, max_args = 3 }
+"system.math.clamp" = { emit = "stdlib:clamp",         min_args = 3, max_args = 3 }
 
 # ── String functions — WASM string builtins (zero overhead) ──────────────────
 
@@ -224,17 +253,20 @@ day          = { emit = "host:wasi:clocks:vbDay",    min_args = 1, max_args = 1 
 hour         = { emit = "host:wasi:clocks:vbHour",   min_args = 1, max_args = 1 }
 minute       = { emit = "host:wasi:clocks:vbMinute", min_args = 1, max_args = 1 }
 second       = { emit = "host:wasi:clocks:vbSecond", min_args = 1, max_args = 1 }
-dateadd      = { emit = "host:wasi:clocks:vbNow",    min_args = 3, max_args = 3 }
-datediff     = { emit = "host:wasi:clocks:vbNow",    min_args = 3, max_args = 3 }
-datepart     = { emit = "host:wasi:clocks:vbNow",    min_args = 2, max_args = 2 }
-dateserial   = { emit = "host:wasi:clocks:vbNow",    min_args = 3, max_args = 3 }
-datevalue    = { emit = "host:wasi:clocks:vbNow",    min_args = 1, max_args = 1 }
-timeserial   = { emit = "host:wasi:clocks:vbNow",    min_args = 3, max_args = 3 }
-timevalue    = { emit = "host:wasi:clocks:vbNow",    min_args = 1, max_args = 1 }
-cdate        = { emit = "host:wasi:clocks:vbNow",    min_args = 1, max_args = 1 }
-monthname    = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
-weekday      = { emit = "host:wasi:clocks:vbDay",    min_args = 1, max_args = 1 }
-weekdayname  = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
+dateadd      = { emit = "host:vybe:types:dateTimeAddDays",   min_args = 3, max_args = 3 }
+datediff     = { emit = "host:wasi:clocks:vbDay",            min_args = 3, max_args = 3 }
+datepart     = { emit = "host:wasi:clocks:vbDay",            min_args = 2, max_args = 2 }
+dateserial   = { emit = "host:vybe:types:dateTimeNew",        min_args = 3, max_args = 3 }
+datevalue    = { emit = "host:vybe:types:dateTimeParse",      min_args = 1, max_args = 1 }
+timeserial   = { emit = "host:vybe:types:dateTimeNew",        min_args = 3, max_args = 3 }
+timevalue    = { emit = "host:vybe:types:dateTimeParse",      min_args = 1, max_args = 1 }
+cdate        = { emit = "host:vybe:types:dateTimeParse",      min_args = 1, max_args = 1 }
+monthname    = { emit = "host:vybe:convert:toString",         min_args = 1, max_args = 1 }
+weekday      = { emit = "host:wasi:clocks:vbDay",             min_args = 1, max_args = 1 }
+weekdayname  = { emit = "host:vybe:convert:toString",         min_args = 1, max_args = 1 }
+"datetime.now"    = { emit = "host:vybe:types:dateTimeNow",   min_args = 0, max_args = 0 }
+"datetime.utcnow" = { emit = "host:vybe:types:dateTimeUtcNow", min_args = 0, max_args = 0 }
+"datetime.parse"  = { emit = "host:vybe:types:dateTimeParse", min_args = 1, max_args = 1 }
 
 # ── File I/O ─────────────────────────────────────────────────────────────────
 
@@ -243,7 +275,30 @@ weekdayname  = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1
 filecopy     = { emit = "host:wasi:filesystem:copy",     min_args = 2, max_args = 2 }
 kill         = { emit = "host:wasi:filesystem:remove",   min_args = 1, max_args = 1 }
 fileexists   = { emit = "host:wasi:filesystem:exists",   min_args = 1, max_args = 1 }
-"file.exists" = { emit = "host:wasi:filesystem:exists",  min_args = 1, max_args = 1 }
+"file.exists"         = { emit = "host:wasi:filesystem:exists",      min_args = 1, max_args = 1 }
+"file.readalltext"    = { emit = "host:wasi:filesystem:readFile",    min_args = 1, max_args = 1 }
+"file.writealltext"   = { emit = "host:wasi:filesystem:writeFile",   min_args = 2, max_args = 2 }
+"file.appendalltext"  = { emit = "host:wasi:filesystem:appendFile",  min_args = 2, max_args = 2 }
+"file.delete"         = { emit = "host:wasi:filesystem:remove",      min_args = 1, max_args = 1 }
+"file.copy"           = { emit = "host:wasi:filesystem:copy",        min_args = 2, max_args = 2 }
+"file.move"           = { emit = "host:wasi:filesystem:rename",      min_args = 2, max_args = 2 }
+"file.readalllines"   = { emit = "host:wasi:filesystem:readFile",    min_args = 1, max_args = 1 }
+"directory.exists"          = { emit = "host:wasi:filesystem:isDir",         min_args = 1, max_args = 1 }
+"directory.createdirectory" = { emit = "host:wasi:filesystem:mkdir",         min_args = 1, max_args = 1 }
+"directory.delete"          = { emit = "host:wasi:filesystem:remove",        min_args = 1, max_args = 2 }
+"directory.getfiles"        = { emit = "host:wasi:filesystem:listDir",       min_args = 1, max_args = 1 }
+"directory.getdirectories"  = { emit = "host:wasi:filesystem:listDir",       min_args = 1, max_args = 1 }
+"directory.getcurrentdirectory" = { emit = "host:wasi:cli:cwd",              min_args = 0, max_args = 0 }
+"path.getfilename"              = { emit = "host:wasi:filesystem:pathGetFileName",            min_args = 1, max_args = 1 }
+"path.getfilenamewithoutextension" = { emit = "host:wasi:filesystem:pathGetFileNameWithoutExt", min_args = 1, max_args = 1 }
+"path.getextension"             = { emit = "host:wasi:filesystem:pathGetExtension",           min_args = 1, max_args = 1 }
+"path.getdirectoryname"         = { emit = "host:wasi:filesystem:pathGetDirectory",           min_args = 1, max_args = 1 }
+"path.getfullpath"              = { emit = "host:wasi:filesystem:pathGetFullPath",            min_args = 1, max_args = 1 }
+"path.gettemppath"              = { emit = "host:wasi:filesystem:pathGetTempPath",            min_args = 0, max_args = 0 }
+"path.combine"                  = { emit = "host:wasi:filesystem:pathCombine",                min_args = 2, max_args = 255 }
+"path.changeextension"          = { emit = "host:wasi:filesystem:pathChangeExtension",        min_args = 2, max_args = 2 }
+"path.hasextension"             = { emit = "host:wasi:filesystem:pathHasExtension",           min_args = 1, max_args = 1 }
+"path.ispathrooted"             = { emit = "host:wasi:filesystem:pathIsRooted",               min_args = 1, max_args = 1 }
 filedatetime = { emit = "host:wasi:clocks:vbNow",        min_args = 1, max_args = 1 }
 filelen      = { emit = "host:wasi:filesystem:fileSize",  min_args = 1, max_args = 1 }
 lof          = { emit = "host:wasi:filesystem:fileSize",  min_args = 1, max_args = 1 }
@@ -280,6 +335,29 @@ command      = { emit = "host:wasi:cli:args",              min_args = 0, max_arg
 sendkeys     = { emit = "noop",                            min_args = 1, max_args = 2 }
 appactivate  = { emit = "noop",                            min_args = 1, max_args = 1 }
 doevents     = { emit = "noop",                            min_args = 0, max_args = 0 }
+
+# ── Environment ──────────────────────────────────────────────────────────────
+
+"environment.currentdirectory"        = { emit = "host:wasi:cli:cwd",        min_args = 0, max_args = 0 }
+"environment.newline"                 = { emit = "host:wasi:cli:newLine",     min_args = 0, max_args = 0 }
+"environment.machinename"             = { emit = "host:wasi:cli:machineName", min_args = 0, max_args = 0 }
+"environment.username"                = { emit = "host:wasi:cli:userName",    min_args = 0, max_args = 0 }
+"environment.osversion"               = { emit = "host:wasi:cli:platform",    min_args = 0, max_args = 0 }
+"environment.processorcount"          = { emit = "host:wasi:cli:arch",        min_args = 0, max_args = 0 }
+"environment.tickcount"               = { emit = "host:wasi:cli:tickCount",   min_args = 0, max_args = 0 }
+"environment.getenvironmentvariable"  = { emit = "host:wasi:cli:getEnv",      min_args = 1, max_args = 1 }
+"environment.setenvironmentvariable"  = { emit = "noop",                      min_args = 2, max_args = 2 }
+"environment.getfolderpath"           = { emit = "host:wasi:cli:getFolderPath", min_args = 1, max_args = 1 }
+
+# ── Guid ─────────────────────────────────────────────────────────────────────
+
+"guid.newguid" = { emit = "host:vybe:types:guidNewGuid",   min_args = 0, max_args = 0 }
+
+# ── Convert (Base64) ─────────────────────────────────────────────────────────
+
+"convert.tobase64string"   = { emit = "host:vybe:convert:btoa",  min_args = 1, max_args = 1 }
+"convert.frombase64string" = { emit = "host:vybe:convert:atob",  min_args = 1, max_args = 1 }
+"convert.todatetime"       = { emit = "host:vybe:types:dateTimeParse", min_args = 1, max_args = 1 }
 
 # ── JSON / XML / Regex ───────────────────────────────────────────────────────
 
@@ -326,11 +404,16 @@ screen       = { emit = "host:vybe:convert:cint",      min_args = 0, max_args = 
 clipboard    = { emit = "host:vybe:convert:toString",  min_args = 0, max_args = 1 }
 forms        = { emit = "host:vybe:convert:toString",  min_args = 0, max_args = 0 }
 print        = { emit = "host:wasi:cli:log",           min_args = 0, max_args = 255 }
-write        = { emit = "host:wasi:cli:log",           min_args = 0, max_args = 255 }
+write        = { emit = "host:dotnet:io:streamWriterWrite",    min_args = 1, max_args = 1 }
+writeline    = { emit = "host:dotnet:io:streamWriterWriteLine", min_args = 1, max_args = 1 }
+readline     = { emit = "host:dotnet:io:streamReaderReadLine", min_args = 0, max_args = 0 }
+readtoend    = { emit = "host:dotnet:io:streamReaderReadToEnd", min_args = 0, max_args = 0 }
+endofstream  = { emit = "host:dotnet:io:streamReaderAtEnd",    min_args = 0, max_args = 0 }
+flush        = { emit = "host:dotnet:io:streamWriterFlush",    min_args = 0, max_args = 0 }
+close        = { emit = "host:dotnet:io:streamWriterClose",    min_args = 0, max_args = 0 }
 input        = { emit = "host:wasi:cli:readLine",      min_args = 0, max_args = 1 }
 inputb       = { emit = "host:wasi:cli:readLine",      min_args = 0, max_args = 1 }
 lineinput    = { emit = "host:wasi:cli:readLine",      min_args = 0, max_args = 1 }
-close        = { emit = "noop",                        min_args = 0, max_args = 1 }
 open         = { emit = "host:wasi:filesystem:readFile", min_args = 1, max_args = 3 }
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -398,7 +481,7 @@ startswith    = { emit = "opcode:str_starts_with",     min_args = 1, max_args = 
 endswith      = { emit = "opcode:str_ends_with",       min_args = 1, max_args = 1 }
 substring     = { emit = "common:strings.substring",   min_args = 1, max_args = 2 }
 indexof       = { emit = "common:strings.index_of",    min_args = 1, max_args = 1 }
-lastindexof   = { emit = "opcode:str_last_index_of",   min_args = 1, max_args = 1 }
+lastindexof   = { emit = "host:vybe:array:lastIndexOf",   min_args = 1, max_args = 1 }
 contains      = { emit = "opcode:str_includes",        min_args = 1, max_args = 1 }
 tostring      = { emit = "stdlib:tostring",            min_args = 0, max_args = 0 }
 padleft       = { emit = "opcode:str_pad_start",       min_args = 1, max_args = 2 }
@@ -410,9 +493,9 @@ add = [
     { emit = "common:collections.push",   min_args = 1, max_args = 1 },
     { emit = "common:dict.set_dynamic",   min_args = 2, max_args = 2 },
 ]
-remove        = { emit = "host:vybe:array:remove",     min_args = 1, max_args = 1 }
-removeat      = { emit = "host:vybe:array:removeAt",   min_args = 1, max_args = 1 }
-insert        = { emit = "host:vybe:array:insert",     min_args = 2, max_args = 2 }
+remove        = { emit = "stdlib:array_remove_value",  min_args = 1, max_args = 1 }
+removeat      = { emit = "stdlib:array_remove_at",     min_args = 1, max_args = 1 }
+insert        = { emit = "stdlib:array_insert",        min_args = 2, max_args = 2 }
 clear         = { emit = "host:vybe:array:clear",      min_args = 0, max_args = 0 }
 count         = { emit = "common:collections.length", min_args = 0, max_args = 0 }
 sort          = { emit = "stdlib:sort_in_place",       min_args = 0, max_args = 0 }
@@ -443,13 +526,48 @@ hide           = { emit = "host:vybe:gui:hideForm",        min_args = 0, max_arg
 "controls.add" = { emit = "host:vybe:gui:controlsAdd",    min_args = 1, max_args = 1 }
 
 # Stopwatch methods
-start          = { emit = "host:vybe:types:stopwatchStart", min_args = 0, max_args = 0 }
-stop           = { emit = "host:vybe:types:stopwatchStop",  min_args = 0, max_args = 0 }
-reset          = { emit = "host:vybe:types:stopwatchReset", min_args = 0, max_args = 0 }
+start          = { emit = "host:wasi:clocks:stopwatchStart", min_args = 0, max_args = 0 }
+stop           = { emit = "host:wasi:clocks:stopwatchStop",  min_args = 0, max_args = 0 }
+reset          = { emit = "host:wasi:clocks:stopwatchReset", min_args = 0, max_args = 0 }
 
-# StringBuilder methods
+# Regex instance methods — extract __pattern from self object
+ismatch        = { emit = "host:vybe:types:regexIsMatch",  min_args = 1, max_args = 1 }
+"match"        = { emit = "host:vybe:types:regexMatch",    min_args = 1, max_args = 1 }
+matches        = { emit = "host:vybe:types:regexMatches",  min_args = 1, max_args = 1 }
+replace        = { emit = "host:vybe:types:regexReplace",  min_args = 2, max_args = 2 }
+
+# StringBuilder methods (overloaded with array ops by arity where unambiguous)
 append         = { emit = "host:vybe:types:sbAppend",      min_args = 1, max_args = 1 }
 appendline     = { emit = "host:vybe:types:sbAppendLine",  min_args = 0, max_args = 1 }
+
+# Stopwatch extended
+restart             = { emit = "host:wasi:clocks:stopwatchReset",    min_args = 0, max_args = 0 }
+elapsedmilliseconds = { emit = "host:wasi:clocks:stopwatchElapsed",  min_args = 0, max_args = 0 }
+isrunning           = { emit = "noop",                               min_args = 0, max_args = 0 }
+
+# List/collection extra
+addrange       = { emit = "host:vybe:types:listAddRange",   min_args = 1, max_args = 1 }
+trygetvalue    = { emit = "host:vybe:types:dictTryGetValue", min_args = 1, max_args = 2 }
+containsvalue  = { emit = "host:vybe:array:includes",      min_args = 1, max_args = 1 }
+
+# Queue methods
+enqueue        = { emit = "host:vybe:types:queueEnqueue",  min_args = 1, max_args = 1 }
+dequeue        = { emit = "host:vybe:types:queueDequeue",  min_args = 0, max_args = 0 }
+peek           = { emit = "host:vybe:types:collectionPeek", min_args = 0, max_args = 0 }
+
+# Stack methods
+push           = { emit = "host:vybe:types:stackPush",     min_args = 1, max_args = 1 }
+pop            = { emit = "host:vybe:types:stackPop",      min_args = 0, max_args = 0 }
+
+# HashSet methods (add/remove/contains/count share keys with List — dispatch by arity is ambiguous)
+# HashSet.Add(val) = 1 arg, same as List.Add — both route to push/add; OK since collections are duck-typed
+
+# Random instance methods
+"next"         = [
+    { emit = "host:vybe:threading:randomNext", min_args = 0, max_args = 2 },
+]
+nextdouble     = { emit = "host:vybe:threading:randomNextDouble", min_args = 0, max_args = 0 }
+
 
 # ────────────────────────────────────────────────────────────────────────────
 # .NET NAMESPACE RESOLUTION
@@ -461,6 +579,7 @@ appendline     = { emit = "host:vybe:types:sbAppendLine",  min_args = 0, max_arg
 # resolve_dotted_name(), and the full .NET resolution order
 # (locals → fields → FQN → imports → known types).
 use_dotnet = true
+use_dotnet_resolver = true
 
 # Additional default imports specific to VB (beyond the common .NET ones)
 extra_imports = [
@@ -473,21 +592,12 @@ extra_imports = [
 
 [known_types]
 # name = [host_module, host_function]
-"list"           = ["vybe:types", "listNew"]
-"dictionary"     = ["vybe:types", "dictNew"]
-"stack"          = ["vybe:types", "stackNew"]
-"queue"          = ["vybe:types", "queueNew"]
-"hashset"        = ["vybe:types", "hashSetNew"]
-"sortedlist"     = ["vybe:types", "sortedListNew"]
-"arraylist"      = ["vybe:types", "listNew"]
-"collection"     = ["vybe:types", "listNew"]
-"hashtable"      = ["vybe:types", "dictNew"]
 "stringbuilder"  = ["vybe:types", "stringBuilderNew"]
-"stopwatch"      = ["vybe:types", "stopwatchNew"]
-"random"         = ["vybe:types", "randomNew"]
+"stopwatch"      = ["wasi:clocks", "stopwatchNew"]
+"random"         = ["vybe:threading", "randomNew"]
 "regex"          = ["vybe:types", "regexNew"]
-"streamreader"   = ["wasi:filesystem", "readFile"]
-"streamwriter"   = ["wasi:filesystem", "writeFile"]
+"streamreader"   = ["dotnet:io", "streamReaderNew"]
+"streamwriter"   = ["dotnet:io", "streamWriterNew"]
 "memorystream"   = ["vybe:types", "listNew"]
 "filestream"     = ["wasi:filesystem", "readFile"]
 "binaryreader"   = ["wasi:filesystem", "readFile"]
@@ -503,6 +613,29 @@ extra_imports = [
 # `compiler_common::gui` emitter (vybe:gui::new_Timer, etc.), NOT the .NET
 # host bridge. Keep them OUT of known_types so the GUI control branch wins.
 "process"        = ["vybe:types", "processNew"]
+"queue"          = ["vybe:types", "queueNew"]
+"stack"          = ["vybe:types", "stackNew"]
+"hashset"        = ["vybe:types", "hashSetNew"]
 "datatable"      = ["vybe:types", "dataTableNew"]
 "datarow"        = ["vybe:types", "dataRowNew"]
 "dataadapter"    = ["vybe:types", "dataAdapterNew"]
+
+# ────────────────────────────────────────────────────────────────────────────
+# NAMESPACE CONSTANTS — compile-time float/string values for property accesses
+# ────────────────────────────────────────────────────────────────────────────
+
+[namespace_constants]
+"math.pi" = 3.141592653589793
+"math.e"  = 2.718281828459045
+
+# System.Text.RegularExpressions.RegexOptions enum values
+"regexoptions.none"                    = 0.0
+"regexoptions.ignorecase"              = 1.0
+"regexoptions.multiline"               = 2.0
+"regexoptions.explicitcapture"         = 4.0
+"regexoptions.compiled"                = 8.0
+"regexoptions.singleline"              = 16.0
+"regexoptions.ignorepatternwhitespace" = 32.0
+"regexoptions.righttoleft"             = 64.0
+"regexoptions.ecmascript"              = 256.0
+"regexoptions.cultureinvariant"        = 512.0

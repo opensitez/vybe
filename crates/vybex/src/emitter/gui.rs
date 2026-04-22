@@ -148,6 +148,18 @@ pub fn host_fn_new_control(canonical: &str) -> String {
 /// Stack at call site: [obj, prop_name, value]
 pub const HOST_FN_SET_PROPERTY: &str = "controlSetProperty";
 
+/// Host fn name for "get a property from a control object".
+/// Stack at call site: [obj, prop_name]
+pub const HOST_FN_GET_PROPERTY: &str = "controlGetProperty";
+
+/// Host fn name for "create a controls collection bound to this owner".
+/// Stack at call site: [owner]
+pub const HOST_FN_NEW_CONTROLS_COLLECTION: &str = "newControlsCollection";
+
+/// Host fn name for "create a components collection bound to this owner".
+/// Stack at call site: [owner]
+pub const HOST_FN_NEW_COMPONENTS_COLLECTION: &str = "newComponentsCollection";
+
 /// Host fn name for "register an event handler on a control".
 /// Stack at call site: [control_name_string, event_name, handler_fn_ref]
 pub const HOST_FN_BIND_EVENT: &str = "onEvent";

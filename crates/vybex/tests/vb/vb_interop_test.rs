@@ -648,7 +648,7 @@ Dim f As New Form1()
     assert_eq!(out, vec!["ok"]);
 }
 
-/// D34. Application.Run emits RunApplication
+/// D34. Application.Run triggers the GUI launch host path.
 #[test]
 fn d34_application_run_emits_run_application() {
     let (_vm, gui, _output) = run_vb_gui(r#"

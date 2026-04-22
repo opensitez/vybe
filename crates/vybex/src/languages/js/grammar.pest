@@ -93,12 +93,17 @@ array_hole = { &"," }   // empty slot before comma
 // ── Function declaration ────────────────────────────────────────────────────
 
 function_declaration = {
-    "function" ~ ident_name ~ "(" ~ param_list? ~ ")" ~ function_body
+    "function" ~ generator_marker? ~ ident_name ~ "(" ~ param_list? ~ ")" ~ function_body
 }
 
 async_function_declaration = {
-    "async" ~ "function" ~ ident_name? ~ "(" ~ param_list? ~ ")" ~ function_body
+    "async" ~ "function" ~ generator_marker? ~ ident_name? ~ "(" ~ param_list? ~ ")" ~ function_body
 }
+
+/// `function*` marks a generator declaration — the walker uses the
+/// presence of this token plus `yield` inside the body to set
+/// `is_generator = true`.
+generator_marker = { "*" }
 
 function_body = { "{" ~ statement* ~ "}" }
 
@@ -254,7 +259,8 @@ expression_statement = { expression ~ terminator }
 expression = { assignment_expression ~ ("," ~ assignment_expression)* }
 
 assignment_expression = {
-    arrow_function
+    yield_expression
+    | arrow_function
     | async_arrow_function
     | conditional_expression ~ (assignment_op ~ assignment_expression)?
 }
@@ -322,6 +328,14 @@ void_kw = @{ "void" ~ !(ASCII_ALPHANUMERIC | "_") }
 delete_kw = @{ "delete" ~ !(ASCII_ALPHANUMERIC | "_") }
 await_kw = @{ "await" ~ !(ASCII_ALPHANUMERIC | "_") }
 async_kw = @{ "async" ~ !(ASCII_ALPHANUMERIC | "_") }
+yield_kw = @{ "yield" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+/// `yield expr` (legal only inside a `function*`). The walker folds
+/// this into `ExprKind::Yield`, which the compiler lowers to
+/// `Op::SUSPEND` at the bytecode level.
+yield_expression = {
+    yield_kw ~ "*"? ~ assignment_expression?
+}
 
 unary_op = {
     "-" ~ !("-" | "=")

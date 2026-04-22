@@ -2,7 +2,7 @@
 /// (Split, Join, Replace, Trim, PadLeft, Format), verbatim strings,
 /// char operations, parsing, conversion patterns.
 
-use super::helpers::run_csharp;
+use super::helpers::{compile_csharp_to_wasm, extract_imports, run_csharp};
 
 // ===================================================================
 // STRING INTERPOLATION
@@ -140,12 +140,18 @@ Console.WriteLine(string.Format("Name: {0}, Age: {1}", "Bob", 25));
 "#), &["1 + 2 = 3", "Name: Bob, Age: 25"]);
 }
 
+#[test] fn fully_qualified_system_string_format() {
+    assert_eq!(run_csharp(r#"
+Console.WriteLine(System.String.Format("{0}-{1}", "A", "B"));
+"#), &["A-B"]);
+}
+
 #[test] fn string_isnullorempty() {
     assert_eq!(run_csharp(r#"
 Console.WriteLine(string.IsNullOrEmpty(""));
 Console.WriteLine(string.IsNullOrEmpty(null));
 Console.WriteLine(string.IsNullOrEmpty("hello"));
-"#), &["True", "True", "False"]);
+"#), &["true", "true", "false"]);
 }
 
 #[test] fn string_isnullorwhitespace() {
@@ -153,7 +159,26 @@ Console.WriteLine(string.IsNullOrEmpty("hello"));
 Console.WriteLine(string.IsNullOrWhiteSpace("   "));
 Console.WriteLine(string.IsNullOrWhiteSpace(""));
 Console.WriteLine(string.IsNullOrWhiteSpace("x"));
-"#), &["True", "True", "False"]);
+"#), &["true", "true", "false"]);
+}
+
+#[test] fn string_methods_use_stdlib_not_vybe_string_hosts() {
+    let wasm = compile_csharp_to_wasm(r#"
+string s = "Hello World";
+Console.WriteLine(string.IsNullOrEmpty(""));
+Console.WriteLine(s.Insert(5, " Beautiful"));
+Console.WriteLine(s.Remove(5));
+Console.WriteLine(s.Remove(5, 1));
+"#);
+    let imports = extract_imports(&wasm);
+    for forbidden in ["isNullOrEmpty", "insert", "remove"] {
+        assert!(
+            !imports.iter().any(|(module, name)| module == "vybe:string" && name == forbidden),
+            "unexpected vybe:string.{} import in emitted wasm: {:?}",
+            forbidden,
+            imports
+        );
+    }
 }
 
 // ===================================================================

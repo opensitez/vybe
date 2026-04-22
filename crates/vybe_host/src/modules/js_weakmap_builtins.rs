@@ -22,7 +22,7 @@
 
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::value::{Object, ObjectKind, Value};
-use vybe_bytecode::{HostContext, VM};
+use vybe_bytecode::VM;
 
 const WEAKMAP_TAG: &str = "__vybe_js_weakmap";
 const WEAKSET_TAG: &str = "__vybe_js_weakset";

@@ -23,58 +23,20 @@ pub fn is_namespace_root(name: &str) -> bool {
 /// Return the set of names that should be treated as namespace/type roots.
 /// Public so language-specific extensions can build derived sets if needed.
 pub fn namespace_roots() -> HashSet<String> {
-    let mut s = HashSet::new();
-    for name in &[
-        // Top-level namespace roots
-        "system", "microsoft", "vybe",
-        // Direct .NET type names
-        "math", "console", "convert", "strings", "array",
-        "window", "file", "io", "directory", "application",
-        "environment", "thread", "json", "color",
-        "datetime", "stringbuilder", "process",
-        "timespan", "guid", "point", "size", "font", "random",
-        "path", "messagebox", "encoding",
-        // WinForms enums
-        "borderstyle", "formborderstyle", "contentalignment",
-        "dialogresult", "messageboxbuttons", "messageboxicon",
-        "keys", "dockstyle", "anchorstyles", "formstartposition",
-        "formwindowstate",
-        // VB6 legacy globals — registered by vybe_host::namespaces::vb_globals
-        // with pre-computed Path/EXEName/Title/Width/Height etc. The resolver
-        // must see them as namespace roots so `App.Path` / `Screen.Width`
-        // resolve as `global_get app` + `struct_get path` instead of being
-        // treated as undefined locals.
-        "app", "screen",
-        // System.Diagnostics types
-        "stopwatch", "debug", "trace",
-        // System.IO types
-        "streamreader", "streamwriter", "filestream",
-        "binaryreader", "binarywriter", "memorystream",
-        // System.Net types
-        "webrequest", "httpwebrequest", "webclient",
-        "socket", "tcpclient", "tcplistener", "udpclient",
-        // System.Threading types
-        "task", "timer", "mutex", "semaphore",
-        // System.Text types
-        "regex", "match",
-        // System.Collections types
-        "list", "dictionary", "queue", "stack", "hashset",
-        "arraylist", "hashtable", "sortedlist", "collection",
-        // System.Data types
-        "datatable", "dataset", "datarow", "datacolumn",
-        "sqlconnection", "sqlcommand", "sqldatareader",
-        "oledbconnection", "oledbcommand",
-        // System.Xml types
-        "xdocument", "xelement", "xmldocument",
-        // System.Drawing types
-        "pen", "solidbrush", "graphics", "bitmap", "image",
-        "colortranslator", "systemcolors",
-        // Primitive type names used as namespaces (Int32.Parse, etc.)
-        "int", "integer", "long", "double", "single", "string", "boolean", "byte",
-        "float", "bool", "object",
-        "int32", "int64", "uint32",
-    ] {
-        s.insert(name.to_string());
+    let mut roots = super::core::namespace_roots();
+    roots.extend(super::winforms::namespace_roots());
+    roots
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_namespace_roots_merge_core_and_winforms() {
+        let roots = namespace_roots();
+        assert!(roots.contains("console"));
+        assert!(roots.contains("application"));
+        assert!(roots.contains("formborderstyle"));
     }
-    s
 }

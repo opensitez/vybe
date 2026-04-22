@@ -9,20 +9,9 @@
 //!   by `ref.test`-shaped opcodes and the exception-handling proposal's
 //!   typed-catch arms.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use crate::chunk::Chunk;
 use crate::error::VMError;
-use crate::event_loop::{EventLoop, Task};
-use crate::fiber::{Fiber, SavedFrame};
-use crate::opcode::Op;
-use crate::shared_memory::SharedMemory;
-use crate::value::{Function, Object, ObjectKind, Upvalue, UpvalueLocation, Value};
-use crate::vm::{
-    VM, CallFrame, ExceptionHandler, FinalizerEntry, LabelEntry,
-    ExecResult, HostContext, HostFn, ImportTarget,
-    MAX_FRAMES, MAX_STACK,
-};
+use crate::value::Value;
+use crate::vm::VM;
 
 impl VM {
     pub(crate) fn simd_i32x4_binop(&mut self, f: impl Fn(i32, i32) -> i32) -> Result<(), VMError> {

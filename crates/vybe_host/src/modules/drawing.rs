@@ -113,6 +113,38 @@ pub fn register(vm: &mut VM) {
     // to 0 (Solid) and `dashoffset` to 0.0 — the framework wrapper's
     // setters mutate them in place when user code does
     // `pen.DashStyle = ...`.
+    // `new Point(x, y)` — System.Drawing.Point value type. The GUI
+    // property dispatch reads `.x` / `.y` from a `Value::Object` stored
+    // at `location`, so we expose exactly those field names.
+    vm.register_host_fn("vybe:drawing", "pointNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let x = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
+        let y = args.get(1).map(|v| v.as_f64()).unwrap_or(0.0);
+        let mut obj = Object::new();
+        obj.properties.insert("__type".into(), Value::String(Arc::from("Point")));
+        obj.properties.insert("x".into(), Value::F64(x));
+        obj.properties.insert("y".into(), Value::F64(y));
+        // Pascal-case aliases so code that reads `.X` / `.Y` (C#
+        // idiomatic) resolves too; lowercase is what the GUI plumbing
+        // actually reads.
+        obj.properties.insert("X".into(), Value::F64(x));
+        obj.properties.insert("Y".into(), Value::F64(y));
+        Value::Object(Arc::new(Mutex::new(obj)))
+    }));
+
+    // `new Size(width, height)` — System.Drawing.Size. The GUI dispatch
+    // reads `.width` / `.height` (lowercase) from the `size` property.
+    vm.register_host_fn("vybe:drawing", "sizeNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let w = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
+        let h = args.get(1).map(|v| v.as_f64()).unwrap_or(0.0);
+        let mut obj = Object::new();
+        obj.properties.insert("__type".into(), Value::String(Arc::from("Size")));
+        obj.properties.insert("width".into(), Value::F64(w));
+        obj.properties.insert("height".into(), Value::F64(h));
+        obj.properties.insert("Width".into(), Value::F64(w));
+        obj.properties.insert("Height".into(), Value::F64(h));
+        Value::Object(Arc::new(Mutex::new(obj)))
+    }));
+
     vm.register_host_fn("vybe:drawing", "penNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let color = args.first().cloned().unwrap_or(Value::Null);
         let width = args.get(1).map(|v| v.as_f64()).unwrap_or(1.0);

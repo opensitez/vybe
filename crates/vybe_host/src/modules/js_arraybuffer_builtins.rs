@@ -27,7 +27,7 @@
 
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::value::{ArrayBufferState, Object, ObjectKind, Value};
-use vybe_bytecode::{HostContext, VM};
+use vybe_bytecode::VM;
 
 const DV_TAG: &str = "__vybe_js_dataview";
 const DV_BUFFER_PROP: &str = "__vybe_dv_buffer";

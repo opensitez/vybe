@@ -144,7 +144,7 @@ DateTime        = "vybe:types"
 StringBuffer    = "vybe:types"
 Duration        = "vybe:types"
 Random          = "vybe:threading"
-Stopwatch       = "vybe:threading"
+Stopwatch       = "wasi:clocks"
 RegExp          = "vybe:regex"
 Future          = "vybe:runtime"
 Stream          = "vybe:runtime"
@@ -175,7 +175,7 @@ base64          = "vybe:convert"
 DateTime        = ["vybe:types", "dateTimeNew"]
 StringBuffer    = ["vybe:types", "stringBuilderNew"]
 Random          = ["vybe:threading", "randomNew"]
-Stopwatch       = ["vybe:threading", "stopwatchNew"]
+Stopwatch       = ["wasi:clocks", "stopwatchNew"]
 RegExp          = ["vybe:regex", "test"]
 
 # ────────────────────────────────────────────────────────────────────────────

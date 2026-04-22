@@ -186,6 +186,7 @@ statement = _{
     | do_while_statement
     | switch_statement
     | return_statement
+    | yield_statement
     | break_statement
     | continue_statement
     | throw_statement
@@ -278,6 +279,16 @@ return_statement = { "return" ~ expression? ~ ";" }
 break_statement = { "break" ~ ";" }
 continue_statement = { "continue" ~ ";" }
 throw_statement = { "throw" ~ expression? ~ ";" }
+
+/// `yield return expr;` / `yield break;` — C# generator syntax. Any
+/// method body that contains `yield return`/`yield break` is treated
+/// as a generator; the compiler sets `chunk.is_generator = true` and
+/// each `yield return` lowers to `Op::SUSPEND`. `yield break` ends the
+/// generator (maps to `return`).
+yield_statement = {
+    "yield" ~ "return" ~ expression ~ ";"
+    | "yield" ~ "break" ~ ";"
+}
 
 // ── Try / Catch / Finally ───────────────────────────────────────────────────
 

@@ -5,11 +5,10 @@ use std::sync::{Arc, Mutex, Weak as ArcWeak};
 
 use crate::chunk::Chunk;
 use crate::error::VMError;
-use crate::event_loop::{EventLoop, Task};
-use crate::fiber::{Fiber, SavedFrame};
+use crate::event_loop::EventLoop;
 use crate::opcode::Op;
 use crate::shared_memory::SharedMemory;
-use crate::value::{Function, Object, ObjectKind, Upvalue, UpvalueLocation, Value};
+use crate::value::{Object, ObjectKind, Upvalue, Value};
 
 pub(crate) const MAX_FRAMES: usize = 256;
 pub(crate) const MAX_STACK: usize = 65536;
@@ -85,10 +84,25 @@ pub(crate) struct CallFrame {
 /// Record of a live continuation on the VM's active-continuation
 /// stack. Each entry owns the continuation `Value` plus the caller's
 /// pre-RESUME `Fiber` — that's what we restore on suspend.
+///
+/// `mode` selects between the raw RESUME protocol (caller sees just
+/// the yielded value on its stack) and the iterator protocol (caller
+/// sees `[value, has_more_i32]` — so a loop can check `has_more`
+/// without a second API call). `SUSPEND` and normal-`RETURN`-out-of-
+/// a-continuation consult this flag to decide what to push.
 #[derive(Debug)]
-pub(crate) struct ActiveContinuation {
+pub struct ActiveContinuation {
     pub cont: crate::value::Value,
     pub caller_fiber: crate::fiber::Fiber,
+    pub mode: ResumeMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumeMode {
+    /// Bare `RESUME` — push only the yielded value on caller's stack.
+    Raw,
+    /// `GEN_NEXT` iterator protocol — push `(value, has_more_i32)`.
+    Iterator,
 }
 
 /// Exception handler entry — pushed by try_start, popped by try_end or catch.
@@ -160,9 +174,9 @@ pub struct VM {
     /// pops the topmost entry, captures the runnable fiber into the
     /// continuation's `saved` slot, and restores the caller. Empty when
     /// no coroutine is active.
-    pub(crate) active_continuations: Vec<ActiveContinuation>,
+    pub active_continuations: Vec<ActiveContinuation>,
     /// Block label stack for structured control flow.
-    pub(crate) label_stack: Vec<LabelEntry>,
+    pub label_stack: Vec<LabelEntry>,
     /// Callback invoker for host functions (cached allocation).
     pub(crate) callback_invoker: Option<Box<dyn FnMut(&Value, &[Value]) -> Value>>,
     /// When true, enforce strict WASM isolation:
@@ -189,6 +203,9 @@ pub struct VM {
     /// Execution trace: when true, print every opcode + stack top.
     /// Enable via `vm.set_trace(true)` or `VYBE_TRACE=1` env var.
     pub(crate) trace: bool,
+    /// Optional chunk-name filter for execution trace output.
+    /// When set, only matching chunks emit trace lines.
+    pub(crate) trace_chunk_filter: Option<String>,
 }
 
 /// A registered finalizer for an object.
@@ -202,11 +219,11 @@ pub(crate) struct FinalizerEntry {
 
 /// Entry in the structured control flow label stack.
 #[derive(Debug, Clone)]
-pub(crate) struct LabelEntry {
+pub struct LabelEntry {
     /// Instruction offset to jump to on `br` (end of block, or start of loop).
-    pub(crate) target: usize,
+    pub target: usize,
     /// True if this is a loop (continue jumps to start), false if block (break jumps to end).
-    pub(crate) is_loop: bool,
+    pub is_loop: bool,
 }
 
 impl VM {
@@ -268,6 +285,7 @@ impl VM {
             thread_handles: HashMap::new(),
             next_thread_id: 1,
             trace: std::env::var("VYBE_TRACE").map_or(false, |v| v == "1" || v == "true"),
+            trace_chunk_filter: std::env::var("VYBE_TRACE_CHUNK").ok(),
         }
     }
 
@@ -276,6 +294,11 @@ impl VM {
     /// Can also be enabled via `VYBE_TRACE=1` environment variable.
     pub fn set_trace(&mut self, enabled: bool) {
         self.trace = enabled;
+    }
+
+    /// Restrict execution trace output to a specific chunk name.
+    pub fn set_trace_chunk_filter(&mut self, chunk_name: Option<String>) {
+        self.trace_chunk_filter = chunk_name;
     }
 
     /// Capture the current call stack for error reporting.
@@ -1019,6 +1042,13 @@ impl VM {
         }
         self.stack.push(value);
         Ok(())
+    }
+
+    pub(crate) fn stack_floor(&self) -> usize {
+        self.frames.last().map(|frame| {
+            let chunk = &self.chunks[frame.chunk_index];
+            frame.base + (chunk.local_count as usize).max(chunk.arity as usize)
+        }).unwrap_or(0)
     }
 
     pub(crate) fn pop(&mut self) -> Value {

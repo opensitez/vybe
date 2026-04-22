@@ -8,12 +8,389 @@ mod gui_impl {
 
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::{VM, Value, HostContext};
+use vybe_bytecode::value::{Object, ObjectKind};
 use crate::gui_state::GuiState;
+
+fn gui_trace_enabled() -> bool {
+    std::env::var("VYBE_GUI_TRACE")
+        .map(|value| !matches!(value.as_str(), "" | "0" | "false" | "False"))
+        .unwrap_or(false)
+}
+
+fn control_property_value_from_live_or_fallback(
+    gui: &mut GuiState,
+    control_name: &str,
+    property: &str,
+    fallback: Option<Value>,
+) -> Value {
+    let prop_lower = property.to_lowercase();
+
+    if !control_name.is_empty() {
+        let value = gui.get_property(control_name, property);
+        if !value.is_empty() || prop_lower == "text" {
+            return match prop_lower.as_str() {
+                "enabled" | "visible" | "readonly" | "tabstop" | "autosize" | "multiline" => {
+                    Value::Bool(matches!(value.as_str(), "true" | "True" | "1"))
+                }
+                "left" | "top" | "width" | "height" | "tabindex" | "maxlength" | "selectionlength" | "selectionstart" | "textlength" | "opacity" => {
+                    value.parse::<f64>().map(Value::F64).unwrap_or_else(|_| Value::String(Arc::from(value.as_str())))
+                }
+                _ => Value::String(Arc::from(value.as_str())),
+            };
+        }
+    }
+
+    fallback.unwrap_or(Value::Null)
+}
+
+fn collection_type_name(kind: &str) -> &'static str {
+    match kind {
+        "controls" => "ControlCollection",
+        "components" => "ComponentCollection",
+        "forms" => "FormCollection",
+        _ => "Collection",
+    }
+}
+
+fn sync_collection_metadata(collection: &mut Object) {
+    let len = match &collection.kind {
+        ObjectKind::Array(items) => items.len(),
+        _ => 0,
+    };
+    collection.properties.insert("count".into(), Value::F64(len as f64));
+    collection.properties.insert("length".into(), Value::F64(len as f64));
+}
+
+fn create_collection_object(
+    kind: &str,
+    owner: Option<Value>,
+    add_ref: &Value,
+    clear_ref: &Value,
+    contains_ref: &Value,
+) -> Value {
+    let mut collection = Object::new_array(Vec::new());
+    collection.properties.insert("__type".into(), Value::String(Arc::from(collection_type_name(kind))));
+    collection.properties.insert("__collection_kind".into(), Value::String(Arc::from(kind)));
+    if let Some(owner) = owner {
+        collection.properties.insert("__owner".into(), owner);
+    }
+    collection.properties.insert("add".into(), add_ref.clone());
+    collection.properties.insert("clear".into(), clear_ref.clone());
+    collection.properties.insert("contains".into(), contains_ref.clone());
+    sync_collection_metadata(&mut collection);
+    Value::Object(Arc::new(Mutex::new(collection)))
+}
+
+fn push_collection_value(collection_obj: &Arc<Mutex<Object>>, value: Value) {
+    let mut collection = collection_obj.lock().unwrap();
+    if let ObjectKind::Array(items) = &mut collection.kind {
+        if !items.iter().any(|existing| existing.eq(&value)) {
+            items.push(value);
+        }
+    }
+    sync_collection_metadata(&mut collection);
+}
+
+fn clear_collection_value(collection_obj: &Arc<Mutex<Object>>) {
+    let mut collection = collection_obj.lock().unwrap();
+    if let ObjectKind::Array(items) = &mut collection.kind {
+        items.clear();
+    }
+    sync_collection_metadata(&mut collection);
+}
+
+fn remove_collection_value(collection_obj: &Arc<Mutex<Object>>, value: &Value) {
+    let mut collection = collection_obj.lock().unwrap();
+    if let ObjectKind::Array(items) = &mut collection.kind {
+        items.retain(|existing| !existing.eq(value));
+    }
+    sync_collection_metadata(&mut collection);
+}
+
+fn append_to_owner_collection(owner_obj: &Arc<Mutex<Object>>, property: &str, value: Value) {
+    let collection = {
+        owner_obj.lock().unwrap().properties.get(property).cloned()
+    };
+    if let Some(Value::Object(collection_obj)) = collection {
+        push_collection_value(&collection_obj, value);
+    }
+}
+
+fn clear_owner_collection(owner_obj: &Arc<Mutex<Object>>, property: &str) {
+    let collection = {
+        owner_obj.lock().unwrap().properties.get(property).cloned()
+    };
+    if let Some(Value::Object(collection_obj)) = collection {
+        clear_collection_value(&collection_obj);
+    }
+}
+
+fn is_non_visual_component_type(type_name: &str) -> bool {
+    matches!(
+        type_name.to_lowercase().as_str(),
+        "bindingsource"
+            | "timer"
+            | "imagelist"
+            | "tooltip"
+            | "notifyicon"
+            | "errorprovider"
+            | "helpprovider"
+            | "backgroundworker"
+            | "dataset"
+            | "datatable"
+            | "dataadapter"
+            | "openfiledialog"
+            | "savefiledialog"
+            | "folderbrowserdialog"
+            | "fontdialog"
+            | "colordialog"
+            | "printdialog"
+            | "printpreviewdialog"
+            | "pagesetupdialog"
+            | "printdocument"
+            | "sqlconnection"
+            | "oledbconnection"
+            | "dataview"
+    )
+}
+
+fn refresh_form_component_collection(form_obj: &Arc<Mutex<Object>>) {
+    clear_owner_collection(form_obj, "components");
+    let components: Vec<Value> = {
+        let form = form_obj.lock().unwrap();
+        form.properties
+            .iter()
+            .filter_map(|(key, value)| {
+                if key.starts_with("__") || matches!(key.as_str(), "controls" | "components") {
+                    return None;
+                }
+                let Value::Object(candidate) = value else {
+                    return None;
+                };
+                let type_name = {
+                    let candidate_guard = candidate.lock().unwrap();
+                    candidate_guard
+                        .properties
+                        .get("__type")
+                        .or_else(|| candidate_guard.properties.get("__control_type"))
+                        .map(|value| format!("{}", value))
+                        .unwrap_or_default()
+                };
+                if is_non_visual_component_type(&type_name) {
+                    Some(Value::Object(candidate.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+
+    for component in components {
+        append_to_owner_collection(form_obj, "components", component);
+    }
+}
+
+fn controls_add_impl(gui: &Arc<Mutex<GuiState>>, parent: Option<&Value>, obj: &Arc<Mutex<Object>>) {
+    let (parent_abs_x, parent_abs_y) = if let Some(Value::Object(parent_obj)) = parent {
+        let po = parent_obj.lock().unwrap();
+        let (px, py) = if let Some(Value::Object(loc)) = po.properties.get("location") {
+            let loc = loc.lock().unwrap();
+            (loc.properties.get("x").map(|v| v.as_f64() as i32).unwrap_or(0),
+             loc.properties.get("y").map(|v| v.as_f64() as i32).unwrap_or(0))
+        } else {
+            (po.properties.get("left").map(|v| v.as_f64() as i32).unwrap_or(0),
+             po.properties.get("top").map(|v| v.as_f64() as i32).unwrap_or(0))
+        };
+        let mut abs_x = px;
+        let mut abs_y = py;
+        let mut cur = po.properties.get("__parent").cloned();
+        drop(po);
+        while let Some(Value::Object(ancestor)) = cur {
+            let anc = ancestor.lock().unwrap();
+            let (ax, ay) = if let Some(Value::Object(loc)) = anc.properties.get("location") {
+                let loc = loc.lock().unwrap();
+                (loc.properties.get("x").map(|v| v.as_f64() as i32).unwrap_or(0),
+                 loc.properties.get("y").map(|v| v.as_f64() as i32).unwrap_or(0))
+            } else {
+                (anc.properties.get("left").map(|v| v.as_f64() as i32).unwrap_or(0),
+                 anc.properties.get("top").map(|v| v.as_f64() as i32).unwrap_or(0))
+            };
+            abs_x += ax;
+            abs_y += ay;
+            cur = anc.properties.get("__parent").cloned();
+        }
+        (abs_x, abs_y)
+    } else {
+        (0, 0)
+    };
+
+    let parent_field_name = if let Some(Value::Object(parent_obj)) = parent {
+        let parent = parent_obj.lock().unwrap();
+        parent.properties.iter().find_map(|(key, value)| {
+            if key.starts_with("__") {
+                return None;
+            }
+            match value {
+                Value::Object(candidate) if Arc::ptr_eq(candidate, obj) => Some(key.clone()),
+                _ => None,
+            }
+        })
+    } else {
+        None
+    };
+
+    if let Some(parent_val) = parent {
+        obj.lock().unwrap().properties.insert("__parent".into(), parent_val.clone());
+    }
+    if let Some(ref field_name) = parent_field_name {
+        let mut child = obj.lock().unwrap();
+        let explicit_name = child.properties.get("name")
+            .map(|v| format!("{}", v))
+            .filter(|name| !name.is_empty());
+        let effective_name = explicit_name.unwrap_or_else(|| field_name.clone());
+        child.properties.insert("name".into(), Value::String(Arc::from(effective_name.as_str())));
+        child.properties.insert("__control_name".into(), Value::String(Arc::from(effective_name.as_str())));
+    }
+    let o = obj.lock().unwrap();
+    let control_type = o.properties.get("__control_type")
+        .map(|v| format!("{}", v)).unwrap_or_else(|| "Button".into());
+    let control_name = o.properties.get("name")
+        .or_else(|| o.properties.get("__control_name"))
+        .map(|v| format!("{}", v)).unwrap_or_else(|| "ctrl".into());
+    let text = o.properties.get("text")
+        .map(|v| format!("{}", v)).unwrap_or_default();
+    let left = o.properties.get("left").map(|v| v.as_f64() as i32).unwrap_or(0);
+    let top = o.properties.get("top").map(|v| v.as_f64() as i32).unwrap_or(0);
+    let width = o.properties.get("width").map(|v| v.as_f64() as i32).unwrap_or(100);
+    let height = o.properties.get("height").map(|v| v.as_f64() as i32).unwrap_or(30);
+    let (left, top) = if let Some(Value::Object(loc)) = o.properties.get("location") {
+        let loc = loc.lock().unwrap();
+        (loc.properties.get("x").map(|v| v.as_f64() as i32).unwrap_or(left),
+         loc.properties.get("y").map(|v| v.as_f64() as i32).unwrap_or(top))
+    } else { (left, top) };
+    let (width, height) = if let Some(Value::Object(sz)) = o.properties.get("size") {
+        let sz = sz.lock().unwrap();
+        (sz.properties.get("width").map(|v| v.as_f64() as i32).unwrap_or(width),
+         sz.properties.get("height").map(|v| v.as_f64() as i32).unwrap_or(height))
+    } else { (width, height) };
+    let props: Vec<(String, String)> = o.properties.iter()
+        .filter(|(k, _)| !k.starts_with("__") && !matches!(k.as_str(),
+            "name" | "left" | "top" | "width" | "height" | "text"
+            | "location" | "size" | "show" | "close" | "focus" | "hide" | "showdialog"
+            | "controls" | "components"))
+        .filter_map(|(k, v)| {
+            let val_str = value_to_property_string(v)?;
+            Some((capitalize_first(k), val_str))
+        })
+        .collect();
+    drop(o);
+
+    let abs_left = left + parent_abs_x;
+    let abs_top = top + parent_abs_y;
+    let mut g = gui.lock().unwrap();
+    g.add_widget(&control_type, &control_name, &text, abs_left, abs_top, width, height);
+    if gui_trace_enabled() {
+        eprintln!(
+            "[gui-host] controlsAdd type={} parent_field={:?} widget_name={} text={}",
+            control_type,
+            parent_field_name,
+            control_name,
+            text,
+        );
+    }
+    let name_lower = control_name.to_lowercase();
+    for (prop, val) in props {
+        apply_property(&mut g.form, &name_lower, &prop, &val);
+    }
+    drop(g);
+
+    if let Some(Value::Object(parent_obj)) = parent {
+        append_to_owner_collection(parent_obj, "controls", Value::Object(obj.clone()));
+    }
+}
 
 pub fn register(
     vm: &mut VM,
     gui: Arc<Mutex<GuiState>>,
 ) {
+    let gui_collection_add = gui.clone();
+    vm.register_host_fn("vybe:gui", "__collection_add", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+        let Some(Value::Object(collection_obj)) = args.first() else {
+            return Value::Null;
+        };
+        let value = args.get(1).cloned().unwrap_or(Value::Null);
+        let (kind, owner) = {
+            let collection = collection_obj.lock().unwrap();
+            let kind = collection.properties.get("__collection_kind")
+                .map(|value| format!("{}", value))
+                .unwrap_or_default();
+            let owner = collection.properties.get("__owner").cloned();
+            (kind, owner)
+        };
+
+        match kind.as_str() {
+            "controls" => {
+                if let (Some(owner), Value::Object(child_obj)) = (owner.as_ref(), &value) {
+                    controls_add_impl(&gui_collection_add, Some(owner), child_obj);
+                }
+            }
+            "components" | "forms" => {
+                push_collection_value(collection_obj, value);
+            }
+            _ => {}
+        }
+        Value::Null
+    }));
+    vm.register_host_fn("vybe:gui", "__collection_clear", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(collection_obj)) = args.first() {
+            clear_collection_value(collection_obj);
+        }
+        Value::Null
+    }));
+    vm.register_host_fn("vybe:gui", "__collection_contains", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(Value::Object(collection_obj)) = args.first() else {
+            return Value::Bool(false);
+        };
+        let needle = args.get(1).cloned().unwrap_or(Value::Null);
+        let contains = {
+            let collection = collection_obj.lock().unwrap();
+            if let ObjectKind::Array(items) = &collection.kind {
+                items.iter().any(|existing| existing.eq(&needle))
+            } else {
+                false
+            }
+        };
+        Value::Bool(contains)
+    }));
+    let collection_add_ref = host_fn_ref(vm, "__collection_add");
+    let collection_clear_ref = host_fn_ref(vm, "__collection_clear");
+    let collection_contains_ref = host_fn_ref(vm, "__collection_contains");
+    let open_forms = create_collection_object(
+        "forms",
+        None,
+        &collection_add_ref,
+        &collection_clear_ref,
+        &collection_contains_ref,
+    );
+    vm.globals.insert("__openforms".into(), open_forms.clone());
+
+    vm.register_host_fn("vybe:gui", "newControlsCollection", {
+        let add_ref = collection_add_ref.clone();
+        let clear_ref = collection_clear_ref.clone();
+        let contains_ref = collection_contains_ref.clone();
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            create_collection_object("controls", args.first().cloned(), &add_ref, &clear_ref, &contains_ref)
+        })
+    });
+    vm.register_host_fn("vybe:gui", "newComponentsCollection", {
+        let add_ref = collection_add_ref.clone();
+        let clear_ref = collection_clear_ref.clone();
+        let contains_ref = collection_contains_ref.clone();
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            create_collection_object("components", args.first().cloned(), &add_ref, &clear_ref, &contains_ref)
+        })
+    });
+
     // Form creation
     vm.register_host_fn("vybe:gui", "createForm", {
         let gui = gui.clone();
@@ -28,18 +405,32 @@ pub fn register(
 
     vm.register_host_fn("vybe:gui", "newForm", {
         let gui = gui.clone();
+        let add_ref = collection_add_ref.clone();
+        let clear_ref = collection_clear_ref.clone();
+        let contains_ref = collection_contains_ref.clone();
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let title = str_arg(args, 0, "Form1");
             let name = title.clone();
             { let mut g = gui.lock().unwrap(); g.form = vybe_widgets::Form::new(&title); }
-            let mut obj = vybe_bytecode::value::Object::new();
-            obj.properties.insert("__control_type".into(), Value::String(Arc::from("Form")));
-            obj.properties.insert("__control_name".into(), Value::String(Arc::from(name.as_str())));
-            obj.properties.insert("name".into(), Value::String(Arc::from(name.as_str())));
-            obj.properties.insert("text".into(), Value::String(Arc::from(title.as_str())));
-            obj.properties.insert("width".into(), Value::F64(800.0));
-            obj.properties.insert("height".into(), Value::F64(600.0));
-            Value::Object(Arc::new(Mutex::new(obj)))
+            let form_obj = Arc::new(Mutex::new(Object::new()));
+            {
+                let mut obj = form_obj.lock().unwrap();
+                obj.properties.insert("__control_type".into(), Value::String(Arc::from("Form")));
+                obj.properties.insert("__control_name".into(), Value::String(Arc::from(name.as_str())));
+                obj.properties.insert("name".into(), Value::String(Arc::from(name.as_str())));
+                obj.properties.insert("text".into(), Value::String(Arc::from(title.as_str())));
+                obj.properties.insert("width".into(), Value::F64(800.0));
+                obj.properties.insert("height".into(), Value::F64(600.0));
+            }
+            let owner = Value::Object(form_obj.clone());
+            let controls = create_collection_object("controls", Some(owner.clone()), &add_ref, &clear_ref, &contains_ref);
+            let components = create_collection_object("components", Some(owner.clone()), &add_ref, &clear_ref, &contains_ref);
+            {
+                let mut obj = form_obj.lock().unwrap();
+                obj.properties.insert("controls".into(), controls);
+                obj.properties.insert("components".into(), components);
+            }
+            owner
         })
     });
 
@@ -47,88 +438,8 @@ pub fn register(
     vm.register_host_fn("vybe:gui", "controlsAdd", {
         let gui = gui.clone();
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            // args[0] = parent container, args[1] = child control
-            // Compute parent's absolute offset so child is positioned inside parent.
-            let (parent_abs_x, parent_abs_y) = if let Some(Value::Object(parent_obj)) = args.first() {
-                let po = parent_obj.lock().unwrap();
-                let (px, py) = if let Some(Value::Object(loc)) = po.properties.get("location") {
-                    let loc = loc.lock().unwrap();
-                    (loc.properties.get("x").map(|v| v.as_f64() as i32).unwrap_or(0),
-                     loc.properties.get("y").map(|v| v.as_f64() as i32).unwrap_or(0))
-                } else {
-                    (po.properties.get("left").map(|v| v.as_f64() as i32).unwrap_or(0),
-                     po.properties.get("top").map(|v| v.as_f64() as i32).unwrap_or(0))
-                };
-                // Walk up __parent chain to accumulate offsets for deeply nested containers
-                let mut abs_x = px;
-                let mut abs_y = py;
-                let mut cur = po.properties.get("__parent").cloned();
-                drop(po);
-                while let Some(Value::Object(ancestor)) = cur {
-                    let anc = ancestor.lock().unwrap();
-                    let (ax, ay) = if let Some(Value::Object(loc)) = anc.properties.get("location") {
-                        let loc = loc.lock().unwrap();
-                        (loc.properties.get("x").map(|v| v.as_f64() as i32).unwrap_or(0),
-                         loc.properties.get("y").map(|v| v.as_f64() as i32).unwrap_or(0))
-                    } else {
-                        (anc.properties.get("left").map(|v| v.as_f64() as i32).unwrap_or(0),
-                         anc.properties.get("top").map(|v| v.as_f64() as i32).unwrap_or(0))
-                    };
-                    abs_x += ax;
-                    abs_y += ay;
-                    cur = anc.properties.get("__parent").cloned();
-                }
-                (abs_x, abs_y)
-            } else {
-                (0, 0)
-            };
-
             if let Some(Value::Object(obj)) = args.get(1) {
-                // Record parent reference on the child for deep nesting
-                if let Some(parent_val) = args.first() {
-                    obj.lock().unwrap().properties.insert("__parent".into(), parent_val.clone());
-                }
-                let o = obj.lock().unwrap();
-                let control_type = o.properties.get("__control_type")
-                    .map(|v| format!("{}", v)).unwrap_or_else(|| "Button".into());
-                let control_name = o.properties.get("name")
-                    .or_else(|| o.properties.get("__control_name"))
-                    .map(|v| format!("{}", v)).unwrap_or_else(|| "ctrl".into());
-                let text = o.properties.get("text")
-                    .map(|v| format!("{}", v)).unwrap_or_default();
-                let left = o.properties.get("left").map(|v| v.as_f64() as i32).unwrap_or(0);
-                let top = o.properties.get("top").map(|v| v.as_f64() as i32).unwrap_or(0);
-                let width = o.properties.get("width").map(|v| v.as_f64() as i32).unwrap_or(100);
-                let height = o.properties.get("height").map(|v| v.as_f64() as i32).unwrap_or(30);
-                let (left, top) = if let Some(Value::Object(loc)) = o.properties.get("location") {
-                    let loc = loc.lock().unwrap();
-                    (loc.properties.get("x").map(|v| v.as_f64() as i32).unwrap_or(left),
-                     loc.properties.get("y").map(|v| v.as_f64() as i32).unwrap_or(top))
-                } else { (left, top) };
-                let (width, height) = if let Some(Value::Object(sz)) = o.properties.get("size") {
-                    let sz = sz.lock().unwrap();
-                    (sz.properties.get("width").map(|v| v.as_f64() as i32).unwrap_or(width),
-                     sz.properties.get("height").map(|v| v.as_f64() as i32).unwrap_or(height))
-                } else { (width, height) };
-                let props: Vec<(String, String)> = o.properties.iter()
-                    .filter(|(k, _)| !k.starts_with("__") && !matches!(k.as_str(),
-                        "name" | "left" | "top" | "width" | "height" | "text"
-                        | "location" | "size" | "show" | "close" | "focus" | "hide" | "showdialog"))
-                    .filter_map(|(k, v)| {
-                        let val_str = value_to_property_string(v)?;
-                        Some((capitalize_first(k), val_str))
-                    })
-                    .collect();
-                drop(o);
-                // Add widget at absolute position (child local + parent absolute)
-                let abs_left = left + parent_abs_x;
-                let abs_top = top + parent_abs_y;
-                let mut g = gui.lock().unwrap();
-                g.add_widget(&control_type, &control_name, &text, abs_left, abs_top, width, height);
-                let name_lower = control_name.to_lowercase();
-                for (prop, val) in props {
-                    apply_property(&mut g.form, &name_lower, &prop, &val);
-                }
+                controls_add_impl(&gui, args.first(), obj);
             }
             Value::Null
         })
@@ -165,22 +476,68 @@ pub fn register(
         let gui = gui.clone();
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             if let Some(Value::Object(obj)) = args.first() {
-                let control_name = {
-                    let o = obj.lock().unwrap();
-                    o.properties.get("__control_name")
-                        .map(|v| format!("{}", v)).unwrap_or_default()
-                };
                 let property = str_arg(args, 1, "");
                 let val = args.get(2).cloned().unwrap_or(Value::Null);
                 let val_str = format!("{}", val);
                 let prop_lower = property.to_lowercase();
-                obj.lock().unwrap().properties.insert(prop_lower.clone(), val.clone());
-                if prop_lower == "name" {
-                    obj.lock().unwrap().properties.insert("__control_name".into(), val);
+                let control_name = {
+                    let o = obj.lock().unwrap();
+                    o.properties.get("__control_name")
+                        .or_else(|| o.properties.get("name"))
+                        .map(|v| format!("{}", v)).unwrap_or_default()
+                };
+                let live_widget = if control_name.is_empty() {
+                    false
+                } else {
+                    let g = gui.lock().unwrap();
+                    g.control_names.iter().any(|name| name == &control_name.to_lowercase())
+                };
+                if !live_widget || prop_lower == "name" {
+                    obj.lock().unwrap().properties.insert(prop_lower.clone(), val.clone());
+                }
+                if prop_lower == "name" && !live_widget {
+                    obj.lock().unwrap().properties.insert("__control_name".into(), val.clone());
+                }
+                if gui_trace_enabled() && matches!(prop_lower.as_str(), "name" | "text") {
+                    eprintln!(
+                        "[gui-host] controlSetProperty control={} property={} live_widget={} value={}",
+                        control_name,
+                        property,
+                        live_widget,
+                        val_str,
+                    );
                 }
                 gui.lock().unwrap().set_property(&control_name, &property, &val_str);
             }
             Value::Null
+        })
+    });
+
+    vm.register_host_fn("vybe:gui", "controlGetProperty", {
+        let gui = gui.clone();
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let Some(Value::Object(obj)) = args.first() else {
+                return Value::Null;
+            };
+
+            let property = str_arg(args, 1, "");
+            let prop_lower = property.to_lowercase();
+            let (control_name, fallback) = {
+                let o = obj.lock().unwrap();
+                let fallback = o.properties.get(&prop_lower).cloned();
+                let control_name = o.properties.get("__control_name")
+                    .or_else(|| o.properties.get("name"))
+                    .map(|v| format!("{}", v))
+                    .unwrap_or_default();
+                (control_name, fallback)
+            };
+
+            control_property_value_from_live_or_fallback(
+                &mut gui.lock().unwrap(),
+                &control_name,
+                &property,
+                fallback,
+            )
         })
     });
 
@@ -223,16 +580,26 @@ pub fn register(
     // Form lifecycle
     vm.register_host_fn("vybe:gui", "showForm", {
         let gui = gui.clone();
+        let open_forms = open_forms.clone();
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let mut g = gui.lock().unwrap();
             g.should_run = true;
-            if let Some(obj) = args.first().cloned() { g.form_object = Some(obj); }
+            if let Some(obj) = args.first().cloned() {
+                if let Value::Object(form_obj) = &obj {
+                    refresh_form_component_collection(form_obj);
+                }
+                if let Value::Object(open_forms_obj) = &open_forms {
+                    push_collection_value(open_forms_obj, obj.clone());
+                }
+                g.form_object = Some(obj);
+            }
             Value::Null
         })
     });
 
     vm.register_host_fn("vybe:gui", "runApplication", {
         let gui = gui.clone();
+        let open_forms = open_forms.clone();
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let mut g = gui.lock().unwrap();
             g.should_run = true;
@@ -242,6 +609,12 @@ pub fn register(
                     if let Some(w) = o.properties.get("width") { g.width = w.as_f64() as u32; }
                     if let Some(h) = o.properties.get("height") { g.height = h.as_f64() as u32; }
                 }
+                if let Value::Object(form_obj) = &obj {
+                    refresh_form_component_collection(form_obj);
+                }
+                if let Value::Object(open_forms_obj) = &open_forms {
+                    push_collection_value(open_forms_obj, obj.clone());
+                }
                 g.form_object = Some(obj);
             }
             Value::Null
@@ -250,8 +623,13 @@ pub fn register(
 
     vm.register_host_fn("vybe:gui", "closeForm", {
         let gui = gui.clone();
+        let open_forms = open_forms.clone();
         Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
-            gui.lock().unwrap().close_requested = true;
+            let mut guard = gui.lock().unwrap();
+            guard.close_requested = true;
+            if let (Some(form_obj), Value::Object(open_forms_obj)) = (guard.form_object.clone(), &open_forms) {
+                remove_collection_value(open_forms_obj, &form_obj);
+            }
             Value::Null
         })
     });
@@ -317,11 +695,15 @@ pub fn register(
         Value::Null
     }));
     let gui_close = gui.clone();
+    let open_forms_close = open_forms.clone();
     vm.register_host_fn("vybe:gui", "__ctrl_close", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
         let (_name, is_form) = read_this_identity(args);
         let mut g = gui_close.lock().unwrap();
         if is_form {
             g.close_requested = true;
+            if let (Some(form_obj), Value::Object(open_forms_obj)) = (args.first().cloned(), &open_forms_close) {
+                remove_collection_value(open_forms_obj, &form_obj);
+            }
         }
         // Non-form `Close` (rare — most controls don't expose Close in real
         // .NET; only forms do) is a no-op.
@@ -468,6 +850,9 @@ pub fn register(
         let focus = focus_ref.clone();
         let hide = hide_ref.clone();
         let dlg = dlg_ref.clone();
+        let add_ref = collection_add_ref.clone();
+        let clear_ref = collection_clear_ref.clone();
+        let contains_ref = collection_contains_ref.clone();
         vm.register_host_fn("vybe:gui", &format!("new_{}", ct), Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
             // The vybe_widgets backing object. The dotnet class wrappers in
             // `compiler_common::dotnet::classes` consume this from inside the
@@ -480,26 +865,38 @@ pub fn register(
             static COUNTER: AtomicU32 = AtomicU32::new(1);
             let id = COUNTER.fetch_add(1, Ordering::Relaxed);
             let name = format!("{}_{}", type_name, id);
-            let mut obj = vybe_bytecode::value::Object::new();
-            obj.properties.insert("__control_type".into(), Value::String(Arc::from(type_name.as_str())));
-            obj.properties.insert("__control_name".into(), Value::String(Arc::from(name.as_str())));
-            obj.properties.insert("__type".into(), Value::String(Arc::from(type_name.as_str())));
-            obj.properties.insert("name".into(), Value::String(Arc::from(name.as_str())));
-            obj.properties.insert("width".into(), Value::F64(100.0));
-            obj.properties.insert("height".into(), Value::F64(30.0));
-            obj.properties.insert("left".into(), Value::F64(0.0));
-            obj.properties.insert("top".into(), Value::F64(0.0));
-            obj.properties.insert("show".into(), show.clone());
-            obj.properties.insert("close".into(), close.clone());
-            obj.properties.insert("focus".into(), focus.clone());
-            obj.properties.insert("hide".into(), hide.clone());
-            if matches!(type_name.as_str(),
+            let obj = Arc::new(Mutex::new(vybe_bytecode::value::Object::new()));
+            {
+                let mut object = obj.lock().unwrap();
+                object.properties.insert("__control_type".into(), Value::String(Arc::from(type_name.as_str())));
+                object.properties.insert("__control_name".into(), Value::String(Arc::from(name.as_str())));
+                object.properties.insert("__type".into(), Value::String(Arc::from(type_name.as_str())));
+                object.properties.insert("name".into(), Value::String(Arc::from(name.as_str())));
+                object.properties.insert("width".into(), Value::F64(100.0));
+                object.properties.insert("height".into(), Value::F64(30.0));
+                object.properties.insert("left".into(), Value::F64(0.0));
+                object.properties.insert("top".into(), Value::F64(0.0));
+                object.properties.insert("show".into(), show.clone());
+                object.properties.insert("close".into(), close.clone());
+                object.properties.insert("focus".into(), focus.clone());
+                object.properties.insert("hide".into(), hide.clone());
+                if matches!(type_name.as_str(),
                 "OpenFileDialog" | "SaveFileDialog" | "FontDialog" | "ColorDialog"
                 | "FolderBrowserDialog" | "PrintDialog" | "PrintPreviewDialog"
             ) {
-                obj.properties.insert("showdialog".into(), dlg.clone());
+                    object.properties.insert("showdialog".into(), dlg.clone());
+                }
             }
-            Value::Object(Arc::new(Mutex::new(obj)))
+            let owner = Value::Object(obj.clone());
+            if !is_non_visual_component_type(&type_name) {
+                let controls = create_collection_object("controls", Some(owner.clone()), &add_ref, &clear_ref, &contains_ref);
+                obj.lock().unwrap().properties.insert("controls".into(), controls);
+            }
+            if type_name == "Form" {
+                let components = create_collection_object("components", Some(owner.clone()), &add_ref, &clear_ref, &contains_ref);
+                obj.lock().unwrap().properties.insert("components".into(), components);
+            }
+            owner
         }));
     }
 }
@@ -620,6 +1017,59 @@ fn apply_property(form: &mut vybe_widgets::Form, control_name: &str, property: &
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_empty_textbox_text_returns_empty_string_not_null() {
+        let mut gui = GuiState::new();
+        gui.add_widget("TextBox", "txtCalc", "", 0, 0, 100, 30);
+
+        let value = control_property_value_from_live_or_fallback(&mut gui, "txtCalc", "Text", None);
+
+        match value {
+            Value::String(text) => assert!(text.is_empty()),
+            other => panic!("expected empty text string, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn refresh_form_component_collection_only_collects_non_visual_components() {
+        let add_ref = Value::Null;
+        let clear_ref = Value::Null;
+        let contains_ref = Value::Null;
+
+        let form = Arc::new(Mutex::new(Object::new()));
+        let owner = Value::Object(form.clone());
+        let components = create_collection_object("components", Some(owner), &add_ref, &clear_ref, &contains_ref);
+        form.lock().unwrap().properties.insert("components".into(), components.clone());
+
+        let binding_source = Arc::new(Mutex::new(Object::new()));
+        binding_source.lock().unwrap().properties.insert("__type".into(), Value::String(Arc::from("BindingSource")));
+        form.lock().unwrap().properties.insert("bs1".into(), Value::Object(binding_source.clone()));
+
+        let button = Arc::new(Mutex::new(Object::new()));
+        button.lock().unwrap().properties.insert("__type".into(), Value::String(Arc::from("Button")));
+        form.lock().unwrap().properties.insert("btn1".into(), Value::Object(button));
+
+        refresh_form_component_collection(&form);
+
+        let count = match components {
+            Value::Object(collection) => {
+                let collection = collection.lock().unwrap();
+                match &collection.kind {
+                    ObjectKind::Array(items) => items.len(),
+                    _ => 0,
+                }
+            }
+            _ => 0,
+        };
+
+        assert_eq!(count, 1);
+    }
+}
+
 } // mod gui_impl
 
 // Public re-export when gui feature is on
@@ -636,6 +1086,8 @@ pub fn register(
         "createForm", "addControl", "setProperty", "getProperty",
         "onEvent", "showForm", "runApplication", "msgBox", "closeForm",
         "newControl", "controlSetProperty", "controlsAdd", "newForm",
+        "newControlsCollection", "newComponentsCollection",
+        "__collection_add", "__collection_clear", "__collection_contains",
         "noop", "addHandler", "removeHandler",
         "__ctrl_show", "__ctrl_close", "__ctrl_focus", "__ctrl_hide",
         "__dlg_showdialog", "__dlg_show",

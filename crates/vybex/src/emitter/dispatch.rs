@@ -53,6 +53,8 @@ pub fn emit_common(name: &str, chunks: &mut [Chunk], current: usize, line: u32) 
         "collections.set" => collections::emit_set(chunks, current, line),
         "collections.contains" => collections::emit_contains(chunks, current, line),
         "collections.index_of" => collections::emit_index_of(chunks, current, line),
+        "collections.last_index_of" => collections::emit_last_index_of(chunks, current, line),
+        "collections.remove_at" => collections::emit_remove_at(chunks, current, line),
         "collections.sorted" => collections::emit_sorted(chunks, current, line),
         "collections.reverse" => collections::emit_reverse(chunks, current, line),
         "collections.join" => collections::emit_join(chunks, current, line),

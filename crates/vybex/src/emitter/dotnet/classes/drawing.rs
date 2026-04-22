@@ -564,5 +564,28 @@ pub fn classes() -> &'static [DotnetClass] {
             widget_host_fn: Some("linearGradientBrushNew"),
             widget_host_module: "vybe:drawing",
         },
+        // System.Drawing.Point — position value type. `new Point(x, y)`
+        // lowers to `vybe:drawing::pointNew(x, y)` which returns an
+        // Object with `{x, y, X, Y}` fields. The GUI property dispatch
+        // reads `.x` / `.y` from a control's `location` property.
+        DotnetClass {
+            name: "Point",
+            parent: None,
+            properties: &["X", "Y", "IsEmpty"],
+            methods: &[],
+            ctor_arity: 2,
+            widget_host_fn: Some("pointNew"),
+            widget_host_module: "vybe:drawing",
+        },
+        // System.Drawing.Size — dimensions value type. Mirror of Point.
+        DotnetClass {
+            name: "Size",
+            parent: None,
+            properties: &["Width", "Height", "IsEmpty"],
+            methods: &[],
+            ctor_arity: 2,
+            widget_host_fn: Some("sizeNew"),
+            widget_host_module: "vybe:drawing",
+        },
     ]
 }

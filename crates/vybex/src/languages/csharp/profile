@@ -59,19 +59,22 @@ multi_value_tuple_returns = true
 
 # ── Math — host calls ───────────────────────────────────────────────────────
 
-"Math.Pow"          = { emit = "host:vybe:math:pow",      min_args = 2, max_args = 2 }
-"Math.Sin"          = { emit = "host:vybe:math:sin",      min_args = 1, max_args = 1 }
-"Math.Cos"          = { emit = "host:vybe:math:cos",      min_args = 1, max_args = 1 }
-"Math.Tan"          = { emit = "host:vybe:math:tan",      min_args = 1, max_args = 1 }
-"Math.Asin"         = { emit = "host:vybe:math:asin",     min_args = 1, max_args = 1 }
-"Math.Acos"         = { emit = "host:vybe:math:acos",     min_args = 1, max_args = 1 }
-"Math.Atan"         = { emit = "host:vybe:math:atan",     min_args = 1, max_args = 1 }
-"Math.Atan2"        = { emit = "host:vybe:math:atan2",    min_args = 2, max_args = 2 }
-"Math.Log"          = { emit = "host:vybe:math:log",      min_args = 1, max_args = 1 }
-"Math.Log10"        = { emit = "host:vybe:math:log10",    min_args = 1, max_args = 1 }
-"Math.Exp"          = { emit = "host:vybe:math:exp",      min_args = 1, max_args = 1 }
-"Math.Sign"         = { emit = "host:vybe:math:sign",     min_args = 1, max_args = 1 }
-"Math.Clamp"        = { emit = "host:vybe:math:clamp",    min_args = 3, max_args = 3 }
+"Math.Pow"          = { emit = "stdlib:pow",      min_args = 2, max_args = 2 }
+"Math.Sin"          = { emit = "stdlib:sin",      min_args = 1, max_args = 1 }
+"Math.Cos"          = { emit = "stdlib:cos",      min_args = 1, max_args = 1 }
+"Math.Tan"          = { emit = "stdlib:tan",      min_args = 1, max_args = 1 }
+"Math.Asin"         = { emit = "stdlib:asin",     min_args = 1, max_args = 1 }
+"Math.Acos"         = { emit = "stdlib:acos",     min_args = 1, max_args = 1 }
+"Math.Atan"         = { emit = "stdlib:atan",     min_args = 1, max_args = 1 }
+"Math.Atan2"        = { emit = "stdlib:atan2",    min_args = 2, max_args = 2 }
+"Math.Log"          = { emit = "stdlib:log",      min_args = 1, max_args = 1 }
+"Math.Log10"        = { emit = "stdlib:log10",    min_args = 1, max_args = 1 }
+"Math.Exp"          = { emit = "stdlib:exp",      min_args = 1, max_args = 1 }
+"Math.Sinh"         = { emit = "stdlib:sinh",     min_args = 1, max_args = 1 }
+"Math.Cosh"         = { emit = "stdlib:cosh",     min_args = 1, max_args = 1 }
+"Math.Tanh"         = { emit = "stdlib:tanh",     min_args = 1, max_args = 1 }
+"Math.Sign"         = { emit = "stdlib:sign",     min_args = 1, max_args = 1 }
+"Math.Clamp"        = { emit = "stdlib:clamp",    min_args = 3, max_args = 3 }
 
 # ── Type conversion ──────────────────────────────────────────────────────────
 
@@ -94,10 +97,12 @@ multi_value_tuple_returns = true
 # ── String static methods ────────────────────────────────────────────────────
 
 "String.Join"         = { emit = "common:collections.join",      min_args = 2, max_args = 2 }
-"String.IsNullOrEmpty" = { emit = "host:vybe:string:isNullOrEmpty", min_args = 1, max_args = 1 }
+"String.IsNullOrEmpty" = { emit = "stdlib:string_is_null_or_empty", min_args = 1, max_args = 1 }
+"String.IsNullOrWhiteSpace" = { emit = "stdlib:string_is_null_or_whitespace", min_args = 1, max_args = 1 }
 "String.Format"       = { emit = "host:vybe:string:format",       min_args = 1, max_args = 255 }
 "String.Concat"       = { emit = "opcode:str_concat",             min_args = 2, max_args = 255 }
-"string.IsNullOrEmpty" = { emit = "host:vybe:string:isNullOrEmpty", min_args = 1, max_args = 1 }
+"string.IsNullOrEmpty" = { emit = "stdlib:string_is_null_or_empty", min_args = 1, max_args = 1 }
+"string.IsNullOrWhiteSpace" = { emit = "stdlib:string_is_null_or_whitespace", min_args = 1, max_args = 1 }
 "string.Join"         = { emit = "common:collections.join",      min_args = 2, max_args = 2 }
 
 # ── Array static methods ────────────────────────────────────────────────────
@@ -127,13 +132,6 @@ multi_value_tuple_returns = true
 # opcodes (thread_spawn, thread_join, atomic_*) — NOT Vybe-specific host calls.
 # Standard WASM runtimes that support the threads proposal get proper threading
 # without needing the Vybe host. Sleep uses the standard `wasi:clocks` import.
-
-"Task.Run"                     = { emit = "common:threading.task_run",       min_args = 1, max_args = 1 }
-"Task.Delay"                   = { emit = "common:threading.sleep",          min_args = 1, max_args = 1 }
-"Thread.Sleep"                 = { emit = "common:threading.sleep",          min_args = 1, max_args = 1 }
-"Interlocked.Add"              = { emit = "common:threading.atomic_add",     min_args = 2, max_args = 2 }
-"Interlocked.Exchange"         = { emit = "common:threading.atomic_xchg",    min_args = 2, max_args = 2 }
-"Interlocked.CompareExchange"  = { emit = "common:threading.atomic_cmpxchg", min_args = 3, max_args = 3 }
 
 # ── GUI (Windows Forms) ─────────────────────────────────────────────────────
 
@@ -172,8 +170,11 @@ PadLeft       = { emit = "opcode:str_pad_start",       min_args = 1, max_args = 
 PadRight      = { emit = "opcode:str_pad_end",         min_args = 1, max_args = 2 }
 ToString      = { emit = "stdlib:tostring",            min_args = 0, max_args = 0 }
 ToCharArray   = { emit = "opcode:str_split",           min_args = 0, max_args = 0 }
-Insert        = { emit = "host:vybe:string:insert",    min_args = 2, max_args = 2 }
-Remove        = { emit = "host:vybe:string:remove",    min_args = 1, max_args = 2 }
+Insert        = { emit = "stdlib:str_insert",          min_args = 2, max_args = 2 }
+Remove        = [
+    { emit = "stdlib:str_remove_start", min_args = 1, max_args = 1 },
+    { emit = "stdlib:str_remove_range", min_args = 2, max_args = 2 },
+]
 
 # Array/List instance methods
 # Add has two overloads: list.Add(item) (1 arg) and dict.Add(key, value) (2 args)
@@ -231,14 +232,6 @@ Path          = "wasi:filesystem"
 # ────────────────────────────────────────────────────────────────────────────
 
 [known_types]
-# Collections — use compiler_common (no host functions)
-"List"            = ["common", "collections.new"]
-"Dictionary"      = ["common", "dict.new"]
-"Queue"           = ["common", "collections.new"]
-"Stack"           = ["common", "collections.new"]
-"HashSet"         = ["common", "collections.new"]
-"SortedList"      = ["common", "dict.new"]
-"LinkedList"      = ["common", "collections.new"]
 # Exceptions
 "Exception"       = ["vybe:types", "exceptionNew"]
 "ArgumentException" = ["vybe:types", "exceptionNew"]
@@ -250,7 +243,7 @@ Path          = "wasi:filesystem"
 "StringBuilder"   = ["vybe:types", "stringBuilderNew"]
 "Regex"           = ["vybe:regex", "RegExp"]
 "Random"          = ["wasi:random", "Random"]
-"Stopwatch"       = ["vybe:types", "dateTimeNew"]
+"Stopwatch"       = ["wasi:clocks", "stopwatchNew"]
 "Timer"           = ["vybe:types", "timerNew"]
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -286,3 +279,17 @@ OrderBy   = "__array_sort_by_key"
 "char.MinValue"         = 0
 "bool.TrueString"       = "True"
 "bool.FalseString"      = "False"
+
+[namespaces]
+# Use the .NET BCL namespace resolution from the shared dotnet module.
+# Installs Form, Button, TextBox, Label, Panel, Size, Point, etc. as
+# callable globals before the user program is compiled, so `new Form()`
+# / `new Button()` in C# source resolves the same way it does in VB.
+# Without this the auto-base-call in `public class MyForm : Form {}`
+# sees `Form` as `undefined` and traps at runtime.
+use_dotnet = true
+# Route C# through the shared .NET dotted-name resolver as well. The
+# resolver now bails out for user-defined types before trying namespace
+# imports, so `MathUtils.Fact(5)` still uses the normal static-method path
+# while real .NET namespace/type calls share the same surface as VB.
+use_dotnet_resolver = true

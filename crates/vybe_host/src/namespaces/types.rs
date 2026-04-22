@@ -14,16 +14,16 @@ pub fn register(vm: &mut VM) {
 fn register_datetime_ns(vm: &mut VM) {
     // DateTime (direct)
     let dt = ensure_namespace(vm, &["DateTime"]);
-    set_prop(&dt, "now", host_fn_ref(vm, "vybe:types", "dateTimeNow"));
+    set_prop(&dt, "__get_now", host_fn_ref(vm, "vybe:types", "dateTimeNow"));
     set_prop(&dt, "parse", host_fn_ref(vm, "vybe:types", "dateTimeParse"));
-    set_prop(&dt, "today", host_fn_ref(vm, "vybe:types", "dateTimeNow"));
+    set_prop(&dt, "__get_today", host_fn_ref(vm, "vybe:types", "dateTimeNow"));
 
     // System.DateTime
     let sys_dt = ensure_namespace(vm, &["System", "DateTime"]);
-    set_prop(&sys_dt, "now", host_fn_ref(vm, "vybe:types", "dateTimeNow"));
+    set_prop(&sys_dt, "__get_now", host_fn_ref(vm, "vybe:types", "dateTimeNow"));
     set_prop(&sys_dt, "parse", host_fn_ref(vm, "vybe:types", "dateTimeParse"));
-    set_prop(&sys_dt, "today", host_fn_ref(vm, "vybe:types", "dateTimeNow"));
-    set_prop(&sys_dt, "utcnow", host_fn_ref(vm, "vybe:types", "dateTimeNow"));
+    set_prop(&sys_dt, "__get_today", host_fn_ref(vm, "vybe:types", "dateTimeNow"));
+    set_prop(&sys_dt, "__get_utcnow", host_fn_ref(vm, "vybe:types", "dateTimeUtcNow"));
     set_prop(&sys_dt, "maxvalue", Value::F64(253402300799.0)); // 9999-12-31
     set_prop(&sys_dt, "minvalue", Value::F64(0.0));
     set_prop(&sys_dt, "daysinmonth", host_fn_ref(vm, "vybe:types", "dateTimeNow")); // placeholder
@@ -78,14 +78,16 @@ fn register_timespan_ns(vm: &mut VM) {
 }
 
 fn register_guid_ns(vm: &mut VM) {
+    let empty_guid = Value::String(Arc::from("00000000-0000-0000-0000-000000000000"));
+
     let guid = ensure_namespace(vm, &["Guid"]);
     set_prop(&guid, "newguid", host_fn_ref(vm, "vybe:types", "guidNewGuid"));
-    set_prop(&guid, "empty", host_fn_ref(vm, "vybe:types", "guidEmpty"));
+    set_prop(&guid, "empty", empty_guid.clone());
     set_prop(&guid, "parse", host_fn_ref(vm, "vybe:types", "guidParse"));
 
     let sys_guid = ensure_namespace(vm, &["System", "Guid"]);
     set_prop(&sys_guid, "newguid", host_fn_ref(vm, "vybe:types", "guidNewGuid"));
-    set_prop(&sys_guid, "empty", host_fn_ref(vm, "vybe:types", "guidEmpty"));
+    set_prop(&sys_guid, "empty", empty_guid);
     set_prop(&sys_guid, "parse", host_fn_ref(vm, "vybe:types", "guidParse"));
 }
 

@@ -9,73 +9,60 @@
 //!   used by callers that need PascalCase forms
 
 use std::collections::HashMap;
+use std::sync::LazyLock;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KnownTypeTarget {
+    Host {
+        module: &'static str,
+        constructor: &'static str,
+    },
+    Common {
+        emit: &'static str,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KnownTypeMapping {
+    pub name: &'static str,
+    pub interface: &'static str,
+    pub display_name: &'static str,
+    pub target: KnownTypeTarget,
+}
+
+static KNOWN_TYPE_MAPPINGS: LazyLock<Vec<KnownTypeMapping>> = LazyLock::new(|| {
+    super::core::known_type_mappings()
+        .iter()
+        .chain(super::winforms::known_type_mappings())
+        .copied()
+        .collect()
+});
 
 /// WinForms layout/lifecycle methods that are always no-ops at runtime.
 pub fn is_noop_method(name: &str) -> bool {
-    matches!(name,
-        "suspendlayout" | "resumelayout" | "performlayout" |
-        "refresh" | "invalidate" | "update" | "begininit" | "endinit" |
-        "dispose" | "select" | "focus" | "bringtofront" | "sendtoback" |
-        "createcontrol" | "show" | "hide"
-    )
+    super::winforms::is_noop_method(name)
 }
 
 /// .NET property-like constants that should NOT be called even when args are empty.
 pub fn is_known_constant(name: &str) -> bool {
-    matches!(name,
-        "pi" | "e" | "maxvalue" | "minvalue" |
-        "positiveinfinity" | "negativeinfinity" | "nan" | "epsilon" |
-        "empty" | "newline" | "true" | "false" |
-        "completedtask"
-    )
+    super::core::is_known_constant(name)
 }
 
-/// Return the .NET constructor table: bare type name → (host_module, host_constructor_func).
-pub fn known_types() -> HashMap<String, (&'static str, &'static str)> {
+/// Return the .NET constructor table: bare type name → constructor target.
+pub fn known_type_mappings() -> &'static [KnownTypeMapping] {
+    KNOWN_TYPE_MAPPINGS.as_slice()
+}
+
+pub fn lookup_known_type(name: &str) -> Option<&'static KnownTypeMapping> {
+    known_type_mappings()
+        .iter()
+        .find(|mapping| mapping.name.eq_ignore_ascii_case(name))
+}
+
+pub fn known_types() -> HashMap<String, KnownTypeTarget> {
     let mut m = HashMap::new();
-    for (name, module, func) in &[
-        // Collections
-        ("list", "vybe:types", "listNew"),
-        ("dictionary", "vybe:types", "dictNew"),
-        ("queue", "vybe:types", "queueNew"),
-        ("stack", "vybe:types", "stackNew"),
-        ("hashset", "vybe:types", "hashSetNew"),
-        ("arraylist", "vybe:types", "listNew"),
-        ("hashtable", "vybe:types", "dictNew"),
-        ("collection", "vybe:types", "listNew"),
-        ("sortedlist", "vybe:types", "dictNew"),
-        // Common types
-        ("datetime", "vybe:types", "dateTimeNew"),
-        ("stringbuilder", "vybe:types", "stringBuilderNew"),
-        // Data
-        ("datatable", "vybe:data", "dataTableNew"),
-        ("dataset", "vybe:data", "dataSetNew"),
-        // Drawing
-        ("point", "vybe:drawing", "pointNew"),
-        ("size", "vybe:drawing", "sizeNew"),
-        ("sizef", "vybe:drawing", "sizeNew"),
-        ("font", "vybe:drawing", "fontNew"),
-        ("pen", "vybe:drawing", "penNew"),
-        ("solidbrush", "vybe:drawing", "solidBrushNew"),
-        ("color", "vybe:drawing", "colorFromName"),
-        ("graphics", "vybe:drawing", "graphicsNew"),
-        // Threading
-        ("random", "vybe:threading", "randomNew"),
-        ("stopwatch", "vybe:threading", "stopwatchNew"),
-        // Database / Net
-        ("sqlconnection", "vybe:database", "connect"),
-        ("tcpclient", "vybe:net", "tcpConnect"),
-        ("tcplistener", "vybe:net", "tcpListenerNew"),
-        ("udpclient", "vybe:net", "udpNew"),
-        ("streamreader", "vybe:net", "streamReaderNew"),
-        ("streamwriter", "vybe:net", "streamWriterNew"),
-        // Process
-        ("processstartinfo", "vybe:types", "processStartInfoNew"),
-        ("process", "vybe:types", "processNew"),
-        // WinForms
-        ("form", "vybe:gui", "newForm"),
-    ] {
-        m.insert(name.to_string(), (*module, *func));
+    for mapping in known_type_mappings() {
+        m.insert(mapping.name.to_string(), mapping.target);
     }
     m
 }
@@ -97,18 +84,23 @@ pub fn known_types() -> HashMap<String, (&'static str, &'static str)> {
 /// PascalCase, but the canonical name returned matches what other frontends
 /// (MAUI, Flutter, Tkinter, …) would also produce.
 pub fn capitalize_control_name(name: &str) -> String {
-    crate::emitter::gui::canonical_control_name(name)
+    super::winforms::capitalize_control_name(name)
 }
 
 /// Data table / DataSet / DataAdapter — these are .NET BCL data types, NOT
 /// GUI controls. They live in `known_types` because they're .NET-specific;
 /// other framework frontends won't have them. Returns empty for non-data types.
 pub fn capitalize_data_type(name: &str) -> String {
-    match name {
-        "dataset" => "DataSet",
-        "datatable" => "DataTable",
-        "dataadapter" => "DataAdapter",
-        _ => return String::new(),
+    super::core::capitalize_data_type(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_known_type_mappings_merge_core_and_winforms() {
+        assert!(known_type_mappings().iter().any(|mapping| mapping.name == "stringbuilder"));
+        assert!(known_type_mappings().iter().any(|mapping| mapping.name == "form"));
     }
-    .to_string()
 }

@@ -26,6 +26,7 @@ pub use error::VMError;
 pub use event_loop::EventLoop;
 pub use typedef::{TypeDef, TypeRegistry, Method, FieldDef, ResourceTable};
 pub mod component;
+pub mod component_model;
 pub mod project;
 pub use component::{Component, Linker, LinkResult, Interface, FuncSig, ValType, Language, ExportImpl, ModuleResolver, ResolvedModule, ModuleExport, ImportPolicy};
 pub use project::ProjectConfig;

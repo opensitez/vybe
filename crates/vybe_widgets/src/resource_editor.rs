@@ -286,7 +286,7 @@ impl ResourceEditor {
 
             // Name column
             if is_editing && self.editing.as_ref().unwrap().1 == 0 {
-                let (_, _, ref text, cursor) = self.editing.as_ref().unwrap();
+                let (_, _, text, cursor) = self.editing.as_ref().unwrap();
                 self.render_edit_cell(pix, fs, sc, x, ry, name_w, text, *cursor, s);
             } else {
                 crate::ide_text::draw_text(pix, fs, sc, &entry.name, x + 4.0, ry + 5.0, 11.0, val_col, s);
@@ -294,7 +294,7 @@ impl ResourceEditor {
 
             // Value column
             if is_editing && self.editing.as_ref().unwrap().1 == 1 {
-                let (_, _, ref text, cursor) = self.editing.as_ref().unwrap();
+                let (_, _, text, cursor) = self.editing.as_ref().unwrap();
                 self.render_edit_cell(pix, fs, sc, x + name_w, ry, value_w, text, *cursor, s);
             } else {
                 let display = Self::display_value(entry);
@@ -312,7 +312,7 @@ impl ResourceEditor {
 
             // Comment column
             if is_editing && self.editing.as_ref().unwrap().1 == 2 {
-                let (_, _, ref text, cursor) = self.editing.as_ref().unwrap();
+                let (_, _, text, cursor) = self.editing.as_ref().unwrap();
                 self.render_edit_cell(pix, fs, sc, x + name_w + value_w, ry, comment_w, text, *cursor, s);
             } else {
                 crate::ide_text::draw_text(pix, fs, sc, &entry.comment, x + name_w + value_w + 4.0, ry + 5.0, 11.0, dim_col, s);

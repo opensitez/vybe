@@ -36,6 +36,9 @@ impl Compiler {
         // `Continuation` instead of executing the body inline. The
         // body itself was compiled with `SUSPEND` at each yield site.
         chunk.is_generator = is_generator;
+        if is_generator {
+            self.generator_functions.insert(cname.clone());
+        }
         // Multi-value tuple returns: if the pre-scan marked this function
         // as a same-arity multi-tuple-return, stamp its result_arity here
         // so the WASM type section emits `(externref^N) -> (externref^N)`
@@ -244,7 +247,7 @@ impl Compiler {
         for m in members {
             match m {
                 ClassMember::Method(stmt) => {
-                    if let StmtKind::FunctionDecl { name: mname, params, return_type, body, modifiers, is_sub: _, .. } = &stmt.kind {
+                    if let StmtKind::FunctionDecl { name: mname, params, return_type, body, modifiers, is_sub: _, is_generator, .. } = &stmt.kind {
                         // NOTE: do NOT skip empty-body methods. They still need
                         // a chunk + binding so that callers (e.g. an explicit
                         // constructor calling `InitializeComponent()`) can
@@ -268,7 +271,16 @@ impl Compiler {
                         let arity = (user_params.len() + 1) as u8; // +1 for self
 
                         let ci = self.chunks.len();
-                        let chunk = common::functions::create_function_chunk(mname, arity);
+                        let mut chunk = common::functions::create_function_chunk(mname, arity);
+                        // C# `yield return` / JS generator methods on
+                        // classes: propagate the generator flag from the
+                        // FunctionDecl so the VM wraps invocations in a
+                        // `Continuation` instead of executing the body.
+                        chunk.is_generator = *is_generator;
+                        if *is_generator {
+                            let cname = self.canon(mname);
+                            self.generator_functions.insert(cname);
+                        }
                         self.chunks.push(chunk);
                         self.scopes.push(Scope::new_function());
                         let saved = self.current;
@@ -465,7 +477,7 @@ impl Compiler {
         }).unwrap_or_default();
         for (i, p) in user_params.iter().enumerate() {
             self.scope_mut().define(p);
-            if let Some(Some(ref default)) = ctor_param_defaults.get(i) {
+            if let Some(Some(default)) = ctor_param_defaults.get(i) {
                 let slot = self.scope().resolve(p).unwrap();
                 self.emit_u16(Op::LOCAL_GET, slot);
                 self.emit(Op::REF_IS_NULL);

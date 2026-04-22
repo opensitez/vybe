@@ -228,6 +228,15 @@ pub fn register_all(vm: &mut VM) {
             }
             Value::Null
         }));
+        vm.register_host_fn("vybe:gui", "controlGetProperty", Box::new(|_ctx, args| {
+            if let Some(Value::Object(obj)) = args.first() {
+                let property = args.get(1)
+                    .map(|v| format!("{}", v).to_lowercase())
+                    .unwrap_or_default();
+                return obj.lock().unwrap().properties.get(&property).cloned().unwrap_or(Value::Null);
+            }
+            Value::Null
+        }));
         vm.register_host_fn("vybe:gui", "setProperty", Box::new(|_ctx, _| Value::Null));
         vm.register_host_fn("vybe:gui", "showForm", Box::new(|_ctx, _| Value::Null));
         vm.register_host_fn("vybe:gui", "closeForm", Box::new(|_ctx, _| Value::Null));
@@ -236,6 +245,70 @@ pub fn register_all(vm: &mut VM) {
         vm.register_host_fn("vybe:gui", "runApplication", Box::new(|_ctx, _| Value::Null));
         vm.register_host_fn("vybe:gui", "onEvent", Box::new(|_ctx, _| Value::Null));
         vm.register_host_fn("vybe:gui", "controlsAdd", Box::new(|_ctx, _| Value::Null));
+        vm.register_host_fn("vybe:gui", "newControlsCollection", Box::new(|_ctx, args| {
+            use vybe_bytecode::value::Object;
+            let owner = args.first().cloned();
+            let mut collection = Object::new_array(vec![]);
+            collection.properties.insert("__type".into(), Value::String(Arc::from("ControlCollection")));
+            if let Some(owner) = owner {
+                collection.properties.insert("__owner".into(), owner);
+            }
+            collection.properties.insert("count".into(), Value::F64(0.0));
+            Value::Object(Arc::new(Mutex::new(collection)))
+        }));
+        vm.register_host_fn("vybe:gui", "newComponentsCollection", Box::new(|_ctx, args| {
+            use vybe_bytecode::value::Object;
+            let owner = args.first().cloned();
+            let mut collection = Object::new_array(vec![]);
+            collection.properties.insert("__type".into(), Value::String(Arc::from("ComponentCollection")));
+            if let Some(owner) = owner {
+                collection.properties.insert("__owner".into(), owner);
+            }
+            collection.properties.insert("count".into(), Value::F64(0.0));
+            Value::Object(Arc::new(Mutex::new(collection)))
+        }));
+        vm.register_host_fn("vybe:gui", "__collection_add", Box::new(|_ctx, args| {
+            if let Some(Value::Object(collection)) = args.first() {
+                let value = args.get(1).cloned().unwrap_or(Value::Null);
+                let mut collection = collection.lock().unwrap();
+                let mut len = None;
+                if let vybe_bytecode::value::ObjectKind::Array(items) = &mut collection.kind {
+                    if !items.iter().any(|existing| existing.eq(&value)) {
+                        items.push(value);
+                    }
+                    len = Some(items.len());
+                }
+                if let Some(len) = len {
+                    collection.properties.insert("count".into(), Value::F64(len as f64));
+                    collection.properties.insert("length".into(), Value::F64(len as f64));
+                }
+            }
+            Value::Null
+        }));
+        vm.register_host_fn("vybe:gui", "__collection_clear", Box::new(|_ctx, args| {
+            if let Some(Value::Object(collection)) = args.first() {
+                let mut collection = collection.lock().unwrap();
+                if let vybe_bytecode::value::ObjectKind::Array(items) = &mut collection.kind {
+                    items.clear();
+                }
+                collection.properties.insert("count".into(), Value::F64(0.0));
+                collection.properties.insert("length".into(), Value::F64(0.0));
+            }
+            Value::Null
+        }));
+        vm.register_host_fn("vybe:gui", "__collection_contains", Box::new(|_ctx, args| {
+            let Some(Value::Object(collection)) = args.first() else {
+                return Value::Bool(false);
+            };
+            let needle = args.get(1).cloned().unwrap_or(Value::Null);
+            let collection = collection.lock().unwrap();
+            let contains = if let vybe_bytecode::value::ObjectKind::Array(items) = &collection.kind {
+                items.iter().any(|existing| existing.eq(&needle))
+            } else {
+                false
+            };
+            Value::Bool(contains)
+        }));
         vm.register_host_fn("vybe:gui", "newForm", Box::new(|_ctx, args| {
             use vybe_bytecode::value::Object;
             let title = args.first().map(|v| format!("{v}")).unwrap_or_default();
@@ -245,8 +318,13 @@ pub fn register_all(vm: &mut VM) {
             obj.properties.insert("name".into(), Value::String(Arc::from("form")));
             // Controls collection (no-op stub)
             let mut ctrls = Object::new_array(vec![]);
-            ctrls.properties.insert("__type".into(), Value::String(Arc::from("List")));
+            ctrls.properties.insert("__type".into(), Value::String(Arc::from("ControlCollection")));
+            ctrls.properties.insert("count".into(), Value::F64(0.0));
             obj.properties.insert("controls".into(), Value::Object(Arc::new(Mutex::new(ctrls))));
+            let mut comps = Object::new_array(vec![]);
+            comps.properties.insert("__type".into(), Value::String(Arc::from("ComponentCollection")));
+            comps.properties.insert("count".into(), Value::F64(0.0));
+            obj.properties.insert("components".into(), Value::Object(Arc::new(Mutex::new(comps))));
             Value::Object(Arc::new(Mutex::new(obj)))
         }));
         vm.register_host_fn("vybe:gui", "addHandler", Box::new(|_ctx, _| Value::Null));
@@ -389,6 +467,7 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
     json::register(vm);
     object::register(vm);
     regex::register(vm);
+    regex::register_constructor(vm);
     collections::register(vm);
     runtime::register(vm);
     types::register(vm);
@@ -420,14 +499,20 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
     if caps.has(Capability::FileRead) || caps.has(Capability::FileWrite) {
         fs::register(vm);
     }
+    if caps.has(Capability::FileRead) || caps.has(Capability::FileWrite) || caps.has(Capability::Sockets) {
+        sockets::register_dotnet_io(vm);
+    }
     if caps.has(Capability::Environment) {
         env::register(vm);
+        env::register_dotnet_net(vm);
     }
     if caps.has(Capability::Http) {
         http::register(vm);
     }
     if caps.has(Capability::Sockets) {
         sockets::register(vm);
+        sockets::register_dotnet_net(vm);
+        sockets::register_dotnet_sockets(vm);
     }
     if caps.has(Capability::Database) {
         database::register(vm);

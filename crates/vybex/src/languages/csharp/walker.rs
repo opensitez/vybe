@@ -93,6 +93,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         Rule::do_while_statement => walk_do_while(pair)?,
         Rule::switch_statement => walk_switch(pair)?,
         Rule::return_statement => walk_return(pair)?,
+        Rule::yield_statement => walk_yield_stmt(pair)?,
         Rule::break_statement => StmtKind::Break(BreakTarget::Implicit),
         Rule::continue_statement => StmtKind::Continue(ContinueTarget::Implicit),
         Rule::throw_statement => walk_throw(pair)?,
@@ -221,7 +222,7 @@ fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let first = inner.next().ok_or("Empty local var")?;
 
     // Skip type name (var or explicit type)
-    let _type_hint = match first.as_rule() {
+    let type_hint = match first.as_rule() {
         Rule::var_kw => None,
         Rule::type_name => Some(first.as_str().to_string()),
         _ => None,
@@ -239,6 +240,12 @@ fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
             }
             Rule::var_declarator => declarations.push(walk_var_declarator(p)?),
             _ => {}
+        }
+    }
+
+    if let Some(type_hint) = type_hint {
+        for decl in &mut declarations {
+            decl.type_hint = Some(type_hint.clone());
         }
     }
 
@@ -516,6 +523,7 @@ fn walk_method(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String>
 
     let is_sub = return_type.as_deref() == Some("void");
 
+    let is_generator = body_has_yield(&body);
     Ok(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
         name,
         params,
@@ -524,7 +532,7 @@ fn walk_method(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String>
         modifiers: mods,
         handles: Vec::new(),
         is_async,
-        is_generator: false,
+        is_generator,
         is_sub,
     }))))
 }
@@ -1008,6 +1016,51 @@ fn walk_return(pair: Pair<Rule>) -> Result<StmtKind, String> {
         .map(walk_expression)
         .transpose()?;
     Ok(StmtKind::Return(expr))
+}
+
+/// C# `yield return expr;` → `StmtKind::Expr(Yield(expr))`
+/// `yield break;`          → `StmtKind::Return(None)` (ends the coroutine)
+fn walk_yield_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
+    let s = pair.as_str();
+    let inner = pair.into_inner().next();
+    if s.trim_start().starts_with("yield") && s.contains("return") {
+        let expr = inner.map(walk_expression).transpose()?;
+        let yield_expr = Expression::new(ExprKind::Yield(expr.map(Box::new)));
+        Ok(StmtKind::Expr(yield_expr))
+    } else {
+        // yield break → end the generator
+        Ok(StmtKind::Return(None))
+    }
+}
+
+/// Walk a block scanning for any `yield return` / `yield break` —
+/// determines whether the enclosing method is a generator.
+fn body_has_yield(body: &[Statement]) -> bool {
+    fn expr_has_yield(e: &Expression) -> bool {
+        matches!(&e.kind, ExprKind::Yield(_) | ExprKind::YieldFrom(_))
+    }
+    for s in body {
+        match &s.kind {
+            StmtKind::Expr(e) if expr_has_yield(e) => return true,
+            StmtKind::If { then_body, elifs, else_body, .. } => {
+                if body_has_yield(then_body) { return true; }
+                for (_, b) in elifs { if body_has_yield(b) { return true; } }
+                if let Some(b) = else_body { if body_has_yield(b) { return true; } }
+            }
+            StmtKind::While { body: b, .. } | StmtKind::ForIn { body: b, .. }
+            | StmtKind::For { body: b, .. } | StmtKind::DoWhile { body: b, .. } => {
+                if body_has_yield(b) { return true; }
+            }
+            StmtKind::Try { body: b, catches, finally, .. } => {
+                if body_has_yield(b) { return true; }
+                for c in catches { if body_has_yield(&c.body) { return true; } }
+                if let Some(f) = finally { if body_has_yield(f) { return true; } }
+            }
+            StmtKind::Block(b) => { if body_has_yield(b) { return true; } }
+            _ => {}
+        }
+    }
+    false
 }
 
 fn walk_throw(pair: Pair<Rule>) -> Result<StmtKind, String> {

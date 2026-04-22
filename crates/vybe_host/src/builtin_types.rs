@@ -249,9 +249,9 @@ pub fn register_all(vm: &mut VM) {
     {
         let mut t = TypeDef::new("TcpClient");
         for (method, fname) in &[
-            ("close", "tcpClose"), ("getstream", "tcpGetStream"),
+            ("close", "tcpClientClose"), ("getstream", "tcpClientGetStream"),
         ] {
-            if let Some(idx) = h(vm, "vybe:net", fname) {
+            if let Some(idx) = h(vm, "dotnet:sockets", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }
@@ -264,9 +264,9 @@ pub fn register_all(vm: &mut VM) {
         let mut t = TypeDef::new("TcpListener");
         for (method, fname) in &[
             ("start", "tcpListenerStart"), ("stop", "tcpListenerStop"),
-            ("accepttcpclient", "tcpListenerAccept"),
+            ("accepttcpclient", "tcpListenerAccept"), ("pending", "tcpListenerPending"),
         ] {
-            if let Some(idx) = h(vm, "vybe:net", fname) {
+            if let Some(idx) = h(vm, "dotnet:sockets", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }
@@ -278,9 +278,9 @@ pub fn register_all(vm: &mut VM) {
     {
         let mut t = TypeDef::new("UdpClient");
         for (method, fname) in &[
-            ("send", "udpSend"), ("receive", "udpReceive"), ("close", "udpClose"),
+            ("send", "udpClientSend"), ("receive", "udpClientReceive"), ("close", "udpClientClose"),
         ] {
-            if let Some(idx) = h(vm, "vybe:net", fname) {
+            if let Some(idx) = h(vm, "dotnet:sockets", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }
@@ -292,10 +292,10 @@ pub fn register_all(vm: &mut VM) {
     {
         let mut t = TypeDef::new("StreamReader");
         for (method, fname) in &[
-            ("readline", "streamReaderReadLine"), ("readtoend", "streamReaderReadLine"),
+            ("readline", "streamReaderReadLine"), ("readtoend", "streamReaderReadToEnd"),
             ("close", "streamWriterClose"),
         ] {
-            if let Some(idx) = h(vm, "vybe:net", fname) {
+            if let Some(idx) = h(vm, "dotnet:io", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }
@@ -307,10 +307,10 @@ pub fn register_all(vm: &mut VM) {
     {
         let mut t = TypeDef::new("StreamWriter");
         for (method, fname) in &[
-            ("writeline", "streamWriterWriteLine"), ("write", "streamWriterWriteLine"),
+            ("writeline", "streamWriterWriteLine"), ("write", "streamWriterWrite"),
             ("flush", "streamWriterFlush"), ("close", "streamWriterClose"),
         ] {
-            if let Some(idx) = h(vm, "vybe:net", fname) {
+            if let Some(idx) = h(vm, "dotnet:io", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }
@@ -321,15 +321,18 @@ pub fn register_all(vm: &mut VM) {
     // --- Stopwatch ---
     {
         let mut t = TypeDef::new("Stopwatch");
-        if let Some(idx) = h(vm, "vybe:threading", "stopwatchStart") {
+        if let Some(idx) = h(vm, "wasi:clocks", "stopwatchStart") {
             t.methods.insert("start".into(), Method::HostFn(idx));
         }
-        if let Some(idx) = h(vm, "vybe:threading", "stopwatchStop") {
+        if let Some(idx) = h(vm, "wasi:clocks", "stopwatchStop") {
             t.methods.insert("stop".into(), Method::HostFn(idx));
         }
-        if let Some(idx) = h(vm, "vybe:threading", "stopwatchElapsed") {
+        if let Some(idx) = h(vm, "wasi:clocks", "stopwatchElapsed") {
             t.methods.insert("elapsedmilliseconds".into(), Method::HostFn(idx));
             t.methods.insert("elapsed".into(), Method::HostFn(idx));
+        }
+        if let Some(idx) = h(vm, "wasi:clocks", "stopwatchReset") {
+            t.methods.insert("reset".into(), Method::HostFn(idx));
         }
         t.parent = Some(0);
         vm.type_registry.register(t);
@@ -461,7 +464,21 @@ pub fn register_all(vm: &mut VM) {
 
     // --- Task ---
     {
-        let t = TypeDef::new("Task");
+        let mut t = TypeDef::new("Task");
+        if let Some(idx) = h(vm, "vybe:threading", "taskStart") {
+            t.methods.insert("start".into(), Method::HostFn(idx));
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+
+    // --- Process ---
+    {
+        let mut t = TypeDef::new("Process");
+        if let Some(idx) = h(vm, "vybe:types", "processWaitForExit") {
+            t.methods.insert("waitforexit".into(), Method::HostFn(idx));
+        }
+        t.parent = Some(0);
         vm.type_registry.register(t);
     }
 
@@ -533,12 +550,12 @@ pub fn register_all(vm: &mut VM) {
         ("StringBuilder", "vybe:types", "stringBuilderNew"),
         ("DateTime", "vybe:types", "dateTimeNew"),
         ("SqlConnection", "vybe:database", "connect"),
-        ("TcpClient", "vybe:net", "tcpConnect"),
-        ("TcpListener", "vybe:net", "tcpListenerNew"),
-        ("UdpClient", "vybe:net", "udpNew"),
-        ("StreamReader", "vybe:net", "streamReaderNew"),
-        ("StreamWriter", "vybe:net", "streamWriterNew"),
-        ("Stopwatch", "vybe:threading", "stopwatchNew"),
+        ("TcpClient", "dotnet:sockets", "tcpClientNew"),
+        ("TcpListener", "dotnet:sockets", "tcpListenerNew"),
+        ("UdpClient", "dotnet:sockets", "udpClientNew"),
+        ("StreamReader", "dotnet:io", "streamReaderNew"),
+        ("StreamWriter", "dotnet:io", "streamWriterNew"),
+        ("Stopwatch", "wasi:clocks", "stopwatchNew"),
         ("Random", "vybe:threading", "randomNew"),
         ("DataTable", "vybe:data", "dataTableNew"),
         ("DataSet", "vybe:data", "dataSetNew"),

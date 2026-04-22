@@ -45,6 +45,15 @@ fn test_math_pow() {
 }
 
 #[test]
+fn test_math_portable_stdlib_funcs() {
+    assert_eq!(run_js_one("console.log(Math.sin(0))"), "0");
+    assert_eq!(run_js_one("console.log(Math.cos(0))"), "1");
+    assert_eq!(run_js_one("console.log(Math.log(1))"), "0");
+    assert_eq!(run_js_one("console.log(Math.exp(0))"), "1");
+    assert_eq!(run_js_one("console.log(Math.sign(-5))"), "-1");
+}
+
+#[test]
 fn test_math_min_max() {
     assert_eq!(run_js_one("console.log(Math.min(3, 7))"), "3");
     assert_eq!(run_js_one("console.log(Math.max(3, 7))"), "7");

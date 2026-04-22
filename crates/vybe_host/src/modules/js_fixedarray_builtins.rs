@@ -22,7 +22,7 @@
 
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::value::{Object, ObjectKind, Value};
-use vybe_bytecode::{HostContext, VM};
+use vybe_bytecode::VM;
 
 /// Property marker denoting "this array's length is immutable".
 /// Mutation handlers (push/pop/shift/splice/setLength) check this

@@ -105,9 +105,10 @@ impl Compiler {
                 let lower_parts: Vec<String> = parts.iter().map(|s| self.canon(s)).collect();
 
                 // Use dotnet resolver when enabled
-                if self.profile.namespaces.use_dotnet {
+                if self.profile.namespaces.use_dotnet_resolver {
+                    let dotnet_surface = common::dotnet::surface();
                     let imports = {
-                        let mut imp = common::dotnet::default_interface_imports();
+                        let mut imp = dotnet_surface.default_imports().to_vec();
                         imp.extend(self.profile.namespaces.extra_imports.clone());
                         imp
                     };
@@ -120,20 +121,44 @@ impl Compiler {
                     } else {
                         std::collections::HashSet::new()
                     };
+                    // `is_local` must recognise top-level variables that
+                    // live in `defined_globals` (VB `Dim` at the module
+                    // level, JS top-level `var`/`let`), but MUST NOT
+                    // match user classes there — those go through
+                    // `is_user_type` which returns Unresolved so static
+                    // dispatch runs the class ctor path, not a bogus
+                    // struct_get chain off the ctor function. The union
+                    // (`is_local`) minus (`is_user_type`) gives the
+                    // right set of "things you can local_get and
+                    // struct_get from".
+                    let defined_classes = self.defined_classes.clone();
+                    let is_user_class_fn = move |name: &str| -> bool {
+                        defined_classes.contains(name)
+                            || defined_classes.iter().any(|c| c.eq_ignore_ascii_case(name))
+                    };
+                    let is_user_class_for_local = is_user_class_fn.clone();
                     let ctx = common::dotnet::ResolutionContext {
                         is_local: &|name: &str| {
+                            if is_user_class_for_local(name) { return false; }
                             scope.resolve(name).is_some()
                             || scope.resolve_ci(name).is_some()
                             || defined_globals.contains(name)
+                            || defined_globals.iter().any(|g| g.eq_ignore_ascii_case(name))
                         },
                         is_class_field: &|name: &str| field_set.contains(name),
-                        is_user_type: &|name: &str| defined_globals.contains(name),
+                        is_user_type: &is_user_class_fn,
                         imports: &imports,
                     };
                     let refs: Vec<&str> = lower_parts.iter().map(|s| s.as_str()).collect();
                     let resolution = common::dotnet::resolve_dotted_name(&refs, &ctx);
 
                     match resolution {
+                        common::dotnet::DottedResolution::CommonCall { emit } => {
+                            for a in &arg_exprs { self.compile_expr(a)?; }
+                            let line = self.line;
+                            self.emit_common(&emit, line);
+                            return Ok(());
+                        }
                         common::dotnet::DottedResolution::HostCall { module, func } => {
                             for a in &arg_exprs { self.compile_expr(a)?; }
                             let idx = self.import(&module, &func);
@@ -141,40 +166,112 @@ impl Compiler {
                             return Ok(());
                         }
                         common::dotnet::DottedResolution::NamespaceAccess { parts: ns_parts } => {
-                            // Intercept threading calls. The actual emit goes
-                            // through compiler_common::dispatch so the bytecode
-                            // shape is identical to what the C# profile's
-                            // `common:threading.*` entries produce.
-                            let dotted = ns_parts.join(".");
-                            match dotted.as_str() {
-                                "system.threading.task.run" | "task.run" => {
-                                    if let Some(a) = arg_exprs.first() { self.compile_expr(a)?; }
-                                    let line = self.line;
-                                    self.emit_common("threading.task_run", line);
+                            // If any contiguous sub-window of the chain is a profile namespace
+                            // constant (e.g. ["system","math","pi","tostring"] where "math.pi"
+                            // is a constant), emit the constant and dispatch remaining as a
+                            // value method. Namespace prefix before the constant is discarded.
+                            if ns_parts.len() >= 2 {
+                                let mut found_window: Option<(usize, usize)> = None;
+                                'outer: for start in 0..ns_parts.len().saturating_sub(1) {
+                                    for end in ((start + 2)..=ns_parts.len().saturating_sub(0)).rev() {
+                                        if end > ns_parts.len() { continue; }
+                                        let key = ns_parts[start..end].join(".");
+                                        if self.profile.lookup_constant(&key).is_some() {
+                                            found_window = Some((start, end));
+                                            break 'outer;
+                                        }
+                                    }
+                                }
+                                if let Some((_const_start, const_end)) = found_window {
+                                    let key = ns_parts[_const_start..const_end].join(".");
+                                    let cv = self.profile.lookup_constant(&key).cloned().unwrap();
+                                    match &cv {
+                                        ConstantValue::Float(f) => self.emit_const(Value::F64(*f)),
+                                        ConstantValue::Str(s) => self.emit_const(Value::String(Arc::from(s.as_str()))),
+                                    }
+                                    let remaining = ns_parts[const_end..].to_vec();
+                                    if let Some(method_name) = remaining.first() {
+                                        let argc = arg_exprs.len() as u8;
+                                        let def = self.profile.lookup_value_method(method_name, argc).cloned();
+                                        if let Some(def) = def {
+                                            for a in &arg_exprs { self.compile_expr(a)?; }
+                                            let line = self.line;
+                                            match &def.emit {
+                                                BuiltinEmit::Stdlib(name) => {
+                                                    // For stdlib: func ref must be pushed BEFORE object.
+                                                    // But object is already on stack. Save it to a temp.
+                                                    let tmp = self.scope_mut().define("__const_val");
+                                                    self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
+                                                    let global_name = format!("__vybe_{}", name);
+                                                    let name_idx = self.str_const(&global_name);
+                                                    self.emit_u16(Op::GLOBAL_GET, name_idx);
+                                                    self.emit_u16(Op::LOCAL_GET, tmp);
+                                                    for a in &arg_exprs { self.compile_expr(a)?; }
+                                                    self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                                                }
+                                                BuiltinEmit::HostCall(module, func) => {
+                                                    let idx = self.import(module, func);
+                                                    self.emit_host_call(idx, (arg_exprs.len() + 1) as u8);
+                                                }
+                                                BuiltinEmit::Common(name) => {
+                                                    let name = name.clone();
+                                                    self.emit_common(&name, line);
+                                                }
+                                                BuiltinEmit::Opcode(op_name) => {
+                                                    self.emit_named_opcode(op_name);
+                                                }
+                                                _ => {
+                                                    // Fallback: STRUCT_GET the method and call_ref
+                                                    let idx = self.str_const(method_name);
+                                                    self.emit_u16(Op::STRUCT_GET, idx);
+                                                    self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                                                }
+                                            }
+                                        } else {
+                                            // No value method — STRUCT_GET and call_ref
+                                            let idx = self.str_const(method_name);
+                                            self.emit_u16(Op::STRUCT_GET, idx);
+                                            for a in &arg_exprs { self.compile_expr(a)?; }
+                                            self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                                        }
+                                    }
                                     return Ok(());
                                 }
-                                "system.diagnostics.process.start" | "process.start" => {
-                                    // Process.Start(startInfo) → host call that runs the command
-                                    for a in &arg_exprs { self.compile_expr(a)?; }
-                                    let idx = self.import("vybe:types", "processStart");
-                                    self.emit_host_call(idx, arg_exprs.len() as u8);
-                                    return Ok(());
-                                }
-                                "system.threading.thread.sleep" | "thread.sleep" => {
-                                    if let Some(a) = arg_exprs.first() { self.compile_expr(a)?; }
-                                    let line = self.line;
-                                    self.emit_common("threading.sleep", line);
-                                    return Ok(());
-                                }
-                                _ => {}
                             }
+
+                            if !arg_exprs.is_empty() && ns_parts.len() >= 2 {
+                                let method_name = ns_parts.last().cloned().unwrap_or_default();
+                                let root_idx = self.str_const(&ns_parts[0]);
+                                self.emit_u16(Op::GLOBAL_GET, root_idx);
+                                for part in &ns_parts[1..ns_parts.len() - 1] {
+                                    let idx = self.str_const(part);
+                                    self.emit_u16(Op::STRUCT_GET, idx);
+                                }
+                                let method_idx = self.str_const(&method_name);
+                                self.emit(Op::DUP);
+                                self.emit_u16(Op::STRUCT_GET, method_idx);
+                                let fn_tmp = self.scope_mut().define("__ns_fn");
+                                self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
+                                let obj_tmp = self.scope_mut().define("__ns_obj");
+                                self.reserve_local_slot(obj_tmp);
+                                self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+                                self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                                for a in &arg_exprs { self.compile_expr(a)?; }
+                                self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                                return Ok(());
+                            }
+
                             let root_idx = self.str_const(&ns_parts[0]);
                             self.emit_u16(Op::GLOBAL_GET, root_idx);
                             for part in &ns_parts[1..] {
                                 let idx = self.str_const(part);
                                 self.emit_u16(Op::STRUCT_GET, idx);
                             }
-                            let is_const = common::dotnet::is_known_constant(ns_parts.last().unwrap_or(&String::new()));
+                            let is_const = ns_parts
+                                .last()
+                                .map(|name| dotnet_surface.is_known_constant(name))
+                                .unwrap_or(false);
                             if !is_const {
                                 for a in &arg_exprs { self.compile_expr(a)?; }
                                 self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
@@ -198,11 +295,6 @@ impl Compiler {
                             if members.len() == 1 {
                                 let method = members[0].as_str();
                                 match method {
-                                    "start" => {
-                                        // th.Start() — thread_spawn already started it, no-op
-                                        self.emit(Op::NULL);
-                                        return Ok(());
-                                    }
                                     "join" => {
                                         // th.Join() → thread_join opcode (blocks until thread
                                         // completes, pushes exit code). Leave the exit code on
@@ -213,44 +305,15 @@ impl Compiler {
                                         common::threading::emit_thread_join(self.chunk(), line);
                                         return Ok(());
                                     }
-                                    "waitforexit" => {
-                                        // p.WaitForExit() — process ran synchronously, no-op
-                                        // Must leave a value on stack (caller drops it)
-                                        self.emit(Op::NULL);
-                                        return Ok(());
-                                    }
                                     _ => {}
                                 }
                             }
-                            // Generic instance member chain → obj.prop.method(args)
-                            self.emit_var_get(&local);
-                            let last_idx = members.len() - 1;
-                            for (i, m) in members.iter().enumerate() {
-                                let idx = self.str_const(m);
-                                if i < last_idx {
-                                    self.emit_u16(Op::STRUCT_GET, idx);
-                                } else {
-                                    // Last member is the method — struct_get then call with this
-                                    self.emit(Op::DUP); // keep obj for this
-                                    self.emit_u16(Op::STRUCT_GET, idx);
-                                    // Stack: [obj, method_fn] — swap so fn is first
-                                    let fn_tmp = self.scope().resolve("__dotnet_fn")
-                                        .unwrap_or_else(|| self.scope_mut().define("__dotnet_fn"));
-                                    self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
-                                    let obj_tmp = self.scope().resolve("__dotnet_obj")
-                                        .unwrap_or_else(|| self.scope_mut().define("__dotnet_obj"));
-                                    self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
-                                    self.emit_u16(Op::LOCAL_GET, fn_tmp);
-                                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                                    for a in &arg_exprs { self.compile_expr(a)?; }
-                                    self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
-                                    return Ok(());
-                                }
-                            }
-                            // Shouldn't reach here for calls, but just in case
-                            for a in &arg_exprs { self.compile_expr(a)?; }
-                            self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
-                            return Ok(());
+                            let _ = local;
+                            let _ = members;
+                            // For ordinary local/member calls, fall through to the
+                            // shared call pipeline below. That keeps value-method
+                            // dispatch (`dict.Add`, `queue.Dequeue`, etc.) and the
+                            // generic object member path as the single source of truth.
                         }
                         common::dotnet::DottedResolution::NoOp => {
                             self.emit(Op::NULL);
@@ -263,12 +326,16 @@ impl Compiler {
                 }
 
                 // Non-dotnet: module aliases (JS: console → wasi:cli)
-                if let Some(module) = self.profile.lookup_module_alias(&lower_parts[0]).map(|s| s.to_string()) {
+                let dotnet_root = self.profile.namespaces.use_dotnet_resolver
+                    && common::dotnet::is_namespace_root(&lower_parts[0]);
+                if !dotnet_root {
+                    if let Some(module) = self.profile.lookup_module_alias(&lower_parts[0]).map(|s| s.to_string()) {
                     let func = if lower_parts.len() == 2 { lower_parts[1].clone() } else { lower_parts[1..].join(".") };
                     for a in &arg_exprs { self.compile_expr(a)?; }
                     let idx = self.import(&module, &func);
                     self.emit_host_call(idx, arg_exprs.len() as u8);
                     return Ok(());
+                    }
                 }
 
                 // Profile namespace roots
@@ -384,6 +451,11 @@ impl Compiler {
             );
             let user_method_shadow = receiver_is_direct
                 && self.defined_class_methods.contains(&canon_field);
+            let matched_value_method = self.profile.lookup_value_method(field, arg_exprs.len() as u8).cloned();
+            let prefer_string_stdlib_value_method = matches!(
+                matched_value_method.as_ref().map(|d| &d.emit),
+                Some(BuiltinEmit::Stdlib(_))
+            ) && self.expr_is_known_string_receiver(object);
             // Also skip value_methods if the field is an array HOF method —
             // the array_methods dispatch handles it with proper HOF semantics.
             // Without this, `[1,2,3].includes(2)` routes through the string
@@ -392,7 +464,14 @@ impl Compiler {
             let is_array_method = self.profile.lookup_array_method(&field_lower_check).is_some();
             if user_method_shadow || is_array_method {
                 // Fall through — let the HOF dispatch or generic call path handle it
-            } else if let Some(def) = self.profile.lookup_value_method(field, arg_exprs.len() as u8).cloned() {
+            } else if self.profile.namespaces.use_dotnet
+                && common::dotnet::uses_runtime_collection_dispatch(field)
+                && !prefer_string_stdlib_value_method
+            {
+                // Let the generic member-call path consult the runtime type
+                // registry for shared .NET collection methods instead of
+                // intercepting them via language profile value-method tables.
+            } else if let Some(def) = matched_value_method {
                 // For Stdlib calls, push func ref BEFORE args (call_ref expects [func, args...])
                 if let BuiltinEmit::Stdlib(stdlib_name) = &def.emit {
                     let global_name = format!("__vybe_{}", stdlib_name);
@@ -408,7 +487,7 @@ impl Compiler {
                 for a in &arg_exprs { self.compile_expr(a)?; }
                 // Some opcodes need default args when called with fewer
                 // than required. Push defaults here.
-                if let BuiltinEmit::Opcode(ref op) | BuiltinEmit::Common(ref op) = &def.emit {
+                if let BuiltinEmit::Opcode(op) | BuiltinEmit::Common(op) = &def.emit {
                     match op.as_str() {
                         // array_join / collections.join needs [arr, sep]
                         "array_join" | "collections.join" if arg_exprs.is_empty() => {
@@ -762,6 +841,7 @@ impl Compiler {
                 let fn_tmp = self.scope_mut().define("__fn");
                 self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
                 let obj_tmp = self.scope_mut().define("__obj");
+                self.reserve_local_slot(obj_tmp);
                 self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -778,6 +858,7 @@ impl Compiler {
             let fn_tmp = self.scope_mut().define("__fn");
             self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
             let obj_tmp = self.scope_mut().define("__obj");
+            self.reserve_local_slot(obj_tmp);
             self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
             self.emit_u16(Op::LOCAL_GET, fn_tmp);
             self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -824,10 +905,8 @@ impl Compiler {
                 let is_local = self.scope().resolve(name).is_some()
                     || (!self.case_sensitive && self.scope().resolve_ci(name).is_some());
                 if !is_local && !is_known_func {
-                    let self_kw = self.profile.self_keyword.clone();
-                    if let Some(self_slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
+                    if self.emit_self_ref() {
                         // Me.name(args) → load Me, dup, struct_get(name), call with this
-                        self.emit_u16(Op::LOCAL_GET, self_slot);
                         let field_name = self.canon(name);
                         let prop = self.str_const(&field_name);
                         self.emit(Op::DUP);

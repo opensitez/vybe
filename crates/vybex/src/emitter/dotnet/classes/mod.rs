@@ -1,4 +1,4 @@
-//! .NET-shaped class wrappers for the GUI surface.
+//! WinForms-shaped class wrappers for the GUI surface.
 //!
 //! This submodule defines the metadata + chunk-building helpers that turn
 //! the .NET WinForms class hierarchy into real compile-time classes
@@ -41,7 +41,7 @@
 //! ## Module layout
 //!
 //! ```text
-//! dotnet/classes/
+//! dotnet/winforms/classes/
 //! ├── mod.rs          — DotnetClass struct, registration entry, table
 //! ├── builder.rs      — chunk-building helpers (private)
 //! ├── object.rs       — Object, MarshalByRefObject, Component
@@ -160,6 +160,21 @@ pub struct DotnetClass {
     /// [`gui_class!`] / explicit-module convention so the GUI control
     /// families don't have to repeat the module everywhere.
     pub widget_host_module: &'static str,
+}
+
+impl DotnetClass {
+    /// `true` for value-type-style classes whose ctor should return
+    /// the backing host object **directly** rather than building a
+    /// fresh `this` + copying identity fields. Used by
+    /// `System.Drawing.Point` / `System.Drawing.Size` — the host fn
+    /// already produces the exact `{x, y}` / `{width, height}` shape
+    /// the GUI dispatch reads, so introducing an intermediate `this`
+    /// object strips those fields and leaves controls stacked at (0,0).
+    pub fn is_value_type(&self) -> bool {
+        self.widget_host_fn.is_some()
+            && self.parent.is_none()
+            && self.methods.is_empty()
+    }
 }
 
 /// One method on a `DotnetClass`.

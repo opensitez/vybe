@@ -39,7 +39,7 @@ use std::sync::{Arc, Mutex};
 use vybe_bytecode::value::{
     ArrayBufferState, Object, ObjectKind, TypedArrayState, TypedElemKind, Value,
 };
-use vybe_bytecode::{HostContext, VM};
+use vybe_bytecode::VM;
 
 // ── Variant wiring ────────────────────────────────────────────────────
 

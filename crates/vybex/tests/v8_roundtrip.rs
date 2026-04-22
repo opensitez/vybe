@@ -147,3 +147,43 @@ fn v8_imports_resolve() {
         }
     }
 }
+
+#[test]
+fn v8_math_imports_are_portable() {
+    let src = r#"
+        function main() {
+            return Math.sin(0) + Math.log(1) + Math.exp(0);
+        }
+    "#;
+    let wasm = compile_to_wasm(src);
+    let imports = extract_imports(&wasm);
+    assert!(!imports.iter().any(|(m, n)| m == "vybe:math" && ["sin", "log", "exp"].contains(&n.as_str())),
+        "math migration incomplete, found vybe:math imports: {:?}", imports);
+    for needed in ["sin", "log", "exp"] {
+        assert!(imports.iter().any(|(m, n)| m == "env" && n == needed),
+            "missing env.{} import in emitted wasm: {:?}", needed, imports);
+    }
+}
+
+#[test]
+fn v8_math_imports_resolve() {
+    if !node_available() {
+        eprintln!("skipping: node not available");
+        return;
+    }
+    let src = r#"
+        function main() {
+            return Math.sin(0) + Math.log(1) + Math.exp(0);
+        }
+    "#;
+    let wasm = compile_to_wasm(src);
+    match run_on_v8(&wasm, "main") {
+        Ok(out) => assert_eq!(out, "1"),
+        Err(e) => {
+            if e.contains("Unknown import") || e.contains("import ") && e.contains("not defined") {
+                panic!("v8 rejected a portable math import: {}", e);
+            }
+            eprintln!("v8 compile error (not math-import-related): {}", e);
+        }
+    }
+}

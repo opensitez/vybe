@@ -14,7 +14,13 @@
 //!   min_val(array) → value
 //!   max_val(array) → value
 //!   to_str(value) → string (via convert import)
+//!   string_is_null_or_empty(str) → bool
+//!   string_is_null_or_whitespace(str) → bool
+//!   str_insert(str, index, value) → string
+//!   str_remove_start(str, start) → string
+//!   str_remove_range(str, start, count) → string
 //!   pow(base, exp) → number (repeated multiplication fallback)
+//!   sin/cos/tan/asin/acos/atan/atan2/log/log10/exp/sign/clamp → number
 
 use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
@@ -40,7 +46,27 @@ pub fn build_stdlib(imports: &mut Chunk) -> StdLib {
     chunks.push(build_min(imports));               exports.push("__stdlib_min");
     chunks.push(build_max(imports));               exports.push("__stdlib_max");
     chunks.push(build_pow(imports));               exports.push("__stdlib_pow");
+    chunks.push(build_sin(imports));               exports.push("__stdlib_sin");
+    chunks.push(build_cos(imports));               exports.push("__stdlib_cos");
+    chunks.push(build_tan(imports));               exports.push("__stdlib_tan");
+    chunks.push(build_asin(imports));              exports.push("__stdlib_asin");
+    chunks.push(build_acos(imports));              exports.push("__stdlib_acos");
+    chunks.push(build_atan(imports));              exports.push("__stdlib_atan");
+    chunks.push(build_atan2(imports));             exports.push("__stdlib_atan2");
+    chunks.push(build_log(imports));               exports.push("__stdlib_log");
+    chunks.push(build_log10(imports));             exports.push("__stdlib_log10");
+    chunks.push(build_exp(imports));               exports.push("__stdlib_exp");
+    chunks.push(build_sinh(imports));              exports.push("__stdlib_sinh");
+    chunks.push(build_cosh(imports));              exports.push("__stdlib_cosh");
+    chunks.push(build_tanh(imports));              exports.push("__stdlib_tanh");
+    chunks.push(build_sign(imports));              exports.push("__stdlib_sign");
+    chunks.push(build_clamp(imports));             exports.push("__stdlib_clamp");
     chunks.push(build_to_string(imports));         exports.push("__stdlib_tostring");
+    chunks.push(build_string_is_null_or_empty(imports)); exports.push("__stdlib_string_is_null_or_empty");
+    chunks.push(build_string_is_null_or_whitespace(imports)); exports.push("__stdlib_string_is_null_or_whitespace");
+    chunks.push(build_str_insert(imports));        exports.push("__stdlib_str_insert");
+    chunks.push(build_str_remove_start(imports));  exports.push("__stdlib_str_remove_start");
+    chunks.push(build_str_remove_range(imports));  exports.push("__stdlib_str_remove_range");
     chunks.push(build_str_count(imports));         exports.push("__stdlib_count");
     chunks.push(build_is_numeric(imports));        exports.push("__stdlib_isnumeric");
     chunks.push(build_splice(imports));            exports.push("__stdlib_splice");
@@ -58,6 +84,10 @@ pub fn build_stdlib(imports: &mut Chunk) -> StdLib {
     chunks.push(build_concat(imports));            exports.push("__stdlib_concat");
     chunks.push(build_string_raw(imports));        exports.push("__stdlib_string_raw");
     chunks.push(build_fmod(imports));              exports.push("__stdlib_fmod");
+    chunks.push(build_array_insert(imports));      exports.push("__stdlib_array_insert");
+    chunks.push(build_array_remove_at(imports));   exports.push("__stdlib_array_remove_at");
+    chunks.push(build_array_remove_value(imports)); exports.push("__stdlib_array_remove_value");
+    chunks.push(build_array_last_index_of(imports)); exports.push("__stdlib_array_last_index_of");
 
     StdLib { chunks, exports }
 }
@@ -830,7 +860,7 @@ fn build_max(imports: &mut Chunk) -> Chunk {
 }
 
 // ── pow(base, exp) → number (integer exponent by repeated mul) ──
-fn build_pow(imports: &mut Chunk) -> Chunk {
+fn build_pow(_imports: &mut Chunk) -> Chunk {
     // Bytecode-only fallback for `pow(base, exp)`. Handles INTEGER exponents
     // (positive, zero, negative) using a multiply loop. Fractional exponents
     // require floating-point exp/log which WASM doesn't have as standard
@@ -913,9 +943,157 @@ fn build_pow(imports: &mut Chunk) -> Chunk {
     c
 }
 
+fn build_unary_env_math(imports: &mut Chunk, chunk_name: &str, env_name: &str) -> Chunk {
+    let idx = imports.add_import("env", env_name);
+    let mut c = Chunk::new(chunk_name);
+    c.arity = 1;
+    c.local_count = 1;
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, idx, 0);
+    c.emit(1, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+fn build_binary_env_math(imports: &mut Chunk, chunk_name: &str, env_name: &str) -> Chunk {
+    let idx = imports.add_import("env", env_name);
+    let mut c = Chunk::new(chunk_name);
+    c.arity = 2;
+    c.local_count = 2;
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, idx, 0);
+    c.emit(2, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+fn build_sin(imports: &mut Chunk) -> Chunk {
+    build_unary_env_math(imports, "__stdlib_sin", "sin")
+}
+
+fn build_cos(imports: &mut Chunk) -> Chunk {
+    build_unary_env_math(imports, "__stdlib_cos", "cos")
+}
+
+fn build_tan(imports: &mut Chunk) -> Chunk {
+    build_unary_env_math(imports, "__stdlib_tan", "tan")
+}
+
+fn build_asin(imports: &mut Chunk) -> Chunk {
+    build_unary_env_math(imports, "__stdlib_asin", "asin")
+}
+
+fn build_acos(imports: &mut Chunk) -> Chunk {
+    build_unary_env_math(imports, "__stdlib_acos", "acos")
+}
+
+fn build_atan(imports: &mut Chunk) -> Chunk {
+    build_unary_env_math(imports, "__stdlib_atan", "atan")
+}
+
+fn build_atan2(imports: &mut Chunk) -> Chunk {
+    build_binary_env_math(imports, "__stdlib_atan2", "atan2")
+}
+
+fn build_sinh(imports: &mut Chunk) -> Chunk {
+    build_unary_env_math(imports, "__stdlib_sinh", "sinh")
+}
+
+fn build_cosh(imports: &mut Chunk) -> Chunk {
+    build_unary_env_math(imports, "__stdlib_cosh", "cosh")
+}
+
+fn build_tanh(imports: &mut Chunk) -> Chunk {
+    build_unary_env_math(imports, "__stdlib_tanh", "tanh")
+}
+
+fn build_log(imports: &mut Chunk) -> Chunk {
+    build_unary_env_math(imports, "__stdlib_log", "log")
+}
+
+fn build_log10(imports: &mut Chunk) -> Chunk {
+    build_unary_env_math(imports, "__stdlib_log10", "log10")
+}
+
+fn build_exp(imports: &mut Chunk) -> Chunk {
+    build_unary_env_math(imports, "__stdlib_exp", "exp")
+}
+
+fn build_sign(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_sign");
+    c.arity = 1;
+    c.local_count = 1;
+    let value = 0u16;
+    let one = c.add_constant(Value::F64(1.0));
+    let zero = c.add_constant(Value::F64(0.0));
+    let minus_one = c.add_constant(Value::F64(-1.0));
+
+    let skip_positive = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op_u16(Op::CONST, zero, 0);
+    c.emit_op(Op::DYN_GT, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::CONST, one, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0);
+    c.patch_block(skip_positive);
+
+    let skip_negative = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op_u16(Op::CONST, zero, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::CONST, minus_one, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0);
+    c.patch_block(skip_negative);
+
+    c.emit_op_u16(Op::CONST, zero, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+fn build_clamp(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_clamp");
+    c.arity = 3;
+    c.local_count = 3;
+    let value = 0u16;
+    let min = 1u16;
+    let max = 2u16;
+
+    let skip_min = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op_u16(Op::LOCAL_GET, min, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, min, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0);
+    c.patch_block(skip_min);
+
+    let skip_max = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op_u16(Op::LOCAL_GET, max, 0);
+    c.emit_op(Op::DYN_GT, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, max, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0);
+    c.patch_block(skip_max);
+
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
 // ── toString(value) → string ────────────────────────────────
 // "" + value triggers dyn_add string coercion in the VM
-fn build_to_string(imports: &mut Chunk) -> Chunk {
+fn build_to_string(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_tostring");
     c.arity = 1;
     c.local_count = 1;
@@ -928,9 +1106,127 @@ fn build_to_string(imports: &mut Chunk) -> Chunk {
     c
 }
 
+// ── string_is_null_or_empty(value) → bool ─────────────────
+fn build_string_is_null_or_empty(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_string_is_null_or_empty");
+    c.arity = 1;
+    c.local_count = 1;
+    let value = 0u16;
+
+    let non_null = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op(Op::TRUE, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0);
+    c.patch_block(non_null);
+
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op(Op::STR_LENGTH, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── string_is_null_or_whitespace(value) → bool ─────────────
+fn build_string_is_null_or_whitespace(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_string_is_null_or_whitespace");
+    c.arity = 1;
+    c.local_count = 1;
+    let value = 0u16;
+
+    let non_null = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op(Op::TRUE, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0);
+    c.patch_block(non_null);
+
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op(Op::STR_TRIM, 0);
+    c.emit_op(Op::STR_LENGTH, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── str_insert(str, index, value) → string ────────────────
+fn build_str_insert(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_str_insert");
+    c.arity = 3;
+    c.local_count = 3;
+    let value = 2u16;
+    let max = c.add_constant(Value::I32(i32::MAX));
+
+    // prefix = str[0:index]
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op(Op::STR_SUBSTRING, 0);
+
+    // prefix + value (keeps current coercion behavior for non-string values)
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+
+    // + suffix = str[index:]
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::CONST, max, 0);
+    c.emit_op(Op::STR_SUBSTRING, 0);
+    c.emit_op(Op::STR_CONCAT, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── str_remove_start(str, start) → string ─────────────────
+fn build_str_remove_start(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_str_remove_start");
+    c.arity = 2;
+    c.local_count = 2;
+
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op(Op::STR_SUBSTRING, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── str_remove_range(str, start, count) → string ──────────
+fn build_str_remove_range(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_str_remove_range");
+    c.arity = 3;
+    c.local_count = 3;
+    let max = c.add_constant(Value::I32(i32::MAX));
+
+    // prefix = str[0:start]
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op(Op::STR_SUBSTRING, 0);
+
+    // suffix = str[start+count:]
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op_u16(Op::CONST, max, 0);
+    c.emit_op(Op::STR_SUBSTRING, 0);
+    c.emit_op(Op::STR_CONCAT, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
 // ── count(haystack, needle) → int ───────────────────────────
 // Count non-overlapping occurrences using substring + indexOf loop
-fn build_str_count(imports: &mut Chunk) -> Chunk {
+fn build_str_count(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_count");
     c.arity = 2;
     c.local_count = 4;
@@ -1047,7 +1343,7 @@ fn build_splice(imports: &mut Chunk) -> Chunk {
 
 // ── isNumeric(value) → bool ─────────────────────────────────
 // Check if value is a number type using ref_typeof opcode.
-fn build_is_numeric(imports: &mut Chunk) -> Chunk {
+fn build_is_numeric(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_isnumeric");
     c.arity = 1;
     c.local_count = 1; // val(0)
@@ -1087,7 +1383,7 @@ fn build_is_numeric(imports: &mut Chunk) -> Chunk {
 }
 
 // ── floor(n) → int — wraps f64_floor opcode ────────────────
-fn build_floor(imports: &mut Chunk) -> Chunk {
+fn build_floor(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_floor");
     c.arity = 1;
     c.local_count = 1;
@@ -1167,7 +1463,7 @@ fn build_has_property(imports: &mut Chunk) -> Chunk {
 }
 
 // ── assign(target, source) → target with source props merged ─
-fn build_assign(imports: &mut Chunk) -> Chunk {
+fn build_assign(_imports: &mut Chunk) -> Chunk {
     // Can't iterate source properties in pure bytecode.
     // Fallback: return target unchanged.
     let mut c = Chunk::new("__stdlib_assign");
@@ -1325,7 +1621,7 @@ fn build_slice_step(imports: &mut Chunk) -> Chunk {
 }
 
 // ── dynMul(a, b) → string repeat or numeric multiply ─────────
-fn build_dyn_mul(imports: &mut Chunk) -> Chunk {
+fn build_dyn_mul(_imports: &mut Chunk) -> Chunk {
     use std::sync::Arc;
     let mut c = Chunk::new("__stdlib_dynmul");
     c.arity = 2;
@@ -1614,7 +1910,7 @@ fn build_string_raw(imports: &mut Chunk) -> Chunk {
 // ── fmod(a, b) → a % b (floating-point remainder) ──────────
 // WASM has no f64.rem. Pure bytecode: a - trunc(a/b) * b.
 // Host can override __vybe_fmod with native fmod for performance.
-fn build_fmod(imports: &mut Chunk) -> Chunk {
+fn build_fmod(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_fmod");
     c.arity = 2; // a, b
     c.local_count = 2; // a(0) + b(1)
@@ -1630,6 +1926,109 @@ fn build_fmod(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, b, 0);   // b
     c.emit_op(Op::F64_MUL, 0);            // trunc(a / b) * b
     c.emit_op(Op::F64_SUB, 0);            // a - trunc(a / b) * b
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── array_insert(arr, index, value) → null ──────────────────────────────
+// splice(arr, index, 0, value) — inserts value at index without removing anything.
+fn build_array_insert(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_array_insert");
+    c.arity = 3; // arr, index, value
+    c.local_count = 3;
+    let arr = 0u16;
+    let index = 1;
+    let value = 2;
+
+    // splice(arr, index, 0, value)
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, index, 0);
+    c.emit_op(Op::I32_CONST_0, 0); // deleteCount = 0
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    let splice = imports.add_import("wasm:js-array", "splice");
+    c.emit_op_u16(Op::CALL_IMPORT, splice, 0);
+    c.emit(4u8, 0); // 4 args
+    c.emit_op(Op::DROP, 0); // drop returned removed-elements array
+    c.emit_op(Op::NULL, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── array_remove_at(arr, index) → null ──────────────────────────────────
+// splice(arr, index, 1) — removes 1 element at index.
+fn build_array_remove_at(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_array_remove_at");
+    c.arity = 2; // arr, index
+    c.local_count = 2;
+    let arr = 0u16;
+    let index = 1;
+
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, index, 0);
+    c.emit_op(Op::I32_CONST_1, 0); // deleteCount = 1
+    let splice = imports.add_import("wasm:js-array", "splice");
+    c.emit_op_u16(Op::CALL_IMPORT, splice, 0);
+    c.emit(3u8, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op(Op::NULL, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── array_remove_value(arr, value) → bool ───────────────────────────────
+// indexOf(arr, value) → if >= 0: splice(arr, idx, 1); return true; else return false.
+fn build_array_remove_value(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_array_remove_value");
+    c.arity = 2; // arr, value
+    c.local_count = 3;
+    let arr = 0u16;
+    let value = 1;
+    let idx = 2;
+
+    // idx = indexOf(arr, value)
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    let index_of = imports.add_import("wasm:js-array", "indexOf");
+    c.emit_op_u16(Op::CALL_IMPORT, index_of, 0);
+    c.emit(2u8, 0);
+    c.emit_op_u16(Op::LOCAL_SET, idx, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // if idx >= 0: splice + return true
+    c.emit_op_u16(Op::LOCAL_GET, idx, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_GE, 0);
+    let skip = c.emit_jump(Op::BR_IF_FALSE, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, idx, 0);
+    c.emit_op(Op::I32_CONST_1, 0); // deleteCount = 1
+    let splice = imports.add_import("wasm:js-array", "splice");
+    c.emit_op_u16(Op::CALL_IMPORT, splice, 0);
+    c.emit(3u8, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op(Op::TRUE, 0);
+    c.emit_op(Op::RETURN, 0);
+
+    c.patch_jump(skip);
+    c.emit_op(Op::FALSE, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── array_last_index_of(arr, value) → i32 ───────────────────────────────
+fn build_array_last_index_of(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_array_last_index_of");
+    c.arity = 2; // arr, value
+    c.local_count = 2;
+    let arr = 0u16;
+    let value = 1;
+
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    let last_index_of = imports.add_import("wasm:js-array", "lastIndexOf");
+    c.emit_op_u16(Op::CALL_IMPORT, last_index_of, 0);
+    c.emit(2u8, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }

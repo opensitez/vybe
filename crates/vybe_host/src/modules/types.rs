@@ -1,6 +1,7 @@
 //! Built-in .NET types: DateTime, StringBuilder, List, Dictionary.
 //! Each constructor creates an object with methods as HostFunctions.
 
+use chrono::Local;
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::{Object, ObjectKind};
@@ -24,7 +25,12 @@ pub fn register(vm: &mut VM) {
 fn register_datetime(vm: &mut VM) {
     // DateTime.Now → creates a DateTime object from current time
     vm.register_host_fn("vybe:types", "dateTimeNow", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-        make_datetime_from_epoch_secs(epoch_secs())
+        make_datetime_from_epoch_secs_with_offset(epoch_secs(), local_utc_offset_seconds())
+    }));
+
+    // DateTime.UtcNow → creates a DateTime object from current UTC time
+    vm.register_host_fn("vybe:types", "dateTimeUtcNow", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+        make_datetime_from_epoch_secs_with_offset(epoch_secs(), 0)
     }));
 
     // DateTime.Parse(str) → parse a date string
@@ -47,20 +53,7 @@ fn register_datetime(vm: &mut VM) {
         let hour = args.get(4).map(|v| v.as_f64() as u64).unwrap_or(0);
         let min = args.get(5).map(|v| v.as_f64() as u64).unwrap_or(0);
         let sec = args.get(6).map(|v| v.as_f64() as u64).unwrap_or(0);
-
-        let mut obj = Object::new();
-        obj.properties.insert("__type".into(), Value::String(Arc::from("DateTime")));
-        obj.properties.insert("year".into(), Value::F64(year as f64));
-        obj.properties.insert("month".into(), Value::F64(month as f64));
-        obj.properties.insert("day".into(), Value::F64(day as f64));
-        obj.properties.insert("hour".into(), Value::F64(hour as f64));
-        obj.properties.insert("minute".into(), Value::F64(min as f64));
-        obj.properties.insert("second".into(), Value::F64(sec as f64));
-
-        let epoch = date_to_epoch(year, month, day, hour, min, sec);
-        obj.properties.insert("__epoch".into(), Value::F64(epoch as f64));
-
-        Value::Object(Arc::new(Mutex::new(obj)))
+        make_datetime_from_parts(year, month, day, hour, min, sec, 0)
     }));
 
     // Instance methods called via vybe:runtime/callMethod or directly
@@ -80,13 +73,14 @@ fn register_datetime(vm: &mut VM) {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.lock().unwrap();
             let epoch = o.properties.get("__epoch").map(|v| v.as_f64()).unwrap_or(0.0) as u64;
+            let offset_seconds = datetime_offset_seconds(&o);
             let months = args.get(1).map(|v| v.as_f64() as i64).unwrap_or(0);
-            let (y, m, d, h, min, s) = decompose(epoch);
+            let (y, m, d, h, min, s) = decompose_with_offset(epoch, offset_seconds);
             let total_months = y * 12 + m as i64 + months;
             let ny = total_months / 12;
             let nm = ((total_months % 12) + 12) % 12;
             let nm = if nm == 0 { 12 } else { nm as u64 };
-            return make_datetime_from_epoch_secs(date_to_epoch(ny, nm, d, h, min, s));
+            return make_datetime_from_parts(ny, nm, d, h, min, s, offset_seconds);
         }
         Value::Null
     }));
@@ -94,9 +88,10 @@ fn register_datetime(vm: &mut VM) {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.lock().unwrap();
             let epoch = o.properties.get("__epoch").map(|v| v.as_f64()).unwrap_or(0.0) as u64;
+            let offset_seconds = datetime_offset_seconds(&o);
             let years = args.get(1).map(|v| v.as_f64() as i64).unwrap_or(0);
-            let (y, m, d, h, min, s) = decompose(epoch);
-            return make_datetime_from_epoch_secs(date_to_epoch(y + years, m, d, h, min, s));
+            let (y, m, d, h, min, s) = decompose_with_offset(epoch, offset_seconds);
+            return make_datetime_from_parts(y + years, m, d, h, min, s, offset_seconds);
         }
         Value::Null
     }));
@@ -104,8 +99,10 @@ fn register_datetime(vm: &mut VM) {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.lock().unwrap();
             let epoch = o.properties.get("__epoch").map(|v| v.as_f64()).unwrap_or(0.0) as u64;
-            let (y, m, d, h, min, s) = decompose(epoch);
-            return Value::String(Arc::from(format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, m, d, h, min, s).as_str()));
+            let (y, m, d, h, min, s) = decompose_with_offset(epoch, datetime_offset_seconds(&o));
+            let fmt = args.get(1).map(value_to_plain_string);
+            let rendered = format_datetime(y, m, d, h, min, s, fmt.as_deref());
+            return Value::String(Arc::from(rendered));
         }
         Value::String(Arc::from(""))
     }));
@@ -113,7 +110,7 @@ fn register_datetime(vm: &mut VM) {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.lock().unwrap();
             let epoch = o.properties.get("__epoch").map(|v| v.as_f64()).unwrap_or(0.0) as u64;
-            let (y, m, d, _, _, _) = decompose(epoch);
+            let (y, m, d, _, _, _) = decompose_with_offset(epoch, datetime_offset_seconds(&o));
             return Value::String(Arc::from(format!("{:02}/{:02}/{:04}", m, d, y).as_str()));
         }
         Value::String(Arc::from(""))
@@ -410,6 +407,7 @@ fn register_dictionary(vm: &mut VM) {
         obj.properties.insert("__type".into(), Value::String(Arc::from("Dictionary")));
         obj.properties.insert("__data".into(), Value::Object(Arc::new(Mutex::new(Object::new()))));
         obj.properties.insert("count".into(), Value::F64(0.0));
+        obj.properties.insert("length".into(), Value::F64(0.0));
         Value::Object(Arc::new(Mutex::new(obj)))
     }));
 
@@ -418,12 +416,25 @@ fn register_dictionary(vm: &mut VM) {
         if let Some(Value::Object(obj)) = args.first() {
             let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
             let value = args.get(2).cloned().unwrap_or(Value::Null);
-            let o = obj.lock().unwrap();
-            if let Some(Value::Object(data)) = o.properties.get("__data") {
-                data.lock().unwrap().properties.insert(key, value);
-                let count = data.lock().unwrap().properties.len() as f64;
-                drop(o);
-                obj.lock().unwrap().properties.insert("count".into(), Value::F64(count));
+            let data = {
+                let o = obj.lock().unwrap();
+                match o.properties.get("__data") {
+                    Some(Value::Object(data)) => Some(data.clone()),
+                    _ => None,
+                }
+            };
+            if let Some(data) = data {
+                let count = {
+                    let mut data_obj = data.lock().unwrap();
+                    data_obj.properties.insert(key.clone(), value.clone());
+                    data_obj.properties.len() as f64
+                };
+                let mut outer = obj.lock().unwrap();
+                if !key.starts_with("__") {
+                    outer.properties.insert(key, value);
+                }
+                outer.properties.insert("count".into(), Value::F64(count));
+                outer.properties.insert("length".into(), Value::F64(count));
             }
         }
         Value::Null
@@ -445,6 +456,23 @@ fn register_dictionary(vm: &mut VM) {
         Value::Null
     }));
 
+    // Dict.TryGetValue(key[, outVal]) → value if found, null if not
+    // The second arg (out-param) is ignored — out params aren't supported yet.
+    // Returns the value directly so `found = dict.TryGetValue(key, out)` yields the value.
+    vm.register_host_fn("vybe:types", "dictTryGetValue", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+            let o = obj.lock().unwrap();
+            if let Some(Value::Object(data)) = o.properties.get("__data") {
+                return data.lock().unwrap().properties.get(&key).cloned().unwrap_or(Value::Null);
+            }
+            if let Some(val) = o.properties.get(&key) {
+                return val.clone();
+            }
+        }
+        Value::Null
+    }));
+
     // Dict.ContainsKey(key) → bool
     vm.register_host_fn("vybe:types", "dictContainsKey", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
@@ -453,6 +481,7 @@ fn register_dictionary(vm: &mut VM) {
             if let Some(Value::Object(data)) = o.properties.get("__data") {
                 return Value::Bool(data.lock().unwrap().properties.contains_key(&key));
             }
+            return Value::Bool(o.properties.contains_key(&key));
         }
         Value::Bool(false)
     }));
@@ -461,12 +490,23 @@ fn register_dictionary(vm: &mut VM) {
     vm.register_host_fn("vybe:types", "dictRemove", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
-            let o = obj.lock().unwrap();
-            if let Some(Value::Object(data)) = o.properties.get("__data") {
-                let removed = data.lock().unwrap().properties.remove(&key).is_some();
-                let count = data.lock().unwrap().properties.len() as f64;
-                drop(o);
-                obj.lock().unwrap().properties.insert("count".into(), Value::F64(count));
+            let data = {
+                let o = obj.lock().unwrap();
+                match o.properties.get("__data") {
+                    Some(Value::Object(data)) => Some(data.clone()),
+                    _ => None,
+                }
+            };
+            if let Some(data) = data {
+                let (removed, count) = {
+                    let mut data_obj = data.lock().unwrap();
+                    let removed = data_obj.properties.remove(&key).is_some();
+                    (removed, data_obj.properties.len() as f64)
+                };
+                let mut outer = obj.lock().unwrap();
+                outer.properties.remove(&key);
+                outer.properties.insert("count".into(), Value::F64(count));
+                outer.properties.insert("length".into(), Value::F64(count));
                 return Value::Bool(removed);
             }
         }
@@ -518,11 +558,19 @@ fn register_dictionary(vm: &mut VM) {
     // Dict.Clear()
     vm.register_host_fn("vybe:types", "dictClear", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
-            let o = obj.lock().unwrap();
-            if let Some(Value::Object(data)) = o.properties.get("__data") {
+            let data = {
+                let o = obj.lock().unwrap();
+                match o.properties.get("__data") {
+                    Some(Value::Object(data)) => Some(data.clone()),
+                    _ => None,
+                }
+            };
+            if let Some(data) = data {
                 data.lock().unwrap().properties.clear();
-                drop(o);
-                obj.lock().unwrap().properties.insert("count".into(), Value::F64(0.0));
+                let mut outer = obj.lock().unwrap();
+                outer.properties.retain(|k, _| k == "__type" || k == "__data" || k == "count" || k == "length");
+                outer.properties.insert("count".into(), Value::F64(0.0));
+                outer.properties.insert("length".into(), Value::F64(0.0));
             }
         }
         Value::Null
@@ -578,6 +626,11 @@ fn register_process(vm: &mut VM) {
         }
     }));
 
+    vm.register_host_fn("vybe:types", "processWaitForExit", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+        // Process.Start waits for completion before returning the Process object.
+        Value::Null
+    }));
+
     // Process constructor (bare)
     vm.register_host_fn("vybe:types", "processNew", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         let mut obj = Object::new();
@@ -592,17 +645,19 @@ fn register_process(vm: &mut VM) {
 // ============================================================
 
 fn epoch_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+    super::clock::now_secs()
 }
 
-fn make_datetime_from_epoch_secs(secs: u64) -> Value {
-    let (y, m, d, h, min, s) = decompose(secs);
+fn local_utc_offset_seconds() -> i32 {
+    Local::now().offset().local_minus_utc()
+}
+
+fn make_datetime_from_epoch_secs_with_offset(secs: u64, offset_seconds: i32) -> Value {
+    let (y, m, d, h, min, s) = decompose_with_offset(secs, offset_seconds);
     let mut obj = Object::new();
     obj.properties.insert("__type".into(), Value::String(Arc::from("DateTime")));
     obj.properties.insert("__epoch".into(), Value::F64(secs as f64));
+    obj.properties.insert("__offset_seconds".into(), Value::F64(offset_seconds as f64));
     obj.properties.insert("year".into(), Value::F64(y as f64));
     obj.properties.insert("month".into(), Value::F64(m as f64));
     obj.properties.insert("day".into(), Value::F64(d as f64));
@@ -612,15 +667,64 @@ fn make_datetime_from_epoch_secs(secs: u64) -> Value {
     Value::Object(Arc::new(Mutex::new(obj)))
 }
 
+fn make_datetime_from_parts(year: i64, month: u64, day: u64, hour: u64, min: u64, sec: u64, offset_seconds: i32) -> Value {
+    let epoch = date_to_epoch_with_offset(year, month, day, hour, min, sec, offset_seconds);
+    make_datetime_from_epoch_secs_with_offset(epoch, offset_seconds)
+}
+
+fn datetime_offset_seconds(obj: &Object) -> i32 {
+    obj.properties
+        .get("__offset_seconds")
+        .map(|v| v.as_f64() as i32)
+        .unwrap_or(0)
+}
+
 fn dt_add(args: &[Value], multiplier: f64) -> Value {
     if let Some(Value::Object(obj)) = args.first() {
         let o = obj.lock().unwrap();
         let epoch = o.properties.get("__epoch").map(|v| v.as_f64()).unwrap_or(0.0);
+        let offset_seconds = datetime_offset_seconds(&o);
         let amount = args.get(1).map(|v| v.as_f64()).unwrap_or(0.0);
         let new_epoch = (epoch + amount * multiplier) as u64;
-        return make_datetime_from_epoch_secs(new_epoch);
+        return make_datetime_from_epoch_secs_with_offset(new_epoch, offset_seconds);
     }
     Value::Null
+}
+
+fn value_to_plain_string(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.to_string(),
+        _ => format!("{}", value),
+    }
+}
+
+fn format_datetime(y: i64, m: u64, d: u64, h: u64, min: u64, s: u64, fmt: Option<&str>) -> String {
+    match fmt.unwrap_or("") {
+        "" => format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, m, d, h, min, s),
+        "d" => format!("{:02}/{:02}/{:04}", m, d, y),
+        "t" => format!("{:02}:{:02}", h, min),
+        spec => {
+            let hour12 = match h % 12 {
+                0 => 12,
+                v => v,
+            };
+            let am_pm = if h < 12 { "AM" } else { "PM" };
+            let mut rendered = spec.to_string();
+            for (token, replacement) in [
+                ("yyyy", format!("{:04}", y)),
+                ("MM", format!("{:02}", m)),
+                ("dd", format!("{:02}", d)),
+                ("HH", format!("{:02}", h)),
+                ("hh", format!("{:02}", hour12)),
+                ("mm", format!("{:02}", min)),
+                ("ss", format!("{:02}", s)),
+                ("tt", am_pm.to_string()),
+            ] {
+                rendered = rendered.replace(token, &replacement);
+            }
+            rendered
+        }
+    }
 }
 
 fn decompose(total_secs: u64) -> (i64, u64, u64, u64, u64, u64) {
@@ -648,6 +752,15 @@ fn decompose(total_secs: u64) -> (i64, u64, u64, u64, u64, u64) {
     (y, m, (rem + 1) as u64, h, min, s)
 }
 
+fn decompose_with_offset(total_secs: u64, offset_seconds: i32) -> (i64, u64, u64, u64, u64, u64) {
+    let shifted = if offset_seconds >= 0 {
+        total_secs.saturating_add(offset_seconds as u64)
+    } else {
+        total_secs.saturating_sub((-offset_seconds) as u64)
+    };
+    decompose(shifted)
+}
+
 fn date_to_epoch(year: i64, month: u64, day: u64, hour: u64, min: u64, sec: u64) -> u64 {
     let mut days: i64 = 0;
     for y in 1970..year {
@@ -660,6 +773,11 @@ fn date_to_epoch(year: i64, month: u64, day: u64, hour: u64, min: u64, sec: u64)
     }
     days += day.saturating_sub(1) as i64;
     (days as u64) * 86400 + hour * 3600 + min * 60 + sec
+}
+
+fn date_to_epoch_with_offset(year: i64, month: u64, day: u64, hour: u64, min: u64, sec: u64, offset_seconds: i32) -> u64 {
+    let base_epoch = date_to_epoch(year, month, day, hour, min, sec) as i128;
+    (base_epoch - offset_seconds as i128).max(0) as u64
 }
 
 // ============================================================
@@ -704,6 +822,23 @@ fn register_queue_stack(vm: &mut VM) {
             let o = obj.lock().unwrap();
             if let ObjectKind::Array(ref elems) = o.kind {
                 return elems.first().cloned().unwrap_or(Value::Null);
+            }
+        }
+        Value::Null
+    }));
+
+    vm.register_host_fn("vybe:types", "collectionPeek", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.lock().unwrap();
+            let is_stack = o.properties.get("__type")
+                .and_then(|v| if let Value::String(s) = v { Some(s.as_ref() == "Stack") } else { None })
+                .unwrap_or(false);
+            if let ObjectKind::Array(ref elems) = o.kind {
+                return if is_stack {
+                    elems.last().cloned().unwrap_or(Value::Null)
+                } else {
+                    elems.first().cloned().unwrap_or(Value::Null)
+                };
             }
         }
         Value::Null

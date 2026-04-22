@@ -28,6 +28,13 @@ pub fn register(vm: &mut VM) {
     let sys_dir = ensure_namespace(vm, &["System", "IO", "Directory"]);
     register_directory_methods(vm, &sys_dir);
 
+    // System.IO.StreamReader / StreamWriter
+    let sys_reader = ensure_namespace(vm, &["System", "IO", "StreamReader"]);
+    set_prop(&sys_reader, "new", host_fn_ref(vm, "dotnet:io", "streamReaderNew"));
+
+    let sys_writer = ensure_namespace(vm, &["System", "IO", "StreamWriter"]);
+    set_prop(&sys_writer, "new", host_fn_ref(vm, "dotnet:io", "streamWriterNew"));
+
     // Path (direct shortcut)
     let path = ensure_namespace(vm, &["Path"]);
     set_prop(&path, "combine", host_fn_ref(vm, "wasi:filesystem", "pathCombine"));
@@ -43,6 +50,8 @@ pub fn register(vm: &mut VM) {
     let io = ensure_namespace(vm, &["IO"]);
     set_prop(&io, "file", ensure_namespace(vm, &["File"]));
     set_prop(&io, "path", ensure_namespace(vm, &["Path"]));
+    set_prop(&io, "streamreader", sys_reader);
+    set_prop(&io, "streamwriter", sys_writer);
 }
 
 fn register_file_methods(vm: &VM, ns: &Value) {

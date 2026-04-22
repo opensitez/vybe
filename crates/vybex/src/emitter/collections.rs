@@ -185,6 +185,29 @@ pub fn emit_sort(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_import_call(chunks, current, "wasm:js-array", "sort", 1, line);
 }
 
+/// Array lastIndexOf. Stack: [array, value] → [i32] via `wasm:js-array.lastIndexOf`.
+pub fn emit_last_index_of(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_import_call(chunks, current, "wasm:js-array", "lastIndexOf", 2, line);
+}
+
+/// Array removeAt (splice). Stack: [array, index] → [null].
+/// splice(arr, index, 1) — deletes 1 element at index.
+pub fn emit_remove_at(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(Op::I32_CONST_1, line);
+    emit_import_call(chunks, current, "wasm:js-array", "splice", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+/// Array insert. Stack: [array, index, deleteCount=0, value] → [null].
+/// Caller must push 0 as deleteCount before value.
+/// splice(arr, index, 0, value) — inserts value at index.
+pub fn emit_insert(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_import_call(chunks, current, "wasm:js-array", "splice", 4, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
 /// Pack N consecutive stack values into a new array (was the
 /// `ARRAY_NEW_FIXED N` opcode). Stack: [v0, v1, …, v(N-1)] → [array].
 ///

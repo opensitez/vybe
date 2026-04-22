@@ -21,13 +21,13 @@ pub fn register(vm: &mut VM) {
 
     // System.Diagnostics.Stopwatch
     let sw = ensure_namespace(vm, &["System", "Diagnostics", "Stopwatch"]);
-    set_prop(&sw, "startnew", host_fn_ref(vm, "vybe:threading", "stopwatchNew"));
-    set_prop(&sw, "new", host_fn_ref(vm, "vybe:threading", "stopwatchNew"));
+    set_prop(&sw, "startnew", host_fn_ref(vm, "wasi:clocks", "stopwatchNew"));
+    set_prop(&sw, "new", host_fn_ref(vm, "wasi:clocks", "stopwatchNew"));
 
     // Bare Stopwatch alias
     let sw_bare = ensure_namespace(vm, &["Stopwatch"]);
-    set_prop(&sw_bare, "startnew", host_fn_ref(vm, "vybe:threading", "stopwatchNew"));
-    set_prop(&sw_bare, "new", host_fn_ref(vm, "vybe:threading", "stopwatchNew"));
+    set_prop(&sw_bare, "startnew", host_fn_ref(vm, "wasi:clocks", "stopwatchNew"));
+    set_prop(&sw_bare, "new", host_fn_ref(vm, "wasi:clocks", "stopwatchNew"));
 
     // System.Diagnostics.Debug / Trace (no-op stubs)
     let debug = ensure_namespace(vm, &["System", "Diagnostics", "Debug"]);

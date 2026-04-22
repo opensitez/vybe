@@ -158,6 +158,17 @@ pub struct NamespaceConfig {
     /// When true, the compiler uses dotnet::namespace_roots(), dotnet::default_interface_imports(),
     /// dotnet::resolve_dotted_name(), etc. — the full .NET resolution pipeline.
     pub use_dotnet: bool,
+    /// When true, uses the shared .NET dotted-name resolver
+    /// (`resolve_dotted_name`) for `Foo.Bar(...)` call sites. VB
+    /// needs this because `Thread.Sleep` / `String.Format` etc. must
+    /// route to host imports. C# generally doesn't — the default
+    /// member-call path handles static dispatch on user classes and
+    /// the dotnet-class ctor path handles `new Form()`-style uses.
+    /// Splitting this flag from `use_dotnet` lets C# install Form /
+    /// Button / Point / Size as callable globals **without** pulling
+    /// the eager import-prefix fallback that mis-routes user static
+    /// calls (`MathUtils.Fact(5)` → `system.mathutils.fact`).
+    pub use_dotnet_resolver: bool,
     /// Additional imports beyond the defaults (e.g. "microsoft.visualbasic" for VB).
     pub extra_imports: Vec<String>,
     /// Known namespace roots (used when use_dotnet is false).
@@ -254,7 +265,6 @@ impl LanguageProfile {
         let key = if self.case_sensitive { name.to_string() } else { name.to_lowercase() };
         let overloads = self.value_methods.get(&key)?;
         overloads.iter().find(|d| argc >= d.min_args && argc <= d.max_args)
-            .or_else(|| overloads.first()) // fallback: first overload if no arity match
     }
 
     /// Check if a value method exists by name (any arity).
@@ -446,6 +456,12 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
     let namespaces = if let Some(ns) = root.get("namespaces") {
         NamespaceConfig {
             use_dotnet: ns.get("use_dotnet").and_then(|v| v.as_bool()).unwrap_or(false),
+            use_dotnet_resolver: ns.get("use_dotnet_resolver").and_then(|v| v.as_bool())
+                // Default: the resolver is on whenever `use_dotnet` is —
+                // that's how VB works today. Languages that want the
+                // class registration but NOT the eager dotted-name
+                // rewrite (C#) can override to `false`.
+                .unwrap_or_else(|| ns.get("use_dotnet").and_then(|v| v.as_bool()).unwrap_or(false)),
             extra_imports: ns.get("extra_imports").and_then(|v| v.as_array())
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
                 .unwrap_or_default(),

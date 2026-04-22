@@ -16,126 +16,75 @@
 //! `compiler_common::gui::canonical_control_name` so the canonical naming
 //! lives in one place across all framework frontends.
 
+use std::sync::LazyLock;
+
+/// Static `.NET` class member routed to a host function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DotnetStaticMethodMapping {
+    pub interface: &'static str,
+    pub type_name: &'static str,
+    pub method_name: &'static str,
+    pub host_module: &'static str,
+    pub host_fn: &'static str,
+    pub arity: u8,
+}
+
+impl DotnetStaticMethodMapping {
+    fn matches_legacy_func(&self, module: &str, func: &str) -> bool {
+        if self.host_module != module {
+            return false;
+        }
+
+        let bare = self.method_name.to_lowercase();
+        let qualified = format!("{}.{}", self.type_name.to_lowercase(), bare);
+        func == bare || func == qualified
+    }
+}
+
+static STATIC_METHOD_MAPPINGS: LazyLock<Vec<DotnetStaticMethodMapping>> = LazyLock::new(|| {
+    super::core::static_method_mappings()
+        .iter()
+        .chain(super::winforms::static_method_mappings())
+        .copied()
+        .collect()
+});
+
+pub fn static_method_mappings() -> &'static [DotnetStaticMethodMapping] {
+    STATIC_METHOD_MAPPINGS.as_slice()
+}
+
 /// Map a .NET namespace prefix (lowercased, dot-separated) to the Vybe host
 /// module name. Returns the prefix itself if no explicit mapping exists.
 pub fn namespace_to_host_module<'a>(prefix: &'a str) -> &'a str {
-    match prefix {
-        "system.console" => "wasi:cli",
-        "system.math" => "vybe:math",
-        "system.convert" => "vybe:convert",
-        "system.string" => "vybe:string",
-        "system.array" => "vybe:array",
-        "system.environment" => "wasi:cli",
-        // IO
-        "system.io" | "system.io.file" | "system.io.path" | "system.io.directory" => "wasi:filesystem",
-        // Threading
-        "system.threading.thread" => "wasi:clocks",
-        "system.threading" | "system.threading.tasks" => "vybe:threading",
-        // Diagnostics
-        "system.diagnostics.process" => "vybe:types",
-        "system.diagnostics.stopwatch" => "vybe:threading",
-        "system.diagnostics.debug" | "system.diagnostics.trace" | "system.diagnostics" => "wasi:cli",
-        // Net
-        "system.net" => "wasi:http",
-        "system.net.sockets" => "vybe:net",
-        // Text
-        "system.text.regularexpressions" => "vybe:regex",
-        "system.text" => "vybe:string",
-        // Collections
-        "system.collections.generic" | "system.collections" => "vybe:types",
-        // Data
-        "system.data" | "system.data.sqlclient" | "system.data.oledb" => "vybe:data",
-        // Security
-        "system.security.cryptography" => "vybe:crypto",
-        // XML
-        "system.xml.linq" => "vybe:xml",
-        // Drawing
-        "system.drawing" => "vybe:drawing",
-        // WinForms
-        "system.windows.forms" => "vybe:gui",
-        "application" => "vybe:gui",
-        // VB-specific
-        "microsoft.visualbasic" => "vybe:string",
-        // Fallback
-        _ => prefix,
-    }
+    super::core::namespace_to_host_module(prefix)
+        .or_else(|| super::winforms::namespace_to_host_module(prefix))
+        .unwrap_or(prefix)
 }
 
 /// Map a (host_module, dotnet_method_name) pair to the actual host function
 /// name registered in the VM. Both inputs should already be lowercased.
 pub fn map_host_func(module: &str, func: &str) -> String {
+    if let Some(mapping) = static_method_mappings()
+        .iter()
+        .find(|mapping| mapping.matches_legacy_func(module, func))
+    {
+        return mapping.host_fn.to_string();
+    }
+
     match (module, func) {
-        // ── Console ──
-        ("wasi:cli", "writeline") => "log".into(),
-        ("wasi:cli", "write") => "log".into(),
-        ("wasi:cli", "readline") => "readLine".into(),
-        ("wasi:cli", "error") => "error".into(),
-        ("wasi:cli", "print") => "log".into(),
-        ("wasi:cli", "assert") => "log".into(),
+        _ => super::core::map_host_func(module, func)
+            .or_else(|| super::winforms::map_host_func(module, func))
+            .unwrap_or_else(|| func.to_string()),
+    }
+}
 
-        // ── Math ──
-        ("vybe:math", f) => f.to_string(),
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        // ── Filesystem ──
-        ("wasi:filesystem", "readalltext") => "readFile".into(),
-        ("wasi:filesystem", "writealltext") => "writeFile".into(),
-        ("wasi:filesystem", "appendalltext") => "appendFile".into(),
-        ("wasi:filesystem", "exists") => "exists".into(),
-        ("wasi:filesystem", "delete") => "remove".into(),
-        ("wasi:filesystem", "copy") => "copy".into(),
-        ("wasi:filesystem", "move") => "rename".into(),
-        ("wasi:filesystem", "combine") => "pathCombine".into(),
-        ("wasi:filesystem", "getfilename") => "pathGetFileName".into(),
-        ("wasi:filesystem", "getextension") => "pathGetExtension".into(),
-        ("wasi:filesystem", "getdirectoryname") => "pathGetDirectory".into(),
-        ("wasi:filesystem", "getfilenamewithoutextension") => "pathGetFileNameWithoutExt".into(),
-        ("wasi:filesystem", "changeextension") => "pathChangeExtension".into(),
-        ("wasi:filesystem", "getfullpath") => "pathGetFullPath".into(),
-        ("wasi:filesystem", "gettemppath") => "pathGetTempPath".into(),
-        ("wasi:filesystem", "createdirectory") => "mkdir".into(),
-        ("wasi:filesystem", "getfiles") => "listDir".into(),
-        ("wasi:filesystem", "getcurrentdirectory") => "cwd".into(),
-
-        // ── Convert ──
-        ("vybe:convert", "toint32") => "cint".into(),
-        ("vybe:convert", "todouble") => "cdbl".into(),
-        ("vybe:convert", "tostring") => "toString".into(),
-        ("vybe:convert", "toboolean") => "cbool".into(),
-        ("vybe:convert", "todatetime") => "toString".into(),
-
-        // ── Environment ──
-        ("wasi:cli", "getenvironmentvariable") => "getEnv".into(),
-        ("wasi:cli", "machinename") => "machineName".into(),
-        ("wasi:cli", "currentdirectory") => "cwd".into(),
-
-        // ── Threading ──
-        ("wasi:clocks", "sleep") => "sleep".into(),
-
-        // ── Diagnostics - Process ──
-        ("vybe:types", "start") => "processStart".into(),
-        ("vybe:types", "getcurrentprocess") => "processGetCurrent".into(),
-
-        // ── Diagnostics - Stopwatch ──
-        ("vybe:threading", "startnew") => "stopwatchNew".into(),
-
-        // ── GUI / WinForms ──
-        // The .NET surface uses Application.Run / Application.Exit, but the
-        // canonical host fn names live in `compiler_common::gui`. Frontends
-        // that aren't .NET-shaped (Tkinter `mainloop`, Flutter `runApp`, etc.)
-        // will resolve to the SAME host fn names through their own frontend.
-        ("vybe:gui", "application.run") => crate::emitter::gui::HOST_FN_RUN_APPLICATION.into(),
-        ("vybe:gui", "run") => crate::emitter::gui::HOST_FN_RUN_APPLICATION.into(),
-        ("vybe:gui", "exit") => crate::emitter::gui::HOST_FN_APP_EXIT.into(),
-        ("vybe:gui", f) => {
-            let canonical = crate::emitter::gui::canonical_control_name(f);
-            if !canonical.is_empty() && canonical != f {
-                crate::emitter::gui::host_fn_new_control(&canonical)
-            } else {
-                f.to_string()
-            }
-        }
-
-        // ── Default: pass through ──
-        (_, f) => f.to_string(),
+    #[test]
+    fn test_static_method_mappings_merge_core_and_winforms() {
+        assert!(static_method_mappings().iter().any(|mapping| mapping.type_name == "Console"));
+        assert!(static_method_mappings().iter().any(|mapping| mapping.type_name == "Application"));
     }
 }

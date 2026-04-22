@@ -1,8 +1,8 @@
 //! Register the `.NET` BCL class wrappers against the user's compiler.
 //!
-//! Walks `compiler_common::dotnet::classes::dotnet_classes()` in declared
-//! order (which is also inheritance order — `Object` first, leaves last)
-//! and, for each class:
+//! Walks `compiler_common::dotnet::class_exports::dotnet_class_exports()`
+//! in declared order (which is also inheritance order — `Object` first,
+//! leaves last) and, for each wrapper-backed class:
 //!
 //! 1. Adds `vybe:gui::controlSetProperty` to `chunks[0]` imports (once,
 //!    deduped by `add_import`).
@@ -28,7 +28,8 @@
 
 use crate::compiler::Compiler;
 use crate::emitter as common;
-use common::dotnet::classes::{dotnet_classes, builder, DotnetClass, MethodTarget};
+use common::dotnet::class_exports::dotnet_class_exports;
+use common::dotnet::classes::{builder, DotnetClass, MethodTarget};
 use common::dotnet::classes::builder::{SetterBinding, MethodBinding};
 
 impl Compiler {
@@ -41,9 +42,24 @@ impl Compiler {
         // calling it before each setter is safe.
         let set_prop_idx = self.chunks_mut()[0]
             .add_import(common::gui::GUI_MODULE, common::gui::HOST_FN_SET_PROPERTY);
+        let get_prop_idx = self.chunks_mut()[0]
+            .add_import(common::gui::GUI_MODULE, common::gui::HOST_FN_GET_PROPERTY);
+        let new_controls_collection_idx = self.chunks_mut()[0]
+            .add_import(common::gui::GUI_MODULE, common::gui::HOST_FN_NEW_CONTROLS_COLLECTION);
+        let new_components_collection_idx = self.chunks_mut()[0]
+            .add_import(common::gui::GUI_MODULE, common::gui::HOST_FN_NEW_COMPONENTS_COLLECTION);
 
-        for class in dotnet_classes() {
-            self.register_one_dotnet_class(class, set_prop_idx)?;
+        for export in dotnet_class_exports() {
+            let Some(class) = export.wrapper.as_ref() else {
+                continue;
+            };
+            self.register_one_dotnet_class(
+                class,
+                set_prop_idx,
+                get_prop_idx,
+                new_controls_collection_idx,
+                new_components_collection_idx,
+            )?;
         }
 
         Ok(())
@@ -53,9 +69,14 @@ impl Compiler {
         &mut self,
         class: &DotnetClass,
         set_prop_idx: u16,
+        get_prop_idx: u16,
+        new_controls_collection_idx: u16,
+        new_components_collection_idx: u16,
     ) -> Result<(), String> {
         // ── Step 1: build & push setter chunks for this class's properties ──
         let mut setter_bindings: Vec<SetterBinding<'static>> =
+            Vec::with_capacity(class.properties.len());
+        let mut getter_bindings: Vec<builder::GetterBinding<'static>> =
             Vec::with_capacity(class.properties.len());
         for prop in class.properties {
             let setter_chunk = builder::build_setter_chunk(class.name, prop, set_prop_idx);
@@ -64,6 +85,14 @@ impl Compiler {
             setter_bindings.push(SetterBinding {
                 prop_pascal: *prop,
                 setter_chunk_idx: setter_idx,
+            });
+
+            let getter_chunk = builder::build_getter_chunk(class.name, prop, get_prop_idx);
+            self.chunks_mut().push(getter_chunk);
+            let getter_idx = self.chunks_mut().len() - 1;
+            getter_bindings.push(builder::GetterBinding {
+                prop_pascal: *prop,
+                getter_chunk_idx: getter_idx,
             });
         }
 
@@ -127,8 +156,11 @@ impl Compiler {
         let ctor_chunk = builder::build_constructor_chunk(
             class,
             &setter_bindings,
+            &getter_bindings,
             &method_bindings,
             widget_new_idx,
+            new_controls_collection_idx,
+            new_components_collection_idx,
         );
         self.chunks_mut().push(ctor_chunk);
         let ctor_idx = self.chunks_mut().len() - 1;

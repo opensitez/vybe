@@ -33,6 +33,11 @@ pub fn register(vm: &mut VM) {
             if type_str == "List" {
                 return dispatch_list(ctx, &obj, &method, call_args);
             }
+
+            // .NET Dictionary methods
+            if type_str == "Dictionary" {
+                return dispatch_dictionary(&obj, &method, call_args);
+            }
         }
 
         // Not a builtin collection — return Undefined (caller falls through to regular method call)
@@ -548,6 +553,128 @@ fn dispatch_map(obj: &Value, method: &str, args: &[Value]) -> Value {
             drop(ob);
             o.lock().unwrap().properties.insert("size".into(), Value::F64(0.0));
             obj.clone()
+        }
+        _ => Value::Null,
+    }
+}
+
+fn dispatch_dictionary(obj: &Value, method: &str, args: &[Value]) -> Value {
+    let o = match obj { Value::Object(o) => o, _ => return Value::Null };
+
+    match method {
+        "Add" | "add" => {
+            let key = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+            let value = args.get(1).cloned().unwrap_or(Value::Null);
+            let data = {
+                let ob = o.lock().unwrap();
+                match ob.properties.get("__data") {
+                    Some(Value::Object(data)) => Some(data.clone()),
+                    _ => None,
+                }
+            };
+            if let Some(data) = data {
+                let count = {
+                    let mut data_obj = data.lock().unwrap();
+                    data_obj.properties.insert(key.clone(), value.clone());
+                    data_obj.properties.len() as f64
+                };
+                let mut ob = o.lock().unwrap();
+                if !key.starts_with("__") {
+                    ob.properties.insert(key, value);
+                }
+                ob.properties.insert("count".into(), Value::F64(count));
+                ob.properties.insert("length".into(), Value::F64(count));
+            }
+            Value::Null
+        }
+        "Item" | "item" | "get_Item" => {
+            let key = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+            let ob = o.lock().unwrap();
+            if let Some(Value::Object(data)) = ob.properties.get("__data") {
+                return data.lock().unwrap().properties.get(&key).cloned().unwrap_or(Value::Null);
+            }
+            ob.properties.get(&key).cloned().unwrap_or(Value::Null)
+        }
+        "ContainsKey" | "containskey" => {
+            let key = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+            let ob = o.lock().unwrap();
+            if let Some(Value::Object(data)) = ob.properties.get("__data") {
+                return Value::Bool(data.lock().unwrap().properties.contains_key(&key));
+            }
+            Value::Bool(ob.properties.contains_key(&key))
+        }
+        "Remove" | "remove" => {
+            let key = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+            let data = {
+                let ob = o.lock().unwrap();
+                match ob.properties.get("__data") {
+                    Some(Value::Object(data)) => Some(data.clone()),
+                    _ => None,
+                }
+            };
+            if let Some(data) = data {
+                let (removed, count) = {
+                    let mut data_obj = data.lock().unwrap();
+                    let removed = data_obj.properties.remove(&key).is_some();
+                    (removed, data_obj.properties.len() as f64)
+                };
+                let mut ob = o.lock().unwrap();
+                ob.properties.remove(&key);
+                ob.properties.insert("count".into(), Value::F64(count));
+                ob.properties.insert("length".into(), Value::F64(count));
+                return Value::Bool(removed);
+            }
+            Value::Bool(false)
+        }
+        "Keys" | "keys" => {
+            let ob = o.lock().unwrap();
+            if let Some(Value::Object(data)) = ob.properties.get("__data") {
+                let keys: Vec<Value> = data.lock().unwrap().properties.keys()
+                    .map(|k| Value::String(Arc::from(k.as_str())))
+                    .collect();
+                return Value::Object(Arc::new(Mutex::new(Object::new_array(keys))));
+            }
+            Value::Object(Arc::new(Mutex::new(Object::new_array(vec![]))))
+        }
+        "Values" | "values" => {
+            let ob = o.lock().unwrap();
+            if let Some(Value::Object(data)) = ob.properties.get("__data") {
+                let vals: Vec<Value> = data.lock().unwrap().properties.values().cloned().collect();
+                return Value::Object(Arc::new(Mutex::new(Object::new_array(vals))));
+            }
+            Value::Object(Arc::new(Mutex::new(Object::new_array(vec![]))))
+        }
+        "Clear" | "clear" => {
+            let data = {
+                let ob = o.lock().unwrap();
+                match ob.properties.get("__data") {
+                    Some(Value::Object(data)) => Some(data.clone()),
+                    _ => None,
+                }
+            };
+            if let Some(data) = data {
+                data.lock().unwrap().properties.clear();
+                let mut ob = o.lock().unwrap();
+                ob.properties.retain(|k, _| k == "__type" || k == "__data" || k == "count" || k == "length");
+                ob.properties.insert("count".into(), Value::F64(0.0));
+                ob.properties.insert("length".into(), Value::F64(0.0));
+            }
+            Value::Null
+        }
+        "Count" | "count" => {
+            let ob = o.lock().unwrap();
+            if let Some(Value::Object(data)) = ob.properties.get("__data") {
+                return Value::F64(data.lock().unwrap().properties.len() as f64);
+            }
+            ob.properties.get("count").cloned().unwrap_or(Value::F64(0.0))
+        }
+        "TryGetValue" | "trygetvalue" => {
+            let key = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+            let ob = o.lock().unwrap();
+            if let Some(Value::Object(data)) = ob.properties.get("__data") {
+                return data.lock().unwrap().properties.get(&key).cloned().unwrap_or(Value::Null);
+            }
+            ob.properties.get(&key).cloned().unwrap_or(Value::Null)
         }
         _ => Value::Null,
     }

@@ -12,6 +12,7 @@
 
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use vybe_host::GuiState;
 
@@ -258,6 +259,9 @@ impl Application for FormApp {
     }
 
     fn handle_mouse(&mut self, event: MouseEvent) -> bool {
+        if Self::gui_trace_enabled() {
+            eprintln!("[gui] formapp.handle_mouse event={:?}", event);
+        }
         self.gui.lock().unwrap().form.handle_mouse(&event);
         self.process_widget_events();
         true
@@ -281,6 +285,12 @@ impl Application for FormApp {
 // ── VM glue ────────────────────────────────────────────────────────────
 
 impl FormApp {
+    fn gui_trace_enabled() -> bool {
+        std::env::var("VYBE_GUI_TRACE")
+            .map(|value| !matches!(value.as_str(), "" | "0" | "false" | "False"))
+            .unwrap_or(false)
+    }
+
     fn fire_load_event(&mut self) {
         let callback = {
             let g = self.gui.lock().unwrap();
@@ -300,16 +310,24 @@ impl FormApp {
             if let Err(e) = result {
                 eprintln!("[LOAD] Error: {e}");
             }
-            drop(vm);
-            self.sync_widgets_from_vm();
         }
     }
 
     fn fire_click(&mut self, control_name: &str) {
         let callback = {
             let g = self.gui.lock().unwrap();
+            if Self::gui_trace_enabled() {
+                eprintln!(
+                    "[gui] fire_click control={} keys={:?}",
+                    control_name,
+                    g.event_keys()
+                );
+            }
             g.get_event_handler(&control_name.to_lowercase(), "Click").cloned()
         };
+        if Self::gui_trace_enabled() {
+            eprintln!("[gui] fire_click found={}", callback.is_some());
+        }
         if let Some(cb) = callback {
             self.invoke_callback(&cb, control_name);
         }
@@ -321,6 +339,14 @@ impl FormApp {
             .unwrap_or(vybe_bytecode::Value::Null);
         let arity = fn_arity(cb);
         let sender = vybe_bytecode::Value::String(Arc::from(control_name));
+        if Self::gui_trace_enabled() {
+            eprintln!(
+                "[gui] invoke_callback control={} arity={} me_type={}",
+                control_name,
+                arity,
+                me.type_tag()
+            );
+        }
         let result = match arity {
             0 => vm.invoke(cb, &[]),
             1 => vm.invoke(cb, &[me]),
@@ -329,29 +355,63 @@ impl FormApp {
         };
         if let Err(e) = result {
             eprintln!("Event handler error: {e}");
+        } else if Self::gui_trace_enabled() {
+            eprintln!("[gui] invoke_callback ok");
+            if let Some(vybe_bytecode::Value::Object(form_obj)) = vm.globals.get("__f") {
+                let form = form_obj.lock().unwrap();
+                let keys: Vec<String> = form.properties.keys().cloned().collect();
+                let txtcalc_text = form.properties.get("txtcalc").and_then(|value| {
+                    if let vybe_bytecode::Value::Object(control_obj) = value {
+                        let control = control_obj.lock().unwrap();
+                        control.properties.get("text").map(|text| format!("{}", text))
+                    } else {
+                        None
+                    }
+                });
+                let txtdisplay_text = form.properties.get("txtdisplay").and_then(|value| {
+                    if let vybe_bytecode::Value::Object(control_obj) = value {
+                        let control = control_obj.lock().unwrap();
+                        control.properties.get("text").map(|text| format!("{}", text))
+                    } else {
+                        None
+                    }
+                });
+                eprintln!(
+                    "[gui] post_callback form_keys={:?} txtcalc.text={:?} txtdisplay.text={:?}",
+                    keys,
+                    txtcalc_text,
+                    txtdisplay_text,
+                );
+            }
         }
         drop(vm);
-        self.sync_widgets_from_vm();
     }
 
     fn sync_widgets_from_vm(&mut self) {
         let updates = {
             let vm = self.vm.borrow();
-            let g = self.gui.lock().unwrap();
             let mut ups: Vec<(String, String)> = Vec::new();
             if let Some(vybe_bytecode::Value::Object(form_obj)) = vm.globals.get("__f") {
                 let fo = form_obj.lock().unwrap();
-                for ctrl_name in &g.control_names {
-                    if let Some(vybe_bytecode::Value::Object(co)) = fo.properties.get(ctrl_name) {
-                        let c = co.lock().unwrap();
-                        if let Some(text) = c.properties.get("text") {
-                            ups.push((ctrl_name.clone(), format!("{}", text)));
+                for (field_name, value) in &fo.properties {
+                    if let vybe_bytecode::Value::Object(control_obj) = value {
+                        let control = control_obj.lock().unwrap();
+                        let control_name = control.properties.get("__control_name")
+                            .or_else(|| control.properties.get("name"))
+                            .map(|v| format!("{}", v).to_lowercase())
+                            .filter(|name| !name.is_empty())
+                            .unwrap_or_else(|| field_name.to_lowercase());
+                        if let Some(text) = control.properties.get("text") {
+                            ups.push((control_name, format!("{}", text)));
                         }
                     }
                 }
             }
             ups
         };
+        if Self::gui_trace_enabled() && !updates.is_empty() {
+            eprintln!("[gui] sync_widgets_from_vm updates={:?}", updates);
+        }
         if !updates.is_empty() {
             let mut g = self.gui.lock().unwrap();
             for (name, text) in updates {
@@ -362,6 +422,9 @@ impl FormApp {
 
     fn process_widget_events(&mut self) {
         let events = self.gui.lock().unwrap().form.drain_events();
+        if Self::gui_trace_enabled() && !events.is_empty() {
+            eprintln!("[gui] process_widget_events events={:?}", events);
+        }
         for event in events {
             match &event {
                 WidgetEvent::ButtonClicked(name) |
@@ -786,5 +849,300 @@ pub fn launch_vm_form(
         } else {
             launch_gui(vm, gui);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::projects;
+    use super::*;
+    use crate::compiler::Compiler;
+    use crate::languages::vb;
+    use crate::profile::parse_profile;
+    use std::sync::{Arc, Mutex};
+    use vybe_bytecode::value::ObjectKind;
+    use vybe_bytecode::{HostContext, Value, VM};
+    use vybe_host::gui_state::GuiState;
+    use vybe_widgets::layout::{MouseButton, MouseEvent, MouseEventKind};
+
+    fn run_vb_gui(src: &str) -> (VM, Arc<Mutex<GuiState>>) {
+        let module = vb::parse(src).expect("VB parse failed");
+        let profile = parse_profile(vb::profile_source()).expect("Failed to parse VB profile");
+        let chunks = Compiler::with_profile(profile)
+            .compile(&module)
+            .expect("VB compile failed");
+
+        let mut vm = VM::new();
+        let gui = vybe_host::register_all_with_gui(&mut vm);
+        vm.register_host_fn("wasi:cli", "log", Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null));
+        vybe_host::setup_namespaces(&mut vm);
+        vm.run(chunks).expect("VB run failed");
+        (vm, gui)
+    }
+
+    fn run_bundle_gui(path: &str) -> (VM, Arc<Mutex<GuiState>>) {
+        let bundle = projects::load(std::path::Path::new(path)).expect("project load failed");
+        let chunks = bundle.compile().expect("project compile failed");
+
+        let mut vm = VM::new();
+        let gui = vybe_host::register_all_with_gui(&mut vm);
+        vm.register_host_fn("wasi:cli", "log", Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null));
+        vybe_host::setup_namespaces(&mut vm);
+        vm.run(chunks).expect("project run failed");
+        (vm, gui)
+    }
+
+    fn control_widget_name(form: &Value, field_name: &str) -> String {
+        match form {
+            Value::Object(form_obj) => {
+                let form_guard = form_obj.lock().unwrap();
+                match form_guard.properties.get(field_name) {
+                    Some(Value::Object(control_obj)) => {
+                        let control_guard = control_obj.lock().unwrap();
+                        control_guard.properties.get("__control_name")
+                            .or_else(|| control_guard.properties.get("name"))
+                            .map(|value| format!("{}", value).to_lowercase())
+                            .unwrap_or_else(|| field_name.to_string())
+                    }
+                    _ => field_name.to_string(),
+                }
+            }
+            _ => field_name.to_string(),
+        }
+    }
+
+    fn collection_count(value: &Value) -> usize {
+        match value {
+            Value::Object(obj) => {
+                let obj = obj.lock().unwrap();
+                match &obj.kind {
+                    ObjectKind::Array(items) => items.len(),
+                    _ => 0,
+                }
+            }
+            _ => 0,
+        }
+    }
+
+    fn collection_contains(collection: &Value, needle: &Value) -> bool {
+        match collection {
+            Value::Object(obj) => {
+                let obj = obj.lock().unwrap();
+                match &obj.kind {
+                    ObjectKind::Array(items) => items.iter().any(|item| item.eq(needle)),
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn simulated_button_click_updates_display() {
+        let source = std::fs::read_to_string(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/vb/calculator.vb"),
+        )
+        .expect("calculator source");
+
+        let (mut vm, gui) = run_vb_gui(&source);
+        if let Some(form_obj) = gui.lock().unwrap().form_object.clone() {
+            vm.globals.insert("__f".into(), form_obj);
+        }
+
+        let mut app = FormApp {
+            font_system: FontSystem::new(),
+            swash_cache: SwashCache::new(),
+            vm: Rc::new(RefCell::new(vm)),
+            gui: gui.clone(),
+            data_bindings: Vec::new(),
+            binding_sources: Vec::new(),
+            navigators: Vec::new(),
+            data_store: std::collections::HashMap::new(),
+            initialised: false,
+        };
+
+        app.on_init(300.0, 400.0, 1.0);
+
+        let press = MouseEvent {
+            x: 20.0,
+            y: 70.0,
+            kind: MouseEventKind::Press(MouseButton::Left),
+            cmd: false,
+            shift: false,
+            alt: false,
+        };
+        let release = MouseEvent {
+            x: 20.0,
+            y: 70.0,
+            kind: MouseEventKind::Release(MouseButton::Left),
+            cmd: false,
+            shift: false,
+            alt: false,
+        };
+
+        assert!(app.handle_mouse(press));
+        assert!(app.handle_mouse(release));
+
+        let form = app.vm.borrow().globals.get("__f").cloned().expect("__f global");
+        let display_name = control_widget_name(&form, "txtdisplay");
+        let display_text = {
+            let mut guard = gui.lock().unwrap();
+            match guard.form.send_command(&display_name, &WidgetCommand::GetText) {
+                CommandValue::Text(text) => text,
+                other => panic!("Expected txtdisplay widget text, got {:?}", other),
+            }
+        };
+
+        assert_eq!(display_text, "7");
+    }
+
+    #[test]
+    fn simulated_project_button_click_updates_widget_text() {
+        let (mut vm, gui) = run_bundle_gui(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/vb/calc/Calculator.vbproj"),
+        );
+        if let Some(form_obj) = gui.lock().unwrap().form_object.clone() {
+            vm.globals.insert("__f".into(), form_obj);
+        }
+
+        let mut app = FormApp {
+            font_system: FontSystem::new(),
+            swash_cache: SwashCache::new(),
+            vm: Rc::new(RefCell::new(vm)),
+            gui: gui.clone(),
+            data_bindings: Vec::new(),
+            binding_sources: Vec::new(),
+            navigators: Vec::new(),
+            data_store: std::collections::HashMap::new(),
+            initialised: false,
+        };
+
+        app.on_init(340.0, 280.0, 1.0);
+
+        app.fire_click("btn8");
+        app.fire_click("btn5");
+
+        let form = app.vm.borrow().globals.get("__f").cloned().expect("__f global");
+        let txtcalc_name = control_widget_name(&form, "txtcalc");
+        let text = {
+            let mut guard = gui.lock().unwrap();
+            match guard.form.send_command(&txtcalc_name, &WidgetCommand::GetText) {
+                CommandValue::Text(text) => text,
+                other => panic!("Expected txtcalc widget text, got {:?}", other),
+            }
+        };
+
+        assert_eq!(text, "85");
+    }
+
+    #[test]
+    fn simulated_project_textbox_starts_empty_and_first_click_has_no_null_prefix() {
+        let (mut vm, gui) = run_bundle_gui(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/vb/calc/Calculator.vbproj"),
+        );
+        if let Some(form_obj) = gui.lock().unwrap().form_object.clone() {
+            vm.globals.insert("__f".into(), form_obj);
+        }
+
+        let mut app = FormApp {
+            font_system: FontSystem::new(),
+            swash_cache: SwashCache::new(),
+            vm: Rc::new(RefCell::new(vm)),
+            gui: gui.clone(),
+            data_bindings: Vec::new(),
+            binding_sources: Vec::new(),
+            navigators: Vec::new(),
+            data_store: std::collections::HashMap::new(),
+            initialised: false,
+        };
+
+        app.on_init(340.0, 280.0, 1.0);
+
+        let form = app.vm.borrow().globals.get("__f").cloned().expect("__f global");
+        let txtcalc_name = control_widget_name(&form, "txtcalc");
+
+        let initial_text = {
+            let mut guard = gui.lock().unwrap();
+            match guard.form.send_command(&txtcalc_name, &WidgetCommand::GetText) {
+                CommandValue::Text(text) => text,
+                other => panic!("Expected txtcalc widget text, got {:?}", other),
+            }
+        };
+
+        assert_eq!(initial_text, "");
+
+        app.fire_click("btn8");
+
+        let updated_text = {
+            let mut guard = gui.lock().unwrap();
+            match guard.form.send_command(&txtcalc_name, &WidgetCommand::GetText) {
+                CommandValue::Text(text) => text,
+                other => panic!("Expected txtcalc widget text, got {:?}", other),
+            }
+        };
+
+        assert_eq!(updated_text, "8");
+    }
+
+    #[test]
+    fn project_form_exposes_controls_components_and_openforms_collections() {
+        let source = r#"
+Imports System.Windows.Forms
+
+Public Class Form1
+    Inherits Form
+
+    Friend WithEvents txt1 As TextBox
+    Friend WithEvents bs1 As BindingSource
+
+    Public Sub New()
+        MyBase.New()
+        InitializeComponent()
+    End Sub
+
+    Private Sub InitializeComponent()
+        Me.txt1 = New TextBox()
+        Me.bs1 = New BindingSource()
+        Me.txt1.Name = "txt1"
+        Me.bs1.Name = "bs1"
+        Me.Controls.Add(Me.txt1)
+    End Sub
+End Class
+
+Module Program
+    Sub Main()
+        Dim f As New Form1()
+        Application.Run(f)
+    End Sub
+End Module
+"#;
+
+        let (mut vm, gui) = run_vb_gui(source);
+        if let Some(form_obj) = gui.lock().unwrap().form_object.clone() {
+            vm.globals.insert("__f".into(), form_obj);
+        }
+
+        let form = vm.globals.get("__f").cloned().expect("__f global");
+        let open_forms = vm.globals.get("__openforms").cloned().expect("__openforms global");
+
+        let (controls, components, txt1, bs1) = match &form {
+            Value::Object(form_obj) => {
+                let form = form_obj.lock().unwrap();
+                (
+                    form.properties.get("controls").cloned().expect("controls collection"),
+                    form.properties.get("components").cloned().expect("components collection"),
+                    form.properties.get("txt1").cloned().expect("txt1 field"),
+                    form.properties.get("bs1").cloned().expect("bs1 field"),
+                )
+            }
+            _ => panic!("expected form object"),
+        };
+
+        assert!(collection_count(&controls) > 0);
+        assert!(collection_count(&components) > 0);
+        assert!(collection_contains(&controls, &txt1));
+        assert!(!collection_contains(&controls, &bs1));
+        assert!(collection_contains(&components, &bs1));
+        assert!(collection_contains(&open_forms, &form));
     }
 }

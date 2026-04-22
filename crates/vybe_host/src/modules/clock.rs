@@ -1,5 +1,13 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use vybe_bytecode::{VM, Value, HostContext};
+use vybe_bytecode::value::{Object, ObjectKind};
+
+pub(crate) fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
 
 pub fn register(vm: &mut VM) {
     // Returns milliseconds since Unix epoch (like JS Date.now())
@@ -25,6 +33,72 @@ pub fn register(vm: &mut VM) {
         let ms = args.first().map(|v| v.as_f64()).unwrap_or(0.0) as u64;
         std::thread::sleep(std::time::Duration::from_millis(ms));
         Value::Null
+    }));
+
+    vm.register_host_fn("wasi:clocks", "stopwatchStart", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let mut inner = obj.lock().unwrap();
+            let running = inner.properties.get("isrunning").map(|v| v.as_bool()).unwrap_or(false);
+            if !running {
+                inner.properties.insert("__start".into(), Value::F64(now_millis()));
+                inner.properties.insert("isrunning".into(), Value::Bool(true));
+            }
+        }
+        Value::Null
+    }));
+
+    vm.register_host_fn("wasi:clocks", "stopwatchStop", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let mut inner = obj.lock().unwrap();
+            let running = inner.properties.get("isrunning").map(|v| v.as_bool()).unwrap_or(false);
+            if running {
+                let start = inner.properties.get("__start").map(|v| v.as_f64()).unwrap_or(0.0);
+                let acc = inner.properties.get("__accumulated").map(|v| v.as_f64()).unwrap_or(0.0);
+                inner.properties.insert("__accumulated".into(), Value::F64(acc + (now_millis() - start)));
+                inner.properties.insert("isrunning".into(), Value::Bool(false));
+            }
+        }
+        Value::Null
+    }));
+
+    vm.register_host_fn("wasi:clocks", "stopwatchReset", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let mut inner = obj.lock().unwrap();
+            inner.properties.insert("__start".into(), Value::F64(0.0));
+            inner.properties.insert("__accumulated".into(), Value::F64(0.0));
+            inner.properties.insert("isrunning".into(), Value::Bool(false));
+        }
+        Value::Null
+    }));
+
+    vm.register_host_fn("wasi:clocks", "stopwatchElapsed", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let inner = obj.lock().unwrap();
+            let acc = inner.properties.get("__accumulated").map(|v| v.as_f64()).unwrap_or(0.0);
+            let running = inner.properties.get("isrunning").map(|v| v.as_bool()).unwrap_or(false);
+            if running {
+                let start = inner.properties.get("__start").map(|v| v.as_f64()).unwrap_or(0.0);
+                return Value::F64(acc + (now_millis() - start));
+            }
+            return Value::F64(acc);
+        }
+        Value::F64(0.0)
+    }));
+
+    let elapsed_idx = *vm.host_registry.get(&("wasi:clocks".into(), "stopwatchElapsed".into())).unwrap();
+    vm.register_host_fn("wasi:clocks", "stopwatchNew", Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
+        let mut obj = Object::new();
+        obj.properties.insert("__type".into(), Value::String(Arc::from("Stopwatch")));
+        obj.properties.insert("__start".into(), Value::F64(0.0));
+        obj.properties.insert("__accumulated".into(), Value::F64(0.0));
+        obj.properties.insert("isrunning".into(), Value::Bool(false));
+
+        let mut getter = Object::new();
+        getter.kind = ObjectKind::HostFunction(elapsed_idx);
+        let getter_val = Value::Object(Arc::new(Mutex::new(getter)));
+        obj.properties.insert("__get_elapsedmilliseconds".into(), getter_val.clone());
+        obj.properties.insert("__get_elapsed".into(), getter_val);
+        Value::Object(Arc::new(Mutex::new(obj)))
     }));
 
     // Format a timestamp as ISO 8601 string (simple implementation)
@@ -71,40 +145,24 @@ pub fn register(vm: &mut VM) {
 
     // now() → current date/time as ISO string
     vm.register_host_fn("wasi:clocks", "vbNow", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Value::String(Arc::from(format_timestamp(now).as_str()))
+        Value::String(Arc::from(format_timestamp(now_secs()).as_str()))
     }));
 
     // date/today → current date as string
     vm.register_host_fn("wasi:clocks", "vbDate", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let (y, m, d, _, _, _) = decompose_timestamp(now);
+        let (y, m, d, _, _, _) = decompose_timestamp(now_secs());
         Value::String(Arc::from(format!("{:02}/{:02}/{:04}", m, d, y).as_str()))
     }));
 
     // time → current time as string
     vm.register_host_fn("wasi:clocks", "vbTime", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let (_, _, _, h, min, s) = decompose_timestamp(now);
+        let (_, _, _, h, min, s) = decompose_timestamp(now_secs());
         Value::String(Arc::from(format!("{:02}:{:02}:{:02}", h, min, s).as_str()))
     }));
 
     // timer → seconds since midnight
     vm.register_host_fn("wasi:clocks", "vbTimer", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let time_of_day = now % 86400;
+        let time_of_day = now_secs() % 86400;
         Value::F64(time_of_day as f64)
     }));
 
@@ -155,10 +213,7 @@ fn parse_vb_date(args: &[Value]) -> u64 {
     // For now, treat numeric as epoch seconds, string as current time
     match args.first() {
         Some(Value::F64(n)) => *n as u64,
-        _ => std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
+        _ => now_secs(),
     }
 }
 
@@ -191,4 +246,11 @@ fn decompose_timestamp(total_secs: u64) -> (i64, u64, u64, u64, u64, u64) {
 fn format_timestamp(total_secs: u64) -> String {
     let (y, m, d, h, min, s) = decompose_timestamp(total_secs);
     format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, m, d, h, min, s)
+}
+
+fn now_millis() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as f64
 }

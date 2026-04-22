@@ -9,17 +9,10 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use crate::chunk::Chunk;
 use crate::error::VMError;
-use crate::event_loop::{EventLoop, Task};
-use crate::fiber::{Fiber, SavedFrame};
-use crate::opcode::Op;
-use crate::shared_memory::SharedMemory;
-use crate::value::{Function, Object, ObjectKind, Upvalue, UpvalueLocation, Value};
+use crate::value::{Function, Object, ObjectKind, Value};
 use crate::vm::{
-    VM, CallFrame, ExceptionHandler, FinalizerEntry, LabelEntry,
-    ExecResult, HostContext, HostFn, ImportTarget,
-    MAX_FRAMES, MAX_STACK,
+    VM, CallFrame, HostFn, MAX_FRAMES,
 };
 
 impl VM {
@@ -44,6 +37,17 @@ impl VM {
     }
 
     pub(crate) fn call_value(&mut self, argc: usize) -> Result<(), VMError> {
+        self.call_value_inner(argc, false)
+    }
+
+    /// Like `call_value` but bypasses the generator intercept — used
+    /// from RESUME / GEN_NEXT when we genuinely want the generator
+    /// body to execute.
+    pub(crate) fn call_value_direct(&mut self, argc: usize) -> Result<(), VMError> {
+        self.call_value_inner(argc, true)
+    }
+
+    fn call_value_inner(&mut self, argc: usize, bypass_generator: bool) -> Result<(), VMError> {
         let callee_idx = self.stack.len() - 1 - argc;
         let callee = self.stack[callee_idx].clone();
 
@@ -56,7 +60,11 @@ impl VM {
                         drop(o);
                         // Remove callee from stack (WASM convention: only args, no callee)
                         self.stack.remove(callee_idx);
-                        self.call_function(&func, argc)?;
+                        if bypass_generator {
+                            self.call_function_direct(&func, argc)?;
+                        } else {
+                            self.call_function(&func, argc)?;
+                        }
                     }
                     ObjectKind::HostFunction(idx) => {
                         let idx = *idx;
@@ -99,6 +107,18 @@ impl VM {
     }
 
     pub(crate) fn call_function(&mut self, func: &Function, argc: usize) -> Result<(), VMError> {
+        self.call_function_inner(func, argc, false)
+    }
+
+    /// Direct entry-body call that bypasses the `is_generator`
+    /// intercept — used from `RESUME` / `GEN_NEXT` when we want the
+    /// generator's body to execute (rather than re-wrap as a nested
+    /// continuation).
+    pub(crate) fn call_function_direct(&mut self, func: &Function, argc: usize) -> Result<(), VMError> {
+        self.call_function_inner(func, argc, true)
+    }
+
+    fn call_function_inner(&mut self, func: &Function, argc: usize, bypass_generator: bool) -> Result<(), VMError> {
         if self.frames.len() >= MAX_FRAMES {
             return Err(VMError::new("Stack overflow"));
         }
@@ -109,7 +129,7 @@ impl VM {
         // `Continuation` bound to a reified Function value and the
         // passed-through args, push it on the stack, and return. The
         // caller drives the generator by RESUMEing the continuation.
-        if self.chunks[chunk_index].is_generator {
+        if !bypass_generator && self.chunks[chunk_index].is_generator {
             use crate::value::{ContinuationState, ContinuationPhase};
             // Collect args — they'll be bound into the continuation.
             let mut args: Vec<Value> = Vec::with_capacity(argc);
@@ -181,11 +201,24 @@ impl VM {
         match obj {
             Value::Object(o) => {
                 let ob = o.lock().unwrap();
-
                 // 1. Instance property (getters handled in struct_get opcode directly)
                 let val = ob.get(name);
                 if !matches!(val, Value::Null) {
                     return Ok(val);
+                }
+                // 1b. Case-insensitive fallback for case-sensitive
+                // languages (C#, Dart) reading PascalCase fields
+                // (`btn.Location`) off an object whose setter-backed
+                // write stored them lowercased (`location`). The
+                // lowercase key is the canonical .NET wrapper storage;
+                // falling back finds it without forcing every host
+                // write-path to duplicate the value under two keys.
+                let name_lc = name.to_lowercase();
+                if name_lc != name {
+                    let val = ob.get(&name_lc);
+                    if !matches!(val, Value::Null) {
+                        return Ok(val);
+                    }
                 }
 
                 // 3. TypeRegistry vtable

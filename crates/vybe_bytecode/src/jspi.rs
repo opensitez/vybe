@@ -9,19 +9,12 @@
 //! `run_event_loop` drains microtasks (Promise callbacks) and
 //! macrotasks (timers) until no pending work remains.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use crate::chunk::Chunk;
 use crate::error::VMError;
-use crate::event_loop::{EventLoop, Task};
+use crate::event_loop::Task;
 use crate::fiber::{Fiber, SavedFrame};
-use crate::opcode::Op;
-use crate::shared_memory::SharedMemory;
-use crate::value::{Function, Object, ObjectKind, Upvalue, UpvalueLocation, Value};
+use crate::value::Value;
 use crate::vm::{
-    VM, CallFrame, ExceptionHandler, FinalizerEntry, LabelEntry,
-    ExecResult, HostContext, HostFn, ImportTarget,
-    MAX_FRAMES, MAX_STACK,
+    VM, CallFrame, ExecResult,
 };
 
 impl VM {
@@ -72,7 +65,7 @@ impl VM {
     /// continues executing from the restored `ip`. If `push_value` is
     /// `Some`, it's pushed onto the restored stack — that's the
     /// yielded value the caller of RESUME sees.
-    pub(crate) fn resume_fiber_with(&mut self, fiber: Fiber, push_value: Option<Value>)
+    pub fn resume_fiber_with(&mut self, fiber: Fiber, push_value: Option<Value>)
         -> Result<(), VMError>
     {
         self.stack = fiber.stack;
@@ -83,6 +76,8 @@ impl VM {
             upvalues: f.upvalues,
         }).collect();
         self.open_upvalues = fiber.open_upvalues;
+        self.label_stack = fiber.label_stack;
+        self.active_continuations = fiber.active_continuations;
         if let Some(val) = push_value { self.push(val)?; }
         Ok(())
     }
@@ -98,6 +93,8 @@ impl VM {
             upvalues: f.upvalues,
         }).collect();
         self.open_upvalues = fiber.open_upvalues;
+        self.label_stack = fiber.label_stack;
+        self.active_continuations = fiber.active_continuations;
 
         // Push the resolved value onto the stack (this is what `await` returns)
         if let Some(val) = fiber.resume_value {
@@ -130,7 +127,7 @@ impl VM {
     }
 
     /// Save the current execution state to a Fiber.
-    pub(crate) fn save_fiber(&mut self) -> Fiber {
+    pub fn save_fiber(&mut self) -> Fiber {
         let frames = self.frames.drain(..).map(|f| SavedFrame {
             chunk_index: f.chunk_index,
             ip: f.ip,
@@ -139,6 +136,10 @@ impl VM {
         }).collect();
         let stack = self.stack.drain(..).collect();
         let upvalues = self.open_upvalues.drain(..).collect();
+        let labels = self.label_stack.drain(..).collect();
+        let conts = self.active_continuations.drain(..).collect();
         Fiber::new(stack, frames, upvalues)
+            .with_labels(labels)
+            .with_continuations(conts)
     }
 }

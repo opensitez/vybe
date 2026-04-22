@@ -11,18 +11,13 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use crate::chunk::Chunk;
 use crate::error::VMError;
-use crate::event_loop::{EventLoop, Task};
-use crate::fiber::{Fiber, SavedFrame};
 use crate::opcode::Op;
-use crate::shared_memory::SharedMemory;
 use crate::value::{Function, Object, ObjectKind, Upvalue, UpvalueLocation, Value};
 use crate::vm::{
     dyn_truthy,
     VM, CallFrame, ExceptionHandler, FinalizerEntry, LabelEntry,
-    ExecResult, HostContext, HostFn, ImportTarget, ActiveContinuation,
-    MAX_FRAMES, MAX_STACK,
+    HostFn, ImportTarget, ActiveContinuation, ResumeMode,
 };
 
 impl VM {
@@ -54,16 +49,21 @@ impl VM {
             if self.trace {
                 let f = self.frame();
                 let chunk_name = &self.chunks[f.chunk_index].name;
-                let ip = f.ip;
-                let stack_top = if self.stack.is_empty() {
-                    "[]".to_string()
-                } else {
-                    let top = &self.stack[self.stack.len() - 1];
-                    let depth = self.stack.len();
-                    format!("[{}] (depth={})", top, depth)
-                };
-                eprintln!("  TRACE {:>12} @{:04} {:?}  stack: {}",
-                    chunk_name, ip.saturating_sub(1), op, stack_top);
+                let should_trace = self.trace_chunk_filter.as_ref()
+                    .map(|filter| filter == chunk_name)
+                    .unwrap_or(true);
+                if should_trace {
+                    let ip = f.ip;
+                    let stack_top = if self.stack.is_empty() {
+                        "[]".to_string()
+                    } else {
+                        let top = &self.stack[self.stack.len() - 1];
+                        let depth = self.stack.len();
+                        format!("[{}] (depth={})", top, depth)
+                    };
+                    eprintln!("  TRACE {:>12} @{:04} {:?}  stack: {}",
+                        chunk_name, ip.saturating_sub(1), op, stack_top);
+                }
             }
 
             match op {
@@ -91,7 +91,11 @@ impl VM {
                     let val = self.get_constant(idx);
                     self.push(val)?;
                 }
-                _ if op == Op::DROP => { self.pop(); }
+                _ if op == Op::DROP => {
+                    if self.stack.len() > self.stack_floor() {
+                        self.pop();
+                    }
+                }
                 _ if op == Op::DUP => {
                     let val = self.peek(0).clone();
                     self.push(val)?;
@@ -207,9 +211,20 @@ impl VM {
                     let val = self.pop();
                     let obj = self.pop();
                     if let Value::Object(o) = &obj {
-                        // Check for setter: __set_{name}
+                        // Check for setter: __set_{name}. Property setters
+                        // installed by the .NET class wrappers use a
+                        // lowercased key (`__set_location`), so fall back
+                        // to a case-insensitive lookup for case-sensitive
+                        // languages (C#, Dart) whose AST preserves
+                        // PascalCase field names.
                         let setter_key = format!("__set_{}", name);
-                        let setter = o.lock().unwrap().properties.get(&setter_key).cloned();
+                        let setter_key_lc = format!("__set_{}", name.to_lowercase());
+                        let setter = {
+                            let props = &o.lock().unwrap().properties;
+                            props.get(&setter_key)
+                                .cloned()
+                                .or_else(|| props.get(&setter_key_lc).cloned())
+                        };
                         if let Some(setter_fn) = setter {
                             // Call the setter synchronously. Save stack depth
                             // and restore after — invoke_callback leaks the
@@ -566,6 +581,27 @@ impl VM {
                     self.close_upvalues(base);
                     self.frames.pop();
                     if self.frames.is_empty() || self.frames.len() < min_depth {
+                        // End-of-continuation: a generator body that
+                        // returned normally (no SUSPEND) transfers
+                        // control back to the caller of RESUME/GEN_NEXT
+                        // rather than exiting the VM. Mark the cont as
+                        // Done and restore the caller's fiber.
+                        if let Some(ac) = self.active_continuations.pop() {
+                            if let Value::Object(ref obj) = ac.cont {
+                                let o = obj.lock().unwrap();
+                                if let ObjectKind::Continuation(cs) = &o.kind {
+                                    *cs.state.lock().unwrap() =
+                                        crate::value::ContinuationPhase::Done;
+                                }
+                            }
+                            let ret_val = results.pop().unwrap_or(Value::Null);
+                            self.resume_fiber_with(ac.caller_fiber, Some(ret_val))?;
+                            if ac.mode == ResumeMode::Iterator {
+                                // has_more = 0 — generator is exhausted
+                                self.push(Value::I32(0))?;
+                            }
+                            continue;
+                        }
                         let last = results.pop().unwrap_or(Value::Null);
                         return Ok(last);
                     }
@@ -2429,7 +2465,7 @@ impl VM {
                     // value onto the caller's stack.
                     let val = self.pop();
                     match self.active_continuations.pop() {
-                        Some(ActiveContinuation { cont, caller_fiber }) => {
+                        Some(ActiveContinuation { cont, caller_fiber, mode }) => {
                             let fiber = self.save_fiber();
                             if let Value::Object(ref obj) = cont {
                                 let o = obj.lock().unwrap();
@@ -2439,8 +2475,14 @@ impl VM {
                                         crate::value::ContinuationPhase::Suspended;
                                 }
                             }
-                            // Resume the caller with the yielded value.
+                            // Restore caller with the yielded value. For
+                            // iterator-mode callers, append `has_more=1`
+                            // so a GEN_NEXT-driven loop can check without
+                            // a second API call.
                             self.resume_fiber_with(caller_fiber, Some(val))?;
+                            if mode == ResumeMode::Iterator {
+                                self.push(Value::I32(1))?;
+                            }
                         }
                         None => {
                             // No active cont — legacy behaviour: return the
@@ -2466,18 +2508,15 @@ impl VM {
                             }
                         };
                         // Capture the caller's state so SUSPEND can restore
-                        // us here when the coroutine yields.
+                        // us here when the coroutine yields. Important:
+                        // push the active-continuation entry AFTER body
+                        // state is in place — `resume_fiber_with`
+                        // overwrites `active_continuations` with the
+                        // saved fiber's copy, and we want our new entry
+                        // on top of that.
                         let caller_fiber = self.save_fiber();
-                        self.active_continuations.push(ActiveContinuation {
-                            cont: cont.clone(),
-                            caller_fiber,
-                        });
                         match phase {
                             crate::value::ContinuationPhase::Ready => {
-                                // First resume: call the entry function
-                                // with the bound args (from generator
-                                // call / cont.bind) first, then the
-                                // resume value last.
                                 let bound: Vec<Value> = {
                                     let o = obj.lock().unwrap();
                                     match o.properties.get("__bound_args") {
@@ -2494,11 +2533,9 @@ impl VM {
                                 self.push(entry)?;
                                 for b in bound { self.push(b)?; }
                                 self.push(resume_val)?;
-                                self.call_value(argc)?;
+                                self.call_value_direct(argc)?;
                             }
                             crate::value::ContinuationPhase::Suspended => {
-                                // Restore saved fiber, push resume value
-                                // onto its operand stack.
                                 let saved = {
                                     let o = obj.lock().unwrap();
                                     if let ObjectKind::Continuation(cs) = &o.kind {
@@ -2514,6 +2551,13 @@ impl VM {
                                 return Err(VMError::new("trap: resume on completed continuation"));
                             }
                         }
+                        // Body state is now live; push the AC on top so
+                        // SUSPEND finds it.
+                        self.active_continuations.push(ActiveContinuation {
+                            cont: cont.clone(),
+                            caller_fiber,
+                            mode: ResumeMode::Raw,
+                        });
                     } else {
                         self.push(resume_val)?;
                     }
@@ -2596,6 +2640,81 @@ impl VM {
                     };
                     self.push(new_cont)?;
                 }
+                // `gen.next` — iterator-protocol resume. Takes [cont],
+                // advances it, leaves [value, has_more_i32] on the
+                // caller's stack. Semantically identical to RESUME but
+                // with `mode: Iterator` so SUSPEND / final-RETURN know
+                // to append the has_more flag.
+                _ if op == Op::GEN_NEXT => {
+                    let cont = self.pop();
+                    if let Value::Object(ref obj) = cont {
+                        let (phase, entry) = {
+                            let o = obj.lock().unwrap();
+                            if let ObjectKind::Continuation(cs) = &o.kind {
+                                (*cs.state.lock().unwrap(), cs.entry.clone())
+                            } else {
+                                // Non-continuation — emulate a single
+                                // "yielded once" protocol by pushing
+                                // the value as-is then has_more=0.
+                                self.push(cont.clone())?;
+                                self.push(Value::I32(0))?;
+                                return Ok(Value::Null);
+                            }
+                        };
+                        if matches!(phase, crate::value::ContinuationPhase::Done) {
+                            // Already exhausted — yield (null, 0).
+                            self.push(Value::Null)?;
+                            self.push(Value::I32(0))?;
+                            return Ok(Value::Null);
+                        }
+                        let caller_fiber = self.save_fiber();
+                        match phase {
+                            crate::value::ContinuationPhase::Ready => {
+                                let bound: Vec<Value> = {
+                                    let o = obj.lock().unwrap();
+                                    match o.properties.get("__bound_args") {
+                                        Some(Value::Object(arr)) => {
+                                            let a = arr.lock().unwrap();
+                                            if let ObjectKind::Array(v) = &a.kind {
+                                                v.clone()
+                                            } else { Vec::new() }
+                                        }
+                                        _ => Vec::new(),
+                                    }
+                                };
+                                let argc = bound.len() + 1;
+                                self.push(entry)?;
+                                for b in bound { self.push(b)?; }
+                                self.push(Value::Null)?; // resume value
+                                self.call_value_direct(argc)?;
+                            }
+                            crate::value::ContinuationPhase::Suspended => {
+                                let saved = {
+                                    let o = obj.lock().unwrap();
+                                    if let ObjectKind::Continuation(cs) = &o.kind {
+                                        cs.saved.lock().unwrap().take()
+                                    } else { None }
+                                };
+                                if let Some(fiber) = saved {
+                                    self.resume_fiber_with(fiber, Some(Value::Null))?;
+                                }
+                            }
+                            _ => unreachable!(),
+                        }
+                        // Same ordering rule as RESUME: push the AC
+                        // AFTER `resume_fiber_with` has replaced the
+                        // active_continuations stack.
+                        self.active_continuations.push(ActiveContinuation {
+                            cont: cont.clone(),
+                            caller_fiber,
+                            mode: ResumeMode::Iterator,
+                        });
+                    } else {
+                        self.push(cont.clone())?;
+                        self.push(Value::I32(0))?;
+                    }
+                }
+
                 // `resume_throw $ct $tag handlers` — resume a continuation
                 // by throwing an exception into it. Stack:
                 // [cont, exn_value] → control transfers into the cont's
@@ -2620,6 +2739,7 @@ impl VM {
                         self.active_continuations.push(ActiveContinuation {
                             cont: cont.clone(),
                             caller_fiber,
+                            mode: ResumeMode::Raw,
                         });
                         // If suspended, restore fiber then immediately
                         // throw the exception. If fresh (ready), we
@@ -2662,18 +2782,18 @@ impl VM {
                     // can be shared directly — no serialization needed.
                     let func_val = self.pop();
 
-                    let chunk_idx = match &func_val {
+                    let function = match &func_val {
                         Value::Object(obj) => {
                             let o = obj.lock().unwrap();
                             match &o.kind {
-                                ObjectKind::Function(f) => Some(f.chunk_index),
+                                ObjectKind::Function(f) => Some(f.clone()),
                                 _ => None,
                             }
                         }
                         _ => None,
                     };
 
-                    if let Some(ci) = chunk_idx {
+                    if let Some(func) = function {
                         let tid = self.next_thread_id;
                         self.next_thread_id += 1;
 
@@ -2694,6 +2814,13 @@ impl VM {
                         let child_host_fns = self.host_fns.clone();
                         let child_host_registry = self.host_registry.clone();
                         let child_import_table = self.import_table.clone();
+                        let child_globals = self.globals.clone();
+                        let child_type_registry = self.type_registry.clone();
+                        let child_func_table = self.func_table.clone();
+                        let child_extra_tables = self.extra_tables.clone();
+                        let child_case_aliases = self.case_aliases.clone();
+                        let child_strict_isolation = self.strict_isolation;
+                        let child_module_prefix = self.module_prefix.clone();
 
                         let handle = std::thread::spawn(move || {
                             let mut child_vm = VM::new();
@@ -2702,24 +2829,15 @@ impl VM {
                             child_vm.host_fns = child_host_fns;
                             child_vm.host_registry = child_host_registry;
                             child_vm.import_table = child_import_table;
+                            child_vm.globals = child_globals;
+                            child_vm.type_registry = child_type_registry;
+                            child_vm.func_table = child_func_table;
+                            child_vm.extra_tables = child_extra_tables;
+                            child_vm.case_aliases = child_case_aliases;
+                            child_vm.strict_isolation = child_strict_isolation;
+                            child_vm.module_prefix = child_module_prefix;
 
-                            // Set up call frame
-                            let _arity = child_vm.chunks.get(ci).map(|c| c.arity).unwrap_or(0);
-                            child_vm.frames.push(CallFrame {
-                                chunk_index: ci,
-                                ip: 0,
-                                base: 0,
-                                upvalues: Vec::new(),
-                            });
-                            let local_count = child_vm.chunks.get(ci)
-                                .map(|c| c.local_count as usize)
-                                .unwrap_or(1)
-                                .max(64);
-                            for _ in 0..local_count {
-                                child_vm.stack.push(Value::Null);
-                            }
-
-                            let result = match child_vm.execute() {
+                            let result = match child_vm.call_function(&func, 0).and_then(|_| child_vm.execute()) {
                                 Ok(val) => {
                                     // Store return value in the shared task object
                                     let mut t = task_for_child.lock().unwrap();

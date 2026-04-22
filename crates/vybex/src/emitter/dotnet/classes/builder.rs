@@ -90,6 +90,26 @@ pub fn build_setter_chunk(
     chunk
 }
 
+pub fn build_getter_chunk(
+    class_name: &str,
+    prop_pascal: &str,
+    get_property_import_idx: u16,
+) -> Chunk {
+    let chunk_name = format!("{}::__get_{}", class_name, prop_pascal.to_lowercase());
+    let mut chunk = create_function_chunk(&chunk_name, 1); // (this)
+    let line = 0u32;
+
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
+    let prop_const = chunk.add_constant(Value::String(Arc::from(prop_pascal)));
+    chunk.emit_op_u16(Op::CONST, prop_const, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, get_property_import_idx, line);
+    chunk.emit(2, line);
+    chunk.emit_op(Op::RETURN, line);
+
+    chunk.local_count = 1;
+    chunk
+}
+
 // ─── Method thunk chunk ─────────────────────────────────────────────────────
 
 /// Build the thunk chunk that bridges a `.NET` instance method call to
@@ -379,6 +399,12 @@ pub struct SetterBinding<'a> {
     pub setter_chunk_idx: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct GetterBinding<'a> {
+    pub prop_pascal: &'a str,
+    pub getter_chunk_idx: usize,
+}
+
 /// Per-method thunk binding info supplied to [`build_constructor_chunk`].
 ///
 /// `method_name` is the lowercased instance-side key (`"createGraphics"`
@@ -429,14 +455,38 @@ pub struct MethodBinding<'a> {
 pub fn build_constructor_chunk(
     class: &DotnetClass,
     setter_bindings: &[SetterBinding],
+    getter_bindings: &[GetterBinding],
     method_bindings: &[MethodBinding],
     widget_new_import_idx: Option<u16>,
+    new_controls_collection_import_idx: u16,
+    new_components_collection_import_idx: u16,
 ) -> Chunk {
     let mut chunk = create_function_chunk(class.name, class.ctor_arity);
     let line = 0u32;
     let arity = class.ctor_arity as u16;
     let this_slot: u16 = arity;
     let widget_slot: u16 = arity + 1;
+
+    // ── Fast path: value-type ctors ─────────────────────────────────────────
+    //
+    // Point / Size / similar: forward args to the host fn and return its
+    // result directly. Value-type classes don't inherit, don't install
+    // setters or methods, and their host fn produces the exact field
+    // layout the consumer expects (`{x, y}` / `{width, height}`). Going
+    // through the usual setter-chain / field-copy path would strip those
+    // fields from `this` and leave user code seeing `null` for `.X` etc.
+    if class.is_value_type() {
+        if let Some(import_idx) = widget_new_import_idx {
+            for i in 0..arity {
+                chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+            }
+            chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
+            chunk.emit(arity as u8, line);
+            chunk.emit_op(Op::RETURN, line);
+            chunk.local_count = arity;
+            return chunk;
+        }
+    }
 
     // ── Step 1: get `this` ──────────────────────────────────────────────────
     if let Some(parent_name) = class.parent {
@@ -478,6 +528,16 @@ pub fn build_constructor_chunk(
         chunk.emit_op(Op::DROP, line);
     }
 
+    for binding in getter_bindings {
+        let get_name = format!("__get_{}", binding.prop_pascal.to_lowercase());
+        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+        chunk.emit_op_u16(Op::REF_FUNC, binding.getter_chunk_idx as u16, line);
+        chunk.emit(0, line);
+        let key = chunk.add_constant(Value::String(Arc::from(get_name.as_str())));
+        chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+        chunk.emit_op(Op::DROP, line);
+    }
+
     // ── Step 4: bind methods for THIS class ────────────────────────────────
     //
     // Each method thunk was pre-built and pushed by the orchestrator. The
@@ -492,6 +552,26 @@ pub fn build_constructor_chunk(
         chunk.emit_op_u16(Op::REF_FUNC, binding.thunk_chunk_idx as u16, line);
         chunk.emit(0, line); // 0 upvalues
         let key = chunk.add_constant(Value::String(Arc::from(binding.method_name)));
+        chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+        chunk.emit_op(Op::DROP, line);
+    }
+
+    if class.name == "Control" {
+        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+        chunk.emit_op_u16(Op::CALL_IMPORT, new_controls_collection_import_idx, line);
+        chunk.emit(1, line);
+        let key = chunk.add_constant(Value::String(Arc::from("controls")));
+        chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+        chunk.emit_op(Op::DROP, line);
+    }
+
+    if class.name == "Form" {
+        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+        chunk.emit_op_u16(Op::CALL_IMPORT, new_components_collection_import_idx, line);
+        chunk.emit(1, line);
+        let key = chunk.add_constant(Value::String(Arc::from("components")));
         chunk.emit_op_u16(Op::STRUCT_SET, key, line);
         chunk.emit_op(Op::DROP, line);
     }

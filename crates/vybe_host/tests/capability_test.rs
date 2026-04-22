@@ -95,6 +95,22 @@ fn all_caps_registers_sockets() {
 }
 
 #[test]
+fn all_caps_registers_wasi_sockets() {
+    let mut vm = VM::new();
+    register_with_capabilities(&mut vm, &Capabilities::all());
+    let has_sock = vm.host_registry.keys().any(|(m, _)| m.starts_with("wasi:sockets/"));
+    assert!(has_sock, "Full caps should register wasi:sockets modules");
+}
+
+#[test]
+fn all_caps_registers_wasi_io() {
+    let mut vm = VM::new();
+    register_with_capabilities(&mut vm, &Capabilities::all());
+    let has_io = vm.host_registry.keys().any(|(m, _)| m == "wasi:io/streams" || m == "wasi:io/poll");
+    assert!(has_io, "Full caps should register wasi:io modules");
+}
+
+#[test]
 fn all_caps_registers_http() {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::all());
@@ -128,6 +144,22 @@ fn safe_blocks_sockets() {
     register_with_capabilities(&mut vm, &Capabilities::safe());
     let has_sock = vm.host_registry.keys().any(|(m, _)| m == "vybe:net");
     assert!(!has_sock, "Safe mode should NOT have sockets");
+}
+
+#[test]
+fn safe_blocks_wasi_sockets() {
+    let mut vm = VM::new();
+    register_with_capabilities(&mut vm, &Capabilities::safe());
+    let has_sock = vm.host_registry.keys().any(|(m, _)| m.starts_with("wasi:sockets/"));
+    assert!(!has_sock, "Safe mode should NOT have wasi:sockets modules");
+}
+
+#[test]
+fn safe_blocks_wasi_io() {
+    let mut vm = VM::new();
+    register_with_capabilities(&mut vm, &Capabilities::safe());
+    let has_io = vm.host_registry.keys().any(|(m, _)| m == "wasi:io/streams" || m == "wasi:io/poll");
+    assert!(!has_io, "Safe mode should NOT have wasi:io modules");
 }
 
 #[test]

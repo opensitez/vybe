@@ -8,12 +8,14 @@
 //!   --sandbox, -s     Restricted mode (no filesystem/network/database)
 //!   --portable, -p    Minimal WASI runtime only (no Vybe host optimizations)
 //!   --trace, -t       Enable bytecode trace output
+//!   --chunk <name>    Limit --dump/--trace output to a specific chunk
 //!
 //! Supports single source files (detected by extension), project files
 //! (.vybe, .vbproj), and .wasm binaries. Language is determined automatically.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use vybe_bytecode::chunk::Chunk;
 use vybe_bytecode::VM;
 
 fn main() {
@@ -23,15 +25,24 @@ fn main() {
     let mut sandbox = false;
     let mut portable = false;
     let mut trace = false;
+    let mut chunk_filter = None;
     let mut file_arg = None;
 
-    for arg in &args[1..] {
+    let mut iter = args[1..].iter();
+    while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--dump" | "-d" => dump = true,
             "--emit-wasm" | "-w" => emit_wasm = true,
             "--sandbox" | "-s" => sandbox = true,
             "--portable" | "-p" => portable = true,
             "--trace" | "-t" => trace = true,
+            "--chunk" => {
+                let Some(name) = iter.next() else {
+                    eprintln!("Missing value for --chunk");
+                    std::process::exit(1);
+                };
+                chunk_filter = Some(name.clone());
+            }
             "--help" | "-h" => {
                 print_usage();
                 return;
@@ -56,7 +67,7 @@ fn main() {
 
     // ── Handle .wasm binaries directly ──────────────────────────────────────
     if path.extension().and_then(|e| e.to_str()) == Some("wasm") {
-        run_wasm(path, dump, trace);
+        run_wasm(path, dump, trace, chunk_filter.as_deref());
         return;
     }
 
@@ -82,7 +93,7 @@ fn main() {
 
     // ── --dump: disassemble and exit ────────────────────────────────────────
     if dump {
-        for chunk in &chunks {
+        for chunk in filter_chunks(&chunks, chunk_filter.as_deref()) {
             println!("{}", vybe_bytecode::debug::disassemble(chunk));
         }
         return;
@@ -128,6 +139,7 @@ fn main() {
 
     if trace {
         vm.set_trace(true);
+        vm.set_trace_chunk_filter(chunk_filter.clone());
     }
 
     // ── Register WASM function names as globals ─────────────────────────────
@@ -165,7 +177,7 @@ fn main() {
     }
 }
 
-fn run_wasm(path: &Path, dump: bool, trace: bool) {
+fn run_wasm(path: &Path, dump: bool, trace: bool, chunk_filter: Option<&str>) {
     let data = match std::fs::read(path) {
         Ok(d) => d,
         Err(e) => { eprintln!("Error reading {}: {e}", path.display()); std::process::exit(1); }
@@ -179,7 +191,7 @@ fn run_wasm(path: &Path, dump: bool, trace: bool) {
     eprintln!("Loaded {} chunks", chunks.len());
 
     if dump {
-        for chunk in &chunks {
+        for chunk in filter_chunks(&chunks, chunk_filter) {
             println!("{}", vybe_bytecode::debug::disassemble(chunk));
         }
         return;
@@ -191,6 +203,7 @@ fn run_wasm(path: &Path, dump: bool, trace: bool) {
 
     if trace {
         vm.set_trace(true);
+        vm.set_trace_chunk_filter(chunk_filter.map(|s| s.to_string()));
     }
 
     match vm.run(chunks) {
@@ -200,6 +213,19 @@ fn run_wasm(path: &Path, dump: bool, trace: bool) {
 
     if gui.lock().unwrap().should_run {
         vybex::gui_launch::launch_gui(vm, gui);
+    }
+}
+
+fn filter_chunks<'a>(chunks: &'a [Chunk], chunk_filter: Option<&str>) -> Vec<&'a Chunk> {
+    match chunk_filter {
+        Some(filter) => {
+            if let Ok(index) = filter.parse::<usize>() {
+                chunks.get(index).into_iter().collect()
+            } else {
+                chunks.iter().filter(|chunk| chunk.name == filter).collect()
+            }
+        }
+        None => chunks.iter().collect(),
     }
 }
 
@@ -216,6 +242,7 @@ fn print_usage() {
     eprintln!("  -s, --sandbox     Restricted mode (safe capabilities only)");
     eprintln!("  -p, --portable    Minimal WASI runtime (no Vybe host)");
     eprintln!("  -t, --trace       Enable bytecode trace output");
+    eprintln!("      --chunk NAME  Limit --dump/--trace output to a chunk name or index");
     eprintln!("  -h, --help        Show this help");
     eprintln!();
     eprintln!("Supported: {}", ext_list.join(", "));

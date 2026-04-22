@@ -21,14 +21,25 @@ pub fn register(vm: &mut VM) {
         Value::Object(Arc::new(Mutex::new(obj)))
     }));
 
-    // Task.Delay(ms) — sleep
+    // Task.Delay(ms) — return a Task that completes after the timeout.
     vm.register_host_fn("vybe:threading", "taskDelay", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let ms = args.first().map(|v| v.as_f64() as u64).unwrap_or(0);
-        std::thread::sleep(std::time::Duration::from_millis(ms));
         let mut obj = Object::new();
         obj.properties.insert("__type".into(), Value::String(Arc::from("Task")));
-        obj.properties.insert("iscompleted".into(), Value::Bool(true));
-        Value::Object(Arc::new(Mutex::new(obj)))
+        obj.properties.insert("iscompleted".into(), Value::Bool(false));
+        obj.properties.insert("isalive".into(), Value::Bool(true));
+        obj.properties.insert("result".into(), Value::Null);
+        obj.properties.insert("status".into(), Value::String(Arc::from("WaitingForActivation")));
+        let task_obj = Arc::new(Mutex::new(obj));
+        let task_for_child = task_obj.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+            let mut task = task_for_child.lock().unwrap();
+            task.properties.insert("iscompleted".into(), Value::Bool(true));
+            task.properties.insert("isalive".into(), Value::Bool(false));
+            task.properties.insert("status".into(), Value::String(Arc::from("RanToCompletion")));
+        });
+        Value::Object(task_obj)
     }));
 
     // Task.FromResult(value)
@@ -47,6 +58,11 @@ pub fn register(vm: &mut VM) {
         obj.properties.insert("__type".into(), Value::String(Arc::from("Task")));
         obj.properties.insert("iscompleted".into(), Value::Bool(true));
         Value::Object(Arc::new(Mutex::new(obj)))
+    }));
+
+    vm.register_host_fn("vybe:threading", "taskStart", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+        // THREAD_SPAWN creates and starts the worker immediately, so Start is a no-op.
+        Value::Null
     }));
 
     // Stopwatch.Start()
@@ -121,38 +137,53 @@ pub fn register(vm: &mut VM) {
         Value::Object(Arc::new(Mutex::new(obj)))
     }));
 
-    // System.Random
-    vm.register_host_fn("vybe:threading", "randomNew", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .subsec_nanos() as u64;
+    // System.Random — 32-bit LCG (state fits exactly in f64, no precision loss)
+    vm.register_host_fn("vybe:threading", "randomNew", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let seed = if let Some(v) = args.first() {
+            v.as_f64() as u32
+        } else {
+            (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() & 0xFFFFFFFF) as u32
+        };
+        let state = seed.wrapping_mul(1664525u32).wrapping_add(1013904223u32);
         let mut obj = Object::new();
         obj.properties.insert("__type".into(), Value::String(Arc::from("Random")));
-        obj.properties.insert("__seed".into(), Value::F64(seed as f64));
+        obj.properties.insert("__state".into(), Value::F64(state as f64));
         Value::Object(Arc::new(Mutex::new(obj)))
     }));
 
     vm.register_host_fn("vybe:threading", "randomNext", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let max = args.get(1).map(|v| v.as_f64() as u64).unwrap_or(i32::MAX as u64);
-        let min = if args.len() > 2 {
-            let a = args.get(1).map(|v| v.as_f64() as u64).unwrap_or(0);
-            let b = args.get(2).map(|v| v.as_f64() as u64).unwrap_or(i32::MAX as u64);
-            // randomNext(min, max)
-            let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default().subsec_nanos() as u64;
-            return Value::F64((a + t % (b - a).max(1)) as f64);
-        } else {
-            0u64
-        };
-        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default().subsec_nanos() as u64;
-        Value::F64((min + t % max.max(1)) as f64)
+        if let Some(Value::Object(obj)) = args.first() {
+            let mut o = obj.lock().unwrap();
+            let state = o.properties.get("__state").map(|v| v.as_f64() as u32).unwrap_or(12345u32);
+            let next = state.wrapping_mul(1664525u32).wrapping_add(1013904223u32);
+            o.properties.insert("__state".into(), Value::F64(next as f64));
+            let r = (next >> 1) as u64;
+            return if args.len() > 2 {
+                let lo = args[1].as_f64() as u64;
+                let hi = args[2].as_f64() as u64;
+                Value::F64((lo + r % (hi - lo).max(1)) as f64)
+            } else if args.len() > 1 {
+                let hi = args[1].as_f64() as u64;
+                Value::F64((r % hi.max(1)) as f64)
+            } else {
+                Value::F64((r % (i32::MAX as u64)) as f64)
+            };
+        }
+        Value::F64(0.0)
     }));
 
-    vm.register_host_fn("vybe:threading", "randomNextDouble", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default().subsec_nanos();
-        Value::F64((t as f64 % 1_000_000.0) / 1_000_000.0)
+    vm.register_host_fn("vybe:threading", "randomNextDouble", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let mut o = obj.lock().unwrap();
+            let state = o.properties.get("__state").map(|v| v.as_f64() as u32).unwrap_or(12345u32);
+            let next = state.wrapping_mul(1664525u32).wrapping_add(1013904223u32);
+            o.properties.insert("__state".into(), Value::F64(next as f64));
+            let r = (next as f64) / (u32::MAX as f64);
+            return Value::F64(r);
+        }
+        Value::F64(0.0)
     }));
 }

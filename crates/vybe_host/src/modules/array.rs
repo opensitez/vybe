@@ -37,6 +37,27 @@ pub fn register(vm: &mut VM) {
         }
         Value::F64(-1.0)
     }));
+
+    vm.register_host_fn("vybe:array", "lastIndexOf", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.lock().unwrap();
+            if let ObjectKind::Array(ref elems) = o.kind {
+                let search = args.get(1).cloned().unwrap_or(Value::Null);
+                for (i, elem) in elems.iter().enumerate().rev() {
+                    if elem.eq(&search) { return Value::F64(i as f64); }
+                }
+                return Value::F64(-1.0);
+            }
+        }
+        // Fall back to string last index of via format
+        if let (Some(Value::String(s)), Some(search)) = (args.first(), args.get(1)) {
+            let needle = format!("{}", search);
+            if let Some(pos) = s.rfind(needle.as_str()) {
+                return Value::F64(pos as f64);
+            }
+        }
+        Value::F64(-1.0)
+    }));
     // reverse, concat — removed (now array_reverse, array_concat opcodes)
 
     vm.register_host_fn("vybe:array", "slice", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
@@ -158,6 +179,45 @@ pub fn register(vm: &mut VM) {
             }
         }
         args.first().cloned().unwrap_or(Value::Null)
+    }));
+
+    // clear(collection) → null
+    // Compatibility shim for profiles that still emit host:vybe:array:clear
+    // for list/dict/array-style receivers.
+    vm.register_host_fn("vybe:array", "clear", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let mut o = obj.lock().unwrap();
+            match &mut o.kind {
+                ObjectKind::Array(elems) => {
+                    elems.clear();
+                    o.properties.insert("length".into(), Value::F64(0.0));
+                    o.properties.insert("count".into(), Value::F64(0.0));
+                }
+                _ => {
+                    let data_obj = match o.properties.get("__data") {
+                        Some(Value::Object(data)) => Some(data.clone()),
+                        _ => None,
+                    };
+                    if let Some(data) = data_obj {
+                        data.lock().unwrap().properties.clear();
+                        o.properties.insert("count".into(), Value::F64(0.0));
+                    }
+                    let items_obj = match o.properties.get("__items") {
+                        Some(Value::Object(items)) => Some(items.clone()),
+                        _ => None,
+                    };
+                    if let Some(items) = items_obj {
+                        let mut items_obj = items.lock().unwrap();
+                        if let ObjectKind::Array(elems) = &mut items_obj.kind {
+                            elems.clear();
+                        }
+                        drop(items_obj);
+                        o.properties.insert("count".into(), Value::F64(0.0));
+                    }
+                }
+            }
+        }
+        Value::Null
     }));
 
     // flat(arr) → flattened array (one level)

@@ -196,6 +196,15 @@ pub fn register(vm: &mut VM) {
         Value::String(Arc::from(std::env::temp_dir().to_string_lossy().as_ref()))
     }));
 
+    vm.register_host_fn("wasi:filesystem", "pathHasExtension", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let p = s(args, 0);
+        Value::Bool(std::path::Path::new(p.as_str()).extension().is_some())
+    }));
+
+    vm.register_host_fn("wasi:filesystem", "pathIsRooted", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Value::Bool(std::path::Path::new(s(args, 0).as_str()).is_absolute())
+    }));
+
     // -- VB6 file handle I/O --
 
     // openFile(path, mode, fileNumber) → null

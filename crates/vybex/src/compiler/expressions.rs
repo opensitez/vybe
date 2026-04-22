@@ -316,7 +316,16 @@ impl Compiler {
 
             // ── New ─────────────────────────────────────────────────────
             ExprKind::New { class, args } => {
-                if let ExprKind::Ident(type_name) = &class.kind {
+                let class_parts = self.flatten_member_chain(class);
+                let dotted_type_name = match &class.kind {
+                    ExprKind::Ident(name) => Some(name.clone()),
+                    ExprKind::Member { .. } if self.profile.namespaces.use_dotnet && !class_parts.is_empty() => {
+                        Some(class_parts.join("."))
+                    }
+                    _ => None,
+                };
+
+                if let Some(type_name) = dotted_type_name.as_ref() {
                     // User-defined classes take priority over all built-in type mappings.
                     // This ensures `class Point { ... }` followed by `new Point()` calls
                     // the user constructor, not vybe:drawing::pointNew.
@@ -381,11 +390,7 @@ impl Compiler {
                             self.emit_const(Value::String(Arc::from("")));
                         }
                         let line = self.line;
-                        common::errors::emit_exception_new_finalize(
-                            self.chunk(),
-                            type_name, // original casing for `name` field
-                            line,
-                        );
+                        common::errors::emit_exception_new_finalize(self.chunk(), type_name, line);
                         // Stamp `stack` = "Name: message" using locals.
                         // Stack after finalize: [obj]
                         let exc_tmp = self.scope_mut().define("__exc_tmp");
@@ -411,27 +416,17 @@ impl Compiler {
                         return Ok(());
                     }
 
-                    // Profile known types (collections, GUI controls, etc.)
-                    if let Some((module, func)) = self.profile.lookup_known_type(type_name).map(|(m, f)| (m.to_string(), f.to_string())) {
-                        for a in args { self.compile_expr(&a.value)?; }
-                        // Special module "common" → use compiler_common emitter (no host call)
-                        if module == "common" {
-                            let line = self.line;
-                            self.emit_common(&func, line);
-                        } else {
-                            let idx = self.import(&module, &func);
-                            self.emit_host_call(idx, args.len() as u8);
-                        }
-                        return Ok(());
-                    }
                     // GUI control: Button, TextBox, Label, Timer, etc.
                     // Checked BEFORE dotnet known_types so GUI controls always
                     // route through the canonical gui emitter regardless of
                     // whether they overlap with .NET BCL types (Timer is both
                     // a GUI control and a System.Threading.Timer — the GUI
                     // form takes priority because we're in `New X()` syntax).
+                    let dotnet_ctor_registered = self.profile.namespaces.use_dotnet
+                        && (self.defined_globals.contains(bare_str)
+                            || self.defined_globals.contains(&bare_str.to_lowercase()));
                     let canonical = common::gui::canonical_control_name(bare_str);
-                    if !canonical.is_empty() {
+                    if !canonical.is_empty() && !dotnet_ctor_registered {
                         let host_name = common::gui::host_fn_new_control(&canonical);
                         let new_idx = self.import("vybe:gui", &host_name);
                         for a in args { self.compile_expr(&a.value)?; }
@@ -439,13 +434,54 @@ impl Compiler {
                         common::gui::emit_new_control(self.chunk(), new_idx, args.len() as u8, line);
                         return Ok(());
                     }
-                    // Dotnet known types (collections, etc.) — fallback after
+                    // Dotnet component descriptor constructors — fallback after
                     // GUI so .NET-only types like Dictionary still work.
-                    let known = common::dotnet::known_types();
-                    if let Some(&(module, func)) = known.get(bare_str) {
+                    let dotnet_constructor = if !dotnet_ctor_registered {
+                        common::dotnet::surface().lookup_constructor(bare_str)
+                    } else {
+                        None
+                    };
+                    if let Some(target) = dotnet_constructor.clone() {
                         for a in args { self.compile_expr(&a.value)?; }
-                        let idx = self.import(module, func);
-                        self.emit_host_call(idx, args.len() as u8);
+                        match target {
+                            vybe_bytecode::component_model::ConstructorTarget::Host(target) => {
+                                let idx = self.import(&target.module, &target.name);
+                                self.emit_host_call(idx, args.len() as u8);
+                            }
+                            vybe_bytecode::component_model::ConstructorTarget::Common(name) => {
+                                let line = self.line;
+                                self.emit_common(&name, line);
+                            }
+                        }
+                        return Ok(());
+                    }
+
+                    // Profile known types are now a fallback for entries not
+                    // yet absorbed into the shared .NET surface.
+                    if dotnet_constructor.is_none() {
+                        if let Some((module, func)) = self.profile.lookup_known_type(type_name).map(|(m, f)| (m.to_string(), f.to_string())) {
+                            for a in args { self.compile_expr(&a.value)?; }
+                            if module == "common" {
+                                let line = self.line;
+                                self.emit_common(&func, line);
+                            } else {
+                                let idx = self.import(&module, &func);
+                                self.emit_host_call(idx, args.len() as u8);
+                            }
+                            return Ok(());
+                        }
+                    }
+
+                    if dotnet_ctor_registered {
+                        let ctor_name = if self.defined_globals.contains(bare_str) {
+                            bare_str.to_string()
+                        } else {
+                            bare_str.to_lowercase()
+                        };
+                        let ctor_idx = self.str_const(&ctor_name);
+                        self.emit_u16(Op::GLOBAL_GET, ctor_idx);
+                        for a in args { self.compile_expr(&a.value)?; }
+                        self.emit_u8(Op::CALL_REF, args.len() as u8);
                         return Ok(());
                     }
                 }
@@ -765,7 +801,50 @@ impl Compiler {
 
             // ── AddressOf (VB) ──────────────────────────────────────────
             ExprKind::AddressOf(name) => {
-                self.emit_var_get(name);
+                let parts: Vec<&str> = name.split('.').filter(|part| !part.is_empty()).collect();
+                if parts.is_empty() {
+                    self.emit(Op::NULL);
+                    return Ok(());
+                }
+
+                let self_kw = self.profile.self_keyword.clone();
+                let is_self_qualified = parts.first().map(|part| {
+                    if self.case_sensitive {
+                        *part == self_kw || *part == "Me"
+                    } else {
+                        part.eq_ignore_ascii_case(&self_kw) || part.eq_ignore_ascii_case("Me")
+                    }
+                }).unwrap_or(false);
+
+                let bound_parts: Option<&[&str]> = if self.current_class.is_some() {
+                    if is_self_qualified && parts.len() > 1 {
+                        Some(&parts[1..])
+                    } else if parts.len() == 1
+                        && self.defined_class_methods.contains(&self.canon(parts[0]))
+                    {
+                        Some(&parts[..])
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(method_parts) = bound_parts {
+                    if self.emit_self_ref() {
+                        for part in method_parts {
+                            let idx = self.str_const(&self.canon(part));
+                            self.emit_u16(Op::STRUCT_GET, idx);
+                        }
+                        return Ok(());
+                    }
+                }
+
+                self.emit_var_get(parts[0]);
+                for part in &parts[1..] {
+                    let idx = self.str_const(&self.canon(part));
+                    self.emit_u16(Op::STRUCT_GET, idx);
+                }
             }
 
             // ── SuperCall (VB/Python) ───────────────────────────────────
@@ -800,7 +879,7 @@ impl Compiler {
                     } else {
                         self.emit(Op::NULL);
                     }
-                } else if let Some(ref mname) = method {
+                } else if let Some(mname) = method {
                     // MyBase.Method(args) → this.__base_method(this, args)
                     let base_name = format!("__base_{}", self.canon(mname));
                     if let Some(self_slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
@@ -827,8 +906,8 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
 
                 // Only handle the first generator for simplicity
-                if let Some(gen) = generators.first() {
-                    self.compile_expr(&gen.iter)?;
+                if let Some(generator) = generators.first() {
+                    self.compile_expr(&generator.iter)?;
                     let arr_slot = self.scope_mut().define("__comp_iter");
                     self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
                     let idx_slot = self.scope_mut().define("__comp_idx");
@@ -836,7 +915,7 @@ impl Compiler {
                         &mut self.chunks, self.current, arr_slot, idx_slot, line,
                     );
                     // Bind loop var
-                    let var_name = match &gen.target.kind {
+                    let var_name = match &generator.target.kind {
                         ExprKind::Ident(n) => n.clone(),
                         _ => "__comp_var".to_string(),
                     };
@@ -845,7 +924,7 @@ impl Compiler {
 
                     // Check conditions
                     let mut cond_skip = None;
-                    for cond_expr in &gen.conditions {
+                    for cond_expr in &generator.conditions {
                         self.compile_expr(cond_expr)?;
                         self.emit(Op::DYN_TO_BOOL);
                         cond_skip = Some(self.emit_jump(Op::BR_IF_FALSE));

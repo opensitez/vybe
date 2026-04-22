@@ -13,6 +13,17 @@ fn new_button_has_properties() {
 }
 
 #[test]
+fn fully_qualified_button_uses_shared_dotnet_surface() {
+    let out = run_csharp(r#"
+        var btn = new System.Windows.Forms.Button();
+        btn.Text = "Shared";
+        Console.WriteLine(btn.Text);
+        Console.WriteLine(btn.__control_type);
+    "#);
+    assert_eq!(out, vec!["Shared", "Button"]);
+}
+
+#[test]
 fn new_point_properties() {
     let out = run_csharp(r#"
         var p = new Point(100, 200);

@@ -2,6 +2,19 @@ use std::sync::{Arc, Mutex};
 use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::Object;
 
+pub(crate) fn machine_name_value() -> Value {
+    let name = std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("COMPUTERNAME"))
+        .unwrap_or_else(|_| "unknown".into());
+    Value::String(Arc::from(name.as_str()))
+}
+
+pub fn register_dotnet_net(vm: &mut VM) {
+    vm.register_host_fn("dotnet:net", "dnsGetHostName", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+        machine_name_value()
+    }));
+}
+
 pub fn register(vm: &mut VM) {
     // Get command line arguments as array of strings
     vm.register_host_fn("wasi:cli", "args", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
@@ -40,10 +53,7 @@ pub fn register(vm: &mut VM) {
 
     // Machine name
     vm.register_host_fn("wasi:cli", "machineName", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-        let name = std::env::var("HOSTNAME")
-            .or_else(|_| std::env::var("COMPUTERNAME"))
-            .unwrap_or_else(|_| "unknown".into());
-        Value::String(Arc::from(name.as_str()))
+        machine_name_value()
     }));
 
     // User name
@@ -63,5 +73,13 @@ pub fn register(vm: &mut VM) {
             .unwrap_or_default()
             .as_millis();
         Value::F64(ms as f64)
+    }));
+
+    // GetFolderPath — returns home dir for any special folder enum value
+    vm.register_host_fn("wasi:cli", "getFolderPath", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+        let path = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| ".".into());
+        Value::String(Arc::from(path.as_str()))
     }));
 }

@@ -70,6 +70,7 @@ pub struct Compiler {
     /// Names of methods defined on any user class — used to avoid value method
     /// hijacking (e.g. user class `Calc.Add()` shouldn't match array `add`).
     defined_class_methods: HashSet<String>,
+    global_type_hints: HashMap<String, String>,
     /// Map from member name → containing namespace name.
     /// Used for bare-name resolution within modules/namespaces/enums.
     /// E.g. `Main` inside `Module Program` resolves to `Program.Main`.
@@ -90,6 +91,11 @@ pub struct Compiler {
     /// without packing) and caller (destructure directly off the stack)
     /// can agree on the multi-value ABI at emit time.
     multi_return_functions: HashMap<String, u8>,
+    /// Functions compiled with `chunk.is_generator = true` — tracked
+    /// by canonical name so `for v in gen()` call-site emission knows
+    /// to use the `RESUME`-loop iterator protocol rather than the
+    /// array-index protocol.
+    generator_functions: HashSet<String>,
 }
 
 impl Compiler {
@@ -106,6 +112,7 @@ impl Compiler {
             defined_functions: HashSet::new(),
             defined_classes: HashSet::new(),
             defined_class_methods: HashSet::new(),
+            global_type_hints: HashMap::new(),
             enum_members: HashMap::new(),
             case_sensitive: profile.case_sensitive,
             profile,
@@ -115,6 +122,7 @@ impl Compiler {
             current_class: None,
             pending_label: None,
             multi_return_functions: HashMap::new(),
+            generator_functions: HashSet::new(),
         }
     }
 
@@ -180,6 +188,97 @@ impl Compiler {
     // ════════════════════════════════════════════════════════════════════════
     // Multi-value tuple returns (opt-in via `multi_value_tuple_returns`)
     // ════════════════════════════════════════════════════════════════════════
+
+    /// `true` if `iter` is an `ExprKind::Call` to an ident that names
+    /// a function previously compiled with `is_generator = true`. Used
+    /// by `for v in gen():` to pick the stack-switching iterator path.
+    fn is_direct_generator_call(&self, iter: &Expression) -> bool {
+        if let ExprKind::Call { callee, .. } = &iter.kind {
+            if let ExprKind::Ident(n) = &callee.kind {
+                return self.generator_functions.contains(&self.canon(n));
+            }
+        }
+        false
+    }
+
+    /// Emit a `for v in gen():` loop that drives the generator via
+    /// `GEN_NEXT`. Layout:
+    ///   <cont> = compile(iter)
+    ///   block $exit
+    ///     loop $loop
+    ///       local.get $cont
+    ///       gen.next            ;; pushes (value, has_more)
+    ///       br_if 0             ;; break out when has_more == 0
+    ///       local.set $v        ;; assign yielded value
+    ///       <body>
+    ///       br $loop
+    ///     end
+    ///   end
+    fn compile_generator_for_in(
+        &mut self,
+        var: &str,
+        iter: &Expression,
+        body: &[Statement],
+        else_body: Option<&[Statement]>,
+    ) -> Result<(), String> {
+        use crate::ast::ExprKind;
+        // Compile and stash the continuation.
+        let (callee, args) = match &iter.kind {
+            ExprKind::Call { callee, args, .. } => (callee, args),
+            _ => unreachable!("compile_generator_for_in expects Call"),
+        };
+        self.compile_call(callee, args)?;
+        let cont_slot = self.scope_mut().define("__gen_cont");
+        self.emit_u16(Op::LOCAL_SET, cont_slot); self.emit(Op::DROP);
+
+        let line = self.line;
+        let block_patch = self.chunk().emit_block(line);
+        let (loop_patch, _) = self.chunk().emit_loop_s(line);
+        self.label_depth += 2;
+
+        // Advance the generator. GEN_NEXT pops cont and pushes (value, has_more).
+        self.emit_u16(Op::LOCAL_GET, cont_slot);
+        self.emit(Op::GEN_NEXT);
+        // Stack: [value, has_more]. If has_more == 0, break to $exit (label 1).
+        // Unbox-to-bool semantics: DYN_NOT flips, br_if jumps on truthy.
+        self.emit(Op::DYN_TO_BOOL);
+        self.emit(Op::DYN_NOT);
+        // br_if_label 1 → jump to $exit when has_more was 0.
+        self.emit_u8(Op::BR_IF_LABEL, 1);
+        // Pop the value into `var`.
+        let var_slot = self.scope_mut().define(var);
+        self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
+
+        // Compile loop body inside a `$body` block so `continue` can
+        // target it without rerunning the advance.
+        let body_block = self.chunk().emit_block(line);
+        self.label_depth += 1;
+        let break_depth = self.label_depth - 2; // $exit
+        let continue_depth = self.label_depth - 0; // $body
+        self.loops.push(LoopCtx {
+            label: self.pending_label.take(),
+            break_label_depth: break_depth,
+            continue_label_depth: continue_depth,
+        });
+        for s in body { self.compile_stmt(s)?; }
+        self.loops.pop();
+        self.chunk().emit_end(line);
+        self.chunk().patch_block(body_block);
+        self.label_depth -= 1;
+
+        // Continue the loop.
+        self.emit_u8(Op::BR_LABEL, 0);
+        self.chunk().emit_end(line);
+        self.chunk().patch_loop(loop_patch);
+        self.chunk().emit_end(line);
+        self.chunk().patch_block(block_patch);
+        self.label_depth -= 2;
+
+        if let Some(else_stmts) = else_body {
+            for s in else_stmts { self.compile_stmt(s)?; }
+        }
+        Ok(())
+    }
 
     /// Arity of the currently-compiling function if the pre-scan tagged
     /// it multi-return, else `None`. Driven off `current_func_name` so
@@ -282,6 +381,12 @@ impl Compiler {
     fn scope_mut(&mut self) -> &mut Scope { self.scopes.last_mut().unwrap() }
     fn chunk(&mut self) -> &mut Chunk { &mut self.chunks[self.current] }
 
+    fn reserve_local_slot(&mut self, slot: u16) {
+        self.chunks[self.current].local_count = self.chunks[self.current]
+            .local_count
+            .max(slot + 1);
+    }
+
     fn emit(&mut self, op: Op) { let l = self.line; self.chunks[self.current].emit_op(op, l); }
     fn emit_u16(&mut self, op: Op, v: u16) { let l = self.line; self.chunks[self.current].emit_op_u16(op, v, l); }
     fn emit_u8(&mut self, op: Op, v: u8) { let l = self.line; self.chunks[self.current].emit_op_u8(op, v, l); }
@@ -368,9 +473,22 @@ impl Compiler {
             ExprKind::This | ExprKind::Super => self.current_class.clone().map(|c| self.canon(&c)),
             ExprKind::Ident(name) if is_self_ident(self, name) =>
                 self.current_class.clone().map(|c| self.canon(&c)),
-            // Plain identifier → it's a field name (class field) or local
-            // variable name. The source-stable identifier IS the key.
-            ExprKind::Ident(name) => Some(self.canon(name)),
+            // Plain identifier. If it's a **class field** on the enclosing
+            // type (designer-style `Me.btn1.Click += h` where the walker
+            // stripped the `Me.`), the identifier name IS the key. But if
+            // it's a **local variable** holding a freshly-constructed
+            // control with a user-assigned `.Name`, the compile-time
+            // variable name ("btn") and the runtime widget name ("b1")
+            // diverge — so fall through to the runtime extraction path
+            // which reads `__control_name` off the object.
+            ExprKind::Ident(name) => {
+                let is_class_field = if let Some(ref cn) = self.current_class {
+                    self.pending_classes.get(cn.as_str())
+                        .map(|pc| pc.fields.iter().any(|f| f.eq_ignore_ascii_case(name)))
+                        .unwrap_or(false)
+                } else { false };
+                if is_class_field { Some(self.canon(name)) } else { None }
+            }
             // `Me.btn` / `this.btn` → the field name on the form/class.
             ExprKind::Member { object, field, .. } => {
                 let is_self = matches!(&object.kind, ExprKind::This | ExprKind::Super)
@@ -394,6 +512,40 @@ impl Compiler {
 
     fn canon(&self, name: &str) -> String {
         if self.case_sensitive { name.to_string() } else { name.to_lowercase() }
+    }
+
+    fn normalize_type_hint(type_hint: &str) -> String {
+        type_hint.trim().to_lowercase()
+    }
+
+    fn is_string_type_hint(type_hint: &str) -> bool {
+        let normalized = Self::normalize_type_hint(type_hint);
+        normalized == "string"
+            || normalized == "system.string"
+            || normalized.ends_with(".string")
+    }
+
+    fn lookup_var_type_hint(&self, name: &str) -> Option<&str> {
+        if let Some(type_hint) = self.scope().resolve_type(name) {
+            return Some(type_hint);
+        }
+        if !self.case_sensitive {
+            if let Some(type_hint) = self.scope().resolve_type_ci(name) {
+                return Some(type_hint);
+            }
+        }
+        let cname = self.canon(name);
+        self.global_type_hints.get(&cname).map(|s| s.as_str())
+    }
+
+    fn expr_is_known_string_receiver(&self, expr: &Expression) -> bool {
+        match &expr.kind {
+            ExprKind::Lit(Literal::Str(_)) | ExprKind::Interpolation(_) => true,
+            ExprKind::Ident(name) => self
+                .lookup_var_type_hint(name)
+                .is_some_and(Self::is_string_type_hint),
+            _ => false,
+        }
     }
 
     fn emit_var_get(&mut self, name: &str) {
@@ -421,11 +573,7 @@ impl Compiler {
         // dotted-name resolution that returns InstanceMember { local: "field" }
         // would fall through to global_get and read null.
         if self.profile.implicit_self_fields && self.is_class_field(name) {
-            let self_kw = self.profile.self_keyword.clone();
-            if let Some(self_slot) = self.scope().resolve(&self_kw)
-                .or_else(|| self.scope().resolve_ci(&self_kw))
-            {
-                self.emit_u16(Op::LOCAL_GET, self_slot);
+            if self.emit_self_ref() {
                 let cname = self.canon(name);
                 let idx = self.str_const(&cname);
                 self.emit_u16(Op::STRUCT_GET, idx);
@@ -471,6 +619,19 @@ impl Compiler {
                 return;
             }
         }
+        if self.profile.implicit_self_fields && self.is_class_field(name) {
+            let value_slot = self.scope_mut().define("__implicit_self_value");
+            self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+            if self.emit_self_ref() {
+                self.emit_u16(Op::LOCAL_GET, value_slot);
+                let cname = self.canon(name);
+                let idx = self.str_const(&cname);
+                self.emit_u16(Op::STRUCT_SET, idx);
+                self.emit(Op::DROP);
+                return;
+            }
+            self.emit_u16(Op::LOCAL_GET, value_slot);
+        }
         // Global — canonicalize name for case-insensitive languages
         let cname = self.canon(name);
         let idx = self.str_const(&cname); self.emit_u16(Op::GLOBAL_SET, idx); self.emit(Op::DROP);
@@ -514,6 +675,23 @@ impl Compiler {
                 } else {
                     break;
                 }
+            }
+        }
+        false
+    }
+
+    fn emit_self_ref(&mut self) -> bool {
+        let self_kw = self.profile.self_keyword.clone();
+        if let Some(self_slot) = self.scope().resolve(&self_kw)
+            .or_else(|| self.scope().resolve_ci(&self_kw))
+        {
+            self.emit_u16(Op::LOCAL_GET, self_slot);
+            return true;
+        }
+        if self.scopes.len() > 1 {
+            if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, &self_kw) {
+                self.emit_u8(Op::UPVALUE_GET, uv);
+                return true;
             }
         }
         false
@@ -565,6 +743,7 @@ impl Compiler {
                         let fn_tmp = self.scope_mut().define("__fn");
                         self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
                         let obj_tmp = self.scope_mut().define("__obj");
+                        self.reserve_local_slot(obj_tmp);
                         self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, fn_tmp);
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -779,35 +958,45 @@ impl Compiler {
 
             // ── ForIn / ForOf ───────────────────────────────────────────
             StmtKind::ForIn { var, iter, body, else_body, of, .. } => {
-                self.compile_expr(iter)?;
-                if !of {
-                    let idx = self.import("vybe:object", "keys");
-                    self.emit_host_call(idx, 1);
-                }
-                let arr_slot = self.scope_mut().define("__forin_arr");
-                self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
-                let idx_slot = self.scope_mut().define("__forin_idx");
-                let line = self.line;
-                let lp = common::loops::emit_for_in_start(
-                    &mut self.chunks, self.current, arr_slot, idx_slot, line,
-                );
-                // for_in_start emits: block + loop + cond + block $body = 3 labels
-                let break_depth = self.label_depth + 1; // outer block
-                let continue_depth = self.label_depth + 3; // body block (innermost)
-                self.label_depth += 3;
-                let var_slot = self.scope_mut().define(var);
-                self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
-                self.loop_states.push(lp);
-                self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth });
-                for s in body { self.compile_stmt(s)?; }
-                self.loops.pop();
-                let lp = self.loop_states.pop().unwrap();
-                common::loops::emit_for_in_end(
-                    &mut self.chunks, self.current, idx_slot, lp, line,
-                );
-                self.label_depth -= 3;
-                if let Some(else_stmts) = else_body {
-                    for s in else_stmts { self.compile_stmt(s)?; }
+                // Specialisation: if `iter` is a direct call to a
+                // function the pre-pass tagged as a true generator,
+                // emit a `GEN_NEXT`-driven loop rather than the
+                // array-index loop. This is the only path that makes
+                // `for v in @generator_fn()` iterate lazily via the
+                // WASM stack-switching coroutine machinery.
+                if self.is_direct_generator_call(iter) {
+                    self.compile_generator_for_in(var, iter, body, else_body.as_deref())?;
+                } else {
+                    self.compile_expr(iter)?;
+                    if !of {
+                        let idx = self.import("vybe:object", "keys");
+                        self.emit_host_call(idx, 1);
+                    }
+                    let arr_slot = self.scope_mut().define("__forin_arr");
+                    self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
+                    let idx_slot = self.scope_mut().define("__forin_idx");
+                    let line = self.line;
+                    let lp = common::loops::emit_for_in_start(
+                        &mut self.chunks, self.current, arr_slot, idx_slot, line,
+                    );
+                    // for_in_start emits: block + loop + cond + block $body = 3 labels
+                    let break_depth = self.label_depth + 1; // outer block
+                    let continue_depth = self.label_depth + 3; // body block (innermost)
+                    self.label_depth += 3;
+                    let var_slot = self.scope_mut().define(var);
+                    self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
+                    self.loop_states.push(lp);
+                    self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth });
+                    for s in body { self.compile_stmt(s)?; }
+                    self.loops.pop();
+                    let lp = self.loop_states.pop().unwrap();
+                    common::loops::emit_for_in_end(
+                        &mut self.chunks, self.current, idx_slot, lp, line,
+                    );
+                    self.label_depth -= 3;
+                    if let Some(else_stmts) = else_body {
+                        for s in else_stmts { self.compile_stmt(s)?; }
+                    }
                 }
             }
 
@@ -1658,9 +1847,12 @@ impl Compiler {
                     let idx = self.str_const(&cn);
                     self.emit_u16(Op::GLOBAL_SET, idx);
                     self.emit(Op::DROP);
+                    if let Some(type_hint) = decl.type_hint.as_deref() {
+                        self.global_type_hints.insert(cn.clone(), Self::normalize_type_hint(type_hint));
+                    }
                     self.defined_globals.insert(cn);
                 } else {
-                    let slot = self.scope_mut().define(name);
+                    let slot = self.scope_mut().define_typed(name, decl.type_hint.clone());
                     self.emit_u16(Op::LOCAL_SET, slot);
                     self.emit(Op::DROP);
                 }
@@ -3042,9 +3234,9 @@ fn merge_partial_classes(body: &[Statement], case_sensitive: bool) -> Vec<Statem
                 // Clone the first declaration; we'll mutate its members.
                 let mut merged = stmt.clone();
                 if let StmtKind::ClassDecl {
-                    members: ref mut m,
-                    parents: ref mut p,
-                    interfaces: ref mut iface,
+                    members: m,
+                    parents: p,
+                    interfaces: iface,
                     ..
                 } = &mut merged.kind {
                     // Append members from every later declaration of this name.

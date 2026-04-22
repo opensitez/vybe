@@ -34,7 +34,7 @@
 use indexmap::IndexMap;
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::value::{Object, ObjectKind, Value};
-use vybe_bytecode::{HostContext, VM};
+use vybe_bytecode::VM;
 
 // ── Map: variant-backed O(1) impl ─────────────────────────────────────
 

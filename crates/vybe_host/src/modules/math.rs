@@ -22,7 +22,10 @@ pub fn register(vm: &mut VM) {
     }));
     vm.register_host_fn("vybe:math", "sin",  Box::new(|_ctx, a| Value::F64(f(a, 0).sin())));
     vm.register_host_fn("vybe:math", "cos",  Box::new(|_ctx, a| Value::F64(f(a, 0).cos())));
-    vm.register_host_fn("vybe:math", "log",  Box::new(|_ctx, a| Value::F64(f(a, 0).ln())));
+    vm.register_host_fn("vybe:math", "log",  Box::new(|_ctx, a| {
+        let x = f(a, 0);
+        if a.len() > 1 { Value::F64(x.ln() / f(a, 1).ln()) } else { Value::F64(x.ln()) }
+    }));
     vm.register_host_fn("vybe:math", "PI",   Box::new(|_ctx, _| Value::F64(std::f64::consts::PI)));
     vm.register_host_fn("vybe:math", "E",    Box::new(|_ctx, _| Value::F64(std::f64::consts::E)));
     vm.register_host_fn("vybe:math", "sign",  Box::new(|_ctx, a| {
@@ -39,6 +42,10 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("vybe:math", "acos",  Box::new(|_ctx, a| Value::F64(f(a, 0).acos())));
     vm.register_host_fn("vybe:math", "atan",  Box::new(|_ctx, a| Value::F64(f(a, 0).atan())));
     vm.register_host_fn("vybe:math", "exp",   Box::new(|_ctx, a| Value::F64(f(a, 0).exp())));
+    vm.register_host_fn("vybe:math", "sinh",  Box::new(|_ctx, a| Value::F64(f(a, 0).sinh())));
+    vm.register_host_fn("vybe:math", "cosh",  Box::new(|_ctx, a| Value::F64(f(a, 0).cosh())));
+    vm.register_host_fn("vybe:math", "tanh",  Box::new(|_ctx, a| Value::F64(f(a, 0).tanh())));
+    vm.register_host_fn("vybe:math", "clamp", Box::new(|_ctx, a| Value::F64(f(a, 0).clamp(f(a, 1), f(a, 2)))));
     vm.register_host_fn("vybe:math", "clz32", Box::new(|_ctx, a| Value::F64((f(a, 0) as u32).leading_zeros() as f64)));
 
     // VB-specific math functions

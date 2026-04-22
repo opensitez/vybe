@@ -28,6 +28,12 @@
 //!   constructor table, `is_noop_method`, `is_known_constant`, and the
 //!   PascalCase name-shape helpers.
 //!
+//! - **`core`** — shared `.NET` library metadata that multiple framework
+//!   adapters can reuse.
+//!
+//! - **`winforms`** — the current GUI/framework adapter, including the
+//!   wrapper-class hierarchy that used to live directly under `dotnet/classes`.
+//!
 //! ## Future extensions
 //!
 //! When adding a real `Form` base class (and `Control` / `Button` / `TextBox`
@@ -45,7 +51,11 @@ pub mod imports;
 pub mod namespaces;
 pub mod host_map;
 pub mod types;
-pub mod classes;
+pub mod class_exports;
+pub mod component_classes;
+mod descriptor;
+pub mod core;
+pub mod winforms;
 
 // ─── Public re-exports ───────────────────────────────────────────────────────
 //
@@ -62,22 +72,365 @@ pub use resolver::{
     resolve_interface_call,
 };
 
-pub use imports::default_interface_imports;
+pub use core::dotnet_core_component_descriptor;
+pub use winforms::dotnet_winforms_component_descriptor;
+pub use winforms::classes;
 
-pub use namespaces::{
-    is_namespace_root,
-    namespace_roots,
-};
+use std::sync::LazyLock;
+use std::collections::HashSet;
+use vybe_bytecode::component_model::{ComponentDescriptor, ComponentItemKind, ConstructorTarget, MethodBody};
 
-pub use host_map::{
-    namespace_to_host_module,
-    map_host_func,
-};
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StaticMethodTarget {
+    Host { module: String, func: String },
+    Common { emit: String },
+}
 
-pub use types::{
-    is_noop_method,
-    is_known_constant,
-    known_types,
-    capitalize_control_name,
-    capitalize_data_type,
-};
+pub struct DotnetSurface {
+    default_imports: Vec<String>,
+    namespace_roots: HashSet<String>,
+    noop_methods: HashSet<String>,
+    known_constants: HashSet<String>,
+    runtime_collection_methods: HashSet<String>,
+    component_descriptor: ComponentDescriptor,
+}
+
+static DOTNET_SURFACE_CACHE: LazyLock<DotnetSurface> = LazyLock::new(build_dotnet_surface);
+
+fn build_dotnet_surface() -> DotnetSurface {
+    let component_descriptor = dotnet_component_descriptor();
+    DotnetSurface {
+        default_imports: imports::default_interface_imports(),
+        namespace_roots: namespaces::namespace_roots(),
+        noop_methods: winforms::noop_methods()
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect(),
+        known_constants: core::known_constants()
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect(),
+        runtime_collection_methods: collection_runtime_method_names(&component_descriptor),
+        component_descriptor,
+    }
+}
+
+pub fn surface() -> &'static DotnetSurface {
+    &DOTNET_SURFACE_CACHE
+}
+
+impl DotnetSurface {
+    pub fn default_imports(&self) -> &[String] {
+        &self.default_imports
+    }
+
+    pub fn namespace_roots(&self) -> &HashSet<String> {
+        &self.namespace_roots
+    }
+
+    pub fn is_namespace_root(&self, name: &str) -> bool {
+        self.namespace_roots.contains(&name.to_lowercase())
+    }
+
+    pub fn is_noop_method(&self, name: &str) -> bool {
+        self.noop_methods.contains(&name.to_lowercase())
+    }
+
+    pub fn is_known_constant(&self, name: &str) -> bool {
+        self.known_constants.contains(&name.to_lowercase())
+    }
+
+    pub fn uses_runtime_collection_dispatch(&self, name: &str) -> bool {
+        self.runtime_collection_methods.contains(&name.to_lowercase())
+    }
+
+    pub fn component_descriptor(&self) -> &ComponentDescriptor {
+        &self.component_descriptor
+    }
+
+    pub fn lookup_constructor(&self, name: &str) -> Option<ConstructorTarget> {
+        self.component_descriptor
+            .classes
+            .iter()
+            .find(|class| class.name.eq_ignore_ascii_case(name))
+            .and_then(|class| class.constructor.as_ref())
+            .and_then(|ctor| ctor.backing.clone())
+    }
+
+    pub fn lookup_static_method(&self, prefix: &str, method_parts: &[&str]) -> Option<StaticMethodTarget> {
+        let (interface_name, type_name, method_name) = match method_parts {
+            [method_name] if prefix.eq_ignore_ascii_case("application") => {
+                ("system.windows.forms".to_string(), "application".to_string(), *method_name)
+            }
+            [method_name] => {
+                let mut collected: Vec<&str> = prefix.split('.').collect();
+                let type_name = collected.pop()?;
+                (collected.join("."), type_name.to_string(), *method_name)
+            }
+            [type_name, method_name] => (prefix.to_string(), (*type_name).to_string(), *method_name),
+            _ => return None,
+        };
+
+        self.component_descriptor
+            .exports
+            .iter()
+            .find_map(|export| {
+                let ComponentItemKind::Class(class) = &export.kind else {
+                    return None;
+                };
+                let export_interface = export
+                    .interface
+                    .strip_prefix("dotnet.")
+                    .unwrap_or(export.interface.as_str())
+                    .to_lowercase();
+                if export_interface != interface_name || !class.name.eq_ignore_ascii_case(&type_name) {
+                    return None;
+                }
+                class.methods.iter().find_map(|method| {
+                    if !method.is_static || !method.name.eq_ignore_ascii_case(method_name) {
+                        return None;
+                    }
+                    match &method.body {
+                        MethodBody::HostCall(target) => Some(StaticMethodTarget::Host {
+                            module: target.module.clone(),
+                            func: target.name.clone(),
+                        }),
+                        MethodBody::Common(name) => Some(StaticMethodTarget::Common { emit: name.clone() }),
+                        _ => None,
+                    }
+                })
+            })
+    }
+}
+
+pub fn default_interface_imports() -> Vec<String> {
+    surface().default_imports().to_vec()
+}
+
+pub fn namespace_roots() -> HashSet<String> {
+    surface().namespace_roots().clone()
+}
+
+pub fn is_namespace_root(name: &str) -> bool {
+    surface().is_namespace_root(name)
+}
+
+pub fn is_noop_method(name: &str) -> bool {
+    surface().is_noop_method(name)
+}
+
+pub fn is_known_constant(name: &str) -> bool {
+    surface().is_known_constant(name)
+}
+
+pub fn uses_runtime_collection_dispatch(name: &str) -> bool {
+    surface().uses_runtime_collection_dispatch(name)
+}
+
+pub fn namespace_to_host_module(prefix: &str) -> &str {
+    host_map::namespace_to_host_module(prefix)
+}
+
+pub fn map_host_func(module: &str, func: &str) -> String {
+    host_map::map_host_func(module, func)
+}
+
+pub fn static_method_mappings() -> &'static [host_map::DotnetStaticMethodMapping] {
+    host_map::static_method_mappings()
+}
+
+pub fn known_type_mappings() -> &'static [types::KnownTypeMapping] {
+    types::known_type_mappings()
+}
+
+pub fn lookup_known_type(name: &str) -> Option<&'static types::KnownTypeMapping> {
+    types::lookup_known_type(name)
+}
+
+pub fn known_types() -> std::collections::HashMap<String, types::KnownTypeTarget> {
+    types::known_types()
+}
+
+pub fn capitalize_control_name(name: &str) -> String {
+    types::capitalize_control_name(name)
+}
+
+pub fn capitalize_data_type(name: &str) -> String {
+    types::capitalize_data_type(name)
+}
+
+/// Build the typed `.NET` core library descriptor.
+///
+/// This covers the shared non-WinForms surface that can be reused by multiple
+/// .NET-shaped framework adapters.
+/// Build the typed `.NET` framework descriptor as a compatibility merge.
+///
+/// Existing callers still see a single actor, but the metadata is now
+/// partitioned so future framework adapters like MAUI can load separately.
+pub fn dotnet_component_descriptor() -> ComponentDescriptor {
+    let mut merged = dotnet_core_component_descriptor();
+    descriptor::merge_component_descriptor(&mut merged, dotnet_winforms_component_descriptor());
+    merged.name = "dotnet".to_string();
+    merged
+}
+
+pub fn lookup_component_constructor(name: &str) -> Option<ConstructorTarget> {
+    surface().lookup_constructor(name)
+}
+
+pub fn lookup_component_static_method(prefix: &str, method_parts: &[&str]) -> Option<StaticMethodTarget> {
+    surface().lookup_static_method(prefix, method_parts)
+}
+
+fn collection_runtime_method_names(descriptor: &ComponentDescriptor) -> HashSet<String> {
+    descriptor
+        .exports
+        .iter()
+        .filter_map(|export| {
+            if !export.interface.starts_with("dotnet.System.Collections") {
+                return None;
+            }
+            let ComponentItemKind::Class(class) = &export.kind else {
+                return None;
+            };
+            Some(class)
+        })
+        .flat_map(|class| class.methods.iter())
+        .filter(|method| !method.is_static)
+        .map(|method| method.name.to_lowercase())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn test_dotnet_component_descriptor_exports_wrapped_classes() {
+        let descriptor = dotnet_component_descriptor();
+        let mut expected_exports = HashSet::new();
+        for export in class_exports::dotnet_class_exports() {
+            expected_exports.insert(descriptor::class_export_key(export.interface, &export.class.name));
+        }
+
+        assert_eq!(descriptor.classes.len(), expected_exports.len());
+        assert_eq!(descriptor.exports.len(), expected_exports.len());
+        assert!(descriptor
+            .exports
+            .iter()
+            .any(|exp| exp.interface == "dotnet.System.Windows.Forms" && exp.name == "Form"));
+        assert!(descriptor
+            .exports
+            .iter()
+            .any(|exp| exp.interface == "dotnet.System.Drawing" && exp.name == "Graphics"));
+        assert!(descriptor
+            .exports
+            .iter()
+            .any(|exp| exp.interface == "dotnet.System.Text" && exp.name == "StringBuilder"));
+        assert!(descriptor
+            .exports
+            .iter()
+            .any(|exp| exp.interface == "dotnet.System" && exp.name == "Console"));
+        assert!(descriptor
+            .imports
+            .iter()
+            .any(|imp| imp.interface == "vybe:gui" && imp.name == crate::emitter::gui::HOST_FN_SET_PROPERTY));
+        assert!(descriptor
+            .imports
+            .iter()
+            .any(|imp| imp.interface == "vybe:gui" && imp.name == "new_Form"));
+        assert!(descriptor
+            .imports
+            .iter()
+            .any(|imp| imp.interface == "vybe:types" && imp.name == "stringBuilderNew"));
+        let console = descriptor
+            .classes
+            .iter()
+            .find(|class| class.name == "Console")
+            .expect("Console class export");
+        assert!(console.methods.iter().any(|method| method.is_static && method.name == "WriteLine"));
+    }
+
+    #[test]
+    fn test_dotnet_core_component_descriptor_excludes_winforms_surface() {
+        let descriptor = dotnet_core_component_descriptor();
+
+        assert!(descriptor
+            .exports
+            .iter()
+            .any(|exp| exp.interface == "dotnet.System" && exp.name == "Console"));
+        assert!(descriptor
+            .exports
+            .iter()
+            .any(|exp| exp.interface == "dotnet.System.Text" && exp.name == "StringBuilder"));
+        assert!(!descriptor
+            .exports
+            .iter()
+            .any(|exp| exp.interface == "dotnet.System.Windows.Forms" && exp.name == "Form"));
+        assert!(!descriptor
+            .imports
+            .iter()
+            .any(|imp| imp.interface == "vybe:gui" && imp.name == crate::emitter::gui::HOST_FN_RUN_APPLICATION));
+    }
+
+    #[test]
+    fn test_dotnet_winforms_component_descriptor_contains_framework_surface() {
+        let descriptor = dotnet_winforms_component_descriptor();
+
+        assert!(descriptor
+            .exports
+            .iter()
+            .any(|exp| exp.interface == "dotnet.System.Windows.Forms" && exp.name == "Form"));
+        assert!(descriptor
+            .exports
+            .iter()
+            .any(|exp| exp.interface == "dotnet.System.Windows.Forms" && exp.name == "Application"));
+        assert!(descriptor
+            .imports
+            .iter()
+            .any(|imp| imp.interface == "vybe:gui" && imp.name == crate::emitter::gui::HOST_FN_RUN_APPLICATION));
+        assert!(!descriptor
+            .exports
+            .iter()
+            .any(|exp| exp.interface == "dotnet.System" && exp.name == "Console"));
+    }
+
+    #[test]
+    fn test_lookup_component_constructor_uses_descriptor_surface() {
+        let binding = lookup_component_constructor("StringBuilder").expect("StringBuilder constructor");
+        assert_eq!(binding, ConstructorTarget::Host(vybe_bytecode::component_model::HostTarget::new("vybe:types", "stringBuilderNew")));
+    }
+
+    #[test]
+    fn test_lookup_component_constructor_supports_common_emit() {
+        let binding = lookup_component_constructor("List").expect("List constructor");
+        assert_eq!(binding, ConstructorTarget::Common("collections.new".to_string()));
+    }
+
+    #[test]
+    fn test_lookup_component_static_method_uses_descriptor_surface() {
+        let binding = lookup_component_static_method("system.console", &["writeline"])
+            .expect("Console.WriteLine static method");
+        assert_eq!(binding, StaticMethodTarget::Host {
+            module: "wasi:cli".to_string(),
+            func: "log".to_string(),
+        });
+    }
+
+    #[test]
+    fn test_runtime_collection_dispatch_uses_descriptor_surface() {
+        assert!(uses_runtime_collection_dispatch("Add"));
+        assert!(uses_runtime_collection_dispatch("ContainsKey"));
+        assert!(uses_runtime_collection_dispatch("Clear"));
+        assert!(!uses_runtime_collection_dispatch("WriteLine"));
+    }
+
+    #[test]
+    fn test_dotnet_surface_cache_merges_metadata_predicates() {
+        assert!(default_interface_imports().contains(&"system.windows.forms".to_string()));
+        assert!(is_namespace_root("application"));
+        assert!(is_noop_method("SuspendLayout"));
+        assert!(is_known_constant("PI"));
+    }
+}

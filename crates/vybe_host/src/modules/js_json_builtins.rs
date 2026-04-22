@@ -25,7 +25,7 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::value::{Object, ObjectKind, TypedElemKind, Value};
-use vybe_bytecode::{HostContext, VM};
+use vybe_bytecode::VM;
 
 pub fn register(vm: &mut VM) {
     vm.register_host_fn("wasm:js-json", "stringify",

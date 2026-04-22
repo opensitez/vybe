@@ -35,7 +35,7 @@ Dim f As New Form1()
     assert!(!text.is_empty(), "Expected a Text property for form1");
 }
 
-/// A02. Application.Run emits RunApplication side effect.
+/// A02. Application.Run triggers the GUI launch host path.
 #[test]
 fn a02_application_run_emits_run_application() {
     let (_vm, gui, _) = run_vb_gui(r#"

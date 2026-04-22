@@ -56,7 +56,8 @@ pub fn emit_set_const_key(chunks: &mut [Chunk], current: usize, key: &str, line:
 /// Stack before: [dict, key, value]
 /// Stack after: [dict]
 pub fn emit_set_dynamic(chunks: &mut [Chunk], current: usize, line: u32) {
-    crate::emitter::collections::emit_set(chunks, current, line); chunks[current].emit_op(Op::DROP, line);
+    emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
 }
 
 // ── Map/Set method helpers (used by all languages) ──────────────────────
@@ -223,7 +224,7 @@ pub fn emit_get_const_key(chunks: &mut [Chunk], current: usize, key: &str, line:
 /// Emit bytecode to get a value from a dict by dynamic key (on stack).
 /// Stack before: [dict, key]  Stack after: [value_or_null]
 pub fn emit_get_dynamic(chunks: &mut [Chunk], current: usize, line: u32) {
-    crate::emitter::collections::emit_get(chunks, current, line);
+    emit_get(chunks, current, line);
 }
 
 // ── Enumeration (pure WASM — no host calls) ─────────────────────────────

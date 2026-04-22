@@ -252,6 +252,9 @@ pub fn register(vm: &mut VM) {
     let app = ensure_namespace(vm, &["Window", "Forms", "Application"]);
     set_prop(&app, "run", host_fn_ref(vm, "vybe:gui", "runApplication"));
     set_prop(&app, "exit", host_fn_ref(vm, "wasi:cli", "exit"));
+    if let Some(openforms) = vm.globals.get("__openforms").cloned() {
+        set_prop(&app, "openforms", openforms);
+    }
 
     // Event args — empty objects
     let null = Value::Null;
@@ -354,4 +357,7 @@ pub fn register(vm: &mut VM) {
     let sys_app = ensure_namespace(vm, &["System", "Windows", "Forms", "Application"]);
     set_prop(&sys_app, "run", host_fn_ref(vm, "vybe:gui", "runApplication"));
     set_prop(&sys_app, "exit", host_fn_ref(vm, "wasi:cli", "exit"));
+    if let Some(openforms) = vm.globals.get("__openforms").cloned() {
+        set_prop(&sys_app, "openforms", openforms);
+    }
 }

@@ -1013,8 +1013,21 @@ fn inject_handles_into_constructor(members: &mut Vec<ClassMember>) {
     }
 
     // Find the constructor (or create one) and append the AddHandler statements.
+    // VB constructors can appear either as an explicit `Sub New()` method or as a
+    // dedicated `ClassMember::Constructor` node, depending on which parser path
+    // produced the member. Handles normalization must attach to whichever form the
+    // class already uses; otherwise `compile_class` can end up ignoring the
+    // injected AddHandler body by selecting the explicit `Sub New()` body first.
+    let has_explicit_new = members.iter().any(|m| {
+        matches!(m,
+            ClassMember::Method(stmt)
+                if matches!(&stmt.kind,
+                    StmtKind::FunctionDecl { name, .. } if name.eq_ignore_ascii_case("new")
+                )
+        )
+    });
     let has_ctor = members.iter().any(|m| matches!(m, ClassMember::Constructor { .. }));
-    if !has_ctor {
+    if !has_ctor && !has_explicit_new {
         members.push(ClassMember::Constructor {
             params: Vec::new(),
             body: new_stmts,
@@ -1023,9 +1036,20 @@ fn inject_handles_into_constructor(members: &mut Vec<ClassMember>) {
         });
     } else {
         for m in members.iter_mut() {
-            if let ClassMember::Constructor { body, .. } = m {
-                body.extend(new_stmts.drain(..));
-                break;
+            match m {
+                ClassMember::Constructor { body, .. } => {
+                    body.extend(new_stmts.drain(..));
+                    break;
+                }
+                ClassMember::Method(stmt) => {
+                    if let StmtKind::FunctionDecl { name, body, .. } = &mut stmt.kind {
+                        if name.eq_ignore_ascii_case("new") {
+                            body.extend(new_stmts.drain(..));
+                            break;
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -2391,6 +2415,16 @@ fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expres
             } else {
                 vec![]
             };
+            if name.eq_ignore_ascii_case("Item") && !arguments.is_empty() {
+                let mut indexed = expr;
+                for arg in arguments {
+                    indexed = Expression::new(ExprKind::Index {
+                        object: Box::new(indexed),
+                        index: Box::new(arg.value),
+                    });
+                }
+                return Ok(indexed);
+            }
             let callee = Expression::new(ExprKind::Member {
                 object: Box::new(expr),
                 field: name,
@@ -3469,6 +3503,24 @@ fn parse_l_value_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                 } else {
                     vec![]
                 };
+
+                // VB default indexed property syntax often surfaces as
+                // `.Item(...)`. Normalize that to the same Index AST shape
+                // used by C# indexers so both dotnet frontends land on the
+                // same common representation before the compiler sees it.
+                if let ExprKind::Member { object, field, .. } = &expr.kind {
+                    if field.eq_ignore_ascii_case("Item") && !args.is_empty() {
+                        let mut indexed = (**object).clone();
+                        for idx_expr in args {
+                            indexed = Expression::new(ExprKind::Index {
+                                object: Box::new(indexed),
+                                index: Box::new(idx_expr),
+                            });
+                        }
+                        expr = indexed;
+                        continue;
+                    }
+                }
 
                 // Convert to Index expression (array access)
                 if args.len() == 1 {

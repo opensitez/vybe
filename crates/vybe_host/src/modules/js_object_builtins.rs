@@ -16,7 +16,7 @@
 
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::value::{Object, ObjectKind, Value};
-use vybe_bytecode::{HostContext, VM};
+use vybe_bytecode::VM;
 
 /// Magic property name used to mark an object as frozen / sealed /
 /// non-extensible. Matches existing vybe:object module's convention.

@@ -9,20 +9,19 @@ pub fn register(vm: &mut VM) {
 
     // System.Net.Sockets.TcpClient
     let tcp = ensure_namespace(vm, &["System", "Net", "Sockets", "TcpClient"]);
-    set_prop(&tcp, "new", host_fn_ref(vm, "vybe:net", "tcpConnect"));
+    set_prop(&tcp, "new", host_fn_ref(vm, "dotnet:sockets", "tcpClientNew"));
+
+    let listener = ensure_namespace(vm, &["System", "Net", "Sockets", "TcpListener"]);
+    set_prop(&listener, "new", host_fn_ref(vm, "dotnet:sockets", "tcpListenerNew"));
+
+    let udp = ensure_namespace(vm, &["System", "Net", "Sockets", "UdpClient"]);
+    set_prop(&udp, "new", host_fn_ref(vm, "dotnet:sockets", "udpClientNew"));
 
     // System.Net.Dns
     let dns = ensure_namespace(vm, &["System", "Net", "Dns"]);
-    set_prop(&dns, "gethostaddresses", host_fn_ref(vm, "vybe:net", "dnsResolve"));
-    set_prop(&dns, "gethostentry", host_fn_ref(vm, "vybe:net", "dnsResolve"));
-
-    // System.IO.StreamReader / StreamWriter
-    let sr = ensure_namespace(vm, &["System", "IO", "StreamReader"]);
-    set_prop(&sr, "new", host_fn_ref(vm, "vybe:net", "streamReaderNew"));
-
-    let sw = ensure_namespace(vm, &["System", "IO", "StreamWriter"]);
-    set_prop(&sw, "new", host_fn_ref(vm, "vybe:net", "streamWriterNew"));
-
+    set_prop(&dns, "gethostaddresses", host_fn_ref(vm, "dotnet:net", "dnsGetHostAddresses"));
+    set_prop(&dns, "gethostentry", host_fn_ref(vm, "dotnet:net", "dnsGetHostEntry"));
+    set_prop(&dns, "gethostname", host_fn_ref(vm, "dotnet:net", "dnsGetHostName"));
     // System.Security.Cryptography
     let sha = ensure_namespace(vm, &["System", "Security", "Cryptography", "SHA256"]);
     set_prop(&sha, "create", host_fn_ref(vm, "vybe:crypto", "sha256"));

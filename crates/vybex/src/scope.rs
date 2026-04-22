@@ -6,6 +6,7 @@ pub struct Local {
     pub depth: u32,
     pub slot: u16,
     pub is_captured: bool,
+    pub type_hint: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -34,8 +35,18 @@ impl Scope {
     }
 
     pub fn define(&mut self, name: &str) -> u16 {
+        self.define_typed(name, None)
+    }
+
+    pub fn define_typed(&mut self, name: &str, type_hint: Option<String>) -> u16 {
         let slot = self.next_slot;
-        self.locals.push(Local { name: name.to_string(), depth: self.depth, slot, is_captured: false });
+        self.locals.push(Local {
+            name: name.to_string(),
+            depth: self.depth,
+            slot,
+            is_captured: false,
+            type_hint,
+        });
         self.next_slot += 1;
         slot
     }
@@ -50,6 +61,24 @@ impl Scope {
     pub fn resolve_ci(&self, name: &str) -> Option<u16> {
         for l in self.locals.iter().rev() {
             if l.name.eq_ignore_ascii_case(name) { return Some(l.slot); }
+        }
+        None
+    }
+
+    pub fn resolve_type(&self, name: &str) -> Option<&str> {
+        for l in self.locals.iter().rev() {
+            if l.name == name {
+                return l.type_hint.as_deref();
+            }
+        }
+        None
+    }
+
+    pub fn resolve_type_ci(&self, name: &str) -> Option<&str> {
+        for l in self.locals.iter().rev() {
+            if l.name.eq_ignore_ascii_case(name) {
+                return l.type_hint.as_deref();
+            }
         }
         None
     }

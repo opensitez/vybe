@@ -399,7 +399,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     // Collect them and emit as post-class statements in a wrapping Block.
     let mut static_init_stmts: Vec<Statement> = Vec::new();
     members.retain(|m| {
-        if let ClassMember::Method(ref func) = m {
+        if let ClassMember::Method(func) = m {
             if let StmtKind::FunctionDecl { name: ref mname, ref body, ref modifiers, .. } = func.kind {
                 if mname == "__static_init" && modifiers.is_static {
                     static_init_stmts.extend(body.iter().cloned());
@@ -1206,6 +1206,25 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         }
 
         // Arrow functions
+        Rule::yield_expression => {
+            let mut inner = pair.into_inner();
+            let mut is_yield_from = false;
+            let mut value: Option<Expression> = None;
+            while let Some(p) = inner.next() {
+                match p.as_rule() {
+                    Rule::yield_kw => {}
+                    _ if p.as_str() == "*" => { is_yield_from = true; }
+                    _ => {
+                        value = Some(walk_expression(p)?);
+                    }
+                }
+            }
+            if is_yield_from {
+                Ok(ExprKind::YieldFrom(Box::new(value.unwrap_or(Expression::null()))))
+            } else {
+                Ok(ExprKind::Yield(value.map(Box::new)))
+            }
+        }
         Rule::arrow_function | Rule::async_arrow_function => {
             let is_async = pair.as_rule() == Rule::async_arrow_function;
             let mut params = Vec::new();
