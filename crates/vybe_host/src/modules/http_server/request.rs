@@ -155,6 +155,59 @@ pub fn register(vm: &mut VM) {
         with_context(|c| Value::String(Arc::from(c.request_id.as_str())))
             .unwrap_or_else(|| Value::String(Arc::from("")))
     }));
+
+    // Parsed accessors (centralized — every language's adapter uses these) ─
+    vm.register_host_fn("vybe:http/request", "cookies", Box::new(|_ctx, _| {
+        with_context(|c| {
+            let parsed = c.cookies.get_or_init(|| parse_cookies_from_headers(&c.headers));
+            let items: Vec<Value> = parsed.iter()
+                .map(|(n, v)| pair_object(n, v))
+                .collect();
+            array_value(items)
+        }).unwrap_or_else(|| array_value(Vec::new()))
+    }));
+
+    vm.register_host_fn("vybe:http/request", "query_pairs", Box::new(|_ctx, _| {
+        with_context(|c| {
+            let parsed = c.query_pairs.get_or_init(|| parse_query(&c.query));
+            let items: Vec<Value> = parsed.iter()
+                .map(|(n, v)| pair_object(n, v))
+                .collect();
+            array_value(items)
+        }).unwrap_or_else(|| array_value(Vec::new()))
+    }));
+}
+
+// Parsing helpers — the ONE implementation. Every language's stdlib calls
+// the host fn instead of rolling its own parser.
+fn parse_cookies_from_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (n, v) in headers {
+        if !n.eq_ignore_ascii_case("cookie") { continue; }
+        // Multiple Cookie headers per RFC 6265 are joined with `; `.
+        for part in v.split(';') {
+            let part = part.trim();
+            if part.is_empty() { continue; }
+            match part.split_once('=') {
+                Some((name, value)) => {
+                    // Cookie values may be quoted; strip one layer.
+                    let value = value.trim();
+                    let value = value.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(value);
+                    out.push((name.trim().to_string(), value.to_string()));
+                }
+                None => {
+                    out.push((part.to_string(), String::new()));
+                }
+            }
+        }
+    }
+    out
+}
+
+fn parse_query(query: &str) -> Vec<(String, String)> {
+    form_urlencoded::parse(query.as_bytes())
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect()
 }
 
 // Helpers ──────────────────────────────────────────────────────────────────

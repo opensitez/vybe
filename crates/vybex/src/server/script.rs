@@ -78,6 +78,37 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
     };
     vybe_host::register_with_capabilities(&mut vm, &caps);
 
+    // SAPI-style output override: re-register `wasi:cli/log` (what PHP `echo`,
+    // JS `console.log`, and most language `print` calls compile to) to write
+    // to the HTTP response body when a request context is installed. Mirrors
+    // how PHP's real `sapi_module->ub_write` is swapped per SAPI. The
+    // default stderr path stays for anything that reaches the fn with no
+    // context (e.g., inside a callback on a bare thread).
+    vm.register_host_fn("wasi:cli", "log", Box::new(|_ctx, args| {
+        // PHP echo emits one call per argument with arity 1, so we don't
+        // join with spaces here — each call writes its single arg verbatim.
+        // Semantics: "no newline, no joining" matches real PHP `echo`.
+        let mut buf = Vec::<u8>::new();
+        for a in args {
+            match a {
+                vybe_bytecode::Value::String(s) => buf.extend_from_slice(s.as_bytes()),
+                other => buf.extend_from_slice(format!("{}", other).as_bytes()),
+            }
+        }
+        match vybe_host::with_context(|c| {
+            c.response.lock().unwrap().write_bytes(buf.clone());
+        }) {
+            Some(()) => {} // wrote to response
+            None => {
+                // CLI fallback — mirrors original console::register behavior
+                // (println per log call).
+                let parts: Vec<String> = args.iter().map(|v| format!("{}", v)).collect();
+                println!("{}", parts.join(" "));
+            }
+        }
+        vybe_bytecode::Value::Null
+    }));
+
     // Register WASM-named globals (mirrors main.rs). Allows scripts to
     // reference named functions across multi-file projects.
     for (idx, chunk) in chunks.iter().enumerate() {

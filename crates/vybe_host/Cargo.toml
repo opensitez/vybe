@@ -17,3 +17,6 @@ chrono = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }
 indexmap = { workspace = true }
+
+# For the `vybe:http` host module's parsed accessors.
+form_urlencoded = { workspace = true }

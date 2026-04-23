@@ -75,6 +75,8 @@ pub fn build<B>(
         request_id: new_request_id(req),
         body: Mutex::new(body_reader),
         response: Mutex::new(ResponseState::new(Some(tx))),
+        cookies: std::sync::OnceLock::new(),
+        query_pairs: std::sync::OnceLock::new(),
     };
 
     BuiltContext { ctx: Arc::new(ctx), response_rx: rx }

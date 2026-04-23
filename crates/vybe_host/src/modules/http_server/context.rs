@@ -9,7 +9,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Cursor;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Streaming reader over the request body.
 ///
@@ -94,6 +94,15 @@ impl ResponseState {
     /// Flush status + headers on first body write. Idempotent.
     fn flush_headers(&mut self) {
         if self.headers_sent { return; }
+        // Default Content-Type when the script didn't set one. Matches
+        // PHP's default of `text/html; charset=UTF-8`.
+        let has_ct = self.headers.iter().any(|(n, _)| n.eq_ignore_ascii_case("content-type"));
+        if !has_ct {
+            self.headers.push((
+                "Content-Type".to_string(),
+                "text/html; charset=utf-8".to_string(),
+            ));
+        }
         if let Some(tx) = &self.sender {
             let _ = tx.send(ResponseMessage::Headers {
                 status: self.status,
@@ -147,6 +156,11 @@ pub struct RequestContext {
 
     // Outbound response state.
     pub response: Mutex<ResponseState>,
+
+    // Lazily parsed, cached. Parsed once from headers/query per request,
+    // accessed O(1) by every language's adapter thereafter.
+    pub cookies: OnceLock<Vec<(String, String)>>,
+    pub query_pairs: OnceLock<Vec<(String, String)>>,
 }
 
 thread_local! {
