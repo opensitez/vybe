@@ -238,10 +238,12 @@ sort            = { emit = "host:vybe:array:sort",            min_args = 0, max_
 reverse         = { emit = "common:collections.reverse",      min_args = 0, max_args = 0 }
 copy            = { emit = "host:vybe:array:copy",            min_args = 0, max_args = 0 }
 
-# Dict instance methods
-keys            = { emit = "host:vybe:object:keys",           min_args = 0, max_args = 0 }
-values          = { emit = "host:vybe:object:values",         min_args = 0, max_args = 0 }
-items           = { emit = "host:vybe:object:entries",        min_args = 0, max_args = 0 }
+# Dict instance methods. Polymorphic iteration shares wasm:js-object.*
+# with PHP array_keys/values and JS Object.keys/values/entries —
+# portable Component Model imports, one handler.
+keys            = { emit = "host:wasm:js-object:keys",        min_args = 0, max_args = 0 }
+values          = { emit = "host:wasm:js-object:values",      min_args = 0, max_args = 0 }
+items           = { emit = "host:wasm:js-object:entries",     min_args = 0, max_args = 0 }
 get             = { emit = "host:vybe:object:get",            min_args = 1, max_args = 2 }
 update          = { emit = "host:vybe:object:assign",         min_args = 1, max_args = 1 }
 setdefault      = { emit = "host:vybe:object:setdefault",     min_args = 1, max_args = 2 }

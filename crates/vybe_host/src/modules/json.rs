@@ -144,8 +144,27 @@ fn stringify(v: &Value) -> String {
                     let parts: Vec<String> = elems.iter().map(|e| stringify(e)).collect();
                     format!("[{}]", parts.join(","))
                 }
+                // Map-backed objects (PHP assoc arrays, Python dicts, JS
+                // objects with mixed keys) serialize as JSON objects. Keys
+                // are stringified via Display — matches PHP's json_encode
+                // which coerces integer keys to strings for objects.
+                ObjectKind::Map(m) => {
+                    let parts: Vec<String> = m.iter()
+                        .map(|(k, v)| {
+                            let ks = match k {
+                                Value::String(s) => s.to_string(),
+                                other => format!("{}", other),
+                            };
+                            format!("\"{}\":{}",
+                                ks.replace('\\', "\\\\").replace('"', "\\\""),
+                                stringify(v))
+                        })
+                        .collect();
+                    format!("{{{}}}", parts.join(","))
+                }
                 _ => {
                     let parts: Vec<String> = o.properties.iter()
+                        .filter(|(k, _)| !k.starts_with("__"))
                         .map(|(k, v)| format!("\"{}\":{}", k, stringify(v)))
                         .collect();
                     format!("{{{}}}", parts.join(","))

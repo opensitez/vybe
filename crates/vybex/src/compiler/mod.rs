@@ -2263,10 +2263,17 @@ impl Compiler {
             BinOp::UShr => self.emit(Op::I32_SHR_U),
             BinOp::Concat => { let l = self.line; common::strings::emit_str_concat(self.chunk(), l); }
             BinOp::In => {
-                // `x in y` — JS: is `x` a property key / array index of `y`.
-                // Walker pushes `[x, y]`; `wasm:js-array.includes(y, x)` wants
-                // `[y, x]`. No SWAP opcode, so stash through local slots.
-                // The import is polymorphic (strings, arrays, plain objects).
+                // `x in y` — JS: is `x` a property KEY of `y` (not a value).
+                // Route to `wasm:js-object.hasOwn(y, x)`, which is
+                // polymorphic on Array (integer in range), Map
+                // (IndexMap key with int/string coercion), and Ordinary
+                // (properties HashMap). Previously emitted
+                // `wasm:js-array.includes` which confused keys with
+                // values once Maps entered the picture — JS `"k" in obj`
+                // checks keys; PHP `in_array($v, $m)` checks values. They
+                // are different operations and now use different imports.
+                //
+                // Walker stack: `[x, y]`. hasOwn expects `[y, x]`.
                 let l = self.line;
                 let t_y = self.scope_mut().define("__in_y");
                 let t_x = self.scope_mut().define("__in_x");
@@ -2274,7 +2281,9 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, t_x); self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, t_y);
                 self.emit_u16(Op::LOCAL_GET, t_x);
-                common::collections::emit_contains(&mut self.chunks, self.current, l);
+                let idx = self.import("wasm:js-object", "hasOwn");
+                self.chunk().emit_op_u16(Op::CALL_IMPORT, idx, l);
+                self.chunk().emit(2, l);
             }
             BinOp::NotIn => {
                 let l = self.line;
@@ -2284,7 +2293,10 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, t_x); self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, t_y);
                 self.emit_u16(Op::LOCAL_GET, t_x);
-                common::collections::emit_contains(&mut self.chunks, self.current, l);
+                // Same key-check as `in` above — route through hasOwn.
+                let idx = self.import("wasm:js-object", "hasOwn");
+                self.chunk().emit_op_u16(Op::CALL_IMPORT, idx, l);
+                self.chunk().emit(2, l);
                 self.emit(Op::DYN_NOT);
             }
             BinOp::InstanceOf => {
@@ -2801,6 +2813,21 @@ impl Compiler {
                     common::collections::emit_index_of(&mut self.chunks, self.current, line);
                 } else {
                     self.emit_const(Value::I32(-1));
+                }
+            }
+            // PHP `in_array($needle, $haystack)` — walker already normalized
+            // arg order to [haystack, needle, strict?] matching JS's
+            // `arr.includes(needle, fromIndex?)`. emit_contains calls
+            // `wasm:js-array.includes` which is polymorphic over Array,
+            // Map, and Ordinary, so PHP's `in_array` works uniformly on
+            // assoc arrays, indexed arrays, and superglobals.
+            "array_contains" => {
+                if args.len() >= 2 {
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    common::collections::emit_contains(&mut self.chunks, self.current, line);
+                } else {
+                    self.emit(Op::FALSE);
                 }
             }
             _ => { self.emit(Op::NULL); }

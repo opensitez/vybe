@@ -112,6 +112,25 @@ array_merge         = { emit = "opcode:array_concat",              min_args = 1,
 # internally so the final emitted `wasm:js-array.*` imports are the same
 # — only the compile-site arg handling differs.
 
+# Polymorphic key/value/entries helpers — bound to the portable
+# Component-Model `wasm:js-object.*` import set (same imports JS
+# `Object.keys/values/entries` uses; satisfied by V8/SpiderMonkey
+# natively or by the polyfill for wasmtime). Works uniformly on Array,
+# Map, and Ordinary backings.
+#
+# Rationale: PHP and JS compiled under vybex should produce identical
+# WASM imports for the same semantic operation. That way `array_keys`
+# in PHP and `Object.keys` in JS share ONE host handler, one test
+# surface, one CVE surface.
+array_keys          = { emit = "host:wasm:js-object:keys",         min_args = 1, max_args = 3 }
+array_values        = { emit = "host:wasm:js-object:values",       min_args = 1, max_args = 1 }
+# Argument order is normalized to canonical `(obj, key)` at the PHP
+# walker layer (`canonicalize_php_call_args`), so both entries below
+# bind directly to the portable `wasm:js-object.hasOwn` — identical
+# import to what JS `Object.hasOwn` emits.
+array_key_exists    = { emit = "host:wasm:js-object:hasOwn",       min_args = 2, max_args = 2 }
+key_exists          = { emit = "host:wasm:js-object:hasOwn",       min_args = 2, max_args = 2 }
+
 # ── JSON ────────────────────────────────────────────────────────────────────
 
 json_encode         = { emit = "host:vybe:json:stringify",   min_args = 1, max_args = 3 }
@@ -155,6 +174,15 @@ header_remove       = { emit = "host:vybe:http/response:remove_header",     min_
 # `defined` / `define` are runtime queries; for now define returns true
 # and defined returns whether the global is set.
 defined             = { emit = "noop",                        min_args = 1, max_args = 1 }
+
+# isset / empty / unset — polymorphic primitives shared with the rest of
+# the runtime (every language's "is this value defined?" check uses the
+# same host-level primitive). `isset($a['key'])` compiles to: first
+# evaluate the Index expression (producing the value or Null), then call
+# isset_all which checks not-null-not-undefined. Works uniformly across
+# Array, Map, and Ordinary backings.
+isset               = { emit = "host:vybe:object:isset_all",  min_args = 1, max_args = 255 }
+empty               = { emit = "host:vybe:object:is_empty",   min_args = 1, max_args = 1 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # VALUE METHODS — instance method calls on intrinsic types

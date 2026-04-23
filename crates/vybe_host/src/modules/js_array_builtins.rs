@@ -691,19 +691,34 @@ fn register_non_mutators(vm: &mut VM) {
             let from = args.get(2).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
             if let Some(Value::Object(obj)) = args.first() {
                 let o = obj.lock().unwrap();
-                if let ObjectKind::Array(ref v) = o.kind {
-                    for elem in v.iter().skip(from) {
-                        if elem.eq(&needle) {
-                            return Value::Bool(true);
+                match &o.kind {
+                    ObjectKind::Array(v) => {
+                        for elem in v.iter().skip(from) {
+                            if elem.eq(&needle) {
+                                return Value::Bool(true);
+                            }
                         }
+                        return Value::Bool(false);
                     }
-                    return Value::Bool(false);
+                    // Polymorphic on Map — PHP `in_array($v, $map)` checks
+                    // whether `$v` is among the map's VALUES (not keys).
+                    ObjectKind::Map(m) => {
+                        for (_k, v) in m.iter().skip(from) {
+                            if v.eq(&needle) {
+                                return Value::Bool(true);
+                            }
+                        }
+                        return Value::Bool(false);
+                    }
+                    _ => {}
                 }
-                let key_str = match &needle {
-                    Value::String(s) => s.to_string(),
-                    other => format!("{}", other),
-                };
-                return Value::Bool(o.properties.contains_key(&key_str));
+                // Ordinary fallback — checks property VALUES.
+                for (_k, v) in o.properties.iter() {
+                    if v.eq(&needle) {
+                        return Value::Bool(true);
+                    }
+                }
+                return Value::Bool(false);
             }
             Value::Bool(false)
         }),

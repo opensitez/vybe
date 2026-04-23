@@ -117,14 +117,19 @@ String              = { emit = "host:vybe:convert:toStr",         min_args = 1, 
 "Array.of"          = { emit = "host:wasm:js-array:of",              min_args = 0, max_args = 255 }
 
 # ── Object static methods ────────────────────────────────────────────────────
+#
+# Portable Component-Model imports: `wasm:js-object.*` is the shared
+# import set — same handlers back PHP `array_keys/values`, Python
+# `dict.keys/values/items`, Ruby `Hash#keys`, etc. Running vybex-compiled
+# JS under V8 is possible because V8 satisfies these imports natively.
 
-"Object.keys"        = { emit = "host:vybe:object:keys",         min_args = 1, max_args = 1 }
-"Object.values"      = { emit = "host:vybe:object:values",       min_args = 1, max_args = 1 }
-"Object.entries"     = { emit = "host:vybe:object:entries",       min_args = 1, max_args = 1 }
+"Object.keys"        = { emit = "host:wasm:js-object:keys",        min_args = 1, max_args = 1 }
+"Object.values"      = { emit = "host:wasm:js-object:values",      min_args = 1, max_args = 1 }
+"Object.entries"     = { emit = "host:wasm:js-object:entries",     min_args = 1, max_args = 1 }
 "Object.assign"      = { emit = "host:vybe:object:assign",       min_args = 2, max_args = 255 }
 "Object.freeze"      = { emit = "host:vybe:object:freeze",       min_args = 1, max_args = 1 }
 "Object.fromEntries" = { emit = "host:vybe:object:fromEntries",  min_args = 1, max_args = 1 }
-"Object.hasOwn"      = { emit = "host:vybe:object:hasOwn",       min_args = 2, max_args = 2 }
+"Object.hasOwn"      = { emit = "host:wasm:js-object:hasOwn",      min_args = 2, max_args = 2 }
 "Object.create"      = { emit = "host:vybe:object:create",       min_args = 1, max_args = 2 }
 "Object.seal"        = { emit = "host:vybe:object:seal",         min_args = 1, max_args = 1 }
 "Object.isFrozen"    = { emit = "host:vybe:object:isFrozen",     min_args = 1, max_args = 1 }

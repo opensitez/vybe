@@ -636,9 +636,10 @@ impl Compiler {
                 for prop in props {
                     match prop {
                         ObjectProperty::KeyValue { key, value } => {
-                            self.emit(Op::DUP);
-                            self.compile_expr(value)?;
                             if let ExprKind::Lit(Literal::Str(k)) = &key.kind {
+                                // Static string key — fast path via struct_set.
+                                self.emit(Op::DUP);
+                                self.compile_expr(value)?;
                                 let idx = self.str_const(k);
                                 self.emit_u16(Op::STRUCT_SET, idx);
                                 self.emit(Op::DROP);
@@ -651,15 +652,24 @@ impl Compiler {
                                 common::collections::emit_push(&mut self.chunks, self.current, l);
                                 self.emit(Op::DROP);
                             } else {
-                                // Dynamic key — save key for __keys tracking
-                                self.compile_expr(key)?;
-                                self.emit(Op::DUP); // [dict, val, key, key]
+                                // Dynamic key — emit_set is
+                                // `wasm:js-array.set(obj, key, value) → null`
+                                // so we must push key BEFORE value. The
+                                // previous impl pushed value then key,
+                                // causing `{ 1: "one" }` to be stored
+                                // under key "one" with value 1. Fix
+                                // matches the canonical emit_set contract.
+                                self.emit(Op::DUP);                // [dict, dict]
+                                self.compile_expr(key)?;           // [dict, dict, key]
+                                self.emit(Op::DUP);                // [dict, dict, key, key]
                                 let key_tmp = self.scope_mut().define("__obj_dyn_key");
                                 self.emit_u16(Op::LOCAL_SET, key_tmp); self.emit(Op::DROP);
+                                // [dict, dict, key]
+                                self.compile_expr(value)?;         // [dict, dict, key, value]
                                 let l = self.line;
                                 common::collections::emit_set(&mut self.chunks, self.current, l);
                                 self.emit(Op::DROP); // drop returned null
-                                // Track dynamic key in __keys
+                                // Track dynamic key in __keys (stringified)
                                 self.emit(Op::DUP);
                                 let keys_key = self.str_const("__keys");
                                 self.emit_u16(Op::STRUCT_GET, keys_key);

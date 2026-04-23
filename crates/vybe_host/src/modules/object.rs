@@ -151,6 +151,47 @@ pub fn register(vm: &mut VM) {
         Value::Object(Arc::new(Mutex::new(Object::new_array(vec![]))))
     }));
 
+    // ── isset / empty ──────────────────────────────────────────────────────
+    //
+    // PHP's `isset(a, b, c)` is true iff every arg is defined and non-null.
+    // `empty(v)` is true iff v is one of PHP's falsy values: null,
+    // undefined, false, 0, 0.0, "", "0", empty array/map. Defining these
+    // as polymorphic primitives here (vs PHP-specific logic in the
+    // compiler) lets JS/Python/etc. reuse the same semantics if they
+    // want (e.g. Python `is not None` chains, JS `!= null`).
+    vm.register_host_fn("vybe:object", "isset_all", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        for a in args {
+            match a {
+                Value::Null | Value::Undefined => return Value::Bool(false),
+                _ => {}
+            }
+        }
+        Value::Bool(!args.is_empty())
+    }));
+
+    vm.register_host_fn("vybe:object", "is_empty", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(v) = args.first() else { return Value::Bool(true); };
+        let falsy = match v {
+            Value::Null | Value::Undefined => true,
+            Value::Bool(b) => !b,
+            Value::I32(n) => *n == 0,
+            Value::I64(n) => *n == 0,
+            Value::F64(n) => *n == 0.0,
+            Value::String(s) => s.is_empty() || s.as_ref() == "0",
+            Value::Object(obj) => {
+                let o = obj.lock().unwrap();
+                match &o.kind {
+                    ObjectKind::Array(v) => v.is_empty(),
+                    ObjectKind::Map(m) => m.is_empty(),
+                    ObjectKind::Set(s) => s.is_empty(),
+                    _ => o.properties.iter().all(|(k, _)| k.starts_with("__")),
+                }
+            }
+            _ => false,
+        };
+        Value::Bool(falsy)
+    }));
+
     // Object.assign(target, ...sources) → target with all source props copied
     vm.register_host_fn("vybe:object", "assign", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(target)) = args.first() {

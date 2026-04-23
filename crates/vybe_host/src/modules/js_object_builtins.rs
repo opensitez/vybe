@@ -187,15 +187,37 @@ fn register_access(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    // hasOwn(obj, key) -> i32 (own-only, no prototype walk)
+    // hasOwn(obj, key) -> bool (own-only, no prototype walk). Polymorphic
+    // over Array / Map / Ordinary. Backs JS `Object.hasOwn` + `in`
+    // operator, PHP `array_key_exists`, Python `key in dict`, Ruby
+    // `Hash#key?`. Returns Value::Bool so string coercion gives
+    // "true"/"false" (ECMA-262 §23.1.2.3).
     vm.register_host_fn("wasm:js-object", "hasOwn",
         Box::new(|_ctx, args| {
+            let key_raw = args.get(1).cloned().unwrap_or(Value::Undefined);
             if let Some(obj) = obj_of(args, 0) {
-                let key = args.get(1).map(key_string).unwrap_or_default();
                 let o = obj.lock().unwrap();
-                return Value::I32(if o.properties.contains_key(&key) { 1 } else { 0 });
+                let found = match &o.kind {
+                    ObjectKind::Array(v) => {
+                        let i = key_raw.as_i32();
+                        i >= 0 && (i as usize) < v.len()
+                    }
+                    ObjectKind::Map(m) => {
+                        if m.contains_key(&key_raw) { true }
+                        else if let Value::String(s) = &key_raw {
+                            s.parse::<i32>().ok().map_or(false, |n| m.contains_key(&Value::I32(n)))
+                        } else if let Value::I32(n) = &key_raw {
+                            m.contains_key(&Value::String(Arc::from(n.to_string().as_str())))
+                        } else { false }
+                    }
+                    _ => {
+                        let key = args.get(1).map(key_string).unwrap_or_default();
+                        o.properties.contains_key(&key)
+                    }
+                };
+                return Value::Bool(found);
             }
-            Value::I32(0)
+            Value::Bool(false)
         }));
 
     // delete(obj, key) -> i32 (1 if deleted)
@@ -224,11 +246,47 @@ fn register_enumeration(vm: &mut VM) {
             .collect()
     }
 
+    // Polymorphic over Array / Map / Ordinary. Portable: scripts compiled
+    // against `wasm:js-object.keys` run on any WASM engine (V8,
+    // SpiderMonkey, wasmtime with the js-object polyfill). Every language
+    // (PHP `array_keys`, Python `dict.keys`, Ruby `Hash#keys`, JS
+    // `Object.keys`) binds to this SAME import.
+    // Helper: return the ordered string keys of an Ordinary object.
+    // Honors the `__keys` tracker (set by dict::emit_new + friends)
+    // for JS-spec insertion-order semantics. Falls back to own_keys
+    // order when no tracker is present (legacy / C# / VB class
+    // instances that don't use the tracker).
+    fn ordinary_ordered_keys(o: &Object) -> Vec<String> {
+        if let Some(Value::Object(keys_arr)) = o.properties.get("__keys") {
+            let ka = keys_arr.lock().unwrap();
+            if let ObjectKind::Array(ref elems) = ka.kind {
+                return elems.iter()
+                    .filter_map(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
+                    .filter(|k| o.properties.contains_key(k))
+                    .collect();
+            }
+        }
+        own_keys(o)
+    }
+
     vm.register_host_fn("wasm:js-object", "keys",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
-                let keys: Vec<Value> = own_keys(&o).into_iter()
+                match &o.kind {
+                    ObjectKind::Array(v) => {
+                        let keys: Vec<Value> = (0..v.len())
+                            .map(|i| Value::String(Arc::from(i.to_string().as_str())))
+                            .collect();
+                        return Value::Object(Arc::new(Mutex::new(Object::new_array(keys))));
+                    }
+                    ObjectKind::Map(m) => {
+                        let keys: Vec<Value> = m.keys().cloned().collect();
+                        return Value::Object(Arc::new(Mutex::new(Object::new_array(keys))));
+                    }
+                    _ => {}
+                }
+                let keys: Vec<Value> = ordinary_ordered_keys(&o).into_iter()
                     .map(|k| Value::String(Arc::from(k.as_str())))
                     .collect();
                 return Value::Object(Arc::new(Mutex::new(Object::new_array(keys))));
@@ -240,7 +298,17 @@ fn register_enumeration(vm: &mut VM) {
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
-                let values: Vec<Value> = own_keys(&o).into_iter()
+                match &o.kind {
+                    ObjectKind::Array(v) => {
+                        return Value::Object(Arc::new(Mutex::new(Object::new_array(v.clone()))));
+                    }
+                    ObjectKind::Map(m) => {
+                        let vals: Vec<Value> = m.values().cloned().collect();
+                        return Value::Object(Arc::new(Mutex::new(Object::new_array(vals))));
+                    }
+                    _ => {}
+                }
+                let values: Vec<Value> = ordinary_ordered_keys(&o).into_iter()
                     .filter_map(|k| o.properties.get(&k).cloned())
                     .collect();
                 return Value::Object(Arc::new(Mutex::new(Object::new_array(values))));
@@ -252,7 +320,28 @@ fn register_enumeration(vm: &mut VM) {
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
-                let entries: Vec<Value> = own_keys(&o).into_iter()
+                match &o.kind {
+                    ObjectKind::Array(v) => {
+                        let entries: Vec<Value> = v.iter().enumerate()
+                            .map(|(i, val)| {
+                                let pair = vec![Value::I32(i as i32), val.clone()];
+                                Value::Object(Arc::new(Mutex::new(Object::new_array(pair))))
+                            })
+                            .collect();
+                        return Value::Object(Arc::new(Mutex::new(Object::new_array(entries))));
+                    }
+                    ObjectKind::Map(m) => {
+                        let entries: Vec<Value> = m.iter()
+                            .map(|(k, v)| {
+                                let pair = vec![k.clone(), v.clone()];
+                                Value::Object(Arc::new(Mutex::new(Object::new_array(pair))))
+                            })
+                            .collect();
+                        return Value::Object(Arc::new(Mutex::new(Object::new_array(entries))));
+                    }
+                    _ => {}
+                }
+                let entries: Vec<Value> = ordinary_ordered_keys(&o).into_iter()
                     .filter_map(|k| {
                         o.properties.get(&k).map(|v| {
                             let pair = vec![Value::String(Arc::from(k.as_str())), v.clone()];

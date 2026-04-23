@@ -112,24 +112,31 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Iteration primitives — polymorphic over `Array`, `Map`, and
 /// `Ordinary` objects. Every language's iteration (PHP `foreach`,
 /// Python `for ... in`, Ruby `each`, JS `for...of`, C# `foreach`)
-/// routes through these three functions. Swapping the host provider
-/// (e.g. `vybe:object` → a different iter surface) happens here.
+/// routes through these three functions.
+///
+/// Provider: `wasm:js-object` — the Component-Model-portable
+/// import set. Modules compiled through these helpers run on any
+/// engine that implements `wasm:js-object` (V8, SpiderMonkey, wasmtime
+/// with the polyfill). Do NOT emit `vybe:object.*` from language
+/// walkers — that's the Vybe-only escape hatch. If the provider ever
+/// changes (e.g. inline opcodes for perf), it changes HERE, not in
+/// language profiles or walkers.
 
 /// Push an array of keys. Stack: [iterable] → [array_of_keys].
 pub fn emit_iter_keys(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "vybe:object", "keys", 1, line);
+    emit_import_call(chunks, current, "wasm:js-object", "keys", 1, line);
 }
 
 /// Push an array of values. Stack: [iterable] → [array_of_values].
 pub fn emit_iter_values(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "vybe:object", "values", 1, line);
+    emit_import_call(chunks, current, "wasm:js-object", "values", 1, line);
 }
 
 /// Push an array of [key, value] pair arrays. Stack: [iterable] →
 /// [array_of_pairs]. Used for `foreach ($m as $k => $v)` in PHP and
 /// equivalents in other languages.
 pub fn emit_iter_entries(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "vybe:object", "entries", 1, line);
+    emit_import_call(chunks, current, "wasm:js-object", "entries", 1, line);
 }
 
 /// Create an empty Map (ordered associative: IndexMap<Value, Value>).

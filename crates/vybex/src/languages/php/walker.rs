@@ -1472,6 +1472,12 @@ fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span) -> Result<Ex
             } else {
                 Vec::new()
             };
+            // Normalize PHP-specific argument conventions to the common
+            // AST's canonical order BEFORE the compiler sees them. Once
+            // in the common AST, PHP and JS calls should be
+            // indistinguishable — the compiler emits a single canonical
+            // host call regardless of surface syntax.
+            let args = canonicalize_php_call_args(&receiver, args);
             Ok(Expression::with_span(
                 ExprKind::Call { callee: Box::new(receiver), args, optional: false },
                 span.clone(),
@@ -1750,6 +1756,42 @@ fn walk_string(pair: &Pair<Rule>) -> Expression {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
+
+/// Normalize PHP function-call argument order into the canonical common-AST
+/// convention, which matches the JS / Component-Model shape that the
+/// compiler emits. PHP builtins whose signature differs from JS need
+/// their args rewritten at the walker layer so the downstream compiler
+/// sees ONE canonical shape per operation.
+///
+/// Entries in the match table:
+///   ("php_name", &[arg_indices...]) — each arg_indices entry selects
+///   which position in the original PHP call the canonical form takes.
+///   E.g. `("array_key_exists", &[1, 0])` means the canonical
+///   (container, key) order pulls arg 1 first, arg 0 second.
+fn canonicalize_php_call_args(callee: &Expression, args: Vec<Argument>) -> Vec<Argument> {
+    let name = match &callee.kind {
+        ExprKind::Ident(n) => n.as_str(),
+        _ => return args,
+    };
+    let order: &[usize] = match name {
+        // PHP: array_key_exists($key, $arr). Canonical: hasOwn($arr, $key).
+        "array_key_exists" | "key_exists" => &[1, 0],
+        // PHP: in_array($needle, $haystack). Canonical: includes($arr, $needle).
+        // Note: `in_array` has an optional 3rd arg (strict); pass through.
+        "in_array" => &[1, 0, 2],
+        _ => return args,
+    };
+    if args.len() < order.iter().filter(|&&i| i < args.len()).count() {
+        return args;
+    }
+    let mut out = Vec::with_capacity(order.len());
+    for &i in order {
+        if let Some(a) = args.get(i).cloned() {
+            out.push(a);
+        }
+    }
+    out
+}
 
 fn strip_dollar(s: &str) -> &str {
     s.strip_prefix('$').unwrap_or(s)
