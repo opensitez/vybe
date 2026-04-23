@@ -189,13 +189,45 @@ fn register_property_access(vm: &mut VM) {
             let key = args.get(1).cloned().unwrap_or(Value::Undefined);
             if let Some(Value::Object(obj)) = args.first() {
                 let o = obj.lock().unwrap();
-                if let ObjectKind::Array(ref v) = o.kind {
-                    let i = key.as_i32();
-                    if i < 0 {
+                match &o.kind {
+                    ObjectKind::Array(v) => {
+                        let i = key.as_i32();
+                        if i < 0 { return Value::Undefined; }
+                        return v.get(i as usize).cloned().unwrap_or(Value::Undefined);
+                    }
+                    // Polymorphic dispatch on Map — the canonical cross-
+                    // language associative type (PHP `['k'=>v]`, Python
+                    // dicts, Ruby hashes, JS plain objects). Key is looked
+                    // up using Value-level equality (SameValueZero), so
+                    // both `$m['foo']` and `$m[$key]` where `$key = 'foo'`
+                    // resolve identically.
+                    ObjectKind::Map(m) => {
+                        let lookup_key = match &key {
+                            Value::String(_) | Value::I32(_) | Value::I64(_) | Value::F64(_) => key.clone(),
+                            other => Value::String(std::sync::Arc::from(format!("{}", other).as_str())),
+                        };
+                        if let Some(v) = m.get(&lookup_key) {
+                            return v.clone();
+                        }
+                        // PHP-ish fallback: if caller used a string key like
+                        // "0" but the map stores integer keys (or vice
+                        // versa), try the coerced form. Only coerces for
+                        // purely numeric strings to avoid surprises.
+                        if let Value::String(s) = &key {
+                            if let Ok(n) = s.parse::<i32>() {
+                                if let Some(v) = m.get(&Value::I32(n)) { return v.clone(); }
+                            }
+                        } else if let Value::I32(n) = &key {
+                            if let Some(v) = m.get(&Value::String(std::sync::Arc::from(n.to_string().as_str()))) {
+                                return v.clone();
+                            }
+                        }
                         return Value::Undefined;
                     }
-                    return v.get(i as usize).cloned().unwrap_or(Value::Undefined);
+                    _ => {}
                 }
+                // Plain Object fallback: property lookup. Used by Ordinary
+                // objects and by compiler_common's `has` / `in` emitter.
                 let key_str = match &key {
                     Value::String(s) => s.to_string(),
                     other => format!("{}", other),
@@ -210,7 +242,8 @@ fn register_property_access(vm: &mut VM) {
     );
 
     // set(arr_or_obj, key, v) -> () — extends arrays with null-fill when
-    // key >= length; stores into plain objects by string key.
+    // key >= length; stores into plain objects by string key; updates Maps
+    // using the canonical Value-keyed IndexMap.
     vm.register_host_fn(
         "wasm:js-array",
         "set",
@@ -219,23 +252,33 @@ fn register_property_access(vm: &mut VM) {
             let val = args.get(2).cloned().unwrap_or(Value::Null);
             if let Some(Value::Object(obj)) = args.first() {
                 let mut o = obj.lock().unwrap();
-                if let ObjectKind::Array(ref mut v) = o.kind {
-                    let i = key.as_i32();
-                    if i < 0 {
-                        return Value::Null;
+                match &mut o.kind {
+                    ObjectKind::Array(v) => {
+                        let i = key.as_i32();
+                        if i < 0 {
+                            return Value::Null;
+                        }
+                        let idx = i as usize;
+                        while v.len() <= idx {
+                            v.push(Value::Null);
+                        }
+                        v[idx] = val;
+                        sync_length(&mut o);
                     }
-                    let idx = i as usize;
-                    while v.len() <= idx {
-                        v.push(Value::Null);
+                    ObjectKind::Map(m) => {
+                        let map_key = match &key {
+                            Value::String(_) | Value::I32(_) | Value::I64(_) | Value::F64(_) => key.clone(),
+                            other => Value::String(std::sync::Arc::from(format!("{}", other).as_str())),
+                        };
+                        m.insert(map_key, val);
                     }
-                    v[idx] = val;
-                    sync_length(&mut o);
-                } else {
-                    let key_str = match &key {
-                        Value::String(s) => s.to_string(),
-                        other => format!("{}", other),
-                    };
-                    o.properties.insert(key_str, val);
+                    _ => {
+                        let key_str = match &key {
+                            Value::String(s) => s.to_string(),
+                            other => format!("{}", other),
+                        };
+                        o.properties.insert(key_str, val);
+                    }
                 }
             }
             Value::Null
@@ -254,6 +297,7 @@ fn register_property_access(vm: &mut VM) {
                 let lock = o.lock().unwrap();
                 return match &lock.kind {
                     ObjectKind::Array(v) => Value::I32(v.len() as i32),
+                    ObjectKind::Map(m) => Value::I32(m.len() as i32),
                     ObjectKind::TypedArray(t) => Value::I32(t.length as i32),
                     _ => lock.properties.get("length")
                         .map(|v| Value::I32(v.as_i32()))

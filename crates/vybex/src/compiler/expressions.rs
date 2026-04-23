@@ -509,24 +509,80 @@ impl Compiler {
                 // every language and every array-literal site emits the
                 // same import shape. Changing the provider (wasm:js-array
                 // → vybe:array → polyfill) happens in ONE file, not here.
-                // Keyed elements (PHP `['k' => v]`) still drop the key on
-                // this path — full associative semantics route through
-                // `wasm:js-object` and are a separate follow-up.
+                //
+                // Dispatch on whether ANY element has an explicit key:
+                //   - no keys  → `wasm:js-array` path (integer-indexed,
+                //                fast, array-y semantics)
+                //   - any key  → `wasm:js-map` path (IndexMap<Value,Value>,
+                //                PHP-shaped associative: mixed int + string
+                //                keys preserved in insertion order). Once
+                //                a Map, accessors `$a[$k]` use
+                //                `wasm:js-array.get/.set` which now
+                //                dispatch polymorphically on Map.
                 let line = self.line;
-                common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
-                for elem in elements {
-                    if elem.spread {
-                        // Spread: `concat(current, other)` returns a NEW
-                        // array which replaces the one on TOS.
+                let has_keys = elements.iter().any(|e| e.key.is_some());
+
+                if has_keys {
+                    common::collections::emit_map_new(&mut self.chunks, self.current, line);
+                    let mut next_auto_idx: i64 = 0;
+                    for elem in elements {
+                        if elem.spread {
+                            // Spread into a keyed literal isn't
+                            // meaningful for Maps in PHP/Python/Ruby
+                            // semantics in Phase 1 — skip.
+                            continue;
+                        }
+                        // Stack: [map]
+                        self.emit(Op::DUP);              // [map, map]
+                        match &elem.key {
+                            Some(k) => {
+                                // Explicit key expression. If it's a
+                                // numeric literal, bump the auto index
+                                // past it so subsequent unkeyed elements
+                                // don't collide (PHP semantics).
+                                self.compile_expr(k)?;
+                                match &k.kind {
+                                    ExprKind::Lit(crate::ast::Literal::Int(n)) => {
+                                        next_auto_idx = *n + 1;
+                                    }
+                                    ExprKind::Lit(crate::ast::Literal::Float(n)) if n.fract() == 0.0 => {
+                                        next_auto_idx = (*n as i64) + 1;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            None => {
+                                // Unkeyed element inside a keyed literal
+                                // (PHP allows `['x' => 1, 'y']`) — auto
+                                // assign the next integer key.
+                                self.emit_const(Value::I32(next_auto_idx as i32));
+                                next_auto_idx += 1;
+                            }
+                        }
+                        // [map, map, key]
                         self.compile_expr(&elem.value)?;
-                        common::collections::emit_concat(&mut self.chunks, self.current, line);
-                    } else {
-                        // DUP keeps the array on TOS; push returns the
-                        // new length, which we drop.
-                        self.emit(Op::DUP);
-                        self.compile_expr(&elem.value)?;
-                        common::collections::emit_push(&mut self.chunks, self.current, line);
+                        // [map, map, key, value]
+                        common::collections::emit_set(&mut self.chunks, self.current, line);
+                        // set returns null per spec — drop it, map stays on TOS
                         self.emit(Op::DROP);
+                    }
+                } else {
+                    // All-unkeyed: use the array path (fast, small).
+                    common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+                    for elem in elements {
+                        if elem.spread {
+                            // Spread: `concat(current, other)` returns a NEW
+                            // array which replaces the one on TOS.
+                            self.compile_expr(&elem.value)?;
+                            common::collections::emit_concat(&mut self.chunks, self.current, line);
+                        } else {
+                            // DUP keeps the array on TOS; push returns the
+                            // new length, which we drop.
+                            self.emit(Op::DUP);
+                            self.compile_expr(&elem.value)?;
+                            common::collections::emit_push(&mut self.chunks, self.current, line);
+                            self.emit(Op::DROP);
+                        }
                     }
                 }
             }

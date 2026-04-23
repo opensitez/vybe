@@ -18,5 +18,7 @@ sqlx = { workspace = true }
 tokio = { workspace = true }
 indexmap = { workspace = true }
 
-# For the `vybe:http` host module's parsed accessors.
+# For the `vybe:http` host module's parsed accessors + helpers.
 form_urlencoded = { workspace = true }
+percent-encoding = { workspace = true }
+httpdate = { workspace = true }

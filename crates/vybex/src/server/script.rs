@@ -78,6 +78,12 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
     };
     vybe_host::register_with_capabilities(&mut vm, &caps);
 
+    // Populate PHP-style superglobals from the request context. Built as
+    // `ObjectKind::Map` — the canonical cross-language associative type
+    // — so any language's string-key access via `wasm:js-array.get` works
+    // uniformly. PHP's `$_SERVER['REQUEST_METHOD']` lands here.
+    inject_superglobals(&mut vm, &ctx);
+
     // SAPI-style output override: re-register `wasi:cli/log` (what PHP `echo`,
     // JS `console.log`, and most language `print` calls compile to) to write
     // to the HTTP response body when a request context is installed. Mirrors
@@ -146,6 +152,109 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
     // Ensure end() is called so the client sees EOF, even if the script
     // forgot.
     ctx.response.lock().unwrap().end();
+}
+
+/// Populate PHP-style superglobals by inserting entries into `vm.globals`.
+///
+/// Each superglobal is an `ObjectKind::Map` (the canonical cross-language
+/// associative type). `$_SERVER['REQUEST_METHOD']` then routes through
+/// `wasm:js-array.get` which dispatches on `ObjectKind::Map` and returns
+/// the value — same as every other language's associative map.
+///
+/// The globals inserted here are PHP-idiomatic (`_SERVER`, `_GET`, etc.)
+/// but non-PHP scripts running under `--serve` simply won't touch them.
+/// Real request data is always available via `\Vybe\Http\Request\*` host
+/// calls regardless of language.
+fn inject_superglobals(vm: &mut vybe_bytecode::VM, ctx: &Arc<RequestContext>) {
+    use indexmap::IndexMap;
+    use vybe_bytecode::value::{Object, ObjectKind, Value};
+    use std::sync::{Arc as StdArc, Mutex as StdMutex};
+
+    fn make_map(pairs: impl IntoIterator<Item = (String, String)>) -> Value {
+        let mut im = IndexMap::new();
+        for (k, v) in pairs {
+            im.insert(
+                Value::String(StdArc::from(k.as_str())),
+                Value::String(StdArc::from(v.as_str())),
+            );
+        }
+        let mut obj = Object::new();
+        obj.kind = ObjectKind::Map(im);
+        Value::Object(StdArc::new(StdMutex::new(obj)))
+    }
+
+    let server = make_map(ctx.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+
+    let get_pairs: Vec<(String, String)> = form_urlencoded::parse(ctx.query.as_bytes())
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    let get = make_map(get_pairs);
+
+    let cookie_header = ctx.headers.iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case("cookie"))
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("");
+    let cookie_pairs = parse_cookie_header(cookie_header);
+    let cookies = make_map(cookie_pairs);
+
+    // $_POST — populated only for form-urlencoded bodies. multipart/form-data
+    // handling (with $_FILES) lands in a follow-up.
+    let post = {
+        let content_type = ctx.headers.iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case("content-type"))
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("");
+        if content_type.to_ascii_lowercase().starts_with("application/x-www-form-urlencoded") {
+            let body = ctx.body.lock().unwrap().read_all();
+            let pairs: Vec<(String, String)> = form_urlencoded::parse(&body)
+                .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                .collect();
+            make_map(pairs)
+        } else {
+            make_map(Vec::<(String, String)>::new())
+        }
+    };
+
+    vm.globals.insert("_SERVER".to_string(), server);
+    vm.globals.insert("_GET".to_string(), get);
+    vm.globals.insert("_COOKIE".to_string(), cookies);
+    vm.globals.insert("_POST".to_string(), post);
+    // $_REQUEST = $_GET + $_POST + $_COOKIE (per PHP default request_order).
+    // Rebuild since we already moved the others into globals; cheap and PHP
+    // semantics demand it.
+    let mut request_im: IndexMap<Value, Value> = IndexMap::new();
+    for key in ["_GET", "_POST", "_COOKIE"] {
+        if let Some(Value::Object(obj)) = vm.globals.get(key) {
+            let o = obj.lock().unwrap();
+            if let ObjectKind::Map(ref im) = o.kind {
+                for (k, v) in im.iter() {
+                    request_im.insert(k.clone(), v.clone());
+                }
+            }
+        }
+    }
+    let mut req_obj = Object::new();
+    req_obj.kind = ObjectKind::Map(request_im);
+    vm.globals.insert(
+        "_REQUEST".to_string(),
+        Value::Object(StdArc::new(StdMutex::new(req_obj))),
+    );
+}
+
+fn parse_cookie_header(header: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for part in header.split(';') {
+        let part = part.trim();
+        if part.is_empty() { continue; }
+        match part.split_once('=') {
+            Some((n, v)) => {
+                let v = v.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(v);
+                out.push((n.trim().to_string(), v.to_string()));
+            }
+            None => out.push((part.to_string(), String::new())),
+        }
+    }
+    out
 }
 
 fn end_with_text(ctx: &RequestContext, status: u16, body: &str) {

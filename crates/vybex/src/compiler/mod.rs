@@ -1003,7 +1003,7 @@ impl Compiler {
             }
 
             // ── ForIn / ForOf ───────────────────────────────────────────
-            StmtKind::ForIn { var, iter, body, else_body, of, .. } => {
+            StmtKind::ForIn { var, key, iter, body, else_body, of, .. } => {
                 // Specialisation: if `iter` is a direct call to a
                 // function the pre-pass tagged as a true generator,
                 // emit a `GEN_NEXT`-driven loop rather than the
@@ -1013,15 +1013,28 @@ impl Compiler {
                 if self.is_direct_generator_call(iter) {
                     self.compile_generator_for_in(var, iter, body, else_body.as_deref())?;
                 } else {
+                    let line = self.line;
                     self.compile_expr(iter)?;
-                    if !of {
-                        let idx = self.import("vybe:object", "keys");
-                        self.emit_host_call(idx, 1);
+
+                    // Pick the polymorphic iteration primitive. All three
+                    // dispatch on Array / Map / Ordinary uniformly so PHP
+                    // assoc arrays, Python dicts, JS objects, Ruby hashes
+                    // iterate correctly without per-language code.
+                    //
+                    //   for v in X       → values(X)        (Python for)
+                    //   for k => v in X  → entries(X)       (PHP foreach, Ruby each_pair, JS for..of of Map/entries)
+                    //   for k in X       → keys(X)          (JS for..in, Python dict iter-keys)
+                    if key.is_some() {
+                        common::collections::emit_iter_entries(&mut self.chunks, self.current, line);
+                    } else if *of {
+                        common::collections::emit_iter_values(&mut self.chunks, self.current, line);
+                    } else {
+                        common::collections::emit_iter_keys(&mut self.chunks, self.current, line);
                     }
+
                     let arr_slot = self.scope_mut().define("__forin_arr");
                     self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
                     let idx_slot = self.scope_mut().define("__forin_idx");
-                    let line = self.line;
                     let lp = common::loops::emit_for_in_start(
                         &mut self.chunks, self.current, arr_slot, idx_slot, line,
                     );
@@ -1029,8 +1042,36 @@ impl Compiler {
                     let break_depth = self.label_depth + 1; // outer block
                     let continue_depth = self.label_depth + 3; // body block (innermost)
                     self.label_depth += 3;
-                    let var_slot = self.scope_mut().define(var);
-                    self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
+
+                    if let Some(k_name) = key {
+                        // Entries path: TOS is a [k, v] pair. Destructure
+                        // into key_var and var, then run body.
+                        //
+                        // Stack at loop body entry: [pair]
+                        //   DUP; index 0 → key_var
+                        //   index 1 → value_var
+                        let pair_slot = self.scope_mut().define("__forin_pair");
+                        self.emit_u16(Op::LOCAL_SET, pair_slot); self.emit(Op::DROP);
+
+                        // key = pair[0]
+                        self.emit_u16(Op::LOCAL_GET, pair_slot);
+                        self.emit_const(Value::I32(0));
+                        common::collections::emit_get(&mut self.chunks, self.current, line);
+                        let key_slot = self.scope_mut().define(k_name);
+                        self.emit_u16(Op::LOCAL_SET, key_slot); self.emit(Op::DROP);
+
+                        // var = pair[1]
+                        self.emit_u16(Op::LOCAL_GET, pair_slot);
+                        self.emit_const(Value::I32(1));
+                        common::collections::emit_get(&mut self.chunks, self.current, line);
+                        let var_slot = self.scope_mut().define(var);
+                        self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
+                    } else {
+                        // Values path: TOS is the value, bind directly.
+                        let var_slot = self.scope_mut().define(var);
+                        self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
+                    }
+
                     self.loop_states.push(lp);
                     self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth });
                     for s in body { self.compile_stmt(s)?; }

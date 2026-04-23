@@ -109,6 +109,39 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_import_call(chunks, current, "wasm:js-array", "pop", 1, line);
 }
 
+/// Iteration primitives — polymorphic over `Array`, `Map`, and
+/// `Ordinary` objects. Every language's iteration (PHP `foreach`,
+/// Python `for ... in`, Ruby `each`, JS `for...of`, C# `foreach`)
+/// routes through these three functions. Swapping the host provider
+/// (e.g. `vybe:object` → a different iter surface) happens here.
+
+/// Push an array of keys. Stack: [iterable] → [array_of_keys].
+pub fn emit_iter_keys(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_import_call(chunks, current, "vybe:object", "keys", 1, line);
+}
+
+/// Push an array of values. Stack: [iterable] → [array_of_values].
+pub fn emit_iter_values(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_import_call(chunks, current, "vybe:object", "values", 1, line);
+}
+
+/// Push an array of [key, value] pair arrays. Stack: [iterable] →
+/// [array_of_pairs]. Used for `foreach ($m as $k => $v)` in PHP and
+/// equivalents in other languages.
+pub fn emit_iter_entries(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_import_call(chunks, current, "vybe:object", "entries", 1, line);
+}
+
+/// Create an empty Map (ordered associative: IndexMap<Value, Value>).
+/// Stack: [] → [map] via `wasm:js-map.new`. Used by languages with
+/// keyed literals (PHP `['k'=>v]`, Python `{'k':v}`, Ruby `{k=>v}`) —
+/// same backing across every language, same accessor imports
+/// (`wasm:js-array.get/.set` dispatch polymorphically on
+/// `ObjectKind::Map`).
+pub fn emit_map_new(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_import_call(chunks, current, "wasm:js-map", "new", 0, line);
+}
+
 /// Array get. Stack: [array, index] → [value] via `wasm:js-array.get`.
 pub fn emit_get(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_import_call(chunks, current, "wasm:js-array", "get", 2, line);

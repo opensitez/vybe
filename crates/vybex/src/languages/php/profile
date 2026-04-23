@@ -138,9 +138,17 @@ unlink              = { emit = "host:wasi:filesystem:remove",    min_args = 1, m
 
 getenv              = { emit = "host:wasi:cli:getEnv",       min_args = 1, max_args = 1 }
 phpversion          = { emit = "noop",                        min_args = 0, max_args = 1 }
-php_sapi_name       = { emit = "noop",                        min_args = 0, max_args = 0 }
+php_sapi_name       = { emit = "host:vybe:http/meta:php_sapi_name", min_args = 0, max_args = 0 }
 getcwd              = { emit = "host:wasi:cli:cwd",          min_args = 0, max_args = 0 }
 gethostname         = { emit = "host:wasi:cli:machineName",  min_args = 0, max_args = 0 }
+
+# ── HTTP / web (vybex --serve) ──────────────────────────────────────────────
+header              = { emit = "host:vybe:http/response:send_header_raw",   min_args = 1, max_args = 3 }
+http_response_code  = { emit = "host:vybe:http/response:http_response_code", min_args = 0, max_args = 1 }
+setcookie           = { emit = "host:vybe:http/response:set_cookie",         min_args = 1, max_args = 3 }
+setrawcookie        = { emit = "host:vybe:http/response:set_cookie",         min_args = 1, max_args = 3 }
+headers_sent        = { emit = "host:vybe:http/response:headers_sent",      min_args = 0, max_args = 2 }
+header_remove       = { emit = "host:vybe:http/response:remove_header",     min_args = 0, max_args = 1 }
 
 # ── Miscellaneous ───────────────────────────────────────────────────────────
 

@@ -3,11 +3,47 @@ use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::{Object, ObjectKind};
 
 pub fn register(vm: &mut VM) {
-    // Object.keys(obj) → array of property name strings
+    // `vybe:object.keys/values/entries` — POLYMORPHIC iteration primitives.
+    //
+    // The same three host fns serve every language's iteration needs:
+    // - JS `Object.keys/values/entries`
+    // - Python `dict.keys/values/items`
+    // - PHP `array_keys/array_values/array_map`-shaped iteration, `foreach`
+    // - Ruby `Hash#keys/values/to_a`
+    // - C# `Dictionary<K,V>.Keys/Values/KeyValuePairs`
+    // - Dart `Map.keys/values/entries`
+    //
+    // All dispatch on the value's actual type:
+    //   - `ObjectKind::Array(v)`  → integer-indexed values
+    //   - `ObjectKind::Map(m)`    → canonical associative (IndexMap) — PHP
+    //                                assoc, Python dict, Ruby Hash, JS object
+    //                                literal with string keys
+    //   - `ObjectKind::Ordinary`  → property bag (JS plain object, class
+    //                                instances)
+    //   - other kinds (TypedArray, Set, …) → fall back to empty Array
+    //
+    // This is the single polymorphic dispatch that the compiler_common
+    // iteration emitters depend on — one impl, every language benefits.
+
     vm.register_host_fn("vybe:object", "keys", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.lock().unwrap();
-            // If __keys array exists (dict with key tracking), use it directly
+            match &o.kind {
+                ObjectKind::Array(v) => {
+                    // Integer indices as string keys (matches JS
+                    // `Object.keys([a,b,c])` = ["0","1","2"]).
+                    let keys: Vec<Value> = (0..v.len())
+                        .map(|i| Value::String(Arc::from(i.to_string().as_str())))
+                        .collect();
+                    return Value::Object(Arc::new(Mutex::new(Object::new_array(keys))));
+                }
+                ObjectKind::Map(m) => {
+                    let keys: Vec<Value> = m.keys().cloned().collect();
+                    return Value::Object(Arc::new(Mutex::new(Object::new_array(keys))));
+                }
+                _ => {}
+            }
+            // Ordinary fallback — honors __keys marker for insertion order.
             if let Some(Value::Object(keys_arr)) = o.properties.get("__keys") {
                 let ka = keys_arr.lock().unwrap();
                 if let ObjectKind::Array(ref elems) = ka.kind {
@@ -15,7 +51,7 @@ pub fn register(vm: &mut VM) {
                 }
             }
             let keys: Vec<Value> = o.properties.keys()
-                .filter(|k| *k != "length" && !k.starts_with("__")) // exclude internal properties
+                .filter(|k| *k != "length" && !k.starts_with("__"))
                 .map(|k| Value::String(Arc::from(k.as_str())))
                 .collect();
             return Value::Object(Arc::new(Mutex::new(Object::new_array(keys))));
@@ -23,11 +59,19 @@ pub fn register(vm: &mut VM) {
         Value::Object(Arc::new(Mutex::new(Object::new_array(vec![]))))
     }));
 
-    // Object.values(obj) → array of property values
     vm.register_host_fn("vybe:object", "values", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.lock().unwrap();
-            // If __keys array exists, use it to get values in insertion order
+            match &o.kind {
+                ObjectKind::Array(v) => {
+                    return Value::Object(Arc::new(Mutex::new(Object::new_array(v.clone()))));
+                }
+                ObjectKind::Map(m) => {
+                    let vals: Vec<Value> = m.values().cloned().collect();
+                    return Value::Object(Arc::new(Mutex::new(Object::new_array(vals))));
+                }
+                _ => {}
+            }
             if let Some(Value::Object(keys_arr)) = o.properties.get("__keys") {
                 let ka = keys_arr.lock().unwrap();
                 if let ObjectKind::Array(ref elems) = ka.kind {
@@ -46,11 +90,35 @@ pub fn register(vm: &mut VM) {
         Value::Object(Arc::new(Mutex::new(Object::new_array(vec![]))))
     }));
 
-    // Object.entries(obj) → array of [key, value] pairs
     vm.register_host_fn("vybe:object", "entries", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.lock().unwrap();
-            // If __keys array exists, use it for insertion-order entries
+            match &o.kind {
+                ObjectKind::Array(v) => {
+                    // Integer index + value pairs.
+                    let entries: Vec<Value> = v.iter().enumerate()
+                        .map(|(i, val)| {
+                            Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+                                Value::I32(i as i32),
+                                val.clone(),
+                            ]))))
+                        })
+                        .collect();
+                    return Value::Object(Arc::new(Mutex::new(Object::new_array(entries))));
+                }
+                ObjectKind::Map(m) => {
+                    let entries: Vec<Value> = m.iter()
+                        .map(|(k, v)| {
+                            Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+                                k.clone(),
+                                v.clone(),
+                            ]))))
+                        })
+                        .collect();
+                    return Value::Object(Arc::new(Mutex::new(Object::new_array(entries))));
+                }
+                _ => {}
+            }
             if let Some(Value::Object(keys_arr)) = o.properties.get("__keys") {
                 let ka = keys_arr.lock().unwrap();
                 if let ObjectKind::Array(ref elems) = ka.kind {
