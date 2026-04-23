@@ -426,6 +426,52 @@ impl Compiler {
         self.chunks[self.current].emit(argc, l);
     }
 
+    /// Resolve a qualified identifier to a Component Model host call
+    /// `(module, function)` pair when its first segment matches the
+    /// profile's `host_packages` list, else `None`.
+    ///
+    /// Walker conventions: PHP passes backslash-separated names
+    /// (`Vybe\Http\Request\method`), other languages should normalize
+    /// their separator to `\` before this point (TODO for Python / C# /
+    /// etc.). This keeps the resolver language-agnostic.
+    ///
+    /// Mapping:
+    /// - `[Vybe, Http, Request, method]` → `("vybe:http/request", "method")`
+    /// - `[Vybe, Math, cos]`             → `("vybe:math", "cos")`
+    /// - `[Wasi, Cli, log]`              → `("wasi:cli", "log")`
+    ///
+    /// First join is `:` (package → interface), further joins use `/`,
+    /// last segment is the function name. Everything is lowercased.
+    fn resolve_component_model_call(&self, name: &str) -> Option<(String, String)> {
+        if !name.contains('\\') { return None; }
+        let parts: Vec<&str> = name.split('\\').collect();
+        if parts.len() < 2 { return None; }
+
+        let first_lc = parts[0].to_ascii_lowercase();
+        let matches_host_package = self.profile.namespaces.host_packages
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case(&first_lc));
+        if !matches_host_package { return None; }
+
+        let lower: Vec<String> = parts.iter().map(|s| s.to_ascii_lowercase()).collect();
+        let (func, path) = lower.split_last()?;
+        if path.is_empty() { return None; }
+
+        let module = if path.len() == 1 {
+            path[0].clone()
+        } else {
+            let mut m = path[0].clone();
+            m.push(':');
+            m.push_str(&path[1]);
+            for p in &path[2..] {
+                m.push('/');
+                m.push_str(p);
+            }
+            m
+        };
+        Some((module, func.clone()))
+    }
+
     // ── Crate-private accessors used by `dotnet_register` ──────────────
     //
     // The .NET class registration logic lives in a sibling file
@@ -2260,6 +2306,24 @@ impl Compiler {
 
     fn try_compile_builtin(&mut self, name: &str, args: &[&Expression]) -> Result<bool, String> {
         let line = self.line;
+
+        // ── Component Model host-call resolution (qualified name → host fn) ──
+        //
+        // A qualified identifier whose first segment matches the profile's
+        // `host_packages` list resolves directly to a Component Model host
+        // call. This is how `\Vybe\Http\Response\set_status(404)` in PHP
+        // reaches the `vybe:http/response` host module with zero profile
+        // builtin entries. The same convention is intended to apply to every
+        // language with namespaces (Python `vybe.http.request.method`, C#
+        // `Vybe.Http.Request.Method`, etc.) — walkers normalize their
+        // separators to `\` before reaching here so this single resolver
+        // handles them all.
+        if let Some((module, func)) = self.resolve_component_model_call(name) {
+            for a in args { self.compile_expr(a)?; }
+            let idx = self.import(&module, &func);
+            self.emit_host_call(idx, args.len() as u8);
+            return Ok(true);
+        }
 
         // ── Phase D1 pilot: Array(count, init) → wasm:js-array.newWithLength + fill ──
         //

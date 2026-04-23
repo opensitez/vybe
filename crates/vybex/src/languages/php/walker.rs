@@ -1016,12 +1016,22 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
         Rule::variable => ExprKind::Ident(strip_dollar(pair.as_str()).to_string()),
         Rule::identifier => ExprKind::Ident(pair.as_str().to_string()),
         Rule::qualified_name => {
-            // Strip leading backslash; flatten Foo\Bar to "Bar" (the last
-            // segment) since we don't model namespaces. The full name
-            // is also used as a global identifier.
+            // Preserve the qualified path so the compiler can resolve it
+            // against the profile's `host_packages` list. A qualified
+            // name whose first segment matches a host package (e.g.
+            // `\Vybe\Http\Response\set_status`) becomes a Component
+            // Model host call at compile time. Anything else still
+            // resolves by last-segment (user namespaces are flattened
+            // for now — worth revisiting when we model user namespaces).
             let s = pair.as_str().trim_start_matches('\\');
-            let last = s.rsplit('\\').next().unwrap_or(s);
-            ExprKind::Ident(last.to_string())
+            if s.contains('\\') {
+                // Store the full qualified name with backslashes preserved
+                // as an identifier. The compiler's `try_compile_builtin`
+                // path detects backslashes and routes to host calls.
+                ExprKind::Ident(s.to_string())
+            } else {
+                ExprKind::Ident(s.to_string())
+            }
         }
 
         Rule::kw_self => ExprKind::This,  // PHP `self::` inside a method ≈ `this`

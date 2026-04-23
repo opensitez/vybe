@@ -177,6 +177,21 @@ pub struct NamespaceConfig {
     pub default_imports: Vec<String>,
     /// Known constants (property access, not function call).
     pub constants: Vec<String>,
+    /// First segments that identify a qualified name as a Component
+    /// Model host call rather than a user-namespaced symbol.
+    ///
+    /// When the compiler sees a qualified call whose first segment is
+    /// in this list, it converts the path to a Component Model `(module,
+    /// function)` pair and emits a host call directly — no profile
+    /// builtin entry required.
+    ///
+    /// Convention: `[Vybe, Http, Request, method]` with
+    /// `host_packages = ["vybe"]` maps to `module = "vybe:http/request"`,
+    /// `function = "method"`. First join uses `:`, subsequent joins use
+    /// `/`, final segment is the function name. All lowercased.
+    ///
+    /// Typical values: `["vybe", "wasi", "wasm"]`.
+    pub host_packages: Vec<String>,
 }
 
 /// How a function returns its value.
@@ -472,6 +487,9 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
                 .unwrap_or_default(),
             constants: ns.get("constants").and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default(),
+            host_packages: ns.get("host_packages").and_then(|v| v.as_array())
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
                 .unwrap_or_default(),
         }

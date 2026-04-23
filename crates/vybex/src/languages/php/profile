@@ -169,3 +169,9 @@ defined             = { emit = "noop",                        min_args = 1, max_
 use_dotnet = false
 roots = []
 extra_imports = []
+
+# Component Model host packages — any qualified call whose first segment
+# matches one of these resolves directly to a host call, no profile
+# builtin entry required. E.g. `\Vybe\Http\Response\set_status(404)` →
+# host call `(module="vybe:http/response", name="set_status")`.
+host_packages = ["vybe", "wasi", "wasm"]
