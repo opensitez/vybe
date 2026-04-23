@@ -65,3 +65,69 @@ main();
     // await on a non-promise should resolve immediately
     assert_eq!(out, vec!["42"]);
 }
+
+#[test]
+fn async_function_runs_synchronously_until_first_await() {
+    let out = run_js(r#"
+async function demo() {
+    console.log("start");
+    await 1;
+    console.log("end");
+}
+console.log("before");
+demo();
+console.log("after");
+"#);
+    assert_eq!(out, vec!["before", "start", "end", "after"]);
+}
+
+#[test]
+fn async_method_can_use_this_before_await() {
+    let out = run_js(r#"
+class Counter {
+    constructor() { this.value = 2; }
+    async double() {
+        console.log(this.value);
+        return this.value * 2;
+    }
+}
+const c = new Counter();
+console.log(c.double());
+"#);
+    assert_eq!(out[0], "2");
+}
+
+#[test]
+fn await_preserves_expression_result() {
+    let out = run_js(r#"
+async function calc() {
+    const left = await 5;
+    const right = await 7;
+    console.log(left + right);
+}
+calc();
+"#);
+    assert_eq!(out, vec!["12"]);
+}
+
+#[test]
+fn async_arrow_with_parameter() {
+    let out = run_js(r#"
+const double = async x => x * 2;
+console.log(double(6));
+"#);
+    assert!(!out.is_empty());
+}
+
+#[test]
+fn await_inside_loop() {
+    let out = run_js(r#"
+async function main() {
+    for (const value of [1, 2, 3]) {
+        console.log(await value);
+    }
+}
+main();
+"#);
+    assert_eq!(out, vec!["1", "2", "3"]);
+}

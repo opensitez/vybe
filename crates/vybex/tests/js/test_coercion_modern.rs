@@ -377,3 +377,45 @@ console.log(obj?.fn?.());
 console.log(obj?.missing?.());
 "#), &["42", "undefined", "called", "undefined"]);
 }
+
+#[test]
+fn number_coercion_of_arrays() {
+    assert_eq!(run_js(r#"
+console.log(Number([]));
+console.log(Number([5]));
+console.log(Number([1, 2]));
+"#), &["0", "5", "NaN"]);
+}
+
+#[test]
+fn string_coercion_of_objects_uses_default_tag() {
+    assert_eq!(run_js(r#"
+console.log(String({}));
+console.log(String({ a: 1 }));
+"#), &["[object Object]", "[object Object]"]);
+}
+
+#[test]
+fn boolean_coercion_of_symbols_and_functions() {
+    assert_eq!(run_js(r#"
+console.log(Boolean(Symbol("x")));
+console.log(Boolean(function() {}));
+"#), &["true", "true"]);
+}
+
+#[test]
+fn arithmetic_with_null_and_undefined() {
+    assert_eq!(run_js(r#"
+console.log(null + 1);
+console.log(undefined + 1);
+console.log(null == 0);
+"#), &["1", "NaN", "false"]);
+}
+
+#[test]
+fn object_is_distinguishes_negative_zero() {
+    assert_eq!(run_js(r#"
+console.log(Object.is(0, -0));
+console.log(0 === -0);
+"#), &["false", "true"]);
+}

@@ -355,3 +355,127 @@ let nums = [...new NumberRange(1, 5)];
 console.log(nums.join(","));
 "#), &["1,2,3,4,5"]);
 }
+
+#[test]
+fn class_method_extracted_loses_this_binding() {
+    assert_eq!(run_js(r#"
+class Counter {
+    constructor() { this.value = 3; }
+    get() { return this && this.value; }
+}
+let c = new Counter();
+let fn = c.get;
+console.log(c.get());
+console.log(fn());
+"#), &["3", "undefined"]);
+}
+
+#[test]
+fn static_field_is_shared_on_class_not_instance() {
+    assert_eq!(run_js(r#"
+class Box {
+    static count = 2;
+}
+let b = new Box();
+console.log(Box.count);
+console.log(b.count);
+"#), &["2", "undefined"]);
+}
+
+#[test]
+fn subclass_can_call_super_method() {
+    assert_eq!(run_js(r#"
+class Animal {
+    speak() { return "animal"; }
+}
+class Dog extends Animal {
+    speak() { return super.speak() + " dog"; }
+}
+console.log(new Dog().speak());
+"#), &["animal dog"]);
+}
+
+#[test]
+fn class_instance_fields_are_per_instance() {
+    assert_eq!(run_js(r#"
+class Counter {
+    value = 0;
+    inc() { this.value += 1; }
+}
+let a = new Counter();
+let b = new Counter();
+a.inc();
+a.inc();
+b.inc();
+console.log(a.value);
+console.log(b.value);
+"#), &["2", "1"]);
+}
+
+#[test]
+fn class_constructor_can_return_custom_object() {
+    assert_eq!(run_js(r#"
+class Weird {
+    constructor() {
+        this.value = 1;
+        return { value: 99 };
+    }
+}
+let w = new Weird();
+console.log(w.value);
+"#), &["99"]);
+}
+
+#[test]
+fn class_extends_expression() {
+    assert_eq!(run_js(r#"
+function makeBase() {
+    return class {
+        greet() { return "hi"; }
+    };
+}
+class Derived extends makeBase() {}
+console.log(new Derived().greet());
+"#), &["hi"]);
+}
+
+#[test]
+fn getter_runs_on_property_access_each_time() {
+    assert_eq!(run_js(r#"
+class Seq {
+    constructor() { this.n = 0; }
+    get next() { this.n += 1; return this.n; }
+}
+let s = new Seq();
+console.log(s.next);
+console.log(s.next);
+"#), &["1", "2"]);
+}
+
+#[test]
+fn setter_can_normalize_input() {
+    assert_eq!(run_js(r#"
+class User {
+    set name(value) { this._name = value.trim(); }
+    get name() { return this._name; }
+}
+let u = new User();
+u.name = "  Alice  ";
+console.log(u.name);
+"#), &["Alice"]);
+}
+
+#[test]
+fn symbol_toPrimitive_default_hint_used_in_addition() {
+    assert_eq!(run_js(r#"
+class Amount {
+    constructor(v) { this.v = v; }
+    [Symbol.toPrimitive](hint) {
+        console.log(hint);
+        return this.v;
+    }
+}
+let a = new Amount(7);
+console.log(a + 5);
+"#), &["default", "12"]);
+}

@@ -109,6 +109,18 @@ console.log(inc(5, 3));
 }
 
 #[test]
+fn default_params_explicit_null_differs_from_omission() {
+    let out = run_js(r#"
+function greet(name = "World") {
+    console.log("Hello " + name);
+}
+greet();
+greet(null);
+"#);
+    assert_eq!(out, vec!["Hello World", "Hello null"]);
+}
+
+#[test]
 fn iife() {
     let out = run_js(r#"
 const result = (function() {
@@ -233,4 +245,133 @@ const obj = {
 console.log(obj.greet("World"));
 "#);
     assert_eq!(out, vec!["Hello World"]);
+}
+
+#[test]
+fn arrow_function_lexical_this() {
+    let out = run_js(r#"
+const counter = {
+    count: 0,
+    inc() {
+        const step = () => {
+            this.count += 1;
+        };
+        step();
+        step();
+        return this.count;
+    }
+};
+console.log(counter.inc());
+console.log(counter.count);
+"#);
+    assert_eq!(out, vec!["2", "2"]);
+}
+
+#[test]
+fn function_param_reassignment_changes_later_reads() {
+    let out = run_js(r#"
+function update(a) {
+    console.log(a);
+    a = 5;
+    console.log(a);
+}
+update(1);
+"#);
+    assert_eq!(out, vec!["1", "5"]);
+}
+
+#[test]
+fn missing_arguments_currently_produce_null() {
+    let out = run_js(r#"
+function show(a, b) {
+    console.log(a);
+    console.log(b);
+}
+show(1);
+"#);
+    assert_eq!(out, vec!["1", "null"]);
+}
+
+#[test]
+fn extra_arguments_are_ignored_by_named_parameters() {
+    let out = run_js(r#"
+function add(a, b) {
+    console.log(a + b);
+}
+add(2, 3, 4, 5);
+"#);
+    assert_eq!(out, vec!["5"]);
+}
+
+#[test]
+fn nested_function_reads_outer_parameter() {
+    let out = run_js(r#"
+function outer(value) {
+    function inner() {
+        return value + 1;
+    }
+    console.log(inner());
+}
+outer(4);
+"#);
+    assert_eq!(out, vec!["5"]);
+}
+
+#[test]
+fn default_params_evaluated_per_call() {
+    let out = run_js(r#"
+let n = 0;
+function next(value = ++n) {
+    console.log(value);
+}
+next();
+next();
+next(10);
+next();
+"#);
+    assert_eq!(out, vec!["1", "2", "10", "3"]);
+}
+
+#[test]
+fn default_params_can_reference_earlier_param() {
+    let out = run_js(r#"
+function range(start, end = start + 2) {
+    console.log(start + ":" + end);
+}
+range(4);
+range(4, 10);
+"#);
+    assert_eq!(out, vec!["4:6", "4:10"]);
+}
+
+#[test]
+fn recursive_named_function_expression_internal_name() {
+    let out = run_js(r#"
+let outer = function inner(n) {
+    if (n <= 1) return 1;
+    return n * inner(n - 1);
+};
+console.log(outer(4));
+"#);
+    assert_eq!(out, vec!["24"]);
+}
+
+#[test]
+fn function_length_ignores_defaulted_tail_params() {
+    let out = run_js(r#"
+function sample(a, b, c = 1, d = 2) {}
+console.log(sample.length);
+"#);
+    assert_eq!(out, vec!["2"]);
+}
+
+#[test]
+fn function_name_for_declaration_and_arrow_assignment() {
+    let out = run_js(r#"
+function greet() {}
+const answer = () => 42;
+console.log(greet.name);
+console.log(answer.name);
+"#);
+    assert_eq!(out, vec!["greet", "answer"]);
 }

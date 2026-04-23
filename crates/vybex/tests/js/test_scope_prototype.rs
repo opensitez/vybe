@@ -403,3 +403,111 @@ b &&= 42;
 console.log(b);
 "#), &["42", "0"]);
 }
+
+#[test]
+fn block_scope_shadow_does_not_modify_outer_binding() {
+    assert_eq!(run_js(r#"
+let value = 1;
+{
+    let value = 2;
+    value += 3;
+    console.log(value);
+}
+console.log(value);
+"#), &["5", "1"]);
+}
+
+#[test]
+fn function_scope_var_visible_outside_block() {
+    assert_eq!(run_js(r#"
+function test() {
+    if (true) {
+        var value = 7;
+    }
+    console.log(value);
+}
+test();
+"#), &["7"]);
+}
+
+#[test]
+fn prototype_property_falls_back_when_instance_missing() {
+    assert_eq!(run_js(r#"
+function Person() {}
+Person.prototype.role = "user";
+let p = new Person();
+console.log(p.role);
+p.role = "admin";
+console.log(p.role);
+delete p.role;
+console.log(p.role);
+"#), &["user", "admin", "user"]);
+}
+
+#[test]
+fn prototype_method_this_uses_receiver() {
+    assert_eq!(run_js(r#"
+function Person(name) { this.name = name; }
+Person.prototype.greet = function() { return "hi " + this.name; };
+let a = new Person("Alice");
+let b = { name: "Bob", greet: a.greet };
+console.log(a.greet());
+console.log(b.greet());
+"#), &["hi Alice", "hi Bob"]);
+}
+
+#[test]
+fn symbol_for_and_keyfor_roundtrip() {
+    assert_eq!(run_js(r#"
+let sym = Symbol.for("shared.key");
+console.log(Symbol.keyFor(sym));
+console.log(Symbol.keyFor(Symbol("local")));
+"#), &["shared.key", "undefined"]);
+}
+
+#[test]
+fn weakmap_different_object_keys_are_distinct() {
+    assert_eq!(run_js(r#"
+let wm = new WeakMap();
+let a = {};
+let b = {};
+wm.set(a, 1);
+wm.set(b, 2);
+console.log(wm.get(a));
+console.log(wm.get(b));
+"#), &["1", "2"]);
+}
+
+#[test]
+fn weakset_only_tracks_added_objects() {
+    assert_eq!(run_js(r#"
+let ws = new WeakSet();
+let a = {};
+let b = {};
+ws.add(a);
+console.log(ws.has(a));
+console.log(ws.has(b));
+"#), &["true", "false"]);
+}
+
+#[test]
+fn reflect_delete_property_removes_key() {
+    assert_eq!(run_js(r#"
+let obj = { a: 1, b: 2 };
+console.log(Reflect.deleteProperty(obj, "a"));
+console.log("a" in obj);
+"#), &["true", "false"]);
+}
+
+#[test]
+fn proxy_get_trap_receives_dynamic_property_names() {
+    assert_eq!(run_js(r#"
+let proxy = new Proxy({}, {
+    get(target, prop) {
+        return "prop:" + String(prop);
+    }
+});
+console.log(proxy.name);
+console.log(proxy["value"]);
+"#), &["prop:name", "prop:value"]);
+}

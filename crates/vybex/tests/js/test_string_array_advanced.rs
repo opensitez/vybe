@@ -390,3 +390,138 @@ console.log(n.toFixed(2));
 console.log(n.toFixed(0));
 "#), &["3.14", "3"]);
 }
+
+#[test]
+fn string_repeat_zero_and_many() {
+    assert_eq!(run_js(r#"
+console.log("ab".repeat(0));
+console.log("ab".repeat(3));
+"#), &["", "ababab"]);
+}
+
+#[test]
+fn string_pad_start_and_end() {
+    assert_eq!(run_js(r#"
+console.log("5".padStart(3, "0"));
+console.log("5".padEnd(3, "0"));
+"#), &["005", "500"]);
+}
+
+#[test]
+fn string_includes_with_position() {
+    assert_eq!(run_js(r#"
+let s = "banana";
+console.log(s.includes("an", 1));
+console.log(s.includes("ba", 1));
+"#), &["true", "false"]);
+}
+
+#[test]
+fn string_startswith_and_endswith() {
+    assert_eq!(run_js(r#"
+let s = "javascript";
+console.log(s.startsWith("java"));
+console.log(s.endsWith("script"));
+console.log(s.endsWith("java"));
+"#), &["true", "true", "false"]);
+}
+
+#[test]
+fn string_split_with_limit() {
+    assert_eq!(run_js(r#"
+let parts = "a,b,c,d".split(",", 2);
+console.log(parts.join("|"));
+"#), &["a|b"]);
+}
+
+#[test]
+fn string_charcodeat_and_fromcharcode_roundtrip() {
+    assert_eq!(run_js(r#"
+let code = "A".charCodeAt(0);
+console.log(code);
+console.log(String.fromCharCode(code + 1));
+"#), &["65", "B"]);
+}
+
+#[test]
+fn string_substring_swaps_arguments() {
+    assert_eq!(run_js(r#"
+let s = "abcdef";
+console.log(s.substring(4, 1));
+console.log(s.slice(4, 1));
+"#), &["bcd", ""]);
+}
+
+#[test]
+fn string_locale_compare_basic_ordering() {
+    assert_eq!(run_js(r#"
+console.log("a".localeCompare("b") < 0);
+console.log("b".localeCompare("a") > 0);
+console.log("a".localeCompare("a") === 0);
+"#), &["true", "true", "true"]);
+}
+
+#[test]
+fn array_flatmap_can_remove_items() {
+    assert_eq!(run_js(r#"
+let arr = [1, 2, 3, 4];
+let result = arr.flatMap(x => x % 2 === 0 ? [] : [x]);
+console.log(result.join(","));
+"#), &["1,3"]);
+}
+
+#[test]
+fn array_copywithin_partial_range() {
+    assert_eq!(run_js(r#"
+let arr = [1, 2, 3, 4, 5];
+arr.copyWithin(1, 3, 5);
+console.log(arr.join(","));
+"#), &["1,4,5,4,5"]);
+}
+
+#[test]
+fn array_reduce_right_with_numbers() {
+    assert_eq!(run_js(r#"
+let arr = [1, 2, 3];
+let result = arr.reduceRight((acc, x) => acc - x, 10);
+console.log(result);
+"#), &["4"]);
+}
+
+#[test]
+fn array_entries_iterator_exposes_index_value_pairs() {
+    assert_eq!(run_js(r#"
+let first = ["x", "y"].entries().next().value;
+console.log(first[0]);
+console.log(first[1]);
+"#), &["0", "x"]);
+}
+
+#[test]
+fn array_keys_iterator_sequence() {
+    assert_eq!(run_js(r#"
+let iter = ["a", "b"].keys();
+console.log(iter.next().value);
+console.log(iter.next().value);
+console.log(iter.next().done);
+"#), &["0", "1", "true"]);
+}
+
+#[test]
+fn array_values_iterator_sequence() {
+    assert_eq!(run_js(r#"
+let iter = [10, 20].values();
+console.log(iter.next().value);
+console.log(iter.next().value);
+console.log(iter.next().done);
+"#), &["10", "20", "true"]);
+}
+
+#[test]
+fn array_of_single_number_differs_from_constructor() {
+    assert_eq!(run_js(r#"
+console.log(Array.of(3).length);
+console.log(new Array(3).length);
+console.log(Array.of(3)[0]);
+"#), &["1", "3", "3"]);
+}

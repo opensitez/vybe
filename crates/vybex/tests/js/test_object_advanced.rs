@@ -252,3 +252,57 @@ console.log(result.size);
 console.log(result.bold);
 "#), &["blue", "10", "true"]);
 }
+
+#[test] #[ignore] fn get_own_property_descriptor_value_flags() {
+    assert_eq!(run_js(r#"
+let obj = { a: 1 };
+let d = Object.getOwnPropertyDescriptor(obj, "a");
+console.log(d.value);
+console.log(d.writable);
+console.log(d.enumerable);
+console.log(d.configurable);
+"#), &["1", "true", "true", "true"]);
+}
+
+#[test] #[ignore] fn object_defineproperties_multiple_fields() {
+    assert_eq!(run_js(r#"
+let obj = {};
+Object.defineProperties(obj, {
+    a: { value: 1, enumerable: true },
+    b: { value: 2, enumerable: true }
+});
+console.log(obj.a);
+console.log(obj.b);
+console.log(Object.keys(obj).join(","));
+"#), &["1", "2", "a,b"]);
+}
+
+#[test] #[ignore] fn object_prevent_extensions_blocks_new_properties() {
+    assert_eq!(run_js(r#"
+let obj = { a: 1 };
+Object.preventExtensions(obj);
+obj.b = 2;
+console.log(Object.isExtensible(obj));
+console.log(obj.b);
+"#), &["false", "undefined"]);
+}
+
+#[test] #[ignore] fn object_create_with_property_descriptors() {
+    assert_eq!(run_js(r#"
+let obj = Object.create({}, {
+    x: { value: 5, enumerable: true },
+    y: { value: 7, enumerable: true }
+});
+console.log(obj.x + obj.y);
+console.log(Object.keys(obj).join(","));
+"#), &["12", "x,y"]);
+}
+
+#[test] #[ignore] fn object_getprototypeof_object_create_chain() {
+    assert_eq!(run_js(r#"
+let proto = { kind: "base" };
+let obj = Object.create(proto);
+console.log(Object.getPrototypeOf(obj) === proto);
+console.log(obj.kind);
+"#), &["true", "base"]);
+}

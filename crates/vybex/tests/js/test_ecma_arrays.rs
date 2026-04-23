@@ -326,3 +326,166 @@ console.log(result.join(","));
 "#);
     assert_eq!(out, vec!["0:a,1:b,2:c"]);
 }
+
+#[test]
+fn slice_with_negative_indexes() {
+    let out = run_js(r#"
+const arr = [1, 2, 3, 4, 5];
+console.log(arr.slice(-2).join(","));
+console.log(arr.slice(1, -1).join(","));
+"#);
+    assert_eq!(out, vec!["4,5", "2,3,4"]);
+}
+
+#[test]
+fn concat_does_not_mutate_original_arrays() {
+    let out = run_js(r#"
+const a = [1, 2];
+const b = [3, 4];
+const c = a.concat(b);
+console.log(a.join(","));
+console.log(b.join(","));
+console.log(c.join(","));
+"#);
+    assert_eq!(out, vec!["1,2", "3,4", "1,2,3,4"]);
+}
+
+#[test]
+fn reverse_mutates_in_place() {
+    let out = run_js(r#"
+const arr = [1, 2, 3];
+const same = arr.reverse();
+console.log(arr === same);
+console.log(arr.join(","));
+"#);
+    assert_eq!(out, vec!["true", "3,2,1"]);
+}
+
+#[test]
+fn sort_default_is_lexicographic() {
+    let out = run_js(r#"
+const arr = [10, 2, 1];
+arr.sort();
+console.log(arr.join(","));
+"#);
+    assert_eq!(out, vec!["1,10,2"]);
+}
+
+#[test]
+fn fill_without_end_fills_to_array_end() {
+    let out = run_js(r#"
+const arr = [1, 2, 3, 4];
+arr.fill(9, 2);
+console.log(arr.join(","));
+"#);
+    assert_eq!(out, vec!["1,2,9,9"]);
+}
+
+#[test]
+fn find_returns_undefined_when_missing() {
+    let out = run_js(r#"
+const arr = [1, 2, 3];
+console.log(arr.find(x => x > 10));
+"#);
+    assert_eq!(out, vec!["undefined"]);
+}
+
+#[test]
+fn findindex_returns_negative_one_when_missing() {
+    let out = run_js(r#"
+const arr = [1, 2, 3];
+console.log(arr.findIndex(x => x > 10));
+"#);
+    assert_eq!(out, vec!["-1"]);
+}
+
+#[test]
+fn some_short_circuits_after_match() {
+    let out = run_js(r#"
+let seen = [];
+const result = [1, 2, 3, 4].some(x => {
+    seen.push(x);
+    return x === 3;
+});
+console.log(result);
+console.log(seen.join(","));
+"#);
+    assert_eq!(out, vec!["true", "1,2,3"]);
+}
+
+#[test]
+fn every_short_circuits_after_failure() {
+    let out = run_js(r#"
+let seen = [];
+const result = [2, 4, 5, 6].every(x => {
+    seen.push(x);
+    return x % 2 === 0;
+});
+console.log(result);
+console.log(seen.join(","));
+"#);
+    assert_eq!(out, vec!["false", "2,4,5"]);
+}
+
+#[test]
+fn map_preserves_length() {
+    let out = run_js(r#"
+const arr = [1, 2, 3];
+const mapped = arr.map(x => x * 10);
+console.log(arr.length);
+console.log(mapped.length);
+"#);
+    assert_eq!(out, vec!["3", "3"]);
+}
+
+#[test]
+fn filter_can_return_empty_array() {
+    let out = run_js(r#"
+const arr = [1, 3, 5];
+const even = arr.filter(x => x % 2 === 0);
+console.log(even.length);
+console.log(even.join(","));
+"#);
+    assert_eq!(out, vec!["0", ""]);
+}
+
+#[test]
+fn reduce_without_initial_uses_first_element() {
+    let out = run_js(r#"
+const total = [5, 6, 7].reduce((acc, x) => acc + x);
+console.log(total);
+"#);
+    assert_eq!(out, vec!["18"]);
+}
+
+#[test]
+fn foreach_visits_items_in_order() {
+    let out = run_js(r#"
+let seen = [];
+["a", "b", "c"].forEach(v => seen.push(v));
+console.log(seen.join(","));
+"#);
+    assert_eq!(out, vec!["a,b,c"]);
+}
+
+#[test]
+fn flat_flattens_single_level_only_by_default() {
+    let out = run_js(r#"
+const arr = [1, [2, [3]]];
+console.log(arr.flat().join(","));
+"#);
+    assert_eq!(out, vec!["1,2,3"]);
+}
+
+#[test]
+fn array_from_preserves_sparse_length() {
+    let out = run_js(r#"
+const sparse = [];
+sparse[2] = "x";
+const arr = Array.from(sparse);
+console.log(arr.length);
+console.log(arr[0]);
+console.log(arr[2]);
+"#);
+    assert_eq!(out, vec!["3", "undefined", "x"]);
+}

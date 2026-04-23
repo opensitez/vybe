@@ -262,3 +262,132 @@ console.log(found);
 "#);
     assert_eq!(out, vec!["true"]);
 }
+
+#[test]
+fn for_in_array_iterates_present_indexes() {
+    let out = run_js(r#"
+const arr = ["a", "b", "c"];
+let keys = [];
+for (const key in arr) {
+    keys.push(key);
+}
+console.log(keys.join(","));
+"#);
+    assert_eq!(out, vec!["0,1,2"]);
+}
+
+#[test]
+fn for_in_skips_deleted_array_holes() {
+    let out = run_js(r#"
+const arr = ["a", "b", "c"];
+delete arr[1];
+let keys = [];
+for (const key in arr) {
+    keys.push(key);
+}
+console.log(keys.join(","));
+"#);
+    assert_eq!(out, vec!["0,2"]);
+}
+
+#[test]
+fn for_of_array_values_not_indexes() {
+    let out = run_js(r#"
+const arr = [10, 20, 30];
+let values = [];
+for (const value of arr) {
+    values.push(value);
+}
+console.log(values.join(","));
+"#);
+    assert_eq!(out, vec!["10,20,30"]);
+}
+
+#[test]
+fn for_of_string_iterates_unicode_code_points() {
+    let out = run_js(r#"
+let chars = [];
+for (const ch of "A😀B") {
+    chars.push(ch);
+}
+console.log(chars.length);
+console.log(chars[1]);
+"#);
+    assert_eq!(out, vec!["3", "😀"]);
+}
+
+#[test]
+fn spread_array_clone_is_shallow() {
+    let out = run_js(r#"
+const original = [{ x: 1 }];
+const copy = [...original];
+copy[0].x = 9;
+console.log(original[0].x);
+console.log(copy.length);
+"#);
+    assert_eq!(out, vec!["9", "1"]);
+}
+
+#[test]
+fn spread_object_clone_is_shallow() {
+    let out = run_js(r#"
+const original = { nested: { x: 1 } };
+const copy = { ...original };
+copy.nested.x = 5;
+console.log(original.nested.x);
+console.log(copy.nested.x);
+"#);
+    assert_eq!(out, vec!["5", "5"]);
+}
+
+#[test]
+fn while_loop_zero_iterations() {
+    let out = run_js(r#"
+let count = 0;
+while (count < 0) {
+    count += 1;
+}
+console.log(count);
+"#);
+    assert_eq!(out, vec!["0"]);
+}
+
+#[test]
+fn do_while_runs_once_even_when_condition_false() {
+    let out = run_js(r#"
+let count = 0;
+do {
+    count += 1;
+} while (false);
+console.log(count);
+"#);
+    assert_eq!(out, vec!["1"]);
+}
+
+#[test]
+fn continue_skips_current_iteration_only() {
+    let out = run_js(r#"
+let seen = [];
+for (let i = 0; i < 4; i++) {
+    if (i === 2) continue;
+    seen.push(i);
+}
+console.log(seen.join(","));
+"#);
+    assert_eq!(out, vec!["0,1,3"]);
+}
+
+#[test]
+fn break_exits_only_innermost_loop_without_label() {
+    let out = run_js(r#"
+let count = 0;
+for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 3; j++) {
+        if (j === 1) break;
+        count += 1;
+    }
+}
+console.log(count);
+"#);
+    assert_eq!(out, vec!["3"]);
+}

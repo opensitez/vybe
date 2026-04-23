@@ -429,3 +429,122 @@ console.log(x);
 "#);
     assert_eq!(out, vec!["3"]);
 }
+
+#[test]
+fn optional_chaining_computed_property() {
+    let out = run_js(r#"
+const obj = { nested: { value: 7 } };
+const key = "nested";
+console.log(obj?.[key]?.value);
+console.log(obj?.["missing"]?.value);
+"#);
+    assert_eq!(out, vec!["7", "undefined"]);
+}
+
+#[test]
+fn optional_chaining_computed_index() {
+    let out = run_js(r#"
+const list = [{ name: "a" }, { name: "b" }];
+console.log(list?.[1]?.name);
+console.log(list?.[5]?.name);
+"#);
+    assert_eq!(out, vec!["b", "undefined"]);
+}
+
+#[test]
+fn nullish_coalescing_preserves_falsey_non_nullish_values() {
+    let out = run_js(r#"
+console.log(false ?? true);
+console.log(0 ?? 10);
+console.log("" ?? "fallback");
+"#);
+    assert_eq!(out, vec!["false", "0", ""]);
+}
+
+#[test]
+fn delete_array_element_keeps_length() {
+    let out = run_js(r#"
+const arr = [10, 20, 30];
+delete arr[1];
+console.log(arr.length);
+console.log(1 in arr);
+console.log(arr[1]);
+"#);
+    assert_eq!(out, vec!["3", "false", "undefined"]);
+}
+
+#[test]
+fn in_operator_on_array_indexes() {
+    let out = run_js(r#"
+const arr = ["x", "y"];
+console.log(0 in arr);
+console.log(2 in arr);
+console.log("length" in arr);
+"#);
+    assert_eq!(out, vec!["true", "false", "true"]);
+}
+
+#[test]
+fn logical_or_returns_original_operand() {
+    let out = run_js(r#"
+console.log("left" || "right");
+console.log(0 || 5);
+"#);
+    assert_eq!(out, vec!["left", "5"]);
+}
+
+#[test]
+fn logical_and_returns_original_operand() {
+    let out = run_js(r#"
+console.log("left" && "right");
+console.log(0 && 5);
+"#);
+    assert_eq!(out, vec!["right", "0"]);
+}
+
+#[test]
+fn ternary_uses_truthiness() {
+    let out = run_js(r#"
+console.log("" ? "yes" : "no");
+console.log([] ? "yes" : "no");
+"#);
+    assert_eq!(out, vec!["no", "yes"]);
+}
+
+#[test]
+fn typeof_array_and_class() {
+    let out = run_js(r#"
+class Box {}
+console.log(typeof []);
+console.log(typeof Box);
+"#);
+    assert_eq!(out, vec!["object", "function"]);
+}
+
+#[test]
+fn loose_equality_with_booleans_and_strings() {
+    let out = run_js(r#"
+console.log("0" == false);
+console.log("1" == true);
+console.log(2 == true);
+"#);
+    assert_eq!(out, vec!["true", "true", "false"]);
+}
+
+#[test]
+fn strict_equality_distinguishes_nan() {
+    let out = run_js(r#"
+console.log(NaN === NaN);
+console.log(Object.is(NaN, NaN));
+"#);
+    assert_eq!(out, vec!["false", "true"]);
+}
+
+#[test]
+fn comparison_of_strings_is_lexicographic() {
+    let out = run_js(r#"
+console.log("2" > "10");
+console.log("apple" < "banana");
+"#);
+    assert_eq!(out, vec!["true", "true"]);
+}

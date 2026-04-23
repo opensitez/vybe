@@ -189,3 +189,80 @@ try {
 "#);
     assert_eq!(out, vec!["true", "true"]);
 }
+
+#[test]
+fn catch_binding_shadows_outer_variable() {
+    let out = run_js(r#"
+let e = "outer";
+try {
+    throw "inner";
+} catch (e) {
+    console.log(e);
+}
+console.log(e);
+"#);
+    assert_eq!(out, vec!["inner", "outer"]);
+}
+
+#[test]
+fn finally_runs_after_catch() {
+    let out = run_js(r#"
+try {
+    throw new Error("boom");
+} catch (e) {
+    console.log("caught");
+} finally {
+    console.log("finally");
+}
+"#);
+    assert_eq!(out, vec!["caught", "finally"]);
+}
+
+#[test]
+fn throw_plain_object_and_read_property() {
+    let out = run_js(r#"
+try {
+    throw { code: 500, message: "server" };
+} catch (e) {
+    console.log(e.code);
+    console.log(e.message);
+}
+"#);
+    assert_eq!(out, vec!["500", "server"]);
+}
+
+#[test]
+fn rethrow_same_error_object() {
+    let out = run_js(r#"
+try {
+    try {
+        throw new Error("x");
+    } catch (e) {
+        e.tag = "seen";
+        throw e;
+    }
+} catch (e) {
+    console.log(e.message);
+    console.log(e.tag);
+}
+"#);
+    assert_eq!(out, vec!["x", "seen"]);
+}
+
+#[test]
+fn return_from_catch_still_runs_finally() {
+    let out = run_js(r#"
+function test() {
+    try {
+        throw new Error("x");
+    } catch (e) {
+        console.log("catch");
+        return "done";
+    } finally {
+        console.log("finally");
+    }
+}
+console.log(test());
+"#);
+    assert_eq!(out, vec!["catch", "finally", "done"]);
+}
