@@ -301,20 +301,6 @@ fn register_list(vm: &mut VM) {
         Value::Null
     }));
 
-    // List.IndexOf(item) → index or -1
-    vm.register_host_fn("vybe:types", "listIndexOf", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        if let Some(Value::Object(obj)) = args.first() {
-            let search = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
-            let o = obj.lock().unwrap();
-            if let ObjectKind::Array(ref elems) = o.kind {
-                for (i, e) in elems.iter().enumerate() {
-                    if format!("{}", e) == search { return Value::F64(i as f64); }
-                }
-            }
-        }
-        Value::F64(-1.0)
-    }));
-
     // List.Item(index) → element at index
     vm.register_host_fn("vybe:types", "listItem", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
@@ -374,18 +360,77 @@ fn register_list(vm: &mut VM) {
         Value::Null
     }));
 
-    // List.Reverse()
+    // List.IndexOf(item[, start[, count]]) → index or -1
+    vm.register_host_fn("vybe:types", "listIndexOf", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let search = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+            let o = obj.lock().unwrap();
+            if let ObjectKind::Array(ref elems) = o.kind {
+                let start = args.get(2).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
+                let end = if let Some(cnt) = args.get(3) {
+                    (start + cnt.as_i32().max(0) as usize).min(elems.len())
+                } else {
+                    elems.len()
+                };
+                for (i, e) in elems[start.min(elems.len())..end].iter().enumerate() {
+                    if format!("{}", e) == search { return Value::F64((start + i) as f64); }
+                }
+            }
+        }
+        Value::F64(-1.0)
+    }));
+
+    // List.LastIndexOf(item[, end]) → last index or -1. `end` is inclusive upper bound.
+    vm.register_host_fn("vybe:types", "listLastIndexOf", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let search = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+            let o = obj.lock().unwrap();
+            if let ObjectKind::Array(ref elems) = o.kind {
+                let end = args.get(2)
+                    .map(|v| (v.as_i32() + 1).max(0) as usize)
+                    .unwrap_or(elems.len());
+                let end = end.min(elems.len());
+                for (i, e) in elems[..end].iter().enumerate().rev() {
+                    if format!("{}", e) == search { return Value::F64(i as f64); }
+                }
+            }
+        }
+        Value::F64(-1.0)
+    }));
+
+    // List.Reverse([index, count]) — full reverse or subrange
     vm.register_host_fn("vybe:types", "listReverse", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let mut o = obj.lock().unwrap();
             if let ObjectKind::Array(elems) = &mut o.kind {
-                elems.reverse();
+                if let Some(start_v) = args.get(1) {
+                    let start = start_v.as_i32().max(0) as usize;
+                    let count = args.get(2).map(|v| v.as_i32().max(0) as usize)
+                        .unwrap_or_else(|| elems.len().saturating_sub(start));
+                    let end = (start + count).min(elems.len());
+                    elems[start..end].reverse();
+                } else {
+                    elems.reverse();
+                }
             }
         }
         Value::Null
     }));
 
-    // List.ToArray() → new array copy
+    // List.ToArray() / Clone() — return a shallow copy with __type = "List"
+    vm.register_host_fn("vybe:types", "listClone", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.lock().unwrap();
+            if let ObjectKind::Array(ref elems) = o.kind {
+                let mut result = Object::new_array(elems.clone());
+                result.properties.insert("__type".into(), Value::String(Arc::from("List")));
+                return Value::Object(Arc::new(Mutex::new(result)));
+            }
+        }
+        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![]))))
+    }));
+
+    // List.ToArray() → copy (without __type for plain array return)
     vm.register_host_fn("vybe:types", "listToArray", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {
             let o = obj.lock().unwrap();
@@ -394,6 +439,145 @@ fn register_list(vm: &mut VM) {
             }
         }
         Value::Object(Arc::new(Mutex::new(Object::new_array(vec![]))))
+    }));
+
+    // List.InsertRange(index, collection)
+    vm.register_host_fn("vybe:types", "listInsertRange", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let (Some(Value::Object(dst)), Some(Value::Object(src))) = (args.first(), args.get(2)) {
+            let idx = args.get(1).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
+            let s = src.lock().unwrap();
+            if let ObjectKind::Array(ref src_elems) = s.kind {
+                let items: Vec<Value> = src_elems.clone();
+                drop(s);
+                let mut d = dst.lock().unwrap();
+                if let ObjectKind::Array(ref mut dst_elems) = d.kind {
+                    let pos = idx.min(dst_elems.len());
+                    for (i, item) in items.into_iter().enumerate() {
+                        dst_elems.insert(pos + i, item);
+                    }
+                    let len = dst_elems.len() as f64;
+                    d.properties.insert("length".into(), Value::F64(len));
+                    d.properties.insert("count".into(), Value::F64(len));
+                }
+            }
+        }
+        Value::Null
+    }));
+
+    // List.RemoveRange(index, count)
+    vm.register_host_fn("vybe:types", "listRemoveRange", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let idx = args.get(1).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
+            let count = args.get(2).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
+            let mut o = obj.lock().unwrap();
+            if let ObjectKind::Array(elems) = &mut o.kind {
+                let start = idx.min(elems.len());
+                let end = (start + count).min(elems.len());
+                elems.drain(start..end);
+                let len = elems.len() as f64;
+                o.properties.insert("length".into(), Value::F64(len));
+                o.properties.insert("count".into(), Value::F64(len));
+            }
+        }
+        Value::Null
+    }));
+
+    // List.GetRange(index, count) → new ArrayList with sub-elements
+    vm.register_host_fn("vybe:types", "listGetRange", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let idx = args.get(1).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
+            let count = args.get(2).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
+            let o = obj.lock().unwrap();
+            if let ObjectKind::Array(ref elems) = o.kind {
+                let start = idx.min(elems.len());
+                let end = (start + count).min(elems.len());
+                let sub: Vec<Value> = elems[start..end].to_vec();
+                let mut result = Object::new_array(sub);
+                result.properties.insert("__type".into(), Value::String(Arc::from("List")));
+                return Value::Object(Arc::new(Mutex::new(result)));
+            }
+        }
+        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![]))))
+    }));
+
+    // List.SetRange(index, collection) — overwrite elements starting at index
+    vm.register_host_fn("vybe:types", "listSetRange", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let (Some(Value::Object(dst)), Some(Value::Object(src))) = (args.first(), args.get(2)) {
+            let idx = args.get(1).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
+            let s = src.lock().unwrap();
+            if let ObjectKind::Array(ref src_elems) = s.kind {
+                let items: Vec<Value> = src_elems.clone();
+                drop(s);
+                let mut d = dst.lock().unwrap();
+                if let ObjectKind::Array(ref mut dst_elems) = d.kind {
+                    for (i, item) in items.into_iter().enumerate() {
+                        let pos = idx + i;
+                        if pos < dst_elems.len() {
+                            dst_elems[pos] = item;
+                        }
+                    }
+                }
+            }
+        }
+        Value::Null
+    }));
+
+    // List.BinarySearch(value) — simplified to indexOf (assumes sorted, falls back to linear)
+    vm.register_host_fn("vybe:types", "listBinarySearch", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let search = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+            let o = obj.lock().unwrap();
+            if let ObjectKind::Array(ref elems) = o.kind {
+                for (i, e) in elems.iter().enumerate() {
+                    if format!("{}", e) == search { return Value::F64(i as f64); }
+                }
+            }
+        }
+        Value::F64(-1.0)
+    }));
+
+    // List.Shift() — remove and return first element (for Queue TryDequeue)
+    vm.register_host_fn("vybe:types", "listShift", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let mut o = obj.lock().unwrap();
+            if let ObjectKind::Array(elems) = &mut o.kind {
+                if !elems.is_empty() {
+                    let first = elems.remove(0);
+                    let len = elems.len() as f64;
+                    o.properties.insert("length".into(), Value::F64(len));
+                    o.properties.insert("count".into(), Value::F64(len));
+                    return first;
+                }
+            }
+        }
+        Value::Null
+    }));
+
+    // List.Last() — return last element without removing (for Stack/Queue peek)
+    vm.register_host_fn("vybe:types", "listLast", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.lock().unwrap();
+            if let ObjectKind::Array(ref elems) = o.kind {
+                return elems.last().cloned().unwrap_or(Value::Null);
+            }
+        }
+        Value::Null
+    }));
+
+    // List.Pop() — remove and return last element (for Stack TryPop)
+    vm.register_host_fn("vybe:types", "listPop", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let mut o = obj.lock().unwrap();
+            if let ObjectKind::Array(elems) = &mut o.kind {
+                if let Some(last) = elems.pop() {
+                    let len = elems.len() as f64;
+                    o.properties.insert("length".into(), Value::F64(len));
+                    o.properties.insert("count".into(), Value::F64(len));
+                    return last;
+                }
+            }
+        }
+        Value::Null
     }));
 }
 
