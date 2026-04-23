@@ -8,6 +8,10 @@ pub mod stdlib_aliases;
 pub mod gui_state;
 
 pub use modules::{register_all, register_with_capabilities, Capabilities, Capability};
+pub use modules::http_server::{
+    RequestContext, RequestBodyReader, ResponseState, ResponseMessage,
+    install_context, take_context, with_context,
+};
 #[cfg(feature = "gui")]
 pub use modules::{register_all_with_gui, register_with_capabilities_and_gui};
 #[cfg(feature = "gui")]

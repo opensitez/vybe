@@ -34,6 +34,7 @@ pub mod drawing;
 pub mod canvas;
 pub mod rt;
 pub mod js_builtins;
+pub mod http_server;
 // Dynamic-runtime Phase B3 — JS-canonical collection host handlers.
 // Each submodule provides the Rust side of a `wasm:js-*` import set.
 pub mod js_array_builtins;
@@ -87,6 +88,9 @@ pub enum Capability {
     Random,
     /// XML parsing.
     Xml,
+    /// HTTP server (binding ports, handling requests). Required for `vybex --serve`
+    /// and any script calling `vybe:http/server.listen`.
+    HttpServer,
 }
 
 impl Capabilities {
@@ -95,7 +99,7 @@ impl Capabilities {
         use Capability::*;
         let mut granted = HashSet::new();
         for cap in [Console, FileRead, FileWrite, Http, Sockets, Database,
-                    Environment, Gui, Threading, Crypto, Clock, Random, Xml] {
+                    Environment, Gui, Threading, Crypto, Clock, Random, Xml, HttpServer] {
             granted.insert(cap);
         }
         Capabilities { granted }
@@ -525,6 +529,9 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
     }
     if caps.has(Capability::Xml) {
         xml::register(vm);
+    }
+    if caps.has(Capability::HttpServer) {
+        http_server::register(vm);
     }
 
     // Set up namespace objects, type registry

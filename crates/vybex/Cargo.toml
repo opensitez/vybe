@@ -22,6 +22,20 @@ crossbeam-channel = "0.5"
 toml = "1.1"
 quick-xml = "0.39"
 
+# HTTP server stack (for `vybex --serve`).
+tokio = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+percent-encoding = { workspace = true }
+mime_guess = { workspace = true }
+httpdate = { workspace = true }
+dashmap = { workspace = true }
+
 [dev-dependencies]
 
 [[bin]]

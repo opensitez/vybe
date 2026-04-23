@@ -28,6 +28,12 @@ fn main() {
     let mut chunk_filter = None;
     let mut file_arg = None;
 
+    // --serve flags. When `serve` is true, positional args are treated as
+    // [BIND] [ROOT] instead of a single script path.
+    let mut serve = false;
+    let mut serve_no_sandbox = false;
+    let mut serve_positional: Vec<String> = Vec::new();
+
     let mut iter = args[1..].iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -36,6 +42,8 @@ fn main() {
             "--sandbox" | "-s" => sandbox = true,
             "--portable" | "-p" => portable = true,
             "--trace" | "-t" => trace = true,
+            "--serve" => serve = true,
+            "--no-sandbox" => serve_no_sandbox = true,
             "--chunk" => {
                 let Some(name) = iter.next() else {
                     eprintln!("Missing value for --chunk");
@@ -47,12 +55,28 @@ fn main() {
                 print_usage();
                 return;
             }
+            _ if serve && !arg.starts_with('-') => serve_positional.push(arg.clone()),
             _ if file_arg.is_none() && !arg.starts_with('-') => file_arg = Some(arg.clone()),
             _ => {
                 eprintln!("Unknown flag: {arg}");
                 std::process::exit(1);
             }
         }
+    }
+
+    if serve {
+        let mut config = vybex::server::ServeConfig::default();
+        config.no_sandbox = serve_no_sandbox;
+        // Positional parsing: first token that looks like an addr is bind;
+        // first token that looks like a path is root. Order-insensitive.
+        for p in &serve_positional {
+            if looks_like_addr(p) {
+                config.bind = p.clone();
+            } else {
+                config.root = std::path::PathBuf::from(p);
+            }
+        }
+        vybex::server::serve_directory(config);
     }
 
     let file_path = match file_arg {
@@ -235,6 +259,7 @@ fn print_usage() {
     eprintln!("vybex — Universal compiler");
     eprintln!();
     eprintln!("Usage: vybex [flags] <file>");
+    eprintln!("       vybex --serve [BIND] [ROOT]");
     eprintln!();
     eprintln!("Flags:");
     eprintln!("  -d, --dump        Disassemble bytecode (no run)");
@@ -243,7 +268,31 @@ fn print_usage() {
     eprintln!("  -p, --portable    Minimal WASI runtime (no Vybe host)");
     eprintln!("  -t, --trace       Enable bytecode trace output");
     eprintln!("      --chunk NAME  Limit --dump/--trace output to a chunk name or index");
+    eprintln!("      --serve       Start HTTP server for a directory (see httpserver.md)");
+    eprintln!("                    BIND defaults to 127.0.0.1:8080, ROOT to current dir");
+    eprintln!("      --no-sandbox  With --serve: give scripts full host access");
     eprintln!("  -h, --help        Show this help");
     eprintln!();
     eprintln!("Supported: {}", ext_list.join(", "));
+}
+
+/// Heuristic to distinguish a bind address (`host:port` or `:port`) from a
+/// filesystem root path in the positional args of `--serve`.
+fn looks_like_addr(s: &str) -> bool {
+    // Bare port `:3000`
+    if let Some(rest) = s.strip_prefix(':') {
+        return rest.chars().all(|c| c.is_ascii_digit());
+    }
+    // IPv6 bracketed `[::1]:8080`
+    if s.starts_with('[') && s.contains("]:") {
+        return true;
+    }
+    // host:port — exactly one colon, port is numeric, host has no slashes.
+    if let Some((h, p)) = s.rsplit_once(':') {
+        return !h.contains('/')
+            && !h.contains('\\')
+            && !p.is_empty()
+            && p.chars().all(|c| c.is_ascii_digit());
+    }
+    false
 }
