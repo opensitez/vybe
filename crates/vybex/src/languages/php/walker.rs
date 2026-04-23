@@ -1712,8 +1712,10 @@ fn walk_number(pair: &Pair<Rule>) -> Expression {
 fn walk_string(pair: &Pair<Rule>) -> Expression {
     let raw = pair.as_str();
     let body = &raw[1..raw.len() - 1];
-    let value = if raw.starts_with('\'') {
-        // Single-quoted: only \' and \\ are escapes
+
+    if raw.starts_with('\'') {
+        // Single-quoted: literal, only \' and \\ escapes. No
+        // interpolation in PHP.
         let mut out = String::with_capacity(body.len());
         let mut chars = body.chars().peekable();
         while let Some(c) = chars.next() {
@@ -1727,32 +1729,188 @@ fn walk_string(pair: &Pair<Rule>) -> Expression {
             }
             out.push(c);
         }
-        out
-    } else {
-        // Double-quoted: process escape sequences (no interpolation in
-        // Phase 1 — `$var` inside the string is left literal).
-        let mut out = String::with_capacity(body.len());
-        let mut chars = body.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '\\' {
-                match chars.next() {
-                    Some('n') => out.push('\n'),
-                    Some('t') => out.push('\t'),
-                    Some('r') => out.push('\r'),
-                    Some('"') => out.push('"'),
-                    Some('\\') => out.push('\\'),
-                    Some('$') => out.push('$'),
-                    Some('0') => out.push('\0'),
-                    Some(other) => { out.push('\\'); out.push(other); }
-                    None => out.push('\\'),
-                }
-            } else {
-                out.push(c);
-            }
+        return Expression::new(ExprKind::Lit(Literal::Str(out)));
+    }
+
+    // Double-quoted: PHP interpolation. Scan for `$var`, `$var[key]`,
+    // `$var->prop`, `{$expr}` and split the body into InterpolParts.
+    // Empty or interp-free strings collapse back to a plain literal so
+    // the compiler's string path stays fast.
+    let parts = parse_php_interpolation(body);
+    if parts.len() == 1 {
+        if let InterpolPart::Text(s) = &parts[0] {
+            return Expression::new(ExprKind::Lit(Literal::Str(s.clone())));
         }
-        out
+    }
+    if parts.is_empty() {
+        return Expression::new(ExprKind::Lit(Literal::Str(String::new())));
+    }
+    Expression::new(ExprKind::Interpolation(parts))
+}
+
+/// Scan a double-quoted PHP string body into `InterpolPart`s, handling:
+///   - escape sequences (`\n`, `\t`, `\"`, `\\`, `\$`, …)
+///   - `$var`, `$var_with_underscores`
+///   - `$arr[key]` — PHP-classic "unquoted key is a string" rule; digit
+///     keys become int literals
+///   - `$obj->prop`
+///   - `{$arbitrary_expr}` — balanced brace matching; inner text parsed
+///     by re-entering the PHP expression rule
+fn parse_php_interpolation(body: &str) -> Vec<InterpolPart> {
+    let mut parts: Vec<InterpolPart> = Vec::new();
+    let mut text = String::new();
+    let mut chars = body.chars().peekable();
+
+    let flush = |parts: &mut Vec<InterpolPart>, text: &mut String| {
+        if !text.is_empty() {
+            parts.push(InterpolPart::Text(std::mem::take(text)));
+        }
     };
-    Expression::new(ExprKind::Lit(Literal::Str(value)))
+
+    while let Some(c) = chars.next() {
+        // Escapes — must run before $ detection so `\$name` stays literal.
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => text.push('\n'),
+                Some('t') => text.push('\t'),
+                Some('r') => text.push('\r'),
+                Some('"') => text.push('"'),
+                Some('\\') => text.push('\\'),
+                Some('$') => text.push('$'),
+                Some('{') => text.push('{'),
+                Some('0') => text.push('\0'),
+                Some(other) => { text.push('\\'); text.push(other); }
+                None => text.push('\\'),
+            }
+            continue;
+        }
+
+        // `{$...}` complex form — balanced brace scan, re-parse inner.
+        if c == '{' && chars.peek() == Some(&'$') {
+            flush(&mut parts, &mut text);
+            chars.next(); // consume $
+            let mut expr_src = String::from("$");
+            let mut depth: i32 = 1;
+            let mut in_str: Option<char> = None;
+            while let Some(&nc) = chars.peek() {
+                chars.next();
+                if let Some(q) = in_str {
+                    expr_src.push(nc);
+                    if nc == '\\' {
+                        if let Some(&esc) = chars.peek() {
+                            expr_src.push(esc);
+                            chars.next();
+                        }
+                        continue;
+                    }
+                    if nc == q { in_str = None; }
+                    continue;
+                }
+                if nc == '"' || nc == '\'' { in_str = Some(nc); expr_src.push(nc); continue; }
+                if nc == '{' { depth += 1; expr_src.push(nc); continue; }
+                if nc == '}' {
+                    depth -= 1;
+                    if depth == 0 { break; }
+                    expr_src.push(nc);
+                    continue;
+                }
+                expr_src.push(nc);
+            }
+            match parse_interpol_expression(&expr_src) {
+                Ok(expr) => parts.push(InterpolPart::Expr(expr)),
+                // Fall back to literal so we don't lose user content on
+                // parse failure.
+                Err(_) => parts.push(InterpolPart::Text(format!("{{{}}}", expr_src))),
+            }
+            continue;
+        }
+
+        // `$identifier` — possibly followed by `[key]` or `->prop`.
+        if c == '$' {
+            let peek = chars.peek().copied();
+            if matches!(peek, Some(c) if c.is_ascii_alphabetic() || c == '_') {
+                flush(&mut parts, &mut text);
+                let mut name = String::new();
+                while let Some(&nc) = chars.peek() {
+                    if nc.is_ascii_alphanumeric() || nc == '_' {
+                        name.push(nc);
+                        chars.next();
+                    } else { break; }
+                }
+                let mut expr = Expression::new(ExprKind::Ident(name));
+
+                // `$var[key]` — simple unquoted key; per PHP's rule,
+                // identifiers are string literals, digit-runs are ints.
+                if chars.peek() == Some(&'[') {
+                    chars.next(); // consume [
+                    let mut key_text = String::new();
+                    while let Some(&nc) = chars.peek() {
+                        if nc == ']' { chars.next(); break; }
+                        key_text.push(nc);
+                        chars.next();
+                    }
+                    let key_trimmed = key_text.trim();
+                    let key_expr = if let Ok(n) = key_trimmed.parse::<i64>() {
+                        Expression::new(ExprKind::Lit(Literal::Int(n)))
+                    } else {
+                        // PHP quirk: `$a[$b]` inside string is a variable
+                        // if starts with `$`, else unquoted string.
+                        if let Some(inner) = key_trimmed.strip_prefix('$') {
+                            Expression::new(ExprKind::Ident(inner.to_string()))
+                        } else {
+                            Expression::new(ExprKind::Lit(Literal::Str(key_trimmed.to_string())))
+                        }
+                    };
+                    expr = Expression::new(ExprKind::Index {
+                        object: Box::new(expr),
+                        index: Box::new(key_expr),
+                    });
+                } else if chars.peek() == Some(&'-') {
+                    // Look ahead for `->`. If absent, `-` is literal.
+                    let mut save = chars.clone();
+                    save.next();
+                    if save.peek() == Some(&'>') {
+                        chars.next(); // -
+                        chars.next(); // >
+                        let mut prop = String::new();
+                        while let Some(&nc) = chars.peek() {
+                            if nc.is_ascii_alphanumeric() || nc == '_' {
+                                prop.push(nc);
+                                chars.next();
+                            } else { break; }
+                        }
+                        if !prop.is_empty() {
+                            expr = Expression::new(ExprKind::Member {
+                                object: Box::new(expr),
+                                field: prop,
+                                null_safe: false,
+                            });
+                        }
+                    }
+                }
+
+                parts.push(InterpolPart::Expr(expr));
+                continue;
+            }
+            // Lone `$` before non-identifier — literal dollar.
+            text.push(c);
+            continue;
+        }
+
+        text.push(c);
+    }
+
+    flush(&mut parts, &mut text);
+    parts
+}
+
+/// Re-enter the PHP pest grammar on a `{$...}` inner expression.
+fn parse_interpol_expression(src: &str) -> Result<Expression, String> {
+    use pest::Parser;
+    let mut pairs = super::PhpParser::parse(super::Rule::expression, src)
+        .map_err(|e| format!("interpolation expr parse failed: {}", e))?;
+    let pair = pairs.next().ok_or_else(|| "empty interpolation expression".to_string())?;
+    walk_expression(pair)
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
