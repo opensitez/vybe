@@ -69,7 +69,11 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_array_insert",       "__vybe_array_insert"),
     ("__stdlib_array_remove_at",    "__vybe_array_remove_at"),
     ("__stdlib_array_remove_value", "__vybe_array_remove_value"),
-    ("__stdlib_array_last_index_of","__vybe_array_last_index_of"),
+    ("__stdlib_array_insert_range",  "__vybe_array_insert_range"),
+    ("__stdlib_array_set_range",     "__vybe_array_set_range"),
+    ("__stdlib_array_binary_search", "__vybe_array_binary_search"),
+    ("__stdlib_array_reverse_range", "__vybe_array_reverse_range"),
+    ("__stdlib_array_last_index_of", "__vybe_array_last_index_of"),
 ];
 
 /// Emit the stdlib preamble at the START of a script chunk.

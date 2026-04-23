@@ -64,6 +64,18 @@ pub fn emit_common(name: &str, chunks: &mut [Chunk], current: usize, line: u32) 
         "collections.concat" => collections::emit_concat(chunks, current, line),
         "collections.fill" => collections::emit_fill(chunks, current, line),
         "collections.sort" => collections::emit_sort(chunks, current, line),
+        "collections.index_of_from" => collections::emit_index_of_from(chunks, current, line),
+        "collections.last_index_of_from" => collections::emit_last_index_of_from(chunks, current, line),
+        "collections.remove_range" => collections::emit_remove_range(chunks, current, line),
+        "collections.get_range" => collections::emit_get_range(chunks, current, line),
+        "collections.clone" => collections::emit_clone(chunks, current, line),
+        "collections.insert_range" => collections::emit_insert_range(chunks, current, line),
+        "collections.set_range" => collections::emit_set_range(chunks, current, line),
+        "collections.binary_search" => collections::emit_binary_search(chunks, current, line),
+        "collections.reverse_range" => collections::emit_reverse_range(chunks, current, line),
+        "collections.remove" => collections::emit_remove_value(chunks, current, line),
+        "collections.insert" => collections::emit_insert_at(chunks, current, line),
+        "collections.clear" => collections::emit_clear(chunks, current, line),
 
         // ── String ops ──
         "strings.length" => strings::emit_length(&mut chunks[current], line),

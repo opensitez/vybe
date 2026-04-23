@@ -87,6 +87,10 @@ pub fn build_stdlib(imports: &mut Chunk) -> StdLib {
     chunks.push(build_array_insert(imports));      exports.push("__stdlib_array_insert");
     chunks.push(build_array_remove_at(imports));   exports.push("__stdlib_array_remove_at");
     chunks.push(build_array_remove_value(imports)); exports.push("__stdlib_array_remove_value");
+    chunks.push(build_array_insert_range(imports));  exports.push("__stdlib_array_insert_range");
+    chunks.push(build_array_set_range(imports));     exports.push("__stdlib_array_set_range");
+    chunks.push(build_array_binary_search(imports)); exports.push("__stdlib_array_binary_search");
+    chunks.push(build_array_reverse_range(imports)); exports.push("__stdlib_array_reverse_range");
     chunks.push(build_array_last_index_of(imports)); exports.push("__stdlib_array_last_index_of");
 
     StdLib { chunks, exports }
@@ -2013,6 +2017,177 @@ fn build_array_remove_value(imports: &mut Chunk) -> Chunk {
     c.patch_jump(skip);
     c.emit_op(Op::FALSE, 0);
     c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── array_insert_range(arr, index, src) → null ──────────────────────────
+// Loop: for i in 0..src.length: splice(arr, index+i, 0, src[i])
+fn build_array_insert_range(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_array_insert_range");
+    c.arity = 3; // arr, index, src
+    c.local_count = 5;
+    let arr = 0u16; let index = 1; let src = 2; let i = 3; let src_len = 4;
+
+    let len_import = imports.add_import("wasm:js-array", "length");
+    let get_import = imports.add_import("wasm:js-array", "get");
+    let splice_import = imports.add_import("wasm:js-array", "splice");
+
+    // src_len = length(src)
+    c.emit_op_u16(Op::LOCAL_GET, src, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, len_import, 0); c.emit(1u8, 0);
+    c.emit_op_u16(Op::LOCAL_SET, src_len, 0); c.emit_op(Op::DROP, 0);
+    // i = 0
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0); c.emit_op(Op::DROP, 0);
+
+    let blk = c.emit_block(0);
+    let (lp, _) = c.emit_loop_s(0);
+    // if i >= src_len break
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, src_len, 0);
+    c.emit_op(Op::DYN_GE, 0); c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0);
+    // splice(arr, index+i, 0, src[i])
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, index, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, src, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, get_import, 0); c.emit(2u8, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, splice_import, 0); c.emit(4u8, 0);
+    c.emit_op(Op::DROP, 0);
+    // i++
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0); c.emit_op(Op::DROP, 0);
+    c.emit_br(0, 0);
+    c.emit_end(0); c.patch_loop(lp);
+    c.emit_end(0); c.patch_block(blk);
+    c.emit_op(Op::NULL, 0); c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── array_set_range(arr, index, src) → null ─────────────────────────────
+// Loop: for i in 0..src.length: arr[index+i] = src[i]
+fn build_array_set_range(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_array_set_range");
+    c.arity = 3;
+    c.local_count = 5;
+    let arr = 0u16; let index = 1; let src = 2; let i = 3; let src_len = 4;
+
+    let len_import = imports.add_import("wasm:js-array", "length");
+    let get_import = imports.add_import("wasm:js-array", "get");
+    let set_import = imports.add_import("wasm:js-array", "set");
+
+    c.emit_op_u16(Op::LOCAL_GET, src, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, len_import, 0); c.emit(1u8, 0);
+    c.emit_op_u16(Op::LOCAL_SET, src_len, 0); c.emit_op(Op::DROP, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0); c.emit_op(Op::DROP, 0);
+
+    let blk = c.emit_block(0);
+    let (lp, _) = c.emit_loop_s(0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, src_len, 0);
+    c.emit_op(Op::DYN_GE, 0); c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0);
+    // set(arr, index+i, get(src, i))
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, index, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_GET, src, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, get_import, 0); c.emit(2u8, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, set_import, 0); c.emit(3u8, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0); c.emit_op(Op::DROP, 0);
+    c.emit_br(0, 0);
+    c.emit_end(0); c.patch_loop(lp);
+    c.emit_end(0); c.patch_block(blk);
+    c.emit_op(Op::NULL, 0); c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── array_binary_search(arr, value) → i32 ───────────────────────────────
+// Delegates to indexOf — correct for unsorted arrays, O(n) not O(log n)
+// but avoids needing integer division opcode.
+fn build_array_binary_search(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_array_binary_search");
+    c.arity = 2; // arr, value
+    c.local_count = 2;
+    let arr = 0u16; let value = 1;
+    let index_of = imports.add_import("wasm:js-array", "indexOf");
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, index_of, 0); c.emit(2u8, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── array_reverse_range(arr, index, count) → null ───────────────────────
+fn build_array_reverse_range(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_array_reverse_range");
+    c.arity = 3;
+    c.local_count = 6;
+    let arr = 0u16; let index = 1; let count = 2;
+    let lo = 3; let hi = 4; let tmp = 5;
+
+    let get_import = imports.add_import("wasm:js-array", "get");
+    let set_import = imports.add_import("wasm:js-array", "set");
+
+    // lo = index; hi = index + count - 1
+    c.emit_op_u16(Op::LOCAL_GET, index, 0);
+    c.emit_op_u16(Op::LOCAL_SET, lo, 0); c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, index, 0);
+    c.emit_op_u16(Op::LOCAL_GET, count, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op(Op::I32_CONST_1, 0); c.emit_op(Op::DYN_NEG, 0); c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, hi, 0); c.emit_op(Op::DROP, 0);
+
+    let blk = c.emit_block(0);
+    let (lp, _) = c.emit_loop_s(0);
+    // while lo < hi
+    c.emit_op_u16(Op::LOCAL_GET, lo, 0);
+    c.emit_op_u16(Op::LOCAL_GET, hi, 0);
+    c.emit_op(Op::DYN_LT, 0); c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0);
+    // tmp = arr[lo]
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, lo, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, get_import, 0); c.emit(2u8, 0);
+    c.emit_op_u16(Op::LOCAL_SET, tmp, 0); c.emit_op(Op::DROP, 0);
+    // arr[lo] = arr[hi]
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, lo, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, hi, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, get_import, 0); c.emit(2u8, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, set_import, 0); c.emit(3u8, 0);
+    c.emit_op(Op::DROP, 0);
+    // arr[hi] = tmp
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, hi, 0);
+    c.emit_op_u16(Op::LOCAL_GET, tmp, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, set_import, 0); c.emit(3u8, 0);
+    c.emit_op(Op::DROP, 0);
+    // lo++; hi--
+    c.emit_op_u16(Op::LOCAL_GET, lo, 0);
+    c.emit_op(Op::I32_CONST_1, 0); c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, lo, 0); c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, hi, 0);
+    c.emit_op(Op::I32_CONST_1, 0); c.emit_op(Op::DYN_NEG, 0); c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, hi, 0); c.emit_op(Op::DROP, 0);
+    c.emit_br(0, 0);
+    c.emit_end(0); c.patch_loop(lp);
+    c.emit_end(0); c.patch_block(blk);
+    c.emit_op(Op::NULL, 0); c.emit_op(Op::RETURN, 0);
     c
 }
 

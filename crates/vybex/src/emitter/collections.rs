@@ -208,6 +208,121 @@ pub fn emit_insert(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::NULL, line);
 }
 
+/// indexOf with fromIndex. Stack: [array, value, fromIndex] → [i32].
+pub fn emit_index_of_from(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_import_call(chunks, current, "wasm:js-array", "indexOf", 3, line);
+}
+
+/// lastIndexOf with fromIndex. Stack: [array, value, fromIndex] → [i32].
+pub fn emit_last_index_of_from(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_import_call(chunks, current, "wasm:js-array", "lastIndexOf", 3, line);
+}
+
+/// RemoveRange. Stack: [array, index, count] → [null].
+/// splice(arr, index, count) — removes count elements at index.
+pub fn emit_remove_range(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_import_call(chunks, current, "wasm:js-array", "splice", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+/// GetRange. Stack: [array, index, count] → [new_array].
+/// Computes end = index + count, then slice(arr, index, end).
+pub fn emit_get_range(chunks: &mut [Chunk], current: usize, line: u32) {
+    let count_local = chunks[current].local_count;
+    chunks[current].local_count += 1;
+    // save count
+    chunks[current].emit_op_u16(Op::LOCAL_SET, count_local, line);
+    chunks[current].emit_op(Op::DROP, line);
+    // stack: [arr, index]
+    chunks[current].emit_op(Op::DUP, line); // [arr, index, index]
+    chunks[current].emit_op_u16(Op::LOCAL_GET, count_local, line); // [arr, index, index, count]
+    chunks[current].emit_op(Op::DYN_ADD, line); // [arr, index, end]
+    emit_import_call(chunks, current, "wasm:js-array", "slice", 3, line);
+}
+
+/// Clone (full copy). Stack: [array] → [new_array].
+/// Pushes 0 and i32::MAX as start/end, then slice.
+pub fn emit_clone(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(Op::I32_CONST_0, line);
+    let max_c = chunks[current].add_constant(Value::I32(i32::MAX));
+    chunks[current].emit_op_u16(Op::CONST, max_c, line);
+    emit_import_call(chunks, current, "wasm:js-array", "slice", 3, line);
+}
+
+/// InsertRange. Stack: [array, index, src_array] → [null].
+/// Calls __vybe_array_insert_range stdlib (func below args via local reorder).
+pub fn emit_insert_range(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_stdlib_call_3(chunks, current, "__vybe_array_insert_range", line);
+}
+
+/// SetRange. Stack: [array, index, src_array] → [null].
+pub fn emit_set_range(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_stdlib_call_3(chunks, current, "__vybe_array_set_range", line);
+}
+
+/// BinarySearch. Stack: [array, value] → [i32].
+pub fn emit_binary_search(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_stdlib_call_2(chunks, current, "__vybe_array_binary_search", line);
+}
+
+/// ReverseRange. Stack: [array, index, count] → [null].
+pub fn emit_reverse_range(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_stdlib_call_3(chunks, current, "__vybe_array_reverse_range", line);
+}
+
+/// Remove by value. Stack: [array, value] → [bool].
+pub fn emit_remove_value(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_stdlib_call_2(chunks, current, "__vybe_array_remove_value", line);
+}
+
+/// Insert at index. Stack: [array, index, value] → [null].
+pub fn emit_insert_at(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_stdlib_call_3(chunks, current, "__vybe_array_insert", line);
+}
+
+/// Clear array. Stack: [array] → [null].
+/// splice(arr, 0, MAX_INT) removes all elements.
+pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(Op::I32_CONST_0, line);
+    let max_c = chunks[current].add_constant(Value::I32(i32::MAX));
+    chunks[current].emit_op_u16(Op::CONST, max_c, line);
+    emit_import_call(chunks, current, "wasm:js-array", "splice", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+/// Helper: stash 3 args to locals, GLOBAL_GET func, restore args, CALL_REF 3.
+fn emit_stdlib_call_3(chunks: &mut [Chunk], current: usize, global: &'static str, line: u32) {
+    let a2 = chunks[current].local_count;
+    let a1 = chunks[current].local_count + 1;
+    let a0 = chunks[current].local_count + 2;
+    chunks[current].local_count += 3;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, a2, line); chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, a1, line); chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, a0, line); chunks[current].emit_op(Op::DROP, line);
+    let name_c = chunks[current].add_constant(Value::String(Arc::from(global)));
+    chunks[current].emit_op_u16(Op::GLOBAL_GET, name_c, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, a0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, a1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, a2, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 3, line);
+}
+
+/// Helper: stash 2 args to locals, GLOBAL_GET func, restore args, CALL_REF 2.
+fn emit_stdlib_call_2(chunks: &mut [Chunk], current: usize, global: &'static str, line: u32) {
+    let a1 = chunks[current].local_count;
+    let a0 = chunks[current].local_count + 1;
+    chunks[current].local_count += 2;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, a1, line); chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, a0, line); chunks[current].emit_op(Op::DROP, line);
+    let name_c = chunks[current].add_constant(Value::String(Arc::from(global)));
+    chunks[current].emit_op_u16(Op::GLOBAL_GET, name_c, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, a0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, a1, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
+}
+
 /// Pack N consecutive stack values into a new array (was the
 /// `ARRAY_NEW_FIXED N` opcode). Stack: [v0, v1, …, v(N-1)] → [array].
 ///

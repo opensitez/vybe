@@ -48,7 +48,7 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
             DotnetClassExport::new(
                 "dotnet.System.Collections.Concurrent",
                 ClassType::new("ConcurrentDictionary")
-                    .with_constructor(ConstructorDef::new(0).with_common_backing("dict.new"))
+                    .with_constructor(ConstructorDef::new(0).with_backing(HostTarget::new("vybe:types", "dictNew")))
                     .with_method(MethodDef::new("TryAdd",      2, MethodBody::Common("dict.set_dynamic".into())))
                     .with_method(MethodDef::new("TryGetValue", 2, MethodBody::Common("dict.get_dynamic".into())))
                     .with_method(MethodDef::new("AddOrUpdate", 3, MethodBody::Common("dict.set_dynamic".into())))
@@ -61,7 +61,7 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
             DotnetClassExport::new(
                 "dotnet.System.Collections.Concurrent",
                 ClassType::new("ConcurrentQueue")
-                    .with_constructor(ConstructorDef::new(0).with_common_backing("collections.new"))
+                    .with_constructor(ConstructorDef::new(0).with_backing(HostTarget::new("vybe:types", "listNew")))
                     .with_method(MethodDef::new("Enqueue",    1, MethodBody::Common("collections.push".into())))
                     .with_method(MethodDef::new("TryDequeue", 1, MethodBody::Common("collections.shift".into())))
                     .with_method(MethodDef::new("TryPeek",    1, MethodBody::Common("collections.get".into())))
@@ -70,7 +70,7 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
             DotnetClassExport::new(
                 "dotnet.System.Collections.Concurrent",
                 ClassType::new("ConcurrentStack")
-                    .with_constructor(ConstructorDef::new(0).with_common_backing("collections.new"))
+                    .with_constructor(ConstructorDef::new(0).with_backing(HostTarget::new("vybe:types", "listNew")))
                     .with_method(MethodDef::new("Push",    1, MethodBody::Common("collections.push".into())))
                     .with_method(MethodDef::new("TryPop",  0, MethodBody::Common("collections.pop".into())))
                     .with_method(MethodDef::new("TryPeek", 0, MethodBody::Common("collections.get".into())))
@@ -78,7 +78,35 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
             ),
             constructor_class("dotnet.System.Collections.Generic", "SortedList", "vybe:types", "dictNew"),
             common_constructor_class("dotnet.System.Collections.Generic", "LinkedList", "collections.new"),
-            constructor_class("dotnet.System.Collections", "ArrayList", "vybe:types", "listNew"),
+            DotnetClassExport::new(
+                "dotnet.System.Collections",
+                ClassType::new("ArrayList")
+                    .with_constructor(ConstructorDef::new(0).with_common_backing("collections.new"))
+                    .with_method(MethodDef::new("Add",           1, MethodBody::Common("collections.push".into())))
+                    .with_method(MethodDef::new("Remove",        1, MethodBody::Common("collections.remove".into())))
+                    .with_method(MethodDef::new("RemoveAt",      1, MethodBody::Common("collections.remove_at".into())))
+                    .with_method(MethodDef::new("Contains",      1, MethodBody::Common("collections.contains".into())))
+                    .with_method(MethodDef::new("Count",         0, MethodBody::Common("collections.length".into())))
+                    .with_method(MethodDef::new("Capacity",      0, MethodBody::Common("collections.length".into())))
+                    .with_method(MethodDef::new("Clear",         0, MethodBody::Common("collections.clear".into())))
+                    .with_method(MethodDef::new("IndexOf",       1, MethodBody::Common("collections.index_of".into())))
+                    .with_method(MethodDef::new("IndexOf2",      2, MethodBody::Common("collections.index_of_from".into())))
+                    .with_method(MethodDef::new("LastIndexOf",   1, MethodBody::Common("collections.last_index_of".into())))
+                    .with_method(MethodDef::new("LastIndexOf2",  2, MethodBody::Common("collections.last_index_of_from".into())))
+                    .with_method(MethodDef::new("Sort",          0, MethodBody::Common("collections.sort".into())))
+                    .with_method(MethodDef::new("Reverse",       0, MethodBody::Common("collections.reverse".into())))
+                    .with_method(MethodDef::new("ReverseRange",  2, MethodBody::Common("collections.reverse_range".into())))
+                    .with_method(MethodDef::new("ToArray",       0, MethodBody::Common("collections.clone".into())))
+                    .with_method(MethodDef::new("Clone",         0, MethodBody::Common("collections.clone".into())))
+                    .with_method(MethodDef::new("Item",          1, MethodBody::Common("collections.get".into())))
+                    .with_method(MethodDef::new("Insert",        2, MethodBody::Common("collections.insert".into())))
+                    .with_method(MethodDef::new("InsertRange",   2, MethodBody::Common("collections.insert_range".into())))
+                    .with_method(MethodDef::new("RemoveRange",   2, MethodBody::Common("collections.remove_range".into())))
+                    .with_method(MethodDef::new("GetRange",      2, MethodBody::Common("collections.get_range".into())))
+                    .with_method(MethodDef::new("SetRange",      2, MethodBody::Common("collections.set_range".into())))
+                    .with_method(MethodDef::new("BinarySearch",  1, MethodBody::Common("collections.binary_search".into())))
+                    .with_method(MethodDef::new("AddRange",      1, MethodBody::Common("collections.concat".into()))),
+            ),
             constructor_class("dotnet.System.Collections", "Hashtable", "vybe:types", "dictNew"),
             constructor_class("dotnet.System.Collections", "Collection", "vybe:types", "listNew"),
             constructor_class("dotnet.System", "DateTime", "vybe:types", "dateTimeNew"),

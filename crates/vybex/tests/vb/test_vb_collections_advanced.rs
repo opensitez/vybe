@@ -231,3 +231,200 @@ End Module
 "#);
     assert_eq!(out, vec!["3", "b"]);
 }
+
+#[test]
+fn arraylist_basic_methods() {
+    let out = run_vb(r#"
+Imports System.Collections
+Module M
+    Sub Main()
+        Dim al As New ArrayList()
+        al.Add("A")
+        al.Add("B")
+        al.Add("C")
+        Console.WriteLine(al.Count)
+        Console.WriteLine(al.Item(0))
+        Console.WriteLine(al.Item(2))
+        Console.WriteLine(al.Contains("B"))
+        Console.WriteLine(al.Contains("Z"))
+        Console.WriteLine(al.IndexOf("B"))
+        al.Remove("B")
+        Console.WriteLine(al.Count)
+        al.Insert(1, "X")
+        Console.WriteLine(al.Item(1))
+        al.Sort()
+        Console.WriteLine(al.Item(0))
+        al.Reverse()
+        Console.WriteLine(al.Item(0))
+    End Sub
+End Module
+"#);
+    assert_eq!(out, vec!["3", "A", "C", "true", "false", "1", "2", "X", "A", "X"]);
+}
+
+#[test]
+fn arraylist_range_operations() {
+    let out = run_vb(r#"
+Imports System.Collections
+Module M
+    Sub Main()
+        Dim al As New ArrayList()
+        al.Add("A")
+        al.Add("B")
+        al.Add("C")
+        al.Add("D")
+        al.Add("E")
+
+        ' InsertRange
+        Dim ins As New ArrayList()
+        ins.Add("X")
+        ins.Add("Y")
+        al.InsertRange(2, ins)
+        Console.WriteLine(al.Count)
+        Console.WriteLine(al.Item(2))
+        Console.WriteLine(al.Item(3))
+
+        ' RemoveRange
+        al.RemoveRange(2, 2)
+        Console.WriteLine(al.Count)
+        Console.WriteLine(al.Item(2))
+
+        ' GetRange
+        Dim sub1 As ArrayList = al.GetRange(1, 3)
+        Console.WriteLine(sub1.Count)
+        Console.WriteLine(sub1.Item(0))
+
+        ' SetRange
+        Dim rep As New ArrayList()
+        rep.Add("P")
+        rep.Add("Q")
+        al.SetRange(1, rep)
+        Console.WriteLine(al.Item(1))
+        Console.WriteLine(al.Item(2))
+
+        ' Clone
+        Dim cloned As ArrayList = al.Clone()
+        Console.WriteLine(cloned.Count)
+        cloned.Add("NEW")
+        Console.WriteLine(cloned.Count)
+        Console.WriteLine(al.Count)
+    End Sub
+End Module
+"#);
+    assert_eq!(out, vec!["7", "X", "Y", "5", "C", "3", "B", "P", "Q", "5", "6", "5"]);
+}
+
+#[test]
+fn arraylist_indexof_lastindexof() {
+    let out = run_vb(r#"
+Imports System.Collections
+Module M
+    Sub Main()
+        Dim al As New ArrayList()
+        al.Add("A")
+        al.Add("B")
+        al.Add("C")
+        al.Add("D")
+        al.Add("E")
+        al.Add("B")
+        Console.WriteLine(al.IndexOf("B"))
+        Console.WriteLine(al.IndexOf("B", 2))
+        Console.WriteLine(al.LastIndexOf("B"))
+        Console.WriteLine(al.LastIndexOf("B", 3))
+    End Sub
+End Module
+"#);
+    assert_eq!(out, vec!["1", "5", "5", "1"]);
+}
+
+#[test]
+fn arraylist_reverse_range() {
+    let out = run_vb(r#"
+Imports System.Collections
+Module M
+    Sub Main()
+        Dim rv As New ArrayList()
+        rv.Add(1)
+        rv.Add(2)
+        rv.Add(3)
+        rv.Add(4)
+        rv.Add(5)
+        rv.Reverse(1, 3)
+        Console.WriteLine(rv.Item(0))
+        Console.WriteLine(rv.Item(1))
+        Console.WriteLine(rv.Item(2))
+        Console.WriteLine(rv.Item(3))
+        Console.WriteLine(rv.Item(4))
+    End Sub
+End Module
+"#);
+    assert_eq!(out, vec!["1", "4", "3", "2", "5"]);
+}
+
+#[test]
+fn arraylist_hof_methods() {
+    let out = run_vb(r#"
+Imports System.Collections
+Module M
+    Sub Main()
+        Dim nums As New ArrayList()
+        nums.Add(10)
+        nums.Add(20)
+        nums.Add(30)
+        nums.Add(40)
+        nums.Add(50)
+
+        Dim fi As Integer = nums.FindIndex(Function(x) x > 25)
+        Console.WriteLine(fi)
+
+        Dim found As Object = nums.Find(Function(x) x > 25)
+        Console.WriteLine(found)
+
+        Console.WriteLine(nums.Exists(Function(x) x = 40))
+        Console.WriteLine(nums.Exists(Function(x) x = 99))
+        Console.WriteLine(nums.TrueForAll(Function(x) x > 0))
+        Console.WriteLine(nums.TrueForAll(Function(x) x > 15))
+
+        Dim doubled As ArrayList = nums.ConvertAll(Function(x) x * 2)
+        Console.WriteLine(doubled.Count)
+        Console.WriteLine(doubled.Item(0))
+
+        Dim nums2 As New ArrayList()
+        nums2.Add(1)
+        nums2.Add(2)
+        nums2.Add(3)
+        nums2.Add(4)
+        nums2.Add(5)
+        Dim removed As Integer = nums2.RemoveAll(Function(x) x > 3)
+        Console.WriteLine(removed)
+        Console.WriteLine(nums2.Count)
+    End Sub
+End Module
+"#);
+    assert_eq!(out, vec!["2", "30", "true", "false", "true", "false", "5", "20", "2", "3"]);
+}
+
+#[test]
+fn concurrent_collections_basic() {
+    let out = run_vb(r#"
+Imports System.Collections.Concurrent
+Sub Main()
+    Dim d As New ConcurrentDictionary
+    d.TryAdd("key1", "value1")
+    d.TryAdd("key2", "value2")
+    Console.WriteLine(d.ContainsKey("key1"))
+    Console.WriteLine(d.ContainsKey("missing"))
+
+    Dim q As New ConcurrentQueue
+    q.Enqueue(100)
+    q.Enqueue(200)
+    Console.WriteLine(q.Count)
+
+    Dim s As New ConcurrentStack
+    s.Push(10)
+    s.Push(20)
+    Console.WriteLine(s.Count)
+End Sub
+"#);
+    assert_eq!(out, vec!["true", "false", "2", "2"]);
+}

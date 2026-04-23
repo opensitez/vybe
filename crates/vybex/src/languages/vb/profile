@@ -570,6 +570,24 @@ nextdouble     = { emit = "host:vybe:threading:randomNextDouble", min_args = 0, 
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# ARRAY HIGHER-ORDER METHODS (HOF)
+# ────────────────────────────────────────────────────────────────────────────
+# These trigger the compiler's HOF dispatch (emit_for_in loops).
+# Method names are lowercase (VB is case-insensitive).
+
+[array_methods]
+findindex     = "__array_findIndex"
+find          = "__array_find"
+findlast      = "__array_findLast"
+findlastindex = "__array_findLastIndex"
+findall       = "__array_filter"
+trueforall    = "__array_every"
+convertall    = "__array_map"
+exists        = "__array_some"
+removeall     = "__array_removeAll"
+foreach       = "__array_forEach"
+
+# ────────────────────────────────────────────────────────────────────────────
 # .NET NAMESPACE RESOLUTION
 # ────────────────────────────────────────────────────────────────────────────
 

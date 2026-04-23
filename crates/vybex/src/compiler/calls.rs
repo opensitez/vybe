@@ -795,6 +795,130 @@ impl Compiler {
                         self.patch_jump(exit_jump);
                         self.emit_u16(Op::LOCAL_GET, result_slot);
                     }
+                    "findLast" | "findlast" => {
+                        // Iterate backward, return last element matching predicate
+                        self.emit(Op::NULL);
+                        self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, arr_slot);
+                        { let l = self.line; common::collections::emit_len(&mut self.chunks, self.current, l); }
+                        self.emit_const(Value::I32(1));
+                        self.emit(Op::F64_SUB);
+                        self.emit_u16(Op::LOCAL_SET, idx_slot); self.emit(Op::DROP);
+                        let loop_start = self.chunks[self.current].current_offset();
+                        self.emit_u16(Op::LOCAL_GET, idx_slot);
+                        self.emit_const(Value::I32(0));
+                        self.emit(Op::DYN_GE);
+                        let exit_jump = self.emit_jump(Op::BR_IF_FALSE);
+                        let elem_slot = self.scope_mut().define("__fl_elem");
+                        self.emit_u16(Op::LOCAL_GET, arr_slot);
+                        self.emit_u16(Op::LOCAL_GET, idx_slot);
+                        { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+                        self.emit_u16(Op::LOCAL_SET, elem_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, fn_slot);
+                        self.emit_u16(Op::LOCAL_GET, elem_slot);
+                        self.emit_u8(Op::CALL_REF, 1);
+                        self.emit(Op::DYN_TO_BOOL);
+                        let skip = self.emit_jump(Op::BR_IF_FALSE);
+                        self.emit_u16(Op::LOCAL_GET, elem_slot);
+                        self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
+                        let brk = self.emit_jump(Op::BR);
+                        self.patch_jump(skip);
+                        self.emit_u16(Op::LOCAL_GET, idx_slot);
+                        self.emit_const(Value::I32(1));
+                        self.emit(Op::F64_SUB);
+                        self.emit_u16(Op::LOCAL_SET, idx_slot); self.emit(Op::DROP);
+                        self.emit_loop(loop_start);
+                        self.patch_jump(exit_jump);
+                        self.patch_jump(brk);
+                        self.emit_u16(Op::LOCAL_GET, result_slot);
+                    }
+                    "findLastIndex" | "findlastindex" => {
+                        // Iterate backward, return last index matching predicate
+                        self.emit_const(Value::I32(-1));
+                        self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, arr_slot);
+                        { let l = self.line; common::collections::emit_len(&mut self.chunks, self.current, l); }
+                        self.emit_const(Value::I32(1));
+                        self.emit(Op::F64_SUB);
+                        self.emit_u16(Op::LOCAL_SET, idx_slot); self.emit(Op::DROP);
+                        let loop_start = self.chunks[self.current].current_offset();
+                        self.emit_u16(Op::LOCAL_GET, idx_slot);
+                        self.emit_const(Value::I32(0));
+                        self.emit(Op::DYN_GE);
+                        let exit_jump = self.emit_jump(Op::BR_IF_FALSE);
+                        let elem_slot2 = self.scope_mut().define("__fli_elem");
+                        self.emit_u16(Op::LOCAL_GET, arr_slot);
+                        self.emit_u16(Op::LOCAL_GET, idx_slot);
+                        { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+                        self.emit_u16(Op::LOCAL_SET, elem_slot2); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, fn_slot);
+                        self.emit_u16(Op::LOCAL_GET, elem_slot2);
+                        self.emit_u8(Op::CALL_REF, 1);
+                        self.emit(Op::DYN_TO_BOOL);
+                        let skip = self.emit_jump(Op::BR_IF_FALSE);
+                        self.emit_u16(Op::LOCAL_GET, idx_slot);
+                        self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
+                        let brk = self.emit_jump(Op::BR);
+                        self.patch_jump(skip);
+                        self.emit_u16(Op::LOCAL_GET, idx_slot);
+                        self.emit_const(Value::I32(1));
+                        self.emit(Op::F64_SUB);
+                        self.emit_u16(Op::LOCAL_SET, idx_slot); self.emit(Op::DROP);
+                        self.emit_loop(loop_start);
+                        self.patch_jump(exit_jump);
+                        self.patch_jump(brk);
+                        self.emit_u16(Op::LOCAL_GET, result_slot);
+                    }
+                    "removeAll" | "removeall" => {
+                        // Iterate backward over arr, splice each matching element.
+                        // Returns count of removed items.
+                        let removed_slot = self.scope_mut().define("__ra_removed");
+                        self.emit_const(Value::I32(0));
+                        self.emit_u16(Op::LOCAL_SET, removed_slot); self.emit(Op::DROP);
+                        // Start i = arr.len - 1
+                        self.emit_u16(Op::LOCAL_GET, arr_slot);
+                        { let l = self.line; common::collections::emit_len(&mut self.chunks, self.current, l); }
+                        self.emit_const(Value::I32(1));
+                        self.emit(Op::F64_SUB);
+                        self.emit_u16(Op::LOCAL_SET, idx_slot); self.emit(Op::DROP);
+                        let ra_loop = self.chunks[self.current].current_offset();
+                        // while i >= 0
+                        self.emit_u16(Op::LOCAL_GET, idx_slot);
+                        self.emit_const(Value::I32(0));
+                        self.emit(Op::DYN_GE);
+                        let ra_exit = self.emit_jump(Op::BR_IF_FALSE);
+                        // elem = arr[i]
+                        let ra_elem = self.scope_mut().define("__ra_elem");
+                        self.emit_u16(Op::LOCAL_GET, arr_slot);
+                        self.emit_u16(Op::LOCAL_GET, idx_slot);
+                        { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+                        self.emit_u16(Op::LOCAL_SET, ra_elem); self.emit(Op::DROP);
+                        // if fn(elem) → remove
+                        self.emit_u16(Op::LOCAL_GET, fn_slot);
+                        self.emit_u16(Op::LOCAL_GET, ra_elem);
+                        self.emit_u8(Op::CALL_REF, 1);
+                        self.emit(Op::DYN_TO_BOOL);
+                        let ra_skip = self.emit_jump(Op::BR_IF_FALSE);
+                        // splice(arr, i, 1) → drop removed array
+                        self.emit_u16(Op::LOCAL_GET, arr_slot);
+                        self.emit_u16(Op::LOCAL_GET, idx_slot);
+                        { let l = self.line; common::collections::emit_remove_at(&mut self.chunks, self.current, l); }
+                        self.emit(Op::DROP);
+                        // removed++
+                        self.emit_u16(Op::LOCAL_GET, removed_slot);
+                        self.emit_const(Value::I32(1));
+                        self.emit(Op::DYN_ADD);
+                        self.emit_u16(Op::LOCAL_SET, removed_slot); self.emit(Op::DROP);
+                        self.patch_jump(ra_skip);
+                        // i--
+                        self.emit_u16(Op::LOCAL_GET, idx_slot);
+                        self.emit_const(Value::I32(1));
+                        self.emit(Op::F64_SUB);
+                        self.emit_u16(Op::LOCAL_SET, idx_slot); self.emit(Op::DROP);
+                        self.emit_loop(ra_loop);
+                        self.patch_jump(ra_exit);
+                        self.emit_u16(Op::LOCAL_GET, removed_slot);
+                    }
                     _ => {
                         // Fallback: call as regular method
                         self.emit_u16(Op::LOCAL_GET, arr_slot);
