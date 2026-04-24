@@ -4,7 +4,7 @@
 //! stores the chunk's function reference in a global named `__vybe_<op>`
 //! (e.g. `__vybe_pow`, `__vybe_range`). At runtime, if the embedder
 //! provides a native host function for the SAME operation (e.g.
-//! `vybe:js-math::pow`), the host wants to overwrite the bundled stdlib
+//! `ecma:math::pow`), the host wants to overwrite the bundled stdlib
 //! chunk with a direct reference to that native fn — so the VM picks
 //! the optimised implementation and the polyfill becomes dead code.
 //!
@@ -19,22 +19,22 @@
 pub const IMPORT_ALIASES: &[(&str, &str, &str)] = &[
     ("vybe:convert", "toString",         "__vybe_tostring"),
     ("vybe:string",  "count",            "__vybe_count"),
-    ("vybe:js-math",    "pow",              "__vybe_pow"),
-    ("vybe:js-math",    "sin",              "__vybe_sin"),
-    ("vybe:js-math",    "cos",              "__vybe_cos"),
-    ("vybe:js-math",    "tan",              "__vybe_tan"),
-    ("vybe:js-math",    "asin",             "__vybe_asin"),
-    ("vybe:js-math",    "acos",             "__vybe_acos"),
-    ("vybe:js-math",    "atan",             "__vybe_atan"),
-    ("vybe:js-math",    "atan2",            "__vybe_atan2"),
-    ("vybe:js-math",    "log",              "__vybe_log"),
-    ("vybe:js-math",    "log10",            "__vybe_log10"),
-    ("vybe:js-math",    "exp",              "__vybe_exp"),
-    ("vybe:js-math",    "sinh",             "__vybe_sinh"),
-    ("vybe:js-math",    "cosh",             "__vybe_cosh"),
-    ("vybe:js-math",    "tanh",             "__vybe_tanh"),
-    ("vybe:js-math",    "sign",             "__vybe_sign"),
-    ("vybe:js-math",    "clamp",            "__vybe_clamp"),
+    ("ecma:math",    "pow",              "__vybe_pow"),
+    ("ecma:math",    "sin",              "__vybe_sin"),
+    ("ecma:math",    "cos",              "__vybe_cos"),
+    ("ecma:math",    "tan",              "__vybe_tan"),
+    ("ecma:math",    "asin",             "__vybe_asin"),
+    ("ecma:math",    "acos",             "__vybe_acos"),
+    ("ecma:math",    "atan",             "__vybe_atan"),
+    ("ecma:math",    "atan2",            "__vybe_atan2"),
+    ("ecma:math",    "log",              "__vybe_log"),
+    ("ecma:math",    "log10",            "__vybe_log10"),
+    ("ecma:math",    "exp",              "__vybe_exp"),
+    ("ecma:math",    "sinh",             "__vybe_sinh"),
+    ("ecma:math",    "cosh",             "__vybe_cosh"),
+    ("ecma:math",    "tanh",             "__vybe_tanh"),
+    ("ecma:math",    "sign",             "__vybe_sign"),
+    ("ecma:math",    "clamp",            "__vybe_clamp"),
     ("vybe:array",   "range",            "__vybe_range"),
     ("vybe:array",   "sorted",           "__vybe_sorted"),
     ("vybe:array",   "reversed",         "__vybe_reversed"),
@@ -45,7 +45,7 @@ pub const IMPORT_ALIASES: &[(&str, &str, &str)] = &[
     ("vybe:array",   "pymax",            "__vybe_max"),
     ("vybe:convert", "isNumeric",        "__vybe_isnumeric"),
     ("vybe:array",   "splice",           "__vybe_splice"),
-    ("vybe:js-math",    "floor",            "__vybe_floor"),
+    ("ecma:math",    "floor",            "__vybe_floor"),
     ("vybe:array",   "slice",            "__vybe_slice"),
     ("vybe:object",  "keys",             "__vybe_keys"),
     ("vybe:object",  "hasProperty",      "__vybe_hasproperty"),
@@ -55,8 +55,8 @@ pub const IMPORT_ALIASES: &[(&str, &str, &str)] = &[
     ("vybe:array",   "from",             "__vybe_from"),
     ("vybe:array",   "redim",            "__vybe_redim"),
     ("vybe:array",   "sliceStep",        "__vybe_slicestep"),
-    ("vybe:js-math",    "dynMul",           "__vybe_dynmul"),
-    ("vybe:js-math",    "fmod",               "__vybe_fmod"),
+    ("ecma:math",    "dynMul",           "__vybe_dynmul"),
+    ("ecma:math",    "fmod",               "__vybe_fmod"),
     ("vybe:array",   "arrayInsert",        "__vybe_array_insert"),
     ("vybe:array",   "arrayRemoveAt",      "__vybe_array_remove_at"),
     ("vybe:array",   "arrayRemoveValue",   "__vybe_array_remove_value"),

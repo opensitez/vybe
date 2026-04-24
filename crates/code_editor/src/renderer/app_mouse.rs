@@ -437,7 +437,7 @@ impl App {
             // 4a. Menu bar / toolbar / dropdown click
             let tch = self.top_chrome_h();
             if tch > 0.0 {
-                let menu_open = self.tabs.iter().any(|t| matches!(&t.content, TabContent::Form(ref f) if f.menu_bar.open_menu.is_some()));
+                let menu_open = self.tabs.iter().any(|t| matches!(&t.content, TabContent::Form(f) if f.menu_bar.open_menu.is_some()));
 
                 if my < tch || menu_open {
                     if let Some(form_tab) = self.tabs.iter_mut().find(|t| matches!(&t.content, TabContent::Form(_))) {

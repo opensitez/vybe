@@ -1,4 +1,4 @@
-//! # vybe:js-array builtins
+//! # ecma:array builtins
 //!
 //! Host imports that satisfy `Array.prototype.*` and `Array.*` static
 //! methods per ECMA-262 §23.1. Vybe VM registers native Rust handlers
@@ -19,9 +19,9 @@
 
 use super::encoding::*;
 
-pub const MODULE: &str = "vybe:js-array";
+pub const MODULE: &str = "ecma:array";
 
-/// Every `vybe:js-array` import. Matches ECMA-262 §23.1 surface.
+/// Every `ecma:array` import. Matches ECMA-262 §23.1 surface.
 pub const IMPORTS: &[&str] = &[
     // ── Constructors / statics ──────────────────────────────────────
     "new",              // new Array()

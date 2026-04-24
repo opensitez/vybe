@@ -713,7 +713,7 @@ impl Compiler {
                         // `x.includes(v)` — polymorphic: arrays do element
                         // membership, strings do substring search, user
                         // objects fall through to their own method. Route
-                        // through `vybe:js-value.invokeMethod` so the
+                        // through `ecma:value.invokeMethod` so the
                         // emitted wasm stays spec-compliant on v8 where
                         // String.prototype.includes and Array.prototype.includes
                         // are distinct methods on distinct prototypes.
@@ -1084,8 +1084,8 @@ impl Compiler {
             if has_spread {
                 // Spread args: build a flat args array, then spread onto
                 // stack and call. Stash the accumulator in a local so
-                // `vybe:js-array.push` (returns new length per
-                // ECMA-262) and `vybe:js-array.concat` (returns new
+                // `ecma:array.push` (returns new length per
+                // ECMA-262) and `ecma:array.concat` (returns new
                 // array) can both drive the same pattern.
                 let line = self.line;
                 let args_slot = self.scope_mut().define("__spread_args");
@@ -1160,7 +1160,7 @@ impl Compiler {
 
         // Rest param preamble (same as compile_function_decl).
         // Accumulator pattern: stash arr in rest_slot and reload each
-        // iteration so `vybe:js-array.push` (returns new length per
+        // iteration so `ecma:array.push` (returns new length per
         // ECMA-262) cleanly drives the push loop.
         if has_rest {
             let rest_name = &params.last().unwrap().name;

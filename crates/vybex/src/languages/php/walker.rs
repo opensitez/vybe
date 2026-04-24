@@ -90,6 +90,23 @@ pub fn parse(source: &str) -> Result<Module, String> {
         }
     }
 
+    // PHP function/class hoisting: top-level `function foo()` and
+    // `class Foo` declarations are visible anywhere in the file, so forward
+    // calls like `print hijriDate()` above a later `function hijriDate()`
+    // definition are legal. Reorder the body so decls come first — same
+    // pattern the JS walker uses.
+    let mut hoisted = Vec::new();
+    let mut rest = Vec::new();
+    for stmt in body {
+        if matches!(stmt.kind, StmtKind::FunctionDecl { .. } | StmtKind::ClassDecl { .. }) {
+            hoisted.push(stmt);
+        } else {
+            rest.push(stmt);
+        }
+    }
+    hoisted.append(&mut rest);
+    let body = hoisted;
+
     Ok(Module {
         name: String::new(),
         language: Lang::PHP,
@@ -1328,8 +1345,35 @@ fn walk_unary(pair: Pair<Rule>) -> Result<Expression, String> {
     let mut inner = pair.into_inner();
     let first = inner.next().unwrap();
     if matches!(first.as_rule(), Rule::unary_op) {
-        let op = parse_unary_op(first.as_str());
+        let op_str = first.as_str();
         let expr = walk_expression(inner.next().unwrap())?;
+        // Normalise PHP `++` / `--` to a language-neutral call + assign
+        // so the compiler never sees PHP-specific increment semantics.
+        // Mirrors the postfix rewrite in `apply_postfix` — see that
+        // comment for the full rationale.
+        if op_str == "++" || op_str == "--" {
+            let helper = if op_str == "++" { "__php_increment" } else { "__php_decrement" };
+            let callee = Expression::with_span(
+                ExprKind::Ident(helper.to_string()),
+                span.clone(),
+            );
+            let call = Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(callee),
+                    args: vec![Argument::positional(expr.clone())],
+                    optional: false,
+                },
+                span.clone(),
+            );
+            return Ok(Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(expr),
+                    value: Box::new(call),
+                },
+                span,
+            ));
+        }
+        let op = parse_unary_op(op_str);
         Ok(Expression::with_span(
             ExprKind::Unary { op, expr: Box::new(expr) },
             span,
@@ -1357,6 +1401,35 @@ fn walk_cast(pair: Pair<Rule>) -> Result<Expression, String> {
     let mut inner = pair.into_inner();
     let cast_kw = inner.next().unwrap().as_str().to_string();
     let expr = walk_expression(inner.next().unwrap())?;
+    // PHP casts have defined runtime semantics (truncate toward zero for
+    // `(int)`, ECMA `Boolean()`-shaped truthiness for `(bool)`, etc.) —
+    // the vybex `ExprKind::Cast` case is compiled as a no-op. Normalise
+    // at walker time into the PHP builtin call that already does the
+    // right thing, so the compiler never needs PHP-cast awareness.
+    let helper = match cast_kw.to_lowercase().trim_start_matches('(').trim_end_matches(')').trim() {
+        "int" | "integer" | "long" => Some("intval"),
+        "float" | "double" | "real" => Some("floatval"),
+        "bool" | "boolean" => Some("boolval"),
+        "string" | "binary" => Some("strval"),
+        // `(array)`, `(object)`, `(unset)` fall through to a Cast node;
+        // the compiler currently keeps those as identity — if one of
+        // those ever needs real semantics, handle it here too.
+        _ => None,
+    };
+    if let Some(name) = helper {
+        let callee = Expression::with_span(
+            ExprKind::Ident(name.to_string()),
+            span.clone(),
+        );
+        return Ok(Expression::with_span(
+            ExprKind::Call {
+                callee: Box::new(callee),
+                args: vec![Argument::positional(expr)],
+                optional: false,
+            },
+            span,
+        ));
+    }
     Ok(Expression::with_span(
         ExprKind::Cast { expr: Box::new(expr), type_name: cast_kw },
         span,
@@ -1484,9 +1557,42 @@ fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span) -> Result<Ex
             ))
         }
         Rule::inc_dec_op => {
-            let op = if op.as_str() == "++" { UnaryOp::PostInc } else { UnaryOp::PostDec };
+            // PHP `++` / `--` aren't C-style "add 1" — PHP defines them
+            // with Perl-style string-character carry ("aa"++ → "ab",
+            // "az"++ → "ba", "zz"++ → "aaa") AND PHP-flavored numeric
+            // coercion for non-string inputs. Normalise both at walker
+            // time so the AST carries a language-neutral call to a
+            // stdlib helper:
+            //
+            //   $x++   →   $x = __php_increment($x)
+            //   $x--   →   $x = __php_decrement($x)
+            //
+            // Downstream compilers, consumers, and other language
+            // walkers see a plain function call + assign — no
+            // compiler-side `if profile.php_*` flag needed. (The
+            // statement form returns the NEW value, not the classic
+            // post-inc OLD value; acceptable for statement-level
+            // mutation — most `$i++` in real code is statement-level.
+            // Expression-level `$y = $x++` would need a sequence
+            // expression rewrite; deferring until a test demands it.)
+            let helper = if op.as_str() == "++" { "__php_increment" } else { "__php_decrement" };
+            let callee = Expression::with_span(
+                ExprKind::Ident(helper.to_string()),
+                span.clone(),
+            );
+            let call = Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(callee),
+                    args: vec![Argument::positional(receiver.clone())],
+                    optional: false,
+                },
+                span.clone(),
+            );
             Ok(Expression::with_span(
-                ExprKind::Unary { op, expr: Box::new(receiver) },
+                ExprKind::Assign {
+                    target: Box::new(receiver),
+                    value: Box::new(call),
+                },
                 span.clone(),
             ))
         }

@@ -2,7 +2,7 @@
 //!
 //! The `.NET` BCL surface (`System.Console.WriteLine`, `Math.Sqrt`, etc.) is
 //! exposed to user code via Vybe host functions (`wasi:cli::log`,
-//! `vybe:js-math::sqrt`, etc.). This file owns BOTH translation tables that
+//! `ecma:math::sqrt`, etc.). This file owns BOTH translation tables that
 //! make that work:
 //!
 //! 1. **`namespace_to_host_module`** — `system.console` → `wasi:cli`

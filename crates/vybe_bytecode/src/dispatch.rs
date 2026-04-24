@@ -2380,7 +2380,7 @@ impl VM {
                 // REMOVED (Phase E): the 9 non-spec `0xFF` ARRAY_* dispatch
                 // arms — ARRAY_PUSH / POP / SLICE / JOIN / REVERSE /
                 // CONTAINS / INDEX_OF (here) and ARRAY_CONCAT / SHIFT
-                // (below). All callers migrated to `vybe:js-array.*`
+                // (below). All callers migrated to `ecma:array.*`
                 // imports (Vybe handlers in vybe_host, native on v8 via
                 // JS glue, polyfill on wasmtime). Any bytecode still
                 // carrying these opcode bytes will hit the "unknown op"
@@ -2432,7 +2432,7 @@ impl VM {
                 }
                 // ARRAY_CONCAT and ARRAY_SHIFT removed with the cluster
                 // above — both were the non-spec `0xFF` variants. Use
-                // `vybe:js-array.concat` / `vybe:js-array.shift` instead.
+                // `ecma:array.concat` / `ecma:array.shift` instead.
 
                 // ── Stack-switching proposal — real coroutine semantics ──
                 // Each continuation is an `ObjectKind::Continuation` carrying

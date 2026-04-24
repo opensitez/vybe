@@ -75,7 +75,7 @@ impl CanonicalOp {
 /// The args must already be on the stack in the correct order.
 ///
 /// Takes `chunks` + `current` because `__len__` compiles to a
-/// `vybe:js-array.length` / `wasm:js-string.length` runtime dispatch
+/// `ecma:array.length` / `wasm:js-string.length` runtime dispatch
 /// and the import must register on `chunks[0]` (the module-level
 /// imports section) while the code emits on `chunks[current]`.
 pub fn emit_canonical(op: CanonicalOp, chunks: &mut [Chunk], current: usize, line: u32) {

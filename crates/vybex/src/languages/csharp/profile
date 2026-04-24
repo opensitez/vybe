@@ -218,7 +218,7 @@ module = "wasi:cli"
 [[esm_default]]
 kind = "namespace"
 alias = "Math"
-module = "vybe:js-math"
+module = "ecma:math"
 
 [[esm_default]]
 kind = "namespace"

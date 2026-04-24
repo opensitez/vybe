@@ -124,7 +124,14 @@ async fn handle(
         scheme,
     );
 
-    super::script::serve(path, built.ctx, built.response_rx, config.no_sandbox).await
+    super::script::serve(
+        path,
+        built.ctx,
+        built.response_rx,
+        config.no_sandbox,
+        config.timeout_secs,
+        config.shutdown.clone(),
+    ).await
 }
 
 #[derive(Debug)]

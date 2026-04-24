@@ -53,13 +53,13 @@ bytes           = { emit = "host:vybe:convert:toBytes",     min_args = 0, max_ar
 
 len             = { emit = "str_length",                    min_args = 1, max_args = 1 }
 range           = { emit = "host:vybe:array:range",         min_args = 1, max_args = 3 }
-list            = { emit = "host:vybe:js-array:from",          min_args = 0, max_args = 1 }
-tuple           = { emit = "host:vybe:js-array:from",          min_args = 0, max_args = 1 }
+list            = { emit = "host:ecma:array:from",          min_args = 0, max_args = 1 }
+tuple           = { emit = "host:ecma:array:from",          min_args = 0, max_args = 1 }
 dict            = { emit = "host:vybe:object:create",       min_args = 0, max_args = 1 }
-set             = { emit = "host:vybe:js-array:from",          min_args = 0, max_args = 1 }
-frozenset       = { emit = "host:vybe:js-array:from",          min_args = 0, max_args = 1 }
-sorted          = { emit = "host:vybe:js-array:toSorted",        min_args = 1, max_args = 3 }
-reversed        = { emit = "host:vybe:js-array:reversed",      min_args = 1, max_args = 1 }
+set             = { emit = "host:ecma:array:from",          min_args = 0, max_args = 1 }
+frozenset       = { emit = "host:ecma:array:from",          min_args = 0, max_args = 1 }
+sorted          = { emit = "host:ecma:array:toSorted",        min_args = 1, max_args = 3 }
+reversed        = { emit = "host:ecma:array:reversed",      min_args = 1, max_args = 1 }
 enumerate       = { emit = "host:vybe:array:enumerate",     min_args = 1, max_args = 2 }
 zip             = { emit = "host:vybe:array:zip",           min_args = 2, max_args = 255 }
 map             = { emit = "host:vybe:array:map",           min_args = 2, max_args = 255 }
@@ -76,8 +76,8 @@ next            = { emit = "host:vybe:array:next",          min_args = 1, max_ar
 
 abs             = { emit = "opcode:f64_abs",                min_args = 1, max_args = 1 }
 round           = { emit = "opcode:f64_nearest",            min_args = 1, max_args = 2 }
-pow             = { emit = "host:vybe:js-math:pow",            min_args = 2, max_args = 3 }
-divmod          = { emit = "host:vybe:js-math:divmod",         min_args = 2, max_args = 2 }
+pow             = { emit = "host:ecma:math:pow",            min_args = 2, max_args = 3 }
+divmod          = { emit = "host:ecma:math:divmod",         min_args = 2, max_args = 2 }
 
 # ── Math module ──────────────────────────────────────────────────────────────
 
@@ -86,21 +86,21 @@ divmod          = { emit = "host:vybe:js-math:divmod",         min_args = 2, max
 "math.ceil"     = { emit = "opcode:f64_ceil",               min_args = 1, max_args = 1 }
 "math.trunc"    = { emit = "opcode:f64_trunc",              min_args = 1, max_args = 1 }
 "math.fabs"     = { emit = "opcode:f64_abs",                min_args = 1, max_args = 1 }
-"math.pow"      = { emit = "host:vybe:js-math:pow",            min_args = 2, max_args = 2 }
-"math.sin"      = { emit = "host:vybe:js-math:sin",            min_args = 1, max_args = 1 }
-"math.cos"      = { emit = "host:vybe:js-math:cos",            min_args = 1, max_args = 1 }
-"math.tan"      = { emit = "host:vybe:js-math:tan",            min_args = 1, max_args = 1 }
-"math.asin"     = { emit = "host:vybe:js-math:asin",           min_args = 1, max_args = 1 }
-"math.acos"     = { emit = "host:vybe:js-math:acos",           min_args = 1, max_args = 1 }
-"math.atan"     = { emit = "host:vybe:js-math:atan",           min_args = 1, max_args = 1 }
-"math.atan2"    = { emit = "host:vybe:js-math:atan2",          min_args = 2, max_args = 2 }
-"math.log"      = { emit = "host:vybe:js-math:log",            min_args = 1, max_args = 2 }
-"math.log2"     = { emit = "host:vybe:js-math:log2",           min_args = 1, max_args = 1 }
-"math.log10"    = { emit = "host:vybe:js-math:log10",          min_args = 1, max_args = 1 }
-"math.exp"      = { emit = "host:vybe:js-math:exp",            min_args = 1, max_args = 1 }
-"math.gcd"      = { emit = "host:vybe:js-math:gcd",            min_args = 2, max_args = 2 }
-"math.lcm"      = { emit = "host:vybe:js-math:lcm",            min_args = 2, max_args = 2 }
-"math.factorial" = { emit = "host:vybe:js-math:factorial",     min_args = 1, max_args = 1 }
+"math.pow"      = { emit = "host:ecma:math:pow",            min_args = 2, max_args = 2 }
+"math.sin"      = { emit = "host:ecma:math:sin",            min_args = 1, max_args = 1 }
+"math.cos"      = { emit = "host:ecma:math:cos",            min_args = 1, max_args = 1 }
+"math.tan"      = { emit = "host:ecma:math:tan",            min_args = 1, max_args = 1 }
+"math.asin"     = { emit = "host:ecma:math:asin",           min_args = 1, max_args = 1 }
+"math.acos"     = { emit = "host:ecma:math:acos",           min_args = 1, max_args = 1 }
+"math.atan"     = { emit = "host:ecma:math:atan",           min_args = 1, max_args = 1 }
+"math.atan2"    = { emit = "host:ecma:math:atan2",          min_args = 2, max_args = 2 }
+"math.log"      = { emit = "host:ecma:math:log",            min_args = 1, max_args = 2 }
+"math.log2"     = { emit = "host:ecma:math:log2",           min_args = 1, max_args = 1 }
+"math.log10"    = { emit = "host:ecma:math:log10",          min_args = 1, max_args = 1 }
+"math.exp"      = { emit = "host:ecma:math:exp",            min_args = 1, max_args = 1 }
+"math.gcd"      = { emit = "host:ecma:math:gcd",            min_args = 2, max_args = 2 }
+"math.lcm"      = { emit = "host:ecma:math:lcm",            min_args = 2, max_args = 2 }
+"math.factorial" = { emit = "host:ecma:math:factorial",     min_args = 1, max_args = 1 }
 "math.isnan"    = { emit = "host:vybe:convert:isNaN",       min_args = 1, max_args = 1 }
 "math.isinf"    = { emit = "host:vybe:convert:isInfinite",  min_args = 1, max_args = 1 }
 "math.isfinite" = { emit = "host:vybe:convert:isFinite",    min_args = 1, max_args = 1 }
@@ -108,12 +108,12 @@ divmod          = { emit = "host:vybe:js-math:divmod",         min_args = 2, max
 # ── Random module ────────────────────────────────────────────────────────────
 
 "random.random"    = { emit = "host:vybe:random:random",    min_args = 0, max_args = 0 }
-"random.randint"   = { emit = "host:vybe:js-math:randint",     min_args = 2, max_args = 2 }
+"random.randint"   = { emit = "host:ecma:math:randint",     min_args = 2, max_args = 2 }
 "random.choice"    = { emit = "host:vybe:array:choice",     min_args = 1, max_args = 1 }
 "random.shuffle"   = { emit = "host:vybe:array:shuffle",    min_args = 1, max_args = 1 }
-"random.uniform"   = { emit = "host:vybe:js-math:randUniform", min_args = 2, max_args = 2 }
+"random.uniform"   = { emit = "host:ecma:math:randUniform", min_args = 2, max_args = 2 }
 "random.seed"      = { emit = "noop",                       min_args = 0, max_args = 1 }
-"random.randrange" = { emit = "host:vybe:js-math:randint",     min_args = 1, max_args = 3 }
+"random.randrange" = { emit = "host:ecma:math:randint",     min_args = 1, max_args = 3 }
 "random.sample"    = { emit = "host:vybe:array:sample",     min_args = 2, max_args = 2 }
 
 # ── Type checking ────────────────────────────────────────────────────────────
@@ -238,12 +238,12 @@ sort            = { emit = "host:vybe:array:sort",            min_args = 0, max_
 reverse         = { emit = "common:collections.reverse",      min_args = 0, max_args = 0 }
 copy            = { emit = "host:vybe:array:copy",            min_args = 0, max_args = 0 }
 
-# Dict instance methods. Polymorphic iteration shares vybe:js-object.*
+# Dict instance methods. Polymorphic iteration shares ecma:object.*
 # with PHP array_keys/values and JS Object.keys/values/entries —
 # portable Component Model imports, one handler.
-keys            = { emit = "host:vybe:js-object:keys",        min_args = 0, max_args = 0 }
-values          = { emit = "host:vybe:js-object:values",      min_args = 0, max_args = 0 }
-items           = { emit = "host:vybe:js-object:entries",     min_args = 0, max_args = 0 }
+keys            = { emit = "host:ecma:object:keys",        min_args = 0, max_args = 0 }
+values          = { emit = "host:ecma:object:values",      min_args = 0, max_args = 0 }
+items           = { emit = "host:ecma:object:entries",     min_args = 0, max_args = 0 }
 get             = { emit = "host:vybe:object:get",            min_args = 1, max_args = 2 }
 update          = { emit = "host:vybe:object:assign",         min_args = 1, max_args = 1 }
 setdefault      = { emit = "host:vybe:object:setdefault",     min_args = 1, max_args = 2 }
@@ -293,7 +293,7 @@ __len__         = { emit = "str_length",                       min_args = 0, max
 [[esm_default]]
 kind = "namespace"
 alias = "math"
-module = "vybe:js-math"
+module = "ecma:math"
 
 [[esm_default]]
 kind = "namespace"
@@ -318,7 +318,7 @@ module = "vybe:string"
 [[esm_default]]
 kind = "namespace"
 alias = "random"
-module = "vybe:js-math"
+module = "ecma:math"
 
 [[esm_default]]
 kind = "namespace"

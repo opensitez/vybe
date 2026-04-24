@@ -1,4 +1,4 @@
-//! # vybe:js-structured-clone builtin
+//! # ecma:structured-clone builtin
 //!
 //! Host import that satisfies the HTML `structuredClone(value)`
 //! algorithm — deep copy across Array / Object / Map / Set /
@@ -10,7 +10,7 @@
 
 use super::encoding::*;
 
-pub const MODULE: &str = "vybe:js-structured-clone";
+pub const MODULE: &str = "ecma:structured-clone";
 
 pub const IMPORTS: &[&str] = &[
     "clone",   // structuredClone(value, options?)

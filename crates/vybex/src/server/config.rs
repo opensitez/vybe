@@ -20,6 +20,13 @@ pub struct ServeConfig {
     pub timeout_secs: u64,
     /// Filenames to try in order when a request resolves to a directory.
     pub index_files: Vec<String>,
+    /// Shutdown notifier set by `run()`. In-flight request handlers race
+    /// their per-request timeout against this; on Ctrl+C we flip it and
+    /// hung scripts release with a 503 instead of blocking the drain.
+    /// Not serialisable — `ServeConfig::default()` leaves it `None` so
+    /// tests and programmatic callers work without wiring one up.
+    #[allow(dead_code)]
+    pub shutdown: Option<std::sync::Arc<tokio::sync::Notify>>,
 }
 
 impl Default for ServeConfig {
@@ -39,6 +46,7 @@ impl Default for ServeConfig {
                 "index.py".into(),
                 "index.rb".into(),
             ],
+            shutdown: None,
         }
     }
 }

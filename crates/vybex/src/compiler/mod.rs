@@ -321,7 +321,7 @@ impl Compiler {
     ///
     ///   1. **Profile defaults** (`profile.esm_defaults`) — the
     ///      language's ambient pre-declared imports. For JS,
-    ///      `console → wasi:cli` and `Math → vybe:js-math`. For VB,
+    ///      `console → wasi:cli` and `Math → ecma:math`. For VB,
     ///      `System` as a `PackageRoot`.
     ///   2. **User imports** (`module.imports`) — `import { X } from
     ///      "wasi:foo"` etc. Walked last so they shadow profile
@@ -654,7 +654,7 @@ impl Compiler {
     ///
     /// Mapping:
     /// - `[Vybe, Http, Request, method]` → `("vybe:http/request", "method")`
-    /// - `[Vybe, Math, cos]`             → `("vybe:js-math", "cos")`
+    /// - `[Vybe, Math, cos]`             → `("ecma:math", "cos")`
     /// - `[Wasi, Cli, log]`              → `("wasi:cli", "log")`
     ///
     /// First join is `:` (package → interface), further joins use `/`,
@@ -2312,7 +2312,7 @@ impl Compiler {
                 // PHP `$arr[] = v` — empty bracket with null index is the
                 // auto-append form; route through collections::emit_push.
                 // Every emit here goes via common::collections so the
-                // provider (vybe:js-array / vybe:array / polyfill) is
+                // provider (ecma:array / vybe:array / polyfill) is
                 // swappable in one place.
                 let is_append = matches!(
                     &index.kind,
@@ -2325,14 +2325,14 @@ impl Compiler {
                     self.compile_expr(object)?;
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     common::collections::emit_push(&mut self.chunks, self.current, line);
-                    // vybe:js-array.push leaves [new_length]; drop it.
+                    // ecma:array.push leaves [new_length]; drop it.
                     self.emit(Op::DROP);
                 } else {
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     common::collections::emit_set(&mut self.chunks, self.current, line);
-                    // vybe:js-array.set leaves [null]; drop it.
+                    // ecma:array.set leaves [null]; drop it.
                     self.emit(Op::DROP);
                 }
             }
@@ -2340,7 +2340,7 @@ impl Compiler {
             ExprKind::Call { callee, args, .. } if args.len() == 1 => {
                 // VB `arr(idx) = val` — Call used as index-set because () is
                 // both call and index in VB syntax. Route through
-                // vybe:js-array.set per Phase D.
+                // ecma:array.set per Phase D.
                 let tmp = self.scope_mut().define("__tmp");
                 self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
                 self.compile_expr(callee)?;
@@ -2405,13 +2405,26 @@ impl Compiler {
 
     fn compile_binop(&mut self, op: &BinOp) {
         match op {
-            BinOp::Add => { if self.profile.dynamic_add { self.emit(Op::DYN_ADD); } else { self.emit(Op::DYN_ADD); } }
+            BinOp::Add => {
+                // `dynamic_add`: JS-style `+` — concatenates when either
+                // operand is a string, otherwise adds numerically. PHP,
+                // Python, Lua, etc. use `.` / `..` / other operators for
+                // string concat, so `+` is purely numeric and coerces
+                // string operands (`"2026" + 4 == 2030`). `F64_ADD`
+                // coerces both sides via `Value::as_f64()`; `DYN_ADD`
+                // has the JS-style string-concat special case.
+                if self.profile.dynamic_add {
+                    self.emit(Op::DYN_ADD);
+                } else {
+                    self.emit(Op::F64_ADD);
+                }
+            }
             BinOp::Sub => self.emit(Op::F64_SUB),
             BinOp::Mul => self.emit(Op::F64_MUL),
             BinOp::Div => self.emit(Op::F64_DIV),
             BinOp::IDiv => { self.emit(Op::F64_DIV); let l = self.line; common::math::emit_trunc(self.chunk(), l); }
             BinOp::FloorDiv => { self.emit(Op::F64_DIV); let l = self.line; common::math::emit_floor(self.chunk(), l); }
-            BinOp::Mod => { let idx = self.import("vybe:js-math", "fmod"); let l = self.line; common::expressions::emit_f64_mod_with_import(self.chunk(), idx, l); },
+            BinOp::Mod => { let idx = self.import("ecma:math", "fmod"); let l = self.line; common::expressions::emit_f64_mod_with_import(self.chunk(), idx, l); },
             BinOp::Pow => { let l = self.line; common::math::emit_pow(self.chunk(), l); }
             BinOp::Eq => self.emit(Op::DYN_EQ),
             BinOp::NotEq => self.emit(Op::DYN_NE),
@@ -2470,7 +2483,7 @@ impl Compiler {
             BinOp::GtEq => self.emit(Op::DYN_GE),
             BinOp::Spaceship => {
                 // a <=> b: returns -1, 0, or 1
-                let i = self.import("vybe:js-math", "spaceship");
+                let i = self.import("ecma:math", "spaceship");
                 self.emit_host_call(i, 2);
             }
             BinOp::And | BinOp::Or => unreachable!(), // handled with short-circuit
@@ -2484,11 +2497,11 @@ impl Compiler {
             BinOp::Concat => { let l = self.line; common::strings::emit_str_concat(self.chunk(), l); }
             BinOp::In => {
                 // `x in y` — JS: is `x` a property KEY of `y` (not a value).
-                // Route to `vybe:js-object.hasOwn(y, x)`, which is
+                // Route to `ecma:object.hasOwn(y, x)`, which is
                 // polymorphic on Array (integer in range), Map
                 // (IndexMap key with int/string coercion), and Ordinary
                 // (properties HashMap). Previously emitted
-                // `vybe:js-array.includes` which confused keys with
+                // `ecma:array.includes` which confused keys with
                 // values once Maps entered the picture — JS `"k" in obj`
                 // checks keys; PHP `in_array($v, $m)` checks values. They
                 // are different operations and now use different imports.
@@ -2501,7 +2514,7 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, t_x); self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, t_y);
                 self.emit_u16(Op::LOCAL_GET, t_x);
-                let idx = self.import("vybe:js-object", "hasOwn");
+                let idx = self.import("ecma:object", "hasOwn");
                 self.chunk().emit_op_u16(Op::CALL_IMPORT, idx, l);
                 self.chunk().emit(2, l);
             }
@@ -2514,7 +2527,7 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, t_y);
                 self.emit_u16(Op::LOCAL_GET, t_x);
                 // Same key-check as `in` above — route through hasOwn.
-                let idx = self.import("vybe:js-object", "hasOwn");
+                let idx = self.import("ecma:object", "hasOwn");
                 self.chunk().emit_op_u16(Op::CALL_IMPORT, idx, l);
                 self.chunk().emit(2, l);
                 self.emit(Op::DYN_NOT);
@@ -2526,7 +2539,7 @@ impl Compiler {
             }
             BinOp::NullCoalesce => unreachable!(), // handled in compile_expr
             BinOp::MatMul => {
-                let i = self.import("vybe:js-math", "matmul");
+                let i = self.import("ecma:math", "matmul");
                 self.emit_host_call(i, 2);
             }
             BinOp::Like => {
@@ -2555,7 +2568,7 @@ impl Compiler {
             CompoundOp::Mul => self.emit(Op::F64_MUL),
             CompoundOp::Div => self.emit(Op::F64_DIV),
             CompoundOp::IDiv => { self.emit(Op::F64_DIV); let l = self.line; common::math::emit_trunc(self.chunk(), l); }
-            CompoundOp::Mod => { let idx = self.import("vybe:js-math", "fmod"); let l = self.line; common::expressions::emit_f64_mod_with_import(self.chunk(), idx, l); },
+            CompoundOp::Mod => { let idx = self.import("ecma:math", "fmod"); let l = self.line; common::expressions::emit_f64_mod_with_import(self.chunk(), idx, l); },
             CompoundOp::Pow => { let l = self.line; common::math::emit_pow(self.chunk(), l); }
             CompoundOp::Concat => { let l = self.line; common::strings::emit_str_concat(self.chunk(), l); }
             CompoundOp::BitAnd => self.emit(Op::I32_AND),
@@ -2598,12 +2611,12 @@ impl Compiler {
             return Ok(true);
         }
 
-        // ── Phase D1 pilot: Array(count, init) → vybe:js-array.newWithLength + fill ──
+        // ── Phase D1 pilot: Array(count, init) → ecma:array.newWithLength + fill ──
         //
         // COBOL's OCCURS walker emits `Call { callee: Array,
         // args: [count, element_init] }` in the high-level IR. This
         // intercept routes the pattern through the spec-conformant
-        // `vybe:js-array.*` imports instead of the legacy VM-internal
+        // `ecma:array.*` imports instead of the legacy VM-internal
         // opcodes. See `dynamicruntime_support.md` Phase D1 and the
         // reasoning in `project_dynamic_runtime_phase_state.md`.
         //
@@ -2617,7 +2630,7 @@ impl Compiler {
             //   newWithLength(count)  — via common::collections
             //   fill(arr, init, 0, MAX)  — via common::collections
             // All emits route through compiler_common so the provider
-            // (vybe:js-array / vybe:array / polyfill) is swappable in
+            // (ecma:array / vybe:array / polyfill) is swappable in
             // one place.
             self.compile_expr(args[0])?;  // push count
             common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
@@ -2827,7 +2840,7 @@ impl Compiler {
             "str_concat" => self.emit(Op::STR_CONCAT),
             // Array primitives — every emit flows through
             // `common::collections::*` so the emitted bytecode uses
-            // `vybe:js-array.*` imports. One-place-to-change: flip the
+            // `ecma:array.*` imports. One-place-to-change: flip the
             // provider in collections.rs and every array op in every
             // language re-routes.
             "array_push" => { let l = self.line; common::collections::emit_push(&mut self.chunks, self.current, l); }
@@ -2957,7 +2970,7 @@ impl Compiler {
                 self.emit(Op::SET_TIMER);
             }
             // Array primitives — every caller dispatches through
-            // `common::collections::*`, which now routes to `vybe:js-array.*`
+            // `common::collections::*`, which now routes to `ecma:array.*`
             // imports (Phase D). Keep the arg-evaluation and stack shape
             // details here; the emit itself lives in compiler_common so
             // the identical surface is used by every language.
@@ -3038,7 +3051,7 @@ impl Compiler {
             // PHP `in_array($needle, $haystack)` — walker already normalized
             // arg order to [haystack, needle, strict?] matching JS's
             // `arr.includes(needle, fromIndex?)`. emit_contains calls
-            // `vybe:js-array.includes` which is polymorphic over Array,
+            // `ecma:array.includes` which is polymorphic over Array,
             // Map, and Ordinary, so PHP's `in_array` works uniformly on
             // assoc arrays, indexed arrays, and superglobals.
             "array_contains" => {

@@ -1,4 +1,4 @@
-//! # `vybe:js-json` host handlers
+//! # `ecma:json` host handlers
 //!
 //! `JSON.stringify` / `JSON.parse` per ECMA-262 §25.5.
 //!
@@ -28,7 +28,7 @@ use vybe_bytecode::value::{Object, ObjectKind, TypedElemKind, Value};
 use vybe_bytecode::VM;
 
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn("vybe:js-json", "stringify",
+    vm.register_host_fn("ecma:json", "stringify",
         Box::new(|_ctx, args| {
             let value = args.first().cloned().unwrap_or(Value::Undefined);
             // Spec: stringify(undefined) returns undefined, not "undefined"
@@ -44,7 +44,7 @@ pub fn register(vm: &mut VM) {
             Value::String(Arc::from(s.as_str()))
         }));
 
-    vm.register_host_fn("vybe:js-json", "parse",
+    vm.register_host_fn("ecma:json", "parse",
         Box::new(|_ctx, args| {
             let text: String = match args.first() {
                 Some(Value::String(s)) => s.to_string(),

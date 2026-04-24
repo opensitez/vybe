@@ -38,7 +38,7 @@ pub fn static_method_mappings() -> &'static [DotnetStaticMethodMapping] {
 pub fn namespace_to_host_module(prefix: &str) -> Option<&'static str> {
     match prefix {
         "system.console" => Some("wasi:cli"),
-        "system.math" => Some("vybe:js-math"),
+        "system.math" => Some("ecma:math"),
         "system.convert" => Some("vybe:convert"),
         "system.string" => Some("vybe:string"),
         "system.array" => Some("vybe:array"),
@@ -71,7 +71,7 @@ pub fn namespace_to_host_module(prefix: &str) -> Option<&'static str> {
 
 pub fn map_host_func(module: &str, func: &str) -> Option<String> {
     match (module, func) {
-        ("vybe:js-math", f) => Some(f.to_string()),
+        ("ecma:math", f) => Some(f.to_string()),
         _ => None,
     }
 }

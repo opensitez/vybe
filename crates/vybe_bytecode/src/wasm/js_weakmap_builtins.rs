@@ -1,4 +1,4 @@
-//! # vybe:js-weakmap and vybe:js-weakset builtins
+//! # ecma:weakmap and ecma:weakset builtins
 //!
 //! Host imports for `WeakMap.prototype.*` / `WeakSet.prototype.*`
 //! per ECMA-262 §24.3 / §24.4.
@@ -10,8 +10,8 @@
 
 use super::encoding::*;
 
-pub const WEAKMAP_MODULE: &str = "vybe:js-weakmap";
-pub const WEAKSET_MODULE: &str = "vybe:js-weakset";
+pub const WEAKMAP_MODULE: &str = "ecma:weakmap";
+pub const WEAKSET_MODULE: &str = "ecma:weakset";
 
 pub const WEAKMAP_IMPORTS: &[&str] = &[
     "new",

@@ -62,25 +62,25 @@ ceil                = { emit = "opcode:f64_ceil",            min_args = 1, max_a
 floor               = { emit = "opcode:f64_floor",           min_args = 1, max_args = 1 }
 sqrt                = { emit = "opcode:f64_sqrt",            min_args = 1, max_args = 1 }
 round               = { emit = "opcode:f64_nearest",         min_args = 1, max_args = 2 }
-pow                 = { emit = "host:vybe:js-math:pow",         min_args = 2, max_args = 2 }
-sin                 = { emit = "host:vybe:js-math:sin",         min_args = 1, max_args = 1 }
-cos                 = { emit = "host:vybe:js-math:cos",         min_args = 1, max_args = 1 }
-tan                 = { emit = "host:vybe:js-math:tan",         min_args = 1, max_args = 1 }
-asin                = { emit = "host:vybe:js-math:asin",        min_args = 1, max_args = 1 }
-acos                = { emit = "host:vybe:js-math:acos",        min_args = 1, max_args = 1 }
-atan                = { emit = "host:vybe:js-math:atan",        min_args = 1, max_args = 1 }
-atan2               = { emit = "host:vybe:js-math:atan2",       min_args = 2, max_args = 2 }
-exp                 = { emit = "host:vybe:js-math:exp",         min_args = 1, max_args = 1 }
-log                 = { emit = "host:vybe:js-math:log",         min_args = 1, max_args = 2 }
-log2                = { emit = "host:vybe:js-math:log2",        min_args = 1, max_args = 1 }
-log10               = { emit = "host:vybe:js-math:log10",       min_args = 1, max_args = 1 }
+pow                 = { emit = "host:ecma:math:pow",         min_args = 2, max_args = 2 }
+sin                 = { emit = "host:ecma:math:sin",         min_args = 1, max_args = 1 }
+cos                 = { emit = "host:ecma:math:cos",         min_args = 1, max_args = 1 }
+tan                 = { emit = "host:ecma:math:tan",         min_args = 1, max_args = 1 }
+asin                = { emit = "host:ecma:math:asin",        min_args = 1, max_args = 1 }
+acos                = { emit = "host:ecma:math:acos",        min_args = 1, max_args = 1 }
+atan                = { emit = "host:ecma:math:atan",        min_args = 1, max_args = 1 }
+atan2               = { emit = "host:ecma:math:atan2",       min_args = 2, max_args = 2 }
+exp                 = { emit = "host:ecma:math:exp",         min_args = 1, max_args = 1 }
+log                 = { emit = "host:ecma:math:log",         min_args = 1, max_args = 2 }
+log2                = { emit = "host:ecma:math:log2",        min_args = 1, max_args = 1 }
+log10               = { emit = "host:ecma:math:log10",       min_args = 1, max_args = 1 }
 rand                = { emit = "host:vybe:random:random",    min_args = 0, max_args = 2 }
 mt_rand             = { emit = "host:vybe:random:random",    min_args = 0, max_args = 2 }
 intdiv              = { emit = "opcode:f64_div",             min_args = 2, max_args = 2 }
 fmod                = { emit = "opcode:f64_mod",             min_args = 2, max_args = 2 }
 fdiv                = { emit = "opcode:f64_div",             min_args = 2, max_args = 2 }
-pi                  = { emit = "host:vybe:js-math:PI",          min_args = 0, max_args = 0 }
-M_PI                = { emit = "host:vybe:js-math:PI",          min_args = 0, max_args = 0 }
+pi                  = { emit = "host:ecma:math:PI",          min_args = 0, max_args = 0 }
+M_PI                = { emit = "host:ecma:math:PI",          min_args = 0, max_args = 0 }
 
 # ── Type conversion ─────────────────────────────────────────────────────────
 
@@ -109,11 +109,11 @@ array_merge         = { emit = "opcode:array_concat",              min_args = 1,
 # `emit_builtin_opcode` which has the variadic-aware per-arg logic
 # (PHP `array_push($a, v1, v2, ...)`, `array_merge($a, $b, $c, ...)`).
 # `emit_builtin_opcode`'s array_* arms route to `common::collections::*`
-# internally so the final emitted `vybe:js-array.*` imports are the same
+# internally so the final emitted `ecma:array.*` imports are the same
 # — only the compile-site arg handling differs.
 
 # Polymorphic key/value/entries helpers — bound to the portable
-# Component-Model `vybe:js-object.*` import set (same imports JS
+# Component-Model `ecma:object.*` import set (same imports JS
 # `Object.keys/values/entries` uses; satisfied by V8/SpiderMonkey
 # natively or by the polyfill for wasmtime). Works uniformly on Array,
 # Map, and Ordinary backings.
@@ -122,14 +122,14 @@ array_merge         = { emit = "opcode:array_concat",              min_args = 1,
 # WASM imports for the same semantic operation. That way `array_keys`
 # in PHP and `Object.keys` in JS share ONE host handler, one test
 # surface, one CVE surface.
-array_keys          = { emit = "host:vybe:js-object:keys",         min_args = 1, max_args = 3 }
-array_values        = { emit = "host:vybe:js-object:values",       min_args = 1, max_args = 1 }
+array_keys          = { emit = "host:ecma:object:keys",         min_args = 1, max_args = 3 }
+array_values        = { emit = "host:ecma:object:values",       min_args = 1, max_args = 1 }
 # Argument order is normalized to canonical `(obj, key)` at the PHP
 # walker layer (`canonicalize_php_call_args`), so both entries below
-# bind directly to the portable `vybe:js-object.hasOwn` — identical
+# bind directly to the portable `ecma:object.hasOwn` — identical
 # import to what JS `Object.hasOwn` emits.
-array_key_exists    = { emit = "host:vybe:js-object:hasOwn",       min_args = 2, max_args = 2 }
-key_exists          = { emit = "host:vybe:js-object:hasOwn",       min_args = 2, max_args = 2 }
+array_key_exists    = { emit = "host:ecma:object:hasOwn",       min_args = 2, max_args = 2 }
+key_exists          = { emit = "host:ecma:object:hasOwn",       min_args = 2, max_args = 2 }
 
 # ── JSON ────────────────────────────────────────────────────────────────────
 
@@ -137,11 +137,33 @@ json_encode         = { emit = "host:vybe:json:stringify",   min_args = 1, max_a
 json_decode         = { emit = "host:vybe:json:parse",       min_args = 1, max_args = 4 }
 
 # ── Date / Time ─────────────────────────────────────────────────────────────
+# PHP's `time()` / `date()` operate on POSIX seconds-epoch. All wrappers
+# below route through `ecma:date` (ECMA-262 Date mirror + language
+# adapters — chrono-backed). `date()` and `strftime()` accept a format
+# string and a seconds timestamp and produce PHP-correct output.
 
-time                = { emit = "host:wasi:clocks:now",       min_args = 0, max_args = 0 }
-microtime           = { emit = "host:wasi:clocks:hrtime",    min_args = 0, max_args = 1 }
-date                = { emit = "host:wasi:clocks:toISOString", min_args = 1, max_args = 2 }
+time                = { emit = "host:ecma:date:nowSeconds",      min_args = 0, max_args = 0 }
+microtime           = { emit = "host:wasi:clocks:hrtime",           min_args = 0, max_args = 1 }
+date                = { emit = "host:ecma:date:phpDate",         min_args = 1, max_args = 2 }
+strftime            = { emit = "host:ecma:date:phpStrftime",     min_args = 1, max_args = 2 }
+strtotime           = { emit = "host:ecma:date:phpStrtotime",    min_args = 1, max_args = 2 }
+mktime              = { emit = "host:ecma:date:phpMktime",       min_args = 0, max_args = 6 }
 sleep               = { emit = "host:wasi:clocks:sleep",     min_args = 1, max_args = 1 }
+
+# ── String formatting ──────────────────────────────────────────────────────
+
+sprintf             = { emit = "host:vybe:string:sprintf",   min_args = 1, max_args = 255 }
+substr              = { emit = "host:vybe:string:substr",    min_args = 2, max_args = 3 }
+
+# ── Internal helpers — AST rewrite targets ─────────────────────────────────
+# The PHP walker rewrites `$x++` → `$x = __php_increment($x)` and
+# `$x--` → `$x = __php_decrement($x)` so downstream code doesn't see
+# PHP-specific semantics. These identifiers are never writable from user
+# PHP code (leading underscores sort under the normal name binding in
+# PHP anyway, but they're not intended to collide).
+
+__php_increment     = { emit = "host:vybe:string:phpIncrement", min_args = 1, max_args = 1 }
+__php_decrement     = { emit = "host:vybe:string:phpDecrement", min_args = 1, max_args = 1 }
 
 # ── File I/O ────────────────────────────────────────────────────────────────
 

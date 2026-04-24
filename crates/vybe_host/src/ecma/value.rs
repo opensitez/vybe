@@ -1,13 +1,13 @@
-//! # `vybe:js-value` — polymorphic method-dispatch shim
+//! # `ecma:value` — polymorphic method-dispatch shim
 //!
 //! The wasm js-builtins proposals publish **separate** import modules per
-//! reflector (`vybe:js-array.*`, `wasm:js-string.*`, `vybe:js-map.*`,
+//! reflector (`ecma:array.*`, `wasm:js-string.*`, `ecma:map.*`,
 //! …), which is correct when the compiler knows the receiver's type. For
 //! dynamically-typed languages (JS, Python, Ruby) the receiver type isn't
 //! known at compile time, so the compiler emits a single dispatch point
 //! and defers the method lookup to runtime.
 //!
-//! This module registers `vybe:js-value.invokeMethod(receiver, name,
+//! This module registers `ecma:value.invokeMethod(receiver, name,
 //! ...args)`. On v8 via the js-builtins glue, the equivalent shim is one
 //! line of JS: `receiver[name](...args)` — native `String.prototype` vs
 //! `Array.prototype` dispatch, same prototype-chain walk, same
@@ -37,7 +37,7 @@ fn make_array(elems: Vec<Value>) -> Value {
 
 pub fn register(vm: &mut VM) {
     vm.register_host_fn(
-        "vybe:js-value",
+        "ecma:value",
         "invokeMethod",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let receiver = args.first().cloned().unwrap_or(Value::Undefined);
@@ -711,7 +711,7 @@ fn truthy(v: &Value) -> bool {
 }
 
 // ── Map / Set dispatch — delegate to existing host fns where possible.
-// Callers on v8 go through `vybe:js-map.*` directly; Vybe's VM does the
+// Callers on v8 go through `ecma:map.*` directly; Vybe's VM does the
 // work inline here so it doesn't need `HostContext` to loop back into
 // the host registry.
 

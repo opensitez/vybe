@@ -60,17 +60,17 @@ pub fn register_all(vm: &mut VM) {
     // --- List / Array ---
     //
     // Phase 7b: List<T> is a JS Array per ECMA-262 §23.1. Every method
-    // routes through `vybe:js-array/*` — the same host fns v8 / other
+    // routes through `ecma:array/*` — the same host fns v8 / other
     // runtimes expose via the wasm-js-builtins proposal.
     //
     // `list.Count` and `list.Length` are .NET/JS property-style reads;
     // the compile path (struct_get "count") auto-invokes `__get_count`
     // installed on each List instance by `vybe:types/listNew`. The
     // method-call form `list.Count()` dispatches via TypeRegistry to
-    // `vybe:js-array/length` which returns an i32.
+    // `ecma:array/length` which returns an i32.
     //
     // Transitional entries flagged `vybe:types/list*` remain only where
-    // a direct `vybe:js-array` equivalent doesn't exist (RemoveAt,
+    // a direct `ecma:array` equivalent doesn't exist (RemoveAt,
     // AddRange semantic mismatch with concat, BinarySearch, GetRange /
     // SetRange, TryPeek/TryPop at-end). Each lands on a JS-shape
     // primitive over time.
@@ -80,52 +80,52 @@ pub fn register_all(vm: &mut VM) {
             t.constructor = Some(Method::HostFn(idx));
         }
         for (method, module, fname) in &[
-            ("add", "vybe:js-array", "push"),
-            ("remove", "vybe:types", "listRemove"),       // by-value; no vybe:js-array direct
+            ("add", "ecma:array", "push"),
+            ("remove", "vybe:types", "listRemove"),       // by-value; no ecma:array direct
             ("removeat", "vybe:types", "listRemoveAt"),   // splice pattern; to migrate
-            ("contains", "vybe:js-array", "includes"),
-            ("count", "vybe:js-array", "length"),
+            ("contains", "ecma:array", "includes"),
+            ("count", "ecma:array", "length"),
             ("clear", "vybe:types", "listClear"),          // setLength(0) pattern; to migrate
-            ("indexof", "vybe:js-array", "indexOf"),
-            ("sort", "vybe:js-array", "sort"),
-            ("reverse", "vybe:js-array", "reverse"),
-            ("toarray", "vybe:js-array", "slice"),
-            ("item", "vybe:js-array", "get"),
-            ("lastindexof", "vybe:js-array", "lastIndexOf"),
+            ("indexof", "ecma:array", "indexOf"),
+            ("sort", "ecma:array", "sort"),
+            ("reverse", "ecma:array", "reverse"),
+            ("toarray", "ecma:array", "slice"),
+            ("item", "ecma:array", "get"),
+            ("lastindexof", "ecma:array", "lastIndexOf"),
             ("insert", "vybe:types", "listInsert"),        // splice(idx, 0, v); to migrate
             ("addrange", "vybe:types", "listAddRange"),    // in-place extend; concat returns new
-            ("capacity", "vybe:js-array", "length"),
+            ("capacity", "ecma:array", "length"),
             ("insertrange", "vybe:types", "listInsertRange"),
             ("removerange", "vybe:types", "listRemoveRange"),
             ("getrange", "vybe:types", "listGetRange"),
             ("setrange", "vybe:types", "listSetRange"),
             ("binarysearch", "vybe:types", "listBinarySearch"),
-            ("clone", "vybe:js-array", "slice"),
-            ("copyto", "vybe:js-array", "slice"),
-            ("trimtosize", "vybe:js-array", "length"),
-            ("enqueue", "vybe:js-array", "push"),
-            ("trydequeue", "vybe:js-array", "shift"),
-            ("trypop", "vybe:js-array", "pop"),
+            ("clone", "ecma:array", "slice"),
+            ("copyto", "ecma:array", "slice"),
+            ("trimtosize", "ecma:array", "length"),
+            ("enqueue", "ecma:array", "push"),
+            ("trydequeue", "ecma:array", "shift"),
+            ("trypop", "ecma:array", "pop"),
             ("trypeek", "vybe:types", "listLast"),         // get(length-1); compound
             // JS Array methods — direct pass-through.
-            ("push", "vybe:js-array", "push"),
-            ("pop", "vybe:js-array", "pop"),
-            ("shift", "vybe:js-array", "shift"),
-            ("unshift", "vybe:js-array", "unshift"),
-            ("join", "vybe:js-array", "join"),
-            ("includes", "vybe:js-array", "includes"),
-            ("slice", "vybe:js-array", "slice"),
-            ("concat", "vybe:js-array", "concat"),
-            ("splice", "vybe:js-array", "splice"),
-            ("fill", "vybe:js-array", "fill"),
-            ("flat", "vybe:js-array", "flat"),
-            ("find", "vybe:js-array", "find"),
-            ("findindex", "vybe:js-array", "findIndex"),
-            ("keys", "vybe:js-array", "keys"),
-            ("values", "vybe:js-array", "values"),
-            ("at", "vybe:js-array", "at"),
-            ("copywithin", "vybe:js-array", "copyWithin"),
-            ("entries", "vybe:js-array", "entries"),
+            ("push", "ecma:array", "push"),
+            ("pop", "ecma:array", "pop"),
+            ("shift", "ecma:array", "shift"),
+            ("unshift", "ecma:array", "unshift"),
+            ("join", "ecma:array", "join"),
+            ("includes", "ecma:array", "includes"),
+            ("slice", "ecma:array", "slice"),
+            ("concat", "ecma:array", "concat"),
+            ("splice", "ecma:array", "splice"),
+            ("fill", "ecma:array", "fill"),
+            ("flat", "ecma:array", "flat"),
+            ("find", "ecma:array", "find"),
+            ("findindex", "ecma:array", "findIndex"),
+            ("keys", "ecma:array", "keys"),
+            ("values", "ecma:array", "values"),
+            ("at", "ecma:array", "at"),
+            ("copywithin", "ecma:array", "copyWithin"),
+            ("entries", "ecma:array", "entries"),
         ] {
             if let Some(idx) = h(vm, module, fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -143,13 +143,13 @@ pub fn register_all(vm: &mut VM) {
     //
     // Phase 7b: Dictionary is a plain JS Object per ECMA-262 §19.1 —
     // `Dictionary<string, T>` is shape-identical to an object used as
-    // a string-keyed map. Methods route through `vybe:js-object/*`
+    // a string-keyed map. Methods route through `ecma:object/*`
     // host fns (working directly on the object's own properties).
     //
     // Transition note: VB/C# `d.Count` is a property read (not a
     // method call). The old `vybe:types/dictAdd` kept a `count` field
     // on the dict updated on every write so `struct_get` returned a
-    // number; `vybe:js-object/length` is a callable returning a count
+    // number; `ecma:object/length` is a callable returning a count
     // when invoked. A later step will install `__get_count` auto-getters
     // on construction so `d.Count` property reads auto-invoke the
     // length call — until then, `.Count` reads expose the function
@@ -159,22 +159,22 @@ pub fn register_all(vm: &mut VM) {
     let dict_id = {
         let mut t = TypeDef::new("Dictionary");
         for (method, module, fname) in &[
-            ("add", "vybe:js-object", "set"),
-            ("item", "vybe:js-object", "get"),
+            ("add", "ecma:object", "set"),
+            ("item", "ecma:object", "get"),
             // `hasOwn` (own-only, returns Value::Bool) is what VB/C#
             // `ContainsKey` expects — string-coerces to "true"/"false".
             // `has` would return I32 ("1"/"0") which breaks VB prints.
-            ("containskey", "vybe:js-object", "hasOwn"),
-            ("containsvalue", "vybe:js-object", "hasOwn"),
-            ("remove", "vybe:js-object", "delete"),
-            ("keys", "vybe:js-object", "keys"),
-            ("values", "vybe:js-object", "values"),
+            ("containskey", "ecma:object", "hasOwn"),
+            ("containsvalue", "ecma:object", "hasOwn"),
+            ("remove", "ecma:object", "delete"),
+            ("keys", "ecma:object", "keys"),
+            ("values", "ecma:object", "values"),
             ("clear", "vybe:types", "dictClear"),
-            ("count", "vybe:js-object", "length"),
-            ("trygetvalue", "vybe:js-object", "get"),
-            ("tryadd", "vybe:js-object", "set"),
-            ("addorupdate", "vybe:js-object", "set"),
-            ("getoradd", "vybe:js-object", "get"),
+            ("count", "ecma:object", "length"),
+            ("trygetvalue", "ecma:object", "get"),
+            ("tryadd", "ecma:object", "set"),
+            ("addorupdate", "ecma:object", "set"),
+            ("getoradd", "ecma:object", "get"),
         ] {
             if let Some(idx) = h(vm, module, fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -194,13 +194,13 @@ pub fn register_all(vm: &mut VM) {
     {
         let mut t = TypeDef::new("Queue");
         for (method, module, fname) in &[
-            ("enqueue", "vybe:js-array", "push"),
-            ("dequeue", "vybe:js-array", "shift"),
+            ("enqueue", "ecma:array", "push"),
+            ("dequeue", "ecma:array", "shift"),
             ("peek", "vybe:types", "queuePeek"),     // get(0); compound
-            ("count", "vybe:js-array", "length"),
+            ("count", "ecma:array", "length"),
             ("clear", "vybe:types", "listClear"),    // setLength(0); to migrate
-            ("contains", "vybe:js-array", "includes"),
-            ("toarray", "vybe:js-array", "slice"),
+            ("contains", "ecma:array", "includes"),
+            ("toarray", "ecma:array", "slice"),
         ] {
             if let Some(idx) = h(vm, module, fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -217,12 +217,12 @@ pub fn register_all(vm: &mut VM) {
     {
         let mut t = TypeDef::new("Stack");
         for (method, module, fname) in &[
-            ("push", "vybe:js-array", "push"),
-            ("pop", "vybe:js-array", "pop"),
+            ("push", "ecma:array", "push"),
+            ("pop", "ecma:array", "pop"),
             ("peek", "vybe:types", "stackPeek"),     // get(length-1); compound
-            ("count", "vybe:js-array", "length"),
+            ("count", "ecma:array", "length"),
             ("clear", "vybe:types", "listClear"),
-            ("contains", "vybe:js-array", "includes"),
+            ("contains", "ecma:array", "includes"),
         ] {
             if let Some(idx) = h(vm, module, fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -238,11 +238,11 @@ pub fn register_all(vm: &mut VM) {
     {
         let mut t = TypeDef::new("HashSet");
         for (method, module, fname) in &[
-            ("add", "vybe:js-set", "add"),
-            ("contains", "vybe:js-set", "has"),
-            ("remove", "vybe:js-set", "delete"),
-            ("count", "vybe:js-set", "size"),
-            ("clear", "vybe:js-set", "clear"),
+            ("add", "ecma:set", "add"),
+            ("contains", "ecma:set", "has"),
+            ("remove", "ecma:set", "delete"),
+            ("count", "ecma:set", "size"),
+            ("clear", "ecma:set", "clear"),
         ] {
             if let Some(idx) = h(vm, module, fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));

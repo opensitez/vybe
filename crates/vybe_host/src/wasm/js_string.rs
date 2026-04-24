@@ -1,25 +1,15 @@
-//! WASM JS Builtins — `wasm:js-string`, `wasm:js-number`, `wasm:js-boolean`, `wasm:js-undefined`.
+//! # `wasm:js-string`
 //!
-//! These implement the JS String Builtins + JS Primitive Builtins proposals.
-//! They provide boxing/unboxing between WASM typed values and JS primitive values.
-//! The .wasm binary output imports these for type-correct code emission.
+//! **Merged** `js-string-builtins` WebAssembly proposal (V8 implements
+//! natively). Provides boxing/unboxing between WASM typed values and
+//! JS string values, and basic String operations as host imports.
 //!
-//! Spec: proposals/js-primitive-builtins/proposals/js-string-builtins/Overview.md
-//! Spec: proposals/js-primitive-builtins/proposals/js-primitive-builtins/Overview.md
+//! Spec: `proposals/js-string-builtins/proposals/js-string-builtins/Overview.md`
 
 use std::sync::Arc;
-use vybe_bytecode::{VM, Value, HostContext};
+use vybe_bytecode::{HostContext, Value, VM};
 
 pub fn register(vm: &mut VM) {
-    register_js_string(vm);
-    register_js_number(vm);
-    register_js_boolean(vm);
-    register_js_undefined(vm);
-}
-
-// ── wasm:js-string ──────────────────────────────────────────────────────
-
-fn register_js_string(vm: &mut VM) {
     // test(externref) -> i32 — returns 1 if the value is a string
     vm.register_host_fn("wasm:js-string", "test", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         Value::I32(if matches!(args.first(), Some(Value::String(_))) { 1 } else { 0 })
@@ -124,72 +114,5 @@ fn register_js_string(vm: &mut VM) {
     vm.register_host_fn("wasm:js-string", "fromF64", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let n = args.first().map(|v| v.as_f64()).unwrap_or(0.0);
         Value::String(Arc::from(format!("{}", n).as_str()))
-    }));
-}
-
-// ── wasm:js-number ──────────────────────────────────────────────────────
-
-fn register_js_number(vm: &mut VM) {
-    // test(externref) -> i32 — returns 1 if the value is a number
-    vm.register_host_fn("wasm:js-number", "test", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        Value::I32(match args.first() {
-            Some(Value::F64(_)) | Some(Value::I32(_)) | Some(Value::I64(_)) => 1,
-            _ => 0,
-        })
-    }));
-
-    // testI32(externref) -> i32 — returns 1 if the value fits in i32
-    vm.register_host_fn("wasm:js-number", "testI32", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        Value::I32(match args.first() {
-            Some(Value::I32(_)) => 1,
-            Some(Value::F64(n)) => if *n == (*n as i32) as f64 { 1 } else { 0 },
-            _ => 0,
-        })
-    }));
-
-    // fromF64(f64) -> externref — box an f64 into the universal representation
-    vm.register_host_fn("wasm:js-number", "fromF64", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        Value::F64(args.first().map(|v| v.as_f64()).unwrap_or(0.0))
-    }));
-
-    // fromI32(i32) -> externref — box an i32
-    vm.register_host_fn("wasm:js-number", "fromI32", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        Value::I32(args.first().map(|v| v.as_f64() as i32).unwrap_or(0))
-    }));
-
-    // toF64(externref) -> f64 — unbox to f64
-    vm.register_host_fn("wasm:js-number", "toF64", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        Value::F64(args.first().map(|v| v.as_f64()).unwrap_or(0.0))
-    }));
-
-    // toI32(externref) -> i32 — unbox to i32 (truncate)
-    vm.register_host_fn("wasm:js-number", "toI32", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        Value::I32(args.first().map(|v| v.as_f64() as i32).unwrap_or(0))
-    }));
-}
-
-// ── wasm:js-boolean ─────────────────────────────────────────────────────
-
-fn register_js_boolean(vm: &mut VM) {
-    // test(externref) -> i32 — returns 1 if the value is a boolean
-    vm.register_host_fn("wasm:js-boolean", "test", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        Value::I32(if matches!(args.first(), Some(Value::Bool(_))) { 1 } else { 0 })
-    }));
-
-    // cast(externref) -> i32 — extract boolean as i32 (0 or 1), trap if not bool
-    vm.register_host_fn("wasm:js-boolean", "cast", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        match args.first() {
-            Some(Value::Bool(b)) => Value::I32(if *b { 1 } else { 0 }),
-            _ => Value::I32(0),
-        }
-    }));
-}
-
-// ── wasm:js-undefined ───────────────────────────────────────────────────
-
-fn register_js_undefined(vm: &mut VM) {
-    // test(externref) -> i32 — returns 1 if the value is undefined
-    vm.register_host_fn("wasm:js-undefined", "test", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        Value::I32(if matches!(args.first(), Some(Value::Undefined)) { 1 } else { 0 })
     }));
 }

@@ -134,7 +134,7 @@ pub fn register(vm: &mut VM) {
     }));
 
     // dynMul(a, b) — dynamic multiply: str*int → repeat, int*int → multiply
-    vm.register_host_fn("vybe:js-math", "dynMul", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+    vm.register_host_fn("ecma:math", "dynMul", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let a = args.first().cloned().unwrap_or(Value::Null);
         let b = args.get(1).cloned().unwrap_or(Value::Null);
         match (&a, &b) {

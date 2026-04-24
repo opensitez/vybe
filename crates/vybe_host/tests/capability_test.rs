@@ -190,10 +190,11 @@ fn safe_blocks_threading() {
 fn safe_allows_math() {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::safe());
-    // Math is registered under `vybe:js-math` — the ECMA-262 `Math` object
-    // mirror. The `vybe:*` prefix marks it as a Vybe-invented name (the
+    // Math is registered under `ecma:math` — the ECMA-262 `Math` object
+    // mirror. The `ecma:*` prefix marks it as a Vybe-provided namespace
+    // for ECMA-262 types (no such WebAssembly CG proposal exists; the
     // stage-1 wasm-js-primitive-builtins proposal explicitly rejected Math).
-    let has_math = vm.host_registry.keys().any(|(m, _)| m == "vybe:js-math");
+    let has_math = vm.host_registry.keys().any(|(m, _)| m == "ecma:math");
     assert!(has_math, "Safe mode should have math");
 }
 

@@ -139,24 +139,24 @@ round         = { emit = "opcode:f64_nearest", min_args = 1, max_args = 1 }
 
 # ── Math — host calls ───────────────────────────────────────────────────────
 
-sgn        = { emit = "host:vybe:js-math:sign",   min_args = 1, max_args = 1 }
-rnd        = { emit = "host:vybe:js-math:random", min_args = 0, max_args = 1 }
-randomize  = { emit = "host:vybe:js-math:random", min_args = 0, max_args = 0 }
-log        = { emit = "host:vybe:js-math:log",    min_args = 1, max_args = 1 }
-exp        = { emit = "host:vybe:js-math:exp",    min_args = 1, max_args = 1 }
-sin        = { emit = "host:vybe:js-math:sin",    min_args = 1, max_args = 1 }
-cos        = { emit = "host:vybe:js-math:cos",    min_args = 1, max_args = 1 }
-tan        = { emit = "host:vybe:js-math:tan",    min_args = 1, max_args = 1 }
-atn        = { emit = "host:vybe:js-math:atan",   min_args = 1, max_args = 1 }
-atan       = { emit = "host:vybe:js-math:atan",   min_args = 1, max_args = 1 }
+sgn        = { emit = "host:ecma:math:sign",   min_args = 1, max_args = 1 }
+rnd        = { emit = "host:ecma:math:random", min_args = 0, max_args = 1 }
+randomize  = { emit = "host:ecma:math:random", min_args = 0, max_args = 0 }
+log        = { emit = "host:ecma:math:log",    min_args = 1, max_args = 1 }
+exp        = { emit = "host:ecma:math:exp",    min_args = 1, max_args = 1 }
+sin        = { emit = "host:ecma:math:sin",    min_args = 1, max_args = 1 }
+cos        = { emit = "host:ecma:math:cos",    min_args = 1, max_args = 1 }
+tan        = { emit = "host:ecma:math:tan",    min_args = 1, max_args = 1 }
+atn        = { emit = "host:ecma:math:atan",   min_args = 1, max_args = 1 }
+atan       = { emit = "host:ecma:math:atan",   min_args = 1, max_args = 1 }
 pow                 = { emit = "stdlib:pow",    min_args = 2, max_args = 2 }
 "math.pow"          = { emit = "stdlib:pow",    min_args = 2, max_args = 2 }
 "system.math.pow"   = { emit = "stdlib:pow",    min_args = 2, max_args = 2 }
 "math.log10"        = { emit = "stdlib:log10",  min_args = 1, max_args = 1 }
 "system.math.log10" = { emit = "stdlib:log10",  min_args = 1, max_args = 1 }
-"math.log2"         = { emit = "host:vybe:js-math:log2", min_args = 1, max_args = 1 }
-"math.log"          = { emit = "host:vybe:js-math:log", min_args = 1, max_args = 2 }
-"system.math.log"   = { emit = "host:vybe:js-math:log", min_args = 1, max_args = 2 }
+"math.log2"         = { emit = "host:ecma:math:log2", min_args = 1, max_args = 1 }
+"math.log"          = { emit = "host:ecma:math:log", min_args = 1, max_args = 2 }
+"system.math.log"   = { emit = "host:ecma:math:log", min_args = 1, max_args = 2 }
 "math.sin"          = { emit = "stdlib:sin",    min_args = 1, max_args = 1 }
 "math.cos"          = { emit = "stdlib:cos",    min_args = 1, max_args = 1 }
 "math.tan"          = { emit = "stdlib:tan",    min_args = 1, max_args = 1 }
@@ -236,7 +236,7 @@ strdup         = { emit = "host:vybe:convert:toString", min_args = 1, max_args =
 
 ubound  = { emit = "intrinsic:ubound",            min_args = 1, max_args = 1 }
 lbound  = { emit = "intrinsic:lbound",            min_args = 0, max_args = 1 }
-array   = { emit = "host:vybe:js-array:from",         min_args = 0, max_args = 255 }
+array   = { emit = "host:ecma:array:from",         min_args = 0, max_args = 255 }
 erase   = { emit = "intrinsic:erase",              min_args = 1, max_args = 1 }
 
 # ── Date/Time functions ──────────────────────────────────────────────────────

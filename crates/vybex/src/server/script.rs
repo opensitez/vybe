@@ -25,6 +25,8 @@ pub async fn serve(
     ctx: Arc<RequestContext>,
     response_rx: std::sync::mpsc::Receiver<vybe_host::ResponseMessage>,
     no_sandbox: bool,
+    timeout_secs: u64,
+    shutdown: Option<Arc<tokio::sync::Notify>>,
 ) -> Response<BoxBody> {
     // Kick off the VM on a blocking worker. We don't await it here —
     // the response stream bridge will await messages on response_rx as
@@ -36,10 +38,68 @@ pub async fn serve(
         run_vm(&script, vm_ctx, no_sandbox);
     });
 
-    // Build the hyper response from the streaming channel. This awaits
-    // the first message (Headers) before returning, so we have proper
-    // status + headers before any bytes hit the wire.
-    build_response(response_rx).await
+    // Build the hyper response from the streaming channel. Wrap in a
+    // race between (a) the configured per-request timeout and (b) the
+    // server-wide shutdown notify. Whichever fires first releases the
+    // handler with an error response so Ctrl+C doesn't get stuck behind
+    // hung scripts.
+    let start = std::time::Instant::now();
+    let deadline = std::time::Duration::from_secs(timeout_secs);
+
+    enum Outcome {
+        Done(Response<BoxBody>),
+        Timeout,
+        Shutdown,
+    }
+
+    let outcome = {
+        let shutdown_fut = async {
+            if let Some(n) = shutdown.as_ref() {
+                n.notified().await;
+            } else {
+                // No shutdown wired (programmatic / test path): park forever.
+                std::future::pending::<()>().await;
+            }
+        };
+        tokio::select! {
+            resp = build_response(response_rx) => Outcome::Done(resp),
+            _ = tokio::time::sleep(deadline) => Outcome::Timeout,
+            _ = shutdown_fut => Outcome::Shutdown,
+        }
+    };
+
+    match outcome {
+        Outcome::Done(r) => r,
+        Outcome::Timeout => {
+            let elapsed = start.elapsed();
+            eprintln!(
+                "[vybex] ERROR: script timeout after {:.2}s (configured timeout_secs={}) — script did not emit any response. Script: {}  Likely cause: infinite loop, blocked await, or missing host function. The VM thread is still running; the HTTP response is going out as 504 now.",
+                elapsed.as_secs_f64(),
+                timeout_secs,
+                script_path.display(),
+            );
+            let body = format!(
+                "504 Gateway Timeout\n\nThe script {:?} did not emit a response within {}s.\n\nThis usually means:\n  - an infinite loop in the script\n  - a blocked host-function call (unreachable WASI await)\n  - a missing import that left a value undefined and the script is re-trying\n\nServer stderr has the script path and elapsed time. The VM worker thread is orphaned (will run until it naturally exits); restart the server if this recurs.\n",
+                script_path.display(),
+                timeout_secs,
+            );
+            bytes_response(504, "text/plain; charset=utf-8", body.into_bytes())
+        }
+        Outcome::Shutdown => {
+            let elapsed = start.elapsed();
+            eprintln!(
+                "[vybex] WARN: script aborted by shutdown after {:.2}s. Script: {}  (the VM worker thread is orphaned but the process is exiting anyway)",
+                elapsed.as_secs_f64(),
+                script_path.display(),
+            );
+            let body = format!(
+                "503 Service Unavailable\n\nServer is shutting down. Request to {:?} was aborted after {:.2}s.\n",
+                script_path.display(),
+                elapsed.as_secs_f64(),
+            );
+            bytes_response(503, "text/plain; charset=utf-8", body.into_bytes())
+        }
+    }
 }
 
 fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
@@ -80,7 +140,7 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
 
     // Populate PHP-style superglobals from the request context. Built as
     // `ObjectKind::Map` — the canonical cross-language associative type
-    // — so any language's string-key access via `vybe:js-array.get` works
+    // — so any language's string-key access via `ecma:array.get` works
     // uniformly. PHP's `$_SERVER['REQUEST_METHOD']` lands here.
     inject_superglobals(&mut vm, &ctx);
 
@@ -158,7 +218,7 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
 ///
 /// Each superglobal is an `ObjectKind::Map` (the canonical cross-language
 /// associative type). `$_SERVER['REQUEST_METHOD']` then routes through
-/// `vybe:js-array.get` which dispatches on `ObjectKind::Map` and returns
+/// `ecma:array.get` which dispatches on `ObjectKind::Map` and returns
 /// the value — same as every other language's associative map.
 ///
 /// The globals inserted here are PHP-idiomatic (`_SERVER`, `_GET`, etc.)

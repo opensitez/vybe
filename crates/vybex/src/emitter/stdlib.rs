@@ -25,7 +25,7 @@
 use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
 
-/// Build all stdlib chunks. Each chunk registers any `vybe:js-array.*`
+/// Build all stdlib chunks. Each chunk registers any `ecma:array.*`
 /// imports on the passed `imports` chunk (= user program's
 /// `chunks[0]`, the module-level imports section per WASM semantics).
 /// Returns the stdlib chunks + their export names, in matching order;
@@ -109,7 +109,7 @@ impl StdLib {
 
 // ── range(start, stop, step) → array ────────────────────────
 // Every dynamic-array op routes through `common::collections::emit_*`
-// so the emitted bytecode imports `vybe:js-array.*` — works natively on
+// so the emitted bytecode imports `ecma:array.*` — works natively on
 // v8, on Vybe (registered handlers), and on plain wasmtime with the
 // polyfill module. Raw ARRAY_* opcodes are Vybe-only and have been
 // removed.
@@ -1949,7 +1949,7 @@ fn build_array_insert(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, index, 0);
     c.emit_op(Op::I32_CONST_0, 0); // deleteCount = 0
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
-    let splice = imports.add_import("vybe:js-array", "splice");
+    let splice = imports.add_import("ecma:array", "splice");
     c.emit_op_u16(Op::CALL_IMPORT, splice, 0);
     c.emit(4u8, 0); // 4 args
     c.emit_op(Op::DROP, 0); // drop returned removed-elements array
@@ -1970,7 +1970,7 @@ fn build_array_remove_at(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, index, 0);
     c.emit_op(Op::I32_CONST_1, 0); // deleteCount = 1
-    let splice = imports.add_import("vybe:js-array", "splice");
+    let splice = imports.add_import("ecma:array", "splice");
     c.emit_op_u16(Op::CALL_IMPORT, splice, 0);
     c.emit(3u8, 0);
     c.emit_op(Op::DROP, 0);
@@ -1992,7 +1992,7 @@ fn build_array_remove_value(imports: &mut Chunk) -> Chunk {
     // idx = indexOf(arr, value)
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
-    let index_of = imports.add_import("vybe:js-array", "indexOf");
+    let index_of = imports.add_import("ecma:array", "indexOf");
     c.emit_op_u16(Op::CALL_IMPORT, index_of, 0);
     c.emit(2u8, 0);
     c.emit_op_u16(Op::LOCAL_SET, idx, 0);
@@ -2007,7 +2007,7 @@ fn build_array_remove_value(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, idx, 0);
     c.emit_op(Op::I32_CONST_1, 0); // deleteCount = 1
-    let splice = imports.add_import("vybe:js-array", "splice");
+    let splice = imports.add_import("ecma:array", "splice");
     c.emit_op_u16(Op::CALL_IMPORT, splice, 0);
     c.emit(3u8, 0);
     c.emit_op(Op::DROP, 0);
@@ -2028,9 +2028,9 @@ fn build_array_insert_range(imports: &mut Chunk) -> Chunk {
     c.local_count = 5;
     let arr = 0u16; let index = 1; let src = 2; let i = 3; let src_len = 4;
 
-    let len_import = imports.add_import("vybe:js-array", "length");
-    let get_import = imports.add_import("vybe:js-array", "get");
-    let splice_import = imports.add_import("vybe:js-array", "splice");
+    let len_import = imports.add_import("ecma:array", "length");
+    let get_import = imports.add_import("ecma:array", "get");
+    let splice_import = imports.add_import("ecma:array", "splice");
 
     // src_len = length(src)
     c.emit_op_u16(Op::LOCAL_GET, src, 0);
@@ -2078,9 +2078,9 @@ fn build_array_set_range(imports: &mut Chunk) -> Chunk {
     c.local_count = 5;
     let arr = 0u16; let index = 1; let src = 2; let i = 3; let src_len = 4;
 
-    let len_import = imports.add_import("vybe:js-array", "length");
-    let get_import = imports.add_import("vybe:js-array", "get");
-    let set_import = imports.add_import("vybe:js-array", "set");
+    let len_import = imports.add_import("ecma:array", "length");
+    let get_import = imports.add_import("ecma:array", "get");
+    let set_import = imports.add_import("ecma:array", "set");
 
     c.emit_op_u16(Op::LOCAL_GET, src, 0);
     c.emit_op_u16(Op::CALL_IMPORT, len_import, 0); c.emit(1u8, 0);
@@ -2123,7 +2123,7 @@ fn build_array_binary_search(imports: &mut Chunk) -> Chunk {
     c.arity = 2; // arr, value
     c.local_count = 2;
     let arr = 0u16; let value = 1;
-    let index_of = imports.add_import("vybe:js-array", "indexOf");
+    let index_of = imports.add_import("ecma:array", "indexOf");
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
     c.emit_op_u16(Op::CALL_IMPORT, index_of, 0); c.emit(2u8, 0);
@@ -2139,8 +2139,8 @@ fn build_array_reverse_range(imports: &mut Chunk) -> Chunk {
     let arr = 0u16; let index = 1; let count = 2;
     let lo = 3; let hi = 4; let tmp = 5;
 
-    let get_import = imports.add_import("vybe:js-array", "get");
-    let set_import = imports.add_import("vybe:js-array", "set");
+    let get_import = imports.add_import("ecma:array", "get");
+    let set_import = imports.add_import("ecma:array", "set");
 
     // lo = index; hi = index + count - 1
     c.emit_op_u16(Op::LOCAL_GET, index, 0);
@@ -2201,7 +2201,7 @@ fn build_array_last_index_of(imports: &mut Chunk) -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
-    let last_index_of = imports.add_import("vybe:js-array", "lastIndexOf");
+    let last_index_of = imports.add_import("ecma:array", "lastIndexOf");
     c.emit_op_u16(Op::CALL_IMPORT, last_index_of, 0);
     c.emit(2u8, 0);
     c.emit_op(Op::RETURN, 0);

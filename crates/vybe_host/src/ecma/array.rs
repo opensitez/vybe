@@ -1,6 +1,6 @@
-//! # `vybe:js-array` host handlers
+//! # `ecma:array` host handlers
 //!
-//! Native Rust implementations that satisfy the `vybe:js-array.*`
+//! Native Rust implementations that satisfy the `ecma:array.*`
 //! imports declared in
 //! `crates/vybe_bytecode/src/wasm/js_array_builtins.rs`.
 //!
@@ -44,7 +44,7 @@ fn make_array(elements: Vec<Value>) -> Value {
     Value::Object(Arc::new(Mutex::new(Object::new_array(elements))))
 }
 
-/// Marker property set by `vybe:js-fixedarray.freeze` to forbid
+/// Marker property set by `ecma:fixedarray.freeze` to forbid
 /// length-changing mutations. Mutators check it and no-op rather
 /// than allow the change (spec behavior would be TypeError; we
 /// silently no-op until exception dispatch from host handlers is
@@ -80,14 +80,14 @@ pub fn register(vm: &mut VM) {
 fn register_constructors(vm: &mut VM) {
     // new() -> Array
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "new",
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| make_array(Vec::new())),
     );
 
     // newWithLength(n: i32) -> Array (n-element, null-filled)
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "newWithLength",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let n = args.first().map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
@@ -101,7 +101,7 @@ fn register_constructors(vm: &mut VM) {
     // element. Unlike `new Array(n)` which allocates a length, `Array.of(n)`
     // is always a 1-element array `[n]`.
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "of",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             make_array(args.to_vec())
@@ -115,7 +115,7 @@ fn register_constructors(vm: &mut VM) {
     // `mapFn` is supplied it's invoked as `mapFn(value, index)` via the
     // host's `invoke` callback and the result replaces each element.
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "from",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let mut out = Vec::new();
@@ -158,14 +158,14 @@ fn register_constructors(vm: &mut VM) {
     // compilers emitting calls don't fail to link; behavior will be
     // completed in a later pass.
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "fromAsync",
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| make_array(Vec::new())),
     );
 
     // isArray(v) -> i32
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "isArray",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             Value::I32(if array_of(args, 0).is_some() { 1 } else { 0 })
@@ -183,7 +183,7 @@ fn register_property_access(vm: &mut VM) {
     // / `in` compiled through compiler_common. Accepts plain objects to
     // satisfy those callers without requiring a second import.
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "get",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let key = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -245,7 +245,7 @@ fn register_property_access(vm: &mut VM) {
     // key >= length; stores into plain objects by string key; updates Maps
     // using the canonical Value-keyed IndexMap.
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "set",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let key = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -290,7 +290,7 @@ fn register_property_access(vm: &mut VM) {
     // proposal. Polymorphic callers (e.g. our `__len__` canonical) must
     // type-dispatch before selecting the import.
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "length",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(Value::Object(o)) = args.first() {
@@ -310,7 +310,7 @@ fn register_property_access(vm: &mut VM) {
 
     // setLength(arr, n) -> () — truncate or null-fill extend
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "setLength",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let n = args.get(1).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
@@ -328,9 +328,9 @@ fn register_property_access(vm: &mut VM) {
     // at(arr, i) -> value
     //
     // `Array.prototype.at` — negative indices relative to length, undefined
-    // when OOB. String `.at()` routes through `vybe:js-value.invokeMethod`.
+    // when OOB. String `.at()` routes through `ecma:value.invokeMethod`.
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "at",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let i = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
@@ -360,7 +360,7 @@ fn register_mutators(vm: &mut VM) {
     // spec says TypeError — we'll upgrade to a throw when host-side
     // exception dispatch lands.
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "push",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let val = args.get(1).cloned().unwrap_or(Value::Null);
@@ -388,7 +388,7 @@ fn register_mutators(vm: &mut VM) {
 
     // pop(arr) -> popped_value (undefined if empty or frozen)
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "pop",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
@@ -408,7 +408,7 @@ fn register_mutators(vm: &mut VM) {
 
     // shift(arr) -> first_value (undefined if empty or frozen)
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "shift",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
@@ -431,7 +431,7 @@ fn register_mutators(vm: &mut VM) {
     // Spec: inserts all v_i at the head in order, so `[3,4,5].unshift(1,2)`
     // yields `[1,2,3,4,5]`. Frozen arrays just return the current length.
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "unshift",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
@@ -464,7 +464,7 @@ fn register_mutators(vm: &mut VM) {
     // array. `arr.splice(1, 0, 2, 3)` inserts 2 and 3 at index 1 and
     // deletes 0; args[3..] hold the items.
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "splice",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
@@ -496,7 +496,7 @@ fn register_mutators(vm: &mut VM) {
 
     // reverse(arr) -> self (in-place)
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "reverse",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
@@ -514,7 +514,7 @@ fn register_mutators(vm: &mut VM) {
     // in the Phase B5 iterator-helpers pass when we tackle callbacks
     // uniformly.
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "sort",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
@@ -529,7 +529,7 @@ fn register_mutators(vm: &mut VM) {
 
     // fill(arr, value, start, end) -> self
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "fill",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let val = args.get(1).cloned().unwrap_or(Value::Null);
@@ -552,7 +552,7 @@ fn register_mutators(vm: &mut VM) {
 
     // copyWithin(arr, target, start, end) -> self
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "copyWithin",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let target = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
@@ -581,10 +581,10 @@ fn register_non_mutators(vm: &mut VM) {
     // slice(arr, start, end) -> new_arr
     //
     // Array-only per ECMA-262. String slicing goes through
-    // `vybe:js-value.invokeMethod` (or `wasm:js-string.slice` under the
+    // `ecma:value.invokeMethod` (or `wasm:js-string.slice` under the
     // js-string-builtins proposal when v8 hosts it).
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "slice",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
@@ -605,7 +605,7 @@ fn register_non_mutators(vm: &mut VM) {
 
     // concat(arr, other) -> new_arr
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "concat",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let mut out = Vec::new();
@@ -633,7 +633,7 @@ fn register_non_mutators(vm: &mut VM) {
 
     // indexOf(arr, value, fromIndex) -> i32
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "indexOf",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let needle = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -655,7 +655,7 @@ fn register_non_mutators(vm: &mut VM) {
 
     // lastIndexOf(arr, value, fromIndex) -> i32
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "lastIndexOf",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let needle = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -682,9 +682,9 @@ fn register_non_mutators(vm: &mut VM) {
     // Primary: `Array.prototype.includes` (SameValueZero comparison). Also
     // the landing pad for the compiled `x in y` operator when `y` is a
     // plain object — we check own-property membership for that case.
-    // String `.includes(...)` routes through `vybe:js-value.invokeMethod`.
+    // String `.includes(...)` routes through `ecma:value.invokeMethod`.
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "includes",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let needle = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -726,7 +726,7 @@ fn register_non_mutators(vm: &mut VM) {
 
     // join(arr, sep) -> string
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "join",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let sep = args.get(1).map(|v| format!("{}", v)).unwrap_or_else(|| ",".into());
@@ -749,7 +749,7 @@ fn register_non_mutators(vm: &mut VM) {
 
     // toString(arr) -> string (same as join with default ",")
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "toString",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
@@ -771,7 +771,7 @@ fn register_non_mutators(vm: &mut VM) {
 
     // toLocaleString — same as toString for MVP
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "toLocaleString",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             // Same as toString — real locale-aware conversion lives in
@@ -789,7 +789,7 @@ fn register_non_mutators(vm: &mut VM) {
 
     // flat(arr, depth) -> new_arr
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "flat",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let depth = args.get(1).map(|v| v.as_i32()).unwrap_or(1);
@@ -822,7 +822,7 @@ fn register_non_mutators(vm: &mut VM) {
 
     // toReversed(arr) -> new_arr
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "toReversed",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
@@ -839,7 +839,7 @@ fn register_non_mutators(vm: &mut VM) {
 
     // toSorted(arr, compareFn) -> new_arr
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "toSorted",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
@@ -856,7 +856,7 @@ fn register_non_mutators(vm: &mut VM) {
 
     // with(arr, i, v) -> new_arr
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "with",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let i = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
@@ -890,7 +890,7 @@ fn register_iteration(vm: &mut VM) {
     // upgrade these to real iterator externrefs. MVP returns an Array
     // which satisfies most callers since arrays are iterable.
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "keys",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
@@ -905,7 +905,7 @@ fn register_iteration(vm: &mut VM) {
     );
 
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "values",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
@@ -919,7 +919,7 @@ fn register_iteration(vm: &mut VM) {
     );
 
     vm.register_host_fn(
-        "vybe:js-array",
+        "ecma:array",
         "entries",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
@@ -956,7 +956,7 @@ fn register_iteration(vm: &mut VM) {
     //   - findIndex, findLastIndex: §23.1.3.12 — index of first/last match
     //   - flatMap: §23.1.3.15 — map + flatten one level
 
-    vm.register_host_fn("vybe:js-array", "forEach",
+    vm.register_host_fn("ecma:array", "forEach",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
@@ -976,7 +976,7 @@ fn register_iteration(vm: &mut VM) {
             Value::Undefined
         }));
 
-    vm.register_host_fn("vybe:js-array", "map",
+    vm.register_host_fn("ecma:array", "map",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
@@ -999,7 +999,7 @@ fn register_iteration(vm: &mut VM) {
             make_array(Vec::new())
         }));
 
-    vm.register_host_fn("vybe:js-array", "filter",
+    vm.register_host_fn("ecma:array", "filter",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
@@ -1023,7 +1023,7 @@ fn register_iteration(vm: &mut VM) {
             make_array(Vec::new())
         }));
 
-    vm.register_host_fn("vybe:js-array", "reduce",
+    vm.register_host_fn("ecma:array", "reduce",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             let initial_provided = args.len() > 2 && !matches!(args.get(2), Some(Value::Undefined) | None);
@@ -1060,7 +1060,7 @@ fn register_iteration(vm: &mut VM) {
             acc
         }));
 
-    vm.register_host_fn("vybe:js-array", "reduceRight",
+    vm.register_host_fn("ecma:array", "reduceRight",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             let initial_provided = args.len() > 2 && !matches!(args.get(2), Some(Value::Undefined) | None);
@@ -1096,7 +1096,7 @@ fn register_iteration(vm: &mut VM) {
             acc
         }));
 
-    vm.register_host_fn("vybe:js-array", "some",
+    vm.register_host_fn("ecma:array", "some",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
@@ -1118,7 +1118,7 @@ fn register_iteration(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    vm.register_host_fn("vybe:js-array", "every",
+    vm.register_host_fn("ecma:array", "every",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
@@ -1140,7 +1140,7 @@ fn register_iteration(vm: &mut VM) {
             Value::I32(1) // spec: empty array → every returns true
         }));
 
-    vm.register_host_fn("vybe:js-array", "find",
+    vm.register_host_fn("ecma:array", "find",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
@@ -1162,7 +1162,7 @@ fn register_iteration(vm: &mut VM) {
             Value::Undefined
         }));
 
-    vm.register_host_fn("vybe:js-array", "findIndex",
+    vm.register_host_fn("ecma:array", "findIndex",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
@@ -1184,7 +1184,7 @@ fn register_iteration(vm: &mut VM) {
             Value::I32(-1)
         }));
 
-    vm.register_host_fn("vybe:js-array", "findLast",
+    vm.register_host_fn("ecma:array", "findLast",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
@@ -1206,7 +1206,7 @@ fn register_iteration(vm: &mut VM) {
             Value::Undefined
         }));
 
-    vm.register_host_fn("vybe:js-array", "findLastIndex",
+    vm.register_host_fn("ecma:array", "findLastIndex",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
@@ -1228,7 +1228,7 @@ fn register_iteration(vm: &mut VM) {
             Value::I32(-1)
         }));
 
-    vm.register_host_fn("vybe:js-array", "flatMap",
+    vm.register_host_fn("ecma:array", "flatMap",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
@@ -1266,7 +1266,7 @@ fn register_iteration(vm: &mut VM) {
     // null-prototype Object with string keys; `groupToMap` returns a
     // Map keyed by any value.
 
-    vm.register_host_fn("vybe:js-array", "group",
+    vm.register_host_fn("ecma:array", "group",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             use indexmap::IndexMap;
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
@@ -1294,7 +1294,7 @@ fn register_iteration(vm: &mut VM) {
             Value::Object(Arc::new(Mutex::new(out)))
         }));
 
-    vm.register_host_fn("vybe:js-array", "groupToMap",
+    vm.register_host_fn("ecma:array", "groupToMap",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             use indexmap::IndexMap;
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
@@ -1326,7 +1326,7 @@ fn register_iteration(vm: &mut VM) {
         }));
 
     // toSpliced — non-mutating splice returning a new array.
-    vm.register_host_fn("vybe:js-array", "toSpliced",
+    vm.register_host_fn("ecma:array", "toSpliced",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
             let del = args.get(2).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);

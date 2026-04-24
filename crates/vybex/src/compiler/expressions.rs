@@ -457,7 +457,7 @@ impl Compiler {
                                 // import. Common-backed constructors create
                                 // raw JS-shape objects (Array via
                                 // `collections.new`, Object via
-                                // `vybe:js-object/new`, etc.) — the stamp
+                                // `ecma:object/new`, etc.) — the stamp
                                 // adds the .NET metadata runtime dispatch
                                 // needs without per-class host fns.
                                 // Stack: [obj] → [obj, name] → [obj]
@@ -520,17 +520,17 @@ impl Compiler {
             ExprKind::Array(elements) => {
                 // Array literals funnel through `common::collections` so
                 // every language and every array-literal site emits the
-                // same import shape. Changing the provider (vybe:js-array
+                // same import shape. Changing the provider (ecma:array
                 // → vybe:array → polyfill) happens in ONE file, not here.
                 //
                 // Dispatch on whether ANY element has an explicit key:
-                //   - no keys  → `vybe:js-array` path (integer-indexed,
+                //   - no keys  → `ecma:array` path (integer-indexed,
                 //                fast, array-y semantics)
-                //   - any key  → `vybe:js-map` path (IndexMap<Value,Value>,
+                //   - any key  → `ecma:map` path (IndexMap<Value,Value>,
                 //                PHP-shaped associative: mixed int + string
                 //                keys preserved in insertion order). Once
                 //                a Map, accessors `$a[$k]` use
-                //                `vybe:js-array.get/.set` which now
+                //                `ecma:array.get/.set` which now
                 //                dispatch polymorphically on Map.
                 let line = self.line;
                 let has_keys = elements.iter().any(|e| e.key.is_some());
@@ -607,7 +607,7 @@ impl Compiler {
                 for elem in elements { self.compile_expr(elem)?; }
                 // Allocate N consecutive slots; common::collections::emit_pack_n
                 // stashes stack values and re-pushes into a fresh array —
-                // same vybe:js-array.* surface as literals.
+                // same ecma:array.* surface as literals.
                 let base = if n == 0 { 0 } else {
                     let mut first = 0u16;
                     for i in 0..n {
@@ -666,7 +666,7 @@ impl Compiler {
                                 self.emit(Op::DROP);
                             } else {
                                 // Dynamic key — emit_set is
-                                // `vybe:js-array.set(obj, key, value) → null`
+                                // `ecma:array.set(obj, key, value) → null`
                                 // so we must push key BEFORE value. The
                                 // previous impl pushed value then key,
                                 // causing `{ 1: "one" }` to be stored
@@ -756,7 +756,7 @@ impl Compiler {
                             self.emit(Op::DROP);
                         }
                         ObjectProperty::Computed { key, value } => {
-                            // vybe:js-array.set expects [obj, key, val] → null
+                            // ecma:array.set expects [obj, key, val] → null
                             self.emit(Op::DUP);
                             self.compile_expr(key)?;
                             self.emit(Op::DUP); // save key for __keys
@@ -1009,7 +1009,7 @@ impl Compiler {
                         cond_skip = Some(self.emit_jump(Op::BR_IF_FALSE));
                     }
 
-                    // Push element via vybe:js-array.push.
+                    // Push element via ecma:array.push.
                     self.emit_u16(Op::LOCAL_GET, result_slot);
                     self.compile_expr(element)?;
                     let l = self.line;

@@ -20,7 +20,7 @@ pub struct Target {
     pub has_vybe_host: bool,
     /// Whether WASI imports are available (filesystem, CLI, etc).
     pub has_wasi: bool,
-    /// Available host module prefixes (e.g., "vybe:js-math", "vybe:types").
+    /// Available host module prefixes (e.g., "ecma:math", "vybe:types").
     pub available_modules: Vec<String>,
 }
 
@@ -32,7 +32,7 @@ impl Target {
             has_vybe_host: true,
             has_wasi: true,
             available_modules: vec![
-                "vybe:js-math".into(), "vybe:string".into(), "vybe:array".into(),
+                "ecma:math".into(), "vybe:string".into(), "vybe:array".into(),
                 "vybe:types".into(), "vybe:convert".into(), "vybe:object".into(),
                 "vybe:rt".into(), "vybe:collections".into(), "vybe:json".into(),
                 "vybe:regex".into(), "vybe:crypto".into(),

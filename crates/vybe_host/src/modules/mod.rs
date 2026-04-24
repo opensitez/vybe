@@ -10,7 +10,6 @@
 //!   (thread.spawn / thread.join / atomics) emitted by compiler_common.
 
 pub mod console;
-pub mod math;
 pub mod string;
 pub mod array;
 pub mod convert;
@@ -34,20 +33,11 @@ pub mod data;
 pub mod drawing;
 pub mod canvas;
 pub mod rt;
-pub mod js_builtins;
 pub mod http_server;
-// Dynamic-runtime Phase B3 — JS-canonical collection host handlers.
-// Each submodule provides the Rust side of a `wasm:js-*` import set.
-pub mod js_array_builtins;
-pub mod js_map_builtins;
-pub mod js_object_builtins;
-pub mod js_weakmap_builtins;
-pub mod js_arraybuffer_builtins;
-pub mod js_typedarray_builtins;
-pub mod js_json_builtins;
-pub mod js_structured_clone;
-pub mod js_fixedarray_builtins;
-pub mod js_invoke;
+// Note: every `ecma:*` / `wasm:*` host module lives in the sibling
+// `crate::ecma` and `crate::wasm` folders (not under `modules/`). See
+// those `mod.rs` files for the full list. `register_with_capabilities`
+// below calls `crate::ecma::register(vm)` and `crate::wasm::register(vm)`.
 
 use vybe_bytecode::{VM, Value, HostContext};
 use std::collections::HashSet;
@@ -467,8 +457,11 @@ pub fn register_all(vm: &mut VM) {
 
 /// Register modules based on granted capabilities.
 pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
-    // Always registered — pure computation, no security risk
-    math::register(vm);
+    // Always registered — pure computation, no security risk.
+    // Note: `ecma:math` moved to `crate::ecma::math` (registered below
+    // via `crate::ecma::register`). Legacy `vybe:string` / `vybe:json`
+    // / `vybe:object` / etc. still live under `modules/` until their
+    // callers migrate to `ecma:*`.
     string::register(vm);
     array::register(vm);
     convert::register(vm);
@@ -482,17 +475,13 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
     data::register(vm);
     drawing::register(vm);
     rt::register(vm);
-    js_builtins::register(vm);
-    js_array_builtins::register(vm);
-    js_map_builtins::register(vm);
-    js_object_builtins::register(vm);
-    js_weakmap_builtins::register(vm);
-    js_arraybuffer_builtins::register(vm);
-    js_typedarray_builtins::register(vm);
-    js_json_builtins::register(vm);
-    js_structured_clone::register(vm);
-    js_fixedarray_builtins::register(vm);
-    js_invoke::register(vm);
+
+    // ecma:* — JS runtime (ECMA-262 mirror). All pure computation
+    // except `ecma:date`, which is gated under Clock below.
+    crate::ecma::register(vm);
+    // wasm:* — real WebAssembly CG proposal host imports
+    // (js-string-builtins + stage-1 js-primitive-builtins).
+    crate::wasm::register(vm);
 
     // Capability-gated modules
     if caps.has(Capability::Console) {
@@ -500,6 +489,8 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
     }
     if caps.has(Capability::Clock) {
         clock::register(vm);
+        // ecma:date reads the system clock — gated under Clock.
+        crate::ecma::date::register(vm);
     }
     if caps.has(Capability::Random) {
         random::register(vm);

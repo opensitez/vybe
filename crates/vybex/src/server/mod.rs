@@ -57,7 +57,17 @@ async fn run(config: ServeConfig) -> Result<(), Box<dyn std::error::Error + Send
     eprintln!("[vybex] serving {} on http://{}", config.root.display(), addr);
     eprintln!("[vybex] press Ctrl+C to stop");
 
-    let shared = std::sync::Arc::new(config);
+    // Shutdown notification shared with every in-flight request handler.
+    // On Ctrl+C we flip this; per-request timeouts race against it so hung
+    // scripts are released with a 503 immediately instead of blocking the
+    // drain for up to `timeout_secs`.
+    let shutdown = std::sync::Arc::new(tokio::sync::Notify::new());
+    let config_with_shutdown = {
+        let mut c = config;
+        c.shutdown = Some(std::sync::Arc::clone(&shutdown));
+        c
+    };
+    let shared = std::sync::Arc::new(config_with_shutdown);
 
     // Graceful shutdown: drain in-flight on Ctrl+C.
     let graceful = hyper_util::server::graceful::GracefulShutdown::new();
@@ -82,18 +92,22 @@ async fn run(config: ServeConfig) -> Result<(), Box<dyn std::error::Error + Send
                 });
             }
             _ = &mut shutdown_signal => {
-                eprintln!("[vybex] Ctrl+C received, draining in-flight requests…");
+                eprintln!("[vybex] Ctrl+C received, aborting in-flight requests…");
+                shutdown.notify_waiters();
                 break;
             }
         }
     }
 
+    // Keep the drain tight. Any request that hasn't already released on
+    // the shutdown notify gets ~2s before we hard-exit. Dev servers
+    // prioritise fast Ctrl+C over graceful completion.
     tokio::select! {
         _ = graceful.shutdown() => {
             eprintln!("[vybex] all connections drained");
         }
-        _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {
-            eprintln!("[vybex] drain timeout; exiting");
+        _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+            eprintln!("[vybex] drain timeout after 2s; forcing exit");
         }
     }
 

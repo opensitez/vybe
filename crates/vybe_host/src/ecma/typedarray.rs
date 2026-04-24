@@ -1,8 +1,10 @@
-//! # `wasm:js-{int8,uint8,uint8clamped,int16,uint16,int32,uint32,float32,float64,bigint64,biguint64}array`
+//! # `ecma:{int8,uint8,uint8clamped,int16,uint16,int32,uint32,float32,float64,bigint64,biguint64}array`
 //!
-//! Native Rust impls satisfying the imports declared in
-//! `crates/vybe_bytecode/src/wasm/js_typedarray_builtins.rs` per
-//! ECMA-262 §23.2.
+//! Native Rust impls of the ECMA-262 §23.2 TypedArray family. **Not in
+//! any WebAssembly CG proposal** — named `ecma:*` per the project
+//! convention. The only real `wasm:js-*` names are `wasm:js-string`
+//! (merged) and stage-1 `wasm:js-{number,boolean,undefined,symbol,bigint}`;
+//! everything else is `ecma:*`. See `JS_BUILTIN_CONVENTIONS.md`.
 //!
 //! ## Storage (Phase B4 — packed-byte views)
 //!
@@ -46,17 +48,17 @@ use vybe_bytecode::VM;
 /// Ordered list of all 11 typed-array variants + their `wasm:js-*`
 /// module names. The main `register` loop installs handlers for each.
 const VARIANTS: &[(TypedElemKind, &str)] = &[
-    (TypedElemKind::I8,        "vybe:js-int8array"),
-    (TypedElemKind::U8,        "vybe:js-uint8array"),
-    (TypedElemKind::U8Clamped, "vybe:js-uint8clamped"),
-    (TypedElemKind::I16,       "vybe:js-int16array"),
-    (TypedElemKind::U16,       "vybe:js-uint16array"),
-    (TypedElemKind::I32,       "vybe:js-int32array"),
-    (TypedElemKind::U32,       "vybe:js-uint32array"),
-    (TypedElemKind::F32,       "vybe:js-float32array"),
-    (TypedElemKind::F64,       "vybe:js-float64array"),
-    (TypedElemKind::BigI64,    "wasm:js-bigint64array"),
-    (TypedElemKind::BigU64,    "vybe:js-biguint64array"),
+    (TypedElemKind::I8,        "ecma:int8array"),
+    (TypedElemKind::U8,        "ecma:uint8array"),
+    (TypedElemKind::U8Clamped, "ecma:uint8clamped"),
+    (TypedElemKind::I16,       "ecma:int16array"),
+    (TypedElemKind::U16,       "ecma:uint16array"),
+    (TypedElemKind::I32,       "ecma:int32array"),
+    (TypedElemKind::U32,       "ecma:uint32array"),
+    (TypedElemKind::F32,       "ecma:float32array"),
+    (TypedElemKind::F64,       "ecma:float64array"),
+    (TypedElemKind::BigI64,    "ecma:bigint64array"),
+    (TypedElemKind::BigU64,    "ecma:biguint64array"),
 ];
 
 fn zero_value(elem: TypedElemKind) -> Value {

@@ -77,7 +77,7 @@ impl Compiler {
             // Build array from slots rest_slot..rest_slot+16, stopping at null.
             // Pattern per slot: if local[N] is null → jump to done; else arr.push(local[N])
             // Build rest array via `common::collections` so the provider
-            // is swappable in one place. `vybe:js-array.push` returns
+            // is swappable in one place. `ecma:array.push` returns
             // new_length (ECMA-262), not arr, so we stash arr in a
             // scope-local and reload each iteration.
             let line = self.line;

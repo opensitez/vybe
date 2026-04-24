@@ -111,7 +111,7 @@ pub fn emit_instanceof_chain(chunks: &mut [Chunk], current: usize, this_slot: u1
     chunks[current].patch_jump(skip_jump);                         // skip lands here; [this, array]
 
     // Push class_name onto array while preserving array on stack.
-    // vybe:js-array.push is [arr, val] → [new_length], so DUP the array
+    // ecma:array.push is [arr, val] → [new_length], so DUP the array
     // first: [this, array] → [this, array, array] → push → [this, array, len] → drop.
     chunks[current].emit_op(Op::DUP, line);                        // [this, array, array]
     let name_const = chunks[current].add_constant(Value::String(Arc::from(class_name)));

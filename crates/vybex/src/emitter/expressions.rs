@@ -39,7 +39,7 @@ pub fn emit_i32_not(chunk: &mut Chunk, line: u32) {
 /// Emit f64 modulo via stdlib function `__vybe_fmod`.
 /// Pure bytecode implementation: a % b = a - trunc(a/b) * b.
 /// Host can override with native fmod for performance.
-/// `import_idx` is the resolved import index for `vybe:js-math:fmod`.
+/// `import_idx` is the resolved import index for `ecma:math:fmod`.
 /// Stack: [a, b] → [result]
 pub fn emit_f64_mod_with_import(chunk: &mut Chunk, import_idx: u16, line: u32) {
     chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
@@ -50,7 +50,7 @@ pub fn emit_f64_mod_with_import(chunk: &mut Chunk, import_idx: u16, line: u32) {
 /// Use only when imports go on the same chunk as the code (old compilers).
 /// Stack: [a, b] → [result]
 pub fn emit_f64_mod(chunk: &mut Chunk, line: u32) {
-    let idx = chunk.add_import("vybe:js-math", "fmod");
+    let idx = chunk.add_import("ecma:math", "fmod");
     emit_f64_mod_with_import(chunk, idx, line);
 }
 

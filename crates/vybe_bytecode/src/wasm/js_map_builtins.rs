@@ -1,11 +1,11 @@
-//! # vybe:js-map builtins
+//! # ecma:map builtins
 //!
 //! Host imports for `Map.prototype.*` and `Map.*` per ECMA-262 §24.1.
 //! See `JS_BUILTIN_CONVENTIONS.md` for marshaling rules.
 
 use super::encoding::*;
 
-pub const MODULE: &str = "vybe:js-map";
+pub const MODULE: &str = "ecma:map";
 
 pub const IMPORTS: &[&str] = &[
     "new",       // new Map()

@@ -46,7 +46,7 @@ warn            = { emit = "print",                         min_args = 1, max_ar
 "Integer"       = { emit = "host:vybe:convert:cint",        min_args = 1, max_args = 2 }
 "Float"         = { emit = "host:vybe:convert:cdbl",        min_args = 1, max_args = 1 }
 "String"        = { emit = "stdlib:tostring",                min_args = 1, max_args = 1 }
-"Array"         = { emit = "host:vybe:js-array:from",           min_args = 1, max_args = 1 }
+"Array"         = { emit = "host:ecma:array:from",           min_args = 1, max_args = 1 }
 
 # ── Math (WASM opcodes) ─────────────────────────────────────────────────────
 
@@ -54,13 +54,13 @@ abs             = { emit = "opcode:f64_abs",                min_args = 1, max_ar
 rand            = { emit = "host:vybe:random:random",       min_args = 0, max_args = 1 }
 srand           = { emit = "noop",                          min_args = 0, max_args = 1 }
 "Math.sqrt"     = { emit = "opcode:f64_sqrt",               min_args = 1, max_args = 1 }
-"Math.sin"      = { emit = "host:vybe:js-math:sin",            min_args = 1, max_args = 1 }
-"Math.cos"      = { emit = "host:vybe:js-math:cos",            min_args = 1, max_args = 1 }
-"Math.tan"      = { emit = "host:vybe:js-math:tan",            min_args = 1, max_args = 1 }
-"Math.log"      = { emit = "host:vybe:js-math:log",            min_args = 1, max_args = 2 }
-"Math.log2"     = { emit = "host:vybe:js-math:log2",           min_args = 1, max_args = 1 }
-"Math.log10"    = { emit = "host:vybe:js-math:log10",          min_args = 1, max_args = 1 }
-"Math.exp"      = { emit = "host:vybe:js-math:exp",            min_args = 1, max_args = 1 }
+"Math.sin"      = { emit = "host:ecma:math:sin",            min_args = 1, max_args = 1 }
+"Math.cos"      = { emit = "host:ecma:math:cos",            min_args = 1, max_args = 1 }
+"Math.tan"      = { emit = "host:ecma:math:tan",            min_args = 1, max_args = 1 }
+"Math.log"      = { emit = "host:ecma:math:log",            min_args = 1, max_args = 2 }
+"Math.log2"     = { emit = "host:ecma:math:log2",           min_args = 1, max_args = 1 }
+"Math.log10"    = { emit = "host:ecma:math:log10",          min_args = 1, max_args = 1 }
+"Math.exp"      = { emit = "host:ecma:math:exp",            min_args = 1, max_args = 1 }
 "Math.floor"    = { emit = "opcode:f64_floor",              min_args = 1, max_args = 1 }
 "Math.ceil"     = { emit = "opcode:f64_ceil",               min_args = 1, max_args = 1 }
 
@@ -115,7 +115,7 @@ to_s            = { emit = "stdlib:tostring",               min_args = 0, max_ar
 to_str          = { emit = "stdlib:tostring",               min_args = 0, max_args = 0 }
 to_i            = { emit = "host:vybe:convert:cint",        min_args = 0, max_args = 0 }
 to_f            = { emit = "host:vybe:convert:cdbl",        min_args = 0, max_args = 0 }
-to_a            = { emit = "host:vybe:js-array:from",          min_args = 0, max_args = 0 }
+to_a            = { emit = "host:ecma:array:from",          min_args = 0, max_args = 0 }
 to_sym          = { emit = "stdlib:tostring",               min_args = 0, max_args = 0 }
 inspect         = { emit = "stdlib:tostring",               min_args = 0, max_args = 0 }
 freeze          = { emit = "noop_receiver",                 min_args = 0, max_args = 0 }
@@ -153,7 +153,7 @@ shift           = { emit = "common:collections.shift",            min_args = 0, 
 unshift         = { emit = "intrinsic:array_unshift",       min_args = 1, max_args = 255 }
 prepend         = { emit = "intrinsic:array_unshift",       min_args = 1, max_args = 255 }
 # first/last normalized to Index(expr, 0/-1) in walker — pure bytecode
-flatten         = { emit = "host:vybe:js-array:flatten",       min_args = 0, max_args = 1 }
+flatten         = { emit = "host:ecma:array:flatten",       min_args = 0, max_args = 1 }
 compact         = { emit = "host:vybe:array:compact",       min_args = 0, max_args = 0 }
 uniq            = { emit = "host:vybe:array:uniq",          min_args = 0, max_args = 0 }
 min             = { emit = "host:vybe:array:min",           min_args = 0, max_args = 0 }
@@ -197,17 +197,17 @@ abs             = { emit = "opcode:f64_abs",                min_args = 0, max_ar
 round           = { emit = "opcode:f64_nearest",            min_args = 0, max_args = 1 }
 floor           = { emit = "opcode:f64_floor",              min_args = 0, max_args = 0 }
 ceil            = { emit = "opcode:f64_ceil",               min_args = 0, max_args = 0 }
-"even?"         = { emit = "host:vybe:js-math:isEven",         min_args = 0, max_args = 0 }
-"odd?"          = { emit = "host:vybe:js-math:isOdd",          min_args = 0, max_args = 0 }
-"zero?"         = { emit = "host:vybe:js-math:isZero",         min_args = 0, max_args = 0 }
-"positive?"     = { emit = "host:vybe:js-math:isPositive",     min_args = 0, max_args = 0 }
-"negative?"     = { emit = "host:vybe:js-math:isNegative",     min_args = 0, max_args = 0 }
-"between?"      = { emit = "host:vybe:js-math:between",        min_args = 2, max_args = 2 }
-clamp           = { emit = "host:vybe:js-math:clamp",          min_args = 2, max_args = 2 }
-gcd             = { emit = "host:vybe:js-math:gcd",            min_args = 1, max_args = 1 }
-lcm             = { emit = "host:vybe:js-math:lcm",            min_args = 1, max_args = 1 }
-digits          = { emit = "host:vybe:js-math:digits",         min_args = 0, max_args = 1 }
-divmod          = { emit = "host:vybe:js-math:divmod",         min_args = 1, max_args = 1 }
+"even?"         = { emit = "host:ecma:math:isEven",         min_args = 0, max_args = 0 }
+"odd?"          = { emit = "host:ecma:math:isOdd",          min_args = 0, max_args = 0 }
+"zero?"         = { emit = "host:ecma:math:isZero",         min_args = 0, max_args = 0 }
+"positive?"     = { emit = "host:ecma:math:isPositive",     min_args = 0, max_args = 0 }
+"negative?"     = { emit = "host:ecma:math:isNegative",     min_args = 0, max_args = 0 }
+"between?"      = { emit = "host:ecma:math:between",        min_args = 2, max_args = 2 }
+clamp           = { emit = "host:ecma:math:clamp",          min_args = 2, max_args = 2 }
+gcd             = { emit = "host:ecma:math:gcd",            min_args = 1, max_args = 1 }
+lcm             = { emit = "host:ecma:math:lcm",            min_args = 1, max_args = 1 }
+digits          = { emit = "host:ecma:math:digits",         min_args = 0, max_args = 1 }
+divmod          = { emit = "host:ecma:math:divmod",         min_args = 1, max_args = 1 }
 
 # ── File operations ──────────────────────────────────────────────────────────
 
@@ -252,7 +252,7 @@ map_size = "dict_keys, array_length"
 [[esm_default]]
 kind = "namespace"
 alias = "Math"
-module = "vybe:js-math"
+module = "ecma:math"
 
 [[esm_default]]
 kind = "namespace"

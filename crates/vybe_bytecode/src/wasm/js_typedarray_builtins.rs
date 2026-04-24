@@ -1,19 +1,19 @@
-//! # vybe:js-typedarray-* builtins
+//! # ecma:typedarray-* builtins
 //!
 //! Host imports for the 11 typed-array variants per ECMA-262 §23.2.
 //!
 //! Each variant gets its own module name:
-//!   - `vybe:js-int8array`      (`Int8Array`)
-//!   - `vybe:js-uint8array`     (`Uint8Array`)
-//!   - `vybe:js-uint8clamped`   (`Uint8ClampedArray`)
-//!   - `vybe:js-int16array`     (`Int16Array`)
-//!   - `vybe:js-uint16array`    (`Uint16Array`)
-//!   - `vybe:js-int32array`     (`Int32Array`)
-//!   - `vybe:js-uint32array`    (`Uint32Array`)
-//!   - `vybe:js-float32array`   (`Float32Array`)
-//!   - `vybe:js-float64array`   (`Float64Array`)
+//!   - `ecma:int8array`      (`Int8Array`)
+//!   - `ecma:uint8array`     (`Uint8Array`)
+//!   - `ecma:uint8clamped`   (`Uint8ClampedArray`)
+//!   - `ecma:int16array`     (`Int16Array`)
+//!   - `ecma:uint16array`    (`Uint16Array`)
+//!   - `ecma:int32array`     (`Int32Array`)
+//!   - `ecma:uint32array`    (`Uint32Array`)
+//!   - `ecma:float32array`   (`Float32Array`)
+//!   - `ecma:float64array`   (`Float64Array`)
 //!   - `wasm:js-bigint64array`  (`BigInt64Array`)
-//!   - `vybe:js-biguint64array` (`BigUint64Array`)
+//!   - `ecma:biguint64array` (`BigUint64Array`)
 //!
 //! All variants share the same method surface; only the element type
 //! differs. Signatures below are generic on the element type, with
@@ -53,17 +53,17 @@ impl TypedElem {
     /// Returns (module_name, bytes_per_element, value_wasm_type).
     pub fn info(self) -> (&'static str, u32, u8) {
         match self {
-            TypedElem::I8       => ("vybe:js-int8array",     1, TYPE_I32),
-            TypedElem::U8       => ("vybe:js-uint8array",    1, TYPE_I32),
-            TypedElem::U8Clamped=> ("vybe:js-uint8clamped",  1, TYPE_I32),
-            TypedElem::I16      => ("vybe:js-int16array",    2, TYPE_I32),
-            TypedElem::U16      => ("vybe:js-uint16array",   2, TYPE_I32),
-            TypedElem::I32      => ("vybe:js-int32array",    4, TYPE_I32),
-            TypedElem::U32      => ("vybe:js-uint32array",   4, TYPE_I32),
-            TypedElem::F32      => ("vybe:js-float32array",  4, TYPE_F32),
-            TypedElem::F64      => ("vybe:js-float64array",  8, TYPE_F64),
+            TypedElem::I8       => ("ecma:int8array",     1, TYPE_I32),
+            TypedElem::U8       => ("ecma:uint8array",    1, TYPE_I32),
+            TypedElem::U8Clamped=> ("ecma:uint8clamped",  1, TYPE_I32),
+            TypedElem::I16      => ("ecma:int16array",    2, TYPE_I32),
+            TypedElem::U16      => ("ecma:uint16array",   2, TYPE_I32),
+            TypedElem::I32      => ("ecma:int32array",    4, TYPE_I32),
+            TypedElem::U32      => ("ecma:uint32array",   4, TYPE_I32),
+            TypedElem::F32      => ("ecma:float32array",  4, TYPE_F32),
+            TypedElem::F64      => ("ecma:float64array",  8, TYPE_F64),
             TypedElem::BigI64   => ("wasm:js-bigint64array", 8, TYPE_I64),
-            TypedElem::BigU64   => ("vybe:js-biguint64array",8, TYPE_I64),
+            TypedElem::BigU64   => ("ecma:biguint64array",8, TYPE_I64),
         }
     }
 

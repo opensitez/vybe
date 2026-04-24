@@ -1,4 +1,4 @@
-//! # vybe:js-arraybuffer, vybe:js-sharedarraybuffer, vybe:js-dataview
+//! # ecma:arraybuffer, ecma:sharedarraybuffer, ecma:dataview
 //!
 //! Host imports for:
 //!   - `ArrayBuffer.*` / `ArrayBuffer.prototype.*` per ECMA-262 §25.1
@@ -14,7 +14,7 @@ use super::encoding::*;
 
 // ── ArrayBuffer ──────────────────────────────────────────────────────
 
-pub const ARRAYBUFFER_MODULE: &str = "vybe:js-arraybuffer";
+pub const ARRAYBUFFER_MODULE: &str = "ecma:arraybuffer";
 
 pub const ARRAYBUFFER_IMPORTS: &[&str] = &[
     "new",                       // new ArrayBuffer(byteLength)
@@ -79,7 +79,7 @@ pub fn write_arraybuffer_signature(out: &mut Vec<u8>, name: &str) -> bool {
 
 // ── SharedArrayBuffer ────────────────────────────────────────────────
 
-pub const SHAREDARRAYBUFFER_MODULE: &str = "vybe:js-sharedarraybuffer";
+pub const SHAREDARRAYBUFFER_MODULE: &str = "ecma:sharedarraybuffer";
 
 pub const SHAREDARRAYBUFFER_IMPORTS: &[&str] = &[
     "new",                       // new SharedArrayBuffer(byteLength)
@@ -127,7 +127,7 @@ pub fn write_sharedarraybuffer_signature(out: &mut Vec<u8>, name: &str) -> bool 
 
 // ── DataView ─────────────────────────────────────────────────────────
 
-pub const DATAVIEW_MODULE: &str = "vybe:js-dataview";
+pub const DATAVIEW_MODULE: &str = "ecma:dataview";
 
 pub const DATAVIEW_IMPORTS: &[&str] = &[
     "new",                       // new DataView(buffer, byteOffset?, byteLength?)

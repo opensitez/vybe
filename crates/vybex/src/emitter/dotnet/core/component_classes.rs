@@ -7,7 +7,7 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
     static EXPORTS: LazyLock<Vec<DotnetClassExport>> = LazyLock::new(|| {
         vec![
             // Phase 7b: List<T>'s runtime method dispatch goes through
-            // `vybe:js-array/*` (see vybe_host/src/builtin_types.rs).
+            // `ecma:array/*` (see vybe_host/src/builtin_types.rs).
             // The constructor stays on `vybe:types/listNew` because
             // that's where `__get_count` / `__get_length` auto-getters
             // get installed so VB `list.Count` (property-style read)
@@ -400,7 +400,7 @@ fn collection_class(
 /// primitives (Array, Map, Set) — `List<T>` → `collections.*`,
 /// `Dictionary<K,V>` → `dict.*`, etc. The provider of the primitive
 /// is one-file-swappable per the `feedback_compiler_common_is_THE_emitter`
-/// rule; rewiring `collections.push` from `vybe:js-array.push` to a
+/// rule; rewiring `collections.push` from `ecma:array.push` to a
 /// polyfill happens in `compiler_common/collections.rs` alone.
 fn collection_class_common(
     interface: &'static str,

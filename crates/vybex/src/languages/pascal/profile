@@ -59,12 +59,12 @@ max           = { emit = "opcode:f64_max",                 min_args = 2, max_arg
 
 # ── Math — host calls ───────────────────────────────────────────────────────
 
-sin           = { emit = "host:vybe:js-math:sin",             min_args = 1, max_args = 1 }
-cos           = { emit = "host:vybe:js-math:cos",             min_args = 1, max_args = 1 }
-arctan        = { emit = "host:vybe:js-math:atan",            min_args = 1, max_args = 1 }
-exp           = { emit = "host:vybe:js-math:exp",             min_args = 1, max_args = 1 }
-ln            = { emit = "host:vybe:js-math:log",             min_args = 1, max_args = 1 }
-power         = { emit = "host:vybe:js-math:pow",             min_args = 2, max_args = 2 }
+sin           = { emit = "host:ecma:math:sin",             min_args = 1, max_args = 1 }
+cos           = { emit = "host:ecma:math:cos",             min_args = 1, max_args = 1 }
+arctan        = { emit = "host:ecma:math:atan",            min_args = 1, max_args = 1 }
+exp           = { emit = "host:ecma:math:exp",             min_args = 1, max_args = 1 }
+ln            = { emit = "host:ecma:math:log",             min_args = 1, max_args = 1 }
+power         = { emit = "host:ecma:math:pow",             min_args = 2, max_args = 2 }
 random        = { emit = "host:vybe:random:random",        min_args = 0, max_args = 0 }
 randomize     = { emit = "noop",                           min_args = 0, max_args = 0 }
 
@@ -130,10 +130,10 @@ typename      = { emit = "intrinsic:classname",            min_args = 1, max_arg
 
 # ── Array operations ─────────────────────────────────────────────────────────
 
-setlength     = { emit = "host:vybe:js-array:newWithLength",  min_args = 2, max_args = 2 }
-append        = { emit = "host:vybe:js-array:push",           min_args = 2, max_args = 2 }
+setlength     = { emit = "host:ecma:array:newWithLength",  min_args = 2, max_args = 2 }
+append        = { emit = "host:ecma:array:push",           min_args = 2, max_args = 2 }
 sort          = { emit = "stdlib:sort_in_place",          min_args = 1, max_args = 1 }
-reverse       = { emit = "host:vybe:js-array:reverse",        min_args = 1, max_args = 1 }
+reverse       = { emit = "host:ecma:array:reverse",        min_args = 1, max_args = 1 }
 
 # ── Object lifecycle ─────────────────────────────────────────────────────────
 

@@ -41,16 +41,16 @@ print               = { emit = "print",                          min_args = 1, m
 "math.sqrt"         = { emit = "opcode:f64_sqrt",                min_args = 1, max_args = 1 }
 "math.min"          = { emit = "opcode:f64_min",                 min_args = 2, max_args = 2 }
 "math.max"          = { emit = "opcode:f64_max",                 min_args = 2, max_args = 2 }
-"math.pow"          = { emit = "host:vybe:js-math:pow",             min_args = 2, max_args = 2 }
-"math.sin"          = { emit = "host:vybe:js-math:sin",             min_args = 1, max_args = 1 }
-"math.cos"          = { emit = "host:vybe:js-math:cos",             min_args = 1, max_args = 1 }
-"math.tan"          = { emit = "host:vybe:js-math:tan",             min_args = 1, max_args = 1 }
-"math.asin"         = { emit = "host:vybe:js-math:asin",            min_args = 1, max_args = 1 }
-"math.acos"         = { emit = "host:vybe:js-math:acos",            min_args = 1, max_args = 1 }
-"math.atan"         = { emit = "host:vybe:js-math:atan",            min_args = 1, max_args = 1 }
-"math.atan2"        = { emit = "host:vybe:js-math:atan2",           min_args = 2, max_args = 2 }
-"math.exp"          = { emit = "host:vybe:js-math:exp",             min_args = 1, max_args = 1 }
-"math.log"          = { emit = "host:vybe:js-math:log",             min_args = 1, max_args = 1 }
+"math.pow"          = { emit = "host:ecma:math:pow",             min_args = 2, max_args = 2 }
+"math.sin"          = { emit = "host:ecma:math:sin",             min_args = 1, max_args = 1 }
+"math.cos"          = { emit = "host:ecma:math:cos",             min_args = 1, max_args = 1 }
+"math.tan"          = { emit = "host:ecma:math:tan",             min_args = 1, max_args = 1 }
+"math.asin"         = { emit = "host:ecma:math:asin",            min_args = 1, max_args = 1 }
+"math.acos"         = { emit = "host:ecma:math:acos",            min_args = 1, max_args = 1 }
+"math.atan"         = { emit = "host:ecma:math:atan",            min_args = 1, max_args = 1 }
+"math.atan2"        = { emit = "host:ecma:math:atan2",           min_args = 2, max_args = 2 }
+"math.exp"          = { emit = "host:ecma:math:exp",             min_args = 1, max_args = 1 }
+"math.log"          = { emit = "host:ecma:math:log",             min_args = 1, max_args = 1 }
 
 # ── Type conversion ─────────────────────────────────────────────────────────
 
@@ -103,8 +103,8 @@ codeUnitAt    = { emit = "opcode:str_char_code_at",    min_args = 1, max_args = 
 # Array/List instance methods
 add           = { emit = "common:collections.push",    min_args = 1, max_args = 1 }
 removeLast    = { emit = "common:collections.pop",     min_args = 0, max_args = 0 }
-insert        = { emit = "host:vybe:js-array:splice",     min_args = 2, max_args = 2 }
-sublist       = { emit = "host:vybe:js-array:slice",      min_args = 1, max_args = 2 }
+insert        = { emit = "host:ecma:array:splice",     min_args = 2, max_args = 2 }
+sublist       = { emit = "host:ecma:array:slice",      min_args = 1, max_args = 2 }
 join          = { emit = "common:collections.join",    min_args = 0, max_args = 1 }
 reversed      = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
 toList        = { emit = "noop",                       min_args = 0, max_args = 0 }
@@ -133,12 +133,12 @@ sort      = "__array_sort"
 [[esm_default]]
 kind = "namespace"
 alias = "math"
-module = "vybe:js-math"
+module = "ecma:math"
 
 [[esm_default]]
 kind = "namespace"
 alias = "Math"
-module = "vybe:js-math"
+module = "ecma:math"
 
 [[esm_default]]
 kind = "namespace"

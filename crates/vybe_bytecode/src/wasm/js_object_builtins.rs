@@ -1,4 +1,4 @@
-//! # vybe:js-object builtins
+//! # ecma:object builtins
 //!
 //! Host imports for `Object.*` statics and `Object.prototype.*` per
 //! ECMA-262 §20.1.
@@ -11,7 +11,7 @@
 
 use super::encoding::*;
 
-pub const MODULE: &str = "vybe:js-object";
+pub const MODULE: &str = "ecma:object";
 
 pub const IMPORTS: &[&str] = &[
     // ── Construction ────────────────────────────────────────────────
