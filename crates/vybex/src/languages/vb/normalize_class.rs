@@ -117,14 +117,19 @@ pub fn normalize_class(
                         Some(args) => BaseCall::Explicit(
                             args.iter().map(|e| crate::ast::Argument::positional(e.clone())).collect(),
                         ),
-                        // VB walker already injects implicit `MyBase.New()`
-                        // into the body when the class has a parent — see
-                        // `inject_implicit_mybase_new` in the walker. By
-                        // the time we see it here, the call is already
-                        // in `body` as a statement, so we don't need to
-                        // ask `emit_class` to auto-inject. `None` is the
-                        // correct marker: "no additional preamble needed".
-                        None => BaseCall::None,
+                        // The VB walker injects `MyBase.New()` at the start
+                        // of the body when the class DECLARATION itself
+                        // has an `Inherits` clause. For partial classes,
+                        // the walker runs per-file — the declaration that
+                        // owns `Sub New` may not be the one that carries
+                        // `Inherits`, so the body arrives here without an
+                        // explicit super call even though the merged
+                        // class has a parent. Emit `BaseCall::Auto` so
+                        // `compile_class` auto-injects when needed.
+                        // `body_has_super_call` is consulted downstream,
+                        // so this is a no-op when the body already starts
+                        // with `MyBase.New(...)`.
+                        None => if parents.is_empty() { BaseCall::None } else { BaseCall::Auto },
                     },
                     named_name: None,
                 });

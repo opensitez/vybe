@@ -124,6 +124,34 @@ impl Compiler {
             }
         }
 
+        // ── Two-level host prefix: `vybe.gui.setProperty(...)` ──────
+        //
+        // VB / languages without ESM imports reach host functions via
+        // a literal namespace chain `<prefix>.<module>.<fn>(args)` where
+        // the leading ident is a known host-namespace prefix (`vybe`,
+        // `wasi`, `wasm`). Emit as `call_import("<prefix>:<module>",
+        // "<fn>", args)` — identical to what JS gets via `import * as
+        // gui from "vybe:gui"; gui.setProperty(...)`.
+        //
+        // Without this, the call falls through to the method-call
+        // pattern and injects `vybe.<module>` as a phantom receiver,
+        // shifting every argument right by one and silently breaking
+        // host functions that don't expect a receiver slot.
+        if let ExprKind::Member { object, field, .. } = &callee.kind {
+            if let ExprKind::Member { object: inner_obj, field: inner_field, .. } = &object.kind {
+                if let ExprKind::Ident(prefix) = &inner_obj.kind {
+                    let prefix_lc = self.canon(prefix);
+                    if matches!(prefix_lc.as_str(), "vybe" | "wasi" | "wasm") {
+                        let module = format!("{}:{}", prefix_lc, self.canon(inner_field));
+                        for a in &arg_exprs { self.compile_expr(a)?; }
+                        let idx = self.import(&module, field);
+                        self.emit_host_call(idx, arg_exprs.len() as u8);
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
         // ── Dotted name resolution FIRST (uses compiler_common::dotnet when use_dotnet) ──
         // Must run before value methods because value methods like "add" would
         // intercept "Controls.Add" which needs special GUI handling.

@@ -159,11 +159,25 @@ pub fn resolve_dotted_name(parts: &[&str], ctx: &ResolutionContext) -> DottedRes
     // static classes like `String.Format` or `Debug.WriteLine` don't get
     // trapped as namespace-object calls.
     let mut best_import_match: Option<(DottedResolution, usize, usize)> = None;
+    let first_is_ns_root = is_namespace_root(first);
     for import_path in ctx.imports {
         let mut expanded: Vec<String> = import_path.split('.').map(|s| s.to_string()).collect();
         expanded.extend(lower_parts.iter().cloned());
         let expanded_refs: Vec<&str> = expanded.iter().map(|s| s.as_str()).collect();
         if let Some(res) = try_resolve_via_imports_refs(&expanded_refs, ctx.imports) {
+            // When the bare chain's first part is already a known
+            // namespace root (e.g. `Window.Forms.Form` starts with
+            // `Window`), Step 5 will resolve it as a direct 3-segment
+            // NamespaceAccess. Skip NamespaceAccess fallbacks here that
+            // would otherwise prepend an import prefix and produce a
+            // bogus chain like system.windows.forms.window.forms.form.
+            // HostCall / CommonCall from real static-method lookups are
+            // still accepted — those are the only reason Step 4 exists.
+            if first_is_ns_root
+                && matches!(res, DottedResolution::NamespaceAccess { .. })
+            {
+                continue;
+            }
             let import_parts = import_path.split('.').count();
             let kind_rank = import_match_kind_rank(&res);
             if should_prefer_import_match(

@@ -3634,12 +3634,32 @@ fn merge_partial_classes(body: &[Statement], case_sensitive: bool) -> Vec<Statem
                     ..
                 } = &mut merged.kind {
                     // Append members from every later declaration of this name.
+                    // Skip duplicate Constructors — the VB walker's
+                    // `inject_implicit_mybase_new` synthesizes a 2-stmt
+                    // Constructor for any `Partial Class` with an
+                    // `Inherits` clause that doesn't declare its own
+                    // `Sub New`. If another partial DOES declare a real
+                    // Sub New (with injected AddHandlers, user body, etc.),
+                    // appending the synthesized stub would duplicate the
+                    // ClassMember::Constructor entry. `normalize_class`
+                    // then iterates and the last one wins, silently
+                    // dropping every real ctor statement (including the
+                    // injected Handles → AddHandler bindings). Keep the
+                    // first Constructor; discard any later partial's
+                    // Constructor clone.
+                    let mut has_ctor = m.iter().any(|mb| matches!(mb, ClassMember::Constructor { .. }));
                     for later in body.iter().skip(i + 1) {
                         if let StmtKind::ClassDecl {
                             name: ln, members: lm, parents: lp, interfaces: li, ..
                         } = &later.kind {
                             if key(ln) == k {
-                                m.extend(lm.iter().cloned());
+                                for lmem in lm {
+                                    if matches!(lmem, ClassMember::Constructor { .. }) {
+                                        if has_ctor { continue; }
+                                        has_ctor = true;
+                                    }
+                                    m.push(lmem.clone());
+                                }
                                 // Merge unique parents / interfaces
                                 for parent in lp {
                                     if !p.iter().any(|existing| key(existing) == key(parent)) {
