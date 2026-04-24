@@ -27,7 +27,7 @@
 //!     ctor). We populate `auto_init_methods` so the shim preserves
 //!     that semantic when the direct `emit_class` path lands.
 
-use crate::ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, Statement, StmtKind, Visibility};
+use crate::ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind, Visibility};
 use crate::common::classes::{
     build_normal_method,
     canonical::{canonicalize_method, ClassLang},
@@ -165,6 +165,8 @@ pub fn normalize_class(
         is_abstract: modifiers.is_abstract,
         is_sealed: modifiers.is_sealed,
         is_partial: modifiers.is_partial, // informational; merging already done
+        explicit_self_param: false, // VB: Me is implicit
+        implicit_self_fields: true, // VB: bare field names resolve to Me.field
         instance_fields,
         static_fields,
         instance_methods,

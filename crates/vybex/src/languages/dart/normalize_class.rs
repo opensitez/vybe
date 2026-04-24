@@ -19,7 +19,7 @@
 //!   - `abstract class` → `is_abstract`.
 //!   - Dart doesn't have destructors (uses Finalizer from dart:ffi).
 
-use crate::ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, Statement, StmtKind};
+use crate::ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind};
 use crate::common::classes::{
     build_normal_method,
     canonical::{canonicalize_method, ClassLang},
@@ -91,10 +91,11 @@ pub fn normalize_class(
                             args.iter().map(|e| crate::ast::Argument::positional(e.clone())).collect(),
                         ),
                         // Dart: subclass ctor without explicit `: super(...)`
-                        // auto-calls the no-arg super ctor (compile error if
-                        // parent has no no-arg ctor). Mirror with Auto when
-                        // a parent exists.
-                        None => if parents.is_empty() { BaseCall::None } else { BaseCall::Auto },
+                        // auto-calls the no-arg super ctor in real Dart, but
+                        // the Vybe compiler doesn't yet implement that
+                        // auto-insertion. Walker mirrors the source — emit
+                        // layer can opt in later by switching this to Auto.
+                        None => BaseCall::None,
                     },
                     named_name: None, // TODO: plumb Dart named ctors when walker marks them
                 });
@@ -134,6 +135,8 @@ pub fn normalize_class(
         is_abstract: modifiers.is_abstract,
         is_sealed: modifiers.is_sealed,
         is_partial: false,
+        explicit_self_param: false,
+        implicit_self_fields: false, // Dart requires `this.field` for ambiguous refs
         instance_fields,
         static_fields,
         instance_methods,

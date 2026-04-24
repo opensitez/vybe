@@ -30,7 +30,7 @@
 //! the legacy `compile_class` orchestration in `crate::compiler::classes`.
 //! Phase 2b flips the switch.
 
-use crate::ast::{ClassMember, ClassModifiers, Expression, Modifiers, Param, PropertySetter, Span, Statement, StmtKind};
+use crate::ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, Statement, StmtKind};
 use crate::common::classes::{
     build_normal_method,
     canonical::{canonicalize_method, ClassLang},
@@ -106,10 +106,9 @@ pub fn normalize_class(
                         ),
                         // JS: subclass without explicit `super()` is a
                         // runtime TypeError in the spec, but JS's grammar
-                        // permits it. Walker mirrors the source faithfully;
-                        // `emit_class` handles the no-super case by
-                        // treating the parent as optional.
-                        None => if parents.is_empty() { BaseCall::None } else { BaseCall::Auto },
+                        // permits it. The walker mirrors the source
+                        // faithfully — no auto super-call insertion.
+                        None => BaseCall::None,
                     },
                     named_name: None, // JS has no named constructors
                 });
@@ -155,6 +154,8 @@ pub fn normalize_class(
         is_abstract: modifiers.is_abstract,
         is_sealed: modifiers.is_sealed,
         is_partial: false,
+        explicit_self_param: false,
+        implicit_self_fields: false, // JS: bare `foo` doesn't resolve to this.foo
         instance_fields,
         static_fields,
         instance_methods,
@@ -303,7 +304,11 @@ mod tests {
     }
 
     #[test]
-    fn subclass_without_explicit_super_gets_auto_base_call() {
+    fn subclass_without_explicit_super_gets_none_base_call() {
+        // JS spec: derived class missing `super()` is a runtime TypeError.
+        // The walker doesn't auto-insert a super call; it faithfully
+        // reports `BaseCall::None` so downstream emission treats the
+        // missing super as user error, not a normalization default.
         let member = ClassMember::Constructor {
             params: vec![],
             body: vec![],
@@ -314,7 +319,7 @@ mod tests {
             dummy_span(), "Dog", &["Animal".to_string()], &[], &[member],
             &ClassModifiers::default(),
         );
-        assert!(matches!(nc.constructor.as_ref().unwrap().base_call, BaseCall::Auto));
+        assert!(matches!(nc.constructor.as_ref().unwrap().base_call, BaseCall::None));
     }
 
     #[test]

@@ -19,7 +19,6 @@ case_sensitive = true              # PHP function/class names are case-INSENSITI
 string_indexing = "zero_based"
 # PHP-specific
 dynamic_add = false                 # `+` is numeric only; `.` is concat
-implicit_self_fields = false        # PHP requires `$this->field`
 # Route `class` declarations through common::classes::normalize_class
 # + emit_class (see classnormalization.md). Magic methods like
 # __toString / __invoke / __get / __set / __call canonicalise to the

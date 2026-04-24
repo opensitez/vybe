@@ -6,6 +6,7 @@
 //! crate-private for the `dotnet_register` bridge.
 
 use super::*;
+use crate::common::classes::{BaseCall, NormalClass, NormalMethod};
 
 impl Compiler {
     // ════════════════════════════════════════════════════════════════════════
@@ -183,37 +184,50 @@ impl Compiler {
     // Class compilation
     // ════════════════════════════════════════════════════════════════════════
 
-    pub(crate) fn compile_class(&mut self, name: &str, parent: &Option<String>, members: &[ClassMember]) -> Result<(), String> {
+    pub(crate) fn compile_class(&mut self, class: &crate::common::classes::NormalClass) -> Result<(), String> {
+        // Extract the canonicalised names the orchestration below needs.
+        // Canonicalisation happens once here rather than at every caller.
+        let cname = self.canon(&class.name);
+        let name: &str = &cname;
+        let parent_canonical = class.parent.as_ref().map(|p| self.canon(p));
+        let parent: &Option<String> = &parent_canonical;
+
+        // Phase 2b.2 complete: passes 1-4 all read NormalClass fields
+        // directly. No more ClassMember reconstruction inside
+        // compile_class.
         let self_kw = self.profile.self_keyword.clone();
         let ctor_name = self.profile.constructor_name.clone();
         let result_style = self.profile.function_return.clone();
 
-        // Collect fields and initializers (separate instance vs static)
-        // Auto-properties are treated as plain fields (matches old C# compiler).
-        let mut fields = Vec::new();
+        // Pass 1 (ported to NormalClass): collect fields + initialisers
+        // from instance_fields / static_fields, then add backing fields
+        // for auto-properties. Reads NormalClass directly; no longer
+        // iterates the reconstructed member list.
+        let mut fields: Vec<String> = Vec::new();
         let mut field_inits: Vec<(String, Option<Expression>)> = Vec::new();
         let mut static_field_inits: Vec<(String, Option<Expression>)> = Vec::new();
-        for m in members {
-            if let ClassMember::Field { name: fname, init, modifiers, .. } = m {
-                let fname = self.canon(fname);
-                if modifiers.is_static {
-                    static_field_inits.push((fname, init.clone()));
-                } else {
-                    fields.push(fname.clone());
-                    field_inits.push((fname, init.clone()));
-                }
-            }
-            if let ClassMember::Property { name: pname, is_auto, modifiers, .. } = m {
-                if *is_auto {
-                    let pname_canon = self.canon(pname);
-                    if modifiers.is_static {
-                        if !static_field_inits.iter().any(|(n, _)| n == &pname_canon) {
-                            static_field_inits.push((pname_canon, None));
-                        }
-                    } else if !fields.contains(&pname_canon) {
-                        fields.push(pname_canon.clone());
-                        field_inits.push((pname_canon, None));
-                    }
+        for f in &class.instance_fields {
+            let fname = self.canon(&f.name);
+            fields.push(fname.clone());
+            field_inits.push((fname, f.init.clone()));
+        }
+        for f in &class.static_fields {
+            let fname = self.canon(&f.name);
+            static_field_inits.push((fname, f.init.clone()));
+        }
+        for p in &class.properties {
+            // Auto-properties get a backing field named like the property;
+            // the runtime reads/writes through auto-emitted __get_/__set_
+            // chunks bound later.
+            if let Some(auto_field_name) = &p.auto_field {
+                let pname_canon = self.canon(auto_field_name);
+                // Walker doesn't currently distinguish static auto-props;
+                // `is_auto` maps to instance-side by default. If a
+                // language walker populates a static auto-property in
+                // future, it should go on `class.static_fields` instead.
+                if !fields.contains(&pname_canon) {
+                    fields.push(pname_canon.clone());
+                    field_inits.push((pname_canon, None));
                 }
             }
         }
@@ -229,188 +243,116 @@ impl Compiler {
         // (name, chunk_idx, is_ctor, is_static)
         let mut method_chunks: Vec<(String, usize, bool, bool)> = Vec::new();
         let saved_class = self.current_class.take();
+        let saved_implicit = self.current_class_implicit_self;
         self.current_class = Some(name.to_string());
+        self.current_class_implicit_self = class.implicit_self_fields;
 
-        // Pre-register all method names to avoid value-method hijacking
-        for m in members {
-            if let ClassMember::Method(stmt) = m {
-                if let StmtKind::FunctionDecl { name: mname, .. } = &stmt.kind {
-                    self.defined_class_methods.insert(self.canon(mname));
-                }
-            }
-            if let ClassMember::Property { name: pname, .. } = m {
-                self.defined_class_methods.insert(self.canon(pname));
-            }
+        // Pass 2 (ported to NormalClass): pre-register method + property
+        // names in `defined_class_methods` so expression-compilation
+        // doesn't hijack a method call via the value-method dispatch
+        // table. Walks instance_methods + static_methods + properties
+        // directly; no reconstructed member iteration.
+        for m in class.instance_methods.iter().chain(class.static_methods.iter()) {
+            // Use `source_name` so existing compile paths that look up
+            // `self.defined_class_methods.contains("ToString")` (from VB
+            // call-site compilation) still hit. Canonical-name-only
+            // lookups are a Phase 2b.3 concern.
+            self.defined_class_methods.insert(self.canon(&m.source_name));
+        }
+        for p in &class.properties {
+            self.defined_class_methods.insert(self.canon(&p.source_name));
         }
 
 
-        for m in members {
+        // Pass 3 (ported to NormalClass): compile method chunks,
+        // property getter/setter chunks, class-level constants, and
+        // nested types. Order matches the former reconstructed-
+        // `members` layout so chunk indices stay byte-identical:
+        //   instance_methods → static_methods → raw_extra_members
+        //   → properties. Constructor body is handled in pass-4 below.
+
+        // --- Instance + static methods ---
+        // Each NormalMethod carries the walker's raw modifiers, source
+        // name, params, body, return_type, is_generator, is_static
+        // flag (implied by which vec the method lives in). That's all
+        // the old Method arm needed.
+        let mut compile_normal_method = |cc: &mut Compiler, m: &NormalMethod, is_static: bool| -> Result<(), String> {
+            let mname = &m.source_name;
+            let is_ctor = if cc.case_sensitive {
+                mname == &ctor_name || (is_static && mname == "new")
+            } else {
+                mname.eq_ignore_ascii_case(&ctor_name)
+                || is_static && mname.eq_ignore_ascii_case("new")
+            };
+
+            let user_params: Vec<&Param> = if class.explicit_self_param {
+                m.params.iter().skip(1).collect()
+            } else {
+                m.params.iter().collect()
+            };
+            let arity = (user_params.len() + 1) as u8;
+
+            let ci = cc.chunks.len();
+            let mut chunk = common::functions::create_function_chunk(mname, arity);
+            chunk.is_generator = m.is_generator;
+            if m.is_generator {
+                let cname_canon = cc.canon(mname);
+                cc.generator_functions.insert(cname_canon);
+            }
+            cc.chunks.push(chunk);
+            cc.scopes.push(Scope::new_function());
+            let saved = cc.current;
+            cc.current = ci;
+
+            cc.scope_mut().define(&self_kw);
+            for p in &user_params { cc.scope_mut().define(&p.name); }
+
+            if is_ctor {
+                for s in &m.body { cc.compile_stmt(s)?; }
+                if let Some(slot) = cc.scope().resolve(&self_kw).or_else(|| cc.scope().resolve_ci(&self_kw)) {
+                    cc.emit_u16(Op::LOCAL_GET, slot);
+                    cc.emit(Op::RETURN);
+                }
+            } else if m.return_type.is_some() && result_style == ReturnStyle::ResultSlot {
+                let slot_name = cc.profile.result_slot_name.clone();
+                let rs = cc.scope_mut().define(&slot_name);
+                cc.emit(Op::NULL); cc.emit_u16(Op::LOCAL_SET, rs); cc.emit(Op::DROP);
+                let saved_fn = cc.current_func_name.take();
+                let saved_rs = cc.current_result_slot.take();
+                cc.current_func_name = Some(mname.clone());
+                cc.current_result_slot = Some(rs);
+                for s in &m.body { cc.compile_stmt(s)?; }
+                cc.current_func_name = saved_fn;
+                cc.current_result_slot = saved_rs;
+                cc.emit_u16(Op::LOCAL_GET, rs);
+                cc.emit(Op::RETURN);
+            } else {
+                for s in &m.body { cc.compile_stmt(s)?; }
+                let line = cc.line;
+                common::functions::emit_function_epilogue(&mut cc.chunks[ci], line);
+            }
+
+            let locals = cc.scope().next_slot.max(cc.chunks[ci].local_count);
+            cc.chunks[ci].local_count = locals;
+            cc.scopes.pop();
+            cc.current = saved;
+
+            let bound_name = cc.canon(mname);
+            method_chunks.push((bound_name, ci, is_ctor, is_static));
+            Ok(())
+        };
+
+        for m in &class.instance_methods {
+            compile_normal_method(self, m, false)?;
+        }
+        for m in &class.static_methods {
+            compile_normal_method(self, m, true)?;
+        }
+
+        // --- Events / Consts / NestedTypes (from raw_extra_members) ---
+        for m in &class.raw_extra_members {
             match m {
-                ClassMember::Method(stmt) => {
-                    if let StmtKind::FunctionDecl { name: mname, params, return_type, body, modifiers, is_sub: _, is_generator, .. } = &stmt.kind {
-                        // NOTE: do NOT skip empty-body methods. They still need
-                        // a chunk + binding so that callers (e.g. an explicit
-                        // constructor calling `InitializeComponent()`) can
-                        // dispatch through `me.<method>`. Skipping here is what
-                        // caused VB Forms tests to fail with "null is not
-                        // callable" — the empty `Sub InitializeComponent` was
-                        // never bound on `me`.
-
-                        let is_ctor = if self.case_sensitive {
-                            mname == &ctor_name || (modifiers.is_static && mname == "new")
-                        } else {
-                            mname.eq_ignore_ascii_case(&ctor_name)
-                            || modifiers.is_static && mname.eq_ignore_ascii_case("new")
-                        };
-
-                        let user_params: Vec<&Param> = if self.profile.explicit_self_param {
-                            params.iter().skip(1).collect()
-                        } else {
-                            params.iter().collect()
-                        };
-                        let arity = (user_params.len() + 1) as u8; // +1 for self
-
-                        let ci = self.chunks.len();
-                        let mut chunk = common::functions::create_function_chunk(mname, arity);
-                        // C# `yield return` / JS generator methods on
-                        // classes: propagate the generator flag from the
-                        // FunctionDecl so the VM wraps invocations in a
-                        // `Continuation` instead of executing the body.
-                        chunk.is_generator = *is_generator;
-                        if *is_generator {
-                            let cname = self.canon(mname);
-                            self.generator_functions.insert(cname);
-                        }
-                        self.chunks.push(chunk);
-                        self.scopes.push(Scope::new_function());
-                        let saved = self.current;
-                        self.current = ci;
-
-                        self.scope_mut().define(&self_kw);
-                        for p in &user_params { self.scope_mut().define(&p.name); }
-
-                        if is_ctor {
-                            for s in body { self.compile_stmt(s)?; }
-                            if let Some(slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
-                                self.emit_u16(Op::LOCAL_GET, slot);
-                                self.emit(Op::RETURN);
-                            }
-                        } else if return_type.is_some() && result_style == ReturnStyle::ResultSlot {
-                            let slot_name = self.profile.result_slot_name.clone();
-                            let rs = self.scope_mut().define(&slot_name);
-                            self.emit(Op::NULL); self.emit_u16(Op::LOCAL_SET, rs); self.emit(Op::DROP);
-                            let saved_fn = self.current_func_name.take();
-                            let saved_rs = self.current_result_slot.take();
-                            self.current_func_name = Some(mname.clone());
-                            self.current_result_slot = Some(rs);
-                            for s in body { self.compile_stmt(s)?; }
-                            self.current_func_name = saved_fn;
-                            self.current_result_slot = saved_rs;
-                            self.emit_u16(Op::LOCAL_GET, rs);
-                            self.emit(Op::RETURN);
-                        } else {
-                            for s in body { self.compile_stmt(s)?; }
-                            let line = self.line;
-                            common::functions::emit_function_epilogue(&mut self.chunks[ci], line);
-                        }
-
-                        let locals = self.scope().next_slot.max(self.chunks[ci].local_count);
-                        self.chunks[ci].local_count = locals;
-                        self.scopes.pop();
-                        self.current = saved;
-
-                        let bound_name = self.canon(mname);
-                        method_chunks.push((bound_name, ci, is_ctor, modifiers.is_static));
-                    }
-                }
-                ClassMember::Constructor { .. } => {
-                    // Constructor body is handled by the main constructor flow below
-                    // (extracted via ctor_body). No separate chunk needed.
-                }
-                ClassMember::Property { name: pname, getter, setter, is_auto, .. } => {
-                    // Auto-properties are handled as plain fields above — skip getter/setter compilation
-                    if *is_auto { continue; }
-                    let pname_canon = self.canon(pname);
-
-                    // Getter → __get_<prop>
-                    if let Some(getter_body) = getter {
-                        let get_name = format!("__get_{}", pname_canon);
-                        let ci = self.chunks.len();
-                        let chunk = common::functions::create_function_chunk(&get_name, 1); // self
-                        self.chunks.push(chunk);
-                        self.scopes.push(Scope::new_function());
-                        let saved = self.current;
-                        self.current = ci;
-                        self.scope_mut().define(&self_kw);
-
-                        if getter_body.is_empty() {
-                            // Auto-property getter: return backing field
-                            if let Some(slot) = self.scope().resolve(&self_kw) {
-                                self.emit_u16(Op::LOCAL_GET, slot);
-                                let backing = self.str_const(&format!("__{}", pname_canon));
-                                self.emit_u16(Op::STRUCT_GET, backing);
-                                self.emit(Op::RETURN);
-                            }
-                        } else {
-                            let slot_name = self.profile.result_slot_name.clone();
-                            let rs = self.scope_mut().define(&slot_name);
-                            self.emit(Op::NULL); self.emit_u16(Op::LOCAL_SET, rs); self.emit(Op::DROP);
-                            let saved_fn = self.current_func_name.take();
-                            let saved_rs = self.current_result_slot.take();
-                            self.current_func_name = Some(pname.clone());
-                            self.current_result_slot = Some(rs);
-                            for s in getter_body { self.compile_stmt(s)?; }
-                            self.current_func_name = saved_fn;
-                            self.current_result_slot = saved_rs;
-                            self.emit_u16(Op::LOCAL_GET, rs);
-                            self.emit(Op::RETURN);
-                        }
-
-                        let locals = self.scope().next_slot.max(self.chunks[ci].local_count);
-                        self.chunks[ci].local_count = locals;
-                        self.scopes.pop();
-                        self.current = saved;
-                        method_chunks.push((get_name, ci, false, false));
-                    }
-
-                    // Setter → __set_<prop>
-                    if let Some(setter_info) = setter {
-                        let set_name = format!("__set_{}", pname_canon);
-                        let ci = self.chunks.len();
-                        let chunk = common::functions::create_function_chunk(&set_name, 2); // self, value
-                        self.chunks.push(chunk);
-                        self.scopes.push(Scope::new_function());
-                        let saved = self.current;
-                        self.current = ci;
-                        self.scope_mut().define(&self_kw);
-                        self.scope_mut().define(&setter_info.param.name);
-
-                        if setter_info.body.is_empty() {
-                            // Auto-property setter: set backing field
-                            if let Some(self_slot) = self.scope().resolve(&self_kw) {
-                                self.emit_u16(Op::LOCAL_GET, self_slot);
-                                if let Some(val_slot) = self.scope().resolve(&setter_info.param.name) {
-                                    self.emit_u16(Op::LOCAL_GET, val_slot);
-                                }
-                                let backing = self.str_const(&format!("__{}", pname_canon));
-                                self.emit_u16(Op::STRUCT_SET, backing);
-                                self.emit(Op::DROP);
-                            }
-                        } else {
-                            for s in &setter_info.body { self.compile_stmt(s)?; }
-                        }
-
-                        let line = self.line;
-                        common::functions::emit_function_epilogue(&mut self.chunks[ci], line);
-                        let locals = self.scope().next_slot.max(self.chunks[ci].local_count);
-                        self.chunks[ci].local_count = locals;
-                        self.scopes.pop();
-                        self.current = saved;
-                        method_chunks.push((set_name, ci, false, false));
-                    }
-                }
                 ClassMember::Const { name: cname, value, .. } => {
-                    // Class-level constant → global
                     self.compile_expr(value)?;
                     let global_name = self.canon(&format!("{}.{}", name, cname));
                     let idx = self.str_const(&global_name);
@@ -424,31 +366,155 @@ impl Compiler {
             }
         }
 
-        self.current_class = saved_class;
+        // --- Properties: getter → __get_<prop>, setter → __set_<prop> ---
+        for p in &class.properties {
+            // Auto-properties are handled as plain fields in pass-1.
+            if p.auto_field.is_some() { continue; }
+            let pname_canon = self.canon(&p.source_name);
 
-        // Find constructor body and its user arity
-        let _ctor = method_chunks.iter().find(|(_, _, is_ctor, _)| *is_ctor);
-        let ctor_body: Option<(&Vec<Statement>, &Vec<Param>, Option<&Vec<Expression>>)> = members.iter().find_map(|m| {
-            match m {
-                ClassMember::Method(stmt) => {
-                    if let StmtKind::FunctionDecl { name: mname, params, body, modifiers, .. } = &stmt.kind {
-                        let is_ctor = if self.case_sensitive {
-                            mname == &ctor_name || (modifiers.is_static && mname == "new")
-                        } else {
-                            mname.eq_ignore_ascii_case(&ctor_name)
-                            || modifiers.is_static && mname.eq_ignore_ascii_case("new")
-                        };
-                        if is_ctor && !body.is_empty() { return Some((body, params, None)); }
+            if let Some(getter) = &p.getter {
+                let get_name = format!("__get_{}", pname_canon);
+                let ci = self.chunks.len();
+                let chunk = common::functions::create_function_chunk(&get_name, 1); // self
+                self.chunks.push(chunk);
+                self.scopes.push(Scope::new_function());
+                let saved = self.current;
+                self.current = ci;
+                self.scope_mut().define(&self_kw);
+
+                if getter.body.is_empty() {
+                    // Auto-property getter: return backing field
+                    if let Some(slot) = self.scope().resolve(&self_kw) {
+                        self.emit_u16(Op::LOCAL_GET, slot);
+                        let backing = self.str_const(&format!("__{}", pname_canon));
+                        self.emit_u16(Op::STRUCT_GET, backing);
+                        self.emit(Op::RETURN);
                     }
-                    None
+                } else {
+                    let slot_name = self.profile.result_slot_name.clone();
+                    let rs = self.scope_mut().define(&slot_name);
+                    self.emit(Op::NULL); self.emit_u16(Op::LOCAL_SET, rs); self.emit(Op::DROP);
+                    let saved_fn = self.current_func_name.take();
+                    let saved_rs = self.current_result_slot.take();
+                    self.current_func_name = Some(p.source_name.clone());
+                    self.current_result_slot = Some(rs);
+                    for s in &getter.body { self.compile_stmt(s)?; }
+                    self.current_func_name = saved_fn;
+                    self.current_result_slot = saved_rs;
+                    self.emit_u16(Op::LOCAL_GET, rs);
+                    self.emit(Op::RETURN);
                 }
-                ClassMember::Constructor { params, body, base_args, .. } => Some((body, params, base_args.as_ref())),
-                _ => None,
+
+                let locals = self.scope().next_slot.max(self.chunks[ci].local_count);
+                self.chunks[ci].local_count = locals;
+                self.scopes.pop();
+                self.current = saved;
+                method_chunks.push((get_name, ci, false, false));
+            }
+
+            if let Some(setter) = &p.setter {
+                let set_name = format!("__set_{}", pname_canon);
+                let ci = self.chunks.len();
+                let chunk = common::functions::create_function_chunk(&set_name, 2); // self, value
+                self.chunks.push(chunk);
+                self.scopes.push(Scope::new_function());
+                let saved = self.current;
+                self.current = ci;
+                self.scope_mut().define(&self_kw);
+                let value_param_name = setter.params.first()
+                    .map(|p| p.name.clone())
+                    .unwrap_or_else(|| "value".to_string());
+                self.scope_mut().define(&value_param_name);
+
+                if setter.body.is_empty() {
+                    // Auto-property setter: set backing field
+                    if let Some(self_slot) = self.scope().resolve(&self_kw) {
+                        self.emit_u16(Op::LOCAL_GET, self_slot);
+                        if let Some(val_slot) = self.scope().resolve(&value_param_name) {
+                            self.emit_u16(Op::LOCAL_GET, val_slot);
+                        }
+                        let backing = self.str_const(&format!("__{}", pname_canon));
+                        self.emit_u16(Op::STRUCT_SET, backing);
+                        self.emit(Op::DROP);
+                    }
+                } else {
+                    for s in &setter.body { self.compile_stmt(s)?; }
+                }
+
+                let line = self.line;
+                common::functions::emit_function_epilogue(&mut self.chunks[ci], line);
+                let locals = self.scope().next_slot.max(self.chunks[ci].local_count);
+                self.chunks[ci].local_count = locals;
+                self.scopes.pop();
+                self.current = saved;
+                method_chunks.push((set_name, ci, false, false));
+            }
+        }
+
+        self.current_class = saved_class;
+        self.current_class_implicit_self = saved_implicit;
+
+        // Pass 4 (ported to NormalClass): find the constructor's body,
+        // params, and base-call args for the orchestration below.
+        //
+        // Priority order matches the former `members` iteration:
+        // Constructor (reconstruction placed it first) wins over any
+        // Method named `New` / `constructor` / etc. Languages that use
+        // a conventional method-name constructor (VB `Sub New`, C#
+        // `ClassName(...)`) already land in `NormalClass.constructor`
+        // through the walker's normalize_class, so the secondary
+        // method-scan is only a safety net for languages that haven't
+        // categorized a ctor-shaped method into the Constructor slot.
+        let _ctor = method_chunks.iter().find(|(_, _, is_ctor, _)| *is_ctor);
+
+        // Convert NormalConstructor.base_call → Option<Vec<Expression>>
+        // for the downstream orchestration (which still expects the AST
+        // shape). Only `BaseCall::Explicit(args)` carries arguments;
+        // `BaseCall::Auto` signals "auto-insert a zero-arg parent call"
+        // (C#/Pascal style) and is handled separately from base_args.
+        // Walker already turned explicit super() / MyBase.New(...) into
+        // `BaseCall::Explicit(args)`.
+        let ctor_base_args_from_nc: Option<Vec<Expression>> = class.constructor.as_ref().and_then(|c| {
+            if let BaseCall::Explicit(args) = &c.base_call {
+                Some(args.iter().map(|a| a.value.clone()).collect())
+            } else {
+                None
             }
         });
+        let ctor_auto_base = class.constructor.as_ref()
+            .map(|c| matches!(c.base_call, BaseCall::Auto))
+            .unwrap_or(false);
+
+        let ctor_body: Option<(&Vec<Statement>, &Vec<Param>, Option<&Vec<Expression>>)> = {
+            if let Some(c) = &class.constructor {
+                Some((&c.body, &c.params, ctor_base_args_from_nc.as_ref()))
+            } else {
+                // Safety-net scan of instance + static methods for a
+                // method-name constructor (e.g. a language walker that
+                // left a `New` method in the methods vec instead of
+                // promoting it to NormalClass.constructor).
+                class.instance_methods.iter()
+                    .chain(class.static_methods.iter())
+                    .find_map(|m| {
+                        let is_static = class.static_methods.iter()
+                            .any(|sm| sm.source_name == m.source_name);
+                        let is_ctor = if self.case_sensitive {
+                            m.source_name == ctor_name || (is_static && m.source_name == "new")
+                        } else {
+                            m.source_name.eq_ignore_ascii_case(&ctor_name)
+                            || is_static && m.source_name.eq_ignore_ascii_case("new")
+                        };
+                        if is_ctor && !m.body.is_empty() {
+                            Some((&m.body, &m.params, None))
+                        } else {
+                            None
+                        }
+                    })
+            }
+        };
 
         let user_params: Vec<String> = ctor_body.map(|(_, params, _)| {
-            if self.profile.explicit_self_param {
+            if class.explicit_self_param {
                 params.iter().skip(1).map(|p| p.name.clone()).collect()
             } else {
                 params.iter().map(|p| p.name.clone()).collect()
@@ -466,13 +532,15 @@ impl Compiler {
         self.scopes.push(Scope::new_function());
         let saved_cur = self.current;
         let saved_class2 = self.current_class.take();
+        let saved_implicit2 = self.current_class_implicit_self;
         self.current = ctor_idx;
         self.current_class = Some(name.to_string());
+        self.current_class_implicit_self = class.implicit_self_fields;
 
         // Define user params (slot 1..N), then this (slot N+1)
         // Also handle default parameter values from the Param structs.
         let ctor_param_defaults: Vec<Option<Expression>> = ctor_body.map(|(_, params, _)| {
-            let skip = if self.profile.explicit_self_param { 1 } else { 0 };
+            let skip = if class.explicit_self_param { 1 } else { 0 };
             params.iter().skip(skip).map(|p| p.default.clone()).collect()
         }).unwrap_or_default();
         for (i, p) in user_params.iter().enumerate() {
@@ -516,12 +584,15 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_SET, this_slot);
             self.emit(Op::DROP);
 
-            // Determine if auto_base_call should kick in:
-            // ctor exists + base_args None + profile says auto + parent exists + body has no super
+            // Determine if auto base call should kick in: walker flagged
+            // `BaseCall::Auto` on the ctor (C#/Pascal) + parent exists +
+            // body doesn't already contain a super call (VB's walker
+            // injects `MyBase.New()` into the body, so this check short-
+            // circuits there without a profile flag).
             let has_explicit_base = ctor_body.as_ref().map_or(false, |(_, _, ba)| ba.is_some());
             let auto_base_needed = !has_explicit_base
                 && ctor_body.is_some()
-                && self.profile.auto_base_call
+                && ctor_auto_base
                 && parent.is_some()
                 && {
                     let stmts = ctor_body.as_ref().map(|(b, _, _)| b.as_slice()).unwrap_or(&[]);
@@ -610,13 +681,13 @@ impl Compiler {
                     }
                 }
 
-                // Auto-init methods from profile (e.g. InitializeComponent for .NET forms).
+                // Auto-init methods declared on the class (e.g. InitializeComponent
+                // for .NET forms). Walker-populated via normalize_class.
                 // Emitted after method binding but before user body.
                 {
                     let ctor_stmts: &[Statement] = ctor_body
                         .as_ref().map(|(b, _, _)| b.as_slice()).unwrap_or(&[]);
-                    let auto_inits = self.profile.auto_init_methods.clone();
-                    for aim in &auto_inits {
+                    for aim in &class.auto_init_methods {
                         let has_method = instance_methods.iter()
                             .any(|(n, _, _, _)| n.eq_ignore_ascii_case(aim));
                         if has_method && !body_calls_method(ctor_stmts, aim) {
@@ -748,12 +819,12 @@ impl Compiler {
                     }
                 }
 
-                // Auto-init methods from profile (e.g. InitializeComponent for .NET forms).
+                // Auto-init methods declared on the class (e.g. InitializeComponent
+                // for .NET forms). Walker-populated via normalize_class.
                 // Emitted after method binding so struct_get finds the method,
                 // but before user body so controls exist for AddHandler etc.
                 let user_body = &body_stmts[preamble_end..];
-                let auto_inits = self.profile.auto_init_methods.clone();
-                for aim in &auto_inits {
+                for aim in &class.auto_init_methods {
                     let has_method = instance_methods.iter()
                         .any(|(n, _, _, _)| n.eq_ignore_ascii_case(aim));
                     if has_method && !body_calls_method(user_body, aim) {
@@ -794,11 +865,11 @@ impl Compiler {
                 }
             }
 
-            // Auto-init methods from profile (e.g. InitializeComponent for .NET forms).
+            // Auto-init methods declared on the class (e.g. InitializeComponent
+            // for .NET forms). Walker-populated via normalize_class.
             let ctor_stmts: &[Statement] = ctor_body
                 .as_ref().map(|(b, _, _)| b.as_slice()).unwrap_or(&[]);
-            let auto_inits = self.profile.auto_init_methods.clone();
-            for aim in &auto_inits {
+            for aim in &class.auto_init_methods {
                 let has_method = instance_methods.iter()
                     .any(|(n, _, _, _)| n.eq_ignore_ascii_case(aim));
                 if has_method && !body_calls_method(ctor_stmts, aim) {
@@ -821,6 +892,7 @@ impl Compiler {
         self.scopes.pop();
         self.current = saved_cur;
         self.current_class = saved_class2;
+        self.current_class_implicit_self = saved_implicit2;
 
         // Store constructor globally and register type
         let ctor_local = self.scope_mut().define(&format!("__{}_ctor", name));

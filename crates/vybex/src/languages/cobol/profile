@@ -13,7 +13,6 @@ constructor_name = "NEW"
 case_sensitive = false
 string_indexing = "one_based"
 dynamic_add = true
-implicit_self_fields = false
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — COBOL intrinsic functions (FUNCTION xxx)

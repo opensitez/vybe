@@ -167,9 +167,6 @@ fn load_js_profile() -> vybex::profile::LanguageProfile {
         self_keyword: "this".into(),
         base_keyword: Some("super".into()),
         constructor_name: "constructor".into(),
-        separated_methods: false,
-        implicit_self_fields: false,
-        explicit_self_param: false,
         enum_as_ordinals: false,
         case_sensitive: true,
         string_indexing: StringIndexing::ZeroBased,
@@ -179,7 +176,6 @@ fn load_js_profile() -> vybex::profile::LanguageProfile {
         hoist_var: true,
         dynamic_add: true,
         commonjs_require: true,
-        partial_classes: false,
         multi_value_tuple_returns: false,
         byref_boxing: false,
         with_block: false,
@@ -187,8 +183,6 @@ fn load_js_profile() -> vybex::profile::LanguageProfile {
         new_from_initializer: false,
         linq_queries: false,
         switch_fallthrough: true,
-        auto_base_call: false,
-        auto_init_methods: vec![],
         uses_normalize_class: false,
         builtins: {
             let mut b = HashMap::new();

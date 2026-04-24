@@ -13,7 +13,7 @@
 //!   - `override` / `virtual` / `reintroduce` → flag carries through.
 //!   - Case-insensitive: Pascal method names lowercase to canonical.
 
-use crate::ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, Statement, StmtKind};
+use crate::ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind};
 use crate::common::classes::{
     build_normal_method,
     canonical::{canonicalize_method, ClassLang},
@@ -138,6 +138,8 @@ pub fn normalize_class(
         is_abstract: modifiers.is_abstract,
         is_sealed: modifiers.is_sealed,
         is_partial: false,
+        explicit_self_param: false, // Pascal: Self is implicit
+        implicit_self_fields: true, // Pascal: bare field names resolve to Self.field inside methods
         instance_fields,
         static_fields,
         instance_methods,

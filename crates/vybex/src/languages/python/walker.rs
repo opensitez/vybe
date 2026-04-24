@@ -530,7 +530,9 @@ fn stmts_to_class_members(stmts: Vec<Statement>) -> Vec<ClassMember> {
         match &stmt.kind {
             StmtKind::FunctionDecl { name, params, body, modifiers, is_async, .. } => {
                 if name == "__init__" {
-                    // Constructor — keep `self` param; compiler strips it via explicit_self_param
+                    // Constructor — keep `self` param; compiler strips it
+                    // via `NormalClass.explicit_self_param` (set by
+                    // normalize_class).
                     members.push(ClassMember::Constructor {
                         params: params.clone(),
                         body: body.clone(),
@@ -538,7 +540,8 @@ fn stmts_to_class_members(stmts: Vec<Statement>) -> Vec<ClassMember> {
                         visibility: Visibility::Public,
                     });
                 } else {
-                    // Method — keep `self`/`cls` param; compiler strips via explicit_self_param
+                    // Method — keep `self`/`cls` param; compiler strips via
+                    // `NormalClass.explicit_self_param`.
                     let is_static = params.first().map_or(true, |p| p.name != "self");
                     let mut mods = modifiers.clone();
                     mods.is_static = is_static;

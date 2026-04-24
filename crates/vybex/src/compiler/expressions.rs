@@ -1088,13 +1088,20 @@ impl Compiler {
             // ── ClassExpr (JS) ──────────────────────────────────────────
             ExprKind::ClassExpr { name, parent, members } => {
                 let class_name = name.clone().unwrap_or_else(|| "__anonymous_class".to_string());
-                let parent_name = if let Some(p) = parent {
+                let parent_name: Option<String> = if let Some(p) = parent {
                     if let ExprKind::Ident(n) = &p.kind { Some(n.clone()) } else { None }
                 } else { None };
                 let class_name = self.canon(&class_name);
-                let parent_name = parent_name.map(|p| self.canon(&p));
                 self.defined_globals.insert(class_name.clone());
-                self.compile_class(&class_name, &parent_name, members)?;
+                let parents: Vec<String> = parent_name.into_iter().collect();
+                crate::common::classes::emit::emit_class_from_ast(
+                    self,
+                    expr.span.clone(),
+                    &class_name,
+                    &parents,
+                    members,
+                    &crate::ast::ClassModifiers::default(),
+                )?;
                 self.emit_var_get(&class_name);
             }
 

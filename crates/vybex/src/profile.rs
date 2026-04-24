@@ -38,15 +38,6 @@ pub struct LanguageProfile {
     /// Constructor method name (matched case-insensitively for case-insensitive languages).
     pub constructor_name: String,
 
-    /// Whether method bodies are separate from class declarations.
-    pub separated_methods: bool,
-
-    /// Whether bare field names in methods resolve to self.field.
-    pub implicit_self_fields: bool,
-
-    /// Whether the self parameter is explicit in method signatures.
-    pub explicit_self_param: bool,
-
     /// Whether enum values are compiled as global ordinal constants.
     pub enum_as_ordinals: bool,
 
@@ -74,9 +65,6 @@ pub struct LanguageProfile {
     /// JS: support `require()` for CommonJS module loading.
     pub commonjs_require: bool,
 
-    /// VB: merge Partial Class declarations before compiling.
-    pub partial_classes: bool,
-
     /// Python: a function whose every `return` is a same-arity tuple
     /// literal compiles to WASM multi-value — callee pushes N values,
     /// caller destructures directly off the stack. Avoids the heap
@@ -101,17 +89,6 @@ pub struct LanguageProfile {
 
     /// VB: LINQ query syntax compiled to method chains.
     pub linq_queries: bool,
-
-    /// When true, the compiler auto-calls the parent constructor if the ctor
-    /// body doesn't contain an explicit super/base call. VB/C#/Pascal = true,
-    /// JS = false.
-    pub auto_base_call: bool,
-
-    /// Methods to auto-call at the start of every constructor if the class
-    /// defines them (e.g. `["InitializeComponent"]` for .NET forms).
-    /// The call is emitted after method binding but before the ctor body,
-    /// and only if the body doesn't already call the method.
-    pub auto_init_methods: Vec<String>,
 
     /// When true, `StmtKind::ClassDecl` is routed through the new
     /// `common::classes::normalize_class` + `emit_class` path instead
@@ -364,12 +341,6 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         .and_then(|v| v.as_str()).map(|s| s.to_string());
     let constructor_name = compiler.get("constructor_name")
         .and_then(|v| v.as_str()).unwrap_or("constructor").to_string();
-    let separated_methods = compiler.get("separated_methods")
-        .and_then(|v| v.as_bool()).unwrap_or(false);
-    let implicit_self_fields = compiler.get("implicit_self_fields")
-        .and_then(|v| v.as_bool()).unwrap_or(false);
-    let explicit_self_param = compiler.get("explicit_self_param")
-        .and_then(|v| v.as_bool()).unwrap_or(false);
     let enum_as_ordinals = compiler.get("enum_as_ordinals")
         .and_then(|v| v.as_bool()).unwrap_or(false);
     let case_sensitive = compiler.get("case_sensitive")
@@ -391,8 +362,6 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         .and_then(|v| v.as_bool()).unwrap_or(false);
     let commonjs_require = compiler.get("commonjs_require")
         .and_then(|v| v.as_bool()).unwrap_or(false);
-    let partial_classes = compiler.get("partial_classes")
-        .and_then(|v| v.as_bool()).unwrap_or(false);
     let multi_value_tuple_returns = compiler.get("multi_value_tuple_returns")
         .and_then(|v| v.as_bool()).unwrap_or(false);
     let byref_boxing = compiler.get("byref_boxing")
@@ -407,12 +376,6 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         .and_then(|v| v.as_bool()).unwrap_or(false);
     let switch_fallthrough = compiler.get("switch_fallthrough")
         .and_then(|v| v.as_bool()).unwrap_or(false);
-    let auto_base_call = compiler.get("auto_base_call")
-        .and_then(|v| v.as_bool()).unwrap_or(false);
-    let auto_init_methods = compiler.get("auto_init_methods")
-        .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
-        .unwrap_or_default();
     let uses_normalize_class = compiler.get("uses_normalize_class")
         .and_then(|v| v.as_bool()).unwrap_or(false);
 
@@ -604,13 +567,11 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         name,
         function_return, result_slot_name,
         self_keyword, base_keyword, constructor_name,
-        separated_methods, implicit_self_fields, explicit_self_param,
         enum_as_ordinals, case_sensitive, string_indexing,
         array_upper_bound_inclusive, parens_for_index, entry_point,
         hoist_var, dynamic_add, commonjs_require,
-        partial_classes, multi_value_tuple_returns, byref_boxing, with_block,
+        multi_value_tuple_returns, byref_boxing, with_block,
         new_with_initializer, new_from_initializer, linq_queries, switch_fallthrough,
-        auto_base_call, auto_init_methods,
         uses_normalize_class,
         builtins, intrinsics, namespaces, known_types,
         value_methods, namespace_constants, array_methods,

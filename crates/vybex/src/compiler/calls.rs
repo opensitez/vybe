@@ -1057,7 +1057,7 @@ impl Compiler {
             // Inside a class: bare method call → Me.method(args)
             // If name isn't a local variable and we're inside a class body,
             // resolve as Me.name() (implicit self for method calls).
-            if self.current_class.is_some() && self.profile.implicit_self_fields {
+            if self.current_class.is_some() && self.current_class_implicit_self {
                 let is_local = self.scope().resolve(name).is_some()
                     || (!self.case_sensitive && self.scope().resolve_ci(name).is_some());
                 if !is_local && !is_known_func {

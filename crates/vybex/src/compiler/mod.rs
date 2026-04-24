@@ -83,6 +83,13 @@ pub struct Compiler {
     current_result_slot: Option<u16>,
     pending_classes: HashMap<String, PendingClass>,
     current_class: Option<String>,
+    /// Mirrors `NormalClass.implicit_self_fields` for the class the
+    /// compiler is currently inside. Saved/restored by `compile_class`
+    /// alongside `current_class`. Expression + call-site resolution
+    /// consults this instead of `profile.implicit_self_fields`, so the
+    /// walker stays the single source of truth for per-language class
+    /// semantics.
+    pub(crate) current_class_implicit_self: bool,
     /// Label for the next loop to be pushed (set by StmtKind::Labeled).
     pending_label: Option<String>,
     /// Functions whose every explicit `Return` carries an `ExprKind::Tuple`
@@ -181,6 +188,7 @@ impl Compiler {
             current_result_slot: None,
             pending_classes: HashMap::new(),
             current_class: None,
+            current_class_implicit_self: false,
             pending_label: None,
             multi_return_functions: HashMap::new(),
             generator_functions: HashSet::new(),
@@ -242,12 +250,16 @@ impl Compiler {
             self.register_dotnet_classes()?;
         }
 
-        // Pre-pass: merge `Partial Class` declarations sharing the same name
-        // when the language profile enables it. After merging, the body has
-        // exactly one ClassDecl per class name with all fields/methods/etc.
-        // pooled together. This is a language-agnostic transform — every
-        // language that sets `partial_classes = true` (VB, C#) gets it.
-        let merged_body = if self.profile.partial_classes {
+        // Pre-pass: merge `Partial Class` declarations sharing the same name.
+        // Walker-driven: only runs when at least one ClassDecl in the module
+        // is flagged `modifiers.is_partial = true` (VB/C# walkers set this
+        // on `Partial Class`; other languages leave it false and skip the
+        // merge entirely). After merging, the body has exactly one ClassDecl
+        // per class name with all fields/methods pooled together.
+        let has_partial = module.body.iter().any(|s| {
+            matches!(&s.kind, StmtKind::ClassDecl { modifiers, .. } if modifiers.is_partial)
+        });
+        let merged_body = if has_partial {
             merge_partial_classes(&module.body, self.case_sensitive)
         } else {
             module.body.clone()
@@ -838,7 +850,7 @@ impl Compiler {
         // languages like VB do for unqualified field access. Without this,
         // dotted-name resolution that returns InstanceMember { local: "field" }
         // would fall through to global_get and read null.
-        if self.profile.implicit_self_fields && self.is_class_field(name) {
+        if self.current_class_implicit_self && self.is_class_field(name) {
             if self.emit_self_ref() {
                 let cname = self.canon(name);
                 let idx = self.str_const(&cname);
@@ -885,7 +897,7 @@ impl Compiler {
                 return;
             }
         }
-        if self.profile.implicit_self_fields && self.is_class_field(name) {
+        if self.current_class_implicit_self && self.is_class_field(name) {
             let value_slot = self.scope_mut().define("__implicit_self_value");
             self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
             if self.emit_self_ref() {
@@ -927,7 +939,7 @@ impl Compiler {
 
     /// Check if a name is a field of the current class (for implicit self resolution).
     fn is_class_field(&self, name: &str) -> bool {
-        if !self.profile.implicit_self_fields { return false; }
+        if !self.current_class_implicit_self { return false; }
         if let Some(ref class_name) = self.current_class {
             let mut current = Some(class_name.as_str());
             while let Some(cn) = current {
@@ -1608,17 +1620,17 @@ impl Compiler {
                 let cname = self.canon(name);
                 self.defined_globals.insert(cname.clone());
                 self.defined_classes.insert(cname.clone());
-                let parent = parents.first().map(|p| self.canon(p));
-                if self.profile.uses_normalize_class {
-                    // Migrated-language path (see classnormalization.md).
-                    // Walker → normalize_class → emit_class.
-                    let span = stmt.span.clone();
-                    crate::common::classes::emit::emit_class_from_ast(
-                        self, span, &cname, parents, members, modifiers,
-                    )?;
-                } else {
-                    self.compile_class(&cname, &parent, members)?;
-                }
+                let _ = parents;
+                // Every language's profile has `uses_normalize_class = true`
+                // after Phase 3. ClassDecl always goes through
+                // walker → normalize_class → emit_class → compile_class.
+                // If a new language is added that hasn't written its
+                // normalizer yet, `emit_class_from_ast` returns an error
+                // loudly rather than silently picking a legacy path.
+                let span = stmt.span.clone();
+                crate::common::classes::emit::emit_class_from_ast(
+                    self, span, &cname, parents, members, modifiers,
+                )?;
             }
 
             // ── Interface declaration ───────────────────────────────────
@@ -1659,10 +1671,18 @@ impl Compiler {
             }
 
             // ── Struct declaration (same as class) ──────────────────────
-            StmtKind::StructDecl { name, interfaces: _, members, .. } => {
+            // Structs compile through the same pipeline as classes: no
+            // parent, no interfaces (struct `interfaces` list is ignored
+            // by legacy compile_class anyway), same normalize → emit
+            // path. Treated as a parent-less class by the walker's
+            // normalize_class for the active language.
+            StmtKind::StructDecl { name, members, .. } => {
                 let cn = self.canon(name);
                 self.defined_globals.insert(cn.clone());
-                self.compile_class(&cn, &None, members)?;
+                let span = stmt.span.clone();
+                crate::common::classes::emit::emit_class_from_ast(
+                    self, span, &cn, &[], members, &crate::ast::ClassModifiers::default(),
+                )?;
             }
 
             // ── Module declaration (VB) ─────────────────────────────────

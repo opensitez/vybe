@@ -15,9 +15,6 @@ result_slot_name = "__result__"        # internal — not user-visible (VB users
 self_keyword = "me"
 base_keyword = "mybase"
 constructor_name = "New"               # Sub New()
-separated_methods = false              # methods live inside class body
-implicit_self_fields = true            # bare field names resolve to Me.field inside class
-explicit_self_param = false            # Me is implicit, not a param
 enum_as_ordinals = false
 case_sensitive = false
 string_indexing = "one_based"          # Mid(), InStr() are 1-based
@@ -25,9 +22,6 @@ array_upper_bound_inclusive = true     # Dim arr(5) means 0..5 inclusive (6 elem
 parens_for_index = true                # arr(i) not arr[i] — () is both call and index
 entry_point = "main"                   # auto-call Main if defined
 # VB-specific compiler behaviors
-partial_classes = true                 # merge Partial Class declarations before compiling
-auto_base_call = true                  # auto-call parent ctor if body has no explicit super
-auto_init_methods = ["InitializeComponent"]  # auto-call in ctor if class defines it
 byref_boxing = true                    # ByRef args wrapped in single-element arrays for call-by-reference
 with_block = true                      # With obj ... End With — bare .Member resolves to With target
 new_with_initializer = true            # New Foo() With { .Prop = val }
@@ -36,8 +30,8 @@ linq_queries = true                    # LINQ query syntax compiled to method ch
 # Route `class` declarations through common::classes::normalize_class
 # + emit_class (see classnormalization.md). VB walker already injects
 # implicit MyBase.New() and AddHandler statements into ctor bodies;
-# the normalizer just maps method names to canonical (ToString →
-# tostring, GetEnumerator → iterator, etc.) and populates
+# the normalizer maps method names to canonical (ToString →
+# tostring, GetEnumerator → iterator, etc.) and populates the class's
 # `auto_init_methods` when InitializeComponent is defined.
 uses_normalize_class = true
 

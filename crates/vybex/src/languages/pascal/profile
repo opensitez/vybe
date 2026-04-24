@@ -12,9 +12,6 @@ function_return = "result_slot"        # Pascal uses Result := value
 self_keyword = "self"
 base_keyword = "inherited"
 constructor_name = "Create"            # constructor Create;
-separated_methods = true               # methods implemented outside class body (TFoo.Method)
-implicit_self_fields = true            # bare field names resolve to Self.field inside methods
-explicit_self_param = false            # Self is implicit, not a param
 enum_as_ordinals = true                # enums are ordinal values in Pascal
 case_sensitive = false                 # Pascal is case-insensitive
 string_indexing = "one_based"          # Pascal strings are 1-based
@@ -24,8 +21,6 @@ entry_point = "main"                   # program body is the entry point
 hoist_var = false
 dynamic_add = false
 commonjs_require = false
-partial_classes = false
-auto_base_call = true
 byref_boxing = false
 # Route `class` declarations through common::classes::normalize_class
 # + emit_class (see classnormalization.md). Pascal `constructor Create`

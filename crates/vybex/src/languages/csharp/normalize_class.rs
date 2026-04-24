@@ -23,7 +23,7 @@
 //!   - Populates `auto_init_methods` for `InitializeComponent` (the
 //!     WinForms convention — C# ctors implicitly call it).
 
-use crate::ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, Statement, StmtKind, Visibility};
+use crate::ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind, Visibility};
 use crate::common::classes::{
     build_normal_method,
     canonical::{canonicalize_method, ClassLang},
@@ -161,6 +161,8 @@ pub fn normalize_class(
         is_abstract: modifiers.is_abstract,
         is_sealed: modifiers.is_sealed,
         is_partial: modifiers.is_partial,
+        explicit_self_param: false,
+        implicit_self_fields: true, // C#: bare field names resolve to this.field
         instance_fields,
         static_fields,
         instance_methods,

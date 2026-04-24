@@ -37,6 +37,20 @@ pub struct NormalClass {
     /// Flag is informational / diagnostic — `emit_class` ignores it.
     pub is_partial: bool,
 
+    /// Every instance method (including the constructor) has `self` as
+    /// the first positional parameter, as in Python (`def f(self, …)`).
+    /// `emit_class` skips the first param when binding user parameters.
+    /// For languages where `self`/`this` is an implicit slot (JS / VB /
+    /// C# / Ruby / PHP / Dart / Pascal), this stays `false`.
+    pub explicit_self_param: bool,
+
+    /// Bare identifiers inside instance methods resolve to fields on
+    /// `self` before falling through to locals / globals, as in Python
+    /// and VB.NET. Walker-set; threaded through the compiler via
+    /// `current_class_implicit_self` so `calls.rs` / expression
+    /// resolution can honour it without consulting the profile.
+    pub implicit_self_fields: bool,
+
     pub instance_fields: Vec<NormalField>,
     pub static_fields: Vec<NormalField>,
     pub instance_methods: Vec<NormalMethod>,

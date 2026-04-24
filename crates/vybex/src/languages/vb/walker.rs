@@ -1031,7 +1031,7 @@ fn inject_handles_into_constructor(members: &mut Vec<ClassMember>) {
         members.push(ClassMember::Constructor {
             params: Vec::new(),
             body: new_stmts,
-            base_args: None,  // compiler handles auto_base_call via profile
+            base_args: None,  // VB walker injects MyBase.New() into the body; no base_args needed here
             visibility: Visibility::Public,
         });
     } else {

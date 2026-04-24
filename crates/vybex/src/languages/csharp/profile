@@ -12,16 +12,10 @@ function_return = "explicit"
 self_keyword = "this"
 base_keyword = "base"
 constructor_name = "ctor"
-separated_methods = false
-implicit_self_fields = true
-explicit_self_param = false
 enum_as_ordinals = true
 case_sensitive = true
 string_indexing = "zero_based"
 entry_point = "Main"
-partial_classes = true
-auto_base_call = true
-auto_init_methods = ["InitializeComponent"]  # auto-call in ctor if class defines it
 dynamic_add = true
 # Route `class` declarations through common::classes::normalize_class
 # + emit_class (see classnormalization.md).

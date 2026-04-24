@@ -21,7 +21,7 @@
 //!     emit whatever the walker produced (consistent with Python's
 //!     own "consenting adults" philosophy).
 
-use crate::ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, Statement, StmtKind};
+use crate::ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind};
 use crate::common::classes::{
     build_normal_method,
     canonical::{canonicalize_method, ClassLang},
@@ -157,6 +157,8 @@ pub fn normalize_class(
         is_abstract: modifiers.is_abstract,
         is_sealed: modifiers.is_sealed,
         is_partial: false,
+        explicit_self_param: true,
+        implicit_self_fields: false,
         instance_fields,
         static_fields,
         instance_methods,

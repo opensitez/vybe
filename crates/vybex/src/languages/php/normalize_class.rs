@@ -16,7 +16,7 @@
 //!   - `abstract class` / `final class` → `is_abstract` / `is_sealed`.
 //!   - `class Foo implements I1, I2` → `interfaces`.
 
-use crate::ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, Statement, StmtKind, Visibility};
+use crate::ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind, Visibility};
 use crate::common::classes::{
     build_normal_method,
     canonical::{canonicalize_method, ClassLang},
@@ -144,6 +144,8 @@ pub fn normalize_class(
         is_abstract: modifiers.is_abstract,
         is_sealed: modifiers.is_sealed,
         is_partial: false,
+        explicit_self_param: false,
+        implicit_self_fields: false, // PHP requires `$this->field`
         instance_fields,
         static_fields,
         instance_methods,

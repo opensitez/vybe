@@ -6,33 +6,27 @@
 //! reaching here. Read `types.rs` and `canonical.rs` for the data
 //! contract; `classnormalization.md` for the full architecture.
 //!
-//! # Phase status (Phase 2b.1 — adapter shim)
+//! # Phase status (Phase 2b.1 — consolidated shim)
 //!
-//! Currently `emit_class` reconstructs an AST `ClassMember[]` from
-//! `NormalClass` and delegates to the legacy `Compiler::compile_class`
-//! orchestration. This is a **deliberate no-op port**: the new path
-//! is wired end-to-end (walker → normalize_class → emit_class →
-//! legacy compile_class), but emits byte-for-byte equivalent bytecode.
-//! Proves the plumbing works; pinpoints regressions to the wiring
-//! rather than the port.
-//!
-//! Phase 2b.2 replaces the adapter body with a direct orchestration
-//! against `emitter/classes.rs` primitives, one concern at a time
-//! (fields → methods → ctor → properties → specials). Each step keeps
-//! JS test results steady or improving.
+//! After Phase 3 landed all 8 languages on the `normalize_class` path,
+//! this file collapsed to two thin functions: `emit_class_from_ast`
+//! (dispatches to the per-language normalizer) and `emit_class` (hands
+//! the `NormalClass` to `Compiler::compile_class`). The
+//! `NormalClass → ClassMember` reconstruction that the legacy
+//! orchestration still consumes now lives inside `compile_class`
+//! itself — see `reconstruct_members_for_compile` in
+//! `compiler/classes.rs`. Phase 2b.2 eliminates that reconstruction
+//! by porting each pass of `compile_class` to read `NormalClass`
+//! fields directly.
 
 use super::types::*;
-use crate::ast::{
-    Argument, ClassMember, ClassModifiers, Expression, ExprKind, Modifiers, Param, PassBy,
-    PropertySetter, Span, Statement, StmtKind, Visibility,
-};
+use crate::ast::{ClassMember, ClassModifiers, Span};
 use crate::compiler::Compiler;
 use crate::languages::js;
 
 /// Entry point from `compile_stmt`. Receives the raw AST fields from
 /// `StmtKind::ClassDecl`, normalises per language, then hands off to
-/// `emit_class`. Keeping the AST-to-NormalClass dispatch here (not in
-/// the compiler) concentrates language dispatch in one file.
+/// `emit_class`.
 pub fn emit_class_from_ast(
     compiler: &mut Compiler,
     span: Span,
@@ -53,11 +47,13 @@ pub fn emit_class_from_ast(
     emit_class(compiler, nc)
 }
 
+/// Compile a `NormalClass` — the compiler-neutral entry point.
+pub fn emit_class(compiler: &mut Compiler, class: NormalClass) -> Result<(), String> {
+    compiler.compile_class(&class)
+}
+
 /// Dispatch `normalize_class` to the right language implementation based
-/// on the profile name. Each language opts in independently as it
-/// grows a normalizer; until then, the profile-level
-/// `uses_normalize_class` flag stays `false` and this function is
-/// unreachable for that language.
+/// on the profile name.
 fn normalize_for_profile(
     lang: &str,
     span: Span,
@@ -100,146 +96,3 @@ fn normalize_for_profile(
         )),
     }
 }
-
-/// Compile a `NormalClass` — the compiler-neutral entry point.
-///
-/// Phase 2b.1 implementation: reconstruct the equivalent AST
-/// `ClassMember[]` and hand off to the legacy `Compiler::compile_class`.
-/// This is a shim — no NormalClass-specific emission happens yet.
-pub fn emit_class(compiler: &mut Compiler, class: NormalClass) -> Result<(), String> {
-    let cname = compiler.canon(&class.name);
-    let parent_canonical = class.parent.as_ref().map(|p| compiler.canon(p));
-    let members = reconstruct_members(&class);
-    compiler.compile_class(&cname, &parent_canonical, &members)
-}
-
-/// Rebuild a `Vec<ClassMember>` from a `NormalClass` so the legacy
-/// `compile_class` orchestration can consume it unchanged. Used only
-/// by the Phase 2b.1 shim — Phase 2b.2 removes this in favour of
-/// direct emission.
-fn reconstruct_members(class: &NormalClass) -> Vec<ClassMember> {
-    let mut members: Vec<ClassMember> = Vec::new();
-
-    // Constructor — single entry; named constructors (Dart) aren't
-    // a JS concept and aren't exercised on the pilot path.
-    if let Some(ctor) = &class.constructor {
-        let base_args = match &ctor.base_call {
-            BaseCall::Explicit(args) => Some(args.iter().map(|a| a.value.clone()).collect()),
-            BaseCall::Auto | BaseCall::None => None,
-        };
-        members.push(ClassMember::Constructor {
-            params: ctor.params.clone(),
-            body: ctor.body.clone(),
-            base_args,
-            visibility: Visibility::Public,
-        });
-    }
-
-    // Instance fields.
-    for f in &class.instance_fields {
-        members.push(ClassMember::Field {
-            name: f.name.clone(),
-            type_hint: None,
-            init: f.init.clone(),
-            modifiers: Modifiers { is_static: false, ..Default::default() },
-            with_events: false,
-            array_bounds: None,
-        });
-    }
-
-    // Static fields — flagged on Modifiers.
-    for f in &class.static_fields {
-        members.push(ClassMember::Field {
-            name: f.name.clone(),
-            type_hint: None,
-            init: f.init.clone(),
-            modifiers: Modifiers { is_static: true, ..Default::default() },
-            with_events: false,
-            array_bounds: None,
-        });
-    }
-
-    // Instance methods — emit each with its `source_name` (not canonical)
-    // so the legacy pipeline produces the same bytecode it always did.
-    // The canonical-name bookkeeping is Phase 2b.2 territory.
-    for m in &class.instance_methods {
-        members.push(ClassMember::Method(Box::new(method_to_stmt(m, false))));
-    }
-    for m in &class.static_methods {
-        members.push(ClassMember::Method(Box::new(method_to_stmt(m, true))));
-    }
-
-    // Events / Consts / NestedTypes the normalizer didn't explicitly
-    // model — forward verbatim so legacy `compile_class` still sees them.
-    for m in &class.raw_extra_members {
-        members.push(m.clone());
-    }
-
-    // Properties.
-    for p in &class.properties {
-        let getter_body = p.getter.as_ref().map(|g| g.body.clone());
-        let setter = p.setter.as_ref().map(|s| PropertySetter {
-            param: s.params.first().cloned().unwrap_or_else(|| Param {
-                name: "value".into(),
-                type_hint: None,
-                default: None,
-                pass_by: PassBy::Value,
-                is_rest: false,
-                is_kwargs: false,
-                is_optional: false,
-                is_nullable: false,
-            }),
-            body: s.body.clone(),
-        });
-        members.push(ClassMember::Property {
-            name: p.source_name.clone(),
-            type_hint: None,
-            getter: getter_body,
-            setter,
-            is_auto: p.auto_field.is_some(),
-            modifiers: Modifiers::default(),
-        });
-    }
-
-    members
-}
-
-fn method_to_stmt(m: &NormalMethod, is_static: bool) -> Statement {
-    // Start from the walker's raw modifiers to preserve every
-    // language-specific flag (is_readonly, is_shared, is_extension,
-    // is_overloads, is_not_overridable, decorators). Then stamp the
-    // canonical NormalMethod fields on top so they authoritatively
-    // win if they ever diverge from the raw struct.
-    let mut modifiers = m.raw_modifiers.clone();
-    modifiers.is_static = is_static;
-    modifiers.is_abstract = m.is_abstract;
-    modifiers.is_override = m.is_override;
-    modifiers.is_virtual = m.is_virtual;
-    modifiers.visibility = access_to_visibility(m.access);
-
-    Statement::new(StmtKind::FunctionDecl {
-        name: m.source_name.clone(),
-        params: m.params.clone(),
-        return_type: m.return_type.clone(),
-        body: m.body.clone(),
-        modifiers,
-        handles: vec![],
-        is_async: m.is_async,
-        is_generator: m.is_generator,
-        is_sub: m.is_sub,
-    })
-}
-
-/// Invert `access_from_visibility` for reconstruction paths.
-fn access_to_visibility(a: Access) -> Visibility {
-    match a {
-        Access::Public => Visibility::Public,
-        Access::Protected => Visibility::Protected,
-        Access::Private => Visibility::Private,
-        Access::Internal => Visibility::Internal,
-    }
-}
-
-// Silence rust-unused warnings on AST types that this module re-exports
-// implicitly through the reconstruction path.
-const _USED: fn() -> Option<ExprKind> = || None;
