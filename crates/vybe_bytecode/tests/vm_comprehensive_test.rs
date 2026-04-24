@@ -11,7 +11,7 @@ use std::sync::Arc;
 // push grow the array?) rather than opcode dispatch, and that
 // surface now belongs to `vybe_host` — see
 // `crates/vybe_host/tests/js_builtins_behavior_test.rs` which
-// already has 76 behavioural tests covering the `wasm:js-array.*`
+// already has 76 behavioural tests covering the `vybe:js-array.*`
 // handlers end-to-end.
 //
 // What remains here is only VM opcode dispatch: core arithmetic,
@@ -1157,7 +1157,7 @@ fn array_set() {
 
 // Phase E: these five tests used to drive the removed `0xFF` ARRAY_*
 // opcodes (push/pop/join/concat/reverse). Rewritten to exercise the
-// `wasm:js-array.*` imports the VM now dispatches — same runtime
+// `vybe:js-array.*` imports the VM now dispatches — same runtime
 // behaviour, spec-compliant surface.
 
 #[test]

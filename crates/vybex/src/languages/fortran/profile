@@ -55,19 +55,19 @@ int           = { emit = "opcode:to_int",                  min_args = 1, max_arg
 
 # ── Math — host calls ───────────────────────────────────────────────────────
 
-sin           = { emit = "host:vybe:math:sin",             min_args = 1, max_args = 1 }
-cos           = { emit = "host:vybe:math:cos",             min_args = 1, max_args = 1 }
-tan           = { emit = "host:vybe:math:tan",             min_args = 1, max_args = 1 }
-asin          = { emit = "host:vybe:math:asin",            min_args = 1, max_args = 1 }
-acos          = { emit = "host:vybe:math:acos",            min_args = 1, max_args = 1 }
-atan          = { emit = "host:vybe:math:atan",            min_args = 1, max_args = 1 }
-atan2         = { emit = "host:vybe:math:atan2",           min_args = 2, max_args = 2 }
-exp           = { emit = "host:vybe:math:exp",             min_args = 1, max_args = 1 }
-log           = { emit = "host:vybe:math:log",             min_args = 1, max_args = 1 }
-log10         = { emit = "host:vybe:math:log10",           min_args = 1, max_args = 1 }
-mod           = { emit = "host:vybe:math:fmod",            min_args = 2, max_args = 2 }
-sign          = { emit = "host:vybe:math:sign",            min_args = 2, max_args = 2 }
-random_number = { emit = "host:wasi:random:random",        min_args = 0, max_args = 0 }
+sin           = { emit = "host:vybe:js-math:sin",             min_args = 1, max_args = 1 }
+cos           = { emit = "host:vybe:js-math:cos",             min_args = 1, max_args = 1 }
+tan           = { emit = "host:vybe:js-math:tan",             min_args = 1, max_args = 1 }
+asin          = { emit = "host:vybe:js-math:asin",            min_args = 1, max_args = 1 }
+acos          = { emit = "host:vybe:js-math:acos",            min_args = 1, max_args = 1 }
+atan          = { emit = "host:vybe:js-math:atan",            min_args = 1, max_args = 1 }
+atan2         = { emit = "host:vybe:js-math:atan2",           min_args = 2, max_args = 2 }
+exp           = { emit = "host:vybe:js-math:exp",             min_args = 1, max_args = 1 }
+log           = { emit = "host:vybe:js-math:log",             min_args = 1, max_args = 1 }
+log10         = { emit = "host:vybe:js-math:log10",           min_args = 1, max_args = 1 }
+mod           = { emit = "host:vybe:js-math:fmod",            min_args = 2, max_args = 2 }
+sign          = { emit = "host:vybe:js-math:sign",            min_args = 2, max_args = 2 }
+random_number = { emit = "host:vybe:random:random",        min_args = 0, max_args = 0 }
 
 # ── String functions ─────────────────────────────────────────────────────────
 

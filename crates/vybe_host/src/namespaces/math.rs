@@ -8,7 +8,7 @@ pub fn register(vm: &mut VM) {
         "sin", "cos", "tan", "log", "sign", "trunc", "log2", "log10",
         "cbrt", "hypot", "atan2", "asin", "acos", "atan", "exp", "clz32",
     ] {
-        set_prop(&math, name, host_fn_ref(vm, "vybe:math", name));
+        set_prop(&math, name, host_fn_ref(vm, "vybe:js-math", name));
     }
     set_prop(&math, "pi", Value::F64(std::f64::consts::PI));
     set_prop(&math, "e", Value::F64(std::f64::consts::E));
@@ -20,7 +20,7 @@ pub fn register(vm: &mut VM) {
         "sin", "cos", "tan", "log", "sign", "trunc", "log2", "log10",
         "cbrt", "hypot", "atan2", "asin", "acos", "atan", "exp",
     ] {
-        set_prop(&sys_math, name, host_fn_ref(vm, "vybe:math", name));
+        set_prop(&sys_math, name, host_fn_ref(vm, "vybe:js-math", name));
     }
     set_prop(&sys_math, "pi", Value::F64(std::f64::consts::PI));
     set_prop(&sys_math, "e", Value::F64(std::f64::consts::E));

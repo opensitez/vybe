@@ -88,14 +88,14 @@ fn capture_pre_migration_baseline() {
 
     // ── Array ops (current VM opcodes — will go away in Phase E) ──
 
-    let push_get = run_and_time("wasm:js-array.push + length", |chunk| {
+    let push_get = run_and_time("vybe:js-array.push + length", |chunk| {
         chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, 0);
         let arr_slot = 0;
         chunk.local_count = chunk.local_count.max(1);
         chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, 0);
         chunk.emit_op(Op::DROP, 0);
         // One-time import setup (chunks[0]).
-        let push_idx = chunk.add_import("wasm:js-array", "push");
+        let push_idx = chunk.add_import("vybe:js-array", "push");
 
         emit_loop(chunk, |c| {
             c.emit_op_u16(Op::LOCAL_GET, arr_slot, 0);
@@ -106,7 +106,7 @@ fn capture_pre_migration_baseline() {
             c.emit_op(Op::DROP, 0);
         });
     });
-    println!("| `wasm:js-array.push` (import) | {:.1} |", push_get);
+    println!("| `vybe:js-array.push` (import) | {:.1} |", push_get);
 
     let get_read = run_and_time("array.get (pre-populated)", |chunk| {
         // Pre-populate with one element

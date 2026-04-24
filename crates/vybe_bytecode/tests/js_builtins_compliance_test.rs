@@ -26,9 +26,9 @@ fn every_array_import_has_signature() {
     for name in js_array_builtins::IMPORTS {
         let mut buf = Vec::new();
         let ok = js_array_builtins::write_signature(&mut buf, name);
-        assert!(ok, "wasm:js-array.{} declared but no signature", name);
+        assert!(ok, "vybe:js-array.{} declared but no signature", name);
         assert!(!buf.is_empty(),
-            "wasm:js-array.{} signature is empty", name);
+            "vybe:js-array.{} signature is empty", name);
     }
 }
 
@@ -37,7 +37,7 @@ fn every_object_import_has_signature() {
     for name in js_object_builtins::IMPORTS {
         let mut buf = Vec::new();
         let ok = js_object_builtins::write_signature(&mut buf, name);
-        assert!(ok, "wasm:js-object.{} declared but no signature", name);
+        assert!(ok, "vybe:js-object.{} declared but no signature", name);
         assert!(!buf.is_empty());
     }
 }
@@ -47,7 +47,7 @@ fn every_map_import_has_signature() {
     for name in js_map_builtins::IMPORTS {
         let mut buf = Vec::new();
         let ok = js_map_builtins::write_signature(&mut buf, name);
-        assert!(ok, "wasm:js-map.{} declared but no signature", name);
+        assert!(ok, "vybe:js-map.{} declared but no signature", name);
         assert!(!buf.is_empty());
     }
 }
@@ -57,7 +57,7 @@ fn every_set_import_has_signature() {
     for name in js_set_builtins::IMPORTS {
         let mut buf = Vec::new();
         let ok = js_set_builtins::write_signature(&mut buf, name);
-        assert!(ok, "wasm:js-set.{} declared but no signature", name);
+        assert!(ok, "vybe:js-set.{} declared but no signature", name);
         assert!(!buf.is_empty());
     }
 }
@@ -67,12 +67,12 @@ fn every_weakmap_and_weakset_import_has_signature() {
     for name in js_weakmap_builtins::WEAKMAP_IMPORTS {
         let mut buf = Vec::new();
         let ok = js_weakmap_builtins::write_weakmap_signature(&mut buf, name);
-        assert!(ok, "wasm:js-weakmap.{} declared but no signature", name);
+        assert!(ok, "vybe:js-weakmap.{} declared but no signature", name);
     }
     for name in js_weakmap_builtins::WEAKSET_IMPORTS {
         let mut buf = Vec::new();
         let ok = js_weakmap_builtins::write_weakset_signature(&mut buf, name);
-        assert!(ok, "wasm:js-weakset.{} declared but no signature", name);
+        assert!(ok, "vybe:js-weakset.{} declared but no signature", name);
     }
 }
 
@@ -81,17 +81,17 @@ fn every_arraybuffer_import_has_signature() {
     for name in js_arraybuffer_builtins::ARRAYBUFFER_IMPORTS {
         let mut buf = Vec::new();
         let ok = js_arraybuffer_builtins::write_arraybuffer_signature(&mut buf, name);
-        assert!(ok, "wasm:js-arraybuffer.{} declared but no signature", name);
+        assert!(ok, "vybe:js-arraybuffer.{} declared but no signature", name);
     }
     for name in js_arraybuffer_builtins::SHAREDARRAYBUFFER_IMPORTS {
         let mut buf = Vec::new();
         let ok = js_arraybuffer_builtins::write_sharedarraybuffer_signature(&mut buf, name);
-        assert!(ok, "wasm:js-sharedarraybuffer.{} declared but no signature", name);
+        assert!(ok, "vybe:js-sharedarraybuffer.{} declared but no signature", name);
     }
     for name in js_arraybuffer_builtins::DATAVIEW_IMPORTS {
         let mut buf = Vec::new();
         let ok = js_arraybuffer_builtins::write_dataview_signature(&mut buf, name);
-        assert!(ok, "wasm:js-dataview.{} declared but no signature", name);
+        assert!(ok, "vybe:js-dataview.{} declared but no signature", name);
     }
 }
 
@@ -137,16 +137,16 @@ fn rejects_unknown_import_names() {
 
 #[test]
 fn module_names_follow_wasm_js_convention() {
-    assert_eq!(js_array_builtins::MODULE, "wasm:js-array");
-    assert_eq!(js_object_builtins::MODULE, "wasm:js-object");
-    assert_eq!(js_map_builtins::MODULE, "wasm:js-map");
-    assert_eq!(js_set_builtins::MODULE, "wasm:js-set");
-    assert_eq!(js_weakmap_builtins::WEAKMAP_MODULE, "wasm:js-weakmap");
-    assert_eq!(js_weakmap_builtins::WEAKSET_MODULE, "wasm:js-weakset");
-    assert_eq!(js_arraybuffer_builtins::ARRAYBUFFER_MODULE, "wasm:js-arraybuffer");
+    assert_eq!(js_array_builtins::MODULE, "vybe:js-array");
+    assert_eq!(js_object_builtins::MODULE, "vybe:js-object");
+    assert_eq!(js_map_builtins::MODULE, "vybe:js-map");
+    assert_eq!(js_set_builtins::MODULE, "vybe:js-set");
+    assert_eq!(js_weakmap_builtins::WEAKMAP_MODULE, "vybe:js-weakmap");
+    assert_eq!(js_weakmap_builtins::WEAKSET_MODULE, "vybe:js-weakset");
+    assert_eq!(js_arraybuffer_builtins::ARRAYBUFFER_MODULE, "vybe:js-arraybuffer");
     assert_eq!(js_arraybuffer_builtins::SHAREDARRAYBUFFER_MODULE,
-        "wasm:js-sharedarraybuffer");
-    assert_eq!(js_arraybuffer_builtins::DATAVIEW_MODULE, "wasm:js-dataview");
+        "vybe:js-sharedarraybuffer");
+    assert_eq!(js_arraybuffer_builtins::DATAVIEW_MODULE, "vybe:js-dataview");
 
     // Each typed-array variant follows `wasm:js-<type>array` naming.
     for variant in js_typedarray_builtins::VARIANTS {
@@ -230,7 +230,7 @@ fn decode_leb128_u32(bytes: &[u8]) -> (u32, usize) {
 
 #[test]
 fn array_push_signature_is_externref_externref_to_i32() {
-    // wasm:js-array.push: (arr: externref, v: externref) -> i32
+    // vybe:js-array.push: (arr: externref, v: externref) -> i32
     // Matches ECMA-262 §23.1.3.32 (returns the array's new length).
     let mut buf = Vec::new();
     assert!(js_array_builtins::write_signature(&mut buf, "push"));
@@ -379,7 +379,7 @@ fn array_surface_covers_mdn_prototype_methods() {
     ];
     for name in required {
         assert!(js_array_builtins::IMPORTS.contains(name),
-            "wasm:js-array missing required `{}` per ECMA-262 §23.1.3", name);
+            "vybe:js-array missing required `{}` per ECMA-262 §23.1.3", name);
     }
 }
 
@@ -391,7 +391,7 @@ fn map_surface_covers_mdn_prototype_methods() {
     ];
     for name in required {
         assert!(js_map_builtins::IMPORTS.contains(name),
-            "wasm:js-map missing required `{}` per ECMA-262 §24.1.3", name);
+            "vybe:js-map missing required `{}` per ECMA-262 §24.1.3", name);
     }
 }
 
@@ -407,7 +407,7 @@ fn set_surface_covers_mdn_prototype_methods_including_es2025() {
     ];
     for name in required {
         assert!(js_set_builtins::IMPORTS.contains(name),
-            "wasm:js-set missing required `{}` per ECMA-262 §24.2 + ES2025 set algebra", name);
+            "vybe:js-set missing required `{}` per ECMA-262 §24.2 + ES2025 set algebra", name);
     }
 }
 
@@ -424,10 +424,10 @@ fn dataview_has_all_get_and_set_variants() {
         let setter = format!("set{}", ty);
         assert!(js_arraybuffer_builtins::DATAVIEW_IMPORTS
             .iter().any(|s| *s == getter.as_str()),
-            "wasm:js-dataview missing {}", getter);
+            "vybe:js-dataview missing {}", getter);
         assert!(js_arraybuffer_builtins::DATAVIEW_IMPORTS
             .iter().any(|s| *s == setter.as_str()),
-            "wasm:js-dataview missing {}", setter);
+            "vybe:js-dataview missing {}", setter);
     }
 }
 
@@ -453,7 +453,7 @@ fn object_surface_covers_mdn_static_and_prototype_methods() {
     ];
     for name in required {
         assert!(js_object_builtins::IMPORTS.contains(name),
-            "wasm:js-object missing required `{}` per ECMA-262 §20.1", name);
+            "vybe:js-object missing required `{}` per ECMA-262 §20.1", name);
     }
 }
 

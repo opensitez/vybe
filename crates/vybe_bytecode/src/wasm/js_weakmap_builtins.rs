@@ -1,4 +1,4 @@
-//! # wasm:js-weakmap and wasm:js-weakset builtins
+//! # vybe:js-weakmap and vybe:js-weakset builtins
 //!
 //! Host imports for `WeakMap.prototype.*` / `WeakSet.prototype.*`
 //! per ECMA-262 §24.3 / §24.4.
@@ -10,8 +10,8 @@
 
 use super::encoding::*;
 
-pub const WEAKMAP_MODULE: &str = "wasm:js-weakmap";
-pub const WEAKSET_MODULE: &str = "wasm:js-weakset";
+pub const WEAKMAP_MODULE: &str = "vybe:js-weakmap";
+pub const WEAKSET_MODULE: &str = "vybe:js-weakset";
 
 pub const WEAKMAP_IMPORTS: &[&str] = &[
     "new",

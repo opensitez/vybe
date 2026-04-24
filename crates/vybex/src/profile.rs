@@ -250,7 +250,7 @@ pub enum BuiltinEmit {
     StrLength,
     /// Emit nothing (no-op, e.g. randomize, free)
     Noop,
-    /// Dynamic method dispatch via `wasm:js-value.invokeMethod`.
+    /// Dynamic method dispatch via `vybe:js-value.invokeMethod`.
     /// Used for methods with polymorphic receiver types (JS `str.slice` vs
     /// `arr.slice`) — runtime picks the right implementation based on the
     /// receiver. Args are compiled as `[receiver, arg1, ..., argN]` and

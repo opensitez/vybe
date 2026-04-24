@@ -1,4 +1,4 @@
-//! # wasm:js-json builtins
+//! # vybe:js-json builtins
 //!
 //! Host imports that satisfy `JSON.stringify` / `JSON.parse` per
 //! ECMA-262 §25.5. Follows the same `wasm:js-*` builtin pattern as
@@ -7,7 +7,7 @@
 
 use super::encoding::*;
 
-pub const MODULE: &str = "wasm:js-json";
+pub const MODULE: &str = "vybe:js-json";
 
 pub const IMPORTS: &[&str] = &[
     "stringify",   // JSON.stringify(value, replacer?, space?)

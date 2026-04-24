@@ -38,7 +38,7 @@ pub fn static_method_mappings() -> &'static [DotnetStaticMethodMapping] {
 pub fn namespace_to_host_module(prefix: &str) -> Option<&'static str> {
     match prefix {
         "system.console" => Some("wasi:cli"),
-        "system.math" => Some("vybe:math"),
+        "system.math" => Some("vybe:js-math"),
         "system.convert" => Some("vybe:convert"),
         "system.string" => Some("vybe:string"),
         "system.array" => Some("vybe:array"),
@@ -46,7 +46,11 @@ pub fn namespace_to_host_module(prefix: &str) -> Option<&'static str> {
         "system.io.streamreader" | "system.io.streamwriter" => Some("dotnet:io"),
         "system.io" | "system.io.file" | "system.io.path" | "system.io.directory" => Some("wasi:filesystem"),
         "system.threading.thread" => Some("wasi:clocks"),
-        "system.threading" | "system.threading.tasks" => Some("vybe:threading"),
+        // System.Threading / Tasks: spawn+join compile to Op::THREAD_SPAWN /
+        // Op::THREAD_JOIN; sleep uses wasi:clocks; Task/Thread class types
+        // are registered in the TypeRegistry but carry no host-fn namespace.
+        // Return None so the FQN resolver falls through to the type registry
+        // rather than pointing at a dead `vybe:threading` module.
         "system.diagnostics.process" => Some("vybe:types"),
         "system.diagnostics.stopwatch" => Some("wasi:clocks"),
         "system.diagnostics.debug" | "system.diagnostics.trace" | "system.diagnostics" => Some("wasi:cli"),
@@ -67,7 +71,7 @@ pub fn namespace_to_host_module(prefix: &str) -> Option<&'static str> {
 
 pub fn map_host_func(module: &str, func: &str) -> Option<String> {
     match (module, func) {
-        ("vybe:math", f) => Some(f.to_string()),
+        ("vybe:js-math", f) => Some(f.to_string()),
         _ => None,
     }
 }

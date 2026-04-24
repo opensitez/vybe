@@ -1,4 +1,4 @@
-//! # `wasm:js-structured-clone` host handler
+//! # `vybe:js-structured-clone` host handler
 //!
 //! Implements the HTML structured-clone algorithm: deep-copy across
 //! Array / Object / Map / Set / ArrayBuffer / TypedArray / DataView /
@@ -18,7 +18,7 @@ use vybe_bytecode::value::{
 use vybe_bytecode::VM;
 
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn("wasm:js-structured-clone", "clone",
+    vm.register_host_fn("vybe:js-structured-clone", "clone",
         Box::new(|_ctx, args| {
             let value = args.first().cloned().unwrap_or(Value::Undefined);
             let mut seen: HashMap<usize, Value> = HashMap::new();

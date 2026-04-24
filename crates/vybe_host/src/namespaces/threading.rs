@@ -1,30 +1,17 @@
 use super::*;
 
 pub fn register(vm: &mut VM) {
-    // System.Threading.Tasks.Task
-    let task = ensure_namespace(vm, &["System", "Threading", "Tasks", "Task"]);
-    set_prop(&task, "run", host_fn_ref(vm, "vybe:threading", "taskRun"));
-    set_prop(&task, "delay", host_fn_ref(vm, "vybe:threading", "taskDelay"));
-    set_prop(&task, "fromresult", host_fn_ref(vm, "vybe:threading", "taskFromResult"));
-    set_prop(&task, "completedtask", host_fn_ref(vm, "vybe:threading", "taskCompleted"));
-    set_prop(&task, "whenall", host_fn_ref(vm, "vybe:threading", "taskCompleted")); // simplified
-    set_prop(&task, "whenany", host_fn_ref(vm, "vybe:threading", "taskCompleted")); // simplified
+    // System.Threading.Tasks.Task — spawn/join compile to Op::THREAD_SPAWN /
+    // Op::THREAD_JOIN (WASM threads proposal) via compiler_common::threading.
+    // No namespace host fns: `Task.Run(fn)` goes through the compiler's
+    // method-call path, not property lookup.
+    ensure_namespace(vm, &["System", "Threading", "Tasks", "Task"]);
+    ensure_namespace(vm, &["Task"]);
 
-    // Bare Task alias
-    let task_bare = ensure_namespace(vm, &["Task"]);
-    set_prop(&task_bare, "run", host_fn_ref(vm, "vybe:threading", "taskRun"));
-    set_prop(&task_bare, "delay", host_fn_ref(vm, "vybe:threading", "taskDelay"));
-    set_prop(&task_bare, "fromresult", host_fn_ref(vm, "vybe:threading", "taskFromResult"));
-    set_prop(&task_bare, "completedtask", host_fn_ref(vm, "vybe:threading", "taskCompleted"));
-    set_prop(&task_bare, "whenall", host_fn_ref(vm, "vybe:threading", "taskCompleted"));
-    set_prop(&task_bare, "whenany", host_fn_ref(vm, "vybe:threading", "taskCompleted"));
-
-    // System.Diagnostics.Stopwatch
+    // System.Diagnostics.Stopwatch — real WASI clocks backing.
     let sw = ensure_namespace(vm, &["System", "Diagnostics", "Stopwatch"]);
     set_prop(&sw, "startnew", host_fn_ref(vm, "wasi:clocks", "stopwatchNew"));
     set_prop(&sw, "new", host_fn_ref(vm, "wasi:clocks", "stopwatchNew"));
-
-    // Bare Stopwatch alias
     let sw_bare = ensure_namespace(vm, &["Stopwatch"]);
     set_prop(&sw_bare, "startnew", host_fn_ref(vm, "wasi:clocks", "stopwatchNew"));
     set_prop(&sw_bare, "new", host_fn_ref(vm, "wasi:clocks", "stopwatchNew"));
@@ -49,23 +36,22 @@ pub fn register(vm: &mut VM) {
     set_prop(&proc_ns, "start", host_fn_ref(vm, "vybe:types", "processStart"));
     set_prop(&proc_ns, "getcurrentprocess", host_fn_ref(vm, "vybe:types", "processGetCurrent"));
 
-    // System.Random
-    let rnd = ensure_namespace(vm, &["System", "Random"]);
-    set_prop(&rnd, "new", host_fn_ref(vm, "vybe:threading", "randomNew"));
+    // System.Random — constructor bound via known_types ctor_mapping in
+    // builtin_types.rs. No namespace host fn needed; `new Random()` goes
+    // through the compiler's construction path.
+    ensure_namespace(vm, &["System", "Random"]);
+    ensure_namespace(vm, &["Random"]);
 
-    // Also direct shortcut
-    let rnd_short = ensure_namespace(vm, &["Random"]);
-    set_prop(&rnd_short, "new", host_fn_ref(vm, "vybe:threading", "randomNew"));
-
-    // System.Threading.Thread
+    // System.Threading.Thread — Sleep uses real WASI clocks. Spawn/Start
+    // compile to Op::THREAD_SPAWN via compiler_common::threading.
     let thread = ensure_namespace(vm, &["System", "Threading", "Thread"]);
     set_prop(&thread, "sleep", host_fn_ref(vm, "wasi:clocks", "sleep"));
     let thread_bare = ensure_namespace(vm, &["Thread"]);
     set_prop(&thread_bare, "sleep", host_fn_ref(vm, "wasi:clocks", "sleep"));
 
-    // System.Threading.Timer
-    let timer_ns = ensure_namespace(vm, &["System", "Threading", "Timer"]);
-    set_prop(&timer_ns, "new", host_fn_ref(vm, "vybe:threading", "taskDelay")); // simplified
-    let timer_bare = ensure_namespace(vm, &["Timer"]);
-    set_prop(&timer_bare, "new", host_fn_ref(vm, "vybe:threading", "taskDelay")); // simplified
+    // System.Threading.Timer — not yet rewired to wasi:clocks. Placeholder
+    // namespace keeps lookups non-null; actual `new Timer(...)` will fail
+    // until a WASI-backed timer primitive lands.
+    ensure_namespace(vm, &["System", "Threading", "Timer"]);
+    ensure_namespace(vm, &["Timer"]);
 }

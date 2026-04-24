@@ -141,7 +141,7 @@ pub struct VM {
     /// authoritative per-module view lives in `modules`.
     pub host_registry: HashMap<(String, String), usize>,
     /// ECMA-262 §16.2.1 Abstract Module Records, keyed by canonical
-    /// specifier (`"wasi:cli/environment"`, `"wasm:js-math"`, etc.).
+    /// specifier (`"wasi:cli/environment"`, `"vybe:js-math"`, etc.).
     /// Populated by `register_host_fn` and the ESM-Integration
     /// `.wasm` loader. The Linker phase of the compiler reads from
     /// here. See `esmhostplan.md` for the migration plan.

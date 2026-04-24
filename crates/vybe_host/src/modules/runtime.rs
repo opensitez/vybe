@@ -120,6 +120,39 @@ pub fn register(vm: &mut VM) {
         // This stores the label name so error handlers can dispatch.
         args.first().cloned().unwrap_or(Value::Null)
     }));
+
+    // ── Async Task runtime — .NET/JS Promise-compat helpers ────────────
+    //
+    // Task.Delay(ms) lowers here. Builds a Task object with
+    // `iscompleted=false`, spawns a native OS thread that sleeps for `ms`
+    // using wasi:clocks-compatible semantics (std::thread::sleep), then
+    // flips `iscompleted=true`. The thread-spawn path is conceptually
+    // what `wasi.thread-spawn` (wasi-preview1 threads proposal) provides;
+    // using std::thread here is an implementation detail.
+    //
+    // Lives in `vybe:runtime` because async Task is a .NET/Promise
+    // language runtime construct, not a WASI primitive. WASI provides
+    // the underlying sleep / pollable primitives; the Task wrapper is
+    // language-level.
+    vm.register_host_fn("vybe:runtime", "taskDelay", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let ms = args.first().map(|v| v.as_f64() as u64).unwrap_or(0);
+        let mut obj = Object::new();
+        obj.properties.insert("__type".into(), Value::String(Arc::from("Task")));
+        obj.properties.insert("iscompleted".into(), Value::Bool(false));
+        obj.properties.insert("isalive".into(), Value::Bool(true));
+        obj.properties.insert("result".into(), Value::Null);
+        obj.properties.insert("status".into(), Value::String(Arc::from("WaitingForActivation")));
+        let task_obj = Arc::new(Mutex::new(obj));
+        let task_for_child = task_obj.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+            let mut task = task_for_child.lock().unwrap();
+            task.properties.insert("iscompleted".into(), Value::Bool(true));
+            task.properties.insert("isalive".into(), Value::Bool(false));
+            task.properties.insert("status".into(), Value::String(Arc::from("RanToCompletion")));
+        });
+        Value::Object(task_obj)
+    }));
 }
 
 fn make_error(kind: &str, args: &[Value]) -> Value {

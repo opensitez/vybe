@@ -5,7 +5,9 @@
 //!
 //! Capabilities control which modules are available:
 //! - Safe (always on): math, string, array, convert, json, object, types, rt
-//! - Requires permission: fs, database, sockets, http, env, gui, threading, crypto
+//! - Requires permission: fs, database, sockets, http, env, gui, crypto
+//! - Compiled-in (no host fns): threading — WASM threads proposal opcodes
+//!   (thread.spawn / thread.join / atomics) emitted by compiler_common.
 
 pub mod console;
 pub mod math;
@@ -28,7 +30,6 @@ pub mod types;
 pub mod sockets;
 pub mod crypto;
 pub mod xml;
-pub mod threading;
 pub mod data;
 pub mod drawing;
 pub mod canvas;
@@ -524,9 +525,10 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
     if caps.has(Capability::Database) {
         database::register(vm);
     }
-    if caps.has(Capability::Threading) {
-        threading::register(vm);
-    }
+    // Capability::Threading — no host-fn module to register. Thread spawn /
+    // join / atomics compile to WASM opcodes (Op::THREAD_SPAWN, etc.), and
+    // Thread.Sleep uses wasi:clocks/sleep. The capability flag remains as a
+    // gate for future wasi-threads primitives.
     if caps.has(Capability::Crypto) {
         crypto::register(vm);
     }

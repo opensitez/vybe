@@ -86,7 +86,7 @@ impl Op {
     // mutation (push, pop, slice, join, reverse, contains, indexOf,
     // concat, shift — used to live at 0xFF 0x42–0x4A). They were Vybe-
     // specific and NOT in any WASM proposal. All callers now go through
-    // `wasm:js-array.*` imports via `common::collections::*`. The opcode
+    // `vybe:js-array.*` imports via `common::collections::*`. The opcode
     // IDs 0x42–0x4A are left vacant (not reused) so any legacy bytecode
     // that still carries them fails decode loudly rather than silently
     // aliasing to something else.

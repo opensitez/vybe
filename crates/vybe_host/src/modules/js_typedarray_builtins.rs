@@ -46,17 +46,17 @@ use vybe_bytecode::VM;
 /// Ordered list of all 11 typed-array variants + their `wasm:js-*`
 /// module names. The main `register` loop installs handlers for each.
 const VARIANTS: &[(TypedElemKind, &str)] = &[
-    (TypedElemKind::I8,        "wasm:js-int8array"),
-    (TypedElemKind::U8,        "wasm:js-uint8array"),
-    (TypedElemKind::U8Clamped, "wasm:js-uint8clamped"),
-    (TypedElemKind::I16,       "wasm:js-int16array"),
-    (TypedElemKind::U16,       "wasm:js-uint16array"),
-    (TypedElemKind::I32,       "wasm:js-int32array"),
-    (TypedElemKind::U32,       "wasm:js-uint32array"),
-    (TypedElemKind::F32,       "wasm:js-float32array"),
-    (TypedElemKind::F64,       "wasm:js-float64array"),
+    (TypedElemKind::I8,        "vybe:js-int8array"),
+    (TypedElemKind::U8,        "vybe:js-uint8array"),
+    (TypedElemKind::U8Clamped, "vybe:js-uint8clamped"),
+    (TypedElemKind::I16,       "vybe:js-int16array"),
+    (TypedElemKind::U16,       "vybe:js-uint16array"),
+    (TypedElemKind::I32,       "vybe:js-int32array"),
+    (TypedElemKind::U32,       "vybe:js-uint32array"),
+    (TypedElemKind::F32,       "vybe:js-float32array"),
+    (TypedElemKind::F64,       "vybe:js-float64array"),
     (TypedElemKind::BigI64,    "wasm:js-bigint64array"),
-    (TypedElemKind::BigU64,    "wasm:js-biguint64array"),
+    (TypedElemKind::BigU64,    "vybe:js-biguint64array"),
 ];
 
 fn zero_value(elem: TypedElemKind) -> Value {

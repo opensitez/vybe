@@ -7,14 +7,14 @@
 //! `slice` on `String.prototype`, arrays on `Array.prototype`, user
 //! objects on their own prototype chain. The wasm js-builtins proposals
 //! mirror that with **separate import modules** — `wasm:js-string.*` vs
-//! `wasm:js-array.*` — which is correct but forces either compile-time
+//! `vybe:js-array.*` — which is correct but forces either compile-time
 //! type inference or runtime dispatch for every `.slice()` call site.
 //!
 //! This module provides the runtime-dispatch path. The emitted bytecode
 //! routes every dynamic method call through a single import:
 //!
 //! ```text
-//! wasm:js-value.invokeMethod(receiver, method_name, ...args) -> value
+//! vybe:js-value.invokeMethod(receiver, method_name, ...args) -> value
 //! ```
 //!
 //! On v8 via the js-builtins bridge, the glue implementation resolves
@@ -47,7 +47,7 @@ use std::sync::Arc;
 /// Stack before:  `[receiver, arg1, arg2, ..., argN]` (argc args)
 /// Stack after :  `[result]`
 ///
-/// The emitted sequence calls `wasm:js-value.invokeMethod(receiver,
+/// The emitted sequence calls `vybe:js-value.invokeMethod(receiver,
 /// method_name, ...args)`. Argc is bounded to 253 (plus receiver +
 /// name = 255, fitting in a u8).
 pub fn emit_invoke_method(
@@ -63,7 +63,7 @@ pub fn emit_invoke_method(
         let c = &mut chunks[current];
         let name_const = c.add_constant(Value::String(Arc::from(method_name)));
         c.emit_op_u16(Op::CONST, name_const, line);
-        let idx = chunks[0].add_import("wasm:js-value", "invokeMethod");
+        let idx = chunks[0].add_import("vybe:js-value", "invokeMethod");
         let c = &mut chunks[current];
         c.emit_op_u16(Op::CALL_IMPORT, idx, line);
         c.emit(2, line);
@@ -98,7 +98,7 @@ pub fn emit_invoke_method(
         c.emit_op_u16(Op::LOCAL_GET, slot, line);
     }
 
-    let idx = chunks[0].add_import("wasm:js-value", "invokeMethod");
+    let idx = chunks[0].add_import("vybe:js-value", "invokeMethod");
     let c = &mut chunks[current];
     c.emit_op_u16(Op::CALL_IMPORT, idx, line);
     c.emit(argc + 2, line);

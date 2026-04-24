@@ -1,4 +1,4 @@
-//! # wasm:js-set builtins
+//! # vybe:js-set builtins
 //!
 //! Host imports for `Set.prototype.*` and `Set.*` per ECMA-262 §24.2
 //! plus ES2025 set-algebra methods.
@@ -6,7 +6,7 @@
 
 use super::encoding::*;
 
-pub const MODULE: &str = "wasm:js-set";
+pub const MODULE: &str = "vybe:js-set";
 
 pub const IMPORTS: &[&str] = &[
     "new",       // new Set()

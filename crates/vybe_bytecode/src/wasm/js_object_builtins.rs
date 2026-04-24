@@ -1,4 +1,4 @@
-//! # wasm:js-object builtins
+//! # vybe:js-object builtins
 //!
 //! Host imports for `Object.*` statics and `Object.prototype.*` per
 //! ECMA-262 §20.1.
@@ -11,7 +11,7 @@
 
 use super::encoding::*;
 
-pub const MODULE: &str = "wasm:js-object";
+pub const MODULE: &str = "vybe:js-object";
 
 pub const IMPORTS: &[&str] = &[
     // ── Construction ────────────────────────────────────────────────

@@ -1206,7 +1206,7 @@ fn vm_internal_opcodes_have_prefix_0xFF() {
     // prefix which no WASM proposal claims. (The previous
     // `Op::ARRAY_PUSH` check was removed in Phase E — the 9 `0xFF`
     // ARRAY_* opcodes no longer exist; callers emit
-    // `wasm:js-array.*` imports instead.)
+    // `vybe:js-array.*` imports instead.)
     assert_eq!(Op::CONST.prefix(), 0xFF);
     assert_eq!(Op::DYN_ADD.prefix(), 0xFF);
     assert_eq!(Op::DYN_LT.prefix(), 0xFF);

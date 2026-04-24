@@ -172,16 +172,14 @@ fn safe_blocks_http() {
 
 #[test]
 fn safe_blocks_threading() {
+    // Threading no longer has a host-fn module: thread spawn/join compile
+    // directly to WASM opcodes (Op::THREAD_SPAWN / Op::THREAD_JOIN) and
+    // Thread.Sleep uses wasi:clocks. The `vybe:threading` namespace must
+    // not exist in any mode.
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::safe());
-    let has_thread = vm.host_registry.keys().any(|(m, _)| m == "vybe:runtime" && {
-        // runtime module is always registered (pure computation parts),
-        // but threading module is separate
-        false
-    });
-    // Check for the threading-specific host function
-    let has_task_run = vm.host_registry.contains_key(&("vybe:threading".to_string(), "taskRun".to_string()));
-    assert!(!has_task_run, "Safe mode should NOT have threading");
+    let has_vybe_threading = vm.host_registry.keys().any(|(m, _)| m == "vybe:threading");
+    assert!(!has_vybe_threading, "vybe:threading must be fully retired");
 }
 
 // ============================================================
@@ -192,7 +190,10 @@ fn safe_blocks_threading() {
 fn safe_allows_math() {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::safe());
-    let has_math = vm.host_registry.keys().any(|(m, _)| m == "vybe:math");
+    // Math is registered under `vybe:js-math` — the ECMA-262 `Math` object
+    // mirror. The `vybe:*` prefix marks it as a Vybe-invented name (the
+    // stage-1 wasm-js-primitive-builtins proposal explicitly rejected Math).
+    let has_math = vm.host_registry.keys().any(|(m, _)| m == "vybe:js-math");
     assert!(has_math, "Safe mode should have math");
 }
 

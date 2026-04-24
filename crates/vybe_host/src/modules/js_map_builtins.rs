@@ -1,4 +1,4 @@
-//! # `wasm:js-map` and `wasm:js-set` host handlers
+//! # `vybe:js-map` and `vybe:js-set` host handlers
 //!
 //! Native Rust impls of `Map.prototype.*` / `Set.prototype.*` per
 //! ECMA-262 §24.1 / §24.2, satisfying the imports declared in
@@ -97,14 +97,14 @@ pub fn register(vm: &mut VM) {
     register_set(vm);
 }
 
-// ── wasm:js-map ────────────────────────────────────────────────────────
+// ── vybe:js-map ────────────────────────────────────────────────────────
 
 fn register_map(vm: &mut VM) {
-    vm.register_host_fn("wasm:js-map", "new",
+    vm.register_host_fn("vybe:js-map", "new",
         Box::new(|_ctx, _args| new_map_value()));
 
     // fromEntries(iterable) — iterable is an Array of [k, v] pairs.
-    vm.register_host_fn("wasm:js-map", "fromEntries",
+    vm.register_host_fn("vybe:js-map", "fromEntries",
         Box::new(|_ctx, args| {
             let m = new_map_value();
             if let Value::Object(mapobj) = &m {
@@ -133,7 +133,7 @@ fn register_map(vm: &mut VM) {
             m
         }));
 
-    vm.register_host_fn("wasm:js-map", "get",
+    vm.register_host_fn("vybe:js-map", "get",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {
                 let key = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -145,7 +145,7 @@ fn register_map(vm: &mut VM) {
             Value::Undefined
         }));
 
-    vm.register_host_fn("wasm:js-map", "set",
+    vm.register_host_fn("vybe:js-map", "set",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {
                 let key = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -162,7 +162,7 @@ fn register_map(vm: &mut VM) {
             Value::Null
         }));
 
-    vm.register_host_fn("wasm:js-map", "has",
+    vm.register_host_fn("vybe:js-map", "has",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {
                 let key = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -174,7 +174,7 @@ fn register_map(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    vm.register_host_fn("wasm:js-map", "delete",
+    vm.register_host_fn("vybe:js-map", "delete",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {
                 let key = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -194,7 +194,7 @@ fn register_map(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    vm.register_host_fn("wasm:js-map", "clear",
+    vm.register_host_fn("vybe:js-map", "clear",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {
                 let mut m = mapobj.lock().unwrap();
@@ -206,7 +206,7 @@ fn register_map(vm: &mut VM) {
             Value::Null
         }));
 
-    vm.register_host_fn("wasm:js-map", "size",
+    vm.register_host_fn("vybe:js-map", "size",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {
                 let m = mapobj.lock().unwrap();
@@ -218,7 +218,7 @@ fn register_map(vm: &mut VM) {
         }));
 
     // keys / values / entries — Array snapshots in insertion order
-    vm.register_host_fn("wasm:js-map", "keys",
+    vm.register_host_fn("vybe:js-map", "keys",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {
                 let m = mapobj.lock().unwrap();
@@ -230,7 +230,7 @@ fn register_map(vm: &mut VM) {
             Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
         }));
 
-    vm.register_host_fn("wasm:js-map", "values",
+    vm.register_host_fn("vybe:js-map", "values",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {
                 let m = mapobj.lock().unwrap();
@@ -242,7 +242,7 @@ fn register_map(vm: &mut VM) {
             Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
         }));
 
-    vm.register_host_fn("wasm:js-map", "entries",
+    vm.register_host_fn("vybe:js-map", "entries",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {
                 let m = mapobj.lock().unwrap();
@@ -260,7 +260,7 @@ fn register_map(vm: &mut VM) {
 
     // forEach(map, callback) — invokes callback(value, key, map) per
     // entry in insertion order. ECMA-262 §24.1.3.5.
-    vm.register_host_fn("wasm:js-map", "forEach",
+    vm.register_host_fn("vybe:js-map", "forEach",
         Box::new(|ctx, args| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(mapobj) = is_map(args, 0) {
@@ -282,7 +282,7 @@ fn register_map(vm: &mut VM) {
 
     // Map.groupBy(iterable, fn) → Map — groups iterable entries by the
     // value fn returns for each. ES2025.
-    vm.register_host_fn("wasm:js-map", "groupBy",
+    vm.register_host_fn("vybe:js-map", "groupBy",
         Box::new(|ctx, args| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             let out = new_map_value();
@@ -317,13 +317,13 @@ fn register_map(vm: &mut VM) {
         }));
 }
 
-// ── wasm:js-set ────────────────────────────────────────────────────────
+// ── vybe:js-set ────────────────────────────────────────────────────────
 
 fn register_set(vm: &mut VM) {
-    vm.register_host_fn("wasm:js-set", "new",
+    vm.register_host_fn("vybe:js-set", "new",
         Box::new(|_ctx, _args| new_set()));
 
-    vm.register_host_fn("wasm:js-set", "fromIterable",
+    vm.register_host_fn("vybe:js-set", "fromIterable",
         Box::new(|_ctx, args| {
             let s = new_set();
             if let Value::Object(setobj) = &s {
@@ -343,7 +343,7 @@ fn register_set(vm: &mut VM) {
             s
         }));
 
-    vm.register_host_fn("wasm:js-set", "add",
+    vm.register_host_fn("vybe:js-set", "add",
         Box::new(|_ctx, args| {
             if let Some(setobj) = is_set(args, 0) {
                 let v = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -359,7 +359,7 @@ fn register_set(vm: &mut VM) {
             Value::Null
         }));
 
-    vm.register_host_fn("wasm:js-set", "has",
+    vm.register_host_fn("vybe:js-set", "has",
         Box::new(|_ctx, args| {
             if let Some(setobj) = is_set(args, 0) {
                 let v = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -371,7 +371,7 @@ fn register_set(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    vm.register_host_fn("wasm:js-set", "delete",
+    vm.register_host_fn("vybe:js-set", "delete",
         Box::new(|_ctx, args| {
             if let Some(setobj) = is_set(args, 0) {
                 let v = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -389,7 +389,7 @@ fn register_set(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    vm.register_host_fn("wasm:js-set", "clear",
+    vm.register_host_fn("vybe:js-set", "clear",
         Box::new(|_ctx, args| {
             if let Some(setobj) = is_set(args, 0) {
                 let mut so = setobj.lock().unwrap();
@@ -399,7 +399,7 @@ fn register_set(vm: &mut VM) {
             Value::Null
         }));
 
-    vm.register_host_fn("wasm:js-set", "size",
+    vm.register_host_fn("vybe:js-set", "size",
         Box::new(|_ctx, args| {
             if let Some(setobj) = is_set(args, 0) {
                 let so = setobj.lock().unwrap();
@@ -411,7 +411,7 @@ fn register_set(vm: &mut VM) {
         }));
 
     for name in &["values", "keys"] {
-        vm.register_host_fn("wasm:js-set", name,
+        vm.register_host_fn("vybe:js-set", name,
             Box::new(|_ctx, args| {
                 if let Some(setobj) = is_set(args, 0) {
                     let so = setobj.lock().unwrap();
@@ -424,7 +424,7 @@ fn register_set(vm: &mut VM) {
             }));
     }
 
-    vm.register_host_fn("wasm:js-set", "entries",
+    vm.register_host_fn("vybe:js-set", "entries",
         Box::new(|_ctx, args| {
             if let Some(setobj) = is_set(args, 0) {
                 let so = setobj.lock().unwrap();
@@ -442,7 +442,7 @@ fn register_set(vm: &mut VM) {
 
     // Set.prototype.forEach(callback) — callback receives (value,
     // value, set) — the key mirrors the value per §24.2.3.6.
-    vm.register_host_fn("wasm:js-set", "forEach",
+    vm.register_host_fn("vybe:js-set", "forEach",
         Box::new(|ctx, args| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(setobj) = is_set(args, 0) {
@@ -472,7 +472,7 @@ fn register_set(vm: &mut VM) {
     // members that aren't in a" for `union`; "iterate a, keep those
     // also in b" for `intersection`; etc.
 
-    vm.register_host_fn("wasm:js-set", "union",
+    vm.register_host_fn("vybe:js-set", "union",
         Box::new(|_ctx, args| {
             let out = new_set();
             if let Value::Object(outobj) = &out {
@@ -492,7 +492,7 @@ fn register_set(vm: &mut VM) {
             out
         }));
 
-    vm.register_host_fn("wasm:js-set", "intersection",
+    vm.register_host_fn("vybe:js-set", "intersection",
         Box::new(|_ctx, args| {
             let out = new_set();
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
@@ -516,7 +516,7 @@ fn register_set(vm: &mut VM) {
             out
         }));
 
-    vm.register_host_fn("wasm:js-set", "difference",
+    vm.register_host_fn("vybe:js-set", "difference",
         Box::new(|_ctx, args| {
             let out = new_set();
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
@@ -540,7 +540,7 @@ fn register_set(vm: &mut VM) {
             out
         }));
 
-    vm.register_host_fn("wasm:js-set", "symmetricDifference",
+    vm.register_host_fn("vybe:js-set", "symmetricDifference",
         Box::new(|_ctx, args| {
             let out = new_set();
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
@@ -569,7 +569,7 @@ fn register_set(vm: &mut VM) {
             out
         }));
 
-    vm.register_host_fn("wasm:js-set", "isSubsetOf",
+    vm.register_host_fn("vybe:js-set", "isSubsetOf",
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
                 let alock = a.lock().unwrap();
@@ -584,7 +584,7 @@ fn register_set(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    vm.register_host_fn("wasm:js-set", "isSupersetOf",
+    vm.register_host_fn("vybe:js-set", "isSupersetOf",
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
                 let alock = a.lock().unwrap();
@@ -599,7 +599,7 @@ fn register_set(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    vm.register_host_fn("wasm:js-set", "isDisjointFrom",
+    vm.register_host_fn("vybe:js-set", "isDisjointFrom",
         Box::new(|_ctx, args| {
             if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
                 let alock = a.lock().unwrap();

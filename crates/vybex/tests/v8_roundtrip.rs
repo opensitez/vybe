@@ -1,7 +1,7 @@
 //! v8 round-trip — compile Vybe code to .wasm and run it on v8 (Node).
 //!
 //! Validates end-to-end that user array code (`[1,2,3]`, `.push`, `.length`,
-//! etc.) emits `wasm:js-array.*` imports AND that those imports behave
+//! etc.) emits `vybe:js-array.*` imports AND that those imports behave
 //! identically when satisfied by v8's native `Array.prototype.*` via the
 //! JS glue layer at `tools/v8_test/harness.mjs`.
 //!
@@ -89,7 +89,7 @@ fn read_leb(buf: &[u8], mut i: usize) -> (usize, usize) {
 
 #[test]
 fn v8_array_imports_present_in_wasm() {
-    // Prove the emitted .wasm really contains `wasm:js-array.*` imports
+    // Prove the emitted .wasm really contains `vybe:js-array.*` imports
     // for every array op the user code uses. No v8 required — just a
     // binary-level sanity check.
     let src = r#"
@@ -102,13 +102,13 @@ fn v8_array_imports_present_in_wasm() {
     let wasm = compile_to_wasm(src);
     let imports = extract_imports(&wasm);
     let js_array: Vec<_> = imports.iter()
-        .filter(|(m, _)| m == "wasm:js-array")
+        .filter(|(m, _)| m == "vybe:js-array")
         .map(|(_, n)| n.as_str()).collect();
-    assert!(!js_array.is_empty(), "no wasm:js-array.* imports in emitted .wasm! imports={:?}", imports);
+    assert!(!js_array.is_empty(), "no vybe:js-array.* imports in emitted .wasm! imports={:?}", imports);
     // Must have at least the three ops our source exercises.
     for needed in ["newWithLength", "push", "length"] {
         assert!(js_array.iter().any(|&n| n == needed),
-            "missing `wasm:js-array.{}` in emitted imports: {:?}", needed, js_array);
+            "missing `vybe:js-array.{}` in emitted imports: {:?}", needed, js_array);
     }
 }
 
@@ -119,7 +119,7 @@ fn v8_imports_resolve() {
         return;
     }
     // Minimum bar: v8 can compile the .wasm. Failure modes we care about:
-    //   - "Unknown import: wasm:js-array.push" → our migration didn't wire the import
+    //   - "Unknown import: vybe:js-array.push" → our migration didn't wire the import
     //   - "CompileError: ... @...N" → WASM encoding bug (not array-related)
     // The current compiler has unrelated v8-strictness issues around mutable
     // globals; this test passes when v8 gets past the *import-resolution* step,
@@ -139,7 +139,7 @@ fn v8_imports_resolve() {
         }
         Err(e) => {
             if e.contains("Unknown import") || e.contains("import ") && e.contains("not defined") {
-                panic!("v8 rejected a `wasm:js-array.*` import — migration incomplete: {}", e);
+                panic!("v8 rejected a `vybe:js-array.*` import — migration incomplete: {}", e);
             }
             // Other v8 compile errors (mutable globals, opcode gaps, etc.) are
             // separate from array migration — report but don't fail this test.

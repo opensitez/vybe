@@ -1,4 +1,4 @@
-//! # `wasm:js-arraybuffer`, `wasm:js-sharedarraybuffer`, `wasm:js-dataview`
+//! # `vybe:js-arraybuffer`, `vybe:js-sharedarraybuffer`, `vybe:js-dataview`
 //!
 //! Native Rust impls satisfying the imports declared in
 //! `crates/vybe_bytecode/src/wasm/js_arraybuffer_builtins.rs` per
@@ -84,20 +84,20 @@ pub fn register(vm: &mut VM) {
 // ── ArrayBuffer ───────────────────────────────────────────────────────
 
 fn register_arraybuffer(vm: &mut VM) {
-    vm.register_host_fn("wasm:js-arraybuffer", "new",
+    vm.register_host_fn("vybe:js-arraybuffer", "new",
         Box::new(|_ctx, args| {
             let n = args.first().map(|v| v.as_i32()).unwrap_or(0);
             new_arraybuffer(n, n, false, false)
         }));
 
-    vm.register_host_fn("wasm:js-arraybuffer", "newResizable",
+    vm.register_host_fn("vybe:js-arraybuffer", "newResizable",
         Box::new(|_ctx, args| {
             let n = args.first().map(|v| v.as_i32()).unwrap_or(0);
             let max = args.get(1).map(|v| v.as_i32()).unwrap_or(n);
             new_arraybuffer(n, max, true, false)
         }));
 
-    vm.register_host_fn("wasm:js-arraybuffer", "byteLength",
+    vm.register_host_fn("vybe:js-arraybuffer", "byteLength",
         Box::new(|_ctx, args| {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 return Value::I32(ab_byte_length_of(&ab) as i32);
@@ -105,7 +105,7 @@ fn register_arraybuffer(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    vm.register_host_fn("wasm:js-arraybuffer", "maxByteLength",
+    vm.register_host_fn("vybe:js-arraybuffer", "maxByteLength",
         Box::new(|_ctx, args| {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 let o = ab.lock().unwrap();
@@ -116,7 +116,7 @@ fn register_arraybuffer(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    vm.register_host_fn("wasm:js-arraybuffer", "resizable",
+    vm.register_host_fn("vybe:js-arraybuffer", "resizable",
         Box::new(|_ctx, args| {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 let o = ab.lock().unwrap();
@@ -127,7 +127,7 @@ fn register_arraybuffer(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    vm.register_host_fn("wasm:js-arraybuffer", "detached",
+    vm.register_host_fn("vybe:js-arraybuffer", "detached",
         Box::new(|_ctx, args| {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 let o = ab.lock().unwrap();
@@ -138,7 +138,7 @@ fn register_arraybuffer(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    vm.register_host_fn("wasm:js-arraybuffer", "slice",
+    vm.register_host_fn("vybe:js-arraybuffer", "slice",
         Box::new(|_ctx, args| {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
@@ -169,7 +169,7 @@ fn register_arraybuffer(vm: &mut VM) {
             Value::Null
         }));
 
-    vm.register_host_fn("wasm:js-arraybuffer", "resize",
+    vm.register_host_fn("vybe:js-arraybuffer", "resize",
         Box::new(|_ctx, args| {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 let new_len = args.get(1).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
@@ -190,7 +190,7 @@ fn register_arraybuffer(vm: &mut VM) {
             Value::Null
         }));
 
-    vm.register_host_fn("wasm:js-arraybuffer", "transfer",
+    vm.register_host_fn("vybe:js-arraybuffer", "transfer",
         Box::new(|_ctx, args| {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 let requested = args.get(1).map(|v| v.as_i32()).unwrap_or(-1);
@@ -226,7 +226,7 @@ fn register_arraybuffer(vm: &mut VM) {
             Value::Null
         }));
 
-    vm.register_host_fn("wasm:js-arraybuffer", "transferToFixedLength",
+    vm.register_host_fn("vybe:js-arraybuffer", "transferToFixedLength",
         Box::new(|_ctx, args| {
             // Same as transfer() for MVP — both produce non-resizable.
             if let Some(ab) = is_arraybuffer(args, 0) {
@@ -263,7 +263,7 @@ fn register_arraybuffer(vm: &mut VM) {
             Value::Null
         }));
 
-    vm.register_host_fn("wasm:js-arraybuffer", "isView",
+    vm.register_host_fn("vybe:js-arraybuffer", "isView",
         Box::new(|_ctx, args| {
             if let Some(Value::Object(obj)) = args.first() {
                 let o = obj.lock().unwrap();
@@ -280,20 +280,20 @@ fn register_arraybuffer(vm: &mut VM) {
 // ── SharedArrayBuffer ─────────────────────────────────────────────────
 
 fn register_sharedarraybuffer(vm: &mut VM) {
-    vm.register_host_fn("wasm:js-sharedarraybuffer", "new",
+    vm.register_host_fn("vybe:js-sharedarraybuffer", "new",
         Box::new(|_ctx, args| {
             let n = args.first().map(|v| v.as_i32()).unwrap_or(0);
             new_arraybuffer(n, n, false, true)
         }));
 
-    vm.register_host_fn("wasm:js-sharedarraybuffer", "newGrowable",
+    vm.register_host_fn("vybe:js-sharedarraybuffer", "newGrowable",
         Box::new(|_ctx, args| {
             let n = args.first().map(|v| v.as_i32()).unwrap_or(0);
             let max = args.get(1).map(|v| v.as_i32()).unwrap_or(n);
             new_arraybuffer(n, max, true, true)
         }));
 
-    vm.register_host_fn("wasm:js-sharedarraybuffer", "byteLength",
+    vm.register_host_fn("vybe:js-sharedarraybuffer", "byteLength",
         Box::new(|_ctx, args| {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 return Value::I32(ab_byte_length_of(&ab) as i32);
@@ -301,7 +301,7 @@ fn register_sharedarraybuffer(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    vm.register_host_fn("wasm:js-sharedarraybuffer", "maxByteLength",
+    vm.register_host_fn("vybe:js-sharedarraybuffer", "maxByteLength",
         Box::new(|_ctx, args| {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 let o = ab.lock().unwrap();
@@ -312,7 +312,7 @@ fn register_sharedarraybuffer(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    vm.register_host_fn("wasm:js-sharedarraybuffer", "growable",
+    vm.register_host_fn("vybe:js-sharedarraybuffer", "growable",
         Box::new(|_ctx, args| {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 let o = ab.lock().unwrap();
@@ -323,7 +323,7 @@ fn register_sharedarraybuffer(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    vm.register_host_fn("wasm:js-sharedarraybuffer", "slice",
+    vm.register_host_fn("vybe:js-sharedarraybuffer", "slice",
         Box::new(|_ctx, args| {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
@@ -354,7 +354,7 @@ fn register_sharedarraybuffer(vm: &mut VM) {
             Value::Null
         }));
 
-    vm.register_host_fn("wasm:js-sharedarraybuffer", "grow",
+    vm.register_host_fn("vybe:js-sharedarraybuffer", "grow",
         Box::new(|_ctx, args| {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 let new_len = args.get(1).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
@@ -454,7 +454,7 @@ fn dv_write_bytes(dv: &Arc<Mutex<Object>>, offset: i32, payload: &[u8]) -> bool 
 }
 
 fn register_dataview(vm: &mut VM) {
-    vm.register_host_fn("wasm:js-dataview", "new",
+    vm.register_host_fn("vybe:js-dataview", "new",
         Box::new(|_ctx, args| {
             let buffer = args.first().cloned().unwrap_or(Value::Null);
             let byte_offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
@@ -477,7 +477,7 @@ fn register_dataview(vm: &mut VM) {
             new_dataview(buffer, byte_offset, byte_length)
         }));
 
-    vm.register_host_fn("wasm:js-dataview", "buffer",
+    vm.register_host_fn("vybe:js-dataview", "buffer",
         Box::new(|_ctx, args| {
             if let Some(dv) = is_dataview(args, 0) {
                 let o = dv.lock().unwrap();
@@ -486,7 +486,7 @@ fn register_dataview(vm: &mut VM) {
             Value::Null
         }));
 
-    vm.register_host_fn("wasm:js-dataview", "byteOffset",
+    vm.register_host_fn("vybe:js-dataview", "byteOffset",
         Box::new(|_ctx, args| {
             if let Some(dv) = is_dataview(args, 0) {
                 let o = dv.lock().unwrap();
@@ -495,7 +495,7 @@ fn register_dataview(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    vm.register_host_fn("wasm:js-dataview", "byteLength",
+    vm.register_host_fn("vybe:js-dataview", "byteLength",
         Box::new(|_ctx, args| {
             if let Some(dv) = is_dataview(args, 0) {
                 let o = dv.lock().unwrap();
@@ -506,7 +506,7 @@ fn register_dataview(vm: &mut VM) {
 
     // Single-byte getters/setters (no endianness operand per spec)
 
-    vm.register_host_fn("wasm:js-dataview", "getInt8",
+    vm.register_host_fn("vybe:js-dataview", "getInt8",
         Box::new(|_ctx, args| {
             let offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
             if let Some(dv) = is_dataview(args, 0) {
@@ -517,7 +517,7 @@ fn register_dataview(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    vm.register_host_fn("wasm:js-dataview", "getUint8",
+    vm.register_host_fn("vybe:js-dataview", "getUint8",
         Box::new(|_ctx, args| {
             let offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
             if let Some(dv) = is_dataview(args, 0) {
@@ -530,7 +530,7 @@ fn register_dataview(vm: &mut VM) {
 
     macro_rules! getter_multibyte {
         ($name:literal, $count:expr, $ty:ty, $le:path, $be:path, $wrap:expr) => {
-            vm.register_host_fn("wasm:js-dataview", $name,
+            vm.register_host_fn("vybe:js-dataview", $name,
                 Box::new(|_ctx, args| {
                     let offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
                     let little_endian = args.get(2).map(|v| v.as_i32()).unwrap_or(0) != 0;
@@ -556,7 +556,7 @@ fn register_dataview(vm: &mut VM) {
     getter_multibyte!("getFloat32", 4, f32, f32::from_le_bytes, f32::from_be_bytes, |v| Value::F64(v as f64));
     getter_multibyte!("getFloat64", 8, f64, f64::from_le_bytes, f64::from_be_bytes, |v| Value::F64(v));
 
-    vm.register_host_fn("wasm:js-dataview", "setInt8",
+    vm.register_host_fn("vybe:js-dataview", "setInt8",
         Box::new(|_ctx, args| {
             let offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
             let val = args.get(2).map(|v| v.as_i32()).unwrap_or(0);
@@ -566,7 +566,7 @@ fn register_dataview(vm: &mut VM) {
             Value::Null
         }));
 
-    vm.register_host_fn("wasm:js-dataview", "setUint8",
+    vm.register_host_fn("vybe:js-dataview", "setUint8",
         Box::new(|_ctx, args| {
             let offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
             let val = args.get(2).map(|v| v.as_i32()).unwrap_or(0);
@@ -578,7 +578,7 @@ fn register_dataview(vm: &mut VM) {
 
     macro_rules! setter_multibyte {
         ($name:literal, $count:expr, $val_extract:expr, $ty:ty, $le:ident, $be:ident) => {
-            vm.register_host_fn("wasm:js-dataview", $name,
+            vm.register_host_fn("vybe:js-dataview", $name,
                 Box::new(|_ctx, args| {
                     let offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
                     let val: $ty = $val_extract(args.get(2));

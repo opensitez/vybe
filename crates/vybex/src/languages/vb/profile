@@ -139,24 +139,24 @@ round         = { emit = "opcode:f64_nearest", min_args = 1, max_args = 1 }
 
 # ── Math — host calls ───────────────────────────────────────────────────────
 
-sgn        = { emit = "host:vybe:math:sign",   min_args = 1, max_args = 1 }
-rnd        = { emit = "host:vybe:math:random", min_args = 0, max_args = 1 }
-randomize  = { emit = "host:vybe:math:random", min_args = 0, max_args = 0 }
-log        = { emit = "host:vybe:math:log",    min_args = 1, max_args = 1 }
-exp        = { emit = "host:vybe:math:exp",    min_args = 1, max_args = 1 }
-sin        = { emit = "host:vybe:math:sin",    min_args = 1, max_args = 1 }
-cos        = { emit = "host:vybe:math:cos",    min_args = 1, max_args = 1 }
-tan        = { emit = "host:vybe:math:tan",    min_args = 1, max_args = 1 }
-atn        = { emit = "host:vybe:math:atan",   min_args = 1, max_args = 1 }
-atan       = { emit = "host:vybe:math:atan",   min_args = 1, max_args = 1 }
+sgn        = { emit = "host:vybe:js-math:sign",   min_args = 1, max_args = 1 }
+rnd        = { emit = "host:vybe:js-math:random", min_args = 0, max_args = 1 }
+randomize  = { emit = "host:vybe:js-math:random", min_args = 0, max_args = 0 }
+log        = { emit = "host:vybe:js-math:log",    min_args = 1, max_args = 1 }
+exp        = { emit = "host:vybe:js-math:exp",    min_args = 1, max_args = 1 }
+sin        = { emit = "host:vybe:js-math:sin",    min_args = 1, max_args = 1 }
+cos        = { emit = "host:vybe:js-math:cos",    min_args = 1, max_args = 1 }
+tan        = { emit = "host:vybe:js-math:tan",    min_args = 1, max_args = 1 }
+atn        = { emit = "host:vybe:js-math:atan",   min_args = 1, max_args = 1 }
+atan       = { emit = "host:vybe:js-math:atan",   min_args = 1, max_args = 1 }
 pow                 = { emit = "stdlib:pow",    min_args = 2, max_args = 2 }
 "math.pow"          = { emit = "stdlib:pow",    min_args = 2, max_args = 2 }
 "system.math.pow"   = { emit = "stdlib:pow",    min_args = 2, max_args = 2 }
 "math.log10"        = { emit = "stdlib:log10",  min_args = 1, max_args = 1 }
 "system.math.log10" = { emit = "stdlib:log10",  min_args = 1, max_args = 1 }
-"math.log2"         = { emit = "host:vybe:math:log2", min_args = 1, max_args = 1 }
-"math.log"          = { emit = "host:vybe:math:log", min_args = 1, max_args = 2 }
-"system.math.log"   = { emit = "host:vybe:math:log", min_args = 1, max_args = 2 }
+"math.log2"         = { emit = "host:vybe:js-math:log2", min_args = 1, max_args = 1 }
+"math.log"          = { emit = "host:vybe:js-math:log", min_args = 1, max_args = 2 }
+"system.math.log"   = { emit = "host:vybe:js-math:log", min_args = 1, max_args = 2 }
 "math.sin"          = { emit = "stdlib:sin",    min_args = 1, max_args = 1 }
 "math.cos"          = { emit = "stdlib:cos",    min_args = 1, max_args = 1 }
 "math.tan"          = { emit = "stdlib:tan",    min_args = 1, max_args = 1 }
@@ -236,7 +236,7 @@ strdup         = { emit = "host:vybe:convert:toString", min_args = 1, max_args =
 
 ubound  = { emit = "intrinsic:ubound",            min_args = 1, max_args = 1 }
 lbound  = { emit = "intrinsic:lbound",            min_args = 0, max_args = 1 }
-array   = { emit = "host:wasm:js-array:from",         min_args = 0, max_args = 255 }
+array   = { emit = "host:vybe:js-array:from",         min_args = 0, max_args = 255 }
 erase   = { emit = "intrinsic:erase",              min_args = 1, max_args = 1 }
 
 # ── Date/Time functions ──────────────────────────────────────────────────────
@@ -562,11 +562,14 @@ pop            = { emit = "host:vybe:types:stackPop",      min_args = 0, max_arg
 # HashSet methods (add/remove/contains/count share keys with List — dispatch by arity is ambiguous)
 # HashSet.Add(val) = 1 arg, same as List.Add — both route to push/add; OK since collections are duck-typed
 
-# Random instance methods
+# Random instance methods — bind directly to real WASI. Raw u64 is what
+# the WASI primitive returns; range-bounded `.Next(min, max)` and float
+# conversion for `.NextDouble()` are compiler-lowering work-in-progress
+# (TODO: compiler_common::random) and temporarily return unscaled values.
 "next"         = [
-    { emit = "host:vybe:threading:randomNext", min_args = 0, max_args = 2 },
+    { emit = "host:wasi:random/insecure:get-insecure-random-u64", min_args = 0, max_args = 2 },
 ]
-nextdouble     = { emit = "host:vybe:threading:randomNextDouble", min_args = 0, max_args = 0 }
+nextdouble     = { emit = "host:wasi:random/insecure:get-insecure-random-u64", min_args = 0, max_args = 0 }
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -612,7 +615,7 @@ extra_imports = [
 # name = [host_module, host_function]
 "stringbuilder"  = ["vybe:types", "stringBuilderNew"]
 "stopwatch"      = ["wasi:clocks", "stopwatchNew"]
-"random"         = ["vybe:threading", "randomNew"]
+"random"         = ["wasi:random/insecure", "get-insecure-random-u64"]
 "regex"          = ["vybe:types", "regexNew"]
 "streamreader"   = ["dotnet:io", "streamReaderNew"]
 "streamwriter"   = ["dotnet:io", "streamWriterNew"]

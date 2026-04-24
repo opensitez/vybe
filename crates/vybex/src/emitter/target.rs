@@ -20,7 +20,7 @@ pub struct Target {
     pub has_vybe_host: bool,
     /// Whether WASI imports are available (filesystem, CLI, etc).
     pub has_wasi: bool,
-    /// Available host module prefixes (e.g., "vybe:math", "vybe:types").
+    /// Available host module prefixes (e.g., "vybe:js-math", "vybe:types").
     pub available_modules: Vec<String>,
 }
 
@@ -32,14 +32,15 @@ impl Target {
             has_vybe_host: true,
             has_wasi: true,
             available_modules: vec![
-                "vybe:math".into(), "vybe:string".into(), "vybe:array".into(),
+                "vybe:js-math".into(), "vybe:string".into(), "vybe:array".into(),
                 "vybe:types".into(), "vybe:convert".into(), "vybe:object".into(),
                 "vybe:rt".into(), "vybe:collections".into(), "vybe:json".into(),
-                "vybe:regex".into(), "vybe:crypto".into(), "vybe:threading".into(),
+                "vybe:regex".into(), "vybe:crypto".into(),
                 "vybe:database".into(), "vybe:net".into(), "vybe:xml".into(),
                 "vybe:drawing".into(), "dotnet:io".into(), "dotnet:net".into(), "dotnet:sockets".into(),
                 "wasi:cli".into(), "wasi:filesystem".into(), "wasi:http".into(),
-                "wasi:random".into(), "wasi:clocks".into(),
+                "wasi:random/random".into(), "wasi:random/insecure".into(), "wasi:random/insecure-seed".into(),
+                "wasi:clocks".into(),
                 "wasi:io/streams".into(), "wasi:io/poll".into(),
                 "wasi:sockets/network".into(), "wasi:sockets/instance-network".into(),
                 "wasi:sockets/tcp".into(), "wasi:sockets/tcp-create-socket".into(),
@@ -67,7 +68,8 @@ impl Target {
             has_wasi: true,
             available_modules: vec![
                 "wasi:cli".into(), "wasi:filesystem".into(), "wasi:http".into(),
-                "wasi:random".into(), "wasi:clocks".into(),
+                "wasi:random/random".into(), "wasi:random/insecure".into(), "wasi:random/insecure-seed".into(),
+                "wasi:clocks".into(),
                 "wasi:io/streams".into(), "wasi:io/poll".into(),
                 "wasi:sockets/network".into(), "wasi:sockets/instance-network".into(),
                 "wasi:sockets/tcp".into(), "wasi:sockets/tcp-create-socket".into(),

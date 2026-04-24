@@ -1,4 +1,4 @@
-//! # wasm:js-fixedarray builtins
+//! # vybe:js-fixedarray builtins
 //!
 //! `FixedArray` is the Vybe name for a thin wrapper around a
 //! spec-correct WASM GC fixed-length array (`array.new_fixed` / the
@@ -15,7 +15,7 @@
 //! through to the backing `ObjectKind::Array` representation —
 //! there's no dedicated `ObjectKind::FixedArray` variant because
 //! **fixed-vs-growable is a compile-time intent, not a runtime
-//! type**. The compiler emits `wasm:js-fixedarray.freeze` to
+//! type**. The compiler emits `vybe:js-fixedarray.freeze` to
 //! signal "treat this as immutable length from here on" and we
 //! honor that at the mutation sites.
 //!
@@ -23,7 +23,7 @@
 
 use super::encoding::*;
 
-pub const MODULE: &str = "wasm:js-fixedarray";
+pub const MODULE: &str = "vybe:js-fixedarray";
 
 pub const IMPORTS: &[&str] = &[
     "newWithLength",     // FixedArray(n) — n null elements

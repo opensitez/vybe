@@ -6,7 +6,7 @@
 //! plumbing. The earlier version of this test built a `range()`
 //! stdlib chunk that pushed values via the removed `ARRAY_PUSH`
 //! opcode; that behavioural surface now lives under
-//! `vybe_host::wasm:js-array.*` (see
+//! `vybe_host::vybe:js-array.*` (see
 //! `crates/vybe_host/tests/js_builtins_behavior_test.rs`). Here we
 //! keep the test focused on the single concern it names.
 

@@ -1,6 +1,6 @@
 use super::helpers::{compile_ok, run_prints};
 
-// ── Runtime validation — Phase D "all PHP arrays use wasm:js-array" ──
+// ── Runtime validation — Phase D "all PHP arrays use vybe:js-array" ──
 #[test] fn array_literal_runtime() {
     let out = run_prints("<?php\n$a = [10, 20, 30];\necho $a[0]; echo $a[1]; echo $a[2];\n");
     assert_eq!(out, vec!["10", "20", "30"]);

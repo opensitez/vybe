@@ -163,7 +163,7 @@ pub fn create_async_body_chunk(name: &str, arity: u8) -> Chunk {
 /// Emit: push one argument onto a spread-args array.
 /// Stack before: [args_array, value]  Stack after: [args_array]
 ///
-/// Routes through `wasm:js-array.push` (returns new length per
+/// Routes through `vybe:js-array.push` (returns new length per
 /// ECMA-262); caller stashes arr in a local before the loop and
 /// reloads afterwards — see `compile_function_decl` rest-args for
 /// the canonical template. This helper assumes caller has the stack
@@ -173,7 +173,7 @@ pub fn emit_spread_push_arg(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 /// Emit: concat a spread array into the args array via
-/// `wasm:js-array.concat` — returns a new array; caller replaces
+/// `vybe:js-array.concat` — returns a new array; caller replaces
 /// the accumulator local with the result.
 pub fn emit_spread_concat_arg(chunks: &mut [Chunk], current: usize, line: u32) {
     crate::emitter::collections::emit_concat(chunks, current, line);

@@ -80,7 +80,7 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
 
     // Populate PHP-style superglobals from the request context. Built as
     // `ObjectKind::Map` — the canonical cross-language associative type
-    // — so any language's string-key access via `wasm:js-array.get` works
+    // — so any language's string-key access via `vybe:js-array.get` works
     // uniformly. PHP's `$_SERVER['REQUEST_METHOD']` lands here.
     inject_superglobals(&mut vm, &ctx);
 
@@ -158,7 +158,7 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
 ///
 /// Each superglobal is an `ObjectKind::Map` (the canonical cross-language
 /// associative type). `$_SERVER['REQUEST_METHOD']` then routes through
-/// `wasm:js-array.get` which dispatches on `ObjectKind::Map` and returns
+/// `vybe:js-array.get` which dispatches on `ObjectKind::Map` and returns
 /// the value — same as every other language's associative map.
 ///
 /// The globals inserted here are PHP-idiomatic (`_SERVER`, `_GET`, etc.)

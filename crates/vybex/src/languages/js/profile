@@ -80,16 +80,16 @@ decodeURI               = { emit = "host:vybe:convert:decodeURIComponent",    mi
 "Math.atan"         = { emit = "stdlib:atan",     min_args = 1, max_args = 1 }
 "Math.atan2"        = { emit = "stdlib:atan2",    min_args = 2, max_args = 2 }
 "Math.log"          = { emit = "stdlib:log",      min_args = 1, max_args = 1 }
-"Math.log2"         = { emit = "host:vybe:math:log2",     min_args = 1, max_args = 1 }
+"Math.log2"         = { emit = "host:vybe:js-math:log2",     min_args = 1, max_args = 1 }
 "Math.log10"        = { emit = "stdlib:log10",    min_args = 1, max_args = 1 }
 "Math.exp"          = { emit = "stdlib:exp",      min_args = 1, max_args = 1 }
 "Math.sign"         = { emit = "stdlib:sign",     min_args = 1, max_args = 1 }
-"Math.random"       = { emit = "host:wasi:random:random",  min_args = 0, max_args = 0 }
-"Math.hypot"        = { emit = "host:vybe:math:hypot",    min_args = 2, max_args = 2 }
-"Math.cbrt"         = { emit = "host:vybe:math:cbrt",     min_args = 1, max_args = 1 }
-"Math.clz32"        = { emit = "host:vybe:math:clz32",    min_args = 1, max_args = 1 }
-"Math.fround"       = { emit = "host:vybe:math:fround",   min_args = 1, max_args = 1 }
-"Math.imul"         = { emit = "host:vybe:math:imul",     min_args = 2, max_args = 2 }
+"Math.random"       = { emit = "host:vybe:random:random",  min_args = 0, max_args = 0 }
+"Math.hypot"        = { emit = "host:vybe:js-math:hypot",    min_args = 2, max_args = 2 }
+"Math.cbrt"         = { emit = "host:vybe:js-math:cbrt",     min_args = 1, max_args = 1 }
+"Math.clz32"        = { emit = "host:vybe:js-math:clz32",    min_args = 1, max_args = 1 }
+"Math.fround"       = { emit = "host:vybe:js-math:fround",   min_args = 1, max_args = 1 }
+"Math.imul"         = { emit = "host:vybe:js-math:imul",     min_args = 2, max_args = 2 }
 
 # ── Number static methods ────────────────────────────────────────────────────
 
@@ -113,23 +113,23 @@ String              = { emit = "host:vybe:convert:toStr",         min_args = 1, 
 # ── Array static methods ─────────────────────────────────────────────────────
 
 "Array.isArray"     = { emit = "opcode:ref_is_array",             min_args = 1, max_args = 1 }
-"Array.from"        = { emit = "host:wasm:js-array:from",            min_args = 1, max_args = 3 }
-"Array.of"          = { emit = "host:wasm:js-array:of",              min_args = 0, max_args = 255 }
+"Array.from"        = { emit = "host:vybe:js-array:from",            min_args = 1, max_args = 3 }
+"Array.of"          = { emit = "host:vybe:js-array:of",              min_args = 0, max_args = 255 }
 
 # ── Object static methods ────────────────────────────────────────────────────
 #
-# Portable Component-Model imports: `wasm:js-object.*` is the shared
+# Portable Component-Model imports: `vybe:js-object.*` is the shared
 # import set — same handlers back PHP `array_keys/values`, Python
 # `dict.keys/values/items`, Ruby `Hash#keys`, etc. Running vybex-compiled
 # JS under V8 is possible because V8 satisfies these imports natively.
 
-"Object.keys"        = { emit = "host:wasm:js-object:keys",        min_args = 1, max_args = 1 }
-"Object.values"      = { emit = "host:wasm:js-object:values",      min_args = 1, max_args = 1 }
-"Object.entries"     = { emit = "host:wasm:js-object:entries",     min_args = 1, max_args = 1 }
+"Object.keys"        = { emit = "host:vybe:js-object:keys",        min_args = 1, max_args = 1 }
+"Object.values"      = { emit = "host:vybe:js-object:values",      min_args = 1, max_args = 1 }
+"Object.entries"     = { emit = "host:vybe:js-object:entries",     min_args = 1, max_args = 1 }
 "Object.assign"      = { emit = "host:vybe:object:assign",       min_args = 2, max_args = 255 }
 "Object.freeze"      = { emit = "host:vybe:object:freeze",       min_args = 1, max_args = 1 }
 "Object.fromEntries" = { emit = "host:vybe:object:fromEntries",  min_args = 1, max_args = 1 }
-"Object.hasOwn"      = { emit = "host:wasm:js-object:hasOwn",      min_args = 2, max_args = 2 }
+"Object.hasOwn"      = { emit = "host:vybe:js-object:hasOwn",      min_args = 2, max_args = 2 }
 "Object.create"      = { emit = "host:vybe:object:create",       min_args = 1, max_args = 2 }
 "Object.seal"        = { emit = "host:vybe:object:seal",         min_args = 1, max_args = 1 }
 "Object.isFrozen"    = { emit = "host:vybe:object:isFrozen",     min_args = 1, max_args = 1 }
@@ -169,8 +169,8 @@ queueMicrotask       = { emit = "noop",                          min_args = 1, m
 
 # ── crypto module ────────────────────────────────────────────────────────────
 
-"crypto.randomBytes" = { emit = "host:wasi:random:randomBytes",  min_args = 1, max_args = 1 }
-"crypto.randomUUID"  = { emit = "host:wasi:random:uuid",         min_args = 0, max_args = 0 }
+"crypto.randomBytes" = { emit = "host:wasi:random/random:get-random-bytes",  min_args = 1, max_args = 1 }
+"crypto.randomUUID"  = { emit = "host:vybe:random:uuid",         min_args = 0, max_args = 0 }
 "crypto.createHash"  = { emit = "noop",                           min_args = 1, max_args = 1 }
 
 # ── path module ──────────────────────────────────────────────────────────────
@@ -236,7 +236,7 @@ queueMicrotask       = { emit = "noop",                          min_args = 1, m
 [value_methods]
 
 # JS value methods — polymorphic receiver (string OR array OR user object).
-# Dispatched at runtime through `wasm:js-value.invokeMethod` so the right
+# Dispatched at runtime through `vybe:js-value.invokeMethod` so the right
 # implementation is picked based on the receiver's actual type. This mirrors
 # how native v8 resolves `x.method(...)` through the prototype chain.
 #
@@ -279,10 +279,10 @@ pop           = { emit = "common:collections.pop",     min_args = 0, max_args = 
 shift         = { emit = "common:collections.shift",   min_args = 0, max_args = 0 }
 reverse       = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
 join          = { emit = "common:collections.join",    min_args = 0, max_args = 1 }
-fill          = { emit = "host:wasm:js-array:fill",    min_args = 1, max_args = 3 }
-unshift       = { emit = "host:wasm:js-array:unshift", min_args = 1, max_args = 255 }
-splice        = { emit = "host:wasm:js-array:splice",  min_args = 1, max_args = 255 }
-flat          = { emit = "host:wasm:js-array:flat",    min_args = 0, max_args = 1 }
+fill          = { emit = "host:vybe:js-array:fill",    min_args = 1, max_args = 3 }
+unshift       = { emit = "host:vybe:js-array:unshift", min_args = 1, max_args = 255 }
+splice        = { emit = "host:vybe:js-array:splice",  min_args = 1, max_args = 255 }
+flat          = { emit = "host:vybe:js-array:flat",    min_args = 0, max_args = 1 }
 entries       = { emit = "host:vybe:array:enumerate",  min_args = 0, max_args = 0 }
 
 # Map/Set size property
@@ -353,7 +353,7 @@ module = "wasi:clocks"
 [[esm_default]]
 kind = "namespace"
 alias = "Math"
-module = "vybe:math"
+module = "vybe:js-math"
 
 [[esm_default]]
 kind = "namespace"
@@ -413,7 +413,7 @@ module = "wasi:cli"
 [[esm_default]]
 kind = "namespace"
 alias = "random"
-module = "wasi:random"
+module = "vybe:random"
 
 [[esm_default]]
 kind = "namespace"
@@ -490,10 +490,9 @@ kind = "namespace"
 alias = "Promise"
 module = "vybe:runtime"
 
-[[esm_default]]
-kind = "namespace"
-alias = "worker_threads"
-module = "vybe:threading"
+# Node `worker_threads` — worker.spawn() compiles to Op::THREAD_SPAWN
+# (WASM threads proposal). The module is a compiler-level intercept, not
+# a host-fn namespace.
 
 # ────────────────────────────────────────────────────────────────────────────
 # KNOWN TYPES — constructor mappings for new TypeName()
@@ -518,7 +517,8 @@ module = "vybe:threading"
 "Int32Array"    = ["vybe:types", "Int32Array"]
 "Float64Array"  = ["vybe:types", "Float64Array"]
 "Uint8Array"    = ["vybe:types", "Uint8Array"]
-"Worker"        = ["vybe:threading", "Worker"]
+# "Worker" constructor: lowered to Op::THREAD_SPAWN by the compiler, no
+# host-fn ctor entry.
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACE CONSTANTS — property access, NOT function call

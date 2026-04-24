@@ -49,7 +49,7 @@ fn make_count_getter_value(idx: usize) -> Value {
 ///   `__generic_count_getter`. Returns `obj` (lets the caller chain).
 ///
 /// Keeps Common-backed constructors spec-clean: `collections.new` →
-/// pure `wasm:js-array.newWithLength` call, then `__stamp_type`
+/// pure `vybe:js-array.newWithLength` call, then `__stamp_type`
 /// attaches the .NET metadata as a single import call.
 fn register_typing_infrastructure(vm: &mut VM) {
     vm.register_host_fn("vybe:types", "__generic_count_getter", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
@@ -280,7 +280,7 @@ fn register_stringbuilder(vm: &mut VM) {
 
 fn register_list(vm: &mut VM) {
     // Phase 7b: List<T> runtime dispatch migrated from `vybe:types/list*`
-    // to `wasm:js-array/*` (ECMA-262 §23.1 Array). `__get_count` /
+    // to `vybe:js-array/*` (ECMA-262 §23.1 Array). `__get_count` /
     // `__get_length` auto-getters attach the .NET property-style read
     // shape; on `listNew` they reuse the shared `__generic_count_getter`
     // from `register_typing_infrastructure`.
@@ -666,7 +666,7 @@ fn register_list(vm: &mut VM) {
 
 fn register_dictionary(vm: &mut VM) {
     // Phase 7b: Dictionary is a plain JS Object per ECMA-262 §19.1.
-    // Methods route through `wasm:js-object/*` (see builtin_types.rs)
+    // Methods route through `vybe:js-object/*` (see builtin_types.rs)
     // operating directly on this object's properties. `__type` tags
     // the object for `resolve_property`; `__get_count` is the shared
     // auto-getter from `register_typing_infrastructure` so VB / C#
@@ -1056,8 +1056,8 @@ fn date_to_epoch_with_offset(year: i64, month: u64, day: u64, hour: u64, min: u6
 fn register_queue_stack(vm: &mut VM) {
     let getter_idx = count_getter_idx(vm);
 
-    // Queue — backed by JS Array, FIFO semantics via `wasm:js-array/push`
-    // + `wasm:js-array/shift` (see builtin_types.rs Queue type).
+    // Queue — backed by JS Array, FIFO semantics via `vybe:js-array/push`
+    // + `vybe:js-array/shift` (see builtin_types.rs Queue type).
     let getter_idx_q = getter_idx;
     vm.register_host_fn("vybe:types", "queueNew", Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
         let mut obj = Object::new_array(vec![]);
@@ -1120,8 +1120,8 @@ fn register_queue_stack(vm: &mut VM) {
         Value::Null
     }));
 
-    // Stack — backed by JS Array, LIFO semantics via `wasm:js-array/push`
-    // + `wasm:js-array/pop`.
+    // Stack — backed by JS Array, LIFO semantics via `vybe:js-array/push`
+    // + `vybe:js-array/pop`.
     let getter_idx_s = getter_idx;
     vm.register_host_fn("vybe:types", "stackNew", Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
         let mut obj = Object::new_array(vec![]);
@@ -1166,7 +1166,7 @@ fn register_queue_stack(vm: &mut VM) {
     }));
 
     // HashSet — backed by JS Set per ECMA-262 §24.2. Methods route
-    // through `wasm:js-set/*` (see builtin_types.rs HashSet type).
+    // through `vybe:js-set/*` (see builtin_types.rs HashSet type).
     let getter_idx_hs = getter_idx;
     vm.register_host_fn("vybe:types", "hashSetNew", Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
         let mut obj = Object {

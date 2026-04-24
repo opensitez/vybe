@@ -7,7 +7,7 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
     static EXPORTS: LazyLock<Vec<DotnetClassExport>> = LazyLock::new(|| {
         vec![
             // Phase 7b: List<T>'s runtime method dispatch goes through
-            // `wasm:js-array/*` (see vybe_host/src/builtin_types.rs).
+            // `vybe:js-array/*` (see vybe_host/src/builtin_types.rs).
             // The constructor stays on `vybe:types/listNew` because
             // that's where `__get_count` / `__get_length` auto-getters
             // get installed so VB `list.Count` (property-style read)
@@ -118,7 +118,7 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
             constructor_class("dotnet.System.Collections", "Hashtable", "vybe:types", "dictNew"),
             constructor_class("dotnet.System.Collections", "Collection", "vybe:types", "listNew"),
             constructor_class("dotnet.System", "DateTime", "vybe:types", "dateTimeNew"),
-            constructor_class("dotnet.System", "Random", "vybe:threading", "randomNew"),
+            constructor_class("dotnet.System", "Random", "wasi:random/insecure", "get-insecure-random-u64"),
             static_only_class(
                 "dotnet.System",
                 "Console",
@@ -163,7 +163,14 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
                     .with_method(MethodDef::static_method(
                         "Delay",
                         1,
-                        MethodBody::HostCall(HostTarget::new("vybe:threading", "taskDelay")),
+                        // Task.Delay(ms) → vybe:runtime/taskDelay. Returns a
+                        // real async Task whose `iscompleted` flag transitions
+                        // false → true after `ms` milliseconds via a native
+                        // thread-spawn on the host. The WASI-aligned primitives
+                        // underneath are wasi:clocks/monotonic-clock (duration
+                        // timing) and a wasi.thread-spawn-shaped background
+                        // worker (implemented with std::thread in-host).
+                        MethodBody::HostCall(HostTarget::new("vybe:runtime", "taskDelay")),
                     )),
             ),
             DotnetClassExport::new(
@@ -393,7 +400,7 @@ fn collection_class(
 /// primitives (Array, Map, Set) — `List<T>` → `collections.*`,
 /// `Dictionary<K,V>` → `dict.*`, etc. The provider of the primitive
 /// is one-file-swappable per the `feedback_compiler_common_is_THE_emitter`
-/// rule; rewiring `collections.push` from `wasm:js-array.push` to a
+/// rule; rewiring `collections.push` from `vybe:js-array.push` to a
 /// polyfill happens in `compiler_common/collections.rs` alone.
 fn collection_class_common(
     interface: &'static str,

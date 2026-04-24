@@ -43,19 +43,19 @@ pub fn emit_common(name: &str, chunks: &mut [Chunk], current: usize, line: u32) 
         "dict.values" => dict::emit_values(chunks, current, line),
         "dict.new" => dict::emit_new(chunks, current, line),
 
-        // ── Object ops ── wasm:js-object/new creates a plain JS Object.
+        // ── Object ops ── vybe:js-object/new creates a plain JS Object.
         // The `.NET` Dictionary class uses this as its backing (matches
         // the ECMA-262 rule that a Dictionary<string, T> is shape-identical
-        // to an Object). Method dispatch routes through `wasm:js-object/*`
+        // to an Object). Method dispatch routes through `vybe:js-object/*`
         // via TypeRegistry, so no parallel vybe:types/dict* host fns are
         // consulted.
         "object.new" => {
-            let idx = chunks[0].add_import("wasm:js-object", "new");
+            let idx = chunks[0].add_import("vybe:js-object", "new");
             chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
             chunks[current].emit(0, line);
         }
 
-        // ── Collection ops (route through wasm:js-array imports;
+        // ── Collection ops (route through vybe:js-array imports;
         // `chunks` slice lets the helper register on chunks[0] while
         // emitting code on chunks[current]). ──
         "collections.push" => collections::emit_push(chunks, current, line),

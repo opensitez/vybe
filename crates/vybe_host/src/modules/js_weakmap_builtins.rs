@@ -1,4 +1,4 @@
-//! # `wasm:js-weakmap` and `wasm:js-weakset` host handlers
+//! # `vybe:js-weakmap` and `vybe:js-weakset` host handlers
 //!
 //! Native Rust impls of `WeakMap.*` / `WeakSet.*` per ECMA-262 §24.3 /
 //! §24.4.
@@ -89,10 +89,10 @@ pub fn register(vm: &mut VM) {
 // ── WeakMap ───────────────────────────────────────────────────────────
 
 fn register_weakmap(vm: &mut VM) {
-    vm.register_host_fn("wasm:js-weakmap", "new",
+    vm.register_host_fn("vybe:js-weakmap", "new",
         Box::new(|_ctx, _args| new_weakmap()));
 
-    vm.register_host_fn("wasm:js-weakmap", "fromIterable",
+    vm.register_host_fn("vybe:js-weakmap", "fromIterable",
         Box::new(|_ctx, args| {
             let m = new_weakmap();
             if let Value::Object(mapobj) = &m {
@@ -117,7 +117,7 @@ fn register_weakmap(vm: &mut VM) {
             m
         }));
 
-    vm.register_host_fn("wasm:js-weakmap", "get",
+    vm.register_host_fn("vybe:js-weakmap", "get",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_weakmap(args, 0) {
                 let key = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -140,7 +140,7 @@ fn register_weakmap(vm: &mut VM) {
             Value::Undefined
         }));
 
-    vm.register_host_fn("wasm:js-weakmap", "set",
+    vm.register_host_fn("vybe:js-weakmap", "set",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_weakmap(args, 0) {
                 let key = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -155,7 +155,7 @@ fn register_weakmap(vm: &mut VM) {
             Value::Null
         }));
 
-    vm.register_host_fn("wasm:js-weakmap", "has",
+    vm.register_host_fn("vybe:js-weakmap", "has",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_weakmap(args, 0) {
                 let key = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -171,7 +171,7 @@ fn register_weakmap(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    vm.register_host_fn("wasm:js-weakmap", "delete",
+    vm.register_host_fn("vybe:js-weakmap", "delete",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_weakmap(args, 0) {
                 let key = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -236,10 +236,10 @@ fn weakmap_set(mapobj: &Arc<Mutex<Object>>, key: Value, val: Value) {
 // ── WeakSet ───────────────────────────────────────────────────────────
 
 fn register_weakset(vm: &mut VM) {
-    vm.register_host_fn("wasm:js-weakset", "new",
+    vm.register_host_fn("vybe:js-weakset", "new",
         Box::new(|_ctx, _args| new_weakset()));
 
-    vm.register_host_fn("wasm:js-weakset", "fromIterable",
+    vm.register_host_fn("vybe:js-weakset", "fromIterable",
         Box::new(|_ctx, args| {
             let s = new_weakset();
             if let Value::Object(setobj) = &s {
@@ -264,7 +264,7 @@ fn register_weakset(vm: &mut VM) {
             s
         }));
 
-    vm.register_host_fn("wasm:js-weakset", "add",
+    vm.register_host_fn("vybe:js-weakset", "add",
         Box::new(|_ctx, args| {
             if let Some(setobj) = is_weakset(args, 0) {
                 let v = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -285,7 +285,7 @@ fn register_weakset(vm: &mut VM) {
             Value::Null
         }));
 
-    vm.register_host_fn("wasm:js-weakset", "has",
+    vm.register_host_fn("vybe:js-weakset", "has",
         Box::new(|_ctx, args| {
             if let Some(setobj) = is_weakset(args, 0) {
                 let v = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -298,7 +298,7 @@ fn register_weakset(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    vm.register_host_fn("wasm:js-weakset", "delete",
+    vm.register_host_fn("vybe:js-weakset", "delete",
         Box::new(|_ctx, args| {
             if let Some(setobj) = is_weakset(args, 0) {
                 let v = args.get(1).cloned().unwrap_or(Value::Undefined);

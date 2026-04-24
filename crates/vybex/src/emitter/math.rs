@@ -28,10 +28,10 @@ use std::sync::Arc;
 /// Legacy: pow via host import. Stack: [base, exponent] → [result].
 /// Prefer `emit_pow_push_func` + args + `emit_pow_invoke` for the canonical
 /// stdlib path (pure WASM bytecode, runtime-replaceable by Vybe with optimized
-/// native pow). The bundle aliases vybe:math.pow to __vybe_pow as a fallback,
+/// native pow). The bundle aliases vybe:js-math.pow to __vybe_pow as a fallback,
 /// so this still works, but new code should use the explicit stdlib pattern.
 pub fn emit_pow(chunk: &mut Chunk, line: u32) {
-    let idx = chunk.add_import("vybe:math", "pow");
+    let idx = chunk.add_import("vybe:js-math", "pow");
     chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(2, line);
 }
@@ -50,49 +50,49 @@ pub fn emit_pow_invoke(chunk: &mut Chunk, line: u32) {
 
 /// Stack: [value] → [result]
 pub fn emit_log(chunk: &mut Chunk, line: u32) {
-    let idx = chunk.add_import("vybe:math", "log");
+    let idx = chunk.add_import("vybe:js-math", "log");
     chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(1, line);
 }
 
 pub fn emit_sin(chunk: &mut Chunk, line: u32) {
-    let idx = chunk.add_import("vybe:math", "sin");
+    let idx = chunk.add_import("vybe:js-math", "sin");
     chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(1, line);
 }
 
 pub fn emit_cos(chunk: &mut Chunk, line: u32) {
-    let idx = chunk.add_import("vybe:math", "cos");
+    let idx = chunk.add_import("vybe:js-math", "cos");
     chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(1, line);
 }
 
 pub fn emit_tan(chunk: &mut Chunk, line: u32) {
-    let idx = chunk.add_import("vybe:math", "tan");
+    let idx = chunk.add_import("vybe:js-math", "tan");
     chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(1, line);
 }
 
 pub fn emit_exp(chunk: &mut Chunk, line: u32) {
-    let idx = chunk.add_import("vybe:math", "exp");
+    let idx = chunk.add_import("vybe:js-math", "exp");
     chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(1, line);
 }
 
 /// Stack: [] → [f64 random 0..1]
 pub fn emit_random(chunk: &mut Chunk, line: u32) {
-    let idx = chunk.add_import("vybe:math", "random");
+    let idx = chunk.add_import("vybe:js-math", "random");
     chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(0, line);
 }
 
 // ── Target-aware variants ───────────────────────────────────
-// On Vybe: use vybe:math host imports.
+// On Vybe: use vybe:js-math host imports.
 // On standard WASM: these must be provided by the embedder or linked from libm.
 
 /// Target-aware pow. Stack: [base, exp] → [result]
 pub fn emit_pow_targeted(chunk: &mut Chunk, target: &Target, line: u32) {
-    if target.has_module("vybe:math") {
+    if target.has_module("vybe:js-math") {
         emit_pow(chunk, line);
     } else {
         // Standard WASM fallback: import from a portable math module.
@@ -105,8 +105,8 @@ pub fn emit_pow_targeted(chunk: &mut Chunk, target: &Target, line: u32) {
 
 /// Target-aware sin/cos/tan/log/exp — all follow same pattern.
 pub fn emit_math_fn_targeted(chunk: &mut Chunk, name: &str, target: &Target, line: u32) {
-    let (module, func) = if target.has_module("vybe:math") {
-        ("vybe:math", name)
+    let (module, func) = if target.has_module("vybe:js-math") {
+        ("vybe:js-math", name)
     } else {
         ("env", name)
     };

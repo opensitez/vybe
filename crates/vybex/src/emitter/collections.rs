@@ -13,10 +13,10 @@ use vybe_bytecode::opcode::Op;
 #[allow(unused_imports)]
 use crate::emitter::Target;
 
-// ── `wasm:js-array.*` import helpers (Phase D) ─────────────────
+// ── `vybe:js-array.*` import helpers (Phase D) ─────────────────
 //
 // Every language's array surface funnels through these helpers, so the
-// emitted .wasm asks for `wasm:js-array.*` imports whether it runs on
+// emitted .wasm asks for `vybe:js-array.*` imports whether it runs on
 // Vybe's built-in handlers, on v8 (native JS glue), or on plain
 // wasmtime with the polyfill module.
 //
@@ -50,33 +50,33 @@ fn emit_import_call_into(imports: &mut Chunk, code: &mut Chunk, module: &str, na
 }
 
 /// Create an empty array (common case). Stack: [] → [array] via
-/// `wasm:js-array.newWithLength(0)`.
+/// `vybe:js-array.newWithLength(0)`.
 ///
 /// Non-zero counts still use `ARRAY_NEW_FIXED` because packing N
-/// stack values into one array doesn't have a single-op wasm:js-array
+/// stack values into one array doesn't have a single-op vybe:js-array
 /// equivalent; callers (stdlib/dict [k,v] pair building) migrate
 /// incrementally. Each count>0 call site is a Phase E breadcrumb.
 pub fn emit_array_new(chunks: &mut [Chunk], current: usize, count: u16, line: u32) {
     if count == 0 {
         chunks[current].emit_op(Op::I32_CONST_0, line);
-        emit_import_call(chunks, current, "wasm:js-array", "newWithLength", 1, line);
+        emit_import_call(chunks, current, "vybe:js-array", "newWithLength", 1, line);
     } else {
         chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, count, line);
     }
 }
 
 /// Create a length-N null-filled array. Stack: [length_i32] → [array]
-/// via `wasm:js-array.newWithLength`.
+/// via `vybe:js-array.newWithLength`.
 pub fn emit_new_with_length(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "wasm:js-array", "newWithLength", 1, line);
+    emit_import_call(chunks, current, "vybe:js-array", "newWithLength", 1, line);
 }
 
 /// Length of a collection OR string — runtime-dispatched between
-/// `wasm:js-string.length` and `wasm:js-array.length`.
+/// `wasm:js-string.length` and `vybe:js-array.length`.
 ///
 /// `__len__` canonicalises every language's `.length` / `len()` /
 /// `.size` / `Length()` into one call; the spec splits arrays
-/// (`wasm:js-array.length`, ECMA-262 §23.1.3.12) from strings
+/// (`vybe:js-array.length`, ECMA-262 §23.1.3.12) from strings
 /// (`wasm:js-string.length`, js-string-builtins). A `REF_IS_STRING`
 /// branch selects the right import — same pattern v8 uses for
 /// property dispatch on auto-boxed primitives.
@@ -85,8 +85,8 @@ pub fn emit_len(chunks: &mut [Chunk], current: usize, line: u32) {
     c.emit_op(Op::DUP, line);                     // [v, v]
     c.emit_op(Op::REF_IS_STRING, line);            // [v, is_string]
     let to_str = c.emit_jump(Op::BR_IF_TRUE, line); // consumes bool
-    // Not a string — wasm:js-array.length.
-    emit_import_call(chunks, current, "wasm:js-array", "length", 1, line);
+    // Not a string — vybe:js-array.length.
+    emit_import_call(chunks, current, "vybe:js-array", "length", 1, line);
     let end = chunks[current].emit_jump(Op::BR, line);
     chunks[current].patch_jump(to_str);
     // String — wasm:js-string.length.
@@ -95,18 +95,18 @@ pub fn emit_len(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 /// Array push (spec contract). Stack: [array, value] → [new_length_i32]
-/// via `wasm:js-array.push` — matches ECMA-262 §23.1.3.20.
+/// via `vybe:js-array.push` — matches ECMA-262 §23.1.3.20.
 ///
 /// Callers that need the array back must stash it in a local before the
 /// push loop and reload afterwards. See the `rest_arr` pattern in
 /// `compile_function_decl` for the canonical template.
 pub fn emit_push(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "wasm:js-array", "push", 2, line);
+    emit_import_call(chunks, current, "vybe:js-array", "push", 2, line);
 }
 
-/// Array pop. Stack: [array] → [value] via `wasm:js-array.pop`.
+/// Array pop. Stack: [array] → [value] via `vybe:js-array.pop`.
 pub fn emit_pop(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "wasm:js-array", "pop", 1, line);
+    emit_import_call(chunks, current, "vybe:js-array", "pop", 1, line);
 }
 
 /// Iteration primitives — polymorphic over `Array`, `Map`, and
@@ -114,9 +114,9 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Python `for ... in`, Ruby `each`, JS `for...of`, C# `foreach`)
 /// routes through these three functions.
 ///
-/// Provider: `wasm:js-object` — the Component-Model-portable
+/// Provider: `vybe:js-object` — the Component-Model-portable
 /// import set. Modules compiled through these helpers run on any
-/// engine that implements `wasm:js-object` (V8, SpiderMonkey, wasmtime
+/// engine that implements `vybe:js-object` (V8, SpiderMonkey, wasmtime
 /// with the polyfill). Do NOT emit `vybe:object.*` from language
 /// walkers — that's the Vybe-only escape hatch. If the provider ever
 /// changes (e.g. inline opcodes for perf), it changes HERE, not in
@@ -124,49 +124,49 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, line: u32) {
 
 /// Push an array of keys. Stack: [iterable] → [array_of_keys].
 pub fn emit_iter_keys(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "wasm:js-object", "keys", 1, line);
+    emit_import_call(chunks, current, "vybe:js-object", "keys", 1, line);
 }
 
 /// Push an array of values. Stack: [iterable] → [array_of_values].
 pub fn emit_iter_values(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "wasm:js-object", "values", 1, line);
+    emit_import_call(chunks, current, "vybe:js-object", "values", 1, line);
 }
 
 /// Push an array of [key, value] pair arrays. Stack: [iterable] →
 /// [array_of_pairs]. Used for `foreach ($m as $k => $v)` in PHP and
 /// equivalents in other languages.
 pub fn emit_iter_entries(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "wasm:js-object", "entries", 1, line);
+    emit_import_call(chunks, current, "vybe:js-object", "entries", 1, line);
 }
 
 /// Create an empty Map (ordered associative: IndexMap<Value, Value>).
-/// Stack: [] → [map] via `wasm:js-map.new`. Used by languages with
+/// Stack: [] → [map] via `vybe:js-map.new`. Used by languages with
 /// keyed literals (PHP `['k'=>v]`, Python `{'k':v}`, Ruby `{k=>v}`) —
 /// same backing across every language, same accessor imports
-/// (`wasm:js-array.get/.set` dispatch polymorphically on
+/// (`vybe:js-array.get/.set` dispatch polymorphically on
 /// `ObjectKind::Map`).
 pub fn emit_map_new(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "wasm:js-map", "new", 0, line);
+    emit_import_call(chunks, current, "vybe:js-map", "new", 0, line);
 }
 
-/// Array get. Stack: [array, index] → [value] via `wasm:js-array.get`.
+/// Array get. Stack: [array, index] → [value] via `vybe:js-array.get`.
 pub fn emit_get(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "wasm:js-array", "get", 2, line);
+    emit_import_call(chunks, current, "vybe:js-array", "get", 2, line);
 }
 
 /// Array set (spec contract). Stack: [array, index, value] → [null]
-/// via `wasm:js-array.set` — the import is void (mutates in place).
+/// via `vybe:js-array.set` — the import is void (mutates in place).
 /// Callers that need the assigned value back must DUP it before
 /// emit_set and DROP the returned null.
 pub fn emit_set(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "wasm:js-array", "set", 3, line);
+    emit_import_call(chunks, current, "vybe:js-array", "set", 3, line);
 }
 
-/// Array slice. Stack: [array, start, end] → [array] via `wasm:js-array.slice`.
+/// Array slice. Stack: [array, start, end] → [array] via `vybe:js-array.slice`.
 /// For polymorphic (string OR array) slicing, prefer the
 /// `__vybe_slice` stdlib func-ref path.
 pub fn emit_slice(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "wasm:js-array", "slice", 3, line);
+    emit_import_call(chunks, current, "vybe:js-array", "slice", 3, line);
 }
 
 /// Push the __vybe_slice func ref. Use BEFORE compiling the object/start/end.
@@ -184,57 +184,57 @@ pub fn emit_slice_invoke(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u8(Op::CALL_REF, 3, line);
 }
 
-/// Array join. Stack: [array, delimiter] → [string] via `wasm:js-array.join`.
+/// Array join. Stack: [array, delimiter] → [string] via `vybe:js-array.join`.
 pub fn emit_join(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "wasm:js-array", "join", 2, line);
+    emit_import_call(chunks, current, "vybe:js-array", "join", 2, line);
 }
 
-/// Array reverse (in-place). Stack: [array] → [array] via `wasm:js-array.reverse`.
+/// Array reverse (in-place). Stack: [array] → [array] via `vybe:js-array.reverse`.
 pub fn emit_reverse(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "wasm:js-array", "reverse", 1, line);
+    emit_import_call(chunks, current, "vybe:js-array", "reverse", 1, line);
 }
 
 /// Array contains / JS `.includes`. Stack: [array, value] → [bool] via
-/// `wasm:js-array.includes`.
+/// `vybe:js-array.includes`.
 pub fn emit_contains(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "wasm:js-array", "includes", 2, line);
+    emit_import_call(chunks, current, "vybe:js-array", "includes", 2, line);
 }
 
-/// Array indexOf. Stack: [array, value] → [i32] via `wasm:js-array.indexOf`.
+/// Array indexOf. Stack: [array, value] → [i32] via `vybe:js-array.indexOf`.
 pub fn emit_index_of(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "wasm:js-array", "indexOf", 2, line);
+    emit_import_call(chunks, current, "vybe:js-array", "indexOf", 2, line);
 }
 
-/// Array concat. Stack: [array, array] → [array] via `wasm:js-array.concat`.
+/// Array concat. Stack: [array, array] → [array] via `vybe:js-array.concat`.
 pub fn emit_concat(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "wasm:js-array", "concat", 2, line);
+    emit_import_call(chunks, current, "vybe:js-array", "concat", 2, line);
 }
 
-/// Array shift (remove first). Stack: [array] → [value] via `wasm:js-array.shift`.
+/// Array shift (remove first). Stack: [array] → [value] via `vybe:js-array.shift`.
 pub fn emit_shift(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "wasm:js-array", "shift", 1, line);
+    emit_import_call(chunks, current, "vybe:js-array", "shift", 1, line);
 }
 
-/// Array fill. Stack: [array, value, start, end] → [array] via `wasm:js-array.fill`.
+/// Array fill. Stack: [array, value, start, end] → [array] via `vybe:js-array.fill`.
 pub fn emit_fill(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "wasm:js-array", "fill", 4, line);
+    emit_import_call(chunks, current, "vybe:js-array", "fill", 4, line);
 }
 
-/// Array sort (in-place). Stack: [array] → [array] via `wasm:js-array.sort`.
+/// Array sort (in-place). Stack: [array] → [array] via `vybe:js-array.sort`.
 pub fn emit_sort(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "wasm:js-array", "sort", 1, line);
+    emit_import_call(chunks, current, "vybe:js-array", "sort", 1, line);
 }
 
-/// Array lastIndexOf. Stack: [array, value] → [i32] via `wasm:js-array.lastIndexOf`.
+/// Array lastIndexOf. Stack: [array, value] → [i32] via `vybe:js-array.lastIndexOf`.
 pub fn emit_last_index_of(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "wasm:js-array", "lastIndexOf", 2, line);
+    emit_import_call(chunks, current, "vybe:js-array", "lastIndexOf", 2, line);
 }
 
 /// Array removeAt (splice). Stack: [array, index] → [null].
 /// splice(arr, index, 1) — deletes 1 element at index.
 pub fn emit_remove_at(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::I32_CONST_1, line);
-    emit_import_call(chunks, current, "wasm:js-array", "splice", 3, line);
+    emit_import_call(chunks, current, "vybe:js-array", "splice", 3, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op(Op::NULL, line);
 }
@@ -243,25 +243,25 @@ pub fn emit_remove_at(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Caller must push 0 as deleteCount before value.
 /// splice(arr, index, 0, value) — inserts value at index.
 pub fn emit_insert(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "wasm:js-array", "splice", 4, line);
+    emit_import_call(chunks, current, "vybe:js-array", "splice", 4, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op(Op::NULL, line);
 }
 
 /// indexOf with fromIndex. Stack: [array, value, fromIndex] → [i32].
 pub fn emit_index_of_from(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "wasm:js-array", "indexOf", 3, line);
+    emit_import_call(chunks, current, "vybe:js-array", "indexOf", 3, line);
 }
 
 /// lastIndexOf with fromIndex. Stack: [array, value, fromIndex] → [i32].
 pub fn emit_last_index_of_from(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "wasm:js-array", "lastIndexOf", 3, line);
+    emit_import_call(chunks, current, "vybe:js-array", "lastIndexOf", 3, line);
 }
 
 /// RemoveRange. Stack: [array, index, count] → [null].
 /// splice(arr, index, count) — removes count elements at index.
 pub fn emit_remove_range(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "wasm:js-array", "splice", 3, line);
+    emit_import_call(chunks, current, "vybe:js-array", "splice", 3, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op(Op::NULL, line);
 }
@@ -278,7 +278,7 @@ pub fn emit_get_range(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DUP, line); // [arr, index, index]
     chunks[current].emit_op_u16(Op::LOCAL_GET, count_local, line); // [arr, index, index, count]
     chunks[current].emit_op(Op::DYN_ADD, line); // [arr, index, end]
-    emit_import_call(chunks, current, "wasm:js-array", "slice", 3, line);
+    emit_import_call(chunks, current, "vybe:js-array", "slice", 3, line);
 }
 
 /// Clone (full copy). Stack: [array] → [new_array].
@@ -287,7 +287,7 @@ pub fn emit_clone(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::I32_CONST_0, line);
     let max_c = chunks[current].add_constant(Value::I32(i32::MAX));
     chunks[current].emit_op_u16(Op::CONST, max_c, line);
-    emit_import_call(chunks, current, "wasm:js-array", "slice", 3, line);
+    emit_import_call(chunks, current, "vybe:js-array", "slice", 3, line);
 }
 
 /// InsertRange. Stack: [array, index, src_array] → [null].
@@ -327,7 +327,7 @@ pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::I32_CONST_0, line);
     let max_c = chunks[current].add_constant(Value::I32(i32::MAX));
     chunks[current].emit_op_u16(Op::CONST, max_c, line);
-    emit_import_call(chunks, current, "wasm:js-array", "splice", 3, line);
+    emit_import_call(chunks, current, "vybe:js-array", "splice", 3, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op(Op::NULL, line);
 }
@@ -366,7 +366,7 @@ fn emit_stdlib_call_2(chunks: &mut [Chunk], current: usize, global: &'static str
 /// Pack N consecutive stack values into a new array (was the
 /// `ARRAY_NEW_FIXED N` opcode). Stack: [v0, v1, …, v(N-1)] → [array].
 ///
-/// There's no single `wasm:js-array.*` import that consumes N unknown
+/// There's no single `vybe:js-array.*` import that consumes N unknown
 /// stack values, so this stashes each value into a caller-provided
 /// block of consecutive locals, calls `newWithLength(0)`, then pushes
 /// each local back in order.
@@ -397,7 +397,7 @@ pub fn emit_pack_n(
     for i in 0..n {
         chunks[current].emit_op(Op::DUP, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, slot_base + i, line);
-        emit_import_call(chunks, current, "wasm:js-array", "push", 2, line);
+        emit_import_call(chunks, current, "vybe:js-array", "push", 2, line);
         chunks[current].emit_op(Op::DROP, line); // drop new_length
     }
 }
@@ -412,14 +412,14 @@ pub fn emit_array_pair(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, v2, line); chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, v1, line); chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
-    emit_import_call(chunks, current, "wasm:js-array", "newWithLength", 1, line);
+    emit_import_call(chunks, current, "vybe:js-array", "newWithLength", 1, line);
     chunks[current].emit_op(Op::DUP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, v1, line);
-    emit_import_call(chunks, current, "wasm:js-array", "push", 2, line);
+    emit_import_call(chunks, current, "vybe:js-array", "push", 2, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op(Op::DUP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, v2, line);
-    emit_import_call(chunks, current, "wasm:js-array", "push", 2, line);
+    emit_import_call(chunks, current, "vybe:js-array", "push", 2, line);
     chunks[current].emit_op(Op::DROP, line);
 }
 
@@ -430,19 +430,19 @@ pub fn emit_array_pair(chunks: &mut [Chunk], current: usize, line: u32) {
 // `build_*` functions build a fresh local Chunk and return it).
 // Each one mirrors the slice-based API above.
 
-/// `wasm:js-array.newWithLength(0)` → empty Array on `code`'s stack.
+/// `vybe:js-array.newWithLength(0)` → empty Array on `code`'s stack.
 /// Import registers on `imports`.
 pub fn emit_array_new_into(imports: &mut Chunk, code: &mut Chunk, count: u16, line: u32) {
     if count == 0 {
         code.emit_op(Op::I32_CONST_0, line);
-        emit_import_call_into(imports, code, "wasm:js-array", "newWithLength", 1, line);
+        emit_import_call_into(imports, code, "vybe:js-array", "newWithLength", 1, line);
     } else {
         code.emit_op_u16(Op::ARRAY_NEW_FIXED, count, line);
     }
 }
 
 pub fn emit_new_with_length_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    emit_import_call_into(imports, code, "wasm:js-array", "newWithLength", 1, line);
+    emit_import_call_into(imports, code, "vybe:js-array", "newWithLength", 1, line);
 }
 
 pub fn emit_len_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
@@ -482,7 +482,7 @@ pub fn emit_len_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
     code.patch_block(str_block);
     // Array path — fallthrough from the `br_if 0`.
     code.emit_op_u16(Op::LOCAL_GET, scratch_val, line);
-    emit_import_call_into(imports, code, "wasm:js-array", "length", 1, line);
+    emit_import_call_into(imports, code, "vybe:js-array", "length", 1, line);
     code.emit_op_u16(Op::LOCAL_SET, scratch_len, line);
     code.emit_op(Op::DROP, line);
     code.emit_end(line);
@@ -491,57 +491,57 @@ pub fn emit_len_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
 }
 
 pub fn emit_push_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    emit_import_call_into(imports, code, "wasm:js-array", "push", 2, line);
+    emit_import_call_into(imports, code, "vybe:js-array", "push", 2, line);
 }
 
 pub fn emit_pop_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    emit_import_call_into(imports, code, "wasm:js-array", "pop", 1, line);
+    emit_import_call_into(imports, code, "vybe:js-array", "pop", 1, line);
 }
 
 pub fn emit_get_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    emit_import_call_into(imports, code, "wasm:js-array", "get", 2, line);
+    emit_import_call_into(imports, code, "vybe:js-array", "get", 2, line);
 }
 
 pub fn emit_set_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    emit_import_call_into(imports, code, "wasm:js-array", "set", 3, line);
+    emit_import_call_into(imports, code, "vybe:js-array", "set", 3, line);
 }
 
 pub fn emit_slice_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    emit_import_call_into(imports, code, "wasm:js-array", "slice", 3, line);
+    emit_import_call_into(imports, code, "vybe:js-array", "slice", 3, line);
 }
 
 pub fn emit_join_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    emit_import_call_into(imports, code, "wasm:js-array", "join", 2, line);
+    emit_import_call_into(imports, code, "vybe:js-array", "join", 2, line);
 }
 
 pub fn emit_reverse_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    emit_import_call_into(imports, code, "wasm:js-array", "reverse", 1, line);
+    emit_import_call_into(imports, code, "vybe:js-array", "reverse", 1, line);
 }
 
 pub fn emit_contains_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    emit_import_call_into(imports, code, "wasm:js-array", "includes", 2, line);
+    emit_import_call_into(imports, code, "vybe:js-array", "includes", 2, line);
 }
 
 pub fn emit_index_of_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    emit_import_call_into(imports, code, "wasm:js-array", "indexOf", 2, line);
+    emit_import_call_into(imports, code, "vybe:js-array", "indexOf", 2, line);
 }
 
 pub fn emit_concat_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    emit_import_call_into(imports, code, "wasm:js-array", "concat", 2, line);
+    emit_import_call_into(imports, code, "vybe:js-array", "concat", 2, line);
 }
 
 pub fn emit_shift_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    emit_import_call_into(imports, code, "wasm:js-array", "shift", 1, line);
+    emit_import_call_into(imports, code, "vybe:js-array", "shift", 1, line);
 }
 
 pub fn emit_fill_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    emit_import_call_into(imports, code, "wasm:js-array", "fill", 4, line);
+    emit_import_call_into(imports, code, "vybe:js-array", "fill", 4, line);
 }
 
 /// Pack two values from stack into a new two-element array.
 /// Stack: [v1, v2] → [array_of_two]. Used by stdlib for `[k, v]` /
 /// `[i, arr[i]]` pair construction — the one pattern without a single
-/// `wasm:js-array.*` equivalent. Allocates 2 scratch slots via
+/// `vybe:js-array.*` equivalent. Allocates 2 scratch slots via
 /// `chunk.local_count` (safe in stdlib because these chunks don't
 /// share slot space with a scope).
 pub fn emit_array_pair_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
@@ -551,18 +551,18 @@ pub fn emit_array_pair_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
     // Stack: [v1, v2] — stash both into temp slots (peek-set + drop).
     code.emit_op_u16(Op::LOCAL_SET, v2, line); code.emit_op(Op::DROP, line);
     code.emit_op_u16(Op::LOCAL_SET, v1, line); code.emit_op(Op::DROP, line);
-    // arr = wasm:js-array.newWithLength(0)
+    // arr = vybe:js-array.newWithLength(0)
     code.emit_op(Op::I32_CONST_0, line);
-    emit_import_call_into(imports, code, "wasm:js-array", "newWithLength", 1, line);
+    emit_import_call_into(imports, code, "vybe:js-array", "newWithLength", 1, line);
     // arr.push(v1)
     code.emit_op(Op::DUP, line);
     code.emit_op_u16(Op::LOCAL_GET, v1, line);
-    emit_import_call_into(imports, code, "wasm:js-array", "push", 2, line);
+    emit_import_call_into(imports, code, "vybe:js-array", "push", 2, line);
     code.emit_op(Op::DROP, line);
     // arr.push(v2)
     code.emit_op(Op::DUP, line);
     code.emit_op_u16(Op::LOCAL_GET, v2, line);
-    emit_import_call_into(imports, code, "wasm:js-array", "push", 2, line);
+    emit_import_call_into(imports, code, "vybe:js-array", "push", 2, line);
     code.emit_op(Op::DROP, line);
 }
 
@@ -612,7 +612,7 @@ pub fn emit_range_targeted(chunks: &mut [Chunk], current: usize, arg_count: u8, 
 
             chunk.emit_op_u16(Op::LOCAL_GET, result_local, line);
             chunk.emit_op_u16(Op::LOCAL_GET, i_local, line);
-            let push_idx = chunk.add_import("wasm:js-array", "push");
+            let push_idx = chunk.add_import("vybe:js-array", "push");
             chunk.emit_op_u16(Op::CALL_IMPORT, push_idx, line);
             chunk.emit(2u8, line);
             chunk.emit_op(Op::DROP, line);

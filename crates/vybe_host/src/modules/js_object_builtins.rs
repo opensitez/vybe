@@ -1,4 +1,4 @@
-//! # `wasm:js-object` host handlers
+//! # `vybe:js-object` host handlers
 //!
 //! Native Rust impls of `Object.*` statics and `Object.prototype.*` per
 //! ECMA-262 §20.1, satisfying the imports declared in
@@ -85,13 +85,13 @@ pub fn register(vm: &mut VM) {
 // ── Construction ──────────────────────────────────────────────────────
 
 fn register_construction(vm: &mut VM) {
-    vm.register_host_fn("wasm:js-object", "new",
+    vm.register_host_fn("vybe:js-object", "new",
         Box::new(|_ctx, _args| {
             Value::Object(Arc::new(Mutex::new(Object::new())))
         }));
 
     // create(proto) -> new obj with prototype link
-    vm.register_host_fn("wasm:js-object", "create",
+    vm.register_host_fn("vybe:js-object", "create",
         Box::new(|_ctx, args| {
             let mut obj = Object::new();
             if let Some(proto @ Value::Object(_)) = args.first() {
@@ -104,7 +104,7 @@ fn register_construction(vm: &mut VM) {
         }));
 
     // fromEntries(iterable) -> new obj
-    vm.register_host_fn("wasm:js-object", "fromEntries",
+    vm.register_host_fn("vybe:js-object", "fromEntries",
         Box::new(|_ctx, args| {
             let mut obj = Object::new();
             if let Some(Value::Object(src)) = args.first() {
@@ -126,7 +126,7 @@ fn register_construction(vm: &mut VM) {
         }));
 
     // assign(target, source) -> target (pairwise; multi-source chains)
-    vm.register_host_fn("wasm:js-object", "assign",
+    vm.register_host_fn("vybe:js-object", "assign",
         Box::new(|_ctx, args| {
             if let (Some(target), Some(source)) = (args.first(), args.get(1)) {
                 if let (Value::Object(t), Value::Object(s)) = (target, source) {
@@ -150,7 +150,7 @@ fn register_construction(vm: &mut VM) {
 
 fn register_access(vm: &mut VM) {
     // get(obj, key) -> value (walks prototype chain)
-    vm.register_host_fn("wasm:js-object", "get",
+    vm.register_host_fn("vybe:js-object", "get",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let key = args.get(1).map(key_string).unwrap_or_default();
@@ -162,7 +162,7 @@ fn register_access(vm: &mut VM) {
         }));
 
     // set(obj, key, value) -> ()
-    vm.register_host_fn("wasm:js-object", "set",
+    vm.register_host_fn("vybe:js-object", "set",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let key = args.get(1).map(key_string).unwrap_or_default();
@@ -178,7 +178,7 @@ fn register_access(vm: &mut VM) {
         }));
 
     // has(obj, key) -> i32 (walks prototype chain, returns 1/0)
-    vm.register_host_fn("wasm:js-object", "has",
+    vm.register_host_fn("vybe:js-object", "has",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let key = args.get(1).map(key_string).unwrap_or_default();
@@ -192,7 +192,7 @@ fn register_access(vm: &mut VM) {
     // operator, PHP `array_key_exists`, Python `key in dict`, Ruby
     // `Hash#key?`. Returns Value::Bool so string coercion gives
     // "true"/"false" (ECMA-262 §23.1.2.3).
-    vm.register_host_fn("wasm:js-object", "hasOwn",
+    vm.register_host_fn("vybe:js-object", "hasOwn",
         Box::new(|_ctx, args| {
             let key_raw = args.get(1).cloned().unwrap_or(Value::Undefined);
             if let Some(obj) = obj_of(args, 0) {
@@ -221,7 +221,7 @@ fn register_access(vm: &mut VM) {
         }));
 
     // delete(obj, key) -> i32 (1 if deleted)
-    vm.register_host_fn("wasm:js-object", "delete",
+    vm.register_host_fn("vybe:js-object", "delete",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let key = args.get(1).map(key_string).unwrap_or_default();
@@ -247,7 +247,7 @@ fn register_enumeration(vm: &mut VM) {
     }
 
     // Polymorphic over Array / Map / Ordinary. Portable: scripts compiled
-    // against `wasm:js-object.keys` run on any WASM engine (V8,
+    // against `vybe:js-object.keys` run on any WASM engine (V8,
     // SpiderMonkey, wasmtime with the js-object polyfill). Every language
     // (PHP `array_keys`, Python `dict.keys`, Ruby `Hash#keys`, JS
     // `Object.keys`) binds to this SAME import.
@@ -269,7 +269,7 @@ fn register_enumeration(vm: &mut VM) {
         own_keys(o)
     }
 
-    vm.register_host_fn("wasm:js-object", "keys",
+    vm.register_host_fn("vybe:js-object", "keys",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
@@ -294,7 +294,7 @@ fn register_enumeration(vm: &mut VM) {
             Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
         }));
 
-    vm.register_host_fn("wasm:js-object", "values",
+    vm.register_host_fn("vybe:js-object", "values",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
@@ -316,7 +316,7 @@ fn register_enumeration(vm: &mut VM) {
             Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
         }));
 
-    vm.register_host_fn("wasm:js-object", "entries",
+    vm.register_host_fn("vybe:js-object", "entries",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
@@ -356,7 +356,7 @@ fn register_enumeration(vm: &mut VM) {
 
     // getOwnPropertyNames — like keys but includes non-enumerable
     // (our model doesn't track enumerability; alias to keys for MVP)
-    vm.register_host_fn("wasm:js-object", "getOwnPropertyNames",
+    vm.register_host_fn("vybe:js-object", "getOwnPropertyNames",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
@@ -369,12 +369,12 @@ fn register_enumeration(vm: &mut VM) {
         }));
 
     // getOwnPropertySymbols — we don't distinguish symbol vs string keys yet
-    vm.register_host_fn("wasm:js-object", "getOwnPropertySymbols",
+    vm.register_host_fn("vybe:js-object", "getOwnPropertySymbols",
         Box::new(|_ctx, _args| {
             Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
         }));
 
-    vm.register_host_fn("wasm:js-object", "length",
+    vm.register_host_fn("vybe:js-object", "length",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
@@ -391,7 +391,7 @@ fn register_descriptors(vm: &mut VM) {
     // Descriptor is itself an object with {value, writable, enumerable,
     // configurable} or {get, set, enumerable, configurable} fields.
     // MVP: just extract `value` and do a plain set.
-    vm.register_host_fn("wasm:js-object", "defineProperty",
+    vm.register_host_fn("vybe:js-object", "defineProperty",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let key = args.get(1).map(key_string).unwrap_or_default();
@@ -411,7 +411,7 @@ fn register_descriptors(vm: &mut VM) {
             Value::Null
         }));
 
-    vm.register_host_fn("wasm:js-object", "defineProperties",
+    vm.register_host_fn("vybe:js-object", "defineProperties",
         Box::new(|_ctx, args| {
             if let (Some(target), Some(Value::Object(descs))) = (obj_of(args, 0), args.get(1)) {
                 let d = descs.lock().unwrap();
@@ -438,7 +438,7 @@ fn register_descriptors(vm: &mut VM) {
         }));
 
     // getOwnPropertyDescriptor(obj, key) -> descriptor or undefined
-    vm.register_host_fn("wasm:js-object", "getOwnPropertyDescriptor",
+    vm.register_host_fn("vybe:js-object", "getOwnPropertyDescriptor",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let key = args.get(1).map(key_string).unwrap_or_default();
@@ -456,7 +456,7 @@ fn register_descriptors(vm: &mut VM) {
         }));
 
     // getOwnPropertyDescriptors(obj) -> { key: descriptor, ... }
-    vm.register_host_fn("wasm:js-object", "getOwnPropertyDescriptors",
+    vm.register_host_fn("vybe:js-object", "getOwnPropertyDescriptors",
         Box::new(|_ctx, args| {
             let mut result = Object::new();
             if let Some(obj) = obj_of(args, 0) {
@@ -478,7 +478,7 @@ fn register_descriptors(vm: &mut VM) {
 // ── Prototype ─────────────────────────────────────────────────────────
 
 fn register_prototype(vm: &mut VM) {
-    vm.register_host_fn("wasm:js-object", "getPrototypeOf",
+    vm.register_host_fn("vybe:js-object", "getPrototypeOf",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
@@ -487,7 +487,7 @@ fn register_prototype(vm: &mut VM) {
             Value::Null
         }));
 
-    vm.register_host_fn("wasm:js-object", "setPrototypeOf",
+    vm.register_host_fn("vybe:js-object", "setPrototypeOf",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let proto = args.get(1).cloned().unwrap_or(Value::Null);
@@ -503,7 +503,7 @@ fn register_prototype(vm: &mut VM) {
 // ── Locking (freeze / seal / preventExtensions) ───────────────────────
 
 fn register_locking(vm: &mut VM) {
-    vm.register_host_fn("wasm:js-object", "freeze",
+    vm.register_host_fn("vybe:js-object", "freeze",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let mut o = obj.lock().unwrap();
@@ -516,7 +516,7 @@ fn register_locking(vm: &mut VM) {
             Value::Null
         }));
 
-    vm.register_host_fn("wasm:js-object", "isFrozen",
+    vm.register_host_fn("vybe:js-object", "isFrozen",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
@@ -525,7 +525,7 @@ fn register_locking(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    vm.register_host_fn("wasm:js-object", "seal",
+    vm.register_host_fn("vybe:js-object", "seal",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let mut o = obj.lock().unwrap();
@@ -537,7 +537,7 @@ fn register_locking(vm: &mut VM) {
             Value::Null
         }));
 
-    vm.register_host_fn("wasm:js-object", "isSealed",
+    vm.register_host_fn("vybe:js-object", "isSealed",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
@@ -546,7 +546,7 @@ fn register_locking(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    vm.register_host_fn("wasm:js-object", "preventExtensions",
+    vm.register_host_fn("vybe:js-object", "preventExtensions",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let mut o = obj.lock().unwrap();
@@ -557,7 +557,7 @@ fn register_locking(vm: &mut VM) {
             Value::Null
         }));
 
-    vm.register_host_fn("wasm:js-object", "isExtensible",
+    vm.register_host_fn("vybe:js-object", "isExtensible",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
@@ -574,7 +574,7 @@ fn register_locking(vm: &mut VM) {
 
 fn register_comparison(vm: &mut VM) {
     // Object.is(a, b) — SameValue: NaN === NaN, -0 distinct from +0
-    vm.register_host_fn("wasm:js-object", "is",
+    vm.register_host_fn("vybe:js-object", "is",
         Box::new(|_ctx, args| {
             let a = args.first();
             let b = args.get(1);
@@ -599,7 +599,7 @@ fn register_comparison(vm: &mut VM) {
 // ── Prototype methods (called via obj.foo()) ──────────────────────────
 
 fn register_prototype_methods(vm: &mut VM) {
-    vm.register_host_fn("wasm:js-object", "hasOwnProperty",
+    vm.register_host_fn("vybe:js-object", "hasOwnProperty",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let key = args.get(1).map(key_string).unwrap_or_default();
@@ -609,7 +609,7 @@ fn register_prototype_methods(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    vm.register_host_fn("wasm:js-object", "isPrototypeOf",
+    vm.register_host_fn("vybe:js-object", "isPrototypeOf",
         Box::new(|_ctx, args| {
             // isPrototypeOf: is `self` in `other`'s prototype chain?
             if let (Some(self_obj), Some(other)) = (obj_of(args, 0), obj_of(args, 1)) {
@@ -635,7 +635,7 @@ fn register_prototype_methods(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    vm.register_host_fn("wasm:js-object", "propertyIsEnumerable",
+    vm.register_host_fn("vybe:js-object", "propertyIsEnumerable",
         Box::new(|_ctx, args| {
             // Our model: any own property is enumerable.
             if let Some(obj) = obj_of(args, 0) {
@@ -647,7 +647,7 @@ fn register_prototype_methods(vm: &mut VM) {
         }));
 
     // toString(): spec default is "[object Object]" for plain objects
-    vm.register_host_fn("wasm:js-object", "toString",
+    vm.register_host_fn("vybe:js-object", "toString",
         Box::new(|_ctx, args| {
             if is_object(args.first().unwrap_or(&Value::Null)) {
                 return Value::String(Arc::from("[object Object]"));
@@ -655,7 +655,7 @@ fn register_prototype_methods(vm: &mut VM) {
             Value::String(Arc::from(""))
         }));
 
-    vm.register_host_fn("wasm:js-object", "toLocaleString",
+    vm.register_host_fn("vybe:js-object", "toLocaleString",
         Box::new(|_ctx, args| {
             if is_object(args.first().unwrap_or(&Value::Null)) {
                 return Value::String(Arc::from("[object Object]"));
@@ -664,7 +664,7 @@ fn register_prototype_methods(vm: &mut VM) {
         }));
 
     // valueOf: spec default returns the object itself
-    vm.register_host_fn("wasm:js-object", "valueOf",
+    vm.register_host_fn("vybe:js-object", "valueOf",
         Box::new(|_ctx, args| args.first().cloned().unwrap_or(Value::Null)));
 }
 
@@ -674,7 +674,7 @@ fn register_php_extensions(vm: &mut VM) {
     // appendAutoKey(obj, value) -> i32 key
     // Implements PHP's `$a[] = x` — finds the next int key (max of
     // existing int keys + 1, or 0 if none) and sets it.
-    vm.register_host_fn("wasm:js-object", "appendAutoKey",
+    vm.register_host_fn("vybe:js-object", "appendAutoKey",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let val = args.get(1).cloned().unwrap_or(Value::Null);

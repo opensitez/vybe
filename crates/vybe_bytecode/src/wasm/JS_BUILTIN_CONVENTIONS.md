@@ -1,25 +1,41 @@
-# `wasm:js-*` Builtin Conventions
+# JS Builtin Conventions (Vybe)
 
-This file pins the contract every `wasm:js-*` import in Vybe must
+This file pins the contract every JS-shape host import in Vybe must
 follow. It covers:
 
 1. **Type marshaling** — how WASM-level types map to JS-level values
 2. **Error handling** — what a host handler does when things go wrong
 3. **Null / undefined semantics**
 4. **Identity preservation**
-5. **Forward-compat with the CG `js-string-builtins` family**
+5. **Naming: which namespace a primitive belongs under**
 
-The goal: every import in the Vybe stdlib family
-(`wasm:js-array`, `wasm:js-object`, `wasm:js-map`, `wasm:js-set`,
-`wasm:js-weakmap`, `wasm:js-weakset`, `wasm:js-arraybuffer`,
-`wasm:js-sharedarraybuffer`, `wasm:js-dataview`,
-`wasm:js-typedarray-*`, and existing `wasm:js-string`,
-`wasm:js-number`, `wasm:js-boolean`, `wasm:js-undefined`,
-`wasm:js-symbol`, `wasm:js-bigint`) obeys these rules uniformly.
-When v8 / SpiderMonkey / JavaScriptCore implement any of these
-(either today for string/primitives, or hypothetically in the future
-for collections), their signatures match — so browser JS glue is a
-one-liner per method, and future CG standardization is a rename.
+## Namespace policy
+
+- **`wasm:js-string`** — real. Merged `js-string-builtins` proposal. V8
+  implements natively. Use this for string built-ins defined in that
+  proposal.
+- **`wasm:js-{number,boolean,undefined,symbol,bigint}`** — stage-1
+  `js-primitive-builtins` proposal. NOT merged, NOT V8-resolvable
+  today. The proposal Overview explicitly rejected Math. Use these
+  names only for primitives defined in that Overview.md.
+- **`vybe:js-*`** — every other JS-shape primitive Vybe provides:
+  `vybe:js-array`, `vybe:js-object`, `vybe:js-math`, `vybe:js-map`,
+  `vybe:js-set`, `vybe:js-date`, `vybe:js-regexp`, `vybe:js-json`,
+  `vybe:js-convert`, `vybe:js-value`, `vybe:js-weakmap`,
+  `vybe:js-weakset`, `vybe:js-arraybuffer`, `vybe:js-sharedarraybuffer`,
+  `vybe:js-dataview`, `vybe:js-typedarray-*`, `vybe:js-fixedarray`,
+  `vybe:js-structured-clone`, `vybe:js-float`, `vybe:js-int`,
+  `vybe:js-uint`, `vybe:js-biguint`. These are **NOT** in any merged
+  or staged WebAssembly proposal. Names describe the ECMA-262
+  runtime shape they mirror. Running Vybe `.wasm` on V8 / Node /
+  SpiderMonkey / JavaScriptCore requires an embedder `importObject`
+  providing these — they do NOT link automatically.
+
+The goal: every import in this family obeys the marshaling /
+error / null-semantics rules uniformly, regardless of prefix. If any
+currently-`vybe:js-*` name is later accepted into a merged WebAssembly
+proposal, the migration to `wasm:*` is a rename, not a semantic
+change.
 
 ## 1. Type marshaling
 
@@ -48,7 +64,7 @@ WASM type: i32
 Unsigned interpretation in all cases (negative values are either
 invalid input → see §2, or the language mapping layer's concern,
 not the import's). `Array.prototype.at(-1)` is a JS-surface
-feature, not an import-level one — our `wasm:js-array.at` takes a
+feature, not an import-level one — our `vybe:js-array.at` takes a
 positive i32; JS `at()` bridges to it by adding the negative index
 to length at the language layer.
 
@@ -128,7 +144,7 @@ when the op can fail recoverably and the caller needs to
 distinguish. Example:
 
 ```
-wasm:js-map.delete(map, key)
+vybe:js-map.delete(map, key)
   → (i32 was_present, externref previous_value)
 ```
 
@@ -150,7 +166,7 @@ No recovery possible; these are "the host is broken" conditions.
 ```rust
 // Example handler fragment
 let Some(arr) = extract_array(&args[0]) else {
-    return Err(VMError::trap("wasm:js-array.push called on non-array"));
+    return Err(VMError::trap("vybe:js-array.push called on non-array"));
 };
 ```
 
@@ -215,9 +231,9 @@ must yield the same WASM-level identity.
 Concretely:
 
 ```
-let arr = wasm:js-array.new();
-wasm:js-array.push(arr, v);
-let elem = wasm:js-array.at(arr, 0);
+let arr = vybe:js-array.new();
+vybe:js-array.push(arr, v);
+let elem = vybe:js-array.at(arr, 0);
 
 // If v was an externref wrapping an Object, `elem` must be an
 // externref wrapping the SAME Object (same Arc<Mutex<Object>> on
@@ -238,25 +254,23 @@ construction.
 
 ## 5. Forward compatibility with the CG
 
-The import module names use the `wasm:js-*` convention. When the
-WebAssembly CG standardizes additional builtins (e.g. a hypothetical
-`wasm:js-array-builtins` proposal analogous to today's
-`wasm:js-string-builtins`), the migration is a one-line rename in
-`crates/vybe_bytecode/src/wasm/wasm_js_array.rs` —
-`pub const MODULE: &str = "wasm:js-array"` → whatever the final
-standard name becomes (e.g. `"wasm:js-array-builtins"`). User
-modules that were emitted against our pre-standard name can be
-re-emitted with the new name; the behavioral contract stays
-identical.
+Import module names use the `vybe:js-*` convention for everything
+NOT in a merged/staged WebAssembly proposal. The only real / staged
+names Vybe uses are `wasm:js-string` (merged `js-string-builtins`)
+and `wasm:js-{number,boolean,undefined,symbol,bigint}` (stage-1
+`js-primitive-builtins`). If the CG ever standardizes additional
+builtins (e.g. collections, Math), the migration is a one-line
+rename in the appropriate Rust module — `pub const MODULE: &str =
+"vybe:js-array"` → whatever the final standard name becomes.
 
 Signatures are designed to match what v8 / SpiderMonkey / JSCore
-would expose if they implemented these natively — so browser JS
-glue (see `tools/vybe-loader/vybe_js_collections.js`, Phase C) is
-literally a one-to-one method wrapping:
+would expose if they implemented these natively — so a browser JS
+glue layer is literally a one-to-one method wrapping in an
+`importObject`:
 
 ```js
 {
-  "wasm:js-array": {
+  "vybe:js-array": {
     "new": () => new Array(),
     "push": (arr, v) => arr.push(v),
     "pop": (arr) => arr.pop(),
@@ -267,18 +281,19 @@ literally a one-to-one method wrapping:
 ```
 
 Each line is a direct call to the native JS method. Zero
-adaptation.
+adaptation. This glue is **required** to run Vybe `.wasm` outside
+the Vybe VM — no runtime provides `vybe:js-*` automatically.
 
 ## 6. Capabilities
 
-All `wasm:js-*` imports declared in the Vybe stdlib family require
+All `vybe:js-*` imports declared in the Vybe stdlib family require
 the `Capabilities::Safe` level — no I/O, no threads beyond what our
-VM already supports (see `wasm:js-sharedarraybuffer` for the one
+VM already supports (see `vybe:js-sharedarraybuffer` for the one
 exception, which gates on `Capabilities::Threads`).
 
 ## 7. Versioning
 
-No versioning in module names (e.g. no `wasm:js-array/v1`). The
+No versioning in module names (e.g. no `vybe:js-array/v1`). The
 import surface evolves additively — new methods are added, existing
 methods never change signature without a new method name. This
-matches the CG's approach to `wasm:js-string-builtins`.
+matches the WebAssembly CG approach to `js-string-builtins`.

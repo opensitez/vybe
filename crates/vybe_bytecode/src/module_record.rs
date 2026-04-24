@@ -17,7 +17,7 @@ use crate::value::Value;
 /// or Adapter (source-language file re-exporting from Synthetic modules).
 #[derive(Debug)]
 pub struct ModuleRecord {
-    /// Canonical specifier: `"wasi:cli/environment"`, `"wasm:js-math"`,
+    /// Canonical specifier: `"wasi:cli/environment"`, `"vybe:js-math"`,
     /// `"./helpers.wasm"`, etc. Package ≠ interface — this is the
     /// *interface* path, which is what source code imports from.
     pub specifier: String,
@@ -89,7 +89,7 @@ pub enum ExportEntry {
     /// called, or as a `Value::Object(HostFunction(idx))` when read
     /// as a value.
     Function { idx: usize },
-    /// Immutable value export — `wasm:js-math.PI`, etc. Compiled as
+    /// Immutable value export — `vybe:js-math.PI`, etc. Compiled as
     /// `emit_const`.
     Value(Value),
     /// Component Model resource type (WIT `resource`). Registered in

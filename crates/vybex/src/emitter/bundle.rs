@@ -147,7 +147,7 @@ pub fn finalize_with_stdlib(chunks: &mut Vec<Chunk>) {
     // (the module-level imports section — single per WASM module).
     // Same dependency surface as user code → stdlib becomes a true
     // cross-runtime polyfill: on Vybe the chunks are swapped for
-    // native handlers; on v8 their `wasm:js-array.*` imports resolve
+    // native handlers; on v8 their `vybe:js-array.*` imports resolve
     // to native `Array.prototype.*`; on wasmtime the Phase-C polyfill
     // supplies the imports.
     let stdlib = {

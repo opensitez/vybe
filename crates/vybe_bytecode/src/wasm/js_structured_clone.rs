@@ -1,4 +1,4 @@
-//! # wasm:js-structured-clone builtin
+//! # vybe:js-structured-clone builtin
 //!
 //! Host import that satisfies the HTML `structuredClone(value)`
 //! algorithm — deep copy across Array / Object / Map / Set /
@@ -10,7 +10,7 @@
 
 use super::encoding::*;
 
-pub const MODULE: &str = "wasm:js-structured-clone";
+pub const MODULE: &str = "vybe:js-structured-clone";
 
 pub const IMPORTS: &[&str] = &[
     "clone",   // structuredClone(value, options?)

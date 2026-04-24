@@ -1,5 +1,5 @@
 //! Phase D1 pilot — compiler-level validation that the `Array(count,
-//! init)` intercept routes through the new `wasm:js-array.*` host
+//! init)` intercept routes through the new `vybe:js-array.*` host
 //! imports end-to-end.
 //!
 //! The intercept lives at
@@ -14,8 +14,8 @@
 //!
 //! Validates:
 //!   1. The intercept fires when the compiler receives `Array(N, v)`.
-//!   2. The resulting chunk imports `wasm:js-array.newWithLength`.
-//!   3. Non-null init triggers `wasm:js-array.fill` too.
+//!   2. The resulting chunk imports `vybe:js-array.newWithLength`.
+//!   3. Non-null init triggers `vybe:js-array.fill` too.
 //!   4. Running the resulting bytecode produces an Array of the
 //!      expected length — i.e. the full stdlib-import → handler →
 //!      ObjectKind::Array pipeline works end-to-end.
@@ -96,12 +96,12 @@ fn array_call_with_null_init_emits_only_newwithlength() {
         Expression::new(ExprKind::Lit(Literal::Float(5.0))),
         Expression::new(ExprKind::Lit(Literal::Null)),
     );
-    assert!(imports.contains(&("wasm:js-array".into(), "newWithLength".into())),
-        "expected `wasm:js-array.newWithLength` import; got: {:?}", imports);
+    assert!(imports.contains(&("vybe:js-array".into(), "newWithLength".into())),
+        "expected `vybe:js-array.newWithLength` import; got: {:?}", imports);
     // fill() is NOT emitted when init is null — newWithLength already
     // null-fills.
-    assert!(!imports.contains(&("wasm:js-array".into(), "fill".into())),
-        "expected no `wasm:js-array.fill` for null-init shortcut; got: {:?}", imports);
+    assert!(!imports.contains(&("vybe:js-array".into(), "fill".into())),
+        "expected no `vybe:js-array.fill` for null-init shortcut; got: {:?}", imports);
 }
 
 #[test]
@@ -110,9 +110,9 @@ fn array_call_with_non_null_init_emits_fill_too() {
         Expression::new(ExprKind::Lit(Literal::Float(5.0))),
         Expression::new(ExprKind::Lit(Literal::Float(42.0))),
     );
-    assert!(imports.contains(&("wasm:js-array".into(), "newWithLength".into())),
+    assert!(imports.contains(&("vybe:js-array".into(), "newWithLength".into())),
         "expected newWithLength import; got: {:?}", imports);
-    assert!(imports.contains(&("wasm:js-array".into(), "fill".into())),
+    assert!(imports.contains(&("vybe:js-array".into(), "fill".into())),
         "expected fill import to initialise non-null value; got: {:?}", imports);
 }
 
@@ -120,7 +120,7 @@ fn array_call_with_non_null_init_emits_fill_too() {
 fn real_cobol_nested_occurs_emits_wasm_js_array_import() {
     // Real-COBOL end-to-end: a 05-level OCCURS field inside a 01-level
     // group. After the walker's `ident_or_keyword` fix the nested field
-    // now flows through the `Array(count, init)` → `wasm:js-array.*`
+    // now flows through the `Array(count, init)` → `vybe:js-array.*`
     // intercept.
     let imports = cobol_imports_for(r#"
        IDENTIFICATION DIVISION.
@@ -135,14 +135,14 @@ fn real_cobol_nested_occurs_emits_wasm_js_array_import() {
 "#.trim());
 
     assert!(
-        imports.iter().any(|(m, _)| m == "wasm:js-array"),
+        imports.iter().any(|(m, _)| m == "vybe:js-array"),
         "Real COBOL `05 … OCCURS N TIMES` must now import from \
-         `wasm:js-array` (walker ident_or_keyword fix); imports = {:?}",
+         `vybe:js-array` (walker ident_or_keyword fix); imports = {:?}",
         imports
     );
     assert!(
-        imports.contains(&("wasm:js-array".into(), "newWithLength".into())),
-        "Expected `wasm:js-array.newWithLength` in imports; got: {:?}",
+        imports.contains(&("vybe:js-array".into(), "newWithLength".into())),
+        "Expected `vybe:js-array.newWithLength` in imports; got: {:?}",
         imports
     );
 }
@@ -164,11 +164,11 @@ fn real_cobol_occurs_with_value_clause_also_emits_fill() {
 "#.trim());
 
     assert!(
-        imports.contains(&("wasm:js-array".into(), "newWithLength".into())),
+        imports.contains(&("vybe:js-array".into(), "newWithLength".into())),
         "newWithLength missing; imports = {:?}", imports
     );
     assert!(
-        imports.contains(&("wasm:js-array".into(), "fill".into())),
+        imports.contains(&("vybe:js-array".into(), "fill".into())),
         "fill should be emitted when OCCURS has a non-null VALUE; imports = {:?}", imports
     );
 }

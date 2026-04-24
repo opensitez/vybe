@@ -41,17 +41,17 @@ FLOOR               = { emit = "opcode:f64_floor",           min_args = 1, max_a
 CEILING             = { emit = "opcode:f64_ceil",            min_args = 1, max_args = 1 }
 MOD                 = { emit = "opcode:f64_mod",             min_args = 2, max_args = 2 }
 REM                 = { emit = "opcode:f64_mod",             min_args = 2, max_args = 2 }
-POWER               = { emit = "host:vybe:math:pow",         min_args = 2, max_args = 2 }
-LOG                 = { emit = "host:vybe:math:log",         min_args = 1, max_args = 1 }
-LOG10               = { emit = "host:vybe:math:log10",       min_args = 1, max_args = 1 }
-EXP                 = { emit = "host:vybe:math:exp",         min_args = 1, max_args = 1 }
-SIN                 = { emit = "host:vybe:math:sin",         min_args = 1, max_args = 1 }
-COS                 = { emit = "host:vybe:math:cos",         min_args = 1, max_args = 1 }
-TAN                 = { emit = "host:vybe:math:tan",         min_args = 1, max_args = 1 }
-ASIN                = { emit = "host:vybe:math:asin",        min_args = 1, max_args = 1 }
-ACOS                = { emit = "host:vybe:math:acos",        min_args = 1, max_args = 1 }
-ATAN                = { emit = "host:vybe:math:atan",        min_args = 1, max_args = 1 }
-RANDOM              = { emit = "host:wasi:random:random",    min_args = 0, max_args = 0 }
+POWER               = { emit = "host:vybe:js-math:pow",         min_args = 2, max_args = 2 }
+LOG                 = { emit = "host:vybe:js-math:log",         min_args = 1, max_args = 1 }
+LOG10               = { emit = "host:vybe:js-math:log10",       min_args = 1, max_args = 1 }
+EXP                 = { emit = "host:vybe:js-math:exp",         min_args = 1, max_args = 1 }
+SIN                 = { emit = "host:vybe:js-math:sin",         min_args = 1, max_args = 1 }
+COS                 = { emit = "host:vybe:js-math:cos",         min_args = 1, max_args = 1 }
+TAN                 = { emit = "host:vybe:js-math:tan",         min_args = 1, max_args = 1 }
+ASIN                = { emit = "host:vybe:js-math:asin",        min_args = 1, max_args = 1 }
+ACOS                = { emit = "host:vybe:js-math:acos",        min_args = 1, max_args = 1 }
+ATAN                = { emit = "host:vybe:js-math:atan",        min_args = 1, max_args = 1 }
+RANDOM              = { emit = "host:vybe:random:random",    min_args = 0, max_args = 0 }
 
 # ── Numeric conversion ──────────────────────────────────────────────────────
 
@@ -62,12 +62,12 @@ TEST-NUMVAL         = { emit = "host:vybe:convert:isNaN",    min_args = 1, max_a
 
 # ── Aggregate ────────────────────────────────────────────────────────────────
 
-MAX                 = { emit = "host:vybe:math:max",         min_args = 2, max_args = 255 }
-MIN                 = { emit = "host:vybe:math:min",         min_args = 2, max_args = 255 }
-SUM                 = { emit = "host:vybe:math:sum",         min_args = 1, max_args = 255 }
-MEAN                = { emit = "host:vybe:math:mean",        min_args = 1, max_args = 255 }
-MEDIAN              = { emit = "host:vybe:math:median",      min_args = 1, max_args = 255 }
-VARIANCE            = { emit = "host:vybe:math:variance",    min_args = 1, max_args = 255 }
+MAX                 = { emit = "host:vybe:js-math:max",         min_args = 2, max_args = 255 }
+MIN                 = { emit = "host:vybe:js-math:min",         min_args = 2, max_args = 255 }
+SUM                 = { emit = "host:vybe:js-math:sum",         min_args = 1, max_args = 255 }
+MEAN                = { emit = "host:vybe:js-math:mean",        min_args = 1, max_args = 255 }
+MEDIAN              = { emit = "host:vybe:js-math:median",      min_args = 1, max_args = 255 }
+VARIANCE            = { emit = "host:vybe:js-math:variance",    min_args = 1, max_args = 255 }
 
 # ── Date ─────────────────────────────────────────────────────────────────────
 
@@ -81,8 +81,8 @@ FORMATTED-TIME      = { emit = "host:wasi:clocks:toISOString", min_args = 1, max
 
 # ── Financial ────────────────────────────────────────────────────────────────
 
-ANNUITY             = { emit = "host:vybe:math:annuity",     min_args = 2, max_args = 2 }
-PRESENT-VALUE       = { emit = "host:vybe:math:presentValue", min_args = 2, max_args = 255 }
+ANNUITY             = { emit = "host:vybe:js-math:annuity",     min_args = 2, max_args = 2 }
+PRESENT-VALUE       = { emit = "host:vybe:js-math:presentValue", min_args = 2, max_args = 255 }
 
 # ── Type checks (walker emits as calls, profile routes them) ────────────────
 
