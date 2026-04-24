@@ -25,16 +25,37 @@ block_comment = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
 
 // ── Program ──────────────────────────────────────────────────────────────────
 
+// PHP file shape. Real PHP files start in HTML mode and switch into
+// PHP code with `<?php` (or short-echo `<?=`), closing back to HTML
+// with `?>`. A .php source with no tags at all is treated as pure PHP
+// (tag-less convenience supported by this compiler's tests).
+//
+// Three alternatives, first match wins:
+//   html-first — file begins with literal HTML before any `<?php`
+//   php-first  — file begins with `<?php`/`<?=` (may contain later HTML)
+//   bare       — no tags anywhere; entire file is PHP statements
 program = {
     SOI
-    ~ open_tag?
-    ~ (statement)*
-    ~ close_tag?
+    ~ (program_html_first | program_php_first | program_bare)
     ~ EOI
 }
 
-open_tag  = _{ "<?php" | "<?=" | "<?" }
-close_tag = _{ "?>" }
+program_html_first = _{ inline_html ~ (php_segment ~ inline_html?)* }
+program_php_first  = _{ php_segment ~ (inline_html ~ php_segment)* ~ inline_html? }
+program_bare       = _{ statement* }
+
+// One `<?php … ?>` or `<?= expr ?>` region.
+php_segment = _{ php_echo_segment | php_code_segment }
+php_code_segment = { open_tag_code ~ statement* ~ close_tag? }
+php_echo_segment = { open_tag_echo ~ expression ~ (";")? ~ close_tag? }
+
+// Inline HTML is any run of characters that doesn't contain a PHP
+// open tag. Atomic so internal whitespace is preserved verbatim.
+inline_html = @{ (!"<?" ~ ANY)+ }
+
+open_tag_code = _{ "<?php" | "<?" }
+open_tag_echo = _{ "<?=" }
+close_tag     = _{ "?>" }
 
 // ── Keywords (atomic rules for word-boundary safety) ─────────────────────────
 
@@ -176,9 +197,12 @@ string_lit = { sq_string | dq_string | heredoc_str }
 
 statement = _{
     empty_statement
+    | template_break_stmt
+    | template_echo_stmt
     | block_statement
     | const_statement
     | global_statement
+    | static_variable_statement
     | namespace_statement
     | use_statement
     | function_declaration
@@ -236,6 +260,26 @@ const_statement = {
 global_statement = {
     kw_global ~ variable ~ ("," ~ variable)* ~ ";"
 }
+
+// `static $x;` or `static $x = expr;` — function-local static variable
+// that retains its value across calls. Multiple entries: `static $a, $b = 1;`.
+static_variable_statement = {
+    kw_static ~ static_variable_decl ~ ("," ~ static_variable_decl)* ~ ";"
+}
+static_variable_decl = { variable ~ ("=" ~ expression)? }
+
+// PHP mixed-mode breaks inside a statement list. Every PHP web page does
+// this — `?> <td>static</td> <?php` inside a switch case or loop body
+// emits the literal HTML then resumes PHP. Walker rewrites both forms
+// to `StmtKind::Echo(...)`:
+//   - template_break_stmt: `?>TEXT<?php` → echo "TEXT"
+//   - template_echo_stmt:  `?>TEXT<?= expr ?>` → echo "TEXT"; echo expr;
+// The trailing open tag is required so the enclosing statement list stays
+// in PHP mode; a bare `?>TEXT` at end of input is handled by program's
+// outer `inline_html?` tail.
+template_break_stmt = { close_tag ~ template_text ~ open_tag_code }
+template_echo_stmt  = { close_tag ~ template_text ~ open_tag_echo }
+template_text = @{ (!"<?" ~ ANY)* }
 
 // ── Attributes (PHP 8.0+) ────────────────────────────────────────────────────
 //
@@ -658,9 +702,9 @@ list_expression = {
 
 list_element = { expression? }
 
-// `array(1, 2, 'key' => $val, ...$rest)`
+// `array(1, 2, 'key' => $val, ...$rest)` — PHP keyword, case-insensitive
 array_expression = {
-    "array" ~ "(" ~ (array_element ~ ("," ~ array_element)* ~ ","?)? ~ ")"
+    ^"array" ~ "(" ~ (array_element ~ ("," ~ array_element)* ~ ","?)? ~ ")"
 }
 
 // `[1, 2, 'key' => $val, ...$rest]`

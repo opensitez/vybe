@@ -57,7 +57,43 @@ str_starts_with     = { emit = "opcode:str_starts_with",     min_args = 2, max_a
 str_ends_with       = { emit = "opcode:str_ends_with",       min_args = 2, max_args = 2 }
 str_repeat          = { emit = "opcode:str_repeat",          min_args = 2, max_args = 2 }
 chr                 = { emit = "opcode:str_from_char_code",  min_args = 1, max_args = 1 }
-ord                 = { emit = "host:vybe:string:charCodeAt", min_args = 1, max_args = 1 }
+ord                 = { emit = "host:wasm:js-string:charCodeAt", min_args = 1, max_args = 1 }
+# PHP `strpos`: returns position or false; opcode returns -1 on miss.
+# Most callers do `!== false` which still passes since -1 is truthy in PHP.
+strpos              = { emit = "opcode:str_index_of",        min_args = 2, max_args = 3 }
+stripos             = { emit = "opcode:str_index_of",        min_args = 2, max_args = 3 }
+# Path utilities — backed by `wasi:filesystem` (already used by Node's
+# `path.basename`/`path.dirname` in the JS profile). Same semantics.
+basename            = { emit = "host:wasi:filesystem:pathGetFileName",  min_args = 1, max_args = 2 }
+dirname             = { emit = "host:wasi:filesystem:pathGetDirectory", min_args = 1, max_args = 2 }
+# Substring replace — direct STR_REPLACE opcode (ECMA replaceAll-equivalent).
+str_replace         = { emit = "opcode:str_replace",         min_args = 3, max_args = 4 }
+# Array → delimited string. PHP `implode($glue, $array)` and `join` (alias).
+# Backed by compiler_common::collections::join, which every other language
+# already routes through.
+implode             = { emit = "common:collections.join",    min_args = 1, max_args = 2 }
+join                = { emit = "common:collections.join",    min_args = 1, max_args = 2 }
+# `strtr($str, $array)` — multi-pair substring replacement. Iterates the
+# array's entries in insertion order and applies STR_REPLACE per (key,
+# value) pair. Compiled as a multi-opcode intrinsic; no host call.
+strtr               = { emit = "intrinsic:strtr",            min_args = 2, max_args = 3 }
+# `dir($path)` returns a Directory iterator with `read()`/`close()`
+# methods. Backed by an stdlib chunk that wraps wasi:filesystem:listDir.
+dir                 = { emit = "stdlib:dir",                 min_args = 1, max_args = 1 }
+# String split — direct STR_SPLIT opcode.
+explode             = { emit = "opcode:str_split",           min_args = 2, max_args = 3 }
+# `file($path)` returns the file as an array of lines. stdlib chunk
+# composing wasi:filesystem:readFile + STR_SPLIT on "\n".
+file                = { emit = "stdlib:file",                min_args = 1, max_args = 3 }
+# Regex — PHP PCRE → vybe:regex (Rust regex backing). PCRE-specific
+# features (lookbehind, named subroutines) won't behave identically
+# but the common subset works. Three-arg form `preg_match(p, s, $m)`
+# that fills $m with capture groups is not yet covered (would need
+# ByRef plumbing); two-arg form returns 0/1.
+preg_match          = { emit = "host:vybe:regex:test",       min_args = 2, max_args = 5 }
+preg_match_all      = { emit = "host:vybe:regex:matchGroups", min_args = 2, max_args = 5 }
+preg_replace        = { emit = "host:vybe:regex:replaceAll", min_args = 3, max_args = 4 }
+preg_split          = { emit = "host:vybe:regex:split",      min_args = 2, max_args = 4 }
 
 # ── Math functions ───────────────────────────────────────────────────────────
 
@@ -78,8 +114,8 @@ exp                 = { emit = "host:ecma:math:exp",         min_args = 1, max_a
 log                 = { emit = "host:ecma:math:log",         min_args = 1, max_args = 2 }
 log2                = { emit = "host:ecma:math:log2",        min_args = 1, max_args = 1 }
 log10               = { emit = "host:ecma:math:log10",       min_args = 1, max_args = 1 }
-rand                = { emit = "host:vybe:random:random",    min_args = 0, max_args = 2 }
-mt_rand             = { emit = "host:vybe:random:random",    min_args = 0, max_args = 2 }
+rand                = { emit = "host:wasi:random/insecure:get-insecure-random-u64", min_args = 0, max_args = 2 }
+mt_rand             = { emit = "host:wasi:random/insecure:get-insecure-random-u64", min_args = 0, max_args = 2 }
 intdiv              = { emit = "opcode:f64_div",             min_args = 2, max_args = 2 }
 fmod                = { emit = "opcode:f64_mod",             min_args = 2, max_args = 2 }
 fdiv                = { emit = "opcode:f64_div",             min_args = 2, max_args = 2 }
@@ -137,8 +173,8 @@ key_exists          = { emit = "host:ecma:object:hasOwn",       min_args = 2, ma
 
 # ── JSON ────────────────────────────────────────────────────────────────────
 
-json_encode         = { emit = "host:vybe:json:stringify",   min_args = 1, max_args = 3 }
-json_decode         = { emit = "host:vybe:json:parse",       min_args = 1, max_args = 4 }
+json_encode         = { emit = "host:ecma:json:stringify",   min_args = 1, max_args = 3 }
+json_decode         = { emit = "host:ecma:json:parse",       min_args = 1, max_args = 4 }
 
 # ── Date / Time ─────────────────────────────────────────────────────────────
 # PHP's `time()` / `date()` operate on POSIX seconds-epoch. All wrappers
@@ -176,6 +212,12 @@ file_put_contents   = { emit = "host:wasi:filesystem:writeFile", min_args = 2, m
 file_exists         = { emit = "host:wasi:filesystem:exists",    min_args = 1, max_args = 1 }
 is_file             = { emit = "host:wasi:filesystem:isFile",    min_args = 1, max_args = 1 }
 is_dir              = { emit = "host:wasi:filesystem:isDir",     min_args = 1, max_args = 1 }
+# `filesize($path)` → wasi:filesystem:fileSize. Same semantic.
+filesize            = { emit = "host:wasi:filesystem:fileSize", min_args = 1, max_args = 1 }
+# `filemtime($path)` → seconds since epoch. stdlib chunk that extracts
+# the `.modified` (ms) field from `wasi:filesystem.stat()` and divides
+# by 1000.
+filemtime           = { emit = "stdlib:filemtime",              min_args = 1, max_args = 1 }
 mkdir               = { emit = "host:wasi:filesystem:mkdir",     min_args = 1, max_args = 4 }
 unlink              = { emit = "host:wasi:filesystem:remove",    min_args = 1, max_args = 2 }
 
@@ -183,6 +225,17 @@ unlink              = { emit = "host:wasi:filesystem:remove",    min_args = 1, m
 
 getenv              = { emit = "host:wasi:cli:getEnv",       min_args = 1, max_args = 1 }
 phpversion          = { emit = "noop",                        min_args = 0, max_args = 1 }
+
+# ── PHP error / INI runtime (no-ops for CLI / web compilation) ──────────────
+# These are runtime configuration calls that don't affect compiled-bytecode
+# behaviour. Stub them so common PHP boilerplate doesn't break at runtime.
+error_reporting     = { emit = "noop",                        min_args = 0, max_args = 1 }
+ini_set             = { emit = "noop",                        min_args = 2, max_args = 2 }
+ini_get             = { emit = "noop",                        min_args = 1, max_args = 1 }
+set_error_handler   = { emit = "noop",                        min_args = 1, max_args = 2 }
+restore_error_handler = { emit = "noop",                      min_args = 0, max_args = 0 }
+set_exception_handler = { emit = "noop",                      min_args = 1, max_args = 1 }
+trigger_error       = { emit = "noop",                        min_args = 1, max_args = 2 }
 php_sapi_name       = { emit = "host:vybe:http/meta:php_sapi_name", min_args = 0, max_args = 0 }
 getcwd              = { emit = "host:wasi:cli:cwd",          min_args = 0, max_args = 0 }
 gethostname         = { emit = "host:wasi:cli:machineName",  min_args = 0, max_args = 0 }

@@ -84,9 +84,40 @@ pub fn parse(source: &str) -> Result<Module, String> {
 
     let mut body = Vec::new();
     for pair in program.into_inner() {
-        if matches!(pair.as_rule(), Rule::EOI) { continue; }
-        if let Some(stmt) = walk_statement(pair)? {
-            body.push(stmt);
+        match pair.as_rule() {
+            Rule::EOI => continue,
+            // Mixed-mode: literal text between PHP blocks becomes an
+            // implicit `echo "…";` so the compiled bytecode reproduces
+            // PHP's default "output everything outside <?php … ?>".
+            Rule::inline_html => {
+                let text = pair.as_str();
+                if !text.is_empty() {
+                    body.push(Statement::new(StmtKind::Echo(vec![
+                        Expression::new(ExprKind::Lit(Literal::Str(text.to_string()))),
+                    ])));
+                }
+            }
+            // `<?php … ?>` — walk the contained statements.
+            Rule::php_code_segment => {
+                for inner in pair.into_inner() {
+                    if let Some(stmt) = walk_statement(inner)? {
+                        body.push(stmt);
+                    }
+                }
+            }
+            // `<?= expr ?>` — compiles to a one-arg echo.
+            Rule::php_echo_segment => {
+                let expr_pair = pair.into_inner().next().ok_or("php_echo_segment missing expression")?;
+                let expr = walk_expression(expr_pair)?;
+                body.push(Statement::new(StmtKind::Echo(vec![expr])));
+            }
+            // Tag-less convenience: statement at program top level
+            // (program_bare branch).
+            _ => {
+                if let Some(stmt) = walk_statement(pair)? {
+                    body.push(stmt);
+                }
+            }
         }
     }
 
@@ -172,6 +203,50 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
                 .map(|p| strip_dollar(p.as_str()).to_string())
                 .collect();
             StmtKind::ScopeDecl { kind: ScopeDeclKind::Global, names }
+        }
+
+        Rule::template_break_stmt | Rule::template_echo_stmt => {
+            // `?>HTML<?php` (or `<?=`) inside a statement list. Emit the
+            // literal HTML as `echo "…";`. The trailing `<?= expr ?>` is
+            // handled when the enclosing segment reaches the echo block.
+            let mut text = String::new();
+            for p in pair.into_inner() {
+                if matches!(p.as_rule(), Rule::template_text) {
+                    text = p.as_str().to_string();
+                }
+            }
+            StmtKind::Echo(vec![
+                Expression::new(ExprKind::Lit(Literal::Str(text))),
+            ])
+        }
+
+        Rule::static_variable_statement => {
+            // `static $x;` or `static $x = expr;` — function-local static
+            // variable. We don't yet preserve state across calls (that
+            // needs runtime support); compile as a regular VarDecl so
+            // subsequent `$x` references resolve as a local and the
+            // optional initializer runs on first compile.
+            let mut decls = Vec::new();
+            for p in pair.into_inner() {
+                if matches!(p.as_rule(), Rule::static_variable_decl) {
+                    let mut name = String::new();
+                    let mut init: Option<Expression> = None;
+                    for inner in p.into_inner() {
+                        match inner.as_rule() {
+                            Rule::variable => name = strip_dollar(inner.as_str()).to_string(),
+                            _ => { init = Some(walk_expression(inner)?); }
+                        }
+                    }
+                    decls.push(crate::ast::VarDeclarator {
+                        pattern: crate::ast::BindingPattern::Ident(name),
+                        init,
+                        type_hint: None,
+                        array_bounds: None,
+                        with_events: false,
+                    });
+                }
+            }
+            StmtKind::VarDecl { declarations: decls, kind: crate::ast::VarDeclKind::Static }
         }
 
         Rule::namespace_statement => {
@@ -2057,8 +2132,23 @@ fn canonicalize_php_call_args(callee: &Expression, args: Vec<Argument>) -> Vec<A
     out
 }
 
+/// Variable identifier passthrough.
+///
+/// PHP keeps function names and variable names in **separate namespaces**:
+/// `function foo() {}` and `$foo = 1` coexist with no collision (call
+/// is `foo(...)`, read is `$foo`). Vybex lowers both to global slots
+/// keyed by string, so the only way to preserve PHP's two-namespace
+/// semantics is to keep the `$` sigil as part of the variable
+/// identifier — `$foo` becomes the canonical name, distinct from the
+/// bare function name `foo`.
+///
+/// This started life as `s.strip_prefix('$')` which collapsed both
+/// PHP namespaces into one and broke real scripts that legitimately
+/// used the same word as both a function and a variable (e.g.
+/// `function translate(...)` plus `$translate = Array(...)` in the
+/// snif index.php). Returning `s` verbatim is the fix.
 fn strip_dollar(s: &str) -> &str {
-    s.strip_prefix('$').unwrap_or(s)
+    s
 }
 
 fn to_span(pair: &Pair<Rule>) -> Span {

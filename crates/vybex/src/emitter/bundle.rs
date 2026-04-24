@@ -74,6 +74,11 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_array_binary_search", "__vybe_array_binary_search"),
     ("__stdlib_array_reverse_range", "__vybe_array_reverse_range"),
     ("__stdlib_array_last_index_of", "__vybe_array_last_index_of"),
+    ("__stdlib_dir_read",           "__vybe_dir_read"),
+    ("__stdlib_dir_close",          "__vybe_dir_close"),
+    ("__stdlib_dir",                "__vybe_dir"),
+    ("__stdlib_file",               "__vybe_file"),
+    ("__stdlib_filemtime",          "__vybe_filemtime"),
 ];
 
 /// Emit the stdlib preamble at the START of a script chunk.

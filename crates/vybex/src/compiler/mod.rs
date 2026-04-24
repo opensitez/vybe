@@ -3437,6 +3437,65 @@ impl Compiler {
                 }
             }
 
+            "strtr" => {
+                // PHP strtr two-arg form: strtr($str, $array) replaces every
+                // occurrence of each array key with its value, applied in
+                // insertion order. Implemented as a real loop:
+                //
+                //   entries = ecma:object.entries(array)
+                //   str_slot  = $str
+                //   for [k, v] in entries:
+                //       str_slot = STR_REPLACE(str_slot, k, v)
+                //   push str_slot
+                //
+                // Three-arg form `strtr($str, $from, $to)` (single-char swap
+                // by position) is not yet covered — falls through to NULL
+                // until a test demands it.
+                if args.len() == 2 {
+                    self.compile_expr(args[0])?;
+                    let str_slot = self.scope_mut().define("__strtr_str");
+                    self.emit_u16(Op::LOCAL_SET, str_slot); self.emit(Op::DROP);
+
+                    self.compile_expr(args[1])?;
+                    common::collections::emit_iter_entries(&mut self.chunks, self.current, line);
+                    let entries_slot = self.scope_mut().define("__strtr_entries");
+                    self.emit_u16(Op::LOCAL_SET, entries_slot); self.emit(Op::DROP);
+
+                    let idx_slot = self.scope_mut().define("__strtr_idx");
+                    let state = common::loops::emit_for_in_start(
+                        &mut self.chunks, self.current, entries_slot, idx_slot, line,
+                    );
+                    // `emit_for_in_start` leaves the current entry on the
+                    // stack — drop it; we re-fetch `[k, v]` via the index
+                    // so we can pull both fields without a swap.
+                    self.emit(Op::DROP);
+
+                    // str_slot = STR_REPLACE(str_slot, entry[0], entry[1])
+                    self.emit_u16(Op::LOCAL_GET, str_slot);
+                    self.emit_u16(Op::LOCAL_GET, entries_slot);
+                    self.emit_u16(Op::LOCAL_GET, idx_slot);
+                    common::collections::emit_get(&mut self.chunks, self.current, line);
+                    let pair_slot = self.scope_mut().define("__strtr_pair");
+                    self.emit_u16(Op::LOCAL_SET, pair_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, pair_slot);
+                    self.emit_const(Value::I32(0));
+                    common::collections::emit_get(&mut self.chunks, self.current, line);
+                    self.emit_u16(Op::LOCAL_GET, pair_slot);
+                    self.emit_const(Value::I32(1));
+                    common::collections::emit_get(&mut self.chunks, self.current, line);
+                    self.emit(Op::STR_REPLACE);
+                    self.emit_u16(Op::LOCAL_SET, str_slot); self.emit(Op::DROP);
+
+                    common::loops::emit_for_in_end(
+                        &mut self.chunks, self.current, idx_slot, state, line,
+                    );
+
+                    self.emit_u16(Op::LOCAL_GET, str_slot);
+                } else {
+                    self.emit(Op::NULL);
+                }
+            }
+
             _ => { self.emit(Op::NULL); }
         }
         Ok(())

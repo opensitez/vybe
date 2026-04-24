@@ -275,15 +275,17 @@ fn inject_superglobals(vm: &mut vybe_bytecode::VM, ctx: &Arc<RequestContext>) {
         }
     };
 
-    vm.globals.insert("_SERVER".to_string(), server);
-    vm.globals.insert("_GET".to_string(), get);
-    vm.globals.insert("_COOKIE".to_string(), cookies);
-    vm.globals.insert("_POST".to_string(), post);
-    // $_REQUEST = $_GET + $_POST + $_COOKIE (per PHP default request_order).
-    // Rebuild since we already moved the others into globals; cheap and PHP
-    // semantics demand it.
+    // PHP variables and functions live in separate namespaces; the
+    // walker preserves the `$` sigil on variable identifiers so a
+    // function `foo` and a variable `$foo` don't collide. Register
+    // the superglobals with the same `$` prefix so user code's
+    // `$_SERVER["PHP_SELF"]` etc. resolves correctly.
+    vm.globals.insert("$_SERVER".to_string(), server);
+    vm.globals.insert("$_GET".to_string(), get);
+    vm.globals.insert("$_COOKIE".to_string(), cookies);
+    vm.globals.insert("$_POST".to_string(), post);
     let mut request_im: IndexMap<Value, Value> = IndexMap::new();
-    for key in ["_GET", "_POST", "_COOKIE"] {
+    for key in ["$_GET", "$_POST", "$_COOKIE"] {
         if let Some(Value::Object(obj)) = vm.globals.get(key) {
             let o = obj.lock().unwrap();
             if let ObjectKind::Map(ref im) = o.kind {
@@ -296,7 +298,7 @@ fn inject_superglobals(vm: &mut vybe_bytecode::VM, ctx: &Arc<RequestContext>) {
     let mut req_obj = Object::new();
     req_obj.kind = ObjectKind::Map(request_im);
     vm.globals.insert(
-        "_REQUEST".to_string(),
+        "$_REQUEST".to_string(),
         Value::Object(StdArc::new(StdMutex::new(req_obj))),
     );
 }
