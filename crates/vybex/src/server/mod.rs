@@ -17,6 +17,7 @@ pub mod static_files;
 pub mod script;
 pub mod errors;
 pub mod logging;
+pub mod programmatic;
 
 pub use config::ServeConfig;
 

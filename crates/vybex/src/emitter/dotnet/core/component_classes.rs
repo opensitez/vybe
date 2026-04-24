@@ -6,6 +6,14 @@ use vybe_bytecode::component_model::{ClassType, ConstructorDef, HostTarget, Meth
 pub fn class_exports() -> &'static [DotnetClassExport] {
     static EXPORTS: LazyLock<Vec<DotnetClassExport>> = LazyLock::new(|| {
         vec![
+            // Phase 7b: List<T>'s runtime method dispatch goes through
+            // `wasm:js-array/*` (see vybe_host/src/builtin_types.rs).
+            // The constructor stays on `vybe:types/listNew` because
+            // that's where `__get_count` / `__get_length` auto-getters
+            // get installed so VB `list.Count` (property-style read)
+            // auto-invokes the getter. Once a typed `Common` ctor path
+            // that can install auto-getters lands, the ctor can move
+            // to `collections.new`.
             collection_class(
                 "dotnet.System.Collections.Generic",
                 "List",
@@ -374,6 +382,32 @@ fn collection_class(
             *method,
             *arity,
             MethodBody::HostCall(HostTarget::new(*method_module, *method_name)),
+        ));
+    }
+    DotnetClassExport::new(interface, class)
+}
+
+/// Like `collection_class` but every method binds to a `compiler_common`
+/// primitive (`Common("…")`) instead of a host function. Used for
+/// `.NET` classes whose semantics map 1:1 to the shared JS-shape
+/// primitives (Array, Map, Set) — `List<T>` → `collections.*`,
+/// `Dictionary<K,V>` → `dict.*`, etc. The provider of the primitive
+/// is one-file-swappable per the `feedback_compiler_common_is_THE_emitter`
+/// rule; rewiring `collections.push` from `wasm:js-array.push` to a
+/// polyfill happens in `compiler_common/collections.rs` alone.
+fn collection_class_common(
+    interface: &'static str,
+    name: &'static str,
+    ctor_common: &'static str,
+    methods: &[(&'static str, u8, &'static str)],
+) -> DotnetClassExport {
+    let mut class = ClassType::new(name)
+        .with_constructor(ConstructorDef::new(0).with_common_backing(ctor_common));
+    for (method, arity, common) in methods {
+        class = class.with_method(MethodDef::new(
+            *method,
+            *arity,
+            MethodBody::Common((*common).into()),
         ));
     }
     DotnetClassExport::new(interface, class)

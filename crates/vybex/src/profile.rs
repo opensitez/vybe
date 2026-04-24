@@ -125,9 +125,6 @@ pub struct LanguageProfile {
     /// E.g. `Add(item)` for list (1 arg) vs `Add(key, value)` for dict (2 args).
     pub value_methods: HashMap<String, Vec<BuiltinDef>>,
 
-    /// Module aliases: JS namespace objects → host modules (console → wasi:cli, Math → vybe:math).
-    pub module_aliases: HashMap<String, String>,
-
     /// Namespace constants: property access that returns a value, NOT a function call.
     /// "Math.PI" → 3.14159..., "Number.MAX_SAFE_INTEGER" → 9007199254740991
     pub namespace_constants: HashMap<String, ConstantValue>,
@@ -135,6 +132,37 @@ pub struct LanguageProfile {
     /// Array higher-order methods routed to compiled JS builtins.
     /// "map" → "__array_map", "filter" → "__array_filter", etc.
     pub array_methods: HashMap<String, String>,
+
+    /// Synthetic ESM imports the language treats as pre-declared (i.e.
+    /// ambient) at module scope. The Linker walks these BEFORE user
+    /// imports so `import { X }` in user code shadows a profile default
+    /// with the same local name (ECMA-262 §16.2 lexical-over-module-scope
+    /// rule).
+    ///
+    /// Declared in profile TOML as `[[esm_default]]` entries in one
+    /// of three shapes: `kind = "named"`, `kind = "namespace"`, or
+    /// `kind = "package-root"`.
+    pub esm_defaults: Vec<EsmDefault>,
+}
+
+/// One pre-declared ESM import in the ambient module scope — the
+/// profile's equivalent of a hand-written `import` statement. Three
+/// variants mirror the ECMA-262 import forms.
+#[derive(Debug, Clone)]
+pub enum EsmDefault {
+    /// `import { name as local } from "module"`. `name` defaults to
+    /// `local` when not provided.
+    Named { local: String, module: String, name: String },
+    /// `import * as alias from "module"`. Qualified access `alias.field`
+    /// resolves to `(module, field)` at compile time.
+    Namespace { alias: String, module: String },
+    /// Component-Model package root. A qualified chain whose first
+    /// segment matches `prefix` maps to a specifier built by joining
+    /// `module_root` + remaining-but-last segments + `/` + last segment.
+    /// Used for idiomatic qualified access (VB `Imports System` →
+    /// `System.Threading.Thread.Sleep` resolves under `dotnet:`) where
+    /// the namespace object would be too coarse.
+    PackageRoot { prefix: String, module_root: String },
 }
 
 /// A compile-time constant value.
@@ -177,21 +205,6 @@ pub struct NamespaceConfig {
     pub default_imports: Vec<String>,
     /// Known constants (property access, not function call).
     pub constants: Vec<String>,
-    /// First segments that identify a qualified name as a Component
-    /// Model host call rather than a user-namespaced symbol.
-    ///
-    /// When the compiler sees a qualified call whose first segment is
-    /// in this list, it converts the path to a Component Model `(module,
-    /// function)` pair and emits a host call directly — no profile
-    /// builtin entry required.
-    ///
-    /// Convention: `[Vybe, Http, Request, method]` with
-    /// `host_packages = ["vybe"]` maps to `module = "vybe:http/request"`,
-    /// `function = "method"`. First join uses `:`, subsequent joins use
-    /// `/`, final segment is the function name. All lowercased.
-    ///
-    /// Typical values: `["vybe", "wasi", "wasm"]`.
-    pub host_packages: Vec<String>,
 }
 
 /// How a function returns its value.
@@ -288,11 +301,6 @@ impl LanguageProfile {
         self.value_methods.contains_key(&key)
     }
 
-
-    /// Look up a module alias (JS: console → wasi:cli, Math → vybe:math).
-    pub fn lookup_module_alias(&self, name: &str) -> Option<&str> {
-        self.module_aliases.get(name).map(|s| s.as_str())
-    }
 
     /// Look up a namespace constant value (Math.PI, Number.MAX_SAFE_INTEGER).
     pub fn lookup_constant(&self, name: &str) -> Option<&ConstantValue> {
@@ -465,7 +473,6 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
     let builtins = parse_builtin_table(&root, "builtins");
     let value_methods = parse_value_methods_table(&root);
     let intrinsics = parse_string_table(&root, "intrinsics");
-    let module_aliases = parse_string_table(&root, "module_aliases");
     let array_methods = parse_string_table(&root, "array_methods");
 
     let namespaces = if let Some(ns) = root.get("namespaces") {
@@ -487,9 +494,6 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
                 .unwrap_or_default(),
             constants: ns.get("constants").and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
-                .unwrap_or_default(),
-            host_packages: ns.get("host_packages").and_then(|v| v.as_array())
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
                 .unwrap_or_default(),
         }
@@ -528,6 +532,51 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         }
     }
 
+    // Ambient-import defaults declared via `[[esm_default]]` TOML
+    // entries (Phase 4 schema). Three variants:
+    //   * `kind = "named"`     — `import { name as local } from "module"`
+    //   * `kind = "namespace"` — `import * as alias from "module"`
+    //   * `kind = "package-root"` — Component-Model qualified-chain root
+    let mut esm_defaults: Vec<EsmDefault> = Vec::new();
+    if let Some(arr) = root.get("esm_default").and_then(|v| v.as_array()) {
+        for entry in arr {
+            let Some(tbl) = entry.as_table() else { continue };
+            let kind = tbl.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            match kind {
+                "named" => {
+                    let Some(local) = tbl.get("local").and_then(|v| v.as_str()) else { continue };
+                    let Some(module) = tbl.get("module").and_then(|v| v.as_str()) else { continue };
+                    // `name` defaults to `local` when omitted.
+                    let name = tbl.get("name").and_then(|v| v.as_str()).unwrap_or(local);
+                    esm_defaults.push(EsmDefault::Named {
+                        local: local.to_string(),
+                        module: module.to_string(),
+                        name: name.to_string(),
+                    });
+                }
+                "namespace" => {
+                    let Some(alias) = tbl.get("alias").and_then(|v| v.as_str()) else { continue };
+                    let Some(module) = tbl.get("module").and_then(|v| v.as_str()) else { continue };
+                    esm_defaults.push(EsmDefault::Namespace {
+                        alias: alias.to_string(),
+                        module: module.to_string(),
+                    });
+                }
+                "package-root" | "package_root" => {
+                    let Some(prefix) = tbl.get("prefix").and_then(|v| v.as_str()) else { continue };
+                    let Some(module_root) = tbl.get("module_root").and_then(|v| v.as_str()) else { continue };
+                    esm_defaults.push(EsmDefault::PackageRoot {
+                        prefix: prefix.to_string(),
+                        module_root: module_root.to_string(),
+                    });
+                }
+                _ => {
+                    eprintln!("Warning: unknown esm_default kind: {:?}", kind);
+                }
+            }
+        }
+    }
+
     Ok(LanguageProfile {
         function_return, result_slot_name,
         self_keyword, base_keyword, constructor_name,
@@ -539,6 +588,7 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         new_with_initializer, new_from_initializer, linq_queries, switch_fallthrough,
         auto_base_call, auto_init_methods,
         builtins, intrinsics, namespaces, known_types,
-        value_methods, module_aliases, namespace_constants, array_methods,
+        value_methods, namespace_constants, array_methods,
+        esm_defaults,
     })
 }

@@ -38,3 +38,4 @@ mod test_async_patterns;
 mod test_class_patterns;
 mod test_coercion_modern;
 mod test_generators_lazy;
+mod test_esm_host_imports;

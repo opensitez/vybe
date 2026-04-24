@@ -58,54 +58,74 @@ pub fn register_all(vm: &mut VM) {
     };
 
     // --- List / Array ---
+    //
+    // Phase 7b: List<T> is a JS Array per ECMA-262 §23.1. Every method
+    // routes through `wasm:js-array/*` — the same host fns v8 / other
+    // runtimes expose via the wasm-js-builtins proposal.
+    //
+    // `list.Count` and `list.Length` are .NET/JS property-style reads;
+    // the compile path (struct_get "count") auto-invokes `__get_count`
+    // installed on each List instance by `vybe:types/listNew`. The
+    // method-call form `list.Count()` dispatches via TypeRegistry to
+    // `wasm:js-array/length` which returns an i32.
+    //
+    // Transitional entries flagged `vybe:types/list*` remain only where
+    // a direct `wasm:js-array` equivalent doesn't exist (RemoveAt,
+    // AddRange semantic mismatch with concat, BinarySearch, GetRange /
+    // SetRange, TryPeek/TryPop at-end). Each lands on a JS-shape
+    // primitive over time.
     let list_id = {
         let mut t = TypeDef::new("List");
         if let Some(idx) = h(vm, "vybe:types", "listNew") {
             t.constructor = Some(Method::HostFn(idx));
         }
         for (method, module, fname) in &[
-            ("add", "vybe:types", "listAdd"),
-            ("remove", "vybe:types", "listRemove"),
-            ("removeat", "vybe:types", "listRemoveAt"),
-            ("contains", "vybe:types", "listContains"),
-            ("count", "vybe:types", "listCount"),
-            ("clear", "vybe:types", "listClear"),
-            ("indexof", "vybe:types", "listIndexOf"),
-            ("sort", "vybe:types", "listSort"),
-            ("reverse", "vybe:types", "listReverse"),
-            ("toarray", "vybe:types", "listClone"),
-            ("item", "vybe:types", "listItem"),
-            ("lastindexof", "vybe:types", "listLastIndexOf"),
-            ("insert", "vybe:types", "listInsert"),
-            ("addrange", "vybe:types", "listAddRange"),
-            ("capacity", "vybe:types", "listCount"),
+            ("add", "wasm:js-array", "push"),
+            ("remove", "vybe:types", "listRemove"),       // by-value; no wasm:js-array direct
+            ("removeat", "vybe:types", "listRemoveAt"),   // splice pattern; to migrate
+            ("contains", "wasm:js-array", "includes"),
+            ("count", "wasm:js-array", "length"),
+            ("clear", "vybe:types", "listClear"),          // setLength(0) pattern; to migrate
+            ("indexof", "wasm:js-array", "indexOf"),
+            ("sort", "wasm:js-array", "sort"),
+            ("reverse", "wasm:js-array", "reverse"),
+            ("toarray", "wasm:js-array", "slice"),
+            ("item", "wasm:js-array", "get"),
+            ("lastindexof", "wasm:js-array", "lastIndexOf"),
+            ("insert", "vybe:types", "listInsert"),        // splice(idx, 0, v); to migrate
+            ("addrange", "vybe:types", "listAddRange"),    // in-place extend; concat returns new
+            ("capacity", "wasm:js-array", "length"),
             ("insertrange", "vybe:types", "listInsertRange"),
             ("removerange", "vybe:types", "listRemoveRange"),
             ("getrange", "vybe:types", "listGetRange"),
             ("setrange", "vybe:types", "listSetRange"),
             ("binarysearch", "vybe:types", "listBinarySearch"),
-            ("clone", "vybe:types", "listClone"),
-            ("copyto", "vybe:types", "listClone"),
-            ("trimtosize", "vybe:types", "listCount"),
-            ("enqueue", "vybe:types", "listAdd"),
-            ("trydequeue", "vybe:types", "listShift"),
-            ("trypop", "vybe:types", "listPop"),
-            ("trypeek", "vybe:types", "listLast"),
-            // Array methods
-            ("push", "vybe:array", "push"),
-            ("pop", "vybe:array", "pop"),
-            ("shift", "vybe:array", "shift"),
-            ("join", "vybe:array", "join"),
-            ("includes", "vybe:array", "includes"),
-            ("slice", "vybe:array", "slice"),
-            ("concat", "vybe:array", "concat"),
-            ("find", "vybe:types", "listIndexOf"),
-            ("findindex", "vybe:types", "listIndexOf"),
-            // Array iterator methods (return arrays for spread support)
-            ("keys", "vybe:array", "arrKeys"),
-            ("values", "vybe:array", "arrValues"),
-            ("at", "vybe:array", "at"),
-            ("copywithin", "vybe:array", "copyWithin"),
+            ("clone", "wasm:js-array", "slice"),
+            ("copyto", "wasm:js-array", "slice"),
+            ("trimtosize", "wasm:js-array", "length"),
+            ("enqueue", "wasm:js-array", "push"),
+            ("trydequeue", "wasm:js-array", "shift"),
+            ("trypop", "wasm:js-array", "pop"),
+            ("trypeek", "vybe:types", "listLast"),         // get(length-1); compound
+            // JS Array methods — direct pass-through.
+            ("push", "wasm:js-array", "push"),
+            ("pop", "wasm:js-array", "pop"),
+            ("shift", "wasm:js-array", "shift"),
+            ("unshift", "wasm:js-array", "unshift"),
+            ("join", "wasm:js-array", "join"),
+            ("includes", "wasm:js-array", "includes"),
+            ("slice", "wasm:js-array", "slice"),
+            ("concat", "wasm:js-array", "concat"),
+            ("splice", "wasm:js-array", "splice"),
+            ("fill", "wasm:js-array", "fill"),
+            ("flat", "wasm:js-array", "flat"),
+            ("find", "wasm:js-array", "find"),
+            ("findindex", "wasm:js-array", "findIndex"),
+            ("keys", "wasm:js-array", "keys"),
+            ("values", "wasm:js-array", "values"),
+            ("at", "wasm:js-array", "at"),
+            ("copywithin", "wasm:js-array", "copyWithin"),
+            ("entries", "wasm:js-array", "entries"),
         ] {
             if let Some(idx) = h(vm, module, fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -120,21 +140,41 @@ pub fn register_all(vm: &mut VM) {
     let _ = vm.type_registry.register(TypeDef::new("Array").with_parent(list_id));
 
     // --- Dictionary ---
+    //
+    // Phase 7b: Dictionary is a plain JS Object per ECMA-262 §19.1 —
+    // `Dictionary<string, T>` is shape-identical to an object used as
+    // a string-keyed map. Methods route through `wasm:js-object/*`
+    // host fns (working directly on the object's own properties).
+    //
+    // Transition note: VB/C# `d.Count` is a property read (not a
+    // method call). The old `vybe:types/dictAdd` kept a `count` field
+    // on the dict updated on every write so `struct_get` returned a
+    // number; `wasm:js-object/length` is a callable returning a count
+    // when invoked. A later step will install `__get_count` auto-getters
+    // on construction so `d.Count` property reads auto-invoke the
+    // length call — until then, `.Count` reads expose the function
+    // value. Code using explicit `d.Count()` works today; bare `d.Count`
+    // is a pending follow-up. Known regression count tracked in the
+    // phase notes.
     let dict_id = {
         let mut t = TypeDef::new("Dictionary");
         for (method, module, fname) in &[
-            ("add", "vybe:types", "dictAdd"),
-            ("item", "vybe:types", "dictItem"),
-            ("containskey", "vybe:types", "dictContainsKey"),
-            ("containsvalue", "vybe:types", "dictContainsKey"),
-            ("remove", "vybe:types", "dictRemove"),
-            ("keys", "vybe:types", "dictKeys"),
-            ("values", "vybe:types", "dictValues"),
+            ("add", "wasm:js-object", "set"),
+            ("item", "wasm:js-object", "get"),
+            // `hasOwn` (own-only, returns Value::Bool) is what VB/C#
+            // `ContainsKey` expects — string-coerces to "true"/"false".
+            // `has` would return I32 ("1"/"0") which breaks VB prints.
+            ("containskey", "wasm:js-object", "hasOwn"),
+            ("containsvalue", "wasm:js-object", "hasOwn"),
+            ("remove", "wasm:js-object", "delete"),
+            ("keys", "wasm:js-object", "keys"),
+            ("values", "wasm:js-object", "values"),
             ("clear", "vybe:types", "dictClear"),
-            ("trygetvalue", "vybe:types", "dictTryGetValue"),
-            ("tryadd", "vybe:types", "dictAdd"),
-            ("addorupdate", "vybe:types", "dictAdd"),
-            ("getoradd", "vybe:types", "dictItem"),
+            ("count", "wasm:js-object", "length"),
+            ("trygetvalue", "wasm:js-object", "get"),
+            ("tryadd", "wasm:js-object", "set"),
+            ("addorupdate", "wasm:js-object", "set"),
+            ("getoradd", "wasm:js-object", "get"),
         ] {
             if let Some(idx) = h(vm, module, fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -146,14 +186,23 @@ pub fn register_all(vm: &mut VM) {
     let _ = vm.type_registry.register(TypeDef::new("Hashtable").with_parent(dict_id));
 
     // --- Queue ---
+    //
+    // Phase 7b: `.NET Queue<T>` is a JS Array used FIFO — `Enqueue` →
+    // `push` appends at the end, `Dequeue` → `shift` removes from the
+    // front. Property-style `q.Count` works via the __get_count
+    // auto-getter installed by `vybe:types/queueNew`.
     {
         let mut t = TypeDef::new("Queue");
-        for (method, fname) in &[
-            ("enqueue", "queueEnqueue"), ("dequeue", "queueDequeue"), ("peek", "queuePeek"),
-            ("count", "listCount"), ("clear", "listClear"), ("contains", "listContains"),
-            ("toarray", "listToArray"),
+        for (method, module, fname) in &[
+            ("enqueue", "wasm:js-array", "push"),
+            ("dequeue", "wasm:js-array", "shift"),
+            ("peek", "vybe:types", "queuePeek"),     // get(0); compound
+            ("count", "wasm:js-array", "length"),
+            ("clear", "vybe:types", "listClear"),    // setLength(0); to migrate
+            ("contains", "wasm:js-array", "includes"),
+            ("toarray", "wasm:js-array", "slice"),
         ] {
-            if let Some(idx) = h(vm, "vybe:types", fname) {
+            if let Some(idx) = h(vm, module, fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }
@@ -162,13 +211,20 @@ pub fn register_all(vm: &mut VM) {
     }
 
     // --- Stack ---
+    //
+    // Phase 7b: `.NET Stack<T>` is a JS Array used LIFO — `Push` →
+    // `push` appends at the end, `Pop` → `pop` removes from the end.
     {
         let mut t = TypeDef::new("Stack");
-        for (method, fname) in &[
-            ("push", "stackPush"), ("pop", "stackPop"), ("peek", "stackPeek"),
-            ("count", "listCount"), ("clear", "listClear"), ("contains", "listContains"),
+        for (method, module, fname) in &[
+            ("push", "wasm:js-array", "push"),
+            ("pop", "wasm:js-array", "pop"),
+            ("peek", "vybe:types", "stackPeek"),     // get(length-1); compound
+            ("count", "wasm:js-array", "length"),
+            ("clear", "vybe:types", "listClear"),
+            ("contains", "wasm:js-array", "includes"),
         ] {
-            if let Some(idx) = h(vm, "vybe:types", fname) {
+            if let Some(idx) = h(vm, module, fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }
@@ -177,13 +233,18 @@ pub fn register_all(vm: &mut VM) {
     }
 
     // --- HashSet ---
+    //
+    // Phase 7b: `.NET HashSet<T>` is a JS Set per ECMA-262 §24.2.
     {
         let mut t = TypeDef::new("HashSet");
-        for (method, fname) in &[
-            ("add", "hashSetAdd"), ("contains", "hashSetContains"), ("remove", "hashSetRemove"),
-            ("count", "listCount"), ("clear", "listClear"),
+        for (method, module, fname) in &[
+            ("add", "wasm:js-set", "add"),
+            ("contains", "wasm:js-set", "has"),
+            ("remove", "wasm:js-set", "delete"),
+            ("count", "wasm:js-set", "size"),
+            ("clear", "wasm:js-set", "clear"),
         ] {
-            if let Some(idx) = h(vm, "vybe:types", fname) {
+            if let Some(idx) = h(vm, module, fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }

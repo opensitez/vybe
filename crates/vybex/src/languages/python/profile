@@ -287,14 +287,40 @@ __len__         = { emit = "str_length",                       min_args = 0, max
 "False"         = false
 
 # ────────────────────────────────────────────────────────────────────────────
-# MODULE ALIASES — Python namespace objects → host modules
+# ESM DEFAULTS — Python namespace objects → host modules, ECMA-262 §16.2 shape
 # ────────────────────────────────────────────────────────────────────────────
 
-[module_aliases]
-math            = "vybe:math"
-os              = "wasi:filesystem"
-sys             = "wasi:cli"
-json            = "vybe:json"
-re              = "vybe:string"
-random          = "vybe:math"
-time            = "wasi:clocks"
+[[esm_default]]
+kind = "namespace"
+alias = "math"
+module = "vybe:math"
+
+[[esm_default]]
+kind = "namespace"
+alias = "os"
+module = "wasi:filesystem"
+
+[[esm_default]]
+kind = "namespace"
+alias = "sys"
+module = "wasi:cli"
+
+[[esm_default]]
+kind = "namespace"
+alias = "json"
+module = "vybe:json"
+
+[[esm_default]]
+kind = "namespace"
+alias = "re"
+module = "vybe:string"
+
+[[esm_default]]
+kind = "namespace"
+alias = "random"
+module = "vybe:math"
+
+[[esm_default]]
+kind = "namespace"
+alias = "time"
+module = "wasi:clocks"

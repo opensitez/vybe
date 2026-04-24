@@ -162,6 +162,7 @@ impl Value {
                     ObjectKind::TypedArray(_) => "typedarray",
                     ObjectKind::Function(_) => "function",
                     ObjectKind::HostFunction(_) => "function",
+                    ObjectKind::ModuleNamespace => "object",
                     ObjectKind::Continuation(_) => "continuation",
                 }
             }
@@ -410,6 +411,10 @@ impl fmt::Display for Value {
                         write!(f, "[function {}]", func.name.as_deref().unwrap_or("anonymous"))
                     }
                     ObjectKind::HostFunction(idx) => write!(f, "[host function {}]", idx),
+                    // Per ECMA-262 §10.4.6 the `Symbol.toStringTag`
+                    // own property is `"Module"`, so `Object.prototype.toString.call(ns)`
+                    // returns `"[object Module]"`.
+                    ObjectKind::ModuleNamespace => write!(f, "[object Module]"),
                     ObjectKind::Continuation(_) => write!(f, "[continuation]"),
                     ObjectKind::Ordinary => write!(f, "[object]"),
                 }
@@ -566,6 +571,25 @@ pub enum ObjectKind {
     Function(Function),
     /// A reference to a host function by its index in the VM's host_fns table.
     HostFunction(usize),
+    /// ECMA-262 §10.4.6 Module Namespace Exotic Object — the runtime
+    /// materialization of `import * as ns from "wasi:foo"` when read as
+    /// a bare value (reflective access: `Object.keys(ns)`,
+    /// `Reflect.ownKeys(ns)`, `typeof ns`, `ns[Symbol.toStringTag]`).
+    ///
+    /// Spec invariants enforced by `host_imports::install` at VM setup
+    /// and respected by the VM's property-access path:
+    ///   - `[[Prototype]] = null` (no prototype chain walk)
+    ///   - `[[Extensible]] = false` (frozen — no new exports at runtime)
+    ///   - Own keys = sorted exports ∪ `@@toStringTag`
+    ///   - Each export: `[[Enumerable]] = true`, `[[Writable]] = false`,
+    ///     `[[Configurable]] = false`
+    ///   - `@@toStringTag` = `"Module"`, non-writable / non-enumerable /
+    ///     non-configurable
+    ///
+    /// Hot-path qualified access (`ns.field(args)`) is resolved at
+    /// compile time by the Linker — this object is only materialized
+    /// when code actually reads `ns` as a value.
+    ModuleNamespace,
     /// WASM stack-switching continuation — a coroutine. Holds the entry
     /// function (to call on first resume) and the saved fiber state
     /// (when paused). Each suspend captures the current VM state into

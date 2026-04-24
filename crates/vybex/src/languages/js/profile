@@ -332,41 +332,168 @@ array_unshift = "const_i32(0), const_i32(0), splice"
 map_size = "dict_keys, array_length"
 
 # ────────────────────────────────────────────────────────────────────────────
-# MODULE ALIASES — JS namespace objects → WASI/vybe host modules
+# ESM DEFAULTS — ambient imports the language pre-declares at module scope.
+# ECMA-262 §16.2 shape: each entry is an `import` statement's equivalent,
+# resolved by the compiler Linker alongside user-written `import` lines.
+# User imports shadow these on key collision.
+#
+# `kind = "namespace"` ≡ `import * as <alias> from "<module>"`.
 # ────────────────────────────────────────────────────────────────────────────
 
-[module_aliases]
-console         = "wasi:cli"
-Date            = "wasi:clocks"
-Math            = "vybe:math"
-JSON            = "vybe:json"
-Object          = "vybe:object"
-RegExp          = "vybe:regex"
-Array           = "vybe:array"
-String          = "vybe:string"
-Number          = "vybe:convert"
-Map             = "vybe:collections"
-Set             = "vybe:collections"
-fs              = "wasi:filesystem"
-clock           = "wasi:clocks"
-env             = "wasi:cli"
-random          = "wasi:random"
-http            = "wasi:http"
-https           = "wasi:http"
-crypto          = "vybe:crypto"
-net             = "dotnet:sockets"
-tls             = "dotnet:sockets"
-dgram           = "dotnet:sockets"
-path            = "wasi:filesystem"
-os              = "wasi:cli"
-child_process   = "vybe:types"
-url             = "vybe:convert"
-xml             = "vybe:xml"
-xml2js          = "vybe:xml"
-gui             = "vybe:gui"
-db              = "vybe:database"
-Promise         = "vybe:runtime"
-worker_threads  = "vybe:threading"
+[[esm_default]]
+kind = "namespace"
+alias = "console"
+module = "wasi:cli"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Date"
+module = "wasi:clocks"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Math"
+module = "vybe:math"
+
+[[esm_default]]
+kind = "namespace"
+alias = "JSON"
+module = "vybe:json"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Object"
+module = "vybe:object"
+
+[[esm_default]]
+kind = "namespace"
+alias = "RegExp"
+module = "vybe:regex"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Array"
+module = "vybe:array"
+
+[[esm_default]]
+kind = "namespace"
+alias = "String"
+module = "vybe:string"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Number"
+module = "vybe:convert"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Map"
+module = "vybe:collections"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Set"
+module = "vybe:collections"
+
+[[esm_default]]
+kind = "namespace"
+alias = "fs"
+module = "wasi:filesystem"
+
+[[esm_default]]
+kind = "namespace"
+alias = "clock"
+module = "wasi:clocks"
+
+[[esm_default]]
+kind = "namespace"
+alias = "env"
+module = "wasi:cli"
+
+[[esm_default]]
+kind = "namespace"
+alias = "random"
+module = "wasi:random"
+
+[[esm_default]]
+kind = "namespace"
+alias = "http"
+module = "wasi:http"
+
+[[esm_default]]
+kind = "namespace"
+alias = "https"
+module = "wasi:http"
+
+[[esm_default]]
+kind = "namespace"
+alias = "crypto"
+module = "vybe:crypto"
+
+[[esm_default]]
+kind = "namespace"
+alias = "net"
+module = "dotnet:sockets"
+
+[[esm_default]]
+kind = "namespace"
+alias = "tls"
+module = "dotnet:sockets"
+
+[[esm_default]]
+kind = "namespace"
+alias = "dgram"
+module = "dotnet:sockets"
+
+[[esm_default]]
+kind = "namespace"
+alias = "path"
+module = "wasi:filesystem"
+
+[[esm_default]]
+kind = "namespace"
+alias = "os"
+module = "wasi:cli"
+
+[[esm_default]]
+kind = "namespace"
+alias = "child_process"
+module = "vybe:types"
+
+[[esm_default]]
+kind = "namespace"
+alias = "url"
+module = "vybe:convert"
+
+[[esm_default]]
+kind = "namespace"
+alias = "xml"
+module = "vybe:xml"
+
+[[esm_default]]
+kind = "namespace"
+alias = "xml2js"
+module = "vybe:xml"
+
+[[esm_default]]
+kind = "namespace"
+alias = "gui"
+module = "vybe:gui"
+
+[[esm_default]]
+kind = "namespace"
+alias = "db"
+module = "vybe:database"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Promise"
+module = "vybe:runtime"
+
+[[esm_default]]
+kind = "namespace"
+alias = "worker_threads"
+module = "vybe:threading"
 
 # ────────────────────────────────────────────────────────────────────────────
 # KNOWN TYPES — constructor mappings for new TypeName()

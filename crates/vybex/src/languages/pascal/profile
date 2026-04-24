@@ -208,11 +208,8 @@ tostring      = { emit = "stdlib:tostring",     min_args = 0, max_args = 0 }
 "pi"          = 3.141592653589793
 
 # ────────────────────────────────────────────────────────────────────────────
-# MODULE ALIASES — Pascal unit names → host modules
+# ESM DEFAULTS — Pascal has no ambient host module imports.
 # ────────────────────────────────────────────────────────────────────────────
-
-[module_aliases]
-# No significant module aliases for Pascal
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACE CONFIG

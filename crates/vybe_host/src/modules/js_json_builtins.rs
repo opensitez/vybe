@@ -112,6 +112,12 @@ fn stringify_object(obj: &Arc<Mutex<Object>>, visited: &mut HashSet<usize>) -> S
             ObjectKind::Ordinary => {
                 stringify_ordinary(&o, visited)
             }
+            // Module Namespace Objects serialize their exports like an
+            // Ordinary object — functions (the common case) get dropped
+            // per the same "value is a function → undefined" rule.
+            ObjectKind::ModuleNamespace => {
+                stringify_ordinary(&o, visited)
+            }
         }
     };
     visited.remove(&id);

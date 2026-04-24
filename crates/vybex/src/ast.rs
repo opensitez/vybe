@@ -344,6 +344,14 @@ pub enum StmtKind {
         declaration: Option<Box<Statement>>,
         names: Vec<ExportName>,
         default: Option<Box<Expression>>,
+        /// Re-export source module. `None` for local exports. `Some(path)`
+        /// for `export { X } from "m"` and `export * from "m"` — the
+        /// Linker resolves these as Indirect exports per ECMA-262
+        /// §16.2.1.6.2 `ResolveExport`.
+        from: Option<String>,
+        /// `true` for `export * from "m"` (all re-exported under source
+        /// names). `false` for named re-exports or local exports.
+        star: bool,
     },
 
     // ── Labeled statement (JS) ──────────────────────────────────────────

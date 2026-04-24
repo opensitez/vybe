@@ -21,5 +21,7 @@ pub mod scope;
 pub mod bundle;
 pub mod projects;
 pub mod lsp;
+pub mod adapters;
 pub mod gui_launch;
+pub mod host_imports;
 pub mod server;

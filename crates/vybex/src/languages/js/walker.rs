@@ -911,6 +911,18 @@ fn walk_export(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut declaration = None;
     let mut names = Vec::new();
     let mut default_expr = None;
+    let mut from: Option<String> = None;
+    let mut star = false;
+    let mut star_alias: Option<String> = None;
+
+    // Detect `export * [as n] from "m"` by looking at raw source — the
+    // `*` token isn't captured as its own pair because pest matches
+    // it as a literal in the rule. Scan the raw string for leading `*`.
+    let raw = pair.as_str();
+    let trimmed = raw.trim_start_matches("export").trim_start();
+    if trimmed.starts_with('*') {
+        star = true;
+    }
 
     for p in pair.into_inner() {
         match p.as_rule() {
@@ -924,6 +936,16 @@ fn walk_export(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 let alias = parts.next().map(|p| p.as_str().to_string());
                 names.push(ExportName { name, alias });
             }
+            Rule::string_literal => {
+                // The `from "m"` clause — a re-export source.
+                from = Some(unquote(p.as_str()));
+            }
+            Rule::ident_name => {
+                // `export * as n from "m"` — `n` captured as ident_name.
+                if star {
+                    star_alias = Some(p.as_str().to_string());
+                }
+            }
             _ => {
                 // default expression
                 if let Ok(expr) = walk_expression(p) {
@@ -933,7 +955,17 @@ fn walk_export(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
-    Ok(StmtKind::Export { declaration, names, default: default_expr })
+    // `export * as n from "m"` — expose the whole namespace under
+    // local name `n`. Lower as a single ExportName with
+    // `name = "*"` so the Linker recognizes the star-as-namespace
+    // shape.
+    if star {
+        if let Some(n) = star_alias {
+            names.push(ExportName { name: "*".into(), alias: Some(n) });
+        }
+    }
+
+    Ok(StmtKind::Export { declaration, names, default: default_expr, from, star })
 }
 
 // ── Expressions ─────────────────────────────────────────────────────────────

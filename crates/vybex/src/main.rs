@@ -109,30 +109,9 @@ fn main() {
         eprintln!("  → {} ({} bytes)", s.path.display(), s.code.len());
     }
 
-    // ── Compile ─────────────────────────────────────────────────────────────
-    let chunks = match bundle.compile() {
-        Ok(c) => c,
-        Err(e) => { eprintln!("Compile error: {e}"); std::process::exit(1); }
-    };
-
-    // ── --dump: disassemble and exit ────────────────────────────────────────
-    if dump {
-        for chunk in filter_chunks(&chunks, chunk_filter.as_deref()) {
-            println!("{}", vybe_bytecode::debug::disassemble(chunk));
-        }
-        return;
-    }
-
-    // ── --emit-wasm: write .wasm binary and exit ────────────────────────────
-    if emit_wasm {
-        let wasm_bytes = vybe_bytecode::wasm::write_wasm(&chunks);
-        let out_path = path.with_extension("wasm");
-        std::fs::write(&out_path, &wasm_bytes).unwrap();
-        eprintln!("Wrote {} bytes to {}", wasm_bytes.len(), out_path.display());
-        return;
-    }
-
-    // ── Set up VM ───────────────────────────────────────────────────────────
+    // ── Set up VM first (so adapter modules can be registered ──────────────
+    // against the Synthetic modules they re-export from before the
+    // user program is linked).
     let mut vm = VM::new();
 
     let gui = if sandbox {
@@ -161,10 +140,62 @@ fn main() {
         vybe_host::setup_namespaces(&mut vm);
     }
 
+    // Programmatic-mode server primitive: scripts can call
+    // `vybe:http/server.listen(addr, handler)` to become a long-lived
+    // HTTP server (Node/Flask/Sinatra style). Register before the
+    // adapters so `node:http`'s re-export target exists.
+    vybex::server::programmatic::register(&mut vm);
+
+    // Register every in-language Adapter module (node:http, node:fs,
+    // etc.). Each adapter's JS source is embedded, parsed, and
+    // installed into `vm.modules` as `ModuleKind::Adapter` with
+    // `Indirect` exports chained to the real Synthetic targets.
+    if let Err(e) = vybex::adapters::register_all(&mut vm) {
+        eprintln!("adapter registration error: {e}");
+        std::process::exit(1);
+    }
+
+    // ── Compile ─────────────────────────────────────────────────────────────
+    let compiled = match bundle.compile_full_with_modules(&vm.modules) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("Compile error: {e}"); std::process::exit(1); }
+    };
+    let chunks = compiled.chunks;
+    let host_imports = compiled.host_imports;
+
+    // ── --dump: disassemble and exit ────────────────────────────────────────
+    if dump {
+        for chunk in filter_chunks(&chunks, chunk_filter.as_deref()) {
+            println!("{}", vybe_bytecode::debug::disassemble(chunk));
+        }
+        return;
+    }
+
+    // ── --emit-wasm: write .wasm binary and exit ────────────────────────────
+    if emit_wasm {
+        let wasm_bytes = vybe_bytecode::wasm::write_wasm(&chunks);
+        let out_path = path.with_extension("wasm");
+        std::fs::write(&out_path, &wasm_bytes).unwrap();
+        eprintln!("Wrote {} bytes to {}", wasm_bytes.len(), out_path.display());
+        return;
+    }
+
+    // VM was set up above, before compilation, so adapter modules
+    // could be registered against the Synthetic modules they re-export
+    // from. Apply the trace flag now.
     if trace {
         vm.set_trace(true);
         vm.set_trace_chunk_filter(chunk_filter.clone());
     }
+
+    // ── Install ESM host-module imports as VM globals ───────────────────────
+    // `import { log } from "wasi:cli"` creates a local binding `log`. The
+    // compiler emits direct CALL_IMPORT for `log(...)` calls, but a
+    // read-as-value such as `const f = log; f("hi")` resolves via GLOBAL_GET
+    // — so install each named import as a global bound to the host function
+    // reference. Wildcard imports (`import * as ns from "wasi:foo"`) need a
+    // namespace object exposing every host fn under that module.
+    vybex::host_imports::install(&mut vm, &host_imports);
 
     // ── Register WASM function names as globals ─────────────────────────────
     // When a .vybe project includes .wasm files, their named functions are

@@ -238,7 +238,8 @@ import_specifier = { ident_or_keyword ~ ("as" ~ ident_name)? }
 
 export_statement = {
     "export" ~ "default" ~ (function_declaration | class_declaration | assignment_expression) ~ terminator
-    | "export" ~ "{" ~ (export_specifier ~ ("," ~ export_specifier)*)? ~ ","? ~ "}" ~ terminator
+    | "export" ~ "*" ~ ("as" ~ ident_name)? ~ "from" ~ string_literal ~ terminator
+    | "export" ~ "{" ~ (export_specifier ~ ("," ~ export_specifier)*)? ~ ","? ~ "}" ~ ("from" ~ string_literal)? ~ terminator
     | "export" ~ (function_declaration | class_declaration | variable_declaration)
 }
 

@@ -96,6 +96,67 @@ pub struct Compiler {
     /// to use the `RESUME`-loop iterator protocol rather than the
     /// array-index protocol.
     generator_functions: HashSet<String>,
+    /// ESM host-module import bindings: canon(local) → (module, func).
+    /// Populated from user `import { X } from "wasi:foo"` statements.
+    /// A direct call to `X` compiles to `CALL_IMPORT`; read-as-value
+    /// (`const f = X`) reads the global that `host_imports::install`
+    /// places under the same key.
+    host_import_bindings: HashMap<String, (String, String)>,
+    /// ESM wildcard namespace aliases: canon(alias) → module specifier.
+    /// `import * as cli from "wasi:cli"` records `cli` → `"wasi:cli"`.
+    /// Module Namespace Object access `cli.field` is resolved at compile
+    /// time to `CALL_IMPORT (wasi:cli, field)` with no receiver pushed.
+    /// Bare-value access of `cli` uses a runtime namespace object built
+    /// by `host_imports::install` (reflection path).
+    host_namespace_aliases: HashMap<String, String>,
+    /// Component-Model package roots: canon(prefix) → module_root.
+    /// Populated by the Linker from profile `PackageRoot` defaults
+    /// (e.g. `{"vybe": "vybe:", "wasi": "wasi:", "wasm": "wasm:"}`).
+    /// Phase 3 will wire `calls.rs`'s qualified-chain path to consume
+    /// this map instead of `profile.namespaces.host_packages`.
+    host_package_roots: HashMap<String, String>,
+    /// Read-only snapshot of `vm.modules` keyed by specifier. Lets the
+    /// Linker resolve `import { X } from "node:http"` against Adapter
+    /// modules (Phase 6) — walking the `Indirect` re-export chain to
+    /// the ultimate Synthetic export so `X` binds directly to that
+    /// `(module, func)` pair, same as a direct host import.
+    ///
+    /// Stored by specifier → per-module name → (final module, final
+    /// name). Empty map when the caller didn't supply one (Bundle's
+    /// legacy compile path, tests that don't use adapters).
+    module_exports: HashMap<String, HashMap<String, (String, String)>>,
+}
+
+/// §16.2.1.3 wildcard — `import * as alias from "module"`.
+#[derive(Debug, Clone)]
+pub struct HostWildcardImport {
+    pub alias: String,
+    pub module: String,
+}
+
+/// §16.2.1 named — `import { name as local } from "module"`.
+#[derive(Debug, Clone)]
+pub struct HostImportNamed {
+    pub local: String,
+    pub module: String,
+    pub func: String,
+}
+
+/// Named + wildcard ESM imports a compiled module binds against host
+/// Component Model namespaces.
+#[derive(Debug, Default, Clone)]
+pub struct HostImportMetadata {
+    pub named: Vec<HostImportNamed>,
+    pub wildcard: Vec<HostWildcardImport>,
+}
+
+/// Result of `Compiler::compile_with_imports` — chunks + ESM host-import
+/// metadata the VM setup uses to install runtime globals for
+/// `read-as-value` and reflective namespace access.
+#[derive(Debug, Default)]
+pub struct CompileResult {
+    pub chunks: Vec<Chunk>,
+    pub host_imports: HostImportMetadata,
 }
 
 impl Compiler {
@@ -123,12 +184,54 @@ impl Compiler {
             pending_label: None,
             multi_return_functions: HashMap::new(),
             generator_functions: HashSet::new(),
+            host_import_bindings: HashMap::new(),
+            host_namespace_aliases: HashMap::new(),
+            host_package_roots: HashMap::new(),
+            module_exports: HashMap::new(),
         }
     }
 
-    /// Compile a module to bytecode chunks.
-    pub fn compile(mut self, module: &Module) -> Result<Vec<Chunk>, String> {
+    /// Pre-populate the module-exports snapshot. Called by the Bundle
+    /// before `compile_with_imports` so the Linker can resolve
+    /// Adapter-module re-exports during Phase A.
+    pub fn with_module_exports(
+        mut self,
+        module_exports: HashMap<String, HashMap<String, (String, String)>>,
+    ) -> Self {
+        self.module_exports = module_exports;
+        self
+    }
+
+    /// Compile a module to bytecode chunks. Legacy API — returns just
+    /// chunks; import bindings discarded. Callers that need bindings
+    /// should use [`Self::compile_with_imports`].
+    pub fn compile(self, module: &Module) -> Result<Vec<Chunk>, String> {
+        self.compile_with_imports(module).map(|r| r.chunks)
+    }
+
+    /// Compile a module, returning chunks plus ESM host-module import
+    /// metadata. The caller (typically the VM setup) uses the metadata
+    /// to install runtime globals for imported names so `import { X }`
+    /// followed by `const f = X` works, and to synthesize Module
+    /// Namespace Objects for `import * as ns` reflective access.
+    pub fn compile_with_imports(mut self, module: &Module) -> Result<CompileResult, String> {
         self.case_sensitive = self.profile.case_sensitive;
+
+        // ── Phase A: Link ──────────────────────────────────────────────
+        //
+        // ECMA-262 §16.2.1.5 adapted for Vybe. Populates the three
+        // resolver maps from profile defaults + user imports so every
+        // downstream emit site consults a single source of truth.
+        // Profile defaults seed the ambient namespaces (e.g. JS
+        // `console`, VB `System`); user `import { X } from "wasi:foo"`
+        // statements shadow them on key collision, per §16.2
+        // lexical-over-module-scope.
+        //
+        // Host synthetic modules (`wasi:*`, `wasm:*`, `vybe:*`) are
+        // linked immediately — they're leaves with no code. User
+        // `.wasm` / source-file imports continue to resolve at Bundle
+        // load time in a separate step.
+        self.link(module);
 
         // Register the .NET BCL class wrappers (Object → … → Form, Button, …)
         // before walking the user body, so user code that writes
@@ -182,7 +285,121 @@ impl Compiler {
         let locals = self.scope().next_slot.max(self.chunks[0].local_count);
         self.chunks[0].local_count = locals;
         common::bundle::finalize_with_stdlib(&mut self.chunks);
-        Ok(self.chunks)
+        let host_imports = self.collected_host_imports();
+        Ok(CompileResult {
+            chunks: self.chunks,
+            host_imports,
+        })
+    }
+
+    /// Drain the compiler's host-import metadata into the shape the VM
+    /// setup expects.
+    fn collected_host_imports(&self) -> HostImportMetadata {
+        let mut named: Vec<HostImportNamed> = self.host_import_bindings.iter()
+            .map(|(local, (module, func))| HostImportNamed {
+                local: local.clone(),
+                module: module.clone(),
+                func: func.clone(),
+            })
+            .collect();
+        named.sort_by(|a, b| a.local.cmp(&b.local));
+        let mut wildcard: Vec<HostWildcardImport> = self.host_namespace_aliases.iter()
+            .map(|(alias, module)| HostWildcardImport {
+                alias: alias.clone(),
+                module: module.clone(),
+            })
+            .collect();
+        wildcard.sort_by(|a, b| a.alias.cmp(&b.alias));
+        HostImportMetadata { named, wildcard }
+    }
+
+    /// The Linker phase — ECMA-262 §16.2.1.5 Link adapted for Vybe.
+    ///
+    /// Populates the three resolver maps (`host_import_bindings`,
+    /// `host_namespace_aliases`, `host_package_roots`) from two
+    /// sources, in order:
+    ///
+    ///   1. **Profile defaults** (`profile.esm_defaults`) — the
+    ///      language's ambient pre-declared imports. For JS,
+    ///      `console → wasi:cli` and `Math → vybe:math`. For VB,
+    ///      `System` as a `PackageRoot`.
+    ///   2. **User imports** (`module.imports`) — `import { X } from
+    ///      "wasi:foo"` etc. Walked last so they shadow profile
+    ///      defaults on key collision (ECMA-262 §16.2 lexical bindings
+    ///      override module-scope defaults).
+    ///
+    /// `HashMap::insert` on a duplicate key replaces the value, so
+    /// walking profile-then-user gives spec-correct shadowing for
+    /// free.
+    ///
+    /// Runs before any bytecode is emitted.
+    fn link(&mut self, module: &crate::ast::Module) {
+        // Phase A.1: ambient profile defaults.
+        let defaults = self.profile.esm_defaults.clone();
+        for d in &defaults {
+            match d {
+                crate::profile::EsmDefault::Named { local, module: m, name } => {
+                    let key = self.canon(local);
+                    self.host_import_bindings.insert(key, (m.clone(), name.clone()));
+                }
+                crate::profile::EsmDefault::Namespace { alias, module: m } => {
+                    let key = self.canon(alias);
+                    self.host_namespace_aliases.insert(key, m.clone());
+                }
+                crate::profile::EsmDefault::PackageRoot { prefix, module_root } => {
+                    // Component Model package names are lowercase by
+                    // spec; store + look up in lowercase regardless of
+                    // the language's case sensitivity.
+                    let key = prefix.to_ascii_lowercase();
+                    self.host_package_roots.insert(key, module_root.clone());
+                }
+            }
+        }
+
+        // Phase A.2: user imports — shadow profile defaults on key
+        // collision. Resolves host-specifier paths (wasi:* / wasm:* /
+        // vybe:*) directly, and Adapter-module paths (node:*, etc.)
+        // by walking the re-export chain in `module_exports` to the
+        // ultimate target. Relative paths still resolve at bundle
+        // load time.
+        for imp in &module.imports {
+            match &imp.kind {
+                crate::ast::ImportKind::Named { path, names, .. } => {
+                    if is_host_specifier(path) {
+                        for n in names {
+                            let raw_local = n.alias.as_ref().unwrap_or(&n.name).clone();
+                            let key = self.canon(&raw_local);
+                            self.host_import_bindings.insert(key, (path.clone(), n.name.clone()));
+                        }
+                    } else if let Some(adapter_exports) = self.module_exports.get(path).cloned() {
+                        // Adapter module: each name is a pre-resolved
+                        // `(final_module, final_name)` pair courtesy
+                        // of the Indirect chain walker in the Bundle.
+                        for n in names {
+                            let raw_local = n.alias.as_ref().unwrap_or(&n.name).clone();
+                            let key = self.canon(&raw_local);
+                            if let Some(target) = adapter_exports.get(&n.name).cloned() {
+                                self.host_import_bindings.insert(key, target);
+                            }
+                            // Unresolved export — leave it; Phase 8
+                            // will surface a link error here.
+                        }
+                    }
+                    // Relative / file-system imports — bundle-level
+                    // resolver handles them by inlining sources.
+                }
+                crate::ast::ImportKind::Wildcard { path, alias } => {
+                    if !is_host_specifier(path) { continue; }
+                    if let Some(ns) = alias {
+                        let key = self.canon(ns);
+                        self.host_namespace_aliases.insert(key, path.clone());
+                    }
+                }
+                // Default + Simple: no meaning for host modules; skip.
+                crate::ast::ImportKind::Default { .. }
+                | crate::ast::ImportKind::Simple { .. } => {}
+            }
+        }
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -447,11 +664,14 @@ impl Compiler {
         let parts: Vec<&str> = name.split('\\').collect();
         if parts.len() < 2 { return None; }
 
-        let first_lc = parts[0].to_ascii_lowercase();
-        let matches_host_package = self.profile.namespaces.host_packages
-            .iter()
-            .any(|p| p.eq_ignore_ascii_case(&first_lc));
-        if !matches_host_package { return None; }
+        // Consult the Linker's `host_package_roots` map instead of
+        // `profile.namespaces.host_packages`. Populated at link time
+        // from `EsmDefault::PackageRoot` entries (which the profile
+        // loader auto-translates from the legacy list). Component
+        // Model package names are lowercase by spec — match
+        // case-insensitively regardless of the language's case rules.
+        let first_key = parts[0].to_ascii_lowercase();
+        if !self.host_package_roots.contains_key(&first_key) { return None; }
 
         let lower: Vec<String> = parts.iter().map(|s| s.to_ascii_lowercase()).collect();
         let (func, path) = lower.split_last()?;
@@ -3400,4 +3620,13 @@ fn merge_partial_classes(body: &[Statement], case_sensitive: bool) -> Vec<Statem
     }
 
     result
+}
+
+/// `true` when an ESM import specifier points at a host Component Model
+/// namespace rather than a source file on disk. The Linker treats these
+/// as Synthetic Module Record imports — no filesystem resolution.
+fn is_host_specifier(path: &str) -> bool {
+    path.starts_with("wasi:")
+        || path.starts_with("wasm:")
+        || path.starts_with("vybe:")
 }

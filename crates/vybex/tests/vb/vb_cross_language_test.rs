@@ -197,8 +197,8 @@ fn load_js_profile() -> vybex::profile::LanguageProfile {
         namespaces: NamespaceConfig::default(),
         known_types: HashMap::new(),
         value_methods: HashMap::new(),
-        module_aliases: HashMap::new(),
         namespace_constants: HashMap::new(),
         array_methods: HashMap::new(),
+        esm_defaults: Vec::new(),
     }
 }

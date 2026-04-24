@@ -8,6 +8,7 @@ use crate::error::VMError;
 use crate::event_loop::EventLoop;
 use crate::opcode::Op;
 use crate::shared_memory::SharedMemory;
+use crate::module_record::{ExportEntry, ModuleRecord};
 use crate::value::{Object, ObjectKind, Upvalue, Value};
 
 pub(crate) const MAX_FRAMES: usize = 256;
@@ -134,7 +135,17 @@ pub struct VM {
     pub(crate) open_upvalues: Vec<Arc<Mutex<Upvalue>>>,
     pub(crate) host_fns: Vec<HostFn>,
     /// Registry: (module, name) → index into host_fns.
+    ///
+    /// Flat cache of module exports; lookup-optimized shadow of
+    /// `modules[*].exports[*]`. Kept for hot-path dispatch; the
+    /// authoritative per-module view lives in `modules`.
     pub host_registry: HashMap<(String, String), usize>,
+    /// ECMA-262 §16.2.1 Abstract Module Records, keyed by canonical
+    /// specifier (`"wasi:cli/environment"`, `"wasm:js-math"`, etc.).
+    /// Populated by `register_host_fn` and the ESM-Integration
+    /// `.wasm` loader. The Linker phase of the compiler reads from
+    /// here. See `esmhostplan.md` for the migration plan.
+    pub modules: HashMap<String, ModuleRecord>,
     /// Import resolution table: import_index → resolved target.
     /// WASM-aligned: a single `.wasm` module has one imports section shared
     /// by every function inside. Vybe represents one module as many chunks
@@ -265,6 +276,7 @@ impl VM {
             open_upvalues: Vec::new(),
             host_fns: Vec::new(),
             host_registry: HashMap::new(),
+            modules: HashMap::new(),
             import_table: Vec::<ImportTarget>::new(),
             exception_handlers: Vec::new(),
             event_loop: Rc::new(RefCell::new(EventLoop::new())),
@@ -449,7 +461,9 @@ impl VM {
     }
 
     /// Register a host function with a (module, name) pair.
-    /// Also adds it to the function table for call_indirect dispatch.
+    /// Also adds it to the function table for call_indirect dispatch,
+    /// and records the export in the per-module `ModuleRecord` so the
+    /// Linker (ESM host-import resolver) can see it.
     pub fn register_host_fn(&mut self, module: &str, name: &str, f: Box<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>) {
         let idx = self.host_fns.len();
         self.host_fns.push(Arc::from(f));
@@ -462,6 +476,16 @@ impl VM {
         let mut obj = Object::new();
         obj.kind = ObjectKind::HostFunction(idx);
         self.func_table[idx] = Value::Object(Arc::new(Mutex::new(obj)));
+
+        // Mirror the registration into the Module Records registry.
+        // First registration under a given specifier auto-creates a
+        // Synthetic ModuleRecord; subsequent registrations add exports.
+        // `host_registry` remains the fast lookup path; `modules` is
+        // the spec-aligned per-module view.
+        let record = self.modules
+            .entry(module.to_string())
+            .or_insert_with(|| ModuleRecord::new_synthetic(module));
+        record.exports.insert(name.to_string(), ExportEntry::Function { idx });
     }
 
     /// Create a HostContext with callback capability for host functions.

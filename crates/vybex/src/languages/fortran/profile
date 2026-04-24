@@ -98,10 +98,8 @@ stop          = { emit = "noop",                           min_args = 0, max_arg
 [namespace_constants]
 
 # ────────────────────────────────────────────────────────────────────────────
-# MODULE ALIASES
+# ESM DEFAULTS — none. Fortran has no ambient host module imports.
 # ────────────────────────────────────────────────────────────────────────────
-
-[module_aliases]
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACE CONFIG

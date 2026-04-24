@@ -192,6 +192,9 @@ pub fn register_all(vm: &mut VM) {
                         ObjectKind::Ordinary => {
                             eprintln!("  [Ordinary]");
                         }
+                        ObjectKind::ModuleNamespace => {
+                            eprintln!("  [ModuleNamespace] exports={}", o.properties.len());
+                        }
                         ObjectKind::Continuation(cs) => {
                             let phase = *cs.state.lock().unwrap();
                             eprintln!("  [Continuation] phase={:?}", phase);

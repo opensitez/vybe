@@ -17,6 +17,7 @@ pub mod fiber;
 pub mod event_loop;
 pub mod typedef;
 pub mod shared_memory;
+pub mod module_record;
 
 pub use opcode::Op;
 pub use value::Value;
@@ -25,6 +26,7 @@ pub use vm::{VM, HostFn, HostContext, ImportTarget};
 pub use error::VMError;
 pub use event_loop::EventLoop;
 pub use typedef::{TypeDef, TypeRegistry, Method, FieldDef, ResourceTable};
+pub use module_record::{ModuleRecord, ModuleKind, ModuleStatus, ExportEntry, ModuleRequest};
 pub mod component;
 pub mod component_model;
 pub mod project;

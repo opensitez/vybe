@@ -451,6 +451,19 @@ impl Compiler {
                             vybe_bytecode::component_model::ConstructorTarget::Common(name) => {
                                 let line = self.line;
                                 self.emit_common(&name, line);
+                                // Tag the object with `__type` and install
+                                // `__get_count` / `__get_length` auto-getters
+                                // via the one-shot `vybe:types/__stamp_type`
+                                // import. Common-backed constructors create
+                                // raw JS-shape objects (Array via
+                                // `collections.new`, Object via
+                                // `wasm:js-object/new`, etc.) — the stamp
+                                // adds the .NET metadata runtime dispatch
+                                // needs without per-class host fns.
+                                // Stack: [obj] → [obj, name] → [obj]
+                                self.emit_const(Value::String(Arc::from(bare_str)));
+                                let stamp_idx = self.import("vybe:types", "__stamp_type");
+                                self.emit_host_call(stamp_idx, 2);
                             }
                         }
                         return Ok(());

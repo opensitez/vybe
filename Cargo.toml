@@ -1,40 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/vybe_parser_basic",
-    "crates/vybe_forms",
     "crates/code_editor",
-    "crates/vybe_ide",
-    "crates/legacy_ide",
-    "crates/legacy_editor",
-    "crates/vybe_project",
-    "crates/vybe_cli",
     "crates/vybe_bytecode",
-    "crates/vybe_parser_js",
-    "crates/vybe_compiler_js",
     "crates/vybe_host",
-    "crates/vybe_compiler_vb",
-    "crates/vybe_parser_csharp",
-    "crates/vybe_compiler_csharp",
     "crates/vybe_widgets",
-    "crates/vybe_designer",
-    "crates/vybe_parser_dart",
-    "crates/vybe_compiler_dart",
-    "crates/vybe_parser_pascal",
-    "crates/vybe_compiler_pascal",
-    "crates/vybe_parser_python",
-    "crates/vybe_compiler_python",
-    "crates/vybe_compiler_common",
-    "crates/htmlbox",
-    "crates/vybe_parser_php",
-    "crates/vybe_compiler_php",
-    "crates/vybe_parser_ruby",
-    "crates/vybe_compiler_ruby",
-    "crates/vybe_parser_cobol",
-    "crates/vybe_compiler_cobol",
-    "crates/vybe_lsp",
-    "crates/vybe_parser_generic",
-    "crates/vybe_compiler_generic",
     "crates/vybex",
 ]
 
@@ -58,42 +28,28 @@ uuid = { version = "1.10", features = ["serde", "v4"] }
 thiserror = "1.0"
 regex = "1"
 sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite", "postgres", "mysql", "any"] }
-tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
+tokio = { version = "1", features = ["full"] }
+chrono = "0.4"
+indexmap = "2"
+dashmap = "6"
 
 # Dialog libraries
 rfd = "0.14"
 
-
+# HTTP server stack
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http = "1"
+http-body-util = "0.1"
+bytes = "1"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs"] }
+percent-encoding = "2"
+form_urlencoded = "1"
+mime_guess = "2"
+httpdate = "1"
 
 # Internal crates
-vybe_parser_basic = { path = "crates/vybe_parser_basic" }
-vybe_forms = { path = "crates/vybe_forms" }
-vybe_project = { path = "crates/vybe_project" }
 vybe_bytecode = { path = "crates/vybe_bytecode" }
-vybe_parser_php = { path = "crates/vybe_parser_php" }
-vybe_compiler_php = { path = "crates/vybe_compiler_php" }
-vybe_parser_js = { path = "crates/vybe_parser_js" }
-vybe_compiler_js = { path = "crates/vybe_compiler_js" }
-vybe_compiler_vb = { path = "crates/vybe_compiler_vb" }
-vybe_parser_csharp = { path = "crates/vybe_parser_csharp" }
-vybe_compiler_csharp = { path = "crates/vybe_compiler_csharp" }
 vybe_host = { path = "crates/vybe_host" }
-vybe_cli = { path = "crates/vybe_cli" }
-vybe_parser_dart = { path = "crates/vybe_parser_dart" }
-vybe_compiler_dart = { path = "crates/vybe_compiler_dart" }
-vybe_parser_pascal = { path = "crates/vybe_parser_pascal" }
-vybe_compiler_pascal = { path = "crates/vybe_compiler_pascal" }
-vybe_parser_python = { path = "crates/vybe_parser_python" }
-vybe_compiler_python = { path = "crates/vybe_compiler_python" }
-vybe_compiler_common = { path = "crates/vybe_compiler_common" }
-vybe_parser_ruby = { path = "crates/vybe_parser_ruby" }
-vybe_compiler_ruby = { path = "crates/vybe_compiler_ruby" }
-vybe_parser_cobol = { path = "crates/vybe_parser_cobol" }
-vybe_compiler_cobol = { path = "crates/vybe_compiler_cobol" }
-vybe_lsp = { path = "crates/vybe_lsp" }
-vybe_parser_generic = { path = "crates/vybe_parser_generic" }
-vybe_compiler_generic = { path = "crates/vybe_compiler_generic" }
-rhtmledit = { path = "crates/htmlbox" }
 vybe_widgets = { path = "crates/vybe_widgets" }
-
- 

@@ -127,31 +127,113 @@ every     = "__array_every"
 sort      = "__array_sort"
 
 # ────────────────────────────────────────────────────────────────────────────
-# MODULE ALIASES — Dart library prefixes → host modules
+# ESM DEFAULTS — Dart library prefixes → host modules, ECMA-262 §16.2 shape
 # ────────────────────────────────────────────────────────────────────────────
 
-[module_aliases]
-math            = "vybe:math"
-Math            = "vybe:math"
-json            = "vybe:json"
-JSON            = "vybe:json"
-http            = "wasi:http"
-File            = "wasi:filesystem"
-Directory       = "wasi:filesystem"
-Map             = "vybe:collections"
-Set             = "vybe:collections"
-DateTime        = "vybe:types"
-StringBuffer    = "vybe:types"
-Duration        = "vybe:types"
-Random          = "vybe:threading"
-Stopwatch       = "wasi:clocks"
-RegExp          = "vybe:regex"
-Future          = "vybe:runtime"
-Stream          = "vybe:runtime"
-Process         = "vybe:types"
-Isolate         = "vybe:threading"
-utf8            = "vybe:convert"
-base64          = "vybe:convert"
+[[esm_default]]
+kind = "namespace"
+alias = "math"
+module = "vybe:math"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Math"
+module = "vybe:math"
+
+[[esm_default]]
+kind = "namespace"
+alias = "json"
+module = "vybe:json"
+
+[[esm_default]]
+kind = "namespace"
+alias = "JSON"
+module = "vybe:json"
+
+[[esm_default]]
+kind = "namespace"
+alias = "http"
+module = "wasi:http"
+
+[[esm_default]]
+kind = "namespace"
+alias = "File"
+module = "wasi:filesystem"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Directory"
+module = "wasi:filesystem"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Map"
+module = "vybe:collections"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Set"
+module = "vybe:collections"
+
+[[esm_default]]
+kind = "namespace"
+alias = "DateTime"
+module = "vybe:types"
+
+[[esm_default]]
+kind = "namespace"
+alias = "StringBuffer"
+module = "vybe:types"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Duration"
+module = "vybe:types"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Random"
+module = "vybe:threading"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Stopwatch"
+module = "wasi:clocks"
+
+[[esm_default]]
+kind = "namespace"
+alias = "RegExp"
+module = "vybe:regex"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Future"
+module = "vybe:runtime"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Stream"
+module = "vybe:runtime"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Process"
+module = "vybe:types"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Isolate"
+module = "vybe:threading"
+
+[[esm_default]]
+kind = "namespace"
+alias = "utf8"
+module = "vybe:convert"
+
+[[esm_default]]
+kind = "namespace"
+alias = "base64"
+module = "vybe:convert"
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACE CONSTANTS

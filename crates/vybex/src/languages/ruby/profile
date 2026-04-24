@@ -246,16 +246,38 @@ array_at = "array_get"
 map_size = "dict_keys, array_length"
 
 # ────────────────────────────────────────────────────────────────────────────
-# MODULE ALIASES
+# ESM DEFAULTS — Ruby module constants → host modules, ECMA-262 §16.2 shape
 # ────────────────────────────────────────────────────────────────────────────
 
-[module_aliases]
-"Math"          = "vybe:math"
-"File"          = "wasi:filesystem"
-"JSON"          = "vybe:json"
-"Kernel"        = "vybe:runtime"
-"IO"            = "wasi:cli"
-"Dir"           = "wasi:filesystem"
+[[esm_default]]
+kind = "namespace"
+alias = "Math"
+module = "vybe:math"
+
+[[esm_default]]
+kind = "namespace"
+alias = "File"
+module = "wasi:filesystem"
+
+[[esm_default]]
+kind = "namespace"
+alias = "JSON"
+module = "vybe:json"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Kernel"
+module = "vybe:runtime"
+
+[[esm_default]]
+kind = "namespace"
+alias = "IO"
+module = "wasi:cli"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Dir"
+module = "wasi:filesystem"
 
 # ────────────────────────────────────────────────────────────────────────────
 # ARRAY HIGHER-ORDER METHODS — compiler_common loop infrastructure

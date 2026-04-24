@@ -71,13 +71,17 @@ fn clone_object(obj: &Arc<Mutex<Object>>, seen: &mut HashMap<usize, Value>) -> V
         KindTag::ArrayBuffer => clone_arraybuffer(obj, id, seen),
         KindTag::TypedArray => clone_typedarray(obj, id, seen),
         // Per spec: functions, host functions — DataCloneError.
-        // MVP returns null.
-        KindTag::Function | KindTag::HostFunction | KindTag::Continuation => Value::Null,
+        // MVP returns null. Module Namespace Objects are frozen
+        // spec-exotic objects — structuredClone on them is not
+        // spec-defined; null is the conservative MVP result.
+        KindTag::Function | KindTag::HostFunction | KindTag::Continuation
+            | KindTag::ModuleNamespace => Value::Null,
     }
 }
 
 enum KindTag {
     Ordinary, Array, Map, Set, ArrayBuffer, TypedArray, Function, HostFunction, Continuation,
+    ModuleNamespace,
 }
 
 fn kind_discriminant(k: &ObjectKind) -> KindTag {
@@ -91,6 +95,7 @@ fn kind_discriminant(k: &ObjectKind) -> KindTag {
         ObjectKind::Function(_) => KindTag::Function,
         ObjectKind::HostFunction(_) => KindTag::HostFunction,
         ObjectKind::Continuation(_) => KindTag::Continuation,
+        ObjectKind::ModuleNamespace => KindTag::ModuleNamespace,
     }
 }
 

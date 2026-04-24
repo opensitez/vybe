@@ -207,25 +207,83 @@ Pop           = { emit = "common:collections.pop",           min_args = 0, max_a
 Peek          = { emit = "host:vybe:runtime:callMethod", min_args = 0, max_args = 0 }
 
 # ────────────────────────────────────────────────────────────────────────────
-# MODULE ALIASES — C# namespace objects → host modules
+# ESM DEFAULTS — C# namespace objects → host modules, ECMA-262 §16.2 shape
 # ────────────────────────────────────────────────────────────────────────────
 
-[module_aliases]
-Console       = "wasi:cli"
-Math          = "vybe:math"
-Convert       = "vybe:convert"
-Environment   = "wasi:cli"
-Array         = "vybe:array"
-String        = "vybe:string"
-Object        = "vybe:object"
-Task          = "vybe:threading"
-Thread        = "vybe:threading"
-Interlocked   = "vybe:threading"
-Application   = "vybe:gui"
-MessageBox    = "vybe:gui"
-File          = "wasi:filesystem"
-Directory     = "wasi:filesystem"
-Path          = "wasi:filesystem"
+[[esm_default]]
+kind = "namespace"
+alias = "Console"
+module = "wasi:cli"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Math"
+module = "vybe:math"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Convert"
+module = "vybe:convert"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Environment"
+module = "wasi:cli"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Array"
+module = "vybe:array"
+
+[[esm_default]]
+kind = "namespace"
+alias = "String"
+module = "vybe:string"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Object"
+module = "vybe:object"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Task"
+module = "vybe:threading"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Thread"
+module = "vybe:threading"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Interlocked"
+module = "vybe:threading"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Application"
+module = "vybe:gui"
+
+[[esm_default]]
+kind = "namespace"
+alias = "MessageBox"
+module = "vybe:gui"
+
+[[esm_default]]
+kind = "namespace"
+alias = "File"
+module = "wasi:filesystem"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Directory"
+module = "wasi:filesystem"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Path"
+module = "wasi:filesystem"
 
 # ────────────────────────────────────────────────────────────────────────────
 # KNOWN TYPES — constructor mappings for new TypeName()

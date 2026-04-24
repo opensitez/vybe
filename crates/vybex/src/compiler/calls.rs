@@ -67,6 +67,22 @@ impl Compiler {
             }
         }
 
+        // ── ESM host-module import binding ──────────────────────────
+        //
+        // `import { createServer } from "wasi:http"` binds
+        // `createServer` locally. Calling it here emits a direct
+        // `CALL_IMPORT` against the recorded (module, fn) pair — the
+        // import statement itself is the compile-time declaration.
+        if let ExprKind::Ident(name) = &callee.kind {
+            let key = self.canon(name);
+            if let Some((module, func)) = self.host_import_bindings.get(&key).cloned() {
+                for a in &arg_exprs { self.compile_expr(a)?; }
+                let idx = self.import(&module, &func);
+                self.emit_host_call(idx, arg_exprs.len() as u8);
+                return Ok(());
+            }
+        }
+
         // ── Builtin check: Ident("print") ───────────────────────────
         // Skip for user-defined functions: a VB `Function Echo(...)` must
         // dispatch to the user's chunk, not to the cross-language `echo →
@@ -86,8 +102,20 @@ impl Compiler {
                 let compound = format!("{}.{}", obj_name, field);
                 if self.try_compile_builtin(&compound, &arg_exprs)? { return Ok(()); }
 
-                // Module alias: console.log → host call
-                if let Some(module) = self.profile.lookup_module_alias(obj_name).map(|s| s.to_string()) {
+                // ── ESM wildcard namespace member call ──────────────
+                //
+                // Per ECMA-262 §16.2, a Module Namespace Object is a
+                // compile-time binding — `ns.field` resolves statically
+                // to the `(module, field)` export. Covers both profile
+                // defaults (JS `console` → `wasi:cli`) and user wildcard
+                // imports (`import * as cli from "wasi:cli"`). The
+                // Linker populated both into `host_namespace_aliases`.
+                //
+                // Runs AFTER `try_compile_builtin(compound)` so profile
+                // builtins with custom emit logic (`Array.from`,
+                // `Math.max`) still win on the names they claim.
+                let key = self.canon(obj_name);
+                if let Some(module) = self.host_namespace_aliases.get(&key).cloned() {
                     for a in &arg_exprs { self.compile_expr(a)?; }
                     let idx = self.import(&module, field);
                     self.emit_host_call(idx, arg_exprs.len() as u8);
@@ -325,11 +353,15 @@ impl Compiler {
                     }
                 }
 
-                // Non-dotnet: module aliases (JS: console → wasi:cli)
+                // Non-dotnet: namespace aliases (JS: console → wasi:cli).
+                // Reads from `host_namespace_aliases` (populated by the
+                // Linker) instead of `profile.lookup_module_alias` — one
+                // source of truth for Member-chain resolution.
                 let dotnet_root = self.profile.namespaces.use_dotnet_resolver
                     && common::dotnet::is_namespace_root(&lower_parts[0]);
                 if !dotnet_root {
-                    if let Some(module) = self.profile.lookup_module_alias(&lower_parts[0]).map(|s| s.to_string()) {
+                    let alias_key = self.canon(&lower_parts[0]);
+                    if let Some(module) = self.host_namespace_aliases.get(&alias_key).cloned() {
                     let func = if lower_parts.len() == 2 { lower_parts[1].clone() } else { lower_parts[1..].join(".") };
                     for a in &arg_exprs { self.compile_expr(a)?; }
                     let idx = self.import(&module, &func);
