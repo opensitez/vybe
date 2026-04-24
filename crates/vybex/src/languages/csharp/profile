@@ -23,6 +23,9 @@ partial_classes = true
 auto_base_call = true
 auto_init_methods = ["InitializeComponent"]  # auto-call in ctor if class defines it
 dynamic_add = true
+# Route `class` declarations through common::classes::normalize_class
+# + emit_class (see classnormalization.md).
+uses_normalize_class = true
 # C#: `return (a, b);` with `ValueTuple` syntax maps to WASM multi-value
 # at the ABI boundary. Destructure-side (`var (a, b) = f();`) isn't in
 # the grammar yet, so today only the callee-side saving applies —

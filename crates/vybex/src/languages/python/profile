@@ -23,6 +23,10 @@ dynamic_add = true
 # callers destructure straight off the stack instead of materialising
 # a heap tuple. See compiler/mod.rs `collect_multi_return_functions`.
 multi_value_tuple_returns = true
+# Route `class` declarations through common::classes::normalize_class
+# + emit_class (see classnormalization.md). Walker-level normalisation
+# of Python's dunder methods to canonical cross-language names.
+uses_normalize_class = true
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — bare global function calls

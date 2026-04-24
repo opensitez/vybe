@@ -33,6 +33,13 @@ with_block = true                      # With obj ... End With — bare .Member 
 new_with_initializer = true            # New Foo() With { .Prop = val }
 new_from_initializer = true            # New List(Of T) From { items }
 linq_queries = true                    # LINQ query syntax compiled to method chains
+# Route `class` declarations through common::classes::normalize_class
+# + emit_class (see classnormalization.md). VB walker already injects
+# implicit MyBase.New() and AddHandler statements into ctor bodies;
+# the normalizer just maps method names to canonical (ToString →
+# tostring, GetEnumerator → iterator, etc.) and populates
+# `auto_init_methods` when InitializeComponent is defined.
+uses_normalize_class = true
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — every function/method the VB compiler knows about

@@ -27,6 +27,10 @@ commonjs_require = false
 partial_classes = false
 auto_base_call = true
 byref_boxing = false
+# Route `class` declarations through common::classes::normalize_class
+# + emit_class (see classnormalization.md). Pascal `constructor Create`
+# / `destructor Destroy` / `class operator Add` all canonicalise.
+uses_normalize_class = true
 with_block = true                      # with obj do begin ... end
 new_with_initializer = false
 new_from_initializer = false

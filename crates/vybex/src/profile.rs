@@ -11,6 +11,12 @@ use std::collections::HashMap;
 /// Compilation semantics for a language.
 #[derive(Debug, Clone)]
 pub struct LanguageProfile {
+    /// Profile short name — matches the `[info].name` TOML field
+    /// (`"js"`, `"vb"`, `"csharp"`, `"python"`, …). Used by cross-
+    /// language orchestration code in `common::*` to dispatch to the
+    /// right per-language helper (e.g. `normalize_class`).
+    pub name: String,
+
     /// How functions return values.
     pub function_return: ReturnStyle,
 
@@ -106,6 +112,15 @@ pub struct LanguageProfile {
     /// The call is emitted after method binding but before the ctor body,
     /// and only if the body doesn't already call the method.
     pub auto_init_methods: Vec<String>,
+
+    /// When true, `StmtKind::ClassDecl` is routed through the new
+    /// `common::classes::normalize_class` + `emit_class` path instead
+    /// of the legacy `compile_class` orchestration. Enables the per-
+    /// language migration from the classnormalization.md plan. Each
+    /// language's walker opts in independently once its normalizer is
+    /// implemented and tested. Default `false` → legacy path, zero
+    /// behaviour change for unmigrated languages.
+    pub uses_normalize_class: bool,
 
     /// Builtin function mappings: source name → emission action.
     pub builtins: HashMap<String, BuiltinDef>,
@@ -327,6 +342,12 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
     let compiler = root.get("compiler")
         .ok_or("Missing [compiler] section")?;
 
+    let name = root.get("info")
+        .and_then(|v| v.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
     let function_return = match compiler.get("function_return")
         .and_then(|v| v.as_str()).unwrap_or("explicit") {
         "result_slot" => ReturnStyle::ResultSlot,
@@ -392,6 +413,8 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
         .unwrap_or_default();
+    let uses_normalize_class = compiler.get("uses_normalize_class")
+        .and_then(|v| v.as_bool()).unwrap_or(false);
 
     fn parse_builtin_table(root: &Value, section: &str) -> HashMap<String, BuiltinDef> {
         let mut map = HashMap::new();
@@ -578,6 +601,7 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
     }
 
     Ok(LanguageProfile {
+        name,
         function_return, result_slot_name,
         self_keyword, base_keyword, constructor_name,
         separated_methods, implicit_self_fields, explicit_self_param,
@@ -587,6 +611,7 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         partial_classes, multi_value_tuple_returns, byref_boxing, with_block,
         new_with_initializer, new_from_initializer, linq_queries, switch_fallthrough,
         auto_base_call, auto_init_methods,
+        uses_normalize_class,
         builtins, intrinsics, namespaces, known_types,
         value_methods, namespace_constants, array_methods,
         esm_defaults,

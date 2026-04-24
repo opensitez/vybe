@@ -20,6 +20,11 @@ string_indexing = "zero_based"
 # PHP-specific
 dynamic_add = false                 # `+` is numeric only; `.` is concat
 implicit_self_fields = false        # PHP requires `$this->field`
+# Route `class` declarations through common::classes::normalize_class
+# + emit_class (see classnormalization.md). Magic methods like
+# __toString / __invoke / __get / __set / __call canonicalise to the
+# cross-language names (tostring / call / getattr / setattr).
+uses_normalize_class = true
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — bare global function calls

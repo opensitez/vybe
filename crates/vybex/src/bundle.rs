@@ -348,6 +348,14 @@ fn resolve_export(
         ExportEntry::Indirect { from, name: src_name } => {
             resolve_export(modules, from, src_name, visited)
         }
-        ExportEntry::Value(_) | ExportEntry::ResourceType { .. } => None,
+        // Non-callable exports — Value (const), ResourceType, Class.
+        // `resolve_export` is the host-fn call-target resolver, so
+        // class/resource imports don't have a `(module, name)` pair to
+        // return here. Constructor calls take a different path that
+        // looks up the type_id in the registry and emits a typed
+        // construction sequence, not a host call.
+        ExportEntry::Value(_)
+        | ExportEntry::ResourceType { .. }
+        | ExportEntry::Class { .. } => None,
     }
 }

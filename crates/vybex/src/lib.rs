@@ -13,6 +13,7 @@
 
 pub mod emitter;
 pub mod ast;
+pub mod common;     // cross-language compile-time helpers (class normalisation, etc.)
 pub mod compiler;
 pub mod dotnet_register;
 pub mod languages;

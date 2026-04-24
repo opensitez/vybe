@@ -60,18 +60,44 @@ pub struct ResourceMethod {
 /// A class type definition in the Component Model.
 /// Classes model user/framework objects with inheritance, fields,
 /// properties, methods, and constructors.
+///
+/// This is the **wire format** — what crosses module boundaries in an
+/// ESM-imported or Component-Model-linked class. The compile-time IR
+/// (`NormalClass`) lives in `vybex::common::classes` and carries
+/// additional metadata (spans, source names, special-method kinds,
+/// event bindings) that is NOT part of the runtime description.
+///
+/// See `classnormalization.md` at the project root for the full
+/// compile → runtime layering.
 #[derive(Debug, Clone)]
 pub struct ClassType {
     /// Class name (e.g. "Form", "Button", "StringBuilder")
     pub name: String,
-    /// Optional parent class name.
+    /// Optional parent class name. Resolved by name at register time;
+    /// ESM dependency ordering guarantees the parent's `ClassType` is
+    /// already in the `TypeRegistry` when this class is registered.
     pub parent: Option<String>,
-    /// Plain instance fields that do not mirror into the host.
+    /// Interface / mixin names used for `instanceof` / `isinstance` /
+    /// `is` / `kind_of?`. Mixin + trait methods are **flattened into
+    /// `methods` at walker time** — this list is only for identity
+    /// checks, not dispatch.
+    pub interfaces: Vec<String>,
+    /// Plain instance fields. Field index = position in this Vec;
+    /// ordering is part of the wire contract so cross-module code
+    /// observes the same layout.
     pub fields: Vec<String>,
     /// Properties, potentially backed by host getter/setter calls.
     pub properties: Vec<PropertyDef>,
-    /// Instance or static methods.
+    /// Instance or static methods, keyed on canonical (language-neutral)
+    /// method names. Dispatch finds a method by looking up the call
+    /// site's name, falling back to `method_aliases`.
     pub methods: Vec<MethodDef>,
+    /// Cross-language alias table: `"__str__" → "tostring"`,
+    /// `"to_s" → "tostring"`, etc. Populated by the walker that
+    /// produced this class, so a Python class consumed by VB code
+    /// routes `ToString` calls to the Python chunk. Absent entries
+    /// mean the source name is already canonical.
+    pub method_aliases: HashMap<String, String>,
     /// Constructor definition.
     pub constructor: Option<ConstructorDef>,
     /// Optional destructor/finalizer-like method.
@@ -301,9 +327,11 @@ impl ClassType {
         ClassType {
             name: name.into(),
             parent: None,
+            interfaces: Vec::new(),
             fields: Vec::new(),
             properties: Vec::new(),
             methods: Vec::new(),
+            method_aliases: HashMap::new(),
             constructor: None,
             destructor: None,
         }
@@ -311,6 +339,27 @@ impl ClassType {
 
     pub fn with_parent(mut self, parent: impl Into<String>) -> Self {
         self.parent = Some(parent.into());
+        self
+    }
+
+    /// Declare an implemented interface / mixin / trait name used by
+    /// `instanceof`-family checks. Method dispatch does NOT walk this
+    /// list — mixin methods are flattened into `methods` at walker time.
+    pub fn with_interface(mut self, interface: impl Into<String>) -> Self {
+        self.interfaces.push(interface.into());
+        self
+    }
+
+    /// Record a cross-language alias for a method. Dispatch consults
+    /// this map after a direct vtable miss, so `obj.ToString()` on a
+    /// class whose canonical method name is `tostring` still hits.
+    /// Populated by the walker from the canonical-name table.
+    pub fn with_method_alias(
+        mut self,
+        alias: impl Into<String>,
+        canonical: impl Into<String>,
+    ) -> Self {
+        self.method_aliases.insert(alias.into(), canonical.into());
         self
     }
 

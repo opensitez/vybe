@@ -183,7 +183,7 @@ impl Compiler {
     // Class compilation
     // ════════════════════════════════════════════════════════════════════════
 
-    pub(super) fn compile_class(&mut self, name: &str, parent: &Option<String>, members: &[ClassMember]) -> Result<(), String> {
+    pub(crate) fn compile_class(&mut self, name: &str, parent: &Option<String>, members: &[ClassMember]) -> Result<(), String> {
         let self_kw = self.profile.self_keyword.clone();
         let ctor_name = self.profile.constructor_name.clone();
         let result_style = self.profile.function_return.clone();

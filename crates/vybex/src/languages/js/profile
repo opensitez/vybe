@@ -25,6 +25,11 @@ dynamic_add = true
 commonjs_require = true
 # JS switch statements fall through unless there's an explicit break
 switch_fallthrough = true
+# Route `class` declarations through common::classes::normalize_class
+# + emit_class instead of the legacy compile_class orchestration.
+# Pilot for the classnormalization.md migration — other languages opt
+# in as each gets its own `normalize_class`.
+uses_normalize_class = true
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — bare global function calls

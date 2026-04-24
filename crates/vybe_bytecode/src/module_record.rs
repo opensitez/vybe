@@ -96,6 +96,15 @@ pub enum ExportEntry {
     /// the `TypeRegistry`; `new SomeResource(...)` dispatches via
     /// the type id.
     ResourceType { type_id: usize },
+    /// Component Model class type (`ClassType`). Registered in the
+    /// `TypeRegistry` by the defining module; consumer modules bind
+    /// `import { Foo } from "./a"` to this entry and resolve
+    /// constructor / method calls through the shared registry.
+    /// Cross-module inheritance and `instanceof` work because the
+    /// whole VM shares one `TypeRegistry` — a class's `type_id` is
+    /// the same everywhere. See `classnormalization.md` § Integration
+    /// with Component Model + ESM imports.
+    Class { type_id: usize },
     /// Re-export: `export { X } from "other"`. The Linker resolves
     /// transitively so the importer binds to the final target
     /// directly — no runtime chase.

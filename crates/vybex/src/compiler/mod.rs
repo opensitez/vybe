@@ -78,7 +78,7 @@ pub struct Compiler {
     /// Models the WASM Component Model's namespace-scoped imports.
     enum_members: HashMap<String, String>,
     case_sensitive: bool,
-    profile: LanguageProfile,
+    pub(crate) profile: LanguageProfile,
     current_func_name: Option<String>,
     current_result_slot: Option<u16>,
     pending_classes: HashMap<String, PendingClass>,
@@ -776,7 +776,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn canon(&self, name: &str) -> String {
+    pub(crate) fn canon(&self, name: &str) -> String {
         if self.case_sensitive { name.to_string() } else { name.to_lowercase() }
     }
 
@@ -1604,12 +1604,21 @@ impl Compiler {
             }
 
             // ── Class declaration ───────────────────────────────────────
-            StmtKind::ClassDecl { name, parents, members, .. } => {
+            StmtKind::ClassDecl { name, parents, members, modifiers, .. } => {
                 let cname = self.canon(name);
                 self.defined_globals.insert(cname.clone());
                 self.defined_classes.insert(cname.clone());
                 let parent = parents.first().map(|p| self.canon(p));
-                self.compile_class(&cname, &parent, members)?;
+                if self.profile.uses_normalize_class {
+                    // Migrated-language path (see classnormalization.md).
+                    // Walker → normalize_class → emit_class.
+                    let span = stmt.span.clone();
+                    crate::common::classes::emit::emit_class_from_ast(
+                        self, span, &cname, parents, members, modifiers,
+                    )?;
+                } else {
+                    self.compile_class(&cname, &parent, members)?;
+                }
             }
 
             // ── Interface declaration ───────────────────────────────────

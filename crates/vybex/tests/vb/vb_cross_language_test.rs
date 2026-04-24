@@ -161,6 +161,7 @@ fn load_js_profile() -> vybex::profile::LanguageProfile {
     use std::collections::HashMap;
 
     LanguageProfile {
+        name: "js".into(),
         function_return: ReturnStyle::Explicit,
         result_slot_name: "Result".into(),
         self_keyword: "this".into(),
@@ -188,6 +189,7 @@ fn load_js_profile() -> vybex::profile::LanguageProfile {
         switch_fallthrough: true,
         auto_base_call: false,
         auto_init_methods: vec![],
+        uses_normalize_class: false,
         builtins: {
             let mut b = HashMap::new();
             b.insert("console.log".into(), BuiltinDef { emit: BuiltinEmit::Print, min_args: 0, max_args: 255 });

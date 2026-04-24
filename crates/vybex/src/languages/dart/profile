@@ -19,6 +19,9 @@ explicit_self_param = false
 enum_as_ordinals = false
 case_sensitive = true
 string_indexing = "zero_based"
+# Route `class` declarations through common::classes::normalize_class
+# + emit_class (see classnormalization.md).
+uses_normalize_class = true
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — bare global function calls

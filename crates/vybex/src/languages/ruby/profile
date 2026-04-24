@@ -25,6 +25,9 @@ dynamic_add = true
 # Non-destructure callers (`r = f()`) get the N values auto-repacked
 # into an array by `compile_expr` for `Call`, preserving Ruby semantics.
 multi_value_tuple_returns = true
+# Route `class` declarations through common::classes::normalize_class
+# + emit_class (see classnormalization.md).
+uses_normalize_class = true
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — bare global function calls
