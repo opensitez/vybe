@@ -101,6 +101,11 @@ pub fn build_stdlib(imports: &mut Chunk) -> StdLib {
     chunks.push(build_dir(imports));                 exports.push("__stdlib_dir");
     chunks.push(build_file(imports));                exports.push("__stdlib_file");
     chunks.push(build_filemtime(imports));           exports.push("__stdlib_filemtime");
+    chunks.push(build_file_exists(imports));         exports.push("__stdlib_file_exists");
+    chunks.push(build_is_file(imports));             exports.push("__stdlib_is_file");
+    chunks.push(build_is_dir(imports));              exports.push("__stdlib_is_dir");
+    chunks.push(build_filesize(imports));            exports.push("__stdlib_filesize");
+    chunks.push(build_unlink(imports));              exports.push("__stdlib_unlink");
 
     StdLib { chunks, exports }
 }
@@ -2219,114 +2224,104 @@ fn build_array_last_index_of(imports: &mut Chunk) -> Chunk {
 
 // ── dir(path) → directory iterator ─────────────────────────
 // PHP `dir($path)` returns a Directory object with `read()` / `close()`
-// methods. We wrap `wasi:filesystem.listDir` (returns an array of names)
-// in an object carrying the entries + a cursor + a bound `read` method
-// that yields the next name on each call (or `false` at end). Lets PHP
-// templates iterate with the standard `while ($e = $dir->read()) { … }`
-// pattern without needing a host-side Directory class.
+// methods. Composes real WASI 0.2.8: get-directories →
+// [method]descriptor.open-at (with OPEN_DIRECTORY=2) →
+// [method]descriptor.read-directory → directory-entry-stream
+// resource embedded on the wrapper as `__stream`. Each `read()` call
+// pulls the next entry via [method]directory-entry-stream
+// .read-directory-entry — proper lazy streaming, no upfront
+// materialisation of the whole listing.
 fn build_dir(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_dir");
     c.arity = 1; // path
-    c.local_count = 2; // path (arg 0) + entries
+    c.local_count = 3; // path(0) + descriptor(1) + stream(2)
     let path = 0u16;
-    let entries = 1;
+    let descriptor = 1;
+    let stream = 2;
 
-    let listdir = imports.add_import("wasi:filesystem", "listDir");
-    let entries_key = c.add_constant(Value::String(std::sync::Arc::from("__entries")));
-    let idx_key     = c.add_constant(Value::String(std::sync::Arc::from("__idx")));
-    let read_key    = c.add_constant(Value::String(std::sync::Arc::from("read")));
-    let close_key   = c.add_constant(Value::String(std::sync::Arc::from("close")));
+    let get_directories = imports.add_import("wasi:filesystem/preopens", "get-directories");
+    let open_at = imports.add_import("wasi:filesystem/types", "[method]descriptor.open-at");
+    let read_directory = imports.add_import("wasi:filesystem/types", "[method]descriptor.read-directory");
+    let array_get = imports.add_import("ecma:array", "get");
+    let stream_key   = c.add_constant(Value::String(std::sync::Arc::from("__stream")));
+    let read_key     = c.add_constant(Value::String(std::sync::Arc::from("read")));
+    let close_key    = c.add_constant(Value::String(std::sync::Arc::from("close")));
     let read_global  = c.add_constant(Value::String(std::sync::Arc::from("__vybe_dir_read")));
     let close_global = c.add_constant(Value::String(std::sync::Arc::from("__vybe_dir_close")));
+    let open_directory_flag = c.add_constant(Value::I32(2)); // open-flags::directory
 
-    // entries = listDir(path)
-    c.emit_op_u16(Op::LOCAL_GET, path, 0);
-    c.emit_op_u16(Op::CALL_IMPORT, listdir, 0);
-    c.emit(1u8, 0);
-    c.emit_op_u16(Op::LOCAL_SET, entries, 0); c.emit_op(Op::DROP, 0);
-
-    // obj = STRUCT_NEW 0 (empty)
-    c.emit_op_u16(Op::STRUCT_NEW, 0, 0);
-
-    // obj.__entries = entries
-    c.emit_op(Op::DUP, 0);
-    c.emit_op_u16(Op::LOCAL_GET, entries, 0);
-    c.emit_op_u16(Op::STRUCT_SET, entries_key, 0);
-    c.emit_op(Op::DROP, 0);
-
-    // obj.__idx = 0
-    c.emit_op(Op::DUP, 0);
+    // preopen = get-directories()[0][0]
+    c.emit_op_u16(Op::CALL_IMPORT, get_directories, 0); c.emit(0u8, 0);
     c.emit_op(Op::I32_CONST_0, 0);
-    c.emit_op_u16(Op::STRUCT_SET, idx_key, 0);
-    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, array_get, 0); c.emit(2u8, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, array_get, 0); c.emit(2u8, 0);
 
-    // obj.read = global_get __vybe_dir_read
+    // descriptor = preopen.open-at(0, path, OPEN_DIRECTORY, 0)
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, path, 0);
+    c.emit_op_u16(Op::CONST, open_directory_flag, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, open_at, 0); c.emit(5u8, 0);
+    c.emit_op_u16(Op::LOCAL_SET, descriptor, 0); c.emit_op(Op::DROP, 0);
+
+    // stream = descriptor.read-directory()
+    c.emit_op_u16(Op::LOCAL_GET, descriptor, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, read_directory, 0); c.emit(1u8, 0);
+    c.emit_op_u16(Op::LOCAL_SET, stream, 0); c.emit_op(Op::DROP, 0);
+
+    // obj = STRUCT_NEW 0
+    c.emit_op_u16(Op::STRUCT_NEW, 0, 0);
+    // obj.__stream = stream
+    c.emit_op(Op::DUP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, stream, 0);
+    c.emit_op_u16(Op::STRUCT_SET, stream_key, 0); c.emit_op(Op::DROP, 0);
+    // obj.read = global __vybe_dir_read
     c.emit_op(Op::DUP, 0);
     c.emit_op_u16(Op::GLOBAL_GET, read_global, 0);
-    c.emit_op_u16(Op::STRUCT_SET, read_key, 0);
-    c.emit_op(Op::DROP, 0);
-
-    // obj.close = global_get __vybe_dir_close
+    c.emit_op_u16(Op::STRUCT_SET, read_key, 0); c.emit_op(Op::DROP, 0);
+    // obj.close = global __vybe_dir_close
     c.emit_op(Op::DUP, 0);
     c.emit_op_u16(Op::GLOBAL_GET, close_global, 0);
-    c.emit_op_u16(Op::STRUCT_SET, close_key, 0);
-    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::STRUCT_SET, close_key, 0); c.emit_op(Op::DROP, 0);
 
     c.emit_op(Op::RETURN, 0);
     c
 }
 
 // ── dir.read(this) → next entry name or false ──────────────
+// Pulls the next entry from the embedded WASI directory-entry-stream
+// resource. End-of-stream (option<directory-entry>::none) maps to
+// `false` for PHP `while ($f = $dir->read()) { … }` compatibility.
 fn build_dir_read(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_dir_read");
     c.arity = 1; // this
-    c.local_count = 3; // this(0) + idx(1) + len(2)
+    c.local_count = 1;
     let this = 0u16;
-    let idx = 1;
-    let len = 2;
 
-    let entries_key = c.add_constant(Value::String(std::sync::Arc::from("__entries")));
-    let idx_key     = c.add_constant(Value::String(std::sync::Arc::from("__idx")));
-    let array_get   = imports.add_import("ecma:array", "get");
-    let array_len   = imports.add_import("ecma:object", "length");
+    let read_entry = imports.add_import(
+        "wasi:filesystem/types",
+        "[method]directory-entry-stream.read-directory-entry",
+    );
+    let stream_key = c.add_constant(Value::String(std::sync::Arc::from("__stream")));
+    let name_key   = c.add_constant(Value::String(std::sync::Arc::from("name")));
 
-    // idx = this.__idx
+    // entry = read-directory-entry(this.__stream)
     c.emit_op_u16(Op::LOCAL_GET, this, 0);
-    c.emit_op_u16(Op::STRUCT_GET, idx_key, 0);
-    c.emit_op_u16(Op::LOCAL_SET, idx, 0); c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::STRUCT_GET, stream_key, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, read_entry, 0); c.emit(1u8, 0);
 
-    // len = ecma:object.length(this.__entries)
-    c.emit_op_u16(Op::LOCAL_GET, this, 0);
-    c.emit_op_u16(Op::STRUCT_GET, entries_key, 0);
-    c.emit_op_u16(Op::CALL_IMPORT, array_len, 0); c.emit(1u8, 0);
-    c.emit_op_u16(Op::LOCAL_SET, len, 0); c.emit_op(Op::DROP, 0);
-
-    // if (idx >= len) → return false
-    let block_p = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, idx, 0);
-    c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    c.emit_op(Op::DYN_LT, 0);
-    c.emit_op(Op::DYN_TO_BOOL, 0);
-    // br_if 0 = jump to block end if true (idx < len → continue past return false)
-    c.emit_br_if(0, 0);
-    // fall-through: return false
-    c.emit_op(Op::FALSE, 0);
+    // if (entry === null) return false; else return entry.name
+    c.emit_op(Op::DUP, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    let if_null = c.emit_jump(Op::BR_IF_TRUE, 0);
+    // not-null: pull `name` and return
+    c.emit_op_u16(Op::STRUCT_GET, name_key, 0);
     c.emit_op(Op::RETURN, 0);
-    c.emit_end(0); c.patch_block(block_p);
-
-    // this.__idx = idx + 1
-    c.emit_op_u16(Op::LOCAL_GET, this, 0);
-    c.emit_op_u16(Op::LOCAL_GET, idx, 0);
-    c.emit_op(Op::I32_CONST_1, 0);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::STRUCT_SET, idx_key, 0);
+    // null: drop the null entry, return false
+    c.patch_jump(if_null);
     c.emit_op(Op::DROP, 0);
-
-    // return this.__entries[idx]
-    c.emit_op_u16(Op::LOCAL_GET, this, 0);
-    c.emit_op_u16(Op::STRUCT_GET, entries_key, 0);
-    c.emit_op_u16(Op::LOCAL_GET, idx, 0);
-    c.emit_op_u16(Op::CALL_IMPORT, array_get, 0); c.emit(2u8, 0);
+    c.emit_op(Op::FALSE, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -2364,21 +2359,151 @@ fn build_file(imports: &mut Chunk) -> Chunk {
     c
 }
 
+// ── file_exists(path) → bool ───────────────────────────────
+// Calls stat-at; non-existent paths come back as an error object
+// (no `type` field), every other result has a `type` string. So
+// `result.type !== null` is a faithful exists-test.
+fn build_file_exists(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_file_exists");
+    c.arity = 1;
+    c.local_count = 1;
+    let get_directories = imports.add_import("wasi:filesystem/preopens", "get-directories");
+    let stat_at = imports.add_import("wasi:filesystem/types", "[method]descriptor.stat-at");
+    let array_get = imports.add_import("ecma:array", "get");
+    let type_key = c.add_constant(Value::String(std::sync::Arc::from("type")));
+
+    c.emit_op_u16(Op::CALL_IMPORT, get_directories, 0); c.emit(0u8, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, array_get, 0); c.emit(2u8, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, array_get, 0); c.emit(2u8, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, stat_at, 0); c.emit(3u8, 0);
+    c.emit_op_u16(Op::STRUCT_GET, type_key, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── is_file(path) → bool ───────────────────────────────────
+// stat-at then `type === "regular-file"`.
+fn build_is_file(imports: &mut Chunk) -> Chunk {
+    build_stat_type_match(imports, "__stdlib_is_file", "regular-file")
+}
+
+// ── is_dir(path) → bool ────────────────────────────────────
+fn build_is_dir(imports: &mut Chunk) -> Chunk {
+    build_stat_type_match(imports, "__stdlib_is_dir", "directory")
+}
+
+fn build_stat_type_match(imports: &mut Chunk, name: &str, expected_type: &str) -> Chunk {
+    let mut c = Chunk::new(name);
+    c.arity = 1;
+    c.local_count = 1;
+    let get_directories = imports.add_import("wasi:filesystem/preopens", "get-directories");
+    let stat_at = imports.add_import("wasi:filesystem/types", "[method]descriptor.stat-at");
+    let array_get = imports.add_import("ecma:array", "get");
+    let type_key = c.add_constant(Value::String(std::sync::Arc::from("type")));
+    let expected = c.add_constant(Value::String(std::sync::Arc::from(expected_type)));
+
+    c.emit_op_u16(Op::CALL_IMPORT, get_directories, 0); c.emit(0u8, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, array_get, 0); c.emit(2u8, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, array_get, 0); c.emit(2u8, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, stat_at, 0); c.emit(3u8, 0);
+    c.emit_op_u16(Op::STRUCT_GET, type_key, 0);
+    c.emit_op_u16(Op::CONST, expected, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── filesize(path) → number ────────────────────────────────
+// stat-at then read the `size` field. Errors return null (PHP
+// returns false; close enough for now).
+fn build_filesize(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_filesize");
+    c.arity = 1;
+    c.local_count = 1;
+    let get_directories = imports.add_import("wasi:filesystem/preopens", "get-directories");
+    let stat_at = imports.add_import("wasi:filesystem/types", "[method]descriptor.stat-at");
+    let array_get = imports.add_import("ecma:array", "get");
+    let size_key = c.add_constant(Value::String(std::sync::Arc::from("size")));
+
+    c.emit_op_u16(Op::CALL_IMPORT, get_directories, 0); c.emit(0u8, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, array_get, 0); c.emit(2u8, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, array_get, 0); c.emit(2u8, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, stat_at, 0); c.emit(3u8, 0);
+    c.emit_op_u16(Op::STRUCT_GET, size_key, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── unlink(path) → null ────────────────────────────────────
+// PHP `unlink($path)` removes a file; under real WASI that's
+// `[method]descriptor.unlink-file-at(parent, path)`. Return is
+// null on success, error object on failure (matches WIT result<_>).
+fn build_unlink(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_unlink");
+    c.arity = 1;
+    c.local_count = 1;
+    let get_directories = imports.add_import("wasi:filesystem/preopens", "get-directories");
+    let unlink_at = imports.add_import(
+        "wasi:filesystem/types",
+        "[method]descriptor.unlink-file-at",
+    );
+    let array_get = imports.add_import("ecma:array", "get");
+
+    c.emit_op_u16(Op::CALL_IMPORT, get_directories, 0); c.emit(0u8, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, array_get, 0); c.emit(2u8, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, array_get, 0); c.emit(2u8, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, unlink_at, 0); c.emit(2u8, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
 // ── filemtime(path) → seconds since epoch ──────────────────
-// PHP `filemtime($path)` returns Unix seconds. wasi:filesystem.stat
-// gives a struct with `.modified` in milliseconds; divide by 1000.
+// PHP `filemtime($path)` returns Unix seconds. Composes real WASI
+// 0.2.8 calls: get-directories → preopen descriptor → stat-at →
+// data-modification-timestamp (ms) → divide by 1000.
 fn build_filemtime(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_filemtime");
     c.arity = 1; // path
     c.local_count = 1;
 
-    let stat = imports.add_import("wasi:filesystem", "stat");
-    let modified_key = c.add_constant(Value::String(std::sync::Arc::from("modified")));
+    let get_directories = imports.add_import("wasi:filesystem/preopens", "get-directories");
+    let stat_at = imports.add_import("wasi:filesystem/types", "[method]descriptor.stat-at");
+    let array_get = imports.add_import("ecma:array", "get");
+    let mtime_key = c.add_constant(Value::String(std::sync::Arc::from("data-modification-timestamp")));
     let one_thousand = c.add_constant(Value::F64(1000.0));
 
+    // preopens[0][0] → descriptor for cwd
+    c.emit_op_u16(Op::CALL_IMPORT, get_directories, 0); c.emit(0u8, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, array_get, 0); c.emit(2u8, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, array_get, 0); c.emit(2u8, 0);
+
+    // stat-at(descriptor, path-flags=0, path) — flat path resolves
+    // relative to the preopen, so PHP's "/abs/path" isn't supported
+    // here; that's a Phase-2 issue (true preopen-aware path mapping).
+    c.emit_op(Op::I32_CONST_0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    c.emit_op_u16(Op::CALL_IMPORT, stat, 0); c.emit(1u8, 0);
-    c.emit_op_u16(Op::STRUCT_GET, modified_key, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, stat_at, 0); c.emit(3u8, 0);
+
+    c.emit_op_u16(Op::STRUCT_GET, mtime_key, 0);
     c.emit_op_u16(Op::CONST, one_thousand, 0);
     c.emit_op(Op::F64_DIV, 0);
     c.emit_op(Op::RETURN, 0);

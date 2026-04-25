@@ -563,3 +563,24 @@ some     = "__array_some"
 every    = "__array_every"
 flatMap  = "__array_flat_map"
 reduceRight = "__array_reduce_right"
+
+# ────────────────────────────────────────────────────────────────────────────
+# BARE MODULE ALIASES — Node.js built-in module name resolution.
+#
+# Node code can import built-ins with either the prefixed form
+# (`import fs from 'node:fs'`, available since Node 16) or the
+# traditional bare form (`import fs from 'fs'`). The bare form is
+# what most existing Node code uses. Both must resolve to the same
+# host module — `node:fs` here.
+#
+# Vybe consults this table only for JS imports (other languages
+# leave [bare_module_aliases] empty so e.g. Python `import os`
+# keeps Python's stdlib semantics).
+# ────────────────────────────────────────────────────────────────────────────
+
+[bare_module_aliases]
+"fs"            = "node:fs"
+"path"          = "node:path"
+"os"            = "node:os"
+"process"       = "node:process"
+"child_process" = "node:child_process"

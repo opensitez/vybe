@@ -92,15 +92,16 @@ console.log(String(cli));
 // ── Phase 6: Adapter modules (node:*) re-export from Synthetic ─────
 
 #[test]
-fn node_os_adapter_reexports_platform() {
-    // `node:os` adapter re-exports `platform` from `wasi:cli`. The
-    // Linker walks the Indirect chain so `platform()` compiles to
-    // `CALL_IMPORT (wasi:cli, platform)` — same bytecode as a direct
-    // `import { platform } from "wasi:cli"`.
+fn node_os_platform_returns_node_faithful_string() {
+    // `node:os` is now a real host module (not a JS adapter that
+    // re-exported `wasi:cli` shims). It returns Node's canonical
+    // platform names — "darwin"/"linux"/"win32" — not the older
+    // Vybe-shim names ("macos"/"linux"/"windows"). See
+    // `crates/vybe_host/src/node/os.rs`.
     let out = run_js_with_imports(r#"
 import { platform } from "node:os";
 let p = platform();
-console.log(p === "macos" || p === "linux" || p === "windows");
+console.log(p === "darwin" || p === "linux" || p === "win32");
 "#);
     assert_eq!(out, vec!["true"]);
 }

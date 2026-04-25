@@ -79,6 +79,11 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_dir",                "__vybe_dir"),
     ("__stdlib_file",               "__vybe_file"),
     ("__stdlib_filemtime",          "__vybe_filemtime"),
+    ("__stdlib_file_exists",        "__vybe_file_exists"),
+    ("__stdlib_is_file",            "__vybe_is_file"),
+    ("__stdlib_is_dir",             "__vybe_is_dir"),
+    ("__stdlib_filesize",           "__vybe_filesize"),
+    ("__stdlib_unlink",             "__vybe_unlink"),
 ];
 
 /// Emit the stdlib preamble at the START of a script chunk.

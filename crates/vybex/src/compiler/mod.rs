@@ -374,16 +374,24 @@ impl Compiler {
         // by walking the re-export chain in `module_exports` to the
         // ultimate target. Relative paths still resolve at bundle
         // load time.
+        let bare_aliases = self.profile.bare_module_aliases.clone();
+        let normalize_bare = |path: &str| -> String {
+            // Profile-driven: JS routes `'fs'` → `'node:fs'` via the
+            // [bare_module_aliases] table; Python's profile leaves it
+            // empty so `import os` keeps Python's stdlib semantics.
+            bare_aliases.get(path).cloned().unwrap_or_else(|| path.to_string())
+        };
         for imp in &module.imports {
             match &imp.kind {
                 crate::ast::ImportKind::Named { path, names, .. } => {
-                    if is_host_specifier(path) {
+                    let path = normalize_bare(path);
+                    if is_host_specifier(&path) {
                         for n in names {
                             let raw_local = n.alias.as_ref().unwrap_or(&n.name).clone();
                             let key = self.canon(&raw_local);
                             self.host_import_bindings.insert(key, (path.clone(), n.name.clone()));
                         }
-                    } else if let Some(adapter_exports) = self.module_exports.get(path).cloned() {
+                    } else if let Some(adapter_exports) = self.module_exports.get(&path).cloned() {
                         // Adapter module: each name is a pre-resolved
                         // `(final_module, final_name)` pair courtesy
                         // of the Indirect chain walker in the Bundle.
@@ -401,10 +409,11 @@ impl Compiler {
                     // resolver handles them by inlining sources.
                 }
                 crate::ast::ImportKind::Wildcard { path, alias } => {
-                    if !is_host_specifier(path) { continue; }
+                    let path = normalize_bare(path);
+                    if !is_host_specifier(&path) { continue; }
                     if let Some(ns) = alias {
                         let key = self.canon(ns);
-                        self.host_namespace_aliases.insert(key, path.clone());
+                        self.host_namespace_aliases.insert(key, path);
                     }
                 }
                 // Default + Simple: no meaning for host modules; skip.
@@ -3750,4 +3759,18 @@ fn is_host_specifier(path: &str) -> bool {
     path.starts_with("wasi:")
         || path.starts_with("wasm:")
         || path.starts_with("vybe:")
+        // Node.js built-ins under the `node:` prefix. Only enumerate
+        // modules with a real host implementation in
+        // `crates/vybe_host/src/node/*.rs`. `node:http` is still
+        // served by a JS adapter in `crates/vybex/src/adapters/node/`
+        // and must fall through so the linker walks the adapter chain.
+        // Add an entry as each new `node:*` host module lands; remove
+        // its matching adapter at the same time.
+        || matches!(path,
+            "node:fs"
+            | "node:os"
+            | "node:path"
+            | "node:process"
+            | "node:child_process"
+            | "node:crypto")
 }

@@ -504,6 +504,10 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
         // node:fs — Node.js built-in filesystem surface, gated under
         // the same capability since reads/writes the same disk.
         crate::node::fs::register(vm);
+        // wasi:filesystem 0.2.8 — real descriptor-based proposal.
+        // Lives alongside the legacy Vybe-shim filesystem until the
+        // shim is renamed to `vybe:fs`.
+        crate::wasi::filesystem::register(vm);
     }
     // node:os, node:path, node:process — read-only system info / pure
     // computation; available regardless of capability.

@@ -135,6 +135,18 @@ pub struct LanguageProfile {
     /// of three shapes: `kind = "named"`, `kind = "namespace"`, or
     /// `kind = "package-root"`.
     pub esm_defaults: Vec<EsmDefault>,
+
+    /// Bare-import-specifier rewrites for languages with built-in
+    /// modules that resolve without a prefix. JS/Node: `import fs
+    /// from 'fs'` rewrites to `'node:fs'` so it binds the same host
+    /// module as the explicit `'node:fs'` import.
+    ///
+    /// Languages with their own stdlib semantics for these names
+    /// (Python `import os`, Ruby `require 'fileutils'`, …) leave the
+    /// table empty so their bare imports stay unrouted by this
+    /// mechanism. Declared in profile TOML as a `[bare_module_aliases]`
+    /// table: `"fs" = "node:fs"` etc.
+    pub bare_module_aliases: HashMap<String, String>,
 }
 
 /// One pre-declared ESM import in the ambient module scope — the
@@ -563,6 +575,18 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         }
     }
 
+    // [bare_module_aliases] — language-specific bare→prefixed import
+    // canonicalisation. Only languages that own these names route them
+    // (JS routes `fs` → `node:fs`); others leave the table empty.
+    let mut bare_module_aliases: HashMap<String, String> = HashMap::new();
+    if let Some(tbl) = root.get("bare_module_aliases").and_then(|v| v.as_table()) {
+        for (key, val) in tbl {
+            if let Some(target) = val.as_str() {
+                bare_module_aliases.insert(key.clone(), target.to_string());
+            }
+        }
+    }
+
     Ok(LanguageProfile {
         name,
         function_return, result_slot_name,
@@ -576,5 +600,6 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         builtins, intrinsics, namespaces, known_types,
         value_methods, namespace_constants, array_methods,
         esm_defaults,
+        bare_module_aliases,
     })
 }

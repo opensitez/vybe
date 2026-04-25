@@ -174,14 +174,15 @@ fn resolve_imports(module: &mut Module, lang: &Language, base_dir: &Path) {
             ImportKind::Simple { path, .. } => path.clone(),
             ImportKind::Wildcard { path, .. } => path.clone(),
         };
-        // Host Component Model namespaces (`wasi:*`, `wasm:*`, `vybe:*`)
-        // are not source files — the compiler binds them at compile time
-        // from `module.imports` directly via `host_import_bindings`.
-        // Skip filesystem resolution so we don't print spurious "no such
-        // file" warnings.
+        // Host Component Model namespaces (`wasi:*`, `wasm:*`, `vybe:*`,
+        // `node:*`) are not source files — the compiler binds them at
+        // compile time from `module.imports` directly via
+        // `host_import_bindings`. Skip filesystem resolution so we
+        // don't print spurious "no such file" warnings.
         if path_str.starts_with("wasi:")
             || path_str.starts_with("wasm:")
             || path_str.starts_with("vybe:")
+            || path_str.starts_with("node:")
         {
             continue;
         }

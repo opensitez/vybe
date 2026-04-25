@@ -1,6 +1,7 @@
 pub mod modules;
 pub mod ecma;       // ecma:*    — ECMA-262 JS runtime (Vybe mirror)
 pub mod node;       // node:*    — Node.js built-in modules (de facto JS standard)
+pub mod wasi;       // wasi:*    — real WASI 0.2.8 proposals (descriptor-based)
 pub mod wasm;       // wasm:*    — real WebAssembly CG proposals
 pub mod controls;
 pub mod namespaces;

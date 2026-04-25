@@ -33,11 +33,15 @@ use vybe_bytecode::{VM, ModuleRecord, ModuleKind, ModuleStatus, ExportEntry};
 /// or link error aborts setup — adapters ship with the binary so any
 /// breakage is a build error, not a runtime error.
 pub fn register_all(vm: &mut VM) -> Result<(), String> {
+    // `node:fs`, `node:os`, `node:path`, `node:process`,
+    // `node:child_process`, `node:crypto` are now real host modules
+    // under `crates/vybe_host/src/node/`. The `is_host_specifier`
+    // linker path resolves their ESM imports directly. Adapters here
+    // are for `node:*` modules without a real host implementation
+    // yet (only `node:http` for now — `vybe:http/server.listen` has
+    // a closure shape that's not trivial to expose under a new
+    // module name without restructuring).
     register_js_adapter(vm, "node:http",   include_str!("adapters/node/http.js"))?;
-    register_js_adapter(vm, "node:fs",     include_str!("adapters/node/fs.js"))?;
-    register_js_adapter(vm, "node:crypto", include_str!("adapters/node/crypto.js"))?;
-    register_js_adapter(vm, "node:path",   include_str!("adapters/node/path.js"))?;
-    register_js_adapter(vm, "node:os",     include_str!("adapters/node/os.js"))?;
     Ok(())
 }
 

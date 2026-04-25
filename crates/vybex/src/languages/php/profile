@@ -209,17 +209,20 @@ __php_decrement     = { emit = "host:vybe:string:phpDecrement", min_args = 1, ma
 
 file_get_contents   = { emit = "host:wasi:filesystem:readFile",  min_args = 1, max_args = 5 }
 file_put_contents   = { emit = "host:wasi:filesystem:writeFile", min_args = 2, max_args = 4 }
-file_exists         = { emit = "host:wasi:filesystem:exists",    min_args = 1, max_args = 1 }
-is_file             = { emit = "host:wasi:filesystem:isFile",    min_args = 1, max_args = 1 }
-is_dir              = { emit = "host:wasi:filesystem:isDir",     min_args = 1, max_args = 1 }
+# Backed by real WASI 0.2.8 stat-at via stdlib chunks. The shim
+# `wasi:filesystem:exists`/`isFile`/`isDir` are deprecated and will
+# move to `vybe:fs` when the namespace truth-rename lands.
+file_exists         = { emit = "stdlib:file_exists",            min_args = 1, max_args = 1 }
+is_file             = { emit = "stdlib:is_file",                min_args = 1, max_args = 1 }
+is_dir              = { emit = "stdlib:is_dir",                 min_args = 1, max_args = 1 }
 # `filesize($path)` → wasi:filesystem:fileSize. Same semantic.
-filesize            = { emit = "host:wasi:filesystem:fileSize", min_args = 1, max_args = 1 }
+filesize            = { emit = "stdlib:filesize",              min_args = 1, max_args = 1 }
 # `filemtime($path)` → seconds since epoch. stdlib chunk that extracts
 # the `.modified` (ms) field from `wasi:filesystem.stat()` and divides
 # by 1000.
 filemtime           = { emit = "stdlib:filemtime",              min_args = 1, max_args = 1 }
 mkdir               = { emit = "host:wasi:filesystem:mkdir",     min_args = 1, max_args = 4 }
-unlink              = { emit = "host:wasi:filesystem:remove",    min_args = 1, max_args = 2 }
+unlink              = { emit = "stdlib:unlink",                 min_args = 1, max_args = 2 }
 
 # ── Environment / CLI ───────────────────────────────────────────────────────
 
