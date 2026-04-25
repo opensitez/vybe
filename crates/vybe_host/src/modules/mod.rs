@@ -82,6 +82,10 @@ pub enum Capability {
     /// HTTP server (binding ports, handling requests). Required for `vybex --serve`
     /// and any script calling `vybe:http/server.listen`.
     HttpServer,
+    /// Spawning child processes (`node:child_process.{spawnSync, execSync,
+    /// execFileSync}`, `node:process.kill`). Carries OS-level escape
+    /// potential — gated separately from FileWrite.
+    Process,
 }
 
 impl Capabilities {
@@ -90,7 +94,7 @@ impl Capabilities {
         use Capability::*;
         let mut granted = HashSet::new();
         for cap in [Console, FileRead, FileWrite, Http, Sockets, Database,
-                    Environment, Gui, Threading, Crypto, Clock, Random, Xml, HttpServer] {
+                    Environment, Gui, Threading, Crypto, Clock, Random, Xml, HttpServer, Process] {
             granted.insert(cap);
         }
         Capabilities { granted }
@@ -497,6 +501,17 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
     }
     if caps.has(Capability::FileRead) || caps.has(Capability::FileWrite) {
         fs::register(vm);
+        // node:fs — Node.js built-in filesystem surface, gated under
+        // the same capability since reads/writes the same disk.
+        crate::node::fs::register(vm);
+    }
+    // node:os, node:path, node:process — read-only system info / pure
+    // computation; available regardless of capability.
+    crate::node::register_always_on(vm);
+    if caps.has(Capability::Process) {
+        // node:child_process — gated separately since spawning OS
+        // commands is a stronger capability than fs read/write.
+        crate::node::child_process::register(vm);
     }
     if caps.has(Capability::FileRead) || caps.has(Capability::FileWrite) || caps.has(Capability::Sockets) {
         sockets::register_dotnet_io(vm);
