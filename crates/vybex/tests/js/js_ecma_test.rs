@@ -553,10 +553,14 @@ fn test_regex_test() {
     assert_eq!(run_js_one(r#"console.log(RegExp.test("\\d+", "abc"))"#), "false");
 }
 
+// ECMA-262 regex APIs are receiver-first per the spec
+// (`String.prototype.match/replace/split` take regex as the argument,
+// receiver = the string). Old `RegExp.<static>(pattern, str, ...)`
+// shape was Vybe-invented and isn't a real JS API.
 #[test]
 fn test_regex_match() {
     let code = r#"
-        let matches = RegExp.match("\\d+", "abc123def456");
+        let matches = "abc123def456".match(new RegExp("\\d+", "g"));
         console.log(matches[0], matches[1]);
     "#;
     assert_eq!(run_js_one(code), "123 456");
@@ -564,18 +568,24 @@ fn test_regex_match() {
 
 #[test]
 fn test_regex_replace() {
-    assert_eq!(run_js_one(r#"console.log(RegExp.replace("\\d+", "abc123", "NUM"))"#), "abcNUM");
+    assert_eq!(
+        run_js_one(r#"console.log("abc123".replace(new RegExp("\\d+"), "NUM"))"#),
+        "abcNUM"
+    );
 }
 
 #[test]
 fn test_regex_replace_all() {
-    assert_eq!(run_js_one(r#"console.log(RegExp.replaceAll("\\d+", "a1b2c3", "X"))"#), "aXbXcX");
+    assert_eq!(
+        run_js_one(r#"console.log("a1b2c3".replace(new RegExp("\\d+", "g"), "X"))"#),
+        "aXbXcX"
+    );
 }
 
 #[test]
 fn test_regex_split() {
     let code = r#"
-        let parts = RegExp.split("[,;]", "a,b;c,d");
+        let parts = "a,b;c,d".split(new RegExp("[,;]"));
         console.log(parts.join(" "));
     "#;
     assert_eq!(run_js_one(code), "a b c d");

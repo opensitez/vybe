@@ -153,3 +153,15 @@ fn default_bool() {
 fn string_plus_number() {
     assert_eq!(run_csharp_one(r#"Console.WriteLine("Value: " + 42);"#), "Value: 42");
 }
+
+#[test]
+fn array_copy_runtime() {
+    // C# `Array.Copy(src, dst, count)` — copies first 3 elems from src into dst
+    let out = run_csharp_one(r#"
+int[] src = new int[] { 10, 20, 30, 40 };
+int[] dst = new int[] { 0, 0, 0, 0 };
+Array.Copy(src, dst, 3);
+Console.WriteLine(dst[0] + dst[1] + dst[2] + dst[3]);
+"#);
+    assert_eq!(out, "60");
+}

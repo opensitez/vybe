@@ -39,3 +39,6 @@ mod test_class_patterns;
 mod test_coercion_modern;
 mod test_generators_lazy;
 mod test_esm_host_imports;
+mod test_intl_e2e;
+mod test_new_globals_e2e;
+mod test_variadic_bug;

@@ -136,10 +136,10 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
                 "Convert",
                 &[
                     ("ToInt32", 1, "vybe:convert", "cint"),
-                    ("ToDouble", 1, "vybe:convert", "cdbl"),
-                    ("ToString", 1, "vybe:convert", "toString"),
-                    ("ToBoolean", 1, "vybe:convert", "cbool"),
-                    ("ToDateTime", 1, "vybe:convert", "toString"),
+                    ("ToDouble", 1, "ecma:number", "Number"),
+                    ("ToString", 1, "ecma:string", "String"),
+                    ("ToBoolean", 1, "ecma:boolean", "Boolean"),
+                    ("ToDateTime", 1, "ecma:string", "String"),
                 ],
             ),
             static_only_class(

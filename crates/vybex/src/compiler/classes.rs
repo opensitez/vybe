@@ -51,10 +51,15 @@ impl Compiler {
         self.scopes.push(Scope::new_function());
         let saved = self.current;
         self.current = func_idx;
+        // Function body opens fresh wrt the runtime label_stack —
+        // emit_return drains back to this base. Save+restore so nested
+        // function decls compose.
+        let saved_label_base = self.function_label_base;
+        self.function_label_base = self.label_depth;
 
         // Define params
         for p in params {
-            self.scope_mut().define(&p.name);
+            self.define_local(&p.name);
             // Default parameters
             if let Some(ref default) = p.default {
                 let slot = self.scope().resolve(&p.name).unwrap();
@@ -89,10 +94,10 @@ impl Compiler {
             // triggering a self-referential push loop.)
             let max_rest = 16u16;
             for i in 1..max_rest {
-                self.scope_mut().define(&format!("__rest_reserved_{}", i));
+                self.define_local(&format!("__rest_reserved_{}", i));
             }
             common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
-            let rest_arr = self.scope_mut().define("__rest_arr");
+            let rest_arr = self.define_local("__rest_arr");
             self.emit_u16(Op::LOCAL_SET, rest_arr); self.emit(Op::DROP);
             let mut done_patches: Vec<usize> = Vec::new();
             for i in 0..max_rest {
@@ -118,7 +123,7 @@ impl Compiler {
         // while Pascal keeps it as `Result` (user-visible per Pascal idiom).
         let result_slot = if return_type.is_some() && self.profile.function_return == ReturnStyle::ResultSlot {
             let slot_name = self.profile.result_slot_name.clone();
-            let rs = self.scope_mut().define(&slot_name);
+            let rs = self.define_local(&slot_name);
             self.emit(Op::NULL); self.emit_u16(Op::LOCAL_SET, rs); self.emit(Op::DROP);
             Some(rs)
         } else {
@@ -137,7 +142,7 @@ impl Compiler {
 
         if let Some(rs) = result_slot {
             self.emit_u16(Op::LOCAL_GET, rs);
-            self.emit(Op::RETURN);
+            self.emit_return();
         } else {
             let line = self.line;
             common::functions::emit_function_epilogue(&mut self.chunks[func_idx], line);
@@ -148,6 +153,7 @@ impl Compiler {
         let uvs = self.scopes.last().unwrap().upvalues.clone();
         self.scopes.pop();
         self.current = saved;
+        self.function_label_base = saved_label_base;
 
         let line = self.line;
         common::functions::emit_ref_func(&mut self.chunks[self.current], func_idx, uvs.len() as u8, line);
@@ -304,8 +310,8 @@ impl Compiler {
             let saved = cc.current;
             cc.current = ci;
 
-            cc.scope_mut().define(&self_kw);
-            for p in &user_params { cc.scope_mut().define(&p.name); }
+            cc.define_local(&self_kw);
+            for p in &user_params { cc.define_local(&p.name); }
 
             if is_ctor {
                 for s in &m.body { cc.compile_stmt(s)?; }
@@ -315,7 +321,7 @@ impl Compiler {
                 }
             } else if m.return_type.is_some() && result_style == ReturnStyle::ResultSlot {
                 let slot_name = cc.profile.result_slot_name.clone();
-                let rs = cc.scope_mut().define(&slot_name);
+                let rs = cc.define_local(&slot_name);
                 cc.emit(Op::NULL); cc.emit_u16(Op::LOCAL_SET, rs); cc.emit(Op::DROP);
                 let saved_fn = cc.current_func_name.take();
                 let saved_rs = cc.current_result_slot.take();
@@ -380,7 +386,7 @@ impl Compiler {
                 self.scopes.push(Scope::new_function());
                 let saved = self.current;
                 self.current = ci;
-                self.scope_mut().define(&self_kw);
+                self.define_local(&self_kw);
 
                 if getter.body.is_empty() {
                     // Auto-property getter: return backing field
@@ -392,7 +398,7 @@ impl Compiler {
                     }
                 } else {
                     let slot_name = self.profile.result_slot_name.clone();
-                    let rs = self.scope_mut().define(&slot_name);
+                    let rs = self.define_local(&slot_name);
                     self.emit(Op::NULL); self.emit_u16(Op::LOCAL_SET, rs); self.emit(Op::DROP);
                     let saved_fn = self.current_func_name.take();
                     let saved_rs = self.current_result_slot.take();
@@ -420,11 +426,11 @@ impl Compiler {
                 self.scopes.push(Scope::new_function());
                 let saved = self.current;
                 self.current = ci;
-                self.scope_mut().define(&self_kw);
+                self.define_local(&self_kw);
                 let value_param_name = setter.params.first()
                     .map(|p| p.name.clone())
                     .unwrap_or_else(|| "value".to_string());
-                self.scope_mut().define(&value_param_name);
+                self.define_local(&value_param_name);
 
                 if setter.body.is_empty() {
                     // Auto-property setter: set backing field
@@ -544,7 +550,7 @@ impl Compiler {
             params.iter().skip(skip).map(|p| p.default.clone()).collect()
         }).unwrap_or_default();
         for (i, p) in user_params.iter().enumerate() {
-            self.scope_mut().define(p);
+            self.define_local(p);
             if let Some(Some(default)) = ctor_param_defaults.get(i) {
                 let slot = self.scope().resolve(p).unwrap();
                 self.emit_u16(Op::LOCAL_GET, slot);
@@ -555,7 +561,7 @@ impl Compiler {
                 self.patch_jump(has_val);
             }
         }
-        self.scope_mut().define(&self_kw); // this_slot = user_arity
+        self.define_local(&self_kw); // this_slot = user_arity
         let this_slot = user_arity as u16;
 
         let is_child = parent.is_some();
@@ -895,7 +901,7 @@ impl Compiler {
         self.current_class_implicit_self = saved_implicit2;
 
         // Store constructor globally and register type
-        let ctor_local = self.scope_mut().define(&format!("__{}_ctor", name));
+        let ctor_local = self.define_local(&format!("__{}_ctor", name));
         common::classes::emit_store_constructor(self.chunk(), name, ctor_idx, ctor_local, line);
 
         // Initialize static fields on the constructor object

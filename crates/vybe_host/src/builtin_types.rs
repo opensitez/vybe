@@ -24,30 +24,38 @@ pub fn register_all(vm: &mut VM) {
     }
 
     // --- String ---
+    //
+    // VB/C#/.NET-style instance method names (Contains, IndexOf,
+    // Substring, etc.) bound directly to ECMA-262 §22.1
+    // String.prototype. Same import surface JS engines satisfy
+    // natively. Methods needing arg adaptation (.NET's `Insert`,
+    // `Remove`, `LastIndexOf` with different-shape args) are still
+    // bound to vybe:string for the legacy impl until language stdlib
+    // adapter chunks are written.
     let _string_id = {
         let mut t = TypeDef::new("String");
         for (method, module, fname) in &[
-            ("contains", "vybe:string", "includes"),
-            ("toupper", "vybe:string", "toUpperCase"),
-            ("tolower", "vybe:string", "toLowerCase"),
-            ("trim", "vybe:string", "trim"),
-            ("trimstart", "vybe:string", "trimStart"),
-            ("trimend", "vybe:string", "trimEnd"),
-            ("startswith", "vybe:string", "startsWith"),
-            ("endswith", "vybe:string", "endsWith"),
-            ("indexof", "vybe:string", "indexOf"),
-            ("lastindexof", "vybe:string", "indexOf"),
-            ("substring", "vybe:string", "substring"),
-            ("replace", "vybe:string", "replace"),
-            ("split", "vybe:string", "split"),
-            ("padleft", "vybe:string", "padStart"),
-            ("padright", "vybe:string", "padEnd"),
+            ("contains", "ecma:string", "includes"),
+            ("toupper", "ecma:string", "toUpperCase"),
+            ("tolower", "ecma:string", "toLowerCase"),
+            ("trim", "ecma:string", "trim"),
+            ("trimstart", "ecma:string", "trimStart"),
+            ("trimend", "ecma:string", "trimEnd"),
+            ("startswith", "ecma:string", "startsWith"),
+            ("endswith", "ecma:string", "endsWith"),
+            ("indexof", "ecma:string", "indexOf"),
+            ("lastindexof", "ecma:string", "lastIndexOf"),
+            ("substring", "ecma:string", "substring"),
+            ("replace", "ecma:string", "replace"),
+            ("split", "ecma:string", "split"),
+            ("padleft", "ecma:string", "padStart"),
+            ("padright", "ecma:string", "padEnd"),
             ("tostring", "vybe:convert", "toString"),
-            ("toupperinvariant", "vybe:string", "toUpperCase"),
-            ("tolowerinvariant", "vybe:string", "toLowerCase"),
-            ("chars", "vybe:string", "charAt"),
+            ("toupperinvariant", "ecma:string", "toUpperCase"),
+            ("tolowerinvariant", "ecma:string", "toLowerCase"),
+            ("chars", "ecma:string", "charAt"),
             ("insert", "vybe:string", "mid"),
-            ("remove", "vybe:string", "slice"),
+            ("remove", "ecma:string", "slice"),
         ] {
             if let Some(idx) = h(vm, module, fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -468,19 +476,26 @@ pub fn register_all(vm: &mut VM) {
     }
 
     // --- Map (JS collection) ---
+    //
+    // Bound directly to `ecma:map.*` — same imports JS engines satisfy
+    // natively, no Vybe-private shape required. Backing store is
+    // `ObjectKind::Map(IndexMap<Value,Value>)` (SameValueZero keys per
+    // ECMA-262 §24.1).
     {
         let mut t = TypeDef::new("Map");
         for (method, fname) in &[
-            ("set", "mapSet"), ("get", "mapGet"), ("has", "mapHas"),
-            ("delete", "mapDelete"), ("keys", "mapKeys"), ("values", "mapValues"),
-            ("clear", "mapClear"),
+            ("set", "set"), ("get", "get"), ("has", "has"),
+            ("delete", "delete"), ("keys", "keys"), ("values", "values"),
+            ("clear", "clear"), ("entries", "entries"), ("forEach", "forEach"),
         ] {
-            if let Some(idx) = h(vm, "vybe:collections", fname) {
+            if let Some(idx) = h(vm, "ecma:map", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }
-        // size/count via listCount
-        if let Some(idx) = h(vm, "vybe:types", "listCount") {
+        // `size` is a property updated by every mutator, but expose the
+        // method form too for VB-style `.Count` callers and JS code that
+        // does `m.size()` even though spec says it's a getter.
+        if let Some(idx) = h(vm, "ecma:map", "size") {
             t.methods.insert("size".to_string(), Method::HostFn(idx));
             t.methods.insert("count".to_string(), Method::HostFn(idx));
         }
@@ -489,17 +504,21 @@ pub fn register_all(vm: &mut VM) {
     }
 
     // --- Set (JS collection) ---
+    //
+    // Bound to `ecma:set.*`. Backing store is
+    // `ObjectKind::Set(IndexSet<Value>)`.
     {
         let mut t = TypeDef::new("Set");
         for (method, fname) in &[
-            ("add", "setAdd"), ("has", "setHas"), ("delete", "setDelete"),
-            ("values", "setValues"), ("clear", "setClear"),
+            ("add", "add"), ("has", "has"), ("delete", "delete"),
+            ("values", "values"), ("keys", "values"), ("clear", "clear"),
+            ("entries", "entries"), ("forEach", "forEach"),
         ] {
-            if let Some(idx) = h(vm, "vybe:collections", fname) {
+            if let Some(idx) = h(vm, "ecma:set", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }
-        if let Some(idx) = h(vm, "vybe:types", "listCount") {
+        if let Some(idx) = h(vm, "ecma:set", "size") {
             t.methods.insert("size".to_string(), Method::HostFn(idx));
             t.methods.insert("count".to_string(), Method::HostFn(idx));
         }
@@ -507,14 +526,17 @@ pub fn register_all(vm: &mut VM) {
         vm.type_registry.register(t);
     }
 
-    // --- WeakMap (JS collection, shares Map storage semantics) ---
+    // --- WeakMap (JS collection) ---
+    //
+    // Bound to `ecma:weakmap.*` — share-nothing with Map (different
+    // backing shape: parallel keys/values arrays per ES spec
+    // garbage-collection model).
     {
         let mut t = TypeDef::new("WeakMap");
         for (method, fname) in &[
-            ("set", "mapSet"), ("get", "mapGet"), ("has", "mapHas"),
-            ("delete", "mapDelete"),
+            ("set", "set"), ("get", "get"), ("has", "has"), ("delete", "delete"),
         ] {
-            if let Some(idx) = h(vm, "vybe:collections", fname) {
+            if let Some(idx) = h(vm, "ecma:weakmap", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }
@@ -522,13 +544,166 @@ pub fn register_all(vm: &mut VM) {
         vm.type_registry.register(t);
     }
 
-    // --- WeakSet (JS collection, shares Set storage semantics) ---
+    // --- WeakSet (JS collection) ---
     {
         let mut t = TypeDef::new("WeakSet");
         for (method, fname) in &[
-            ("add", "setAdd"), ("has", "setHas"), ("delete", "setDelete"),
+            ("add", "add"), ("has", "has"), ("delete", "delete"),
         ] {
-            if let Some(idx) = h(vm, "vybe:collections", fname) {
+            if let Some(idx) = h(vm, "ecma:weakset", fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+
+    // --- RegExp (ECMA-262 §22.2) ---
+    //
+    // Bound to `ecma:regexp.*`. Backing object is a plain Object with
+    // `source`/`flags`/etc. as own properties — re-compiled at every
+    // call (regex crate's `Regex::new` is cheap for small patterns;
+    // caching can come later).
+    {
+        let mut t = TypeDef::new("RegExp");
+        for (method, fname) in &[
+            ("test", "test"), ("exec", "exec"), ("toString", "toString"),
+        ] {
+            if let Some(idx) = h(vm, "ecma:regexp", fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+
+    // --- Intl.* (ECMA-402) ---
+    //
+    // Each Intl class is bound to its `ecma:intl/<class>` host module.
+    // Constructors (via the namespace registry at `namespaces/intl.rs`)
+    // stamp `__type` matching the class name so this registry resolves
+    // `instance.method(...)` to the correct host fn.
+    {
+        let mut t = TypeDef::new("Collator");
+        for (method, fname) in &[
+            ("compare", "compare"), ("resolvedOptions", "resolvedOptions"),
+        ] {
+            if let Some(idx) = h(vm, "ecma:intl/collator", fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+    {
+        let mut t = TypeDef::new("NumberFormat");
+        for (method, fname) in &[
+            ("format", "format"), ("formatToParts", "formatToParts"),
+            ("resolvedOptions", "resolvedOptions"),
+        ] {
+            if let Some(idx) = h(vm, "ecma:intl/numberformat", fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+    {
+        let mut t = TypeDef::new("DateTimeFormat");
+        for (method, fname) in &[
+            ("format", "format"), ("formatToParts", "formatToParts"),
+            ("resolvedOptions", "resolvedOptions"),
+        ] {
+            if let Some(idx) = h(vm, "ecma:intl/datetimeformat", fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+    {
+        let mut t = TypeDef::new("ListFormat");
+        for (method, fname) in &[
+            ("format", "format"), ("formatToParts", "formatToParts"),
+            ("resolvedOptions", "resolvedOptions"),
+        ] {
+            if let Some(idx) = h(vm, "ecma:intl/listformat", fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+    {
+        let mut t = TypeDef::new("PluralRules");
+        for (method, fname) in &[
+            ("select", "select"), ("selectRange", "selectRange"),
+            ("resolvedOptions", "resolvedOptions"),
+        ] {
+            if let Some(idx) = h(vm, "ecma:intl/pluralrules", fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+    {
+        let mut t = TypeDef::new("RelativeTimeFormat");
+        for (method, fname) in &[
+            ("format", "format"), ("formatToParts", "formatToParts"),
+            ("resolvedOptions", "resolvedOptions"),
+        ] {
+            if let Some(idx) = h(vm, "ecma:intl/relativetimeformat", fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+    {
+        let mut t = TypeDef::new("Segmenter");
+        for (method, fname) in &[
+            ("segment", "segment"), ("resolvedOptions", "resolvedOptions"),
+        ] {
+            if let Some(idx) = h(vm, "ecma:intl/segmenter", fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+    {
+        let mut t = TypeDef::new("Locale");
+        for (method, fname) in &[
+            ("toString", "toString"), ("maximize", "maximize"),
+            ("minimize", "minimize"),
+        ] {
+            if let Some(idx) = h(vm, "ecma:intl/locale", fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+    {
+        let mut t = TypeDef::new("DisplayNames");
+        for (method, fname) in &[
+            ("of", "of"), ("resolvedOptions", "resolvedOptions"),
+        ] {
+            if let Some(idx) = h(vm, "ecma:intl/displaynames", fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+    {
+        let mut t = TypeDef::new("DurationFormat");
+        for (method, fname) in &[
+            ("format", "format"), ("formatToParts", "formatToParts"),
+            ("resolvedOptions", "resolvedOptions"),
+        ] {
+            if let Some(idx) = h(vm, "ecma:intl/durationformat", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }
@@ -682,12 +857,88 @@ pub fn register_all(vm: &mut VM) {
     // ============================================================
     // Export __tid_<name> globals for all registered types.
     // This allows compilers to emit set_type_id at construction sites.
+    // ── New ECMA-262 + Web platform types ─────────────────────────
+    register_new_globals_types(vm);
+
     // ============================================================
     for typedef in &vm.type_registry.types {
         let key = format!("__tid_{}", typedef.name.to_lowercase());
         if let Some(tid) = vm.type_registry.get_id(&typedef.name) {
             vm.globals.insert(key, Value::I32(tid as i32));
         }
+    }
+}
+
+fn register_new_globals_types(vm: &mut VM) {
+    let h = |vm: &VM, module: &str, name: &str| -> Option<usize> {
+        vm.host_registry.get(&(module.to_string(), name.to_string())).copied()
+    };
+
+    // ── Iterator (Stage-3) ─────────────────────────────────────────
+    {
+        let mut t = TypeDef::new("Iterator");
+        for (method, fname) in &[
+            ("take", "take"), ("drop", "drop"), ("map", "map"), ("filter", "filter"),
+            ("reduce", "reduce"), ("forEach", "forEach"), ("some", "some"),
+            ("every", "every"), ("find", "find"), ("toArray", "toArray"),
+            ("flatMap", "flatMap"),
+        ] {
+            if let Some(idx) = h(vm, "ecma:iterator", fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+
+    // ── TextEncoder ────────────────────────────────────────────────
+    {
+        let mut t = TypeDef::new("TextEncoder");
+        for (method, fname) in &[("encode", "encode"), ("encodeInto", "encodeInto")] {
+            if let Some(idx) = h(vm, "web:encoding", fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+
+    // ── TextDecoder ────────────────────────────────────────────────
+    {
+        let mut t = TypeDef::new("TextDecoder");
+        if let Some(idx) = h(vm, "web:encoding", "decode") {
+            t.methods.insert("decode".to_string(), Method::HostFn(idx));
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+
+    // ── URLSearchParams ────────────────────────────────────────────
+    {
+        let mut t = TypeDef::new("URLSearchParams");
+        for (method, fname) in &[
+            ("get", "searchParamsGet"),
+            ("has", "searchParamsHas"),
+            ("toString", "searchParamsToString"),
+        ] {
+            if let Some(idx) = h(vm, "web:url", fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+
+    // ── Response (fetch result) ────────────────────────────────────
+    {
+        let mut t = TypeDef::new("Response");
+        for (method, fname) in &[("text", "responseText"), ("json", "responseJson")] {
+            if let Some(idx) = h(vm, "web:fetch", fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
     }
 }
 

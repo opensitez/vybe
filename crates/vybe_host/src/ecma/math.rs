@@ -63,7 +63,56 @@ pub fn register(vm: &mut VM) {
         Value::F64((t as f64 % 1_000_000.0) / 1_000_000.0)
     }));
     vm.register_host_fn("ecma:math", "randomize", Box::new(|_ctx, _a| Value::Null));
+
+    // ── Stage-3 Math iterator accumulators ──────────────────────────
+    //
+    // Math.{minOf, maxOf, sumPrecise} accept iterables/arrays directly,
+    // letting `min(arr)` / `max(arr)` / `sum(arr)` from Python/Ruby
+    // compile to a single host call instead of needing apply/spread.
+    //
+    // sumPrecise uses the Neumaier-Kahan summation algorithm per the
+    // proposal — preserves precision for large sums.
+
+    vm.register_host_fn("ecma:math", "minOf", Box::new(|_ctx, args| {
+        let nums = collect_nums(args);
+        Value::F64(nums.iter().cloned().fold(f64::INFINITY, f64::min))
+    }));
+    vm.register_host_fn("ecma:math", "maxOf", Box::new(|_ctx, args| {
+        let nums = collect_nums(args);
+        Value::F64(nums.iter().cloned().fold(f64::NEG_INFINITY, f64::max))
+    }));
+    vm.register_host_fn("ecma:math", "sumPrecise", Box::new(|_ctx, args| {
+        let nums = collect_nums(args);
+        // Neumaier compensated summation.
+        let mut sum = 0.0_f64;
+        let mut c = 0.0_f64;
+        for x in nums {
+            let t = sum + x;
+            if sum.abs() >= x.abs() {
+                c += (sum - t) + x;
+            } else {
+                c += (x - t) + sum;
+            }
+            sum = t;
+        }
+        Value::F64(sum + c)
+    }));
 }
+
+// Coerce host-fn args into a flat Vec<f64>: accepts a single Array
+// argument (the Iterable case from the proposal) or N scalar args.
+fn collect_nums(args: &[Value]) -> Vec<f64> {
+    if args.len() == 1 {
+        if let Some(Value::Object(arr)) = args.first() {
+            let o = arr.lock().unwrap();
+            if let vybe_bytecode::value::ObjectKind::Array(ref v) = o.kind {
+                return v.iter().map(|e| e.as_f64()).collect();
+            }
+        }
+    }
+    args.iter().map(|v| v.as_f64()).collect()
+}
+
 
 fn f(args: &[Value], idx: usize) -> f64 {
     args.get(idx).map(|v| v.as_f64()).unwrap_or(0.0)

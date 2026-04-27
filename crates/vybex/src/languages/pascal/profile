@@ -64,7 +64,7 @@ arctan        = { emit = "host:ecma:math:atan",            min_args = 1, max_arg
 exp           = { emit = "host:ecma:math:exp",             min_args = 1, max_args = 1 }
 ln            = { emit = "host:ecma:math:log",             min_args = 1, max_args = 1 }
 power         = { emit = "host:ecma:math:pow",             min_args = 2, max_args = 2 }
-random        = { emit = "host:vybe:random:random",        min_args = 0, max_args = 0 }
+random        = { emit = "host:ecma:math:random",          min_args = 0, max_args = 0 }
 randomize     = { emit = "noop",                           min_args = 0, max_args = 0 }
 
 # ── Math — intrinsics (multi-opcode) ────────────────────────────────────────
@@ -89,15 +89,15 @@ copy          = { emit = "intrinsic:copy",                 min_args = 2, max_arg
 # ── String functions — host calls ───────────────────────────────────────────
 
 concat        = { emit = "intrinsic:str_concat",            min_args = 1, max_args = 255 }
-chr           = { emit = "host:vybe:string:chr",           min_args = 1, max_args = 1 }
-ord           = { emit = "host:vybe:string:charCodeAt",    min_args = 1, max_args = 1 }
+chr           = { emit = "host:ecma:string:fromCharCode",  min_args = 1, max_args = 1 }
+ord           = { emit = "host:ecma:string:charCodeAt",    min_args = 1, max_args = 1 }
 format        = { emit = "host:vybe:string:format",        min_args = 1, max_args = 255 }
 stringreplace = { emit = "common:strings.replace",         min_args = 3, max_args = 4 }
 stringofchar  = { emit = "opcode:str_repeat",              min_args = 2, max_args = 2 }
 leftstr       = { emit = "intrinsic:leftstr",              min_args = 2, max_args = 2 }
 rightstr      = { emit = "intrinsic:rightstr",             min_args = 2, max_args = 2 }
-comparestr    = { emit = "host:vybe:string:compare",       min_args = 2, max_args = 2 }
-comparetext   = { emit = "host:vybe:string:compare",       min_args = 2, max_args = 2 }
+comparestr    = { emit = "host:ecma:string:localeCompare",       min_args = 2, max_args = 2 }
+comparetext   = { emit = "host:ecma:string:localeCompare",       min_args = 2, max_args = 2 }
 delete        = { emit = "host:vybe:string:deleteStr",     min_args = 3, max_args = 3 }
 insert        = { emit = "host:vybe:string:insertStr",     min_args = 3, max_args = 3 }
 
@@ -105,9 +105,9 @@ insert        = { emit = "host:vybe:string:insertStr",     min_args = 3, max_arg
 
 inttostr      = { emit = "stdlib:tostring",     min_args = 1, max_args = 1 }
 floattostr    = { emit = "stdlib:tostring",     min_args = 1, max_args = 1 }
-strtoint      = { emit = "host:vybe:convert:parseInt",     min_args = 1, max_args = 1 }
-strtointdef   = { emit = "host:vybe:convert:parseInt",     min_args = 1, max_args = 2 }
-strtofloat    = { emit = "host:vybe:convert:parseFloat",   min_args = 1, max_args = 1 }
+strtoint      = { emit = "host:ecma:number:parseInt",     min_args = 1, max_args = 1 }
+strtointdef   = { emit = "host:ecma:number:parseInt",     min_args = 1, max_args = 2 }
+strtofloat    = { emit = "host:ecma:number:parseFloat",   min_args = 1, max_args = 1 }
 booltostr     = { emit = "stdlib:tostring",     min_args = 1, max_args = 1 }
 strtobool     = { emit = "opcode:dyn_to_bool",             min_args = 1, max_args = 1 }
 

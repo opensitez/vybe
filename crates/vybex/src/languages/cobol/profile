@@ -29,7 +29,7 @@ TRIM                = { emit = "opcode:str_trim",            min_args = 1, max_a
 REVERSE             = { emit = "common:collections.reverse",       min_args = 1, max_args = 1 }
 CONCATENATE         = { emit = "opcode:str_concat",          min_args = 2, max_args = 255 }
 SUBSTITUTE          = { emit = "opcode:str_replace",         min_args = 3, max_args = 3 }
-ORD                 = { emit = "host:vybe:string:charCodeAt", min_args = 1, max_args = 1 }
+ORD                 = { emit = "host:ecma:string:charCodeAt", min_args = 1, max_args = 1 }
 CHAR                = { emit = "opcode:str_from_char_code",  min_args = 1, max_args = 1 }
 
 # ── Math ─────────────────────────────────────────────────────────────────────
@@ -50,14 +50,14 @@ TAN                 = { emit = "host:ecma:math:tan",         min_args = 1, max_a
 ASIN                = { emit = "host:ecma:math:asin",        min_args = 1, max_args = 1 }
 ACOS                = { emit = "host:ecma:math:acos",        min_args = 1, max_args = 1 }
 ATAN                = { emit = "host:ecma:math:atan",        min_args = 1, max_args = 1 }
-RANDOM              = { emit = "host:vybe:random:random",    min_args = 0, max_args = 0 }
+RANDOM              = { emit = "host:ecma:math:random",      min_args = 0, max_args = 0 }
 
 # ── Numeric conversion ──────────────────────────────────────────────────────
 
-NUMVAL              = { emit = "host:vybe:convert:cdbl",     min_args = 1, max_args = 1 }
-NUMVAL-C            = { emit = "host:vybe:convert:cdbl",     min_args = 1, max_args = 1 }
-INTEGER             = { emit = "host:vybe:convert:cint",     min_args = 1, max_args = 1 }
-TEST-NUMVAL         = { emit = "host:vybe:convert:isNaN",    min_args = 1, max_args = 1 }
+NUMVAL              = { emit = "host:ecma:number:Number",     min_args = 1, max_args = 1 }
+NUMVAL-C            = { emit = "host:ecma:number:Number",     min_args = 1, max_args = 1 }
+INTEGER             = { emit = "intrinsic:cint",     min_args = 1, max_args = 1 }
+TEST-NUMVAL         = { emit = "host:ecma:number:isNaN",    min_args = 1, max_args = 1 }
 
 # ── Aggregate ────────────────────────────────────────────────────────────────
 
@@ -85,7 +85,7 @@ PRESENT-VALUE       = { emit = "host:ecma:math:presentValue", min_args = 2, max_
 
 # ── Type checks (walker emits as calls, profile routes them) ────────────────
 
-__is_numeric        = { emit = "host:vybe:convert:isNaN",    min_args = 1, max_args = 1 }
+__is_numeric        = { emit = "host:ecma:number:isNaN",    min_args = 1, max_args = 1 }
 __is_alphabetic     = { emit = "noop",                        min_args = 1, max_args = 1 }
 __refmod            = { emit = "opcode:str_substring",       min_args = 3, max_args = 3 }
 

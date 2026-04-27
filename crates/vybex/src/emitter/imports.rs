@@ -5,65 +5,73 @@
 //! Many of these mappings are identical across languages:
 //!
 //! - Python `print()`, Ruby `puts`, PHP `echo`, Dart `print()` all map to `("wasi:cli", "log")`
-//! - Python `int()`, JS `parseInt()`, PHP `intval()`, Ruby `to_i` all map to `("vybe:convert", "cint")`
+//! - Python `int()`, JS `parseInt()`, PHP `intval()`, Ruby `to_i` all map to `("ecma:number", "Number")`
 //!
 //! This module provides `resolve_common_import` as a single source of truth.
 //! Language compilers can call it first, then fall back to language-specific
 //! overrides for names that don't have a common mapping.
 
-/// Resolve common cross-language function names to host module imports.
-/// Returns `(module, name)` if the function maps to a known host import,
-/// `None` if it's language-specific or should use a different mechanism.
+/// What a cross-language common name resolves to. Either a direct host
+/// import or a compiler intrinsic that emits a multi-opcode composition.
+///
+/// Intrinsics let us preserve language-specific semantics (`cint(3.7) = 3`,
+/// not 3.7) while still routing through a single resolution point. The
+/// underlying intrinsic arms in `Compiler::emit_intrinsic` build the
+/// composition out of ECMA primitives + WASM opcodes — no `vybe:*` host fn.
+pub enum CommonImport {
+    Host(&'static str, &'static str),
+    Intrinsic(&'static str),
+}
+
+/// Resolve common cross-language function names to either a host import
+/// or a compiler intrinsic. Returns `None` for language-specific names
+/// that the caller should resolve via its own profile.
 ///
 /// The lookup is case-insensitive to handle VB (WriteLn), PHP (ECHO), etc.
-pub fn resolve_common_import(name: &str) -> Option<(&'static str, &'static str)> {
+pub fn resolve_common_import(name: &str) -> Option<CommonImport> {
     match name.to_lowercase().as_str() {
         // ── I/O ──────────────────────────────────────────────────────────
-        // Python: print, Ruby: puts/print/p, PHP: echo/print, Dart: print,
-        // VB: Console.WriteLine, COBOL: DISPLAY
         "print" | "puts" | "echo" | "display" | "writeline" | "write"
-            => Some(("wasi:cli", "log")),
+            => Some(CommonImport::Host("wasi:cli", "log")),
 
-        // Python: input, Ruby: gets/readline, PHP: readline, JS: prompt
         "readline" | "input" | "gets" | "prompt"
-            => Some(("wasi:cli", "readLine")),
+            => Some(CommonImport::Host("wasi:cli", "readLine")),
 
         // ── Type conversion ──────────────────────────────────────────────
-        // JS: parseInt, Python: int, Ruby: to_i, PHP: intval, VB: CInt, Dart: int.parse
+        // Integer conversions: `Number(x)` then floor — preserves
+        // `cint(3.7) = 3` semantics every caller expects. Routed through
+        // `intrinsic:cint` so the floor + Number coercion is a single
+        // arm in the compiler.
         "parseint" | "cint" | "int" | "to_i" | "intval"
-            => Some(("vybe:convert", "cint")),
+            => Some(CommonImport::Intrinsic("cint")),
 
-        // JS: parseFloat, Python: float, Ruby: to_f, PHP: floatval, VB: CDbl
+        // Float conversion is `Number(x)` exactly — no truncation.
         "parsefloat" | "cdbl" | "float" | "to_f" | "floatval"
-            => Some(("vybe:convert", "cdbl")),
+            => Some(CommonImport::Host("ecma:number", "Number")),
 
-        // Python: str, Ruby: to_s, PHP: strval, VB: CStr
+        // String coercion — §22.1.1.1 ToString.
         "tostring" | "str" | "to_s" | "strval" | "cstr"
-            => Some(("vybe:convert", "toString")),
+            => Some(CommonImport::Host("ecma:string", "String")),
 
         // JS: isNaN, isFinite — same name across languages
-        "isnan"    => Some(("vybe:convert", "isNaN")),
-        "isfinite" => Some(("vybe:convert", "isFinite")),
+        "isnan"    => Some(CommonImport::Host("ecma:number", "isNaN")),
+        "isfinite" => Some(CommonImport::Host("ecma:number", "isFinite")),
 
         // ── Encoding ─────────────────────────────────────────────────────
-        // JS: btoa/atob, PHP: base64_encode/base64_decode, Ruby: Base64.encode64
-        "btoa" | "base64_encode" => Some(("vybe:convert", "btoa")),
-        "atob" | "base64_decode" => Some(("vybe:convert", "atob")),
+        "btoa" | "base64_encode" => Some(CommonImport::Host("ecma:string", "btoa")),
+        "atob" | "base64_decode" => Some(CommonImport::Host("ecma:string", "atob")),
 
-        // JS: encodeURIComponent, PHP: urlencode/rawurlencode
         "encodeuricomponent" | "urlencode" | "rawurlencode"
-            => Some(("vybe:convert", "encodeURIComponent")),
+            => Some(CommonImport::Host("ecma:string", "encodeURIComponent")),
         "decodeuricomponent" | "urldecode" | "rawurldecode"
-            => Some(("vybe:convert", "decodeURIComponent")),
+            => Some(CommonImport::Host("ecma:string", "decodeURIComponent")),
 
         // ── JSON ─────────────────────────────────────────────────────────
-        // JS: JSON.parse, PHP: json_decode, Python: json.loads, Ruby: JSON.parse
-        "json_decode" => Some(("vybe:json", "parse")),
-        "json_encode" => Some(("vybe:json", "stringify")),
+        "json_decode" => Some(CommonImport::Host("ecma:json", "parse")),
+        "json_encode" => Some(CommonImport::Host("ecma:json", "stringify")),
 
         // ── Environment ──────────────────────────────────────────────────
-        // PHP: getenv, Python: os.getenv, Ruby: ENV[]
-        "getenv" => Some(("wasi:cli", "getEnv")),
+        "getenv" => Some(CommonImport::Host("wasi:cli", "getEnv")),
 
         _ => None,
     }
@@ -73,32 +81,41 @@ pub fn resolve_common_import(name: &str) -> Option<(&'static str, &'static str)>
 mod tests {
     use super::*;
 
+    fn host(r: Option<CommonImport>) -> Option<(&'static str, &'static str)> {
+        match r { Some(CommonImport::Host(m, n)) => Some((m, n)), _ => None }
+    }
+    fn intrinsic(r: Option<CommonImport>) -> Option<&'static str> {
+        match r { Some(CommonImport::Intrinsic(n)) => Some(n), _ => None }
+    }
+
     #[test]
     fn common_print_variants() {
         for name in &["print", "puts", "echo", "DISPLAY", "WriteLine"] {
-            let result = resolve_common_import(name);
-            assert_eq!(result, Some(("wasi:cli", "log")), "failed for {}", name);
+            assert_eq!(host(resolve_common_import(name)), Some(("wasi:cli", "log")),
+                "failed for {}", name);
         }
     }
 
     #[test]
-    fn common_int_conversion() {
+    fn common_int_conversion_uses_intrinsic() {
+        // `cint`/`parseint`/`int`/`to_i`/`intval` must floor — using
+        // `Number(x)` directly (no floor) regresses VB `CInt(3.7) = 3`.
         for name in &["parseInt", "CInt", "int", "to_i", "intval"] {
-            let result = resolve_common_import(name);
-            assert_eq!(result, Some(("vybe:convert", "cint")), "failed for {}", name);
+            assert_eq!(intrinsic(resolve_common_import(name)), Some("cint"),
+                "failed for {}", name);
         }
     }
 
     #[test]
     fn unknown_returns_none() {
-        assert_eq!(resolve_common_import("my_custom_func"), None);
-        assert_eq!(resolve_common_import("setTimeout"), None);
+        assert!(resolve_common_import("my_custom_func").is_none());
+        assert!(resolve_common_import("setTimeout").is_none());
     }
 
     #[test]
     fn encoding_variants() {
-        assert_eq!(resolve_common_import("btoa"), Some(("vybe:convert", "btoa")));
-        assert_eq!(resolve_common_import("base64_encode"), Some(("vybe:convert", "btoa")));
-        assert_eq!(resolve_common_import("urlencode"), Some(("vybe:convert", "encodeURIComponent")));
+        assert_eq!(host(resolve_common_import("btoa")), Some(("ecma:string", "btoa")));
+        assert_eq!(host(resolve_common_import("base64_encode")), Some(("ecma:string", "btoa")));
+        assert_eq!(host(resolve_common_import("urlencode")), Some(("ecma:string", "encodeURIComponent")));
     }
 }

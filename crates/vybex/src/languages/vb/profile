@@ -65,12 +65,12 @@ uses_normalize_class = true
 
 # ── Type Conversions ─────────────────────────────────────────────────────────
 
-cstr    = { emit = "host:vybe:convert:toString",   min_args = 1, max_args = 1 }
+cstr    = { emit = "host:ecma:string:String",   min_args = 1, max_args = 1 }
 cint    = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
 cdbl    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
 cbool   = { emit = "opcode:dyn_to_bool",           min_args = 1, max_args = 1 }
-clng    = { emit = "host:vybe:convert:clng",       min_args = 1, max_args = 1 }
-csng    = { emit = "host:vybe:convert:csng",       min_args = 1, max_args = 1 }
+clng    = { emit = "intrinsic:clng",       min_args = 1, max_args = 1 }
+csng    = { emit = "host:ecma:number:Number",       min_args = 1, max_args = 1 }
 cbyte   = { emit = "intrinsic:cbyte",              min_args = 1, max_args = 1 }
 cchar   = { emit = "host:vybe:convert:cchar",      min_args = 1, max_args = 1 }
 cshort  = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
@@ -83,10 +83,10 @@ cdec    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
 cvar    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
 cobj    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
 val     = { emit = "host:vybe:convert:val",        min_args = 1, max_args = 1 }
-hex     = { emit = "host:vybe:convert:hex",        min_args = 1, max_args = 1 }
-"hex$"  = { emit = "host:vybe:convert:hex",        min_args = 1, max_args = 1 }
-oct     = { emit = "host:vybe:convert:oct",        min_args = 1, max_args = 1 }
-"oct$"  = { emit = "host:vybe:convert:oct",        min_args = 1, max_args = 1 }
+hex     = { emit = "intrinsic:hex",        min_args = 1, max_args = 1 }
+"hex$"  = { emit = "intrinsic:hex",        min_args = 1, max_args = 1 }
+oct     = { emit = "intrinsic:oct",        min_args = 1, max_args = 1 }
+"oct$"  = { emit = "intrinsic:oct",        min_args = 1, max_args = 1 }
 str     = { emit = "host:vybe:convert:str",        min_args = 1, max_args = 1 }
 "str$"  = { emit = "host:vybe:convert:str",        min_args = 1, max_args = 1 }
 iif     = { emit = "host:vybe:convert:iif",        min_args = 3, max_args = 3 }
@@ -210,8 +210,8 @@ split      = { emit = "intrinsic:split",           min_args = 1, max_args = 2 }
 join       = { emit = "intrinsic:join",            min_args = 1, max_args = 2 }
 left       = { emit = "intrinsic:left",            min_args = 2, max_args = 2 }
 "left$"    = { emit = "intrinsic:left",            min_args = 2, max_args = 2 }
-right      = { emit = "host:vybe:string:right",    min_args = 2, max_args = 2 }
-"right$"   = { emit = "host:vybe:string:right",    min_args = 2, max_args = 2 }
+right      = { emit = "intrinsic:right",           min_args = 2, max_args = 2 }
+"right$"   = { emit = "intrinsic:right",           min_args = 2, max_args = 2 }
 mid        = { emit = "intrinsic:mid",             min_args = 2, max_args = 3 }
 "mid$"     = { emit = "intrinsic:mid",             min_args = 2, max_args = 3 }
 space      = { emit = "intrinsic:space",           min_args = 1, max_args = 1 }
@@ -220,8 +220,8 @@ spc        = { emit = "intrinsic:space",           min_args = 1, max_args = 1 }
 strcomp    = { emit = "opcode:str_compare",        min_args = 2, max_args = 2 }
 format     = { emit = "host:vybe:string:format",   min_args = 1, max_args = 2 }
 "format$"  = { emit = "host:vybe:string:format",   min_args = 1, max_args = 2 }
-lset       = { emit = "host:vybe:string:lset",     min_args = 2, max_args = 2 }
-rset       = { emit = "host:vybe:string:rset",     min_args = 2, max_args = 2 }
+lset       = { emit = "host:ecma:string:padEnd",     min_args = 2, max_args = 2 }
+rset       = { emit = "host:ecma:string:padStart",     min_args = 2, max_args = 2 }
 filter     = { emit = "host:vybe:string:filter",   min_args = 2, max_args = 4 }
 "string.isnullorempty" = { emit = "intrinsic:string_isnullorempty", min_args = 1, max_args = 1 }
 
@@ -230,8 +230,8 @@ formatnumber   = { emit = "host:vybe:string:format",  min_args = 1, max_args = 2
 formatcurrency = { emit = "host:vybe:string:format",  min_args = 1, max_args = 2 }
 formatpercent  = { emit = "host:vybe:string:format",  min_args = 1, max_args = 2 }
 formatdatetime = { emit = "host:vybe:string:format",  min_args = 1, max_args = 2 }
-strconv        = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 2 }
-strdup         = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
+strconv        = { emit = "host:ecma:string:String", min_args = 1, max_args = 2 }
+strdup         = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
 
 # ── Array functions ──────────────────────────────────────────────────────────
 
@@ -258,16 +258,16 @@ dateadd      = { emit = "host:vybe:types:dateTimeAddDays",   min_args = 3, max_a
 datediff     = { emit = "host:wasi:clocks:vbDay",            min_args = 3, max_args = 3 }
 datepart     = { emit = "host:wasi:clocks:vbDay",            min_args = 2, max_args = 2 }
 dateserial   = { emit = "host:vybe:types:dateTimeNew",        min_args = 3, max_args = 3 }
-datevalue    = { emit = "host:vybe:types:dateTimeParse",      min_args = 1, max_args = 1 }
+datevalue    = { emit = "host:ecma:date:parse",      min_args = 1, max_args = 1 }
 timeserial   = { emit = "host:vybe:types:dateTimeNew",        min_args = 3, max_args = 3 }
-timevalue    = { emit = "host:vybe:types:dateTimeParse",      min_args = 1, max_args = 1 }
-cdate        = { emit = "host:vybe:types:dateTimeParse",      min_args = 1, max_args = 1 }
-monthname    = { emit = "host:vybe:convert:toString",         min_args = 1, max_args = 1 }
+timevalue    = { emit = "host:ecma:date:parse",      min_args = 1, max_args = 1 }
+cdate        = { emit = "host:ecma:date:parse",      min_args = 1, max_args = 1 }
+monthname    = { emit = "host:ecma:string:String",         min_args = 1, max_args = 1 }
 weekday      = { emit = "host:wasi:clocks:vbDay",             min_args = 1, max_args = 1 }
-weekdayname  = { emit = "host:vybe:convert:toString",         min_args = 1, max_args = 1 }
-"datetime.now"    = { emit = "host:vybe:types:dateTimeNow",   min_args = 0, max_args = 0 }
-"datetime.utcnow" = { emit = "host:vybe:types:dateTimeUtcNow", min_args = 0, max_args = 0 }
-"datetime.parse"  = { emit = "host:vybe:types:dateTimeParse", min_args = 1, max_args = 1 }
+weekdayname  = { emit = "host:ecma:string:String",         min_args = 1, max_args = 1 }
+"datetime.now"    = { emit = "host:ecma:date:now",   min_args = 0, max_args = 0 }
+"datetime.utcnow" = { emit = "host:ecma:date:now", min_args = 0, max_args = 0 }
+"datetime.parse"  = { emit = "host:ecma:date:parse", min_args = 1, max_args = 1 }
 
 # ── File I/O ─────────────────────────────────────────────────────────────────
 
@@ -308,13 +308,13 @@ lof          = { emit = "host:wasi:filesystem:fileSize",  min_args = 1, max_args
 chdir        = { emit = "host:wasi:cli:cwd",              min_args = 1, max_args = 1 }
 mkdir        = { emit = "host:wasi:filesystem:mkdir",     min_args = 1, max_args = 1 }
 rmdir        = { emit = "host:wasi:filesystem:remove",    min_args = 1, max_args = 1 }
-freefile     = { emit = "host:vybe:convert:cint",         min_args = 0, max_args = 0 }
+freefile     = { emit = "intrinsic:cint",         min_args = 0, max_args = 0 }
 "name"       = { emit = "host:wasi:filesystem:rename",    min_args = 2, max_args = 2 }
-loc          = { emit = "host:vybe:convert:cint",         min_args = 1, max_args = 1 }
-fileattr     = { emit = "host:vybe:convert:cint",         min_args = 1, max_args = 1 }
-getattr      = { emit = "host:vybe:convert:cint",         min_args = 1, max_args = 1 }
+loc          = { emit = "intrinsic:cint",         min_args = 1, max_args = 1 }
+fileattr     = { emit = "intrinsic:cint",         min_args = 1, max_args = 1 }
+getattr      = { emit = "intrinsic:cint",         min_args = 1, max_args = 1 }
 setattr      = { emit = "noop",                           min_args = 2, max_args = 2 }
-eof          = { emit = "host:vybe:convert:cbool",        min_args = 1, max_args = 1 }
+eof          = { emit = "host:ecma:boolean:Boolean",        min_args = 1, max_args = 1 }
 seek         = { emit = "noop",                           min_args = 2, max_args = 2 }
 get          = { emit = "host:wasi:filesystem:readFile",  min_args = 1, max_args = 3 }
 put          = { emit = "host:wasi:filesystem:writeFile", min_args = 1, max_args = 3 }
@@ -352,42 +352,46 @@ doevents     = { emit = "noop",                            min_args = 0, max_arg
 
 # ── Guid ─────────────────────────────────────────────────────────────────────
 
-"guid.newguid" = { emit = "host:vybe:types:guidNewGuid",   min_args = 0, max_args = 0 }
+"guid.newguid" = { emit = "host:web:crypto:randomUUID",   min_args = 0, max_args = 0 }
 
 # ── Convert (Base64) ─────────────────────────────────────────────────────────
 
-"convert.tobase64string"   = { emit = "host:vybe:convert:btoa",  min_args = 1, max_args = 1 }
-"convert.frombase64string" = { emit = "host:vybe:convert:atob",  min_args = 1, max_args = 1 }
-"convert.todatetime"       = { emit = "host:vybe:types:dateTimeParse", min_args = 1, max_args = 1 }
+"convert.tobase64string"   = { emit = "host:ecma:string:btoa",  min_args = 1, max_args = 1 }
+"convert.frombase64string" = { emit = "host:ecma:string:atob",  min_args = 1, max_args = 1 }
+"convert.todatetime"       = { emit = "host:ecma:date:parse", min_args = 1, max_args = 1 }
 
 # ── JSON / XML / Regex ───────────────────────────────────────────────────────
 
-"json.serialize"   = { emit = "host:vybe:json:stringify", min_args = 1, max_args = 1 }
-"json.deserialize" = { emit = "host:vybe:json:parse",    min_args = 1, max_args = 1 }
+"json.serialize"   = { emit = "host:ecma:json:stringify", min_args = 1, max_args = 1 }
+"json.deserialize" = { emit = "host:ecma:json:parse",    min_args = 1, max_args = 1 }
 "xml.parse"        = { emit = "host:vybe:xml:parse",     min_args = 1, max_args = 1 }
 "xdocument.parse"  = { emit = "host:vybe:xml:parse",     min_args = 1, max_args = 1 }
 "xml.load"         = { emit = "host:vybe:xml:load",      min_args = 1, max_args = 1 }
 "xdocument.load"   = { emit = "host:vybe:xml:load",      min_args = 1, max_args = 1 }
 "xml.save"         = { emit = "host:vybe:xml:toString",  min_args = 1, max_args = 1 }
 "xdocument.save"   = { emit = "host:vybe:xml:toString",  min_args = 1, max_args = 1 }
-"regex.ismatch"    = { emit = "host:vybe:regex:test",    min_args = 2, max_args = 2 }
-"regex.match"      = { emit = "host:vybe:regex:match",   min_args = 2, max_args = 2 }
-"regex.matches"    = { emit = "host:vybe:regex:match",   min_args = 2, max_args = 2 }
-"regex.replace"    = { emit = "host:vybe:regex:replace", min_args = 3, max_args = 3 }
-"regex.split"      = { emit = "host:vybe:regex:split",   min_args = 2, max_args = 2 }
+# VB Regex.* — .NET pattern-first convention; same arg shape as PHP/Python.
+# `Regex.IsMatch(pat, str)` and `Regex.Match(pat, str)` route to ECMA-262
+# RegExp directly (test/exec accept string-as-pattern as first arg).
+# Replace/Split go through the pat-first stdlib adapter chunks.
+"regex.ismatch"    = { emit = "host:ecma:regexp:test",            min_args = 2, max_args = 2 }
+"regex.match"      = { emit = "host:ecma:regexp:exec",            min_args = 2, max_args = 2 }
+"regex.matches"    = { emit = "stdlib:regex_match_all_pat_first", min_args = 2, max_args = 2 }
+"regex.replace"    = { emit = "stdlib:regex_replace_pat_first",   min_args = 3, max_args = 3 }
+"regex.split"      = { emit = "stdlib:regex_split_pat_first",     min_args = 2, max_args = 2 }
 
 # ── Encoding ─────────────────────────────────────────────────────────────────
 
-"encoding.ascii.getbytes"      = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
-"encoding.utf8.getbytes"       = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
-"encoding.unicode.getbytes"    = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
-"encoding.default.getbytes"    = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
-"encoding.ascii.getstring"     = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
-"encoding.utf8.getstring"      = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
-"encoding.unicode.getstring"   = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
-"encoding.default.getstring"   = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
-"encoding.getencoding"         = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
-"encoding.convert"             = { emit = "host:vybe:convert:toString", min_args = 3, max_args = 3 }
+"encoding.ascii.getbytes"      = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
+"encoding.utf8.getbytes"       = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
+"encoding.unicode.getbytes"    = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
+"encoding.default.getbytes"    = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
+"encoding.ascii.getstring"     = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
+"encoding.utf8.getstring"      = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
+"encoding.unicode.getstring"   = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
+"encoding.default.getstring"   = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
+"encoding.getencoding"         = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
+"encoding.convert"             = { emit = "host:ecma:string:String", min_args = 3, max_args = 3 }
 
 # ── StringBuilder ────────────────────────────────────────────────────────────
 
@@ -396,14 +400,14 @@ switch        = { emit = "host:vybe:convert:choose",         min_args = 2, max_a
 
 # ── Legacy VB6 ───────────────────────────────────────────────────────────────
 
-loadpicture  = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
+loadpicture  = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
 savepicture  = { emit = "noop",                        min_args = 1, max_args = 2 }
 load         = { emit = "noop",                        min_args = 1, max_args = 1 }
 unload       = { emit = "noop",                        min_args = 1, max_args = 1 }
 app          = { emit = "host:wasi:cli:args",          min_args = 0, max_args = 0 }
-screen       = { emit = "host:vybe:convert:cint",      min_args = 0, max_args = 0 }
-clipboard    = { emit = "host:vybe:convert:toString",  min_args = 0, max_args = 1 }
-forms        = { emit = "host:vybe:convert:toString",  min_args = 0, max_args = 0 }
+screen       = { emit = "intrinsic:cint",      min_args = 0, max_args = 0 }
+clipboard    = { emit = "host:ecma:string:String",  min_args = 0, max_args = 1 }
+forms        = { emit = "host:ecma:string:String",  min_args = 0, max_args = 0 }
 print        = { emit = "host:wasi:cli:log",           min_args = 0, max_args = 255 }
 write        = { emit = "host:dotnet:io:streamWriterWrite",    min_args = 1, max_args = 1 }
 writeline    = { emit = "host:dotnet:io:streamWriterWriteLine", min_args = 1, max_args = 1 }
@@ -482,7 +486,7 @@ startswith    = { emit = "opcode:str_starts_with",     min_args = 1, max_args = 
 endswith      = { emit = "opcode:str_ends_with",       min_args = 1, max_args = 1 }
 substring     = { emit = "common:strings.substring",   min_args = 1, max_args = 2 }
 indexof       = { emit = "common:strings.index_of",    min_args = 1, max_args = 1 }
-lastindexof   = { emit = "host:vybe:array:lastIndexOf",   min_args = 1, max_args = 1 }
+lastindexof   = { emit = "host:ecma:array:lastIndexOf",   min_args = 1, max_args = 1 }
 contains      = { emit = "opcode:str_includes",        min_args = 1, max_args = 1 }
 tostring      = { emit = "stdlib:tostring",            min_args = 0, max_args = 0 }
 padleft       = { emit = "opcode:str_pad_start",       min_args = 1, max_args = 2 }
@@ -497,11 +501,11 @@ add = [
 remove        = { emit = "stdlib:array_remove_value",  min_args = 1, max_args = 1 }
 removeat      = { emit = "stdlib:array_remove_at",     min_args = 1, max_args = 1 }
 insert        = { emit = "stdlib:array_insert",        min_args = 2, max_args = 2 }
-clear         = { emit = "host:vybe:array:clear",      min_args = 0, max_args = 0 }
+clear         = { emit = "host:ecma:array:clear",      min_args = 0, max_args = 0 }
 count         = { emit = "common:collections.length", min_args = 0, max_args = 0 }
 sort          = { emit = "stdlib:sort_in_place",       min_args = 0, max_args = 0 }
 reverse       = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
-toarray       = { emit = "host:vybe:array:clone",      min_args = 0, max_args = 0 }
+toarray       = { emit = "host:ecma:array:slice",      min_args = 0, max_args = 0 }
 containskey   = { emit = "common:dict.has",            min_args = 1, max_args = 1 }
 
 # WinForms methods — no-ops in our renderer
@@ -549,16 +553,16 @@ isrunning           = { emit = "noop",                               min_args = 
 # List/collection extra
 addrange       = { emit = "host:vybe:types:listAddRange",   min_args = 1, max_args = 1 }
 trygetvalue    = { emit = "host:vybe:types:dictTryGetValue", min_args = 1, max_args = 2 }
-containsvalue  = { emit = "host:vybe:array:includes",      min_args = 1, max_args = 1 }
+containsvalue  = { emit = "host:ecma:array:includes",      min_args = 1, max_args = 1 }
 
 # Queue methods
-enqueue        = { emit = "host:vybe:types:queueEnqueue",  min_args = 1, max_args = 1 }
-dequeue        = { emit = "host:vybe:types:queueDequeue",  min_args = 0, max_args = 0 }
+enqueue        = { emit = "host:ecma:array:push",  min_args = 1, max_args = 1 }
+dequeue        = { emit = "host:ecma:array:shift",  min_args = 0, max_args = 0 }
 peek           = { emit = "host:vybe:types:collectionPeek", min_args = 0, max_args = 0 }
 
 # Stack methods
-push           = { emit = "host:vybe:types:stackPush",     min_args = 1, max_args = 1 }
-pop            = { emit = "host:vybe:types:stackPop",      min_args = 0, max_args = 0 }
+push           = { emit = "host:ecma:array:push",     min_args = 1, max_args = 1 }
+pop            = { emit = "host:ecma:array:pop",      min_args = 0, max_args = 0 }
 
 # HashSet methods (add/remove/contains/count share keys with List — dispatch by arity is ambiguous)
 # HashSet.Add(val) = 1 arg, same as List.Add — both route to push/add; OK since collections are duck-typed

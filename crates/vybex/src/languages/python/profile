@@ -15,6 +15,10 @@ case_sensitive = true
 string_indexing = "zero_based"
 base_keyword = "super"
 dynamic_add = true
+# Python `arr[-1]` returns the last element. Compiler emits a
+# normalize-before-index sequence (`if i < 0: i = len + i`) when
+# this is set. JS/VB/C# leave it false — they return undefined.
+negative_index_wraps = true
 # Route `return a, b` / `a, b = f()` through WASM multi-value — a
 # uniform-tuple-return function gets chunk.result_arity = N set and
 # callers destructure straight off the stack instead of materialising
@@ -38,40 +42,40 @@ input           = { emit = "host:wasi:cli:readLine",        min_args = 0, max_ar
 
 # ── Type conversion ──────────────────────────────────────────────────────────
 
-int             = { emit = "host:vybe:convert:cint",        min_args = 1, max_args = 2 }
-float           = { emit = "host:vybe:convert:cdbl",        min_args = 1, max_args = 1 }
-str             = { emit = "host:vybe:convert:cstr",        min_args = 1, max_args = 1 }
+int             = { emit = "intrinsic:cint",        min_args = 1, max_args = 2 }
+float           = { emit = "host:ecma:number:Number",        min_args = 1, max_args = 1 }
+str             = { emit = "host:ecma:string:String",        min_args = 1, max_args = 1 }
 bool            = { emit = "opcode:dyn_to_bool",            min_args = 1, max_args = 1 }
 chr             = { emit = "opcode:str_from_char_code",     min_args = 1, max_args = 1 }
 ord             = { emit = "intrinsic:asc",                  min_args = 1, max_args = 1 }
 hex             = { emit = "host:vybe:convert:toHex",       min_args = 1, max_args = 1 }
 oct             = { emit = "host:vybe:convert:toOct",       min_args = 1, max_args = 1 }
 bin             = { emit = "host:vybe:convert:toBin",       min_args = 1, max_args = 1 }
-repr            = { emit = "host:vybe:convert:cstr",        min_args = 1, max_args = 1 }
+repr            = { emit = "host:ecma:string:String",        min_args = 1, max_args = 1 }
 bytes           = { emit = "host:vybe:convert:toBytes",     min_args = 0, max_args = 3 }
 
 # ── Collections ──────────────────────────────────────────────────────────────
 
 len             = { emit = "str_length",                    min_args = 1, max_args = 1 }
-range           = { emit = "host:vybe:array:range",         min_args = 1, max_args = 3 }
+range           = { emit = "stdlib:range",         min_args = 1, max_args = 3 }
 list            = { emit = "host:ecma:array:from",          min_args = 0, max_args = 1 }
 tuple           = { emit = "host:ecma:array:from",          min_args = 0, max_args = 1 }
-dict            = { emit = "host:vybe:object:create",       min_args = 0, max_args = 1 }
+dict            = { emit = "host:ecma:object:create",       min_args = 0, max_args = 1 }
 set             = { emit = "host:ecma:array:from",          min_args = 0, max_args = 1 }
 frozenset       = { emit = "host:ecma:array:from",          min_args = 0, max_args = 1 }
 sorted          = { emit = "host:ecma:array:toSorted",        min_args = 1, max_args = 3 }
 reversed        = { emit = "host:ecma:array:reversed",      min_args = 1, max_args = 1 }
-enumerate       = { emit = "host:vybe:array:enumerate",     min_args = 1, max_args = 2 }
-zip             = { emit = "host:vybe:array:zip",           min_args = 2, max_args = 255 }
-map             = { emit = "host:vybe:array:map",           min_args = 2, max_args = 255 }
-filter          = { emit = "host:vybe:array:filter",        min_args = 2, max_args = 2 }
-sum             = { emit = "host:vybe:array:sum",           min_args = 1, max_args = 2 }
-min             = { emit = "host:vybe:array:min",           min_args = 1, max_args = 255 }
-max             = { emit = "host:vybe:array:max",           min_args = 1, max_args = 255 }
-any             = { emit = "host:vybe:array:any",           min_args = 1, max_args = 1 }
-all             = { emit = "host:vybe:array:all",           min_args = 1, max_args = 1 }
+enumerate       = { emit = "stdlib:enumerate",              min_args = 1, max_args = 2 }
+zip             = { emit = "stdlib:zip",                    min_args = 2, max_args = 255 }
+map             = { emit = "stdlib:pymap",                  min_args = 2, max_args = 255 }
+filter          = { emit = "stdlib:pyfilter",               min_args = 2, max_args = 2 }
+sum             = { emit = "host:ecma:math:sumPrecise",           min_args = 1, max_args = 2 }
+min             = { emit = "host:ecma:math:minOf",           min_args = 1, max_args = 255 }
+max             = { emit = "host:ecma:math:maxOf",           min_args = 1, max_args = 255 }
+any             = { emit = "stdlib:pyany",                  min_args = 1, max_args = 1 }
+all             = { emit = "stdlib:pyall",                  min_args = 1, max_args = 1 }
 iter            = { emit = "noop",                          min_args = 1, max_args = 1 }
-next            = { emit = "host:vybe:array:next",          min_args = 1, max_args = 2 }
+next            = { emit = "stdlib:pynext",                 min_args = 1, max_args = 2 }
 
 # ── Math ─────────────────────────────────────────────────────────────────────
 
@@ -102,20 +106,20 @@ divmod          = { emit = "host:ecma:math:divmod",         min_args = 2, max_ar
 "math.gcd"      = { emit = "host:ecma:math:gcd",            min_args = 2, max_args = 2 }
 "math.lcm"      = { emit = "host:ecma:math:lcm",            min_args = 2, max_args = 2 }
 "math.factorial" = { emit = "host:ecma:math:factorial",     min_args = 1, max_args = 1 }
-"math.isnan"    = { emit = "host:vybe:convert:isNaN",       min_args = 1, max_args = 1 }
+"math.isnan"    = { emit = "host:ecma:number:isNaN",       min_args = 1, max_args = 1 }
 "math.isinf"    = { emit = "host:vybe:convert:isInfinite",  min_args = 1, max_args = 1 }
-"math.isfinite" = { emit = "host:vybe:convert:isFinite",    min_args = 1, max_args = 1 }
+"math.isfinite" = { emit = "host:ecma:number:isFinite",    min_args = 1, max_args = 1 }
 
 # ── Random module ────────────────────────────────────────────────────────────
 
-"random.random"    = { emit = "host:vybe:random:random",    min_args = 0, max_args = 0 }
+"random.random"    = { emit = "host:ecma:math:random",      min_args = 0, max_args = 0 }
 "random.randint"   = { emit = "host:ecma:math:randint",     min_args = 2, max_args = 2 }
-"random.choice"    = { emit = "host:vybe:array:choice",     min_args = 1, max_args = 1 }
-"random.shuffle"   = { emit = "host:vybe:array:shuffle",    min_args = 1, max_args = 1 }
+"random.choice"    = { emit = "stdlib:rand_choice",          min_args = 1, max_args = 1 }
+"random.shuffle"   = { emit = "stdlib:rand_shuffle",         min_args = 1, max_args = 1 }
 "random.uniform"   = { emit = "host:ecma:math:randUniform", min_args = 2, max_args = 2 }
 "random.seed"      = { emit = "noop",                       min_args = 0, max_args = 1 }
 "random.randrange" = { emit = "host:ecma:math:randint",     min_args = 1, max_args = 3 }
-"random.sample"    = { emit = "host:vybe:array:sample",     min_args = 2, max_args = 2 }
+"random.sample"    = { emit = "stdlib:rand_sample",          min_args = 2, max_args = 2 }
 
 # ── Type checking ────────────────────────────────────────────────────────────
 
@@ -123,14 +127,14 @@ type            = { emit = "host:vybe:convert:typeof",       min_args = 1, max_a
 isinstance      = { emit = "host:vybe:convert:instanceof",   min_args = 2, max_args = 2 }
 issubclass      = { emit = "host:vybe:convert:issubclass",   min_args = 2, max_args = 2 }
 callable        = { emit = "host:vybe:convert:isCallable",   min_args = 1, max_args = 1 }
-hasattr         = { emit = "host:vybe:object:hasOwn",        min_args = 2, max_args = 2 }
+hasattr         = { emit = "host:ecma:object:hasOwn",        min_args = 2, max_args = 2 }
 getattr         = { emit = "host:vybe:object:getattr",       min_args = 2, max_args = 3 }
 setattr         = { emit = "host:vybe:object:setattr",       min_args = 3, max_args = 3 }
 delattr         = { emit = "host:vybe:object:delattr",       min_args = 2, max_args = 2 }
 id              = { emit = "host:vybe:convert:id",            min_args = 1, max_args = 1 }
 hash            = { emit = "host:vybe:convert:hash",          min_args = 1, max_args = 1 }
-vars            = { emit = "host:vybe:object:keys",           min_args = 0, max_args = 1 }
-dir             = { emit = "host:vybe:object:keys",           min_args = 0, max_args = 1 }
+vars            = { emit = "host:ecma:object:keys",           min_args = 0, max_args = 1 }
+dir             = { emit = "host:ecma:object:keys",           min_args = 0, max_args = 1 }
 
 # ── String ───────────────────────────────────────────────────────────────────
 
@@ -165,16 +169,24 @@ open            = { emit = "host:wasi:filesystem:open",       min_args = 1, max_
 
 # ── json module ──────────────────────────────────────────────────────────────
 
-"json.dumps"     = { emit = "host:vybe:json:stringify",       min_args = 1, max_args = 3 }
-"json.loads"     = { emit = "host:vybe:json:parse",           min_args = 1, max_args = 1 }
+"json.dumps"     = { emit = "host:ecma:json:stringify",       min_args = 1, max_args = 3 }
+"json.loads"     = { emit = "host:ecma:json:parse",           min_args = 1, max_args = 1 }
 
 # ── re module ────────────────────────────────────────────────────────────────
 
-"re.search"      = { emit = "host:vybe:string:search",        min_args = 2, max_args = 3 }
-"re.match"       = { emit = "host:vybe:string:match",         min_args = 2, max_args = 3 }
-"re.findall"     = { emit = "host:vybe:string:findall",       min_args = 2, max_args = 3 }
-"re.sub"         = { emit = "host:vybe:string:replace",       min_args = 3, max_args = 4 }
-"re.split"       = { emit = "host:vybe:string:split",         min_args = 2, max_args = 3 }
+# Python `re.*` → ECMA-262 §22.2 RegExp. Python's pattern-first
+# convention matches `ecma:regexp.test/exec` directly. re.match's
+# start-anchoring is lost (exec is unanchored) — most callers use
+# re.search anyway.
+#
+# re.findall/re.sub/re.split route through stdlib adapter chunks that
+# reorder Python's pat-first args into ECMA's str-first order before
+# calling ecma:regexp.*.
+"re.search"      = { emit = "host:ecma:regexp:exec",             min_args = 2, max_args = 3 }
+"re.match"       = { emit = "host:ecma:regexp:exec",             min_args = 2, max_args = 3 }
+"re.findall"     = { emit = "stdlib:regex_match_all_pat_first",  min_args = 2, max_args = 3 }
+"re.sub"         = { emit = "stdlib:regex_replace_pat_first",    min_args = 3, max_args = 4 }
+"re.split"       = { emit = "stdlib:regex_split_pat_first",      min_args = 2, max_args = 3 }
 
 # ── time module ──────────────────────────────────────────────────────────────
 
@@ -209,35 +221,35 @@ find            = { emit = "common:strings.index_of",         min_args = 1, max_
 rfind           = { emit = "opcode:str_last_index_of",        min_args = 1, max_args = 3 }
 index           = { emit = "common:strings.index_of",         min_args = 1, max_args = 3 }
 rindex          = { emit = "opcode:str_last_index_of",        min_args = 1, max_args = 3 }
-count           = { emit = "host:vybe:string:count",          min_args = 1, max_args = 3 }
+count           = { emit = "intrinsic:count",          min_args = 1, max_args = 3 }
 startswith      = { emit = "opcode:str_starts_with",          min_args = 1, max_args = 3 }
 endswith        = { emit = "opcode:str_ends_with",            min_args = 1, max_args = 3 }
-capitalize      = { emit = "host:vybe:string:capitalize",     min_args = 0, max_args = 0 }
-title           = { emit = "host:vybe:string:title",          min_args = 0, max_args = 0 }
-swapcase        = { emit = "host:vybe:string:swapcase",       min_args = 0, max_args = 0 }
-center          = { emit = "host:vybe:string:center",         min_args = 1, max_args = 2 }
+capitalize      = { emit = "intrinsic:capitalize",     min_args = 0, max_args = 0 }
+title           = { emit = "host:ecma:string:title",          min_args = 0, max_args = 0 }
+swapcase        = { emit = "host:ecma:string:swapcase",       min_args = 0, max_args = 0 }
+center          = { emit = "intrinsic:center",         min_args = 1, max_args = 2 }
 ljust           = { emit = "opcode:str_pad_end",              min_args = 1, max_args = 2 }
 rjust           = { emit = "opcode:str_pad_start",            min_args = 1, max_args = 2 }
-zfill           = { emit = "host:vybe:string:zfill",          min_args = 1, max_args = 1 }
+zfill           = { emit = "intrinsic:zfill",          min_args = 1, max_args = 1 }
 encode          = { emit = "host:vybe:convert:toBytes",       min_args = 0, max_args = 1 }
-isdigit         = { emit = "host:vybe:string:isdigit",        min_args = 0, max_args = 0 }
-isalpha         = { emit = "host:vybe:string:isalpha",        min_args = 0, max_args = 0 }
-isalnum         = { emit = "host:vybe:string:isalnum",        min_args = 0, max_args = 0 }
-isspace         = { emit = "host:vybe:string:isspace",        min_args = 0, max_args = 0 }
-isupper         = { emit = "host:vybe:string:isupper",        min_args = 0, max_args = 0 }
-islower         = { emit = "host:vybe:string:islower",        min_args = 0, max_args = 0 }
+isdigit         = { emit = "host:ecma:string:isdigit",        min_args = 0, max_args = 0 }
+isalpha         = { emit = "host:ecma:string:isalpha",        min_args = 0, max_args = 0 }
+isalnum         = { emit = "host:ecma:string:isalnum",        min_args = 0, max_args = 0 }
+isspace         = { emit = "host:ecma:string:isspace",        min_args = 0, max_args = 0 }
+isupper         = { emit = "host:ecma:string:isupper",        min_args = 0, max_args = 0 }
+islower         = { emit = "host:ecma:string:islower",        min_args = 0, max_args = 0 }
 format_map      = { emit = "host:vybe:string:format_map",     min_args = 1, max_args = 1 }
 
 # List instance methods
 append          = { emit = "common:collections.push",         min_args = 1, max_args = 1 }
 extend          = { emit = "common:collections.concat",             min_args = 1, max_args = 1 }
-insert          = { emit = "host:vybe:array:insert",          min_args = 2, max_args = 2 }
-remove          = { emit = "host:vybe:array:remove",          min_args = 1, max_args = 1 }
+insert          = { emit = "host:ecma:array:insertAt",        min_args = 2, max_args = 2 }
+remove          = { emit = "host:ecma:array:removeValue",     min_args = 1, max_args = 1 }
 pop             = { emit = "common:collections.pop",          min_args = 0, max_args = 1 }
-clear           = { emit = "host:vybe:array:clear",           min_args = 0, max_args = 0 }
-sort            = { emit = "host:vybe:array:sort",            min_args = 0, max_args = 2 }
+clear           = { emit = "host:ecma:array:clear",           min_args = 0, max_args = 0 }
+sort            = { emit = "host:ecma:array:sort",            min_args = 0, max_args = 2 }
 reverse         = { emit = "common:collections.reverse",      min_args = 0, max_args = 0 }
-copy            = { emit = "host:vybe:array:copy",            min_args = 0, max_args = 0 }
+copy            = { emit = "host:ecma:array:slice",            min_args = 0, max_args = 0 }
 
 # Dict instance methods. Polymorphic iteration shares ecma:object.*
 # with PHP array_keys/values and JS Object.keys/values/entries —
@@ -246,18 +258,18 @@ keys            = { emit = "host:ecma:object:keys",        min_args = 0, max_arg
 values          = { emit = "host:ecma:object:values",      min_args = 0, max_args = 0 }
 items           = { emit = "host:ecma:object:entries",     min_args = 0, max_args = 0 }
 get             = { emit = "host:vybe:object:get",            min_args = 1, max_args = 2 }
-update          = { emit = "host:vybe:object:assign",         min_args = 1, max_args = 1 }
+update          = { emit = "host:ecma:object:assign",         min_args = 1, max_args = 1 }
 setdefault      = { emit = "host:vybe:object:setdefault",     min_args = 1, max_args = 2 }
 
 # Set instance methods
 add             = { emit = "common:collections.push",         min_args = 1, max_args = 1 }
-discard         = { emit = "host:vybe:array:remove",          min_args = 1, max_args = 1 }
-union           = { emit = "host:vybe:set:union",             min_args = 1, max_args = 255 }
-intersection    = { emit = "host:vybe:set:intersection",      min_args = 1, max_args = 255 }
-difference      = { emit = "host:vybe:set:difference",        min_args = 1, max_args = 255 }
-symmetric_difference = { emit = "host:vybe:set:symmetric_difference", min_args = 1, max_args = 1 }
-issubset        = { emit = "host:vybe:set:issubset",          min_args = 1, max_args = 1 }
-issuperset      = { emit = "host:vybe:set:issuperset",        min_args = 1, max_args = 1 }
+discard         = { emit = "host:ecma:array:removeValue",     min_args = 1, max_args = 1 }
+union           = { emit = "host:ecma:set:union",             min_args = 1, max_args = 255 }
+intersection    = { emit = "host:ecma:set:intersection",      min_args = 1, max_args = 255 }
+difference      = { emit = "host:ecma:set:difference",        min_args = 1, max_args = 255 }
+symmetric_difference = { emit = "host:ecma:set:symmetricDifference", min_args = 1, max_args = 1 }
+issubset        = { emit = "host:ecma:set:isSubsetOf",        min_args = 1, max_args = 1 }
+issuperset      = { emit = "host:ecma:set:isSupersetOf",      min_args = 1, max_args = 1 }
 
 # File object methods
 read            = { emit = "host:wasi:filesystem:readFile",   min_args = 0, max_args = 1 }
@@ -309,7 +321,7 @@ module = "wasi:cli"
 [[esm_default]]
 kind = "namespace"
 alias = "json"
-module = "vybe:json"
+module = "ecma:json"
 
 [[esm_default]]
 kind = "namespace"

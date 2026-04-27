@@ -29,15 +29,17 @@ pub mod fs;
 pub mod os;
 pub mod path;
 pub mod process;
+pub mod util;
 
 use vybe_bytecode::VM;
 
 /// Register the always-on Node modules (`os`, `path`, `process`,
-/// `crypto`). Capability-gated modules (`fs`, `child_process`) live
-/// behind the caller's capability check in [`crate::modules`].
+/// `crypto`, `util`). Capability-gated modules (`fs`, `child_process`)
+/// live behind the caller's capability check in [`crate::modules`].
 pub fn register_always_on(vm: &mut VM) {
     os::register(vm);
     path::register(vm);
     process::register(vm);
     crypto::register(vm);
+    util::register(vm);
 }

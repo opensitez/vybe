@@ -27,6 +27,17 @@ use super::helpers::{run_ruby, run_ruby_one, compile_ok};
 // ── Array methods (compile) ─────────────────────────────────────────────────
 
 #[test] fn arr_push()    { compile_ok("a = [1, 2]\na.push(3)\n"); }
+
+// Negative-index wrap (Ruby semantics).
+#[test] fn arr_negative_index() {
+    assert_eq!(run_ruby_one("a = [1, 2, 3]\nputs a[-1]\n"), "3");
+}
+#[test] fn arr_negative_index_mid() {
+    assert_eq!(run_ruby_one("a = [10, 20, 30, 40]\nputs a[-2]\n"), "30");
+}
+#[test] fn str_negative_index() {
+    assert_eq!(run_ruby_one("s = 'hello'\nputs s[-1]\n"), "o");
+}
 #[test] fn arr_pop()     { compile_ok("a = [1, 2, 3]\na.pop\n"); }
 #[test] fn arr_shift()   { compile_ok("a = [1, 2, 3]\na.shift\n"); }
 #[test] fn arr_unshift() { compile_ok("a = [1, 2, 3]\na.unshift(0)\n"); }
@@ -41,6 +52,49 @@ use super::helpers::{run_ruby, run_ruby_one, compile_ok};
 #[test] fn arr_sum()     { compile_ok("x = [1, 2, 3].sum\n"); }
 #[test] fn arr_count()   { compile_ok("x = [1, 2, 3].count\n"); }
 #[test] fn arr_empty()   { compile_ok("x = [].empty?\n"); }
+
+// ── Runtime tests for the Ruby polyfills (compact/uniq/minmax/empty?) ──
+#[test]
+fn arr_compact_runtime() {
+    assert_eq!(run_ruby_one("a = [1, nil, 2, nil, 3]\nputs a.compact.length\n"), "3");
+}
+#[test]
+fn arr_uniq_runtime() {
+    assert_eq!(run_ruby_one("a = [1, 2, 2, 3, 1, 3]\nputs a.uniq.length\n"), "3");
+}
+#[test]
+fn arr_minmax_runtime() {
+    let out = run_ruby("a = [3, 1, 2]\nputs a.minmax[0]\nputs a.minmax[1]\n");
+    assert_eq!(out, vec!["1", "3"]);
+}
+#[test]
+fn arr_empty_q_runtime_true() {
+    assert_eq!(run_ruby_one("x = [].empty?\nputs x\n"), "true");
+}
+#[test]
+fn arr_empty_q_runtime_false() {
+    assert_eq!(run_ruby_one("x = [1].empty?\nputs x\n"), "false");
+}
+
+#[test]
+fn arr_rotate_default_runtime() {
+    // [1,2,3,4,5].rotate => [2,3,4,5,1]
+    assert_eq!(run_ruby_one("a = [1,2,3,4,5]\nputs a.rotate[0]\n"), "2");
+}
+#[test]
+fn arr_rotate_n_runtime() {
+    // [1,2,3,4,5].rotate(2) => [3,4,5,1,2]
+    assert_eq!(run_ruby_one("a = [1,2,3,4,5]\nputs a.rotate(2)[0]\n"), "3");
+}
+#[test]
+fn arr_sample_single_elem() {
+    // sample on single-element array is deterministic
+    assert_eq!(run_ruby_one("a = [99]\nputs a.sample\n"), "99");
+}
+#[test]
+fn arr_shuffle_preserves_count() {
+    assert_eq!(run_ruby_one("a = [1,2,3,4,5]\na.shuffle\nputs a.length\n"), "5");
+}
 #[test] fn arr_join()    { compile_ok("x = [1, 2, 3].join(',')\n"); }
 #[test] fn arr_each()    { compile_ok("[1, 2, 3].each { |x| puts x }\n"); }
 #[test] fn arr_map()     { compile_ok("x = [1, 2, 3].map { |x| x * 2 }\n"); }

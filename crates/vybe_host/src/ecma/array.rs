@@ -73,6 +73,104 @@ pub fn register(vm: &mut VM) {
     register_mutators(vm);
     register_non_mutators(vm);
     register_iteration(vm);
+    register_adapters(vm);
+}
+
+// ── Adapter convenience methods ──────────────────────────────────
+//
+// Not in ECMA-262 but ubiquitous in language runtimes (.NET / Python /
+// Ruby list ops). Live here as one-line compositions of spec methods so
+// .NET/VB/Python emitter dispatch can map to a single host fn instead
+// of inlining the composition at every call site. Each method is
+// equivalent to the documented JS expression and would be optimised
+// out by an engine that JITs the dispatch through `at`/`splice`/etc.
+
+fn register_adapters(vm: &mut VM) {
+    // clear(arr) — `arr.length = 0`. Mutates in place.
+    vm.register_host_fn("ecma:array", "clear", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(arr) = array_of(args, 0) {
+            if !is_frozen(&arr) {
+                let mut o = arr.lock().unwrap();
+                if let ObjectKind::Array(ref mut v) = o.kind { v.clear(); }
+            }
+        }
+        Value::Undefined
+    }));
+
+    // first(arr) — `arr.at(0)`. Convenience for Queue.Peek.
+    vm.register_host_fn("ecma:array", "first", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(arr) = array_of(args, 0) {
+            let o = arr.lock().unwrap();
+            if let ObjectKind::Array(ref v) = o.kind {
+                return v.first().cloned().unwrap_or(Value::Undefined);
+            }
+        }
+        Value::Undefined
+    }));
+
+    // last(arr) — `arr.at(-1)`. Convenience for Stack.Peek.
+    vm.register_host_fn("ecma:array", "last", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(arr) = array_of(args, 0) {
+            let o = arr.lock().unwrap();
+            if let ObjectKind::Array(ref v) = o.kind {
+                return v.last().cloned().unwrap_or(Value::Undefined);
+            }
+        }
+        Value::Undefined
+    }));
+
+    // removeAt(arr, idx) — `arr.splice(idx, 1)`, returns removed value.
+    vm.register_host_fn("ecma:array", "removeAt", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let idx = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
+        if let Some(arr) = array_of(args, 0) {
+            if !is_frozen(&arr) {
+                let mut o = arr.lock().unwrap();
+                if let ObjectKind::Array(ref mut v) = o.kind {
+                    let len = v.len() as i32;
+                    let resolved = if idx < 0 { len + idx } else { idx };
+                    if resolved >= 0 && (resolved as usize) < v.len() {
+                        return v.remove(resolved as usize);
+                    }
+                }
+            }
+        }
+        Value::Undefined
+    }));
+
+    // insertAt(arr, idx, v) — `arr.splice(idx, 0, v)`. Mutates in place.
+    vm.register_host_fn("ecma:array", "insertAt", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let idx = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
+        let val = args.get(2).cloned().unwrap_or(Value::Undefined);
+        if let Some(arr) = array_of(args, 0) {
+            if !is_frozen(&arr) {
+                let mut o = arr.lock().unwrap();
+                if let ObjectKind::Array(ref mut v) = o.kind {
+                    let len = v.len() as i32;
+                    let resolved = if idx < 0 { (len + idx).max(0) } else { idx.min(len) };
+                    v.insert(resolved as usize, val);
+                }
+            }
+        }
+        Value::Undefined
+    }));
+
+    // removeValue(arr, v) — `arr.splice(arr.indexOf(v), 1)` if found.
+    // Returns true if removed, false otherwise (matches .NET List.Remove).
+    vm.register_host_fn("ecma:array", "removeValue", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let needle = args.get(1).cloned().unwrap_or(Value::Undefined);
+        if let Some(arr) = array_of(args, 0) {
+            if !is_frozen(&arr) {
+                let mut o = arr.lock().unwrap();
+                if let ObjectKind::Array(ref mut v) = o.kind {
+                    if let Some(pos) = v.iter().position(|e| e.eq(&needle)) {
+                        v.remove(pos);
+                        return Value::Bool(true);
+                    }
+                }
+            }
+        }
+        Value::Bool(false)
+    }));
 }
 
 // ── Constructors ──────────────────────────────────────────────────────

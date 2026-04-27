@@ -128,10 +128,12 @@ pub fn emit_for_in_start(chunks: &mut [Chunk], current: usize, arr_slot: u16, id
     let block_patch = chunks[current].emit_block(line);
     let (loop_patch, _) = chunks[current].emit_loop_s(line);
 
-    // while i < arr.length
+    // while i < arr.length — direct WASM array.length, not the polymorphic
+    // string-or-array dispatch (which composes flat byte-offset jumps
+    // inside this structured loop body).
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    crate::emitter::collections::emit_len(chunks, current, line);
+    crate::emitter::collections::emit_array_length(&mut chunks[current], line);
     chunks[current].emit_op(Op::DYN_LT, line);
     emit_loop_cond(chunks, current, line);
 
@@ -159,6 +161,9 @@ pub fn emit_for_in_end(chunks: &mut [Chunk], current: usize, idx_slot: u16, stat
     chunks[current].emit_op(Op::I32_CONST_1, line);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
+    // LOCAL_SET peeks (Vybe convention) — drop the residue so the
+    // stack height at loop top is invariant across iterations.
+    chunks[current].emit_op(Op::DROP, line);
 
     // br $loop (continue loop)
     chunks[current].emit_br(0, line);
@@ -278,10 +283,11 @@ pub fn emit_reduce(chunks: &mut [Chunk], current: usize, fn_slot: u16, arr_slot:
     // block { loop {
     let state = emit_loop_start(chunks, current, line);
 
-    // while i < arr.length
+    // while i < arr.length — direct WASM array.length, not the polymorphic
+    // dispatch.
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    crate::emitter::collections::emit_len(chunks, current, line);
+    crate::emitter::collections::emit_array_length(&mut chunks[current], line);
     chunks[current].emit_op(Op::DYN_LT, line);
     emit_loop_cond(chunks, current, line);
 

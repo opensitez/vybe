@@ -50,6 +50,12 @@ pub struct LanguageProfile {
     /// Whether array upper bounds are inclusive (VB: Dim arr(5) = 6 elements).
     pub array_upper_bound_inclusive: bool,
 
+    /// Negative array indices wrap from the end (Python `arr[-1]`,
+    /// Ruby, PHP, Dart `.last`-style). JS / VB / C# return undefined
+    /// for negative — keep this `false` for them; ECMA-262 §10.4.2.1
+    /// is the JS-conformant default.
+    pub negative_index_wraps: bool,
+
     /// Whether parens are used for both calls and indexing (VB: arr(i)).
     pub parens_for_index: bool,
 
@@ -364,6 +370,8 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
     };
     let array_upper_bound_inclusive = compiler.get("array_upper_bound_inclusive")
         .and_then(|v| v.as_bool()).unwrap_or(false);
+    let negative_index_wraps = compiler.get("negative_index_wraps")
+        .and_then(|v| v.as_bool()).unwrap_or(false);
     let parens_for_index = compiler.get("parens_for_index")
         .and_then(|v| v.as_bool()).unwrap_or(false);
     let entry_point = compiler.get("entry_point")
@@ -592,7 +600,7 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         function_return, result_slot_name,
         self_keyword, base_keyword, constructor_name,
         enum_as_ordinals, case_sensitive, string_indexing,
-        array_upper_bound_inclusive, parens_for_index, entry_point,
+        array_upper_bound_inclusive, negative_index_wraps, parens_for_index, entry_point,
         hoist_var, dynamic_add, commonjs_require,
         multi_value_tuple_returns, byref_boxing, with_block,
         new_with_initializer, new_from_initializer, linq_queries, switch_fallthrough,

@@ -210,7 +210,7 @@ fn safe_allows_string() {
 fn safe_allows_json() {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::safe());
-    let has_json = vm.host_registry.keys().any(|(m, _)| m == "vybe:json");
+    let has_json = vm.host_registry.keys().any(|(m, _)| m == "ecma:json");
     assert!(has_json, "Safe mode should have JSON");
 }
 

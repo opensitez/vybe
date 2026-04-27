@@ -19,7 +19,29 @@ fn new_set() -> Value {
     let mut obj = Object::new();
     obj.kind = ObjectKind::Set(indexmap::IndexSet::new());
     obj.properties.insert("size".into(), Value::I32(0));
+    // __type stamp: see comment on `ecma:map.new`. Without it the
+    // TypeRegistry-driven `STRUCT_GET s "add"` lookup misses.
+    obj.properties.insert("__type".into(), Value::String(Arc::from("Set")));
     Value::Object(Arc::new(Mutex::new(obj)))
+}
+
+fn new_set_from_iterable(args: &[Value]) -> Value {
+    let s = new_set();
+    if let (Value::Object(setobj), Some(Value::Object(src))) = (&s, args.first()) {
+        let srclock = src.lock().unwrap();
+        if let ObjectKind::Array(ref items) = srclock.kind {
+            let items = items.clone();
+            drop(srclock);
+            let mut so = setobj.lock().unwrap();
+            if let ObjectKind::Set(ref mut iset) = so.kind {
+                for item in items {
+                    iset.insert(item);
+                }
+            }
+            sync_set_size(&mut so);
+        }
+    }
+    s
 }
 
 fn is_set(args: &[Value], idx: usize) -> Option<Arc<Mutex<Object>>> {
@@ -41,8 +63,10 @@ fn sync_set_size(obj: &mut Object) {
 }
 
 pub fn register(vm: &mut VM) {
+    // `new Set(iterable?)` — per ECMA-262 §24.2.1.1 the constructor optionally
+    // takes an iterable whose elements become Set members.
     vm.register_host_fn("ecma:set", "new",
-        Box::new(|_ctx, _args| new_set()));
+        Box::new(|_ctx, args| new_set_from_iterable(args)));
 
     vm.register_host_fn("ecma:set", "fromIterable",
         Box::new(|_ctx, args| {
@@ -86,10 +110,10 @@ pub fn register(vm: &mut VM) {
                 let v = args.get(1).cloned().unwrap_or(Value::Undefined);
                 let so = setobj.lock().unwrap();
                 if let ObjectKind::Set(ref s) = so.kind {
-                    return Value::I32(if s.contains(&v) { 1 } else { 0 });
+                    return Value::Bool(s.contains(&v));
                 }
             }
-            Value::I32(0)
+            Value::Bool(false)
         }));
 
     vm.register_host_fn("ecma:set", "delete",
@@ -105,9 +129,9 @@ pub fn register(vm: &mut VM) {
                     false
                 };
                 sync_set_size(&mut so);
-                return Value::I32(if removed { 1 } else { 0 });
+                return Value::Bool(removed);
             }
-            Value::I32(0)
+            Value::Bool(false)
         }));
 
     vm.register_host_fn("ecma:set", "clear",

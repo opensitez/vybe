@@ -20,12 +20,26 @@
 // ── ECMA-262 spec types (one file per spec chapter) ──────────────────
 pub mod array;          // §23.1  Array
 pub mod arraybuffer;    // §25.1 ArrayBuffer + §25.3 DataView + SharedArrayBuffer
+pub mod atomics;        // §25.4  Atomics
+pub mod bigint;         // §21.2  BigInt
+pub mod boolean;        // §20.3  Boolean
 pub mod date;           // §21.4  Date
+pub mod error;          // §20.5  Error + native subclasses
+pub mod function;       // §20.2  Function.prototype.{bind,call,apply}
+pub mod global_this;    // §19.3  globalThis
+pub mod iterator;       // Stage-3  Iterator helpers
 pub mod json;           // §25.5  JSON
 pub mod map;            // §24.1  Map
-pub mod math;           // §21.3  Math
+pub mod math;           // §21.3  Math (+ Stage-3 minOf/maxOf/sumPrecise)
 pub mod object;         // §19.1  Object (keys/values/entries, etc.)
+pub mod intl;           // §ECMA-402  Internationalization API (sub-modules)
+pub mod number;         // §21.1  Number + global parseInt/parseFloat/etc.
+pub mod promise;        // §27.7  Promise
+pub mod reflect;        // §28.1  Reflect
+pub mod regexp;         // §22.2  RegExp + String.prototype regex methods
 pub mod set;            // §24.2  Set
+pub mod string;         // §22.1  String + String.prototype
+pub mod symbol;         // §20.4  Symbol + well-knowns
 pub mod typedarray;     // §23.2  TypedArray family
 pub mod weakmap;        // §24.3/§24.4  WeakMap + WeakSet (co-located)
 
@@ -43,11 +57,25 @@ use vybe_bytecode::VM;
 pub fn register(vm: &mut VM) {
     array::register(vm);
     arraybuffer::register(vm);
+    atomics::register(vm);
+    bigint::register(vm);
+    boolean::register(vm);
+    error::register(vm);
+    function::register(vm);
+    global_this::register(vm);
+    iterator::register(vm);
     json::register(vm);
     map::register(vm);
     math::register(vm);
+    intl::register(vm);
+    number::register(vm);
     object::register(vm);
+    promise::register(vm);
+    reflect::register(vm);
+    regexp::register(vm);
     set::register(vm);
+    string::register(vm);
+    symbol::register(vm);
     typedarray::register(vm);
     weakmap::register(vm);
     fixedarray::register(vm);

@@ -17,7 +17,7 @@ pub fn register(vm: &mut VM) {
     let sys = ensure_namespace(vm, &["System", "String"]);
     set_prop(&sys, "isnullorempty", host_fn_ref(vm, "vybe:string", "length"));
     set_prop(&sys, "format", host_fn_ref(vm, "vybe:string", "format"));
-    set_prop(&sys, "join", host_fn_ref(vm, "vybe:array", "join"));
+    set_prop(&sys, "join", host_fn_ref(vm, "ecma:array", "join"));
 
     // Encoding (System.Text.Encoding)
     let utf8 = ensure_namespace(vm, &["Encoding", "UTF8"]);
@@ -28,10 +28,16 @@ pub fn register(vm: &mut VM) {
     set_prop(&ascii, "getbytes", host_fn_ref(vm, "vybe:convert", "toString"));
     set_prop(&ascii, "getstring", host_fn_ref(vm, "vybe:convert", "toString"));
 
-    // System.Text.RegularExpressions.Regex
+    // System.Text.RegularExpressions.Regex — bound to ECMA-262 §22.2 RegExp.
+    // .NET callers typically pass `(input, pattern)` (input-first per the
+    // .NET shape), but `ecma:regexp.test/exec` accept `(pattern, input)` —
+    // the wrong order would yield a regex that matches the literal pattern
+    // string instead of the intended regex. Direct binding works for callers
+    // that have already adapted to pattern-first; compile-site adapter chunks
+    // handle the rest (see emitter/stdlib.rs::build_regex_*_pat_first).
     let regex = ensure_namespace(vm, &["System", "Text", "RegularExpressions", "Regex"]);
-    set_prop(&regex, "ismatch", host_fn_ref(vm, "vybe:regex", "test"));
-    set_prop(&regex, "match", host_fn_ref(vm, "vybe:regex", "match"));
-    set_prop(&regex, "replace", host_fn_ref(vm, "vybe:regex", "replace"));
-    set_prop(&regex, "split", host_fn_ref(vm, "vybe:regex", "split"));
+    set_prop(&regex, "ismatch", host_fn_ref(vm, "ecma:regexp", "test"));
+    set_prop(&regex, "match", host_fn_ref(vm, "ecma:regexp", "exec"));
+    set_prop(&regex, "replace", host_fn_ref(vm, "ecma:regexp", "replace"));
+    set_prop(&regex, "split", host_fn_ref(vm, "ecma:regexp", "split"));
 }

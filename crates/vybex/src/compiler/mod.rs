@@ -37,6 +37,11 @@ struct LoopCtx {
     /// Label stack depth at the LOOP (for continue).
     /// continue = current_label_depth - continue_label_depth
     continue_label_depth: u32,
+    /// Local slot tracking whether `break` fired in this loop.
+    /// Set to true at every `break` site; checked after the loop to
+    /// decide whether the Python/Ruby `else` clause runs.
+    /// `None` for loops without an `else` clause — no slot allocated.
+    did_break_slot: Option<u16>,
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -63,6 +68,12 @@ pub struct Compiler {
     /// Current label stack depth — incremented on every BLOCK/LOOP, decremented on END.
     /// Used to compute BR_LABEL depth for break/continue.
     label_depth: u32,
+    /// Label depth at the entry of the current function body. RETURN
+    /// must drain back to this — the VM's label_stack is global, and
+    /// leaving function-local BLOCKs on it pollutes the caller's
+    /// br_label depths (caller's `br 0` would land on a stale callee
+    /// BLOCK target). Saved/restored across nested function decls.
+    function_label_base: u32,
     line: u32,
     defined_globals: HashSet<String>,
     defined_functions: HashSet<String>,
@@ -175,6 +186,7 @@ impl Compiler {
             loops: Vec::new(),
             loop_states: Vec::new(),
             label_depth: 0,
+            function_label_base: 0,
             line: 1,
             defined_globals: HashSet::new(),
             defined_functions: HashSet::new(),
@@ -296,7 +308,15 @@ impl Compiler {
         // need the VM to reserve slots at call-frame entry.
         let locals = self.scope().next_slot.max(self.chunks[0].local_count);
         self.chunks[0].local_count = locals;
-        common::bundle::finalize_with_stdlib(&mut self.chunks);
+        // Skip stdlib bundling when compiling polyfill source. Polyfills
+        // ARE stdlib chunks (extracted via `emitter::stdlib::build_polyfill`)
+        // — re-running `finalize_with_stdlib` here would call back into
+        // `build_stdlib` → `build_polyfill` → `Compiler::compile` → here
+        // and recurse forever. Cheap thread-local guard since polyfill
+        // compilation is single-threaded at vybex build time.
+        if !crate::emitter::stdlib::is_compiling_polyfill() {
+            common::bundle::finalize_with_stdlib(&mut self.chunks);
+        }
         let host_imports = self.collected_host_imports();
         Ok(CompileResult {
             chunks: self.chunks,
@@ -466,7 +486,7 @@ impl Compiler {
             _ => unreachable!("compile_generator_for_in expects Call"),
         };
         self.compile_call(callee, args)?;
-        let cont_slot = self.scope_mut().define("__gen_cont");
+        let cont_slot = self.define_local("__gen_cont");
         self.emit_u16(Op::LOCAL_SET, cont_slot); self.emit(Op::DROP);
 
         let line = self.line;
@@ -484,7 +504,7 @@ impl Compiler {
         // br_if_label 1 → jump to $exit when has_more was 0.
         self.emit_u8(Op::BR_IF_LABEL, 1);
         // Pop the value into `var`.
-        let var_slot = self.scope_mut().define(var);
+        let var_slot = self.define_local(var);
         self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
 
         // Compile loop body inside a `$body` block so `continue` can
@@ -497,6 +517,7 @@ impl Compiler {
             label: self.pending_label.take(),
             break_label_depth: break_depth,
             continue_label_depth: continue_depth,
+            did_break_slot: None,
         });
         for s in body { self.compile_stmt(s)?; }
         self.loops.pop();
@@ -549,7 +570,7 @@ impl Compiler {
         // rebuilds the array from those slots in declaration order.
         let mut first = 0u16;
         for i in 0..n {
-            let s = self.scope_mut().define("__mv_pack");
+            let s = self.define_local("__mv_pack");
             if i == 0 { first = s; }
         }
         common::collections::emit_pack_n(&mut self.chunks, self.current, n as u16, first, line);
@@ -617,6 +638,91 @@ impl Compiler {
 
     fn scope(&self) -> &Scope { self.scopes.last().unwrap() }
     fn scope_mut(&mut self) -> &mut Scope { self.scopes.last_mut().unwrap() }
+
+    /// Define a local in the current scope AND sync the current chunk's
+    /// `local_count` to the new high-water mark.
+    ///
+    /// Why this exists: helpers in `emitter/` (`emit_invoke_method`,
+    /// `emit_get_range`, `emit_array_pair`, `emit_stdlib_call_*`) allocate
+    /// scratch slots starting at `chunk.local_count`. If `chunk.local_count`
+    /// isn't kept in sync with `scope.next_slot` during compilation, those
+    /// scratch slots overlap named locals (params, rest-collection slots,
+    /// user `let` bindings) and silently corrupt them.
+    ///
+    /// This is the historical root cause of the variadic-param-corruption
+    /// bug — see `tests/js/test_variadic_bug.rs`. Maintaining the
+    /// invariant `chunk.local_count >= scope.next_slot` at all times
+    /// makes every helper using `chunk.local_count` for scratch correct
+    /// by construction.
+    pub(crate) fn define_local(&mut self, name: &str) -> u16 {
+        let slot = self.scopes.last_mut().unwrap().define(name);
+        let high = self.scopes.last().unwrap().next_slot;
+        let cur = self.current;
+        if high > self.chunks[cur].local_count {
+            self.chunks[cur].local_count = high;
+        }
+        slot
+    }
+
+    /// Stack: [coll, idx] → [coll, idx_norm]. For languages where
+    /// negative array indices wrap from the end (Python `arr[-1]`,
+    /// Ruby, PHP). Maps return length 0 from `ARRAY_LENGTH` so this
+    /// is a no-op on dict-style collections (negative integer keys
+    /// stay negative). Strings return char count → `s[-1]` works.
+    pub(crate) fn emit_negative_index_wrap(&mut self) {
+        let line = self.line;
+        let arr_slot = self.define_local("__neg_idx_arr");
+        let idx_slot = self.define_local("__neg_idx_i");
+        // Stash [coll, idx] into locals (LOCAL_SET peeks; DROP pops).
+        self.emit_u16(Op::LOCAL_SET, idx_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
+        // if idx < 0: idx = arr.length + idx
+        self.emit_u16(Op::LOCAL_GET, idx_slot);
+        self.emit_const(Value::I32(0));
+        self.emit(Op::DYN_LT);
+        self.emit(Op::DYN_TO_BOOL);
+        self.emit(Op::DYN_NOT);
+        let block_p = self.chunk().emit_block(line);
+        self.label_depth += 1;
+        self.chunk().emit_br_if(0, line); // skip wrap if !(idx < 0)
+        self.emit_u16(Op::LOCAL_GET, arr_slot);
+        common::collections::emit_array_length(&mut self.chunks[self.current], line);
+        self.emit_u16(Op::LOCAL_GET, idx_slot);
+        self.emit(Op::DYN_ADD);
+        self.emit_u16(Op::LOCAL_SET, idx_slot); self.emit(Op::DROP);
+        self.chunk().emit_end(line);
+        self.chunk().patch_block(block_p);
+        self.label_depth -= 1;
+        // Re-push [arr, idx_norm] for the caller's emit_get.
+        self.emit_u16(Op::LOCAL_GET, arr_slot);
+        self.emit_u16(Op::LOCAL_GET, idx_slot);
+    }
+
+    /// Emit RETURN, draining any function-local BLOCK/LOOP labels first.
+    /// Without this, an early `return` inside an `if` (or any nested
+    /// block) leaves stale labels on the VM's global label_stack —
+    /// the caller's later `br_label N` then targets the callee's
+    /// orphaned BLOCK and jumps into garbage bytecode.
+    pub(crate) fn emit_return(&mut self) {
+        let line = self.line;
+        let drain = self.label_depth.saturating_sub(self.function_label_base);
+        for _ in 0..drain {
+            self.chunk().emit_end(line);
+        }
+        self.emit(Op::RETURN);
+    }
+
+    /// Same as `define_local` but with a type hint — sugar around
+    /// `Scope::define_typed`. Keeps the sync invariant.
+    pub(crate) fn define_local_typed(&mut self, name: &str, type_hint: Option<String>) -> u16 {
+        let slot = self.scopes.last_mut().unwrap().define_typed(name, type_hint);
+        let high = self.scopes.last().unwrap().next_slot;
+        let cur = self.current;
+        if high > self.chunks[cur].local_count {
+            self.chunks[cur].local_count = high;
+        }
+        slot
+    }
     fn chunk(&mut self) -> &mut Chunk { &mut self.chunks[self.current] }
 
     fn reserve_local_slot(&mut self, slot: u16) {
@@ -907,7 +1013,7 @@ impl Compiler {
             }
         }
         if self.current_class_implicit_self && self.is_class_field(name) {
-            let value_slot = self.scope_mut().define("__implicit_self_value");
+            let value_slot = self.define_local("__implicit_self_value");
             self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
             if self.emit_self_ref() {
                 self.emit_u16(Op::LOCAL_GET, value_slot);
@@ -1027,9 +1133,9 @@ impl Compiler {
                         let prop = self.str_const(&field_name);
                         self.emit(Op::DUP);
                         self.emit_u16(Op::STRUCT_GET, prop);
-                        let fn_tmp = self.scope_mut().define("__fn");
+                        let fn_tmp = self.define_local("__fn");
                         self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
-                        let obj_tmp = self.scope_mut().define("__obj");
+                        let obj_tmp = self.define_local("__obj");
                         self.reserve_local_slot(obj_tmp);
                         self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, fn_tmp);
@@ -1088,7 +1194,7 @@ impl Compiler {
                             && self.scope().resolve(name).is_none()
                             && (self.case_sensitive || self.scope().resolve_ci(name).is_none())
                         {
-                            self.scope_mut().define(name);
+                            self.define_local(name);
                         }
                         self.emit_var_set(name);
                     }
@@ -1177,7 +1283,7 @@ impl Compiler {
                 let continue_depth = self.label_depth + 2; // loop is second (continue target)
                 self.label_depth += 2;
                 self.loop_states.push(lp);
-                self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth });
+                self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth, did_break_slot: None });
                 self.compile_expr(cond)?;
                 let line = self.line;
                 common::loops::emit_loop_cond(&mut self.chunks, self.current, line);
@@ -1221,7 +1327,7 @@ impl Compiler {
                 let continue_depth = self.label_depth; // innermost = continue target (body block or loop)
                 let lp = common::loops::LoopState { block_patch, loop_patch, body_block_patch: body_block };
                 self.loop_states.push(lp);
-                self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth });
+                self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth, did_break_slot: None });
                 for s in body { self.compile_stmt(s)?; }
                 self.loops.pop();
                 let lp = self.loop_states.pop().unwrap();
@@ -1273,9 +1379,20 @@ impl Compiler {
                         common::collections::emit_iter_keys(&mut self.chunks, self.current, line);
                     }
 
-                    let arr_slot = self.scope_mut().define("__forin_arr");
+                    let arr_slot = self.define_local("__forin_arr");
                     self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
-                    let idx_slot = self.scope_mut().define("__forin_idx");
+                    let idx_slot = self.define_local("__forin_idx");
+                    // Allocate did_break slot BEFORE the for-in scaffolding
+                    // so the assign-to-false initializer doesn't sit inside
+                    // any of the for's blocks. Only when `else` is present
+                    // — keeps the cost off the common case.
+                    let did_break_slot = if else_body.is_some() {
+                        let slot = self.define_local("__for_did_break");
+                        self.emit(Op::FALSE);
+                        self.emit_u16(Op::LOCAL_SET, slot);
+                        self.emit(Op::DROP);
+                        Some(slot)
+                    } else { None };
                     let lp = common::loops::emit_for_in_start(
                         &mut self.chunks, self.current, arr_slot, idx_slot, line,
                     );
@@ -1291,30 +1408,30 @@ impl Compiler {
                         // Stack at loop body entry: [pair]
                         //   DUP; index 0 → key_var
                         //   index 1 → value_var
-                        let pair_slot = self.scope_mut().define("__forin_pair");
+                        let pair_slot = self.define_local("__forin_pair");
                         self.emit_u16(Op::LOCAL_SET, pair_slot); self.emit(Op::DROP);
 
                         // key = pair[0]
                         self.emit_u16(Op::LOCAL_GET, pair_slot);
                         self.emit_const(Value::I32(0));
                         common::collections::emit_get(&mut self.chunks, self.current, line);
-                        let key_slot = self.scope_mut().define(k_name);
+                        let key_slot = self.define_local(k_name);
                         self.emit_u16(Op::LOCAL_SET, key_slot); self.emit(Op::DROP);
 
                         // var = pair[1]
                         self.emit_u16(Op::LOCAL_GET, pair_slot);
                         self.emit_const(Value::I32(1));
                         common::collections::emit_get(&mut self.chunks, self.current, line);
-                        let var_slot = self.scope_mut().define(var);
+                        let var_slot = self.define_local(var);
                         self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
                     } else {
                         // Values path: TOS is the value, bind directly.
-                        let var_slot = self.scope_mut().define(var);
+                        let var_slot = self.define_local(var);
                         self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
                     }
 
                     self.loop_states.push(lp);
-                    self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth });
+                    self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth, did_break_slot });
                     for s in body { self.compile_stmt(s)?; }
                     self.loops.pop();
                     let lp = self.loop_states.pop().unwrap();
@@ -1323,7 +1440,18 @@ impl Compiler {
                     );
                     self.label_depth -= 3;
                     if let Some(else_stmts) = else_body {
+                        // Python/Ruby for-else: skip else if any `break` fired.
+                        // Wrap in `block { br_if 0 (if did_break); ...else... }`.
+                        let dbs = did_break_slot.expect("did_break_slot allocated when else_body present");
+                        let skip = self.chunk().emit_block(line);
+                        self.label_depth += 1;
+                        self.emit_u16(Op::LOCAL_GET, dbs);
+                        self.emit(Op::DYN_TO_BOOL);
+                        self.chunk().emit_br_if(0, line); // skip else if did_break
                         for s in else_stmts { self.compile_stmt(s)?; }
+                        self.chunk().emit_end(line);
+                        self.chunk().patch_block(skip);
+                        self.label_depth -= 1;
                     }
                 }
             }
@@ -1336,7 +1464,7 @@ impl Compiler {
                 let continue_depth = self.label_depth + 2;
                 self.label_depth += 2;
                 self.loop_states.push(lp);
-                self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth });
+                self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth, did_break_slot: None });
                 for s in body { self.compile_stmt(s)?; }
                 self.compile_expr(cond)?;
                 self.loops.pop();
@@ -1351,7 +1479,7 @@ impl Compiler {
                 // Save switch expression to a local so checks can read it
                 // without leaving it on the stack during body execution.
                 self.compile_expr(expr)?;
-                let sw_slot = self.scope_mut().define("__sw_expr");
+                let sw_slot = self.define_local("__sw_expr");
                 self.emit_u16(Op::LOCAL_SET, sw_slot); self.emit(Op::DROP);
 
                 // Switch uses a BLOCK for break — push onto loop stack so break can find it
@@ -1360,7 +1488,7 @@ impl Compiler {
                 self.label_depth += 1;
                 let switch_lp = common::loops::LoopState { block_patch: switch_block, loop_patch: 0, body_block_patch: None };
                 self.loop_states.push(switch_lp);
-                self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: self.label_depth, continue_label_depth: self.label_depth });
+                self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: self.label_depth, continue_label_depth: self.label_depth, did_break_slot: None });
 
                 // Merge legacy `default` field into the cases list.
                 // New walkers emit default as a case with empty conditions
@@ -1514,7 +1642,7 @@ impl Compiler {
                         }
 
                         if let Some(ref var) = c.var_name {
-                            let slot = self.scope_mut().define(var);
+                            let slot = self.define_local(var);
                             self.emit_u16(Op::LOCAL_SET, slot);
                             self.emit(Op::DROP);
                         } else {
@@ -1547,7 +1675,7 @@ impl Compiler {
                     if let ExprKind::Tuple(elems) = &v.kind {
                         if elems.len() == n as usize {
                             for elem in elems { self.compile_expr(elem)?; }
-                            self.emit(Op::RETURN);
+                            self.emit_return();
                             return Ok(());
                         }
                     }
@@ -1561,7 +1689,7 @@ impl Compiler {
                 } else {
                     self.emit(Op::NULL);
                 }
-                self.emit(Op::RETURN);
+                self.emit_return();
             }
 
             // ── Break ───────────────────────────────────────────────────
@@ -1576,21 +1704,37 @@ impl Compiler {
                         } else {
                             self.emit(Op::NULL);
                         }
-                        self.emit(Op::RETURN);
+                        self.emit_return();
                     }
                     BreakTarget::Implicit | BreakTarget::Kind(_) | BreakTarget::Level(_) => {
+                        // If the targeted loop has a did_break slot (Python/
+                        // Ruby for-else), record that break fired so the
+                        // post-loop else clause is skipped.
+                        if let Some(slot) = self.loops.last().and_then(|c| c.did_break_slot) {
+                            self.emit(Op::TRUE);
+                            self.emit_u16(Op::LOCAL_SET, slot);
+                            self.emit(Op::DROP);
+                        }
                         if let Some(depth) = self.break_depth(None) {
                             self.chunk().emit_br(depth, line);
                         }
                     }
                     BreakTarget::Label(label) => {
+                        if let Some(slot) = self.loops.iter().rev()
+                            .find(|c| c.label.as_deref() == Some(label))
+                            .and_then(|c| c.did_break_slot)
+                        {
+                            self.emit(Op::TRUE);
+                            self.emit_u16(Op::LOCAL_SET, slot);
+                            self.emit(Op::DROP);
+                        }
                         if let Some(depth) = self.break_depth(Some(label)) {
                             self.chunk().emit_br(depth, line);
                         }
                     }
                     BreakTarget::Value(expr) => {
                         self.compile_expr(expr)?;
-                        self.emit(Op::RETURN);
+                        self.emit_return();
                     }
                 }
             }
@@ -1831,7 +1975,7 @@ impl Compiler {
                 if let Some(first) = items.first() {
                     self.compile_expr(&first.expr)?;
                     if let Some(ref var) = first.var {
-                        let slot = self.scope_mut().define(var);
+                        let slot = self.define_local(var);
                         self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
                     } else {
                         self.emit(Op::DROP);
@@ -1843,7 +1987,7 @@ impl Compiler {
             // ── Using ───────────────────────────────────────────────────
             StmtKind::Using { var, resource, body } => {
                 self.compile_expr(resource)?;
-                let slot = self.scope_mut().define(var);
+                let slot = self.define_local(var);
                 self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
                 for s in body { self.compile_stmt(s)?; }
                 // Dispose is a no-op in our VM
@@ -1869,10 +2013,10 @@ impl Compiler {
                         // and copy each element into new[i] (bounded by
                         // new_len). This reuses the canonical for-in loop
                         // emit pattern that every other iteration site uses.
-                        let old_slot = self.scope_mut().define("__redim_old");
-                        let new_slot = self.scope_mut().define("__redim_new");
-                        let new_len_slot = self.scope_mut().define("__redim_nlen");
-                        let idx_slot = self.scope_mut().define("__redim_idx");
+                        let old_slot = self.define_local("__redim_old");
+                        let new_slot = self.define_local("__redim_new");
+                        let new_len_slot = self.define_local("__redim_nlen");
+                        let idx_slot = self.define_local("__redim_idx");
 
                         // old = arr
                         self.emit_var_get(array);
@@ -1905,7 +2049,7 @@ impl Compiler {
                         self.patch_jump(in_bounds);
                         // in bounds: new[idx] = element via common::collections::emit_set.
                         // Stack currently has [element].
-                        let elem_slot = self.scope_mut().define("__redim_el");
+                        let elem_slot = self.define_local("__redim_el");
                         self.emit_u16(Op::LOCAL_SET, elem_slot); self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, new_slot);
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
@@ -2104,7 +2248,7 @@ impl Compiler {
             // ── Match statement (Python) ────────────────────────────────
             StmtKind::MatchStatement { subject, cases } => {
                 self.compile_expr(subject)?;
-                let subject_slot = self.scope_mut().define("__match_subject");
+                let subject_slot = self.define_local("__match_subject");
                 self.emit_u16(Op::LOCAL_SET, subject_slot); self.emit(Op::DROP);
                 let mut end_patches = Vec::new();
                 for case in cases {
@@ -2120,7 +2264,7 @@ impl Compiler {
                         Pattern::As { name: Some(name), .. } => {
                             // Bind subject to name
                             self.emit_u16(Op::LOCAL_GET, subject_slot);
-                            let slot = self.scope_mut().define(name);
+                            let slot = self.define_local(name);
                             self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
                             None
                         }
@@ -2197,7 +2341,7 @@ impl Compiler {
                     }
                     self.defined_globals.insert(cn);
                 } else {
-                    let slot = self.scope_mut().define_typed(name, decl.type_hint.clone());
+                    let slot = self.define_local_typed(name, decl.type_hint.clone());
                     self.emit_u16(Op::LOCAL_SET, slot);
                     self.emit(Op::DROP);
                 }
@@ -2206,7 +2350,7 @@ impl Compiler {
                 // Destructuring: let { a, b } = expr
                 if let Some(ref init_expr) = decl.init {
                     self.compile_expr(init_expr)?;
-                    let obj_slot = self.scope_mut().define("__destruct_obj");
+                    let obj_slot = self.define_local("__destruct_obj");
                     self.emit_u16(Op::LOCAL_SET, obj_slot); self.emit(Op::DROP);
                     for prop in props {
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
@@ -2223,13 +2367,13 @@ impl Compiler {
                         }
                         match &prop.value {
                             Some(BindingPattern::Ident(n)) => {
-                                let slot = self.scope_mut().define(n);
+                                let slot = self.define_local(n);
                                 self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
                             }
                             Some(BindingPattern::Object(nested_props)) => {
                                 // Nested destructuring: { nested: { b } }
                                 // Value from struct_get is the nested object
-                                let nested_slot = self.scope_mut().define("__nested");
+                                let nested_slot = self.define_local("__nested");
                                 self.emit_u16(Op::LOCAL_SET, nested_slot); self.emit(Op::DROP);
                                 for np in nested_props {
                                     self.emit_u16(Op::LOCAL_GET, nested_slot);
@@ -2240,12 +2384,12 @@ impl Compiler {
                                     } else {
                                         &np.key
                                     };
-                                    let slot = self.scope_mut().define(bind);
+                                    let slot = self.define_local(bind);
                                     self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
                                 }
                             }
                             _ => {
-                                let slot = self.scope_mut().define(&prop.key);
+                                let slot = self.define_local(&prop.key);
                                 self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
                             }
                         }
@@ -2256,7 +2400,7 @@ impl Compiler {
                 // Destructuring: let [a, b] = expr
                 if let Some(ref init_expr) = decl.init {
                     self.compile_expr(init_expr)?;
-                    let arr_slot = self.scope_mut().define("__destruct_arr");
+                    let arr_slot = self.define_local("__destruct_arr");
                     self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
                     for (i, elem) in elems.iter().enumerate() {
                         match elem {
@@ -2272,7 +2416,7 @@ impl Compiler {
                                     self.compile_expr(def)?;
                                     self.patch_jump(has_val);
                                 }
-                                let slot = self.scope_mut().define(name);
+                                let slot = self.define_local(name);
                                 self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
                             }
                             ArrayPatternElem::Rest(name) => {
@@ -2284,7 +2428,7 @@ impl Compiler {
                                 { let l = self.line; common::collections::emit_len(&mut self.chunks, self.current, l); }
                                 let line = self.line;
                                 common::collections::emit_slice(&mut self.chunks, self.current, line);
-                                let slot = self.scope_mut().define(name);
+                                let slot = self.define_local(name);
                                 self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
                             }
                             ArrayPatternElem::Hole => { /* skip */ }
@@ -2323,7 +2467,7 @@ impl Compiler {
                 if !is_local && self.is_class_field(name) {
                     let self_kw = self.profile.self_keyword.clone();
                     if let Some(slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
-                        let tmp = self.scope_mut().define("__field_tmp");
+                        let tmp = self.define_local("__field_tmp");
                         self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, slot);
                         self.emit_u16(Op::LOCAL_GET, tmp);
@@ -2337,7 +2481,7 @@ impl Compiler {
                 self.emit_var_set(name);
             }
             ExprKind::Member { object, field, .. } => {
-                let tmp = self.scope_mut().define("__tmp");
+                let tmp = self.define_local("__tmp");
                 self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
                 self.compile_expr(object)?;
                 self.emit_u16(Op::LOCAL_GET, tmp);
@@ -2357,7 +2501,7 @@ impl Compiler {
                     ExprKind::Lit(crate::ast::Literal::Null)
                 );
                 let line = self.line;
-                let tmp = self.scope_mut().define("__tmp");
+                let tmp = self.define_local("__tmp");
                 self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
                 if is_append {
                     self.compile_expr(object)?;
@@ -2379,7 +2523,7 @@ impl Compiler {
                 // VB `arr(idx) = val` — Call used as index-set because () is
                 // both call and index in VB syntax. Route through
                 // ecma:array.set per Phase D.
-                let tmp = self.scope_mut().define("__tmp");
+                let tmp = self.define_local("__tmp");
                 self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
                 self.compile_expr(callee)?;
                 self.compile_expr(&args[0].value)?;
@@ -2392,7 +2536,7 @@ impl Compiler {
                 // Destructuring assignment
                 match pattern {
                     DestructurePattern::Object(props) => {
-                        let obj_slot = self.scope_mut().define("__destruct_obj");
+                        let obj_slot = self.define_local("__destruct_obj");
                         self.emit_u16(Op::LOCAL_SET, obj_slot); self.emit(Op::DROP);
                         for prop in props {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
@@ -2407,7 +2551,7 @@ impl Compiler {
                         }
                     }
                     DestructurePattern::Array(elems) => {
-                        let arr_slot = self.scope_mut().define("__destruct_arr");
+                        let arr_slot = self.define_local("__destruct_arr");
                         self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
                         for (i, elem) in elems.iter().enumerate() {
                             match elem {
@@ -2472,8 +2616,8 @@ impl Compiler {
                 // Stack: [a, b] → check types, then value equality.
                 // Simplest: dup both, compare typeof, if different → false,
                 // else dyn_eq. Using temp locals to avoid deep stack ops.
-                let a_slot = self.scope_mut().define("__seq_a");
-                let b_slot = self.scope_mut().define("__seq_b");
+                let a_slot = self.define_local("__seq_a");
+                let b_slot = self.define_local("__seq_b");
                 self.emit_u16(Op::LOCAL_SET, b_slot); self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_SET, a_slot); self.emit(Op::DROP);
                 // Compare types
@@ -2495,8 +2639,8 @@ impl Compiler {
             }
             BinOp::StrictNotEq => {
                 // JS !==: same as !(===)
-                let a_slot = self.scope_mut().define("__sne_a");
-                let b_slot = self.scope_mut().define("__sne_b");
+                let a_slot = self.define_local("__sne_a");
+                let b_slot = self.define_local("__sne_b");
                 self.emit_u16(Op::LOCAL_SET, b_slot); self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_SET, a_slot); self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, a_slot);
@@ -2546,8 +2690,8 @@ impl Compiler {
                 //
                 // Walker stack: `[x, y]`. hasOwn expects `[y, x]`.
                 let l = self.line;
-                let t_y = self.scope_mut().define("__in_y");
-                let t_x = self.scope_mut().define("__in_x");
+                let t_y = self.define_local("__in_y");
+                let t_x = self.define_local("__in_x");
                 self.emit_u16(Op::LOCAL_SET, t_y); self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_SET, t_x); self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, t_y);
@@ -2558,8 +2702,8 @@ impl Compiler {
             }
             BinOp::NotIn => {
                 let l = self.line;
-                let t_y = self.scope_mut().define("__nin_y");
-                let t_x = self.scope_mut().define("__nin_x");
+                let t_y = self.define_local("__nin_y");
+                let t_x = self.define_local("__nin_x");
                 self.emit_u16(Op::LOCAL_SET, t_y); self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_SET, t_x); self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, t_y);
@@ -2720,10 +2864,17 @@ impl Compiler {
         }
 
         // Check common import table first
-        if let Some((module, func)) = common::imports::resolve_common_import(name) {
-            for a in args { self.compile_expr(a)?; }
-            let idx = self.import(module, func);
-            self.emit_host_call(idx, args.len() as u8);
+        if let Some(resolved) = common::imports::resolve_common_import(name) {
+            match resolved {
+                common::imports::CommonImport::Host(module, func) => {
+                    for a in args { self.compile_expr(a)?; }
+                    let idx = self.import(module, func);
+                    self.emit_host_call(idx, args.len() as u8);
+                }
+                common::imports::CommonImport::Intrinsic(intrinsic_name) => {
+                    self.emit_intrinsic(intrinsic_name, args)?;
+                }
+            }
             return Ok(true);
         }
 
@@ -2926,7 +3077,7 @@ impl Compiler {
                     if let ExprKind::Ident(var) = &first.kind {
                         let var = var.clone();
                         if args.len() > 1 { self.compile_expr(args[1])?; }
-                        let idx = self.import("vybe:array", "newWithLength");
+                        let idx = self.import("ecma:array", "newWithLength");
                         self.emit_host_call(idx, 1);
                         self.emit_var_set(&var);
                     }
@@ -3176,6 +3327,68 @@ impl Compiler {
                     self.emit(Op::NULL);
                 }
             }
+            "php_substr" => {
+                // PHP `substr($s, $start, $length?)` → ECMA `substring(s, start, start + length)`.
+                // 0-based start (matches ECMA); length specifies count
+                // (ECMA wants end index). 2-arg form omits end so ECMA
+                // substring runs to the string's actual length.
+                if args.len() >= 2 {
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    common::convert::emit_to_int(self.chunk(), line);
+                    if args.len() >= 3 {
+                        // Need start twice: once as substring's `start`,
+                        // again to compute `start + length`. Stash in a
+                        // local so the second use doesn't recompute it
+                        // (and doesn't rely on side-effect-free args).
+                        let start_slot = self.define_local("__substr_start");
+                        self.emit(Op::DUP);
+                        self.emit_u16(Op::LOCAL_SET, start_slot); self.emit(Op::DROP);
+                        self.compile_expr(args[2])?;
+                        common::convert::emit_to_int(self.chunk(), line);
+                        self.emit_u16(Op::LOCAL_GET, start_slot);
+                        self.emit(Op::I32_ADD);
+                    } else {
+                        // No length: pass i32::MAX so ECMA substring
+                        // clamps to the string's length.
+                        self.emit_const(Value::I32(0x7FFF_FFFF));
+                    }
+                    common::strings::emit_substring(self.chunk(), line);
+                } else {
+                    self.emit(Op::NULL);
+                }
+            }
+            "right" => {
+                // Right(s, n) → substring(s, len(s) - n, len(s))
+                // Direct opcodes — no host call. Mirrors the `left`
+                // intrinsic shape; goes through `common::strings`
+                // emitters so the underlying provider (str_substring
+                // opcode) stays the single source of truth.
+                if args.len() >= 2 {
+                    // Stash s and n in scratch slots so we can use len(s)
+                    // and n twice (compute start = len - n, end = len).
+                    let s_slot = self.define_local("__right_s");
+                    let n_slot = self.define_local("__right_n");
+                    self.compile_expr(args[0])?;
+                    self.emit_u16(Op::LOCAL_SET, s_slot); self.emit(Op::DROP);
+                    self.compile_expr(args[1])?;
+                    common::convert::emit_to_int(self.chunk(), line);
+                    self.emit_u16(Op::LOCAL_SET, n_slot); self.emit(Op::DROP);
+                    // substring(s, len(s) - n, len(s))
+                    self.emit_u16(Op::LOCAL_GET, s_slot);
+                    // start = len(s) - n
+                    self.emit_u16(Op::LOCAL_GET, s_slot);
+                    common::strings::emit_length(self.chunk(), line);
+                    self.emit_u16(Op::LOCAL_GET, n_slot);
+                    self.emit(Op::I32_SUB);
+                    // end = len(s)
+                    self.emit_u16(Op::LOCAL_GET, s_slot);
+                    common::strings::emit_length(self.chunk(), line);
+                    common::strings::emit_substring(self.chunk(), line);
+                } else {
+                    self.emit(Op::NULL);
+                }
+            }
             "string_isnullorempty" => {
                 // String.IsNullOrEmpty(s) → s is null OR str_length(s) == 0.
                 // Compile s, dup, ref_is_null → if true return true, else
@@ -3248,10 +3461,10 @@ impl Compiler {
             "array_at" => {
                 // .at() supports negative indices for both arrays and strings.
                 // Receiver is already on stack from value method dispatch.
-                // Route through host fn vybe:array:at (handles arrays AND strings via negative idx).
+                // `Array.prototype.at` per ECMA-262 §23.1.3.1.
                 if args.len() >= 1 {
                     self.compile_expr(args[0])?;
-                    let idx = self.import("vybe:array", "at");
+                    let idx = self.import("ecma:array", "at");
                     self.emit_host_call(idx, 2);
                 } else {
                     self.emit(Op::NULL);
@@ -3430,7 +3643,7 @@ impl Compiler {
                 // RightStr(s, n) → substring(s, len(s)-n, len(s))
                 if args.len() == 2 {
                     self.compile_expr(args[0])?;
-                    let s_slot = self.scope_mut().define("__rs_s");
+                    let s_slot = self.define_local("__rs_s");
                     self.emit_u16(Op::LOCAL_SET, s_slot); self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, s_slot);
                     self.emit_u16(Op::LOCAL_GET, s_slot);
@@ -3462,15 +3675,15 @@ impl Compiler {
                 // until a test demands it.
                 if args.len() == 2 {
                     self.compile_expr(args[0])?;
-                    let str_slot = self.scope_mut().define("__strtr_str");
+                    let str_slot = self.define_local("__strtr_str");
                     self.emit_u16(Op::LOCAL_SET, str_slot); self.emit(Op::DROP);
 
                     self.compile_expr(args[1])?;
                     common::collections::emit_iter_entries(&mut self.chunks, self.current, line);
-                    let entries_slot = self.scope_mut().define("__strtr_entries");
+                    let entries_slot = self.define_local("__strtr_entries");
                     self.emit_u16(Op::LOCAL_SET, entries_slot); self.emit(Op::DROP);
 
-                    let idx_slot = self.scope_mut().define("__strtr_idx");
+                    let idx_slot = self.define_local("__strtr_idx");
                     let state = common::loops::emit_for_in_start(
                         &mut self.chunks, self.current, entries_slot, idx_slot, line,
                     );
@@ -3484,7 +3697,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, entries_slot);
                     self.emit_u16(Op::LOCAL_GET, idx_slot);
                     common::collections::emit_get(&mut self.chunks, self.current, line);
-                    let pair_slot = self.scope_mut().define("__strtr_pair");
+                    let pair_slot = self.define_local("__strtr_pair");
                     self.emit_u16(Op::LOCAL_SET, pair_slot); self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, pair_slot);
                     self.emit_const(Value::I32(0));
@@ -3502,6 +3715,198 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, str_slot);
                 } else {
                     self.emit(Op::NULL);
+                }
+            }
+
+            // ── String compositions of ecma:string primitives ──────────
+            //
+            // Each of these used to live as a separate `vybe:string.*`
+            // host fn; now compiled inline so the underlying providers
+            // (ecma:string.padStart, ecma:string.toUpperCase, etc.) are
+            // the single source of truth for semantics. The compositions
+            // are well-known JS idioms — see comments per arm.
+
+            "zfill" => {
+                // Python str.zfill(width) → padStart(width, "0").
+                if args.len() >= 2 {
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    common::convert::emit_to_int(self.chunk(), line);
+                    self.emit_const(Value::String(Arc::from("0")));
+                    let idx = self.import("ecma:string", "padStart");
+                    self.emit_host_call(idx, 3);
+                } else {
+                    self.emit(Op::NULL);
+                }
+            }
+            "capitalize" => {
+                // Python/Ruby `s.capitalize()` → s[0].toUpperCase() +
+                // s.slice(1).toLowerCase(). Compose via ecma:string.
+                if let Some(arg) = args.first() {
+                    let s_slot = self.define_local("__cap_s");
+                    self.compile_expr(arg)?;
+                    self.emit_u16(Op::LOCAL_SET, s_slot); self.emit(Op::DROP);
+                    // first char upper
+                    self.emit_u16(Op::LOCAL_GET, s_slot);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit_const(Value::I32(1));
+                    common::strings::emit_substring(self.chunk(), line);
+                    let upper_idx = self.import("ecma:string", "toUpperCase");
+                    self.emit_host_call(upper_idx, 1);
+                    // rest lower
+                    self.emit_u16(Op::LOCAL_GET, s_slot);
+                    self.emit_const(Value::I32(1));
+                    self.emit_const(Value::I32(0x7FFF_FFFF));
+                    common::strings::emit_substring(self.chunk(), line);
+                    let lower_idx = self.import("ecma:string", "toLowerCase");
+                    self.emit_host_call(lower_idx, 1);
+                    // concat
+                    self.emit(Op::DYN_ADD);
+                } else {
+                    self.emit(Op::NULL);
+                }
+            }
+            "center" => {
+                // Python str.center(width, fill?) — pad symmetrically.
+                // Compose: padStart(ceil((w + len)/2), fill).padEnd(w, fill).
+                if args.len() >= 2 {
+                    let s_slot = self.define_local("__cen_s");
+                    let w_slot = self.define_local("__cen_w");
+                    let pad_slot = self.define_local("__cen_pad");
+                    self.compile_expr(args[0])?;
+                    self.emit_u16(Op::LOCAL_SET, s_slot); self.emit(Op::DROP);
+                    self.compile_expr(args[1])?;
+                    common::convert::emit_to_int(self.chunk(), line);
+                    self.emit_u16(Op::LOCAL_SET, w_slot); self.emit(Op::DROP);
+                    if args.len() >= 3 {
+                        self.compile_expr(args[2])?;
+                    } else {
+                        self.emit_const(Value::String(Arc::from(" ")));
+                    }
+                    self.emit_u16(Op::LOCAL_SET, pad_slot); self.emit(Op::DROP);
+                    // Step 1: padStart with target = (w + len) / 2 + len_remainder
+                    // For simplicity: padStart with (w + len + 1)/2.
+                    self.emit_u16(Op::LOCAL_GET, s_slot);
+                    // target = (w + len + 1) / 2
+                    self.emit_u16(Op::LOCAL_GET, w_slot);
+                    self.emit_u16(Op::LOCAL_GET, s_slot);
+                    common::strings::emit_length(self.chunk(), line);
+                    self.emit(Op::I32_ADD);
+                    self.emit_const(Value::I32(1));
+                    self.emit(Op::I32_ADD);
+                    self.emit_const(Value::I32(2));
+                    self.emit(Op::I32_DIV_S);
+                    self.emit_u16(Op::LOCAL_GET, pad_slot);
+                    let pad_start = self.import("ecma:string", "padStart");
+                    self.emit_host_call(pad_start, 3);
+                    // Step 2: padEnd to full width.
+                    self.emit_u16(Op::LOCAL_GET, w_slot);
+                    self.emit_u16(Op::LOCAL_GET, pad_slot);
+                    let pad_end = self.import("ecma:string", "padEnd");
+                    self.emit_host_call(pad_end, 3);
+                } else {
+                    self.emit(Op::NULL);
+                }
+            }
+            "count" => {
+                // Python `s.count(sub)` / PHP `substr_count($s, $sub)` —
+                // count non-overlapping occurrences. Compose:
+                // s.split(sub).length - 1.
+                if args.len() >= 2 {
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    let split_idx = self.import("ecma:string", "split");
+                    self.emit_host_call(split_idx, 2);
+                    common::collections::emit_len(&mut self.chunks, self.current, line);
+                    self.emit_const(Value::I32(1));
+                    self.emit(Op::I32_SUB);
+                } else {
+                    self.emit(Op::NULL);
+                }
+            }
+            "chop" => {
+                // Ruby `s.chop` — drop last char. Compose: s.slice(0, len(s)-1).
+                if let Some(arg) = args.first() {
+                    let s_slot = self.define_local("__chop_s");
+                    self.compile_expr(arg)?;
+                    self.emit_u16(Op::LOCAL_SET, s_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, s_slot);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit_u16(Op::LOCAL_GET, s_slot);
+                    common::strings::emit_length(self.chunk(), line);
+                    self.emit_const(Value::I32(1));
+                    self.emit(Op::I32_SUB);
+                    common::strings::emit_substring(self.chunk(), line);
+                } else {
+                    self.emit(Op::NULL);
+                }
+            }
+            "chars" => {
+                // Ruby/PHP `s.chars` — array of single-char strings.
+                // Compose: s.split("").
+                if let Some(arg) = args.first() {
+                    self.compile_expr(arg)?;
+                    self.emit_const(Value::String(Arc::from("")));
+                    let split_idx = self.import("ecma:string", "split");
+                    self.emit_host_call(split_idx, 2);
+                } else {
+                    let empty_arr = self.import("ecma:array", "new");
+                    self.emit_host_call(empty_arr, 0);
+                }
+            }
+
+            // ── Numeric conversion intrinsics ─────────────────────────
+            //
+            // VB / Pascal / Python `cint` / `int(x)` / `clng` — coerce
+            // to a number then floor. Matches the legacy
+            // `vybe:convert.cint` semantics (floor, not banker's
+            // rounding — VB6 `cint` uses banker's, but the legacy host
+            // fn used floor, so we preserve that here. A separate
+            // banker's rounding intrinsic would be a behavior change.)
+            "cint" | "clng" => {
+                if let Some(arg) = args.first() {
+                    self.compile_expr(arg)?;
+                    let num = self.import("ecma:number", "Number");
+                    self.emit_host_call(num, 1);
+                    self.emit(Op::F64_FLOOR);
+                } else {
+                    self.emit_const(Value::F64(0.0));
+                }
+            }
+
+            // VB `hex(n)` / `Hex$` — uppercase hex string.
+            // ECMA composition: `Number(n).toString(16).toUpperCase()`.
+            // `Number.prototype.toString` is called via a method
+            // dispatch on the numeric receiver; `String.prototype.
+            // toUpperCase` likewise.
+            "hex" => {
+                if let Some(arg) = args.first() {
+                    self.compile_expr(arg)?;
+                    let num = self.import("ecma:number", "Number");
+                    self.emit_host_call(num, 1);
+                    // Number(n).toString(16)
+                    self.emit_const(Value::F64(16.0));
+                    let to_str = self.import("ecma:number", "toString");
+                    self.emit_host_call(to_str, 2);
+                    // .toUpperCase()
+                    let upper = self.import("ecma:string", "toUpperCase");
+                    self.emit_host_call(upper, 1);
+                } else {
+                    self.emit_const(Value::String(Arc::from("0")));
+                }
+            }
+
+            // VB `oct(n)` / `Oct$` — octal string.
+            "oct" => {
+                if let Some(arg) = args.first() {
+                    self.compile_expr(arg)?;
+                    let num = self.import("ecma:number", "Number");
+                    self.emit_host_call(num, 1);
+                    self.emit_const(Value::F64(8.0));
+                    let to_str = self.import("ecma:number", "toString");
+                    self.emit_host_call(to_str, 2);
+                } else {
+                    self.emit_const(Value::String(Arc::from("0")));
                 }
             }
 

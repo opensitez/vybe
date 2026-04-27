@@ -13,6 +13,11 @@ use crate::ast::Module;
 
 /// A registered language in vybex.
 pub struct Language {
+    /// Canonical language name — matches the profile's `[info].name` and
+    /// the per-language sub-module name. Use [`find_by_name`] to look
+    /// up; this field exists so dispatch by name doesn't require parsing
+    /// the TOML profile each time.
+    pub name: &'static str,
     /// Parse function: source → common AST
     pub parse: fn(&str) -> Result<Module, String>,
     /// Embedded profile TOML source
@@ -23,17 +28,23 @@ pub struct Language {
 /// The profile's [info] section defines the name, extensions, and other metadata.
 pub fn all() -> Vec<Language> {
     vec![
-        Language { parse: vb::parse, profile_source: vb::profile_source },
-        Language { parse: js::parse, profile_source: js::profile_source },
-        Language { parse: pascal::parse, profile_source: pascal::profile_source },
-        Language { parse: csharp::parse, profile_source: csharp::profile_source },
-        Language { parse: python::parse, profile_source: python::profile_source },
-        Language { parse: php::parse, profile_source: php::profile_source },
-        Language { parse: ruby::parse, profile_source: ruby::profile_source },
-        Language { parse: dart::parse, profile_source: dart::profile_source },
-        Language { parse: cobol::parse, profile_source: cobol::profile_source },
-        Language { parse: fortran::parse, profile_source: fortran::profile_source },
+        Language { name: "vb",      parse: vb::parse,      profile_source: vb::profile_source },
+        Language { name: "js",      parse: js::parse,      profile_source: js::profile_source },
+        Language { name: "pascal",  parse: pascal::parse,  profile_source: pascal::profile_source },
+        Language { name: "csharp",  parse: csharp::parse,  profile_source: csharp::profile_source },
+        Language { name: "python",  parse: python::parse,  profile_source: python::profile_source },
+        Language { name: "php",     parse: php::parse,     profile_source: php::profile_source },
+        Language { name: "ruby",    parse: ruby::parse,    profile_source: ruby::profile_source },
+        Language { name: "dart",    parse: dart::parse,    profile_source: dart::profile_source },
+        Language { name: "cobol",   parse: cobol::parse,   profile_source: cobol::profile_source },
+        Language { name: "fortran", parse: fortran::parse, profile_source: fortran::profile_source },
     ]
+}
+
+/// Find a language by canonical name (e.g. `"js"`, `"php"`, `"python"`).
+/// Returns the registered [`Language`] entry or None if no match.
+pub fn find_by_name(name: &str) -> Option<Language> {
+    all().into_iter().find(|l| l.name == name)
 }
 
 /// Find a language by file extension. Reads [info].extensions from each profile.

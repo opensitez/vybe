@@ -32,9 +32,9 @@ print               = { emit = "print",                          min_args = 1, m
 
 # ── String functions ─────────────────────────────────────────────────────────
 
-"int.parse"         = { emit = "host:vybe:convert:cint",         min_args = 1, max_args = 1 }
-"double.parse"      = { emit = "host:vybe:convert:cdbl",         min_args = 1, max_args = 1 }
-"num.parse"         = { emit = "host:vybe:convert:cdbl",         min_args = 1, max_args = 1 }
+"int.parse"         = { emit = "intrinsic:cint",         min_args = 1, max_args = 1 }
+"double.parse"      = { emit = "host:ecma:number:Number",         min_args = 1, max_args = 1 }
+"num.parse"         = { emit = "host:ecma:number:Number",         min_args = 1, max_args = 1 }
 
 # ── Math functions (dart:math) ───────────────────────────────────────────────
 
@@ -54,17 +54,17 @@ print               = { emit = "print",                          min_args = 1, m
 
 # ── Type conversion ─────────────────────────────────────────────────────────
 
-"int.tryParse"      = { emit = "host:vybe:convert:cint",         min_args = 1, max_args = 1 }
-"double.tryParse"   = { emit = "host:vybe:convert:cdbl",         min_args = 1, max_args = 1 }
+"int.tryParse"      = { emit = "intrinsic:cint",         min_args = 1, max_args = 1 }
+"double.tryParse"   = { emit = "host:ecma:number:Number",         min_args = 1, max_args = 1 }
 
 # ── JSON (dart:convert) ─────────────────────────────────────────────────────
 
-jsonEncode          = { emit = "host:vybe:json:stringify",        min_args = 1, max_args = 1 }
-jsonDecode          = { emit = "host:vybe:json:parse",            min_args = 1, max_args = 1 }
+jsonEncode          = { emit = "host:ecma:json:stringify",        min_args = 1, max_args = 1 }
+jsonDecode          = { emit = "host:ecma:json:parse",            min_args = 1, max_args = 1 }
 
 # ── Date / Time ─────────────────────────────────────────────────────────────
 
-"DateTime.now"      = { emit = "host:vybe:types:dateTimeNow",    min_args = 0, max_args = 0 }
+"DateTime.now"      = { emit = "host:ecma:date:now",    min_args = 0, max_args = 0 }
 
 # ── File I/O (dart:io) ──────────────────────────────────────────────────────
 
@@ -108,7 +108,7 @@ sublist       = { emit = "host:ecma:array:slice",      min_args = 1, max_args = 
 join          = { emit = "common:collections.join",    min_args = 0, max_args = 1 }
 reversed      = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
 toList        = { emit = "noop",                       min_args = 0, max_args = 0 }
-toSet         = { emit = "host:vybe:array:pyset",      min_args = 0, max_args = 0 }
+toSet         = { emit = "host:ecma:set:fromIterable",  min_args = 0, max_args = 0 }
 
 # Map methods
 putIfAbsent   = { emit = "host:vybe:runtime:callMethod", min_args = 2, max_args = 2 }
@@ -143,12 +143,12 @@ module = "ecma:math"
 [[esm_default]]
 kind = "namespace"
 alias = "json"
-module = "vybe:json"
+module = "ecma:json"
 
 [[esm_default]]
 kind = "namespace"
 alias = "JSON"
-module = "vybe:json"
+module = "ecma:json"
 
 [[esm_default]]
 kind = "namespace"
@@ -168,12 +168,12 @@ module = "wasi:filesystem"
 [[esm_default]]
 kind = "namespace"
 alias = "Map"
-module = "vybe:collections"
+module = "ecma:map"
 
 [[esm_default]]
 kind = "namespace"
 alias = "Set"
-module = "vybe:collections"
+module = "ecma:set"
 
 [[esm_default]]
 kind = "namespace"
@@ -201,7 +201,7 @@ module = "wasi:clocks"
 [[esm_default]]
 kind = "namespace"
 alias = "RegExp"
-module = "vybe:regex"
+module = "ecma:regexp"
 
 [[esm_default]]
 kind = "namespace"
@@ -254,7 +254,7 @@ DateTime        = ["vybe:types", "dateTimeNew"]
 StringBuffer    = ["vybe:types", "stringBuilderNew"]
 Random          = ["wasi:random/insecure", "get-insecure-random-u64"]
 Stopwatch       = ["wasi:clocks", "stopwatchNew"]
-RegExp          = ["vybe:regex", "test"]
+RegExp          = ["ecma:regexp", "new"]
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACES

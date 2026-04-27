@@ -2,149 +2,12 @@ use std::sync::{Arc, Mutex};
 use vybe_bytecode::{VM, Value, HostContext};
 
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn("vybe:string", "slice", Box::new(|_ctx, a| {
-        let st = s(a, 0);
-        let len = st.len() as i64;
-        let start = norm(f(a, 1) as i64, len);
-        let end = if a.len() > 2 { norm(f(a, 2) as i64, len) } else { len as usize };
-        if start < end { Value::String(Arc::from(&st[start..end])) }
-        else { Value::String(Arc::from("")) }
-    }));
-    vm.register_host_fn("vybe:string", "indexOf", Box::new(|_ctx, a| {
-        match a.first() {
-            Some(Value::String(st)) => {
-                match st.find(&s(a, 1)) {
-                    Some(idx) => Value::F64(idx as f64),
-                    None => Value::F64(-1.0),
-                }
-            }
-            Some(Value::Object(obj)) => {
-                let o = obj.lock().unwrap();
-                if let vybe_bytecode::value::ObjectKind::Array(ref elems) = o.kind {
-                    let search = a.get(1).cloned().unwrap_or(Value::Null);
-                    for (i, elem) in elems.iter().enumerate() {
-                        if elem.eq(&search) { return Value::F64(i as f64); }
-                    }
-                }
-                Value::F64(-1.0)
-            }
-            _ => Value::F64(-1.0),
-        }
-    }));
-    vm.register_host_fn("vybe:string", "includes",    Box::new(|_ctx, a| Value::Bool(s(a, 0).contains(&s(a, 1)))));
-    vm.register_host_fn("vybe:string", "split", Box::new(|_ctx, a| {
-        let parts: Vec<Value> = s(a, 0).split(&s(a, 1)).map(|p| Value::String(Arc::from(p))).collect();
-        Value::Object(Arc::new(Mutex::new(vybe_bytecode::value::Object::new_array(parts))))
-    }));
-    vm.register_host_fn("vybe:string", "replace",    Box::new(|_ctx, a| Value::String(Arc::from(s(a, 0).replacen(&s(a, 1), &s(a, 2), 1).as_str()))));
-    vm.register_host_fn("vybe:string", "replaceAll", Box::new(|_ctx, a| Value::String(Arc::from(s(a, 0).replace(&s(a, 1), &s(a, 2)).as_str()))));
-    vm.register_host_fn("vybe:string", "trimStart",  Box::new(|_ctx, a| Value::String(Arc::from(s(a, 0).trim_start()))));
-    vm.register_host_fn("vybe:string", "trimEnd",    Box::new(|_ctx, a| Value::String(Arc::from(s(a, 0).trim_end()))));
-    vm.register_host_fn("vybe:string", "search", Box::new(|_ctx, a| {
-        let haystack = s(a, 0);
-        let needle = s(a, 1);
-        match haystack.find(&needle) {
-            Some(i) => Value::F64(i as f64),
-            None => Value::F64(-1.0),
-        }
-    }));
-    vm.register_host_fn("vybe:string", "match", Box::new(|_ctx, a| {
-        // Simplified: returns array containing the matched substring, or null.
-        // Real regex support is in regex.rs; this handles plain string matches.
-        let haystack = s(a, 0);
-        let needle = s(a, 1);
-        if let Some(_idx) = haystack.find(&needle) {
-            let mut arr = vybe_bytecode::value::Object::new();
-            arr.kind = vybe_bytecode::value::ObjectKind::Array(vec![
-                Value::String(Arc::from(needle.as_str())),
-            ]);
-            Value::Object(Arc::new(Mutex::new(arr)))
-        } else {
-            Value::Null
-        }
-    }));
-    vm.register_host_fn("vybe:string", "concat", Box::new(|_ctx, a| {
-        let mut result = s(a, 0);
-        for i in 1..a.len() {
-            result.push_str(&format!("{}", a[i]));
-        }
-        Value::String(Arc::from(result.as_str()))
-    }));
-    vm.register_host_fn("vybe:string", "at", Box::new(|_ctx, a| {
-        let st = s(a, 0);
-        let chars: Vec<char> = st.chars().collect();
-        let len = chars.len() as i64;
-        let idx = a.get(1).map(|v| format!("{}", v).parse::<f64>().unwrap_or(0.0) as i64).unwrap_or(0);
-        let real_idx = if idx < 0 { len + idx } else { idx };
-        if real_idx >= 0 && (real_idx as usize) < chars.len() {
-            Value::String(Arc::from(chars[real_idx as usize].to_string().as_str()))
-        } else {
-            Value::Undefined
-        }
-    }));
-    vm.register_host_fn("vybe:string", "padStart", Box::new(|_ctx, a| {
-        let st = s(a, 0);
-        let target_len = a.get(1).map(|v| format!("{}", v).parse::<f64>().unwrap_or(0.0) as usize).unwrap_or(0);
-        let pad = a.get(2).map(|v| format!("{}", v)).unwrap_or_else(|| " ".to_string());
-        if st.len() >= target_len { return Value::String(Arc::from(st.as_str())); }
-        let pad_len = target_len - st.len();
-        let pad_str: String = pad.chars().cycle().take(pad_len).collect();
-        Value::String(Arc::from(format!("{}{}", pad_str, st).as_str()))
-    }));
-    vm.register_host_fn("vybe:string", "padEnd", Box::new(|_ctx, a| {
-        let st = s(a, 0);
-        let target_len = a.get(1).map(|v| format!("{}", v).parse::<f64>().unwrap_or(0.0) as usize).unwrap_or(0);
-        let pad = a.get(2).map(|v| format!("{}", v)).unwrap_or_else(|| " ".to_string());
-        if st.len() >= target_len { return Value::String(Arc::from(st.as_str())); }
-        let pad_len = target_len - st.len();
-        let pad_str: String = pad.chars().cycle().take(pad_len).collect();
-        Value::String(Arc::from(format!("{}{}", st, pad_str).as_str()))
-    }));
-    vm.register_host_fn("vybe:string", "startsWith", Box::new(|_ctx, a| Value::Bool(s(a, 0).starts_with(&s(a, 1)))));
-    vm.register_host_fn("vybe:string", "endsWith",   Box::new(|_ctx, a| Value::Bool(s(a, 0).ends_with(&s(a, 1)))));
-    vm.register_host_fn("vybe:string", "charAt", Box::new(|_ctx, a| {
-        match s(a, 0).chars().nth(f(a, 1) as usize) {
-            Some(c) => Value::String(Arc::from(c.to_string().as_str())),
-            None => Value::String(Arc::from("")),
-        }
-    }));
-    vm.register_host_fn("vybe:string", "substring", Box::new(|_ctx, a| {
-        let st = s(a, 0);
-        let start = (f(a, 1) as usize).min(st.len());
-        let end = if a.len() > 2 { (f(a, 2) as usize).min(st.len()) } else { st.len() };
-        let (start, end) = if start > end { (end, start) } else { (start, end) };
-        Value::String(Arc::from(&st[start..end]))
-    }));
-
-    // charCodeAt(str, index) → number
-    vm.register_host_fn("vybe:string", "charCodeAt", Box::new(|_ctx, a| {
-        let st = s(a, 0);
-        let idx = f(a, 1) as usize;
-        match st.chars().nth(idx) {
-            Some(c) => Value::F64(c as u32 as f64),
-            None => Value::F64(f64::NAN),
-        }
-    }));
-
-    // fromCharCode(code, code, ...) → string
-    vm.register_host_fn("vybe:string", "fromCharCode", Box::new(|_ctx, a| {
-        let result: String = a.iter()
-            .map(|v| char::from_u32(v.as_f64() as u32).unwrap_or('\0'))
-            .collect();
-        Value::String(Arc::from(result.as_str()))
-    }));
-
-    // repeat(str, count) → string
-    vm.register_host_fn("vybe:string", "repeat", Box::new(|_ctx, a| {
-        let st = s(a, 0);
-        let count = f(a, 1) as usize;
-        Value::String(Arc::from(st.repeat(count).as_str()))
-    }));
-
-    // replaceAll(str, search, replace) → string
-    vm.register_host_fn("vybe:string", "replaceAll", Box::new(|_ctx, a| {
-        Value::String(Arc::from(s(a, 0).replace(&s(a, 1), &s(a, 2)).as_str()))
-    }));
+    // ECMA-262 §22.1 String.prototype methods retired here:
+    //   slice/indexOf/includes/split/replace/replaceAll/trimStart/trimEnd/
+    //   search/match/concat/at/padStart/padEnd/startsWith/endsWith/charAt/
+    //   substring/charCodeAt/fromCharCode/repeat
+    // — full coverage now lives in `ecma:string` + `ecma:regexp` (search/match).
+    // Callers compile to those addresses directly.
 
     // --- VB-compatible string functions (available to all languages) ---
 
@@ -156,13 +19,10 @@ pub fn register(vm: &mut VM) {
         Value::String(Arc::from(&st[..end]))
     }));
 
-    // right(str, n) → last n characters
-    vm.register_host_fn("vybe:string", "right", Box::new(|_ctx, a| {
-        let st = s(a, 0);
-        let n = f(a, 1) as usize;
-        let start = st.len().saturating_sub(n);
-        Value::String(Arc::from(&st[start..]))
-    }));
+    // `vybe:string.right` retired — VB `Right(s, n)` compiles to direct
+    // opcodes via the `right` intrinsic in
+    // `crates/vybex/src/compiler/mod.rs::emit_intrinsic` (STR_LENGTH +
+    // I32_SUB + STR_SUBSTRING). No host call.
 
     // mid(str, start, length?) → substring (1-based start like VB)
     vm.register_host_fn("vybe:string", "mid", Box::new(|_ctx, a| {
@@ -308,19 +168,11 @@ pub fn register(vm: &mut VM) {
         }
     }));
 
-    // ── sprintf(format, ...args) — C / PHP printf-style formatter ─────
-    //
-    // Supports: %s (string), %d/%i (signed int), %u (unsigned int),
-    // %f/%F (float), %e/%E (scientific), %x/%X (hex), %o (octal),
-    // %b (binary — PHP extension), %c (char by codepoint), %%.
-    // Flags: `-` (left-align), `+` (sign on positive), `0` (zero-pad),
-    // ` ` (space for positive), `#` (alt form).
-    // Width + precision: `%02d`, `%10.3f`, `%-15s`, `%.5s`.
-    vm.register_host_fn("vybe:string", "sprintf", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let fmt = args.first().map(|v| format!("{}", v)).unwrap_or_default();
-        let rest = if args.len() > 1 { &args[1..] } else { &[][..] };
-        Value::String(Arc::from(sprintf(&fmt, rest).as_str()))
-    }));
+    // sprintf — moved to the polyglot stdlib polyfill at
+    // `crates/vybex/src/emitter/polyfills/sprintf.js`. Compiled once at
+    // vybex build time via `build_polyfill(sprintf.js, "js", "sprintf")`,
+    // bundled into every program as `__vybe_sprintf`. PHP / Python /
+    // Ruby / Pascal sprintf-style callers compile to `stdlib:sprintf`.
 
     // ── phpIncrement(val) / phpDecrement(val) — PHP `++` / `--` ───────
     //
@@ -359,37 +211,13 @@ pub fn register(vm: &mut VM) {
         }
     }));
 
-    // ── substr(str, start, length?) — PHP / ECMA Annex B substr ───────
-    //
-    // Byte-oriented per PHP. Negative `start` counts from the end;
-    // negative `length` means "stop N bytes before end". Omitted
-    // `length` means "to end". Returns "" for out-of-range.
-    vm.register_host_fn("vybe:string", "substr", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let s_val = args.first().map(|v| format!("{}", v)).unwrap_or_default();
-        let bytes = s_val.as_bytes();
-        let blen = bytes.len() as i64;
-        let start_arg = args.get(1).map(|v| v.as_f64() as i64).unwrap_or(0);
-        let start = if start_arg < 0 {
-            (blen + start_arg).max(0) as usize
-        } else {
-            (start_arg as usize).min(blen as usize)
-        };
-        let end = match args.get(2).map(|v| v.as_f64() as i64) {
-            None => blen as usize,
-            Some(len) if len < 0 => {
-                let e = blen + len;
-                if e < start as i64 { start } else { e as usize }
-            }
-            Some(len) => (start + len as usize).min(blen as usize),
-        };
-        if start >= end || start >= blen as usize {
-            return Value::String(Arc::from(""));
-        }
-        match std::str::from_utf8(&bytes[start..end]) {
-            Ok(slice) => Value::String(Arc::from(slice)),
-            Err(_) => Value::String(Arc::from("")),
-        }
-    }));
+    // `vybe:string.substr` retired — PHP `substr($s, $start, $length?)`
+    // compiles to direct opcodes via the `php_substr` intrinsic in
+    // `crates/vybex/src/compiler/mod.rs::emit_intrinsic`, which composes
+    // ECMA `substring(s, start, start + length)` semantics. No host call.
+    // (PHP's negative-start / negative-length nuances are not yet
+    // covered by the intrinsic — the common case `substr($s, $i, $n)`
+    // with non-negative args matches ECMA substring exactly.)
 }
 
 // ── sprintf implementation ───────────────────────────────────────────

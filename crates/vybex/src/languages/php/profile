@@ -85,15 +85,24 @@ explode             = { emit = "opcode:str_split",           min_args = 2, max_a
 # `file($path)` returns the file as an array of lines. stdlib chunk
 # composing wasi:filesystem:readFile + STR_SPLIT on "\n".
 file                = { emit = "stdlib:file",                min_args = 1, max_args = 3 }
-# Regex — PHP PCRE → vybe:regex (Rust regex backing). PCRE-specific
-# features (lookbehind, named subroutines) won't behave identically
-# but the common subset works. Three-arg form `preg_match(p, s, $m)`
-# that fills $m with capture groups is not yet covered (would need
-# ByRef plumbing); two-arg form returns 0/1.
-preg_match          = { emit = "host:vybe:regex:test",       min_args = 2, max_args = 5 }
-preg_match_all      = { emit = "host:vybe:regex:matchGroups", min_args = 2, max_args = 5 }
-preg_replace        = { emit = "host:vybe:regex:replaceAll", min_args = 3, max_args = 4 }
-preg_split          = { emit = "host:vybe:regex:split",      min_args = 2, max_args = 4 }
+# Regex — PHP PCRE → ECMA-262 §22.2 RegExp (Rust regex backing).
+# PCRE-specific features (lookbehind, named subroutines) won't behave
+# identically but the common subset works. Three-arg form
+# `preg_match(p, s, $m)` that fills $m with capture groups is not yet
+# covered (would need ByRef plumbing); two-arg form returns 0/1.
+# PHP preg_* → ECMA-262 §22.2 RegExp. PHP's pattern-first argument
+# convention matches `ecma:regexp.test/exec` directly (string-as-pattern
+# is the first arg). preg_match returns 0/1 — Bool from ecma:regexp.test
+# coerces to "true"/"false"; PHP code typically uses `===` against 1
+# which still passes via Vybe's loose JS-style equality on Bool/Int.
+#
+# preg_replace/preg_split/preg_match_all route through stdlib adapter
+# chunks (`__stdlib_regex_*_pat_first`) that reorder PHP's pat-first
+# args into ECMA's str-first order before calling ecma:regexp.*.
+preg_match          = { emit = "host:ecma:regexp:test",          min_args = 2, max_args = 5 }
+preg_match_all      = { emit = "stdlib:regex_match_all_pat_first", min_args = 2, max_args = 5 }
+preg_replace        = { emit = "stdlib:regex_replace_pat_first", min_args = 3, max_args = 4 }
+preg_split          = { emit = "stdlib:regex_split_pat_first",   min_args = 2, max_args = 4 }
 
 # ── Math functions ───────────────────────────────────────────────────────────
 
@@ -124,14 +133,14 @@ M_PI                = { emit = "host:ecma:math:PI",          min_args = 0, max_a
 
 # ── Type conversion ─────────────────────────────────────────────────────────
 
-intval              = { emit = "host:vybe:convert:cint",     min_args = 1, max_args = 2 }
-floatval            = { emit = "host:vybe:convert:cdbl",     min_args = 1, max_args = 1 }
-doubleval           = { emit = "host:vybe:convert:cdbl",     min_args = 1, max_args = 1 }
-strval              = { emit = "host:vybe:convert:toString", min_args = 1, max_args = 1 }
-boolval             = { emit = "host:vybe:convert:cbool",    min_args = 1, max_args = 1 }
-is_numeric          = { emit = "host:vybe:convert:isNaN",    min_args = 1, max_args = 1 }
-is_finite           = { emit = "host:vybe:convert:isFinite", min_args = 1, max_args = 1 }
-is_nan              = { emit = "host:vybe:convert:isNaN",    min_args = 1, max_args = 1 }
+intval              = { emit = "intrinsic:cint",     min_args = 1, max_args = 2 }
+floatval            = { emit = "host:ecma:number:Number",     min_args = 1, max_args = 1 }
+doubleval           = { emit = "host:ecma:number:Number",     min_args = 1, max_args = 1 }
+strval              = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
+boolval             = { emit = "host:ecma:boolean:Boolean",    min_args = 1, max_args = 1 }
+is_numeric          = { emit = "host:ecma:number:isNaN",    min_args = 1, max_args = 1 }
+is_finite           = { emit = "host:ecma:number:isFinite",  min_args = 1, max_args = 1 }
+is_nan              = { emit = "host:ecma:number:isNaN",     min_args = 1, max_args = 1 }
 
 # ── Array functions ─────────────────────────────────────────────────────────
 
@@ -192,8 +201,8 @@ sleep               = { emit = "host:wasi:clocks:sleep",     min_args = 1, max_a
 
 # ── String formatting ──────────────────────────────────────────────────────
 
-sprintf             = { emit = "host:vybe:string:sprintf",   min_args = 1, max_args = 255 }
-substr              = { emit = "host:vybe:string:substr",    min_args = 2, max_args = 3 }
+sprintf             = { emit = "stdlib:sprintf",            min_args = 1, max_args = 255 }
+substr              = { emit = "intrinsic:php_substr",       min_args = 2, max_args = 3 }
 
 # ── Internal helpers — AST rewrite targets ─────────────────────────────────
 # The PHP walker rewrites `$x++` → `$x = __php_increment($x)` and

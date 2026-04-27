@@ -18,3 +18,4 @@ mod test_comprehensions;
 mod test_error_handling;
 mod test_multi_value;
 mod test_generators;
+mod test_loop_isolate;

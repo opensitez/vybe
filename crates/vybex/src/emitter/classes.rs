@@ -292,7 +292,7 @@ pub fn emit_inherit_statics(chunk: &mut Chunk, parent_name: &str, line: u32) {
     chunk.emit_op(Op::DUP, line);
     let parent_c = chunk.add_constant(Value::String(Arc::from(parent_name)));
     chunk.emit_op_u16(Op::GLOBAL_GET, parent_c, line);
-    let assign_fn = chunk.add_import("vybe:object", "assign");
+    let assign_fn = chunk.add_import("ecma:object", "assign");
     chunk.emit_op_u16(Op::CALL_IMPORT, assign_fn, line);
     chunk.emit(2, line);
     chunk.emit_op(Op::DROP, line);

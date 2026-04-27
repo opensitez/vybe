@@ -246,21 +246,68 @@ impl VM {
                     let obj = self.pop();
                     match &obj {
                         Value::Object(o) => {
-                            // Handle negative indices: x[-1] → x[len-1]
-                            let k = {
-                                let idx = key.as_f64() as i64;
-                                if idx < 0 {
-                                    let ob = o.lock().unwrap();
-                                    let len = match &ob.kind {
-                                        ObjectKind::Array(a) => a.len() as i64,
-                                        _ => 0,
+                            // Map (associative collection — Python dict, PHP keyed
+                            // array, Ruby hash, JS Map): IndexMap lookup by Value
+                            // key. Distinct from member access on a Map (`m.foo`
+                            // → struct_get → Object::get → property bag) which
+                            // matches JS semantics (`m.foo !== m.get("foo")`).
+                            // Mirrors `ecma:map.get` (ECMA-262 §24.1.3.4).
+                            {
+                                let ob = o.lock().unwrap();
+                                if let ObjectKind::Map(ref m) = ob.kind {
+                                    let lookup_key = match &key {
+                                        Value::String(_) | Value::I32(_) | Value::I64(_) | Value::F64(_) => key.clone(),
+                                        other => Value::String(Arc::from(format!("{}", other).as_str())),
                                     };
-                                    format!("{}", (len + idx).max(0))
-                                } else {
-                                    format!("{}", key)
+                                    if let Some(v) = m.get(&lookup_key) {
+                                        let v = v.clone();
+                                        drop(ob);
+                                        self.push(v)?;
+                                        continue;
+                                    }
+                                    // Numeric/string key coercion (PHP idiom): "0" ↔ 0.
+                                    if let Value::String(s) = &key {
+                                        if let Ok(n) = s.parse::<i32>() {
+                                            if let Some(v) = m.get(&Value::I32(n)) {
+                                                let v = v.clone();
+                                                drop(ob);
+                                                self.push(v)?;
+                                                continue;
+                                            }
+                                        }
+                                    } else if let Value::I32(n) = &key {
+                                        if let Some(v) = m.get(&Value::String(Arc::from(n.to_string().as_str()))) {
+                                            let v = v.clone();
+                                            drop(ob);
+                                            self.push(v)?;
+                                            continue;
+                                        }
+                                    }
+                                    drop(ob);
+                                    self.push(Value::Undefined)?;
+                                    continue;
                                 }
-                            };
-                            let val = o.lock().unwrap().get(&k);
+                            }
+                            // Array / property-bag dispatch — spec-clean indexed
+                            // access (no negative-index wrap). ECMA §10.4.2.1
+                            // returns undefined for `arr[-1]` and any missing
+                            // property; languages whose syntax wraps (Python,
+                            // Ruby) normalize the index ahead of this opcode
+                            // via the compiler's `emit_negative_index_wrap`
+                            // adapter. Missing-key returns Undefined (not Null)
+                            // so JS predicates like `cache[k] !== undefined`
+                            // work correctly.
+                            let k = format!("{}", key);
+                            let mut val = o.lock().unwrap().get(&k);
+                            if matches!(val, Value::Null) {
+                                let ob = o.lock().unwrap();
+                                let exists = ob.properties.contains_key(&k)
+                                    || matches!(&ob.kind, ObjectKind::Array(a)
+                                        if k.parse::<usize>().map(|i| i < a.len()).unwrap_or(false));
+                                if !exists {
+                                    val = Value::Undefined;
+                                }
+                            }
                             // If not found and object has __getitem__, call it
                             if matches!(val, Value::Null) {
                                 let getitem = o.lock().unwrap().properties.get("__getitem__").cloned();
@@ -301,6 +348,22 @@ impl VM {
                             self.pop(); // discard __setitem__ return
                             self.push(val)?;
                             continue;
+                        }
+                        // Map (Python dict, PHP keyed array, Ruby hash, JS Map):
+                        // insert into the IndexMap by Value-keyed entry, not the
+                        // property bag. Mirrors `ecma:map.set` (ECMA-262 §24.1.3.9).
+                        {
+                            let mut ob = o.lock().unwrap();
+                            if let ObjectKind::Map(ref mut m) = ob.kind {
+                                let map_key = match &key {
+                                    Value::String(_) | Value::I32(_) | Value::I64(_) | Value::F64(_) => key.clone(),
+                                    other => Value::String(Arc::from(format!("{}", other).as_str())),
+                                };
+                                m.insert(map_key, val.clone());
+                                drop(ob);
+                                self.push(val)?;
+                                continue;
+                            }
                         }
                         let k = format!("{}", key);
                         o.lock().unwrap().set(k, val.clone());

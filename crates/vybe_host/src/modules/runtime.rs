@@ -66,52 +66,10 @@ pub fn register(vm: &mut VM) {
         val
     }));
 
-    // Promise.resolve(value) → creates a fulfilled Promise
-    vm.register_host_fn("vybe:runtime", "promiseResolve", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let val = args.first().cloned().unwrap_or(Value::Null);
-        make_promise("fulfilled", val)
-    }));
-
-    // Promise.reject(reason) → creates a rejected Promise
-    vm.register_host_fn("vybe:runtime", "promiseReject", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let val = args.first().cloned().unwrap_or(Value::Null);
-        make_promise("rejected", val)
-    }));
-
-    // Promise.all(array) → Promise that resolves with array of values
-    vm.register_host_fn("vybe:runtime", "promiseAll", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        if let Some(Value::Object(arr)) = args.first() {
-            let o = arr.lock().unwrap();
-            if let ObjectKind::Array(ref elems) = o.kind {
-                let results: Vec<Value> = elems.iter().map(|p| {
-                    if let Value::Object(obj) = p {
-                        let po = obj.lock().unwrap();
-                        if po.properties.get("__type").map(|v| format!("{}", v)) == Some("Promise".into()) {
-                            return po.properties.get("__value").cloned().unwrap_or(Value::Null);
-                        }
-                    }
-                    p.clone()
-                }).collect();
-                return make_promise("fulfilled", Value::Object(
-                    Arc::new(Mutex::new(Object::new_array(results)))
-                ));
-            }
-        }
-        make_promise("fulfilled", Value::Null)
-    }));
-
-    // Error constructor: new Error("message")
-    vm.register_host_fn("vybe:runtime", "Error", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        make_error("Error", args)
-    }));
-
-    vm.register_host_fn("vybe:runtime", "TypeError", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        make_error("TypeError", args)
-    }));
-
-    vm.register_host_fn("vybe:runtime", "RangeError", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        make_error("RangeError", args)
-    }));
+    // Promise.{resolve,reject,all} retired — moved to `ecma:promise`
+    // (full §27.7 surface incl. race/allSettled/any/try/withResolvers).
+    // Error/TypeError/RangeError retired — moved to `ecma:error` (full
+    // §20.5: 8 native error subclasses).
 
     // GoTo support — stores the target label. The caller checks this global
     // to implement VB6-style GoTo within a subroutine.
@@ -153,29 +111,6 @@ pub fn register(vm: &mut VM) {
         });
         Value::Object(task_obj)
     }));
-}
-
-fn make_error(kind: &str, args: &[Value]) -> Value {
-    // args[0] = this (from new), args[1] = message
-    let this = args.first().cloned().unwrap_or(Value::Null);
-    let message = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
-    if let Value::Object(ref obj) = this {
-        let mut o = obj.lock().unwrap();
-        o.properties.insert("__type".into(), Value::String(Arc::from(kind)));
-        o.properties.insert("__exception_type".into(), Value::String(Arc::from(kind)));
-        o.properties.insert("name".into(), Value::String(Arc::from(kind)));
-        o.properties.insert("message".into(), Value::String(Arc::from(message.as_str())));
-        o.properties.insert("stack".into(), Value::String(Arc::from(format!("{}: {}", kind, message).as_str())));
-    }
-    this
-}
-
-fn make_promise(state: &str, value: Value) -> Value {
-    let mut obj = Object::new();
-    obj.properties.insert("__type".into(), Value::String(Arc::from("Promise")));
-    obj.properties.insert("__state".into(), Value::String(Arc::from(state)));
-    obj.properties.insert("__value".into(), value);
-    Value::Object(Arc::new(Mutex::new(obj)))
 }
 
 fn dispatch_list(ctx: &mut HostContext, obj: &Value, method: &str, args: &[Value]) -> Value {

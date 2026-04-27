@@ -33,21 +33,25 @@ pub fn emit_i64_extend(chunk: &mut Chunk, line: u32) {
 
 /// Any value → string representation. Stack: [value] → [string]
 pub fn emit_to_string(chunk: &mut Chunk, line: u32) {
-    let idx = chunk.add_import("vybe:convert", "toString");
+    let idx = chunk.add_import("ecma:string", "String");
     chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(1, line);
 }
 
 /// String → int (parse). Stack: [string] → [i32]
+///
+/// Uses `ecma:number.parseInt` (§19.2.5) — stops at the first non-digit
+/// so `parseInt("3.7") = 3`, matching VB `CInt`/Python `int`/PHP `intval`
+/// semantics for string parsing. `Number(x)` would return 3.7 here.
 pub fn emit_parse_int(chunk: &mut Chunk, line: u32) {
-    let idx = chunk.add_import("vybe:convert", "cint");
+    let idx = chunk.add_import("ecma:number", "parseInt");
     chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(1, line);
 }
 
 /// String → float (parse). Stack: [string] → [f64]
 pub fn emit_parse_float(chunk: &mut Chunk, line: u32) {
-    let idx = chunk.add_import("vybe:convert", "cdbl");
+    let idx = chunk.add_import("ecma:number", "Number");
     chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunk.emit(1, line);
 }

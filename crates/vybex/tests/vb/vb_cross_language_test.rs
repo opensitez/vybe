@@ -171,6 +171,7 @@ fn load_js_profile() -> vybex::profile::LanguageProfile {
         case_sensitive: true,
         string_indexing: StringIndexing::ZeroBased,
         array_upper_bound_inclusive: false,
+        negative_index_wraps: false,
         parens_for_index: false,
         entry_point: None,
         hoist_var: true,

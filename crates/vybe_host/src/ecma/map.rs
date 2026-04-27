@@ -19,6 +19,10 @@ fn new_map_value() -> Value {
     let mut obj = Object::new();
     obj.kind = ObjectKind::Map(IndexMap::new());
     obj.properties.insert("size".into(), Value::I32(0));
+    // __type stamp lets TypeRegistry-driven runtime method dispatch
+    // (`STRUCT_GET m "set"` → host fn) find the right binding. Without
+    // it, JS-shape `m.set(k,v)` would dereference a missing property.
+    obj.properties.insert("__type".into(), Value::String(Arc::from("Map")));
     Value::Object(Arc::new(Mutex::new(obj)))
 }
 
@@ -43,8 +47,35 @@ fn sync_map_size(obj: &mut Object) {
 }
 
 pub fn register(vm: &mut VM) {
+    // `new Map(iterable?)` — per ECMA-262 §24.1.1.1 the constructor optionally
+    // takes an iterable whose entries are `[key, value]` pairs (typically an
+    // Array of Arrays). Same semantics as `Map.fromEntries(iterable)`.
     vm.register_host_fn("ecma:map", "new",
-        Box::new(|_ctx, _args| new_map_value()));
+        Box::new(|_ctx, args| {
+            let m = new_map_value();
+            if let (Value::Object(mapobj), Some(Value::Object(src))) = (&m, args.first()) {
+                let s = src.lock().unwrap();
+                if let ObjectKind::Array(ref pairs) = s.kind {
+                    let pairs = pairs.clone();
+                    drop(s);
+                    let mut mo = mapobj.lock().unwrap();
+                    if let ObjectKind::Map(ref mut im) = mo.kind {
+                        for pair in pairs {
+                            if let Value::Object(p) = pair {
+                                let pl = p.lock().unwrap();
+                                if let ObjectKind::Array(ref kv) = pl.kind {
+                                    if kv.len() >= 2 {
+                                        im.insert(kv[0].clone(), kv[1].clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    sync_map_size(&mut mo);
+                }
+            }
+            m
+        }));
 
     // fromEntries(iterable) — iterable is an Array of [k, v] pairs.
     vm.register_host_fn("ecma:map", "fromEntries",
@@ -111,10 +142,10 @@ pub fn register(vm: &mut VM) {
                 let key = args.get(1).cloned().unwrap_or(Value::Undefined);
                 let m = mapobj.lock().unwrap();
                 if let ObjectKind::Map(ref im) = m.kind {
-                    return Value::I32(if im.contains_key(&key) { 1 } else { 0 });
+                    return Value::Bool(im.contains_key(&key));
                 }
             }
-            Value::I32(0)
+            Value::Bool(false)
         }));
 
     vm.register_host_fn("ecma:map", "delete",
@@ -130,9 +161,9 @@ pub fn register(vm: &mut VM) {
                     false
                 };
                 sync_map_size(&mut m);
-                return Value::I32(if removed { 1 } else { 0 });
+                return Value::Bool(removed);
             }
-            Value::I32(0)
+            Value::Bool(false)
         }));
 
     vm.register_host_fn("ecma:map", "clear",

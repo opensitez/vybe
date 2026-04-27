@@ -210,15 +210,14 @@ fn test_b17_map_string_keys_number_values() {
     assert_eq!(run_js_one(code), "103");
 }
 
-// B18. Map — get missing key returns undefined
+// B18. Map — get missing key returns undefined (ECMA-262 §24.1.3.6).
 #[test]
 fn test_b18_map_get_missing() {
     let code = r#"
         let m = new Map();
         console.log(m.get("nope"));
     "#;
-    // callMethod returns null for missing keys (VM represents undefined/null as null)
-    assert_eq!(run_js_one(code), "null");
+    assert_eq!(run_js_one(code), "undefined");
 }
 
 // B19. Map — overwrite existing key

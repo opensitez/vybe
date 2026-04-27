@@ -189,6 +189,22 @@ fn dispatch_string(receiver: &Value, method: &str, args: &[Value]) -> Value {
             Value::String(Arc::from(s.repeat(n).as_str()))
         }
         "split" => {
+            // ECMA-262 §22.1.3.20 — first arg can be a String OR a RegExp.
+            // Detect the RegExp shape (object stamped __type=RegExp) and
+            // dispatch through the regex crate.
+            if let Some((pat, flags)) = regex_pattern(args.first()) {
+                if let Some(re) = compile_js_regex(&pat, &flags) {
+                    let limit = args.get(1).and_then(|v| {
+                        let n = v.as_i32();
+                        if n > 0 { Some(n as usize) } else { None }
+                    });
+                    let parts: Vec<Value> = match limit {
+                        Some(n) => re.splitn(&s, n).map(|p| Value::String(Arc::from(p))).collect(),
+                        None => re.split(&s).map(|p| Value::String(Arc::from(p))).collect(),
+                    };
+                    return make_array(parts);
+                }
+            }
             let sep = args.first().map(to_str).unwrap_or_default();
             let parts: Vec<Value> = if sep.is_empty() {
                 s.chars()
@@ -202,14 +218,77 @@ fn dispatch_string(receiver: &Value, method: &str, args: &[Value]) -> Value {
             make_array(parts)
         }
         "replace" => {
+            // ECMA-262 §22.1.3.18 — first arg can be String or RegExp.
+            // With a RegExp + `g` flag → replace all; else first only.
+            if let Some((pat, flags)) = regex_pattern(args.first()) {
+                if let Some(re) = compile_js_regex(&pat, &flags) {
+                    let with = args.get(1).map(to_str).unwrap_or_default();
+                    let result = if flags.contains('g') {
+                        re.replace_all(&s, with.as_str()).into_owned()
+                    } else {
+                        re.replace(&s, with.as_str()).into_owned()
+                    };
+                    return Value::String(Arc::from(result.as_str()));
+                }
+            }
             let find = args.first().map(to_str).unwrap_or_default();
             let with = args.get(1).map(to_str).unwrap_or_default();
             Value::String(Arc::from(s.replacen(find.as_str(), with.as_str(), 1).as_str()))
         }
         "replaceAll" => {
+            if let Some((pat, flags)) = regex_pattern(args.first()) {
+                if let Some(re) = compile_js_regex(&pat, &flags) {
+                    let with = args.get(1).map(to_str).unwrap_or_default();
+                    return Value::String(Arc::from(re.replace_all(&s, with.as_str()).as_ref()));
+                }
+            }
             let find = args.first().map(to_str).unwrap_or_default();
             let with = args.get(1).map(to_str).unwrap_or_default();
             Value::String(Arc::from(s.replace(find.as_str(), with.as_str()).as_str()))
+        }
+        "match" => {
+            // ECMA-262 §22.1.3.13 — receiver=string, arg=regex (or string,
+            // which is treated as a regex source).
+            let (pat, flags) = regex_pattern(args.first())
+                .unwrap_or_else(|| (args.first().map(to_str).unwrap_or_default(), String::new()));
+            let re = match compile_js_regex(&pat, &flags) {
+                Some(r) => r,
+                None => return Value::Null,
+            };
+            if flags.contains('g') {
+                let matches: Vec<Value> = re.find_iter(&s)
+                    .map(|m| Value::String(Arc::from(m.as_str())))
+                    .collect();
+                if matches.is_empty() { Value::Null } else { make_array(matches) }
+            } else {
+                let caps = match re.captures(&s) {
+                    Some(c) => c,
+                    None => return Value::Null,
+                };
+                let mut elems: Vec<Value> = Vec::with_capacity(caps.len());
+                for i in 0..caps.len() {
+                    elems.push(match caps.get(i) {
+                        Some(m) => Value::String(Arc::from(m.as_str())),
+                        None => Value::Undefined,
+                    });
+                }
+                let mut match_obj = Object::new_array(elems);
+                let index = caps.get(0).map(|m| m.start() as i32).unwrap_or(0);
+                match_obj.properties.insert("index".into(), Value::I32(index));
+                match_obj.properties.insert("input".into(), Value::String(s.clone()));
+                Value::Object(Arc::new(Mutex::new(match_obj)))
+            }
+        }
+        "search" => {
+            let (pat, flags) = regex_pattern(args.first())
+                .unwrap_or_else(|| (args.first().map(to_str).unwrap_or_default(), String::new()));
+            match compile_js_regex(&pat, &flags) {
+                Some(re) => match re.find(&s) {
+                    Some(m) => Value::I32(m.start() as i32),
+                    None => Value::I32(-1),
+                },
+                None => Value::I32(-1),
+            }
         }
         "concat" => {
             let mut out = s.to_string();
@@ -710,33 +789,223 @@ fn truthy(v: &Value) -> bool {
     }
 }
 
-// ── Map / Set dispatch — delegate to existing host fns where possible.
-// Callers on v8 go through `ecma:map.*` directly; Vybe's VM does the
-// work inline here so it doesn't need `HostContext` to loop back into
-// the host registry.
+// ── Map / Set dispatch — operate directly on ObjectKind::Map/Set.
+//
+// Callers on v8 go through `ecma:map.*` / `ecma:set.*` directly; Vybe's VM
+// does the same work inline here so it doesn't need to loop back through
+// `HostContext` into the host registry. Semantics mirror
+// `crates/vybe_host/src/ecma/{map,set}.rs` exactly — keys use SameValueZero
+// (`Value`'s `Hash + Eq` impl), `delete` uses `shift_remove` to preserve
+// insertion order per ECMA-262 §24.1.3.3 / §24.2.3.4.
+
+fn sync_map_size(o: &mut Object) {
+    if let ObjectKind::Map(ref m) = o.kind {
+        let n = m.len() as i32;
+        o.properties.insert("size".to_string(), Value::I32(n));
+    }
+}
+
+fn sync_set_size(o: &mut Object) {
+    if let ObjectKind::Set(ref s) = o.kind {
+        let n = s.len() as i32;
+        o.properties.insert("size".to_string(), Value::I32(n));
+    }
+}
 
 fn dispatch_map(
-    _ctx: &mut HostContext,
+    ctx: &mut HostContext,
     obj: Arc<Mutex<Object>>,
     method: &str,
     args: &[Value],
 ) -> Value {
-    let _ = (obj, method, args);
-    // Minimal stub — Map methods are routed through their typed imports at
-    // compile time (profile has `[array_methods]` that doesn't intercept
-    // Map/Set). If a dynamic-typed call lands here, fall through to
-    // Undefined so a useful error surfaces in tests.
-    Value::Undefined
+    match method {
+        "get" => {
+            let key = args.first().cloned().unwrap_or(Value::Undefined);
+            let m = obj.lock().unwrap();
+            if let ObjectKind::Map(ref im) = m.kind {
+                return im.get(&key).cloned().unwrap_or(Value::Undefined);
+            }
+            Value::Undefined
+        }
+        "set" => {
+            let key = args.first().cloned().unwrap_or(Value::Undefined);
+            let val = args.get(1).cloned().unwrap_or(Value::Undefined);
+            {
+                let mut m = obj.lock().unwrap();
+                if let ObjectKind::Map(ref mut im) = m.kind {
+                    im.insert(key, val);
+                }
+                sync_map_size(&mut m);
+            }
+            Value::Object(obj)
+        }
+        "has" => {
+            let key = args.first().cloned().unwrap_or(Value::Undefined);
+            let m = obj.lock().unwrap();
+            if let ObjectKind::Map(ref im) = m.kind {
+                return Value::Bool(im.contains_key(&key));
+            }
+            Value::Bool(false)
+        }
+        "delete" => {
+            let key = args.first().cloned().unwrap_or(Value::Undefined);
+            let mut m = obj.lock().unwrap();
+            let removed = if let ObjectKind::Map(ref mut im) = m.kind {
+                im.shift_remove(&key).is_some()
+            } else {
+                false
+            };
+            sync_map_size(&mut m);
+            Value::Bool(removed)
+        }
+        "clear" => {
+            let mut m = obj.lock().unwrap();
+            if let ObjectKind::Map(ref mut im) = m.kind {
+                im.clear();
+            }
+            sync_map_size(&mut m);
+            Value::Undefined
+        }
+        "size" => {
+            let m = obj.lock().unwrap();
+            if let ObjectKind::Map(ref im) = m.kind {
+                return Value::I32(im.len() as i32);
+            }
+            Value::I32(0)
+        }
+        "keys" => {
+            let m = obj.lock().unwrap();
+            if let ObjectKind::Map(ref im) = m.kind {
+                return make_array(im.keys().cloned().collect());
+            }
+            make_array(Vec::new())
+        }
+        "values" => {
+            let m = obj.lock().unwrap();
+            if let ObjectKind::Map(ref im) = m.kind {
+                return make_array(im.values().cloned().collect());
+            }
+            make_array(Vec::new())
+        }
+        "entries" => {
+            let m = obj.lock().unwrap();
+            if let ObjectKind::Map(ref im) = m.kind {
+                let pairs: Vec<Value> = im
+                    .iter()
+                    .map(|(k, v)| make_array(vec![k.clone(), v.clone()]))
+                    .collect();
+                return make_array(pairs);
+            }
+            make_array(Vec::new())
+        }
+        "forEach" => {
+            let cb = args.first().cloned().unwrap_or(Value::Null);
+            let snapshot: Vec<(Value, Value)> = {
+                let m = obj.lock().unwrap();
+                if let ObjectKind::Map(ref im) = m.kind {
+                    im.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                } else {
+                    Vec::new()
+                }
+            };
+            for (k, v) in snapshot {
+                ctx.invoke(&cb, &[v, k, Value::Object(obj.clone())]);
+            }
+            Value::Undefined
+        }
+        _ => Value::Undefined,
+    }
 }
 
 fn dispatch_set(
-    _ctx: &mut HostContext,
+    ctx: &mut HostContext,
     obj: Arc<Mutex<Object>>,
     method: &str,
     args: &[Value],
 ) -> Value {
-    let _ = (obj, method, args);
-    Value::Undefined
+    match method {
+        "add" => {
+            let v = args.first().cloned().unwrap_or(Value::Undefined);
+            {
+                let mut so = obj.lock().unwrap();
+                if let ObjectKind::Set(ref mut s) = so.kind {
+                    s.insert(v);
+                }
+                sync_set_size(&mut so);
+            }
+            Value::Object(obj)
+        }
+        "has" => {
+            let v = args.first().cloned().unwrap_or(Value::Undefined);
+            let so = obj.lock().unwrap();
+            if let ObjectKind::Set(ref s) = so.kind {
+                return Value::Bool(s.contains(&v));
+            }
+            Value::Bool(false)
+        }
+        "delete" => {
+            let v = args.first().cloned().unwrap_or(Value::Undefined);
+            let mut so = obj.lock().unwrap();
+            let removed = if let ObjectKind::Set(ref mut s) = so.kind {
+                s.shift_remove(&v)
+            } else {
+                false
+            };
+            sync_set_size(&mut so);
+            Value::Bool(removed)
+        }
+        "clear" => {
+            let mut so = obj.lock().unwrap();
+            if let ObjectKind::Set(ref mut s) = so.kind {
+                s.clear();
+            }
+            sync_set_size(&mut so);
+            Value::Undefined
+        }
+        "size" => {
+            let so = obj.lock().unwrap();
+            if let ObjectKind::Set(ref s) = so.kind {
+                return Value::I32(s.len() as i32);
+            }
+            Value::I32(0)
+        }
+        // Set.prototype.keys/values/entries: spec returns an iterator;
+        // MVP returns a snapshot Array (matches `ecma:set` registrations).
+        "keys" | "values" => {
+            let so = obj.lock().unwrap();
+            if let ObjectKind::Set(ref s) = so.kind {
+                return make_array(s.iter().cloned().collect());
+            }
+            make_array(Vec::new())
+        }
+        "entries" => {
+            let so = obj.lock().unwrap();
+            if let ObjectKind::Set(ref s) = so.kind {
+                let pairs: Vec<Value> = s
+                    .iter()
+                    .map(|v| make_array(vec![v.clone(), v.clone()]))
+                    .collect();
+                return make_array(pairs);
+            }
+            make_array(Vec::new())
+        }
+        "forEach" => {
+            let cb = args.first().cloned().unwrap_or(Value::Null);
+            let snapshot: Vec<Value> = {
+                let so = obj.lock().unwrap();
+                if let ObjectKind::Set(ref s) = so.kind {
+                    s.iter().cloned().collect()
+                } else {
+                    Vec::new()
+                }
+            };
+            for v in snapshot {
+                ctx.invoke(&cb, &[v.clone(), v, Value::Object(obj.clone())]);
+            }
+            Value::Undefined
+        }
+        _ => Value::Undefined,
+    }
 }
 
 // ── Plain object / prototype walk ─────────────────────────────────────
@@ -775,4 +1044,49 @@ fn to_str(v: &Value) -> String {
         Value::String(s) => s.to_string(),
         other => format!("{}", other),
     }
+}
+
+/// If `arg` is a RegExp object (Object stamped with `__type=RegExp`),
+/// extract its `(source, flags)` strings. Otherwise return None so the
+/// caller falls back to literal-string handling. Mirrors the shape
+/// produced by `ecma:regexp.new`.
+fn regex_pattern(arg: Option<&Value>) -> Option<(String, String)> {
+    let Some(Value::Object(obj)) = arg else { return None; };
+    let o = obj.lock().unwrap();
+    let type_tag = o.properties.get("__type")?;
+    if !matches!(type_tag, Value::String(s) if s.as_ref() == "RegExp") {
+        return None;
+    }
+    let src = match o.properties.get("source")? {
+        Value::String(s) => s.to_string(),
+        other => format!("{}", other),
+    };
+    let flags = match o.properties.get("flags") {
+        Some(Value::String(s)) => s.to_string(),
+        Some(other) => format!("{}", other),
+        None => String::new(),
+    };
+    Some((src, flags))
+}
+
+/// Compile a JS regex (pattern + JS flag string) using the Rust `regex`
+/// crate. JS flags `i`/`m`/`s` map to Rust inline modifiers; `g`/`y`/`d`/`u`
+/// have no inline equivalent — `g` is handled by the caller (find_iter
+/// vs find), the rest are ignored. Same flag handling as `ecma:regexp`.
+fn compile_js_regex(pattern: &str, flags: &str) -> Option<regex::Regex> {
+    let mut inline = String::new();
+    for c in flags.chars() {
+        match c {
+            'i' => inline.push('i'),
+            'm' => inline.push('m'),
+            's' => inline.push('s'),
+            _ => {}
+        }
+    }
+    let full = if inline.is_empty() {
+        pattern.to_string()
+    } else {
+        format!("(?{}){}", inline, pattern)
+    };
+    regex::Regex::new(&full).ok()
 }

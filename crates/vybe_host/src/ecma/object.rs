@@ -93,12 +93,30 @@ fn register_construction(vm: &mut VM) {
     // create(proto) -> new obj with prototype link
     vm.register_host_fn("ecma:object", "create",
         Box::new(|_ctx, args| {
+            // Object.create(proto) — ECMA-262 §20.1.2.2.
+            //
+            // True spec semantics ([[Get]] walking [[Prototype]]) need
+            // the JS compiler to emit `ecma:object:get(obj, key)` for
+            // property access — currently `obj.foo` lowers to STRUCT_GET
+            // which does own-only lookup. Until that migration lands,
+            // copy parent's enumerable own properties down so STRUCT_GET
+            // finds inherited members; also stash the parent under
+            // `__proto__` so reflective ops like `getPrototypeOf` work.
+            // Internal `__`-prefixed metadata is skipped during copy.
             let mut obj = Object::new();
-            if let Some(proto @ Value::Object(_)) = args.first() {
-                obj.properties.insert(PROTO_KEY.into(), proto.clone());
-            } else if matches!(args.first(), Some(Value::Null)) {
-                // Object.create(null) — no prototype chain
-                obj.properties.insert(PROTO_KEY.into(), Value::Null);
+            match args.first() {
+                Some(proto @ Value::Object(p)) => {
+                    obj.properties.insert(PROTO_KEY.into(), proto.clone());
+                    let parent = p.lock().unwrap();
+                    for (k, v) in parent.properties.iter() {
+                        if k.starts_with("__") { continue; }
+                        obj.properties.insert(k.clone(), v.clone());
+                    }
+                }
+                Some(Value::Null) => {
+                    obj.properties.insert(PROTO_KEY.into(), Value::Null);
+                }
+                _ => {}
             }
             Value::Object(Arc::new(Mutex::new(obj)))
         }));
@@ -125,24 +143,35 @@ fn register_construction(vm: &mut VM) {
             Value::Object(Arc::new(Mutex::new(obj)))
         }));
 
-    // assign(target, source) -> target (pairwise; multi-source chains)
+    // `Object.assign(target, ...sources)` — ECMA-262 §20.1.2.1.
+    // Variadic in the source positions; each source contributes its
+    // own enumerable string-keyed properties onto target. Returns the
+    // modified target. Internal `__`-prefixed properties are skipped
+    // (they're our private metadata, not enumerable JS properties).
     vm.register_host_fn("ecma:object", "assign",
         Box::new(|_ctx, args| {
-            if let (Some(target), Some(source)) = (args.first(), args.get(1)) {
-                if let (Value::Object(t), Value::Object(s)) = (target, source) {
-                    let src = s.lock().unwrap();
-                    let props: Vec<(String, Value)> = src.properties.iter()
-                        .filter(|(k, _)| !k.starts_with("__"))
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect();
-                    drop(src);
-                    let mut tgt = t.lock().unwrap();
-                    for (k, v) in props {
-                        tgt.properties.insert(k, v);
+            let target = match args.first() {
+                Some(t) => t.clone(),
+                None => return Value::Null,
+            };
+            if let Value::Object(t) = &target {
+                for source in args.iter().skip(1) {
+                    if let Value::Object(s) = source {
+                        let props: Vec<(String, Value)> = {
+                            let src = s.lock().unwrap();
+                            src.properties.iter()
+                                .filter(|(k, _)| !k.starts_with("__"))
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect()
+                        };
+                        let mut tgt = t.lock().unwrap();
+                        for (k, v) in props {
+                            tgt.properties.insert(k, v);
+                        }
                     }
                 }
             }
-            args.first().cloned().unwrap_or(Value::Null)
+            target
         }));
 }
 
@@ -182,9 +211,9 @@ fn register_access(vm: &mut VM) {
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let key = args.get(1).map(key_string).unwrap_or_default();
-                return Value::I32(if proto_walk_get(&obj, &key).is_some() { 1 } else { 0 });
+                return Value::Bool(proto_walk_get(&obj, &key).is_some());
             }
-            Value::I32(0)
+            Value::Bool(false)
         }));
 
     // hasOwn(obj, key) -> bool (own-only, no prototype walk). Polymorphic
@@ -220,18 +249,18 @@ fn register_access(vm: &mut VM) {
             Value::Bool(false)
         }));
 
-    // delete(obj, key) -> i32 (1 if deleted)
+    // delete(obj, key) -> bool — ECMA-262 §13.5.1 (delete operator).
     vm.register_host_fn("ecma:object", "delete",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let key = args.get(1).map(key_string).unwrap_or_default();
                 let mut o = obj.lock().unwrap();
                 if o.properties.get(SEALED_MARK).is_some() {
-                    return Value::I32(0);
+                    return Value::Bool(false);
                 }
-                return Value::I32(if o.properties.remove(&key).is_some() { 1 } else { 0 });
+                return Value::Bool(o.properties.remove(&key).is_some());
             }
-            Value::I32(0)
+            Value::Bool(false)
         }));
 }
 
@@ -520,9 +549,9 @@ fn register_locking(vm: &mut VM) {
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
-                return Value::I32(if o.properties.get(FROZEN_MARK).is_some() { 1 } else { 0 });
+                return Value::Bool(o.properties.get(FROZEN_MARK).is_some());
             }
-            Value::I32(0)
+            Value::Bool(false)
         }));
 
     vm.register_host_fn("ecma:object", "seal",
@@ -541,9 +570,9 @@ fn register_locking(vm: &mut VM) {
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
-                return Value::I32(if o.properties.get(SEALED_MARK).is_some() { 1 } else { 0 });
+                return Value::Bool(o.properties.get(SEALED_MARK).is_some());
             }
-            Value::I32(0)
+            Value::Bool(false)
         }));
 
     vm.register_host_fn("ecma:object", "preventExtensions",
@@ -561,12 +590,9 @@ fn register_locking(vm: &mut VM) {
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
-                return Value::I32(match o.properties.get(EXTENSIBLE_MARK) {
-                    Some(Value::I32(0)) => 0,
-                    _ => 1,  // absence => extensible
-                });
+                return Value::Bool(!matches!(o.properties.get(EXTENSIBLE_MARK), Some(Value::I32(0))));
             }
-            Value::I32(0)
+            Value::Bool(false)
         }));
 }
 
@@ -592,7 +618,8 @@ fn register_comparison(vm: &mut VM) {
                 (Some(x), Some(y)) => x.eq(y),
                 _ => false,
             };
-            Value::I32(if same { 1 } else { 0 })
+            // ECMA-262 §20.1.2.13: returns a Boolean.
+            Value::Bool(same)
         }));
 }
 

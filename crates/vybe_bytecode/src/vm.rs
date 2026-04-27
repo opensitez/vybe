@@ -347,11 +347,6 @@ impl VM {
         }
     }
 
-    /// Check if native Vybe host functions are registered.
-    pub fn has_vybe_host(&self) -> bool {
-        self.host_registry.contains_key(&("vybe:array".to_string(), "redim".to_string()))
-    }
-
     /// Evaluate a constant expression (Extended Const Expressions).
     /// Used for global initialization at load time.
     pub(crate) fn eval_const_expr(&self, expr: &crate::chunk::ConstExpr) -> Value {
@@ -803,7 +798,6 @@ impl VM {
                     // Try to resolve against host registry first
                     let key_candidates = [
                         ("wasi:cli".to_string(), name.clone()),
-                        ("vybe:console".to_string(), name.clone()),
                     ];
                     let mut resolved = false;
                     for key in &key_candidates {

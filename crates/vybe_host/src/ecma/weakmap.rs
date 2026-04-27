@@ -35,12 +35,14 @@ fn new_weakmap() -> Value {
     obj.properties.insert(WEAKMAP_TAG.into(), Value::I32(1));
     obj.properties.insert(WM_KEYS_PROP.into(),
         Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new())))));
+    obj.properties.insert("__type".into(), Value::String(Arc::from("WeakMap")));
     Value::Object(Arc::new(Mutex::new(obj)))
 }
 
 fn new_weakset() -> Value {
     let mut obj = Object::new_array(Vec::new());
     obj.properties.insert(WEAKSET_TAG.into(), Value::I32(1));
+    obj.properties.insert("__type".into(), Value::String(Arc::from("WeakSet")));
     Value::Object(Arc::new(Mutex::new(obj)))
 }
 
@@ -159,23 +161,23 @@ fn register_weakmap(vm: &mut VM) {
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_weakmap(args, 0) {
                 let key = args.get(1).cloned().unwrap_or(Value::Undefined);
-                if !matches!(key, Value::Object(_)) { return Value::I32(0); }
+                if !matches!(key, Value::Object(_)) { return Value::Bool(false); }
                 let m = mapobj.lock().unwrap();
                 if let Some(Value::Object(keys_obj)) = m.properties.get(WM_KEYS_PROP) {
                     let ko = keys_obj.lock().unwrap();
                     if let ObjectKind::Array(ref keys) = ko.kind {
-                        return Value::I32(if key_ptr_find(keys, &key).is_some() { 1 } else { 0 });
+                        return Value::Bool(key_ptr_find(keys, &key).is_some());
                     }
                 }
             }
-            Value::I32(0)
+            Value::Bool(false)
         }));
 
     vm.register_host_fn("ecma:weakmap", "delete",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_weakmap(args, 0) {
                 let key = args.get(1).cloned().unwrap_or(Value::Undefined);
-                if !matches!(key, Value::Object(_)) { return Value::I32(0); }
+                if !matches!(key, Value::Object(_)) { return Value::Bool(false); }
                 let mut m = mapobj.lock().unwrap();
                 let pos = if let Some(Value::Object(keys_obj)) = m.properties.get(WM_KEYS_PROP) {
                     let ko = keys_obj.lock().unwrap();
@@ -197,10 +199,10 @@ fn register_weakmap(vm: &mut VM) {
                             keys.remove(pos);
                         }
                     }
-                    return Value::I32(1);
+                    return Value::Bool(true);
                 }
             }
-            Value::I32(0)
+            Value::Bool(false)
         }));
 }
 
@@ -289,20 +291,20 @@ fn register_weakset(vm: &mut VM) {
         Box::new(|_ctx, args| {
             if let Some(setobj) = is_weakset(args, 0) {
                 let v = args.get(1).cloned().unwrap_or(Value::Undefined);
-                if !matches!(v, Value::Object(_)) { return Value::I32(0); }
+                if !matches!(v, Value::Object(_)) { return Value::Bool(false); }
                 let so = setobj.lock().unwrap();
                 if let ObjectKind::Array(ref vs) = so.kind {
-                    return Value::I32(if key_ptr_find(vs, &v).is_some() { 1 } else { 0 });
+                    return Value::Bool(key_ptr_find(vs, &v).is_some());
                 }
             }
-            Value::I32(0)
+            Value::Bool(false)
         }));
 
     vm.register_host_fn("ecma:weakset", "delete",
         Box::new(|_ctx, args| {
             if let Some(setobj) = is_weakset(args, 0) {
                 let v = args.get(1).cloned().unwrap_or(Value::Undefined);
-                if !matches!(v, Value::Object(_)) { return Value::I32(0); }
+                if !matches!(v, Value::Object(_)) { return Value::Bool(false); }
                 let mut so = setobj.lock().unwrap();
                 let pos = if let ObjectKind::Array(ref vs) = so.kind {
                     key_ptr_find(vs, &v)
@@ -313,9 +315,9 @@ fn register_weakset(vm: &mut VM) {
                     if let ObjectKind::Array(ref mut vs) = so.kind {
                         vs.remove(pos);
                     }
-                    return Value::I32(1);
+                    return Value::Bool(true);
                 }
             }
-            Value::I32(0)
+            Value::Bool(false)
         }));
 }

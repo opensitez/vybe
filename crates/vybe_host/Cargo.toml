@@ -24,3 +24,29 @@ md-5 = { workspace = true }
 form_urlencoded = { workspace = true }
 percent-encoding = { workspace = true }
 httpdate = { workspace = true }
+
+# ECMA-402 Intl backing — hybrid: focused crates for services that
+# have full multi-locale coverage at small size, ICU4X for the rest.
+# Backs `ecma:intl/*` the same way Node small-icu / Deno / Bun back
+# theirs. User-program .wasm output is unaffected (it just has import
+# declarations like `(import "ecma:intl/numberformat" "format" ...)`).
+#
+# Focused crates — ALL locales work out of the box at small total cost:
+intl_pluralrules = "7"          # PluralRules — full CLDR plural rules baked in
+unicode-segmentation = "1"      # Segmenter — UAX #29 graphemes/words/sentences
+unic-langid = "0.9"             # Locale — BCP-47 parser
+#
+# ICU4X 2.x — Unicode Consortium's Rust port of ICU. The umbrella `icu`
+# crate re-exports collator, datetime, decimal, list, locale, plurals,
+# properties, segmenter. `compiled_data` bakes CLDR data into the binary.
+icu = { version = "2.2", features = ["compiled_data"] }
+#
+# Pre-2.0 ICU services — these crates haven't been rolled into the icu
+# umbrella yet. They use the older `icu_locid` 1.x for locale types
+# (co-exists fine alongside icu 2.x's `icu_locale_core`).
+icu_relativetime = { version = "0.1", features = ["compiled_data"] }
+icu_displaynames = { version = "0.11", features = ["compiled_data"] }
+icu_locid = "1"   # Bridge: needed to construct DataLocale args for the
+                  # 0.11-era icu_displaynames / icu_relativetime APIs.
+fixed_decimal = "0.5"  # Bridge: matches icu_relativetime 0.1's transitive dep
+                       # so we can construct the FixedDecimal that format() takes.

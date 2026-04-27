@@ -45,20 +45,30 @@ alert               = { emit = "print",                    min_args = 1, max_arg
 prompt              = { emit = "host:wasi:cli:readLine",   min_args = 0, max_args = 1 }
 
 # ── Type conversion ──────────────────────────────────────────────────────────
+#
+# parseInt / parseFloat are ECMA-262 §19.2.5 globals and route to ecma:number
+# (which is also where Number.parseInt / Number.parseFloat point — same fn,
+# spec is explicit they're the same function).
+#
+# Global isNaN / isFinite COERCE before testing (§19.2.3, §19.2.2); the
+# `Number.isNaN` / `Number.isFinite` strict variants do not. ecma:number:isNaN
+# implements the strict form; the global coercion variant currently has no
+# ECMA host fn — that gap is tracked separately. Routing both names here
+# accepts a small semantics gap until the global variant is added.
 
-parseInt            = { emit = "host:vybe:convert:parseInt",     min_args = 1, max_args = 2 }
-parseFloat          = { emit = "host:vybe:convert:parseFloat",   min_args = 1, max_args = 1 }
-isNaN               = { emit = "host:vybe:convert:isNaN",         min_args = 1, max_args = 1 }
-isFinite            = { emit = "host:vybe:convert:isFinite",      min_args = 1, max_args = 1 }
+parseInt            = { emit = "host:ecma:number:parseInt",       min_args = 1, max_args = 2 }
+parseFloat          = { emit = "host:ecma:number:parseFloat",     min_args = 1, max_args = 1 }
+isNaN               = { emit = "host:ecma:number:isNaN",          min_args = 1, max_args = 1 }
+isFinite            = { emit = "host:ecma:number:isFinite",       min_args = 1, max_args = 1 }
 
 # ── Encoding ─────────────────────────────────────────────────────────────────
 
-btoa                    = { emit = "host:vybe:convert:btoa",                  min_args = 1, max_args = 1 }
-atob                    = { emit = "host:vybe:convert:atob",                  min_args = 1, max_args = 1 }
-encodeURIComponent      = { emit = "host:vybe:convert:encodeURIComponent",    min_args = 1, max_args = 1 }
-decodeURIComponent      = { emit = "host:vybe:convert:decodeURIComponent",    min_args = 1, max_args = 1 }
-encodeURI               = { emit = "host:vybe:convert:encodeURIComponent",    min_args = 1, max_args = 1 }
-decodeURI               = { emit = "host:vybe:convert:decodeURIComponent",    min_args = 1, max_args = 1 }
+btoa                    = { emit = "host:ecma:string:btoa",                  min_args = 1, max_args = 1 }
+atob                    = { emit = "host:ecma:string:atob",                  min_args = 1, max_args = 1 }
+encodeURIComponent      = { emit = "host:ecma:string:encodeURIComponent",    min_args = 1, max_args = 1 }
+decodeURIComponent      = { emit = "host:ecma:string:decodeURIComponent",    min_args = 1, max_args = 1 }
+encodeURI               = { emit = "host:ecma:string:encodeURI",             min_args = 1, max_args = 1 }
+decodeURI               = { emit = "host:ecma:string:decodeURI",             min_args = 1, max_args = 1 }
 
 # ── Math — WASM opcodes ─────────────────────────────────────────────────────
 
@@ -86,7 +96,7 @@ decodeURI               = { emit = "host:vybe:convert:decodeURIComponent",    mi
 "Math.log10"        = { emit = "stdlib:log10",    min_args = 1, max_args = 1 }
 "Math.exp"          = { emit = "stdlib:exp",      min_args = 1, max_args = 1 }
 "Math.sign"         = { emit = "stdlib:sign",     min_args = 1, max_args = 1 }
-"Math.random"       = { emit = "host:vybe:random:random",  min_args = 0, max_args = 0 }
+"Math.random"       = { emit = "host:ecma:math:random",  min_args = 0, max_args = 0 }
 "Math.hypot"        = { emit = "host:ecma:math:hypot",    min_args = 2, max_args = 2 }
 "Math.cbrt"         = { emit = "host:ecma:math:cbrt",     min_args = 1, max_args = 1 }
 "Math.clz32"        = { emit = "host:ecma:math:clz32",    min_args = 1, max_args = 1 }
@@ -95,17 +105,17 @@ decodeURI               = { emit = "host:vybe:convert:decodeURIComponent",    mi
 
 # ── Number static methods ────────────────────────────────────────────────────
 
-"Number.parseInt"   = { emit = "host:vybe:convert:parseInt",      min_args = 1, max_args = 2 }
-"Number.parseFloat" = { emit = "host:vybe:convert:parseFloat",    min_args = 1, max_args = 1 }
+"Number.parseInt"   = { emit = "host:ecma:number:parseInt",       min_args = 1, max_args = 2 }
+"Number.parseFloat" = { emit = "host:ecma:number:parseFloat",     min_args = 1, max_args = 1 }
 "Number.isNaN"      = { emit = "intrinsic:number_isnan",          min_args = 1, max_args = 1 }
 "Number.isFinite"   = { emit = "intrinsic:number_isfinite",       min_args = 1, max_args = 1 }
 "Number.isInteger"  = { emit = "intrinsic:number_isinteger",      min_args = 1, max_args = 1 }
 
 # ── Type coercion globals: Boolean(v), Number(v), String(v) ──────────────────
 
-Boolean             = { emit = "host:vybe:convert:toBool",        min_args = 1, max_args = 1 }
-Number              = { emit = "host:vybe:convert:toNumber",      min_args = 1, max_args = 1 }
-String              = { emit = "host:vybe:convert:toStr",         min_args = 1, max_args = 1 }
+Boolean             = { emit = "host:ecma:boolean:Boolean",       min_args = 1, max_args = 1 }
+Number              = { emit = "host:ecma:number:Number",         min_args = 1, max_args = 1 }
+String              = { emit = "host:ecma:string:String",         min_args = 1, max_args = 1 }
 
 # ── String static methods ────────────────────────────────────────────────────
 
@@ -128,23 +138,23 @@ String              = { emit = "host:vybe:convert:toStr",         min_args = 1, 
 "Object.keys"        = { emit = "host:ecma:object:keys",        min_args = 1, max_args = 1 }
 "Object.values"      = { emit = "host:ecma:object:values",      min_args = 1, max_args = 1 }
 "Object.entries"     = { emit = "host:ecma:object:entries",     min_args = 1, max_args = 1 }
-"Object.assign"      = { emit = "host:vybe:object:assign",       min_args = 2, max_args = 255 }
-"Object.freeze"      = { emit = "host:vybe:object:freeze",       min_args = 1, max_args = 1 }
-"Object.fromEntries" = { emit = "host:vybe:object:fromEntries",  min_args = 1, max_args = 1 }
+"Object.assign"      = { emit = "host:ecma:object:assign",       min_args = 2, max_args = 255 }
+"Object.freeze"      = { emit = "host:ecma:object:freeze",       min_args = 1, max_args = 1 }
+"Object.fromEntries" = { emit = "host:ecma:object:fromEntries",  min_args = 1, max_args = 1 }
 "Object.hasOwn"      = { emit = "host:ecma:object:hasOwn",      min_args = 2, max_args = 2 }
-"Object.create"      = { emit = "host:vybe:object:create",       min_args = 1, max_args = 2 }
-"Object.seal"        = { emit = "host:vybe:object:seal",         min_args = 1, max_args = 1 }
-"Object.isFrozen"    = { emit = "host:vybe:object:isFrozen",     min_args = 1, max_args = 1 }
-"Object.isSealed"    = { emit = "host:vybe:object:isSealed",     min_args = 1, max_args = 1 }
-"Object.is"          = { emit = "host:vybe:object:is",           min_args = 2, max_args = 2 }
-"Object.getPrototypeOf"     = { emit = "host:vybe:object:getPrototypeOf",     min_args = 1, max_args = 1 }
-"Object.getOwnPropertyNames" = { emit = "host:vybe:object:getOwnPropertyNames", min_args = 1, max_args = 1 }
-"Object.defineProperty" = { emit = "host:vybe:object:defineProperty", min_args = 3, max_args = 3 }
+"Object.create"      = { emit = "host:ecma:object:create",       min_args = 1, max_args = 2 }
+"Object.seal"        = { emit = "host:ecma:object:seal",         min_args = 1, max_args = 1 }
+"Object.isFrozen"    = { emit = "host:ecma:object:isFrozen",     min_args = 1, max_args = 1 }
+"Object.isSealed"    = { emit = "host:ecma:object:isSealed",     min_args = 1, max_args = 1 }
+"Object.is"          = { emit = "host:ecma:object:is",           min_args = 2, max_args = 2 }
+"Object.getPrototypeOf"     = { emit = "host:ecma:object:getPrototypeOf",     min_args = 1, max_args = 1 }
+"Object.getOwnPropertyNames" = { emit = "host:ecma:object:getOwnPropertyNames", min_args = 1, max_args = 1 }
+"Object.defineProperty" = { emit = "host:ecma:object:defineProperty", min_args = 3, max_args = 3 }
 
 # ── JSON ─────────────────────────────────────────────────────────────────────
 
-"JSON.parse"         = { emit = "host:vybe:json:parse",          min_args = 1, max_args = 1 }
-"JSON.stringify"     = { emit = "host:vybe:json:stringify",       min_args = 1, max_args = 3 }
+"JSON.parse"         = { emit = "host:ecma:json:parse",          min_args = 1, max_args = 1 }
+"JSON.stringify"     = { emit = "host:ecma:json:stringify",       min_args = 1, max_args = 3 }
 
 # ── Timers ───────────────────────────────────────────────────────────────────
 
@@ -172,7 +182,7 @@ queueMicrotask       = { emit = "noop",                          min_args = 1, m
 # ── crypto module ────────────────────────────────────────────────────────────
 
 "crypto.randomBytes" = { emit = "host:wasi:random/random:get-random-bytes",  min_args = 1, max_args = 1 }
-"crypto.randomUUID"  = { emit = "host:vybe:random:uuid",         min_args = 0, max_args = 0 }
+"crypto.randomUUID"  = { emit = "host:web:crypto:randomUUID",         min_args = 0, max_args = 0 }
 "crypto.createHash"  = { emit = "noop",                           min_args = 1, max_args = 1 }
 
 # ── path module ──────────────────────────────────────────────────────────────
@@ -226,9 +236,14 @@ queueMicrotask       = { emit = "noop",                          min_args = 1, m
 
 # ── Promise ──────────────────────────────────────────────────────────────────
 
-"Promise.resolve"     = { emit = "host:vybe:runtime:promiseResolve", min_args = 1, max_args = 1 }
-"Promise.reject"      = { emit = "host:vybe:runtime:promiseReject",  min_args = 1, max_args = 1 }
-"Promise.all"         = { emit = "host:vybe:runtime:promiseAll",     min_args = 1, max_args = 1 }
+"Promise.resolve"     = { emit = "host:ecma:promise:resolve",       min_args = 1, max_args = 1 }
+"Promise.reject"      = { emit = "host:ecma:promise:reject",        min_args = 1, max_args = 1 }
+"Promise.all"         = { emit = "host:ecma:promise:all",           min_args = 1, max_args = 1 }
+"Promise.race"        = { emit = "host:ecma:promise:race",          min_args = 1, max_args = 1 }
+"Promise.allSettled"  = { emit = "host:ecma:promise:allSettled",    min_args = 1, max_args = 1 }
+"Promise.any"         = { emit = "host:ecma:promise:any",           min_args = 1, max_args = 1 }
+"Promise.try"         = { emit = "host:ecma:promise:try",           min_args = 1, max_args = 1 }
+"Promise.withResolvers" = { emit = "host:ecma:promise:withResolvers", min_args = 0, max_args = 0 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # VALUE METHODS — instance methods called on values: str.toUpperCase(), arr.push()
@@ -268,10 +283,10 @@ includes      = { emit = "invoke:includes",      min_args = 1, max_args = 2 }
 slice         = { emit = "invoke:slice",         min_args = 0, max_args = 2 }
 at            = { emit = "invoke:at",            min_args = 1, max_args = 1 }
 concat        = { emit = "invoke:concat",        min_args = 1, max_args = 255 }
-match         = { emit = "host:vybe:string:match",     min_args = 1, max_args = 1 }
-search        = { emit = "host:vybe:string:search",    min_args = 1, max_args = 1 }
+match         = { emit = "host:ecma:regexp:match",     min_args = 1, max_args = 1 }
+search        = { emit = "host:ecma:regexp:search",    min_args = 1, max_args = 1 }
 toString      = { emit = "invoke:toString",      min_args = 0, max_args = 0 }
-toFixed       = { emit = "host:vybe:convert:toFixed",  min_args = 0, max_args = 1 }
+toFixed       = { emit = "host:ecma:number:toFixed",  min_args = 0, max_args = 1 }
 
 # Array instance methods — mutators only; polymorphic methods go through
 # `invoke:*` above. These are array-only per ECMA-262 so we emit the
@@ -285,7 +300,7 @@ fill          = { emit = "host:ecma:array:fill",    min_args = 1, max_args = 3 }
 unshift       = { emit = "host:ecma:array:unshift", min_args = 1, max_args = 255 }
 splice        = { emit = "host:ecma:array:splice",  min_args = 1, max_args = 255 }
 flat          = { emit = "host:ecma:array:flat",    min_args = 0, max_args = 1 }
-entries       = { emit = "host:vybe:array:enumerate",  min_args = 0, max_args = 0 }
+entries       = { emit = "host:ecma:array:entries",   min_args = 0, max_args = 0 }
 
 # Map/Set size property
 size              = { emit = "intrinsic:map_size",       min_args = 0, max_args = 0 }
@@ -293,9 +308,10 @@ size              = { emit = "intrinsic:map_size",       min_args = 0, max_args 
 # JS plain-object instance method `obj.hasOwnProperty(k)`. NB: only the
 # `hasOwnProperty` name is wired here — bare `has`/`delete`/`clear` are
 # Map/Set instance methods and the VM's runtime type-aware dispatch
-# (via `Map.__type → vybe:collections::mapHas` etc.) already handles
-# them correctly. Adding generic profile entries here would intercept
-# Map/Set calls at compile time and route them through the wrong storage.
+# (via `Map.__type → ecma:map.has` etc., bound in `builtin_types.rs`)
+# already handles them correctly. Adding generic profile entries here
+# would intercept Map/Set calls at compile time and route them through
+# the wrong storage.
 hasOwnProperty    = { emit = "common:dict.has",          min_args = 1, max_args = 1 }
 
 # Object.keys/values are STATIC calls via module alias (Object.keys(obj)),
@@ -360,42 +376,63 @@ module = "ecma:math"
 [[esm_default]]
 kind = "namespace"
 alias = "JSON"
-module = "vybe:json"
+module = "ecma:json"
 
 [[esm_default]]
 kind = "namespace"
 alias = "Object"
-module = "vybe:object"
+module = "ecma:object"
 
 [[esm_default]]
 kind = "namespace"
 alias = "RegExp"
-module = "vybe:regex"
+module = "ecma:regexp"
 
 [[esm_default]]
 kind = "namespace"
 alias = "Array"
-module = "vybe:array"
+module = "ecma:array"
 
 [[esm_default]]
 kind = "namespace"
 alias = "String"
-module = "vybe:string"
+module = "ecma:string"
 
 [[esm_default]]
 kind = "namespace"
 alias = "Number"
-module = "vybe:convert"
+module = "ecma:number"
+
+# Intl namespace — ECMA-402. The actual constructors live as properties
+# of the `Intl` global (set up by `crates/vybe_host/src/namespaces/intl.rs`),
+# so JS code that writes `new Intl.NumberFormat(...)` resolves through
+# the namespace registry. The ESM default below also makes
+# `import { ... } from "ecma:intl"` work for the static fns
+# (`getCanonicalLocales`, `supportedValuesOf`).
+[[esm_default]]
+kind = "namespace"
+alias = "Intl"
+module = "ecma:intl"
 
 [[esm_default]]
 kind = "namespace"
 alias = "Map"
-module = "vybe:collections"
+module = "ecma:map"
 
 [[esm_default]]
 kind = "namespace"
 alias = "Set"
-module = "vybe:collections"
+module = "ecma:set"
+
+[[esm_default]]
+kind = "namespace"
+alias = "WeakMap"
+module = "ecma:weakmap"
+
+[[esm_default]]
+kind = "namespace"
+alias = "WeakSet"
+module = "ecma:weakset"
 
 [[esm_default]]
 kind = "namespace"
@@ -415,7 +452,7 @@ module = "wasi:cli"
 [[esm_default]]
 kind = "namespace"
 alias = "random"
-module = "vybe:random"
+module = "wasi:random/random"
 
 [[esm_default]]
 kind = "namespace"
@@ -430,7 +467,70 @@ module = "wasi:http"
 [[esm_default]]
 kind = "namespace"
 alias = "crypto"
-module = "vybe:crypto"
+module = "node:crypto"
+
+# ECMA-262 globals exposed as ESM modules so user code can write
+# `import {Symbol, Reflect, Atomics, BigInt, Iterator} from "ecma:..."`.
+[[esm_default]]
+kind = "namespace"
+alias = "Symbol"
+module = "ecma:symbol"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Reflect"
+module = "ecma:reflect"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Atomics"
+module = "ecma:atomics"
+
+[[esm_default]]
+kind = "namespace"
+alias = "BigInt"
+module = "ecma:bigint"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Iterator"
+module = "ecma:iterator"
+
+# WHATWG / W3C web platform globals.
+[[esm_default]]
+kind = "namespace"
+alias = "URL"
+module = "web:url"
+
+[[esm_default]]
+kind = "namespace"
+alias = "URLSearchParams"
+module = "web:url"
+
+[[esm_default]]
+kind = "namespace"
+alias = "TextEncoder"
+module = "web:encoding"
+
+[[esm_default]]
+kind = "namespace"
+alias = "TextDecoder"
+module = "web:encoding"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Headers"
+module = "web:fetch"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Request"
+module = "web:fetch"
+
+[[esm_default]]
+kind = "namespace"
+alias = "Response"
+module = "web:fetch"
 
 [[esm_default]]
 kind = "namespace"
@@ -490,7 +590,7 @@ module = "vybe:database"
 [[esm_default]]
 kind = "namespace"
 alias = "Promise"
-module = "vybe:runtime"
+module = "ecma:promise"
 
 # Node `worker_threads` — worker.spawn() compiles to Op::THREAD_SPAWN
 # (WASM threads proposal). The module is a compiler-level intercept, not
@@ -501,24 +601,59 @@ module = "vybe:runtime"
 # ────────────────────────────────────────────────────────────────────────────
 
 [known_types]
-"Array"         = ["vybe:array", "arrayNew"]
-"Map"           = ["vybe:collections", "Map"]
-"Set"           = ["vybe:collections", "Set"]
-"Error"         = ["vybe:runtime", "Error"]
-"TypeError"     = ["vybe:runtime", "TypeError"]
-"RangeError"    = ["vybe:runtime", "RangeError"]
-"ReferenceError" = ["vybe:runtime", "ReferenceError"]
-"SyntaxError"   = ["vybe:runtime", "SyntaxError"]
-"RegExp"        = ["vybe:regex", "RegExp"]
+"Array"         = ["ecma:array", "new"]
+"Map"           = ["ecma:map", "new"]
+"Set"           = ["ecma:set", "new"]
+"Error"         = ["ecma:error", "Error"]
+"TypeError"     = ["ecma:error", "TypeError"]
+"RangeError"    = ["ecma:error", "RangeError"]
+"ReferenceError" = ["ecma:error", "ReferenceError"]
+"SyntaxError"   = ["ecma:error", "SyntaxError"]
+"URIError"      = ["ecma:error", "URIError"]
+"EvalError"     = ["ecma:error", "EvalError"]
+"AggregateError" = ["ecma:error", "AggregateError"]
+"RegExp"        = ["ecma:regexp", "new"]
 "Date"          = ["wasi:clocks", "Date"]
-"Promise"       = ["vybe:runtime", "Promise"]
-"WeakMap"       = ["vybe:collections", "WeakMap"]
-"WeakSet"       = ["vybe:collections", "WeakSet"]
-"ArrayBuffer"   = ["vybe:types", "ArrayBuffer"]
-"SharedArrayBuffer" = ["vybe:types", "SharedArrayBuffer"]
-"Int32Array"    = ["vybe:types", "Int32Array"]
-"Float64Array"  = ["vybe:types", "Float64Array"]
-"Uint8Array"    = ["vybe:types", "Uint8Array"]
+"Promise"       = ["ecma:promise", "new"]
+"WeakMap"       = ["ecma:weakmap", "new"]
+"WeakSet"       = ["ecma:weakset", "new"]
+"ArrayBuffer"   = ["ecma:arraybuffer", "new"]
+"SharedArrayBuffer" = ["ecma:sharedarraybuffer", "new"]
+"Int32Array"    = ["ecma:int32array", "newWithLength"]
+"Float64Array"  = ["ecma:float64array", "newWithLength"]
+"Uint8Array"    = ["ecma:uint8array", "newWithLength"]
+
+# ECMA-402 Intl classes — `new Intl.X(...)` resolves via the `Intl`
+# namespace properties (set up by `vybe_host::namespaces::intl`), but
+# code that writes the bare class name (e.g. `new NumberFormat(...)`
+# after `import { NumberFormat } from "ecma:intl"`) hits these
+# known_types entries and gets routed to the `:new` constructor.
+"Collator"            = ["ecma:intl/collator", "new"]
+"NumberFormat"        = ["ecma:intl/numberformat", "new"]
+"DateTimeFormat"      = ["ecma:intl/datetimeformat", "new"]
+"ListFormat"          = ["ecma:intl/listformat", "new"]
+"PluralRules"         = ["ecma:intl/pluralrules", "new"]
+"RelativeTimeFormat"  = ["ecma:intl/relativetimeformat", "new"]
+"Segmenter"           = ["ecma:intl/segmenter", "new"]
+"Locale"              = ["ecma:intl/locale", "new"]
+"DisplayNames"        = ["ecma:intl/displaynames", "new"]
+"DurationFormat"      = ["ecma:intl/durationformat", "new"]
+
+# ECMA-262 §20.4 Symbol + §21.2 BigInt: per spec they are NOT constructors
+# (`new Symbol()` / `new BigInt()` throws TypeError). The Symbol/BigInt
+# globals are themselves callable HostFunction values (see
+# `vybe_host::namespaces::ecma_globals`). No known_types entries needed.
+
+# WHATWG / W3C web platform constructors. The instance methods (e.g.
+# `urlObj.toString`, `enc.encode`, `headers.get`) dispatch via the
+# TypeRegistry vtable on the `__type` stamp the `*New` host fns leave.
+"URL"           = ["web:url", "new"]
+"URLSearchParams" = ["web:url", "searchParamsNew"]
+"TextEncoder"   = ["web:encoding", "encoderNew"]
+"TextDecoder"   = ["web:encoding", "decoderNew"]
+"Headers"       = ["web:fetch", "headersNew"]
+"Request"       = ["web:fetch", "requestNew"]
+"Response"      = ["web:fetch", "responseNew"]
 # "Worker" constructor: lowered to Op::THREAD_SPAWN by the compiler, no
 # host-fn ctor entry.
 

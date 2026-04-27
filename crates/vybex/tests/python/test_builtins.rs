@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_python_one};
 
 // Python builtins
 
@@ -16,6 +16,77 @@ use super::helpers::compile_ok;
 #[test] fn builtin_max_args() { compile_ok("x = max(1, 2, 3)\n"); }
 #[test] fn builtin_any() { compile_ok("x = any([False, True, False])\n"); }
 #[test] fn builtin_all() { compile_ok("x = all([True, True, True])\n"); }
+
+// ── Runtime tests for Python any/all (stdlib:pyany / stdlib:pyall polyfills) ──
+#[test]
+fn builtin_any_runtime_true() {
+    assert_eq!(run_python_one("print(any([False, True, False]))\n"), "true");
+}
+#[test]
+fn builtin_any_runtime_false() {
+    assert_eq!(run_python_one("print(any([False, False, False]))\n"), "false");
+}
+#[test]
+fn builtin_any_empty() {
+    assert_eq!(run_python_one("print(any([]))\n"), "false");
+}
+#[test]
+fn builtin_all_runtime_true() {
+    assert_eq!(run_python_one("print(all([True, 1, 'x']))\n"), "true");
+}
+#[test]
+fn builtin_all_runtime_false() {
+    assert_eq!(run_python_one("print(all([True, False, True]))\n"), "false");
+}
+#[test]
+fn builtin_all_empty() {
+    assert_eq!(run_python_one("print(all([]))\n"), "true");
+}
+
+// ── Runtime tests for new bare-form polyfills ──
+#[test]
+fn builtin_pymap_runtime() {
+    assert_eq!(
+        run_python_one("r = list(map(lambda x: x * 2, [1, 2, 3]))\nprint(r[1])\n"),
+        "4"
+    );
+}
+#[test]
+fn builtin_pyfilter_runtime() {
+    assert_eq!(
+        run_python_one("r = list(filter(lambda x: x > 1, [1, 2, 3]))\nprint(len(r))\n"),
+        "2"
+    );
+}
+#[test]
+fn builtin_next_with_default() {
+    // Empty iter → default returned
+    assert_eq!(run_python_one("print(next([], 'x'))\n"), "x");
+}
+#[test]
+fn builtin_next_consumes_first() {
+    assert_eq!(run_python_one("a = [10, 20, 30]\nprint(next(a, 0))\n"), "10");
+}
+#[test]
+fn builtin_random_choice_in_range() {
+    // Single-element list — choice is deterministic
+    assert_eq!(run_python_one("import random\nprint(random.choice([42]))\n"), "42");
+}
+#[test]
+fn builtin_random_shuffle_preserves_count() {
+    // Shuffle returns same set; check length unchanged
+    assert_eq!(
+        run_python_one("import random\na = [1,2,3,4,5]\nrandom.shuffle(a)\nprint(len(a))\n"),
+        "5"
+    );
+}
+#[test]
+fn builtin_random_sample_size() {
+    assert_eq!(
+        run_python_one("import random\nr = random.sample([1,2,3,4,5], 3)\nprint(len(r))\n"),
+        "3"
+    );
+}
 #[test] fn builtin_type() { compile_ok("x = type(42)\n"); }
 #[test] fn builtin_isinstance() { compile_ok("x = isinstance(42, int)\n"); }
 #[test] fn builtin_bool() { compile_ok("x = bool(0)\ny = bool(1)\n"); }

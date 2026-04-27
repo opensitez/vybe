@@ -22,8 +22,159 @@
 //!   pow(base, exp) → number (repeated multiplication fallback)
 //!   sin/cos/tan/asin/acos/atan/atan2/log/log10/exp/sign/clamp → number
 
+use std::sync::Arc;
 use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+
+// ── Generic polyglot polyfill helper ─────────────────────────────────
+//
+// `build_polyfill(source, language, export_name)` compiles a snippet
+// of source code in any registered language and extracts a single
+// named export as a stdlib Chunk. The result slots into `MAPPINGS` in
+// `bundle.rs` exactly the same as a hand-built `build_pow`-style chunk.
+//
+// The mechanism: dispatch the source through the appropriate language
+// parser, run the standard `Compiler::with_profile` over the AST, then
+// pluck the chunk whose name matches `export_name` from the result.
+// Parse / compile failures abort the build (panicking via `expect`)
+// since polyfill sources ship with the binary — any breakage here
+// is a vybex build bug, not a runtime error.
+//
+// This lets polyfills live in whichever source language is most
+// natural — `sprintf.js`, `format.js`, `phpIncrement.php`,
+// `vbFormat.vb`, etc. — instead of being hand-emitted as Rust opcode
+// calls. Same final artifact: a Chunk that bundles into compiled
+// programs and surfaces as a `__vybe_*` global.
+
+/// Compile a polyfill source written in the given language, extracting
+/// the chunk for the named export. The export name should match the
+/// function declared in the source (e.g. `export function sprintf(...)`
+/// in JS, `function sprintf(...) end function` in VB, etc.).
+///
+/// Errors include the language and export name in the message so build
+/// failures point at the offending polyfill file.
+pub(crate) fn build_polyfill(
+    imports: &mut Chunk,
+    source: &str,
+    language: &str,
+    export_name: &str,
+) -> Chunk {
+    let lang = crate::languages::find_by_name(language)
+        .unwrap_or_else(|| panic!(
+            "polyfill build: unknown language {:?} (registered: vb js pascal csharp \
+             python php ruby dart cobol fortran)", language));
+    let module = (lang.parse)(source)
+        .unwrap_or_else(|e| panic!(
+            "polyfill build: parse {:?}.{:?} failed: {}", language, export_name, e));
+    let profile = crate::profile::parse_profile((lang.profile_source)())
+        .unwrap_or_else(|e| panic!(
+            "polyfill build: profile {:?} parse failed: {}", language, e));
+    // Recursion guard so the inner compile pipeline skips its own
+    // `finalize_with_stdlib` step — that would call back here and
+    // recurse forever. Re-entrancy on the same thread is the only
+    // failure mode and vybex build-time compilation is single-threaded.
+    let polyfill_chunks = with_polyfill_guard(|| {
+        crate::compiler::Compiler::with_profile(profile)
+            .compile(&module)
+            .unwrap_or_else(|e| panic!(
+                "polyfill build: compile {:?}.{:?} failed: {}", language, export_name, e))
+    });
+
+    // Merge the polyfill's module-level imports (which the JS compiler
+    // wrote to its own chunks[0]) into the user program's imports
+    // chunk, building a poly_idx → user_idx remap. Then walk the
+    // function chunk's bytecode and rewrite every `CALL_IMPORT` operand
+    // through the remap so runtime dispatch hits the right slot in the
+    // user program's import table.
+    let polyfill_script = polyfill_chunks.first()
+        .unwrap_or_else(|| panic!("polyfill {}.{}: no chunks compiled", language, export_name));
+    let remap: Vec<u16> = polyfill_script.imports.iter()
+        .map(|imp| imports.add_import(imp.module.clone(), imp.name.clone()))
+        .collect();
+
+    let mut chunk = polyfill_chunks.into_iter()
+        .find(|c| c.name == export_name)
+        .unwrap_or_else(|| panic!(
+            "polyfill build: export {:?} not found in {} source (chunks compiled, \
+             but no chunk has that name — check the function is declared at \
+             top level and exported)", export_name, language));
+
+    if !remap.is_empty() {
+        relocate_call_import_operands(&mut chunk, &remap);
+    }
+    chunk
+}
+
+/// Walk a chunk's bytecode and rewrite every `CALL_IMPORT` u16 operand
+/// using `remap[poly_idx] = user_idx`. Uses the `OperandFormat` table to
+/// safely advance past variable-length opcodes — same logic the
+/// disassembler uses, so it stays aligned automatically.
+fn relocate_call_import_operands(chunk: &mut Chunk, remap: &[u16]) {
+    use vybe_bytecode::opcode::{Op, OperandFormat};
+    let mut offset = 0;
+    while offset + 1 < chunk.code.len() {
+        let prefix = chunk.code[offset];
+        let sub = chunk.code[offset + 1];
+        let op = match Op::decode(prefix, sub) {
+            Some(op) => op,
+            None => { offset += 2; continue; }
+        };
+        let operand_start = offset + 2;
+        let next = match op.operand_format() {
+            OperandFormat::None => operand_start,
+            OperandFormat::U8 => operand_start + 1,
+            OperandFormat::U16 => operand_start + 2,
+            OperandFormat::I16 => operand_start + 2,
+            OperandFormat::U16_U8 => operand_start + 3,
+            OperandFormat::U16_U16 => operand_start + 4,
+            OperandFormat::U16_I16 => operand_start + 4,
+            OperandFormat::Closure => {
+                // u16 + u8 + (u8 count × 2)
+                let uv_count = *chunk.code.get(operand_start + 2).unwrap_or(&0) as usize;
+                operand_start + 3 + uv_count * 2
+            }
+            OperandFormat::BrTable => {
+                let count = *chunk.code.get(operand_start).unwrap_or(&0) as usize;
+                operand_start + 2 + count
+            }
+            OperandFormat::TryTable => {
+                let count = *chunk.code.get(operand_start).unwrap_or(&0) as usize;
+                operand_start + 1 + count * 3
+            }
+            OperandFormat::V128Const => operand_start + 16,
+            OperandFormat::Shuffle => operand_start + 16,
+        };
+        // Rewrite the import index for CALL_IMPORT specifically — other
+        // U16_U8 opcodes (if any) don't index into the imports table.
+        // Vybe stores u16 operands BIG-endian (see `Chunk::read_u16` in
+        // `vybe_bytecode/src/chunk.rs:314`).
+        if op == Op::CALL_IMPORT {
+            let hi = chunk.code[operand_start] as u16;
+            let lo = chunk.code[operand_start + 1] as u16;
+            let poly_idx = (hi << 8) | lo;
+            if let Some(&user_idx) = remap.get(poly_idx as usize) {
+                chunk.code[operand_start] = (user_idx >> 8) as u8;
+                chunk.code[operand_start + 1] = user_idx as u8;
+            }
+        }
+        offset = next;
+    }
+}
+
+thread_local! {
+    static IN_POLYFILL_BUILD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub fn is_compiling_polyfill() -> bool {
+    IN_POLYFILL_BUILD.with(|c| c.get())
+}
+
+fn with_polyfill_guard<R>(f: impl FnOnce() -> R) -> R {
+    IN_POLYFILL_BUILD.with(|c| c.set(true));
+    let result = f();
+    IN_POLYFILL_BUILD.with(|c| c.set(false));
+    result
+}
 
 /// Build all stdlib chunks. Each chunk registers any `ecma:array.*`
 /// imports on the passed `imports` chunk (= user program's
@@ -45,6 +196,20 @@ pub fn build_stdlib(imports: &mut Chunk) -> StdLib {
     chunks.push(build_sum(imports));               exports.push("__stdlib_sum");
     chunks.push(build_min(imports));               exports.push("__stdlib_min");
     chunks.push(build_max(imports));               exports.push("__stdlib_max");
+    chunks.push(build_pyany(imports));             exports.push("__stdlib_pyany");
+    chunks.push(build_pyall(imports));             exports.push("__stdlib_pyall");
+    chunks.push(build_compact(imports));           exports.push("__stdlib_compact");
+    chunks.push(build_uniq(imports));              exports.push("__stdlib_uniq");
+    chunks.push(build_minmax(imports));            exports.push("__stdlib_minmax");
+    chunks.push(build_isempty(imports));           exports.push("__stdlib_isempty");
+    chunks.push(build_pymap(imports));             exports.push("__stdlib_pymap");
+    chunks.push(build_pyfilter(imports));          exports.push("__stdlib_pyfilter");
+    chunks.push(build_pynext(imports));            exports.push("__stdlib_pynext");
+    chunks.push(build_rand_choice(imports));       exports.push("__stdlib_rand_choice");
+    chunks.push(build_rand_shuffle(imports));      exports.push("__stdlib_rand_shuffle");
+    chunks.push(build_rand_sample(imports));       exports.push("__stdlib_rand_sample");
+    chunks.push(build_rotate(imports));            exports.push("__stdlib_rotate");
+    chunks.push(build_array_copy(imports));        exports.push("__stdlib_array_copy");
     chunks.push(build_pow(imports));               exports.push("__stdlib_pow");
     chunks.push(build_sin(imports));               exports.push("__stdlib_sin");
     chunks.push(build_cos(imports));               exports.push("__stdlib_cos");
@@ -92,6 +257,14 @@ pub fn build_stdlib(imports: &mut Chunk) -> StdLib {
     chunks.push(build_array_binary_search(imports)); exports.push("__stdlib_array_binary_search");
     chunks.push(build_array_reverse_range(imports)); exports.push("__stdlib_array_reverse_range");
     chunks.push(build_array_last_index_of(imports)); exports.push("__stdlib_array_last_index_of");
+    // ── JS-source polyfills ────────────────────────────────────────
+    // Compiled at vybex build time via the generic `build_polyfill`
+    // plumbing above. Each is a bytecode chunk identical in shape to
+    // the hand-emitted ones — bundles into every program and surfaces
+    // as a `__vybe_*` global.
+    chunks.push(build_polyfill(
+        imports, include_str!("polyfills/sprintf.js"), "js", "sprintf"));
+    exports.push("__stdlib_sprintf");
     // Order matters: dir() embeds GLOBAL_GET refs to __vybe_dir_read /
     // __vybe_dir_close, which must be registered before dir() runs. The
     // global registration order is the MAPPINGS order (also driven by
@@ -106,6 +279,18 @@ pub fn build_stdlib(imports: &mut Chunk) -> StdLib {
     chunks.push(build_is_dir(imports));              exports.push("__stdlib_is_dir");
     chunks.push(build_filesize(imports));            exports.push("__stdlib_filesize");
     chunks.push(build_unlink(imports));              exports.push("__stdlib_unlink");
+
+    // ── Regex adapters: pattern-first → ECMA str-first ─────────────────
+    //
+    // Python `re.*` and PHP `preg_*` put the regex pattern FIRST per
+    // their stdlib convention. ECMA-262 String.prototype.{match, replace,
+    // split, matchAll} put the string FIRST (receiver). These adapter
+    // chunks bridge the two: take args in language convention, call into
+    // `ecma:regexp.*` with reordered args. Same Layer-3 pattern that
+    // `String.Format` → `vybe:string.format` uses for the .NET shape.
+    chunks.push(build_regex_replace_pat_first(imports)); exports.push("__stdlib_regex_replace_pat_first");
+    chunks.push(build_regex_split_pat_first(imports));   exports.push("__stdlib_regex_split_pat_first");
+    chunks.push(build_regex_match_all_pat_first(imports)); exports.push("__stdlib_regex_match_all_pat_first");
 
     StdLib { chunks, exports }
 }
@@ -748,6 +933,76 @@ fn build_sum(imports: &mut Chunk) -> Chunk {
     c
 }
 
+// ── any(iter) / all(iter) → bool ─────────────────────────────
+// Python `any(iter)` / `all(iter)` — bare-iterable shape (no callback).
+// Spec-shape equivalent of `arr.some(Boolean)` / `arr.every(Boolean)`
+// without requiring callers to materialize the Boolean fn ref. Mirrors
+// the polymorphic ARRAY_GET semantics so it works on Array, Map, and
+// String operands transparently.
+fn build_pyany(imports: &mut Chunk) -> Chunk {
+    build_any_all(imports, "__stdlib_pyany", true)
+}
+
+fn build_pyall(imports: &mut Chunk) -> Chunk {
+    build_any_all(imports, "__stdlib_pyall", false)
+}
+
+fn build_any_all(imports: &mut Chunk, name: &str, is_any: bool) -> Chunk {
+    let mut c = Chunk::new(name);
+    c.arity = 1;
+    c.local_count = 3; // arr(0) + i(1) + len(2)
+    let arr = 0u16;
+    let i = 1;
+    let len = 2;
+
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0); c.emit_op(Op::DROP, 0);
+
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0); c.emit_op(Op::DROP, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit loop → fell through
+
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::emitter::collections::emit_get_into(imports, &mut c, 0);
+    c.emit_op(Op::DYN_TO_BOOL, 0);
+    if is_any {
+        // any: if truthy → return true
+        let to_continue = c.emit_jump(Op::BR_IF_FALSE, 0);
+        c.emit_op(Op::TRUE, 0);
+        c.emit_op(Op::RETURN, 0);
+        c.patch_jump(to_continue);
+    } else {
+        // all: if falsy → return false
+        let to_continue = c.emit_jump(Op::BR_IF_TRUE, 0);
+        c.emit_op(Op::FALSE, 0);
+        c.emit_op(Op::RETURN, 0);
+        c.patch_jump(to_continue);
+    }
+
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0); c.emit_op(Op::DROP, 0);
+
+    c.emit_br(0, 0);
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
+
+    // Loop fell through: any → false, all → true
+    if is_any { c.emit_op(Op::FALSE, 0); } else { c.emit_op(Op::TRUE, 0); }
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
 // ── min(array) → value ──────────────────────────────────────
 fn build_min(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_min");
@@ -874,6 +1129,476 @@ fn build_max(imports: &mut Chunk) -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, best, 0);
     c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── compact(arr) → arr without nulls (Ruby Array#compact) ──
+fn build_compact(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_compact");
+    c.arity = 1;
+    c.local_count = 5; // arr(0) + result(1) + i(2) + len(3) + elem(4)
+    let arr = 0u16;
+    let result = 1;
+    let i = 2;
+    let len = 3;
+    let elem = 4;
+
+    crate::emitter::collections::emit_array_new_into(imports, &mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0); c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0); c.emit_op(Op::DROP, 0);
+
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0); c.emit_op(Op::DROP, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0);
+
+    // elem = arr[i]; stash into local
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::emitter::collections::emit_get_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, elem, 0); c.emit_op(Op::DROP, 0);
+
+    // if !is_null(elem) → result.push(elem)
+    c.emit_op_u16(Op::LOCAL_GET, elem, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    let skip = c.emit_jump(Op::BR_IF_TRUE, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, elem, 0);
+    crate::emitter::collections::emit_push_into(imports, &mut c, 0);
+    c.emit_op(Op::DROP, 0);
+    c.patch_jump(skip);
+
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0); c.emit_op(Op::DROP, 0);
+
+    c.emit_br(0, 0);
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
+
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── isEmpty(arr) → bool (Ruby Array#empty?) ──
+fn build_isempty(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_isempty");
+    c.arity = 1;
+    c.local_count = 1;
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── minmax(arr) → [min, max] (Ruby Array#minmax) ──
+fn build_minmax(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_minmax");
+    c.arity = 1;
+    c.local_count = 3; // arr(0) + min(1) + max(2)
+    let arr = 0u16;
+    let min_g = 1;
+    let max_g = 2;
+
+    // min = __vybe_min(arr); max = __vybe_max(arr); return [min, max]
+    let name_min = c.add_constant(Value::String(Arc::from("__vybe_min")));
+    c.emit_op_u16(Op::GLOBAL_GET, name_min, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u8(Op::CALL_REF, 1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, min_g, 0); c.emit_op(Op::DROP, 0);
+
+    let name_max = c.add_constant(Value::String(Arc::from("__vybe_max")));
+    c.emit_op_u16(Op::GLOBAL_GET, name_max, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u8(Op::CALL_REF, 1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, max_g, 0); c.emit_op(Op::DROP, 0);
+
+    crate::emitter::collections::emit_array_new_into(imports, &mut c, 0, 0);
+    c.emit_op(Op::DUP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, min_g, 0);
+    crate::emitter::collections::emit_push_into(imports, &mut c, 0); c.emit_op(Op::DROP, 0);
+    c.emit_op(Op::DUP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, max_g, 0);
+    crate::emitter::collections::emit_push_into(imports, &mut c, 0); c.emit_op(Op::DROP, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── uniq(arr) → arr with duplicates removed (Ruby Array#uniq) ──
+fn build_uniq(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_uniq");
+    c.arity = 1;
+    c.local_count = 5; // arr(0) + result(1) + i(2) + len(3) + elem(4)
+    let arr = 0u16;
+    let result = 1;
+    let i = 2;
+    let len = 3;
+    let elem = 4;
+
+    crate::emitter::collections::emit_array_new_into(imports, &mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0); c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0); c.emit_op(Op::DROP, 0);
+
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0); c.emit_op(Op::DROP, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0);
+
+    // elem = arr[i]
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    crate::emitter::collections::emit_get_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, elem, 0); c.emit_op(Op::DROP, 0);
+
+    // if !result.includes(elem) result.push(elem)
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, elem, 0);
+    let inc_idx = imports.add_import("ecma:array", "includes");
+    c.emit_op_u16(Op::CALL_IMPORT, inc_idx, 0); c.emit(2u8, 0);
+    let already = c.emit_jump(Op::BR_IF_TRUE, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, elem, 0);
+    crate::emitter::collections::emit_push_into(imports, &mut c, 0); c.emit_op(Op::DROP, 0);
+    c.patch_jump(already);
+
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0); c.emit_op(Op::DROP, 0);
+
+    c.emit_br(0, 0);
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
+
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── pymap(fn, iter) — Python `map(fn, iter)` shape adapter ──
+// Wraps ECMA `Array.prototype.map(fn)` (§23.1.3.21) with swapped
+// args: Python passes (fn, iter), ECMA expects (iter, fn).
+fn build_pymap(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_pymap");
+    c.arity = 2; // fn(0), iter(1)
+    c.local_count = 2;
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0); // iter
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0); // fn
+    let idx = imports.add_import("ecma:array", "map");
+    c.emit_op_u16(Op::CALL_IMPORT, idx, 0); c.emit(2u8, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── pyfilter(fn, iter) — Python `filter(fn, iter)` shape adapter ──
+fn build_pyfilter(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_pyfilter");
+    c.arity = 2;
+    c.local_count = 2;
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    let idx = imports.add_import("ecma:array", "filter");
+    c.emit_op_u16(Op::CALL_IMPORT, idx, 0); c.emit(2u8, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── pynext(iter, default?) — Python `next(iter, default)` ──
+// Returns and removes the first element. Default returned when empty.
+fn build_pynext(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_pynext");
+    c.arity = 2;
+    c.local_count = 2;
+    // if iter.length == 0 → return default (or null when default omitted)
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    let to_consume = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0); // default
+    c.emit_op(Op::RETURN, 0);
+    c.patch_jump(to_consume);
+    // shift first element off iter
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    let sh_idx = imports.add_import("ecma:array", "shift");
+    c.emit_op_u16(Op::CALL_IMPORT, sh_idx, 0); c.emit(1u8, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── rand_choice(arr) — random element via ecma:math.random ──
+// `arr[Math.floor(Math.random() * arr.length)]`. Returns null on empty.
+fn build_rand_choice(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_rand_choice");
+    c.arity = 1;
+    c.local_count = 3; // arr(0), len(1), idx(2)
+    let arr = 0u16;
+    let len = 1;
+    let idx = 2;
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0); c.emit_op(Op::DROP, 0);
+
+    // empty? return null
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    let not_empty = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::NULL, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.patch_jump(not_empty);
+
+    // idx = floor(random() * len)
+    let r_idx = imports.add_import("ecma:math", "random");
+    c.emit_op_u16(Op::CALL_IMPORT, r_idx, 0); c.emit(0u8, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::F64_FROM_I32, 0);
+    c.emit_op(Op::F64_MUL, 0);
+    c.emit_op(Op::I32_FROM_F64, 0);
+    c.emit_op_u16(Op::LOCAL_SET, idx, 0); c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, idx, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── rand_shuffle(arr) — in-place Fisher-Yates with ecma:math.random ──
+fn build_rand_shuffle(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_rand_shuffle");
+    c.arity = 1;
+    c.local_count = 5; // arr(0), i(1), j(2), tmp(3), len(4)
+    let arr = 0u16;
+    let i = 1;
+    let j = 2;
+    let tmp = 3;
+    let len = 4;
+
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0); c.emit_op(Op::DROP, 0);
+
+    // i = len - 1
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0); c.emit_op(Op::DROP, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+    // while i > 0
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_LE, 0);
+    c.emit_br_if(1, 0); // exit if i <= 0
+
+    // j = floor(random() * (i + 1))
+    let r_idx = imports.add_import("ecma:math", "random");
+    c.emit_op_u16(Op::CALL_IMPORT, r_idx, 0); c.emit(0u8, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op(Op::F64_FROM_I32, 0);
+    c.emit_op(Op::F64_MUL, 0);
+    c.emit_op(Op::I32_FROM_F64, 0);
+    c.emit_op_u16(Op::LOCAL_SET, j, 0); c.emit_op(Op::DROP, 0);
+
+    // tmp = arr[i]
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op_u16(Op::LOCAL_SET, tmp, 0); c.emit_op(Op::DROP, 0);
+    // arr[i] = arr[j]
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op(Op::ARRAY_SET, 0); c.emit_op(Op::DROP, 0);
+    // arr[j] = tmp
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, j, 0);
+    c.emit_op_u16(Op::LOCAL_GET, tmp, 0);
+    c.emit_op(Op::ARRAY_SET, 0); c.emit_op(Op::DROP, 0);
+
+    // i--
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0); c.emit_op(Op::DROP, 0);
+
+    c.emit_br(0, 0);
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
+
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── rand_sample(arr, k) — Python `random.sample(seq, k)` ──
+// Returns a new array of k elements without replacement. Uses
+// shuffle then slice — O(n) memory, simple and correct.
+fn build_rand_sample(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_rand_sample");
+    c.arity = 2;
+    c.local_count = 3;
+    // copy = arr.slice(0, len) — duplicate so shuffle doesn't mutate caller
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
+    let sl_idx = imports.add_import("ecma:array", "slice");
+    c.emit_op_u16(Op::CALL_IMPORT, sl_idx, 0); c.emit(3u8, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 2, 0); c.emit_op(Op::DROP, 0);
+
+    // shuffle copy in place
+    let sh_name = c.add_constant(Value::String(Arc::from("__vybe_rand_shuffle")));
+    c.emit_op_u16(Op::GLOBAL_GET, sh_name, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op_u8(Op::CALL_REF, 1, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // return copy.slice(0, k)
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, sl_idx, 0); c.emit(3u8, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── rotate(arr, n) — Ruby `Array#rotate(n)` ──
+// Returns new array rotated n positions left. n defaults to 1; negative
+// rotates right. Implemented as `arr.slice(n).concat(arr.slice(0, n))`
+// after normalizing n into [0, len).
+fn build_rotate(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_rotate");
+    c.arity = 2;
+    c.local_count = 4; // arr(0), n(1), len(2), n_norm(3)
+    let arr = 0u16;
+    let n = 1;
+    let len = 2;
+    let n_norm = 3;
+
+    // n defaults to 1 if null/undefined
+    c.emit_op_u16(Op::LOCAL_GET, n, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    let n_ok = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, n, 0); c.emit_op(Op::DROP, 0);
+    c.patch_jump(n_ok);
+
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0); c.emit_op(Op::DROP, 0);
+
+    // n_norm = ((n % len) + len) % len  — handles negative n
+    c.emit_op_u16(Op::LOCAL_GET, n, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    let fmod_name = c.add_constant(Value::String(Arc::from("__vybe_fmod")));
+    c.emit_op_u16(Op::GLOBAL_GET, fmod_name, 0);
+    // fmod expects [a, b] before func ref; CALL_REF expects [func, args]
+    // We have [n, len, fmod]. Stash + reload.
+    // Simpler: just inline the modulo via DYN_MOD if it exists. Otherwise:
+    // For now, assume n < len and n >= -len: fix via emit
+    c.emit_op(Op::DROP, 0); // drop fmod ref, redo cleanly
+    c.emit_op(Op::DROP, 0); // drop len
+    c.emit_op(Op::DROP, 0); // drop n
+    // Recompute properly: stack []
+    c.emit_op_u16(Op::LOCAL_GET, n, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::I32_REM_S, 0);          // n % len
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::DYN_ADD, 0);           // + len
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::I32_REM_S, 0);           // % len → n_norm
+    c.emit_op_u16(Op::LOCAL_SET, n_norm, 0); c.emit_op(Op::DROP, 0);
+
+    // result = arr.slice(n_norm, len).concat(arr.slice(0, n_norm))
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op_u16(Op::LOCAL_GET, n_norm, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    let sl_idx = imports.add_import("ecma:array", "slice");
+    c.emit_op_u16(Op::CALL_IMPORT, sl_idx, 0); c.emit(3u8, 0);
+    // [first_part]
+    c.emit_op_u16(Op::LOCAL_GET, arr, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, n_norm, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, sl_idx, 0); c.emit(3u8, 0);
+    // [first_part, second_part]
+    let cc_idx = imports.add_import("ecma:array", "concat");
+    c.emit_op_u16(Op::CALL_IMPORT, cc_idx, 0); c.emit(2u8, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── array_copy(src, dst, count) — C# `Array.Copy(src, dst, count)` ──
+// Per .NET spec: copies `count` elements from src[0..] to dst[0..].
+fn build_array_copy(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_array_copy");
+    c.arity = 3;
+    c.local_count = 4; // src(0), dst(1), count(2), i(3)
+    let src = 0u16;
+    let dst = 1;
+    let count = 2;
+    let i = 3;
+
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0); c.emit_op(Op::DROP, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, count, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0);
+
+    // dst[i] = src[i]
+    c.emit_op_u16(Op::LOCAL_GET, dst, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, src, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op(Op::ARRAY_SET, 0); c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0); c.emit_op(Op::DROP, 0);
+
+    c.emit_br(0, 0);
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
+
+    // .NET Array.Copy returns void
+    c.emit_op(Op::NULL, 0);
+    c.emit_op(Op::RETURN, 0);
+    let _ = imports; // silence unused
     c
 }
 
@@ -2509,3 +3234,57 @@ fn build_filemtime(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::RETURN, 0);
     c
 }
+
+// ── Regex adapters for pattern-first language conventions ────────────
+//
+// PHP `preg_replace($pat, $repl, $str)` and Python `re.sub(pat, repl, str)`
+// share the same `(pattern, replacement, input)` order. ECMA-262
+// `String.prototype.replace` is `(input, regex, replacement)` (receiver
+// first). The body just LOCAL_GETs in the right order then calls
+// `ecma:regexp.replace`.
+
+fn build_regex_replace_pat_first(imports: &mut Chunk) -> Chunk {
+    let idx = imports.add_import("ecma:regexp", "replace");
+    let mut c = Chunk::new("__stdlib_regex_replace_pat_first");
+    c.arity = 3;
+    c.local_count = 3; // pat(0), repl(1), str(2)
+    // Push (str, pat, repl) — ecma:regexp.replace order
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, idx, 0);
+    c.emit(3u8, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// PHP `preg_split($pat, $str)` / Python `re.split(pat, str)` →
+// `ecma:regexp.split(str, regex)`.
+fn build_regex_split_pat_first(imports: &mut Chunk) -> Chunk {
+    let idx = imports.add_import("ecma:regexp", "split");
+    let mut c = Chunk::new("__stdlib_regex_split_pat_first");
+    c.arity = 2;
+    c.local_count = 2; // pat(0), str(1)
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, idx, 0);
+    c.emit(2u8, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// PHP `preg_match_all($pat, $str)` / Python `re.findall(pat, str)` →
+// `ecma:regexp.matchAll(str, regex)`.
+fn build_regex_match_all_pat_first(imports: &mut Chunk) -> Chunk {
+    let idx = imports.add_import("ecma:regexp", "matchAll");
+    let mut c = Chunk::new("__stdlib_regex_match_all_pat_first");
+    c.arity = 2;
+    c.local_count = 2; // pat(0), str(1)
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, idx, 0);
+    c.emit(2u8, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+

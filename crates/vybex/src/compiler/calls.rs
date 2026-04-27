@@ -256,7 +256,7 @@ impl Compiler {
                                                 BuiltinEmit::Stdlib(name) => {
                                                     // For stdlib: func ref must be pushed BEFORE object.
                                                     // But object is already on stack. Save it to a temp.
-                                                    let tmp = self.scope_mut().define("__const_val");
+                                                    let tmp = self.define_local("__const_val");
                                                     self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
                                                     let global_name = format!("__vybe_{}", name);
                                                     let name_idx = self.str_const(&global_name);
@@ -306,9 +306,9 @@ impl Compiler {
                                 let method_idx = self.str_const(&method_name);
                                 self.emit(Op::DUP);
                                 self.emit_u16(Op::STRUCT_GET, method_idx);
-                                let fn_tmp = self.scope_mut().define("__ns_fn");
+                                let fn_tmp = self.define_local("__ns_fn");
                                 self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
-                                let obj_tmp = self.scope_mut().define("__ns_obj");
+                                let obj_tmp = self.define_local("__ns_obj");
                                 self.reserve_local_slot(obj_tmp);
                                 self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
                                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
@@ -432,10 +432,10 @@ impl Compiler {
                     self.emit_u16(Op::STRUCT_GET, method_idx);
                     // Stack: [class, fn] — swap so we have [fn, class, ...args]
                     let fn_tmp = self.scope().resolve("__static_fn")
-                        .unwrap_or_else(|| self.scope_mut().define("__static_fn"));
+                        .unwrap_or_else(|| self.define_local("__static_fn"));
                     self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
                     let cls_tmp = self.scope().resolve("__static_cls")
-                        .unwrap_or_else(|| self.scope_mut().define("__static_cls"));
+                        .unwrap_or_else(|| self.define_local("__static_cls"));
                     self.emit_u16(Op::LOCAL_SET, cls_tmp); self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, fn_tmp);
                     self.emit_u16(Op::LOCAL_GET, cls_tmp);
@@ -621,7 +621,7 @@ impl Compiler {
                 };
                 // Compile arr and fn(s) into local slots
                 self.compile_expr(object)?;
-                let arr_slot = self.scope_mut().define("__hof_arr");
+                let arr_slot = self.define_local("__hof_arr");
                 self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
 
                 if let Some(fn_expr) = arg_exprs.first() {
@@ -629,11 +629,11 @@ impl Compiler {
                 } else {
                     self.emit(Op::NULL);
                 }
-                let fn_slot = self.scope_mut().define("__hof_fn");
+                let fn_slot = self.define_local("__hof_fn");
                 self.emit_u16(Op::LOCAL_SET, fn_slot); self.emit(Op::DROP);
 
-                let idx_slot = self.scope_mut().define("__hof_idx");
-                let result_slot = self.scope_mut().define("__hof_result");
+                let idx_slot = self.define_local("__hof_idx");
+                let result_slot = self.define_local("__hof_result");
                 let line = self.line;
 
                 match field_lower.as_str() {
@@ -642,7 +642,7 @@ impl Compiler {
                         common::loops::emit_map(&mut self.chunks, self.current, fn_slot, arr_slot, result_slot, idx_slot, line);
                     }
                     "filter" => {
-                        let elem_slot = self.scope_mut().define("__hof_elem");
+                        let elem_slot = self.define_local("__hof_elem");
                         common::loops::emit_filter(&mut self.chunks, self.current, fn_slot, arr_slot, result_slot, idx_slot, elem_slot, line);
                     }
                     "reduce" => {
@@ -700,7 +700,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
                         let lp = common::loops::emit_for_in_start(
                             &mut self.chunks, self.current, arr_slot, idx_slot, line);
-                        let elem_slot = self.scope_mut().define("__find_elem");
+                        let elem_slot = self.define_local("__find_elem");
                         self.emit_u16(Op::LOCAL_SET, elem_slot); self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
                         self.emit_u16(Op::LOCAL_GET, elem_slot);
@@ -721,7 +721,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
                         let lp = common::loops::emit_for_in_start(
                             &mut self.chunks, self.current, arr_slot, idx_slot, line);
-                        let elem_slot = self.scope_mut().define("__findi_elem");
+                        let elem_slot = self.define_local("__findi_elem");
                         self.emit_u16(Op::LOCAL_SET, elem_slot); self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
                         self.emit_u16(Op::LOCAL_GET, elem_slot);
@@ -799,10 +799,10 @@ impl Compiler {
                     "flatMap" | "flatmap" => {
                         // arr.flatMap(fn) = arr.map(fn).flat()
                         // First emit map: result[i] = fn(arr[i])
-                        let mapped_slot = self.scope_mut().define("__flatmap_mapped");
+                        let mapped_slot = self.define_local("__flatmap_mapped");
                         common::loops::emit_map(&mut self.chunks, self.current, fn_slot, arr_slot, mapped_slot, idx_slot, line);
                         // Now the mapped array is on stack. Flatten it one level.
-                        let flat_idx = self.import("vybe:array", "flat");
+                        let flat_idx = self.import("ecma:array", "flat");
                         self.emit_const(Value::I32(1));  // depth = 1
                         self.emit_host_call(flat_idx, 2);
                     }
@@ -869,7 +869,7 @@ impl Compiler {
                         self.emit_const(Value::I32(0));
                         self.emit(Op::DYN_GE);
                         let exit_jump = self.emit_jump(Op::BR_IF_FALSE);
-                        let elem_slot = self.scope_mut().define("__fl_elem");
+                        let elem_slot = self.define_local("__fl_elem");
                         self.emit_u16(Op::LOCAL_GET, arr_slot);
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
                         { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
@@ -906,7 +906,7 @@ impl Compiler {
                         self.emit_const(Value::I32(0));
                         self.emit(Op::DYN_GE);
                         let exit_jump = self.emit_jump(Op::BR_IF_FALSE);
-                        let elem_slot2 = self.scope_mut().define("__fli_elem");
+                        let elem_slot2 = self.define_local("__fli_elem");
                         self.emit_u16(Op::LOCAL_GET, arr_slot);
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
                         { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
@@ -932,7 +932,7 @@ impl Compiler {
                     "removeAll" | "removeall" => {
                         // Iterate backward over arr, splice each matching element.
                         // Returns count of removed items.
-                        let removed_slot = self.scope_mut().define("__ra_removed");
+                        let removed_slot = self.define_local("__ra_removed");
                         self.emit_const(Value::I32(0));
                         self.emit_u16(Op::LOCAL_SET, removed_slot); self.emit(Op::DROP);
                         // Start i = arr.len - 1
@@ -948,7 +948,7 @@ impl Compiler {
                         self.emit(Op::DYN_GE);
                         let ra_exit = self.emit_jump(Op::BR_IF_FALSE);
                         // elem = arr[i]
-                        let ra_elem = self.scope_mut().define("__ra_elem");
+                        let ra_elem = self.define_local("__ra_elem");
                         self.emit_u16(Op::LOCAL_GET, arr_slot);
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
                         { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
@@ -1022,9 +1022,9 @@ impl Compiler {
                 let prop = self.str_const(&field_name);
                 self.emit(Op::DUP);
                 self.emit_u16(Op::STRUCT_GET, prop);
-                let fn_tmp = self.scope_mut().define("__fn");
+                let fn_tmp = self.define_local("__fn");
                 self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
-                let obj_tmp = self.scope_mut().define("__obj");
+                let obj_tmp = self.define_local("__obj");
                 self.reserve_local_slot(obj_tmp);
                 self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
@@ -1039,9 +1039,9 @@ impl Compiler {
             let prop = self.str_const(&field_name);
             self.emit(Op::DUP);
             self.emit_u16(Op::STRUCT_GET, prop);
-            let fn_tmp = self.scope_mut().define("__fn");
+            let fn_tmp = self.define_local("__fn");
             self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
-            let obj_tmp = self.scope_mut().define("__obj");
+            let obj_tmp = self.define_local("__obj");
             self.reserve_local_slot(obj_tmp);
             self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
             self.emit_u16(Op::LOCAL_GET, fn_tmp);
@@ -1095,9 +1095,9 @@ impl Compiler {
                         let prop = self.str_const(&field_name);
                         self.emit(Op::DUP);
                         self.emit_u16(Op::STRUCT_GET, prop);
-                        let fn_tmp = self.scope_mut().define("__bare_fn");
+                        let fn_tmp = self.define_local("__bare_fn");
                         self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
-                        let obj_tmp = self.scope_mut().define("__bare_obj");
+                        let obj_tmp = self.define_local("__bare_obj");
                         self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, fn_tmp);
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -1116,7 +1116,7 @@ impl Compiler {
                 // ECMA-262) and `ecma:array.concat` (returns new
                 // array) can both drive the same pattern.
                 let line = self.line;
-                let args_slot = self.scope_mut().define("__spread_args");
+                let args_slot = self.define_local("__spread_args");
                 common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
                 self.emit_u16(Op::LOCAL_SET, args_slot); self.emit(Op::DROP);
                 let mut known_len: Option<usize> = Some(0);
@@ -1174,7 +1174,7 @@ impl Compiler {
         let saved = self.current;
         self.current = ci;
         for p in params {
-            self.scope_mut().define(&p.name);
+            self.define_local(&p.name);
             if let Some(ref default) = p.default {
                 let slot = self.scope().resolve(&p.name).unwrap();
                 self.emit_u16(Op::LOCAL_GET, slot);
@@ -1194,7 +1194,7 @@ impl Compiler {
             let rest_name = &params.last().unwrap().name;
             let rest_slot = self.scope().resolve(rest_name).unwrap();
             let line = self.line;
-            let rest_arr = self.scope_mut().define("__rest_arr");
+            let rest_arr = self.define_local("__rest_arr");
             common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
             self.emit_u16(Op::LOCAL_SET, rest_arr); self.emit(Op::DROP);
             let max_rest = 16u16;
@@ -1217,7 +1217,7 @@ impl Compiler {
 
         // Result slot for ResultSlot languages
         let result_slot = if self.profile.function_return == ReturnStyle::ResultSlot {
-            let rs = self.scope_mut().define("Result");
+            let rs = self.define_local("Result");
             self.emit(Op::NULL); self.emit_u16(Op::LOCAL_SET, rs); self.emit(Op::DROP);
             let saved_fn = self.current_func_name.take();
             let saved_rs = self.current_result_slot.take();

@@ -40,8 +40,19 @@ pub fn namespace_to_host_module(prefix: &str) -> Option<&'static str> {
         "system.console" => Some("wasi:cli"),
         "system.math" => Some("ecma:math"),
         "system.convert" => Some("vybe:convert"),
-        "system.string" => Some("vybe:string"),
-        "system.array" => Some("vybe:array"),
+        // `system.string.<X>` falls back here when not matched by an
+        // explicit entry in `component_classes.rs::STATIC_ONLY_CLASS`
+        // (e.g. `String.Format` → `vybe:string.format`). Routing through
+        // `ecma:string` means .NET callers get the ECMA-262 String surface
+        // by default; .NET-only methods (Format, IsNullOrEmpty, Join with
+        // (separator, array) signature) need explicit adapter entries.
+        "system.string" => Some("ecma:string"),
+        // `system.array.X` falls back here when not matched by an
+        // explicit entry in `component_classes.rs::STATIC_ONLY_CLASS`.
+        // Routing through `ecma:array` means .NET callers get the
+        // ECMA-262 Array surface by default; .NET-only methods need
+        // explicit adapter entries.
+        "system.array" => Some("ecma:array"),
         "system.environment" => Some("wasi:cli"),
         "system.io.streamreader" | "system.io.streamwriter" => Some("dotnet:io"),
         "system.io" | "system.io.file" | "system.io.path" | "system.io.directory" => Some("wasi:filesystem"),
@@ -57,7 +68,12 @@ pub fn namespace_to_host_module(prefix: &str) -> Option<&'static str> {
         "system.net" => Some("wasi:http"),
         "system.net.dns" => Some("dotnet:net"),
         "system.net.sockets" => Some("dotnet:sockets"),
-        "system.text.regularexpressions" => Some("vybe:regex"),
+        // .NET `System.Text.RegularExpressions.Regex.*` falls back here.
+        // Same pattern-first arg shape as PHP/Python, but ecma:regexp.test
+        // and exec already accept string-as-pattern. Methods needing arg
+        // reorder (Replace/Split with input-first .NET shape) get explicit
+        // adapter entries via `STATIC_ONLY_CLASS` (or stdlib chunks).
+        "system.text.regularexpressions" => Some("ecma:regexp"),
         "system.text" => Some("vybe:string"),
         "system.collections.generic" | "system.collections" => Some("vybe:types"),
         "system.data" | "system.data.sqlclient" | "system.data.oledb" => Some("vybe:data"),

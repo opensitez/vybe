@@ -394,10 +394,11 @@ pub fn emit_values(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit(1, line);
 }
 
-/// Get all [key, value] pairs.
+/// Get all [key, value] pairs — `Object.entries(obj)` per ECMA-262
+/// §20.1.2.5. Polymorphic over Array, Map, and plain Object.
 /// Stack before: [dict]  Stack after: [array_of_pairs]
 pub fn emit_items(chunks: &mut [Chunk], current: usize, line: u32) {
-    let items_fn = chunks[current].add_import("vybe:array", "dictItems");
+    let items_fn = chunks[0].add_import("ecma:object", "entries");
     chunks[current].emit_op_u16(Op::CALL_IMPORT, items_fn, line);
     chunks[current].emit(1, line);
 }

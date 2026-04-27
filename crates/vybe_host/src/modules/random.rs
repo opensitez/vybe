@@ -15,10 +15,13 @@
 //! `wasi:random/random` functions switch to it without any caller
 //! change.
 //!
-//! Vybe-convenience (NOT in WASI) lives under `vybe:random/*`:
-//!   * `vybe:random/random` — Math.random()-style f64 in [0,1)
-//!   * `vybe:random/randomInt(min, max)` — inclusive-range integer
-//!   * `vybe:random/uuid` — UUID v4 string
+//! Vybe-convenience extensions live under the same `wasi:random/random`
+//! namespace, on top of the WASI primitives:
+//!   * `wasi:random/random.random` — Math.random()-style f64 in [0,1)
+//!   * `wasi:random/random.randomInt(min, max)` — inclusive-range integer
+//!   * `wasi:random/random.uuid` — UUID v4 string
+//! These names aren't in the WASI proposal; they're convenience helpers
+//! callers reach via `import * as random from "wasi:random/random"`.
 //!
 //! [`wasi-random`/random.wit]: proposals/WASI/proposals/random/wit/random.wit
 
@@ -101,18 +104,18 @@ pub fn register(vm: &mut VM) {
         Value::Object(Arc::new(Mutex::new(Object::new_array(pair))))
     }));
 
-    // ── vybe:random/* — conveniences NOT in WASI ──────────────────────
+    // ── wasi:random/random — Vybe convenience extensions ──────────────
     //
-    // `Math.random()`-style float in [0, 1). WASI's `random/random`
-    // gives raw u64; ECMA-262 `Math.random` gives a float. Different
-    // concepts, so this lives under `vybe:random`.
-    vm.register_host_fn("vybe:random", "random", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+    // These names aren't in the WASI proposal; they're convenience
+    // helpers layered on top of the same WASI module so callers can
+    // `import * as random from "wasi:random/random"` and get a
+    // Math.random-shape float, an inclusive-range integer, and a
+    // UUID v4 alongside the spec's raw `get-random-bytes` / `get-random-u64`.
+    vm.register_host_fn("wasi:random/random", "random", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         Value::F64(next_f64())
     }));
 
-    // Random integer in inclusive range. WASI gives raw bytes/u64;
-    // mapping to a range is Vybe-convenience.
-    vm.register_host_fn("vybe:random", "randomInt", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+    vm.register_host_fn("wasi:random/random", "randomInt", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let min = args.first().map(|v| v.as_f64() as i64).unwrap_or(0);
         let max = args.get(1).map(|v| v.as_f64() as i64).unwrap_or(100);
         if max <= min { return Value::F64(min as f64); }
@@ -121,8 +124,8 @@ pub fn register(vm: &mut VM) {
         Value::F64(val as f64)
     }));
 
-    // UUID v4 — not a WASI concept. Generates over local randomness.
-    vm.register_host_fn("vybe:random", "uuid", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+    // UUID v4 — generated over WASI randomness.
+    vm.register_host_fn("wasi:random/random", "uuid", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         let a = next_u64();
         let b = next_u64();
         let s = format!(

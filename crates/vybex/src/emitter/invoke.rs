@@ -50,6 +50,12 @@ use std::sync::Arc;
 /// The emitted sequence calls `ecma:value.invokeMethod(receiver,
 /// method_name, ...args)`. Argc is bounded to 253 (plus receiver +
 /// name = 255, fitting in a u8).
+///
+/// Scratch slots are allocated starting at `chunk.local_count` —
+/// **safe by construction** because `Compiler::define_local` keeps
+/// `chunk.local_count >= scope.next_slot` at all times. Helpers that
+/// take `&mut [Chunk]` and trust `chunk.local_count` for scratch base
+/// rely on this invariant.
 pub fn emit_invoke_method(
     chunks: &mut [Chunk],
     current: usize,

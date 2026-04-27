@@ -17,7 +17,7 @@
 //! override would point at an uninstalled polyfill.
 
 pub const IMPORT_ALIASES: &[(&str, &str, &str)] = &[
-    ("vybe:convert", "toString",         "__vybe_tostring"),
+    ("ecma:string",  "String",           "__vybe_tostring"),
     ("vybe:string",  "count",            "__vybe_count"),
     ("ecma:math",    "pow",              "__vybe_pow"),
     ("ecma:math",    "sin",              "__vybe_sin"),
@@ -35,30 +35,40 @@ pub const IMPORT_ALIASES: &[(&str, &str, &str)] = &[
     ("ecma:math",    "tanh",             "__vybe_tanh"),
     ("ecma:math",    "sign",             "__vybe_sign"),
     ("ecma:math",    "clamp",            "__vybe_clamp"),
-    ("vybe:array",   "range",            "__vybe_range"),
-    ("vybe:array",   "sorted",           "__vybe_sorted"),
-    ("vybe:array",   "reversed",         "__vybe_reversed"),
-    ("vybe:array",   "enumerate",        "__vybe_enumerate"),
-    ("vybe:array",   "zip",              "__vybe_zip"),
-    ("vybe:array",   "sum",              "__vybe_sum"),
-    ("vybe:array",   "pymin",            "__vybe_min"),
-    ("vybe:array",   "pymax",            "__vybe_max"),
+    // vybe:array.* aliases retired with the module. Polyfill globals
+    // (`__vybe_range`, `__vybe_sorted`, etc.) are now installed only
+    // by `emit_stdlib_preamble`; no host fn ever overrides them now,
+    // which is fine since these are dynamic-language idioms (Python
+    // range/sorted/enumerate/zip/sum/min/max — Ruby variants too)
+    // that don't have direct ECMA-262 spec equivalents.
+    // __vybe_reversed alias kept — `ecma:array.toReversed` (ES2023) is
+    // a 1:1 spec match for the polyfill, so a host with native
+    // toReversed can override the bytecode.
+    ("ecma:array",   "toReversed",       "__vybe_reversed"),
     ("vybe:convert", "isNumeric",        "__vybe_isnumeric"),
-    ("vybe:array",   "splice",           "__vybe_splice"),
+    ("ecma:array",   "splice",           "__vybe_splice"),
     ("ecma:math",    "floor",            "__vybe_floor"),
-    ("vybe:array",   "slice",            "__vybe_slice"),
-    ("vybe:object",  "keys",             "__vybe_keys"),
+    ("ecma:array",   "slice",            "__vybe_slice"),
+    ("ecma:object",  "keys",             "__vybe_keys"),
+    // hasProperty stays under vybe:object — `vybe:object.hasProperty(key, obj)`
+    // takes (key, obj) per the compiled `key in obj` operator. ECMA's
+    // `Object.hasOwn(obj, key)` takes args in the opposite order, so a
+    // direct alias swap would silently mis-bind. Keeping the legacy name
+    // until callers are migrated to ecma:object.hasOwn directly.
     ("vybe:object",  "hasProperty",      "__vybe_hasproperty"),
-    ("vybe:object",  "assign",           "__vybe_assign"),
+    ("ecma:object",  "assign",           "__vybe_assign"),
     ("vybe:object",  "instanceOf",       "__vybe_instanceof"),
-    ("vybe:object",  "deleteProperty",   "__vybe_deleteproperty"),
-    ("vybe:array",   "from",             "__vybe_from"),
-    ("vybe:array",   "redim",            "__vybe_redim"),
-    ("vybe:array",   "sliceStep",        "__vybe_slicestep"),
+    ("ecma:object",  "delete",           "__vybe_deleteproperty"),
+    ("ecma:array",   "from",             "__vybe_from"),
+    // (vybe:array.redim / vybe:array.sliceStep alias entries removed —
+    // module is gone; the bundled `__vybe_redim` and `__vybe_slicestep`
+    // polyfill chunks remain installed via `emit_stdlib_preamble`.)
     ("ecma:math",    "dynMul",           "__vybe_dynmul"),
     ("ecma:math",    "fmod",               "__vybe_fmod"),
-    ("vybe:array",   "arrayInsert",        "__vybe_array_insert"),
-    ("vybe:array",   "arrayRemoveAt",      "__vybe_array_remove_at"),
-    ("vybe:array",   "arrayRemoveValue",   "__vybe_array_remove_value"),
-    ("vybe:array",   "arrayLastIndexOf",   "__vybe_array_last_index_of"),
+    ("ecma:array",   "lastIndexOf",        "__vybe_array_last_index_of"),
+    // arrayInsert / arrayRemoveAt / arrayRemoveValue: dead alias entries
+    // (host fns never registered). The bundled stdlib polyfills under
+    // those names just keep running; no override possible until proper
+    // host fns ship. Removing the entries here — add back when the
+    // ecma:array equivalents (splice variants) are wired through.
 ];

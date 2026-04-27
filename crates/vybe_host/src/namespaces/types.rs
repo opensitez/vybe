@@ -160,15 +160,15 @@ fn register_array_statics_ns(vm: &mut VM) {
     set_prop(&sys_arr, "copy", host_fn_ref(vm, "vybe:types", "arrayCopy"));
     set_prop(&sys_arr, "resize", host_fn_ref(vm, "vybe:types", "arrayResize"));
     set_prop(&sys_arr, "sort", host_fn_ref(vm, "vybe:types", "arraySort"));
-    set_prop(&sys_arr, "reverse", host_fn_ref(vm, "vybe:array", "reverse"));
-    set_prop(&sys_arr, "indexof", host_fn_ref(vm, "vybe:array", "indexOf"));
+    set_prop(&sys_arr, "reverse", host_fn_ref(vm, "ecma:array", "reverse"));
+    set_prop(&sys_arr, "indexof", host_fn_ref(vm, "ecma:array", "indexOf"));
 
     // System.Tuple
     let tuple = ensure_namespace(vm, &["System", "Tuple"]);
-    set_prop(&tuple, "create", host_fn_ref(vm, "vybe:array", "from")); // simplified
+    set_prop(&tuple, "create", host_fn_ref(vm, "ecma:array", "from")); // simplified
 
     // System.BitConverter
     let bc = ensure_namespace(vm, &["System", "BitConverter"]);
-    set_prop(&bc, "tostring", host_fn_ref(vm, "vybe:convert", "toString"));
-    set_prop(&bc, "todouble", host_fn_ref(vm, "vybe:convert", "cdbl"));
+    set_prop(&bc, "tostring", host_fn_ref(vm, "ecma:string", "String"));
+    set_prop(&bc, "todouble", host_fn_ref(vm, "ecma:number", "Number"));
 }

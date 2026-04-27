@@ -68,8 +68,25 @@ impl VM {
                     }
                     ObjectKind::HostFunction(idx) => {
                         let idx = *idx;
+                        // Function.prototype.bind support: if the function-ref
+                        // Object carries `__bound_args` (an Array of values)
+                        // they are prepended to the runtime args before
+                        // invocation. This is the standard ECMA-262 §20.2.3.2
+                        // semantics applied to host fns — callers build bound
+                        // refs with `bound_host_fn_ref` in vybe_host.
+                        let bound: Vec<Value> = match o.properties.get("__bound_args") {
+                            Some(Value::Object(arr)) => {
+                                let a = arr.lock().unwrap();
+                                if let ObjectKind::Array(ref elems) = a.kind {
+                                    elems.clone()
+                                } else { Vec::new() }
+                            }
+                            _ => Vec::new(),
+                        };
                         drop(o);
-                        let args: Vec<Value> = self.stack[self.stack.len() - argc..].to_vec();
+                        let mut args: Vec<Value> = Vec::with_capacity(bound.len() + argc);
+                        args.extend(bound);
+                        args.extend(self.stack[self.stack.len() - argc..].iter().cloned());
                         for _ in 0..argc { self.stack.pop(); }
                         self.stack.pop();
                         let placeholder: HostFn = Arc::new(|_, _| Value::Null);

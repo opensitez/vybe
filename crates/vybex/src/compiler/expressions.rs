@@ -186,8 +186,8 @@ impl Compiler {
                         match op {
                             UnaryOp::Neg => { let l = self.line; common::math::emit_neg(self.chunk(), l); }
                             UnaryOp::Pos => {
-                                // JS `+v` coerces to number. Route through vybe:convert:toNumber.
-                                let idx = self.import("vybe:convert", "toNumber");
+                                // JS `+v` coerces to number — ECMA-262 §7.1.4 ToNumber.
+                                let idx = self.import("ecma:number", "Number");
                                 self.emit_host_call(idx, 1);
                             }
                             UnaryOp::Not => self.emit(Op::DYN_NOT),
@@ -310,6 +310,9 @@ impl Compiler {
                 } else {
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
+                    if self.profile.negative_index_wraps {
+                        self.emit_negative_index_wrap();
+                    }
                     { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
                 }
             }
@@ -393,7 +396,7 @@ impl Compiler {
                         common::errors::emit_exception_new_finalize(self.chunk(), type_name, line);
                         // Stamp `stack` = "Name: message" using locals.
                         // Stack after finalize: [obj]
-                        let exc_tmp = self.scope_mut().define("__exc_tmp");
+                        let exc_tmp = self.define_local("__exc_tmp");
                         self.emit_u16(Op::LOCAL_SET, exc_tmp); self.emit(Op::DROP);
                         // Build "Name: " + message
                         self.emit_const(Value::String(Arc::from(format!("{}: ", type_name))));
@@ -403,7 +406,7 @@ impl Compiler {
                         // Stack: ["Name: ", msg]. str_concat: a=prefix, b=msg → prefix+msg
                         self.emit(Op::STR_CONCAT);
                         // Stack: ["Name: msg"]. Save it.
-                        let sv = self.scope_mut().define("__stack_val");
+                        let sv = self.define_local("__stack_val");
                         self.emit_u16(Op::LOCAL_SET, sv); self.emit(Op::DROP);
                         // Stamp: obj.stack = stack_val
                         self.emit_u16(Op::LOCAL_GET, exc_tmp);
@@ -611,7 +614,7 @@ impl Compiler {
                 let base = if n == 0 { 0 } else {
                     let mut first = 0u16;
                     for i in 0..n {
-                        let s = self.scope_mut().define("__pack");
+                        let s = self.define_local("__pack");
                         if i == 0 { first = s; }
                     }
                     first
@@ -627,14 +630,16 @@ impl Compiler {
                 let base = if n == 0 { 0 } else {
                     let mut first = 0u16;
                     for i in 0..n {
-                        let s = self.scope_mut().define("__pack");
+                        let s = self.define_local("__pack");
                         if i == 0 { first = s; }
                     }
                     first
                 };
                 common::collections::emit_pack_n(&mut self.chunks, self.current, n as u16, base, line);
-                // Convert to set via host call
-                let idx = self.import("vybe:collections", "arrayToSet");
+                // Convert the packed array to a Set per ECMA-262 §24.2.1.1
+                // — `new Set(iterable)`. Same import V8 satisfies natively
+                // for `new Set([1,2,3])`.
+                let idx = self.import("ecma:set", "fromIterable");
                 self.emit_host_call(idx, 1);
             }
 
@@ -675,7 +680,7 @@ impl Compiler {
                                 self.emit(Op::DUP);                // [dict, dict]
                                 self.compile_expr(key)?;           // [dict, dict, key]
                                 self.emit(Op::DUP);                // [dict, dict, key, key]
-                                let key_tmp = self.scope_mut().define("__obj_dyn_key");
+                                let key_tmp = self.define_local("__obj_dyn_key");
                                 self.emit_u16(Op::LOCAL_SET, key_tmp); self.emit(Op::DROP);
                                 // [dict, dict, key]
                                 self.compile_expr(value)?;         // [dict, dict, key, value]
@@ -710,7 +715,7 @@ impl Compiler {
                         ObjectProperty::Spread(expr) => {
                             // Object spread: merge properties from expr into current object
                             self.compile_expr(expr)?;
-                            let idx = self.import("vybe:object", "assign");
+                            let idx = self.import("ecma:object", "assign");
                             self.emit_host_call(idx, 2);
                         }
                         ObjectProperty::Method { key, value } => {
@@ -760,7 +765,7 @@ impl Compiler {
                             self.emit(Op::DUP);
                             self.compile_expr(key)?;
                             self.emit(Op::DUP); // save key for __keys
-                            let key_tmp = self.scope_mut().define("__obj_comp_key");
+                            let key_tmp = self.define_local("__obj_comp_key");
                             self.emit_u16(Op::LOCAL_SET, key_tmp); self.emit(Op::DROP);
                             self.compile_expr(value)?;
                             let l = self.line;
@@ -850,7 +855,7 @@ impl Compiler {
                 // If the inner value is not a promise, pass through.
                 self.compile_expr(inner)?;
                 // Save to local, try to read __value
-                let await_slot = self.scope_mut().define("__await");
+                let await_slot = self.define_local("__await");
                 self.emit_u16(Op::LOCAL_SET, await_slot); self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, await_slot);
                 let vk = self.str_const("__value");
@@ -981,15 +986,15 @@ impl Compiler {
                 // Simplified: compile as loop building an array
                 let line = self.line;
                 common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
-                let result_slot = self.scope_mut().define("__comp_result");
+                let result_slot = self.define_local("__comp_result");
                 self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
 
                 // Only handle the first generator for simplicity
                 if let Some(generator) = generators.first() {
                     self.compile_expr(&generator.iter)?;
-                    let arr_slot = self.scope_mut().define("__comp_iter");
+                    let arr_slot = self.define_local("__comp_iter");
                     self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
-                    let idx_slot = self.scope_mut().define("__comp_idx");
+                    let idx_slot = self.define_local("__comp_idx");
                     let lp = common::loops::emit_for_in_start(
                         &mut self.chunks, self.current, arr_slot, idx_slot, line,
                     );
@@ -998,7 +1003,7 @@ impl Compiler {
                         ExprKind::Ident(n) => n.clone(),
                         _ => "__comp_var".to_string(),
                     };
-                    let var_slot = self.scope_mut().define(&var_name);
+                    let var_slot = self.define_local(&var_name);
                     self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
 
                     // Check conditions
@@ -1028,12 +1033,17 @@ impl Compiler {
 
             // ── Slice (Python) ──────────────────────────────────────────
             ExprKind::Slice { lower, upper, step } => {
-                // Emit slice parts for use by Index
+                // Stack on entry (from Index parent): [obj]
+                // Emit slice parts → [obj, lower, upper, step] then call the
+                // bundled `__vybe_slicestep` polyfill directly (skips the
+                // legacy `vybe:array` host-import indirection).
                 if let Some(l) = lower { self.compile_expr(l)?; } else { self.emit(Op::NULL); }
                 if let Some(u) = upper { self.compile_expr(u)?; } else { self.emit(Op::NULL); }
                 if let Some(s) = step { self.compile_expr(s)?; } else { self.emit(Op::NULL); }
-                let idx = self.import("vybe:array", "sliceStep");
-                self.emit_host_call(idx, 4); // obj already on stack from Index parent
+                let line = self.line;
+                common::collections::emit_stdlib_call(
+                    &mut self.chunks, self.current, "__vybe_slicestep", 4, line,
+                );
             }
 
             // ── Walrus (Python :=) ──────────────────────────────────────
@@ -1057,12 +1067,12 @@ impl Compiler {
                 if let ExprKind::Member { object, field, .. } = &inner.kind {
                     self.compile_expr(object)?;
                     self.emit_const(Value::String(Arc::from(field.as_str())));
-                    let idx = self.import("vybe:object", "deleteProperty");
+                    let idx = self.import("ecma:object", "delete");
                     self.emit_host_call(idx, 2);
                 } else if let ExprKind::Index { object, index } = &inner.kind {
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
-                    let idx = self.import("vybe:object", "deleteProperty");
+                    let idx = self.import("ecma:object", "delete");
                     self.emit_host_call(idx, 2);
                 } else {
                     self.compile_expr(inner)?;
@@ -1140,7 +1150,7 @@ impl Compiler {
             // ── Match expression (PHP/Rust) ─────────────────────────────
             ExprKind::Match { subject, arms } => {
                 self.compile_expr(subject)?;
-                let subject_slot = self.scope_mut().define("__match_subj");
+                let subject_slot = self.define_local("__match_subj");
                 self.emit_u16(Op::LOCAL_SET, subject_slot); self.emit(Op::DROP);
                 let mut end_patches = Vec::new();
                 for arm in arms {

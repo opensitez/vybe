@@ -267,7 +267,7 @@ pub fn emit_rich_to_string(chunk: &mut Chunk, obj_slot: u16, line: u32) {
 
     // Fallback: use host toString
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    let to_str = chunk.add_import("vybe:convert", "toString");
+    let to_str = chunk.add_import("ecma:string", "String");
     chunk.emit_op_u16(Op::CALL_IMPORT, to_str, line);
     chunk.emit(1, line);
 

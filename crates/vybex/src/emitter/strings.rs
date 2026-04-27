@@ -13,7 +13,7 @@ use vybe_bytecode::opcode::Op;
 /// Emit toString conversion. Adds import to the given chunk.
 /// Use `emit_to_string_with_import` if your compiler requires imports in chunk 0.
 pub fn emit_to_string(chunk: &mut Chunk, line: u32) {
-    let to_str = chunk.add_import("vybe:convert", "toString");
+    let to_str = chunk.add_import("ecma:string", "String");
     chunk.emit_op_u16(Op::CALL_IMPORT, to_str, line);
     chunk.emit(1, line);
 }

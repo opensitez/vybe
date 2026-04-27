@@ -62,7 +62,7 @@ log           = { emit = "host:ecma:math:log",             min_args = 1, max_arg
 log10         = { emit = "host:ecma:math:log10",           min_args = 1, max_args = 1 }
 mod           = { emit = "host:ecma:math:fmod",            min_args = 2, max_args = 2 }
 sign          = { emit = "host:ecma:math:sign",            min_args = 2, max_args = 2 }
-random_number = { emit = "host:vybe:random:random",        min_args = 0, max_args = 0 }
+random_number = { emit = "host:ecma:math:random",          min_args = 0, max_args = 0 }
 
 # ── String functions ─────────────────────────────────────────────────────────
 
@@ -71,8 +71,8 @@ len_trim      = { emit = "common:strings.length",          min_args = 1, max_arg
 trim          = { emit = "common:strings.trim",            min_args = 1, max_args = 1 }
 adjustl       = { emit = "opcode:str_trim_start",          min_args = 1, max_args = 1 }
 adjustr       = { emit = "opcode:str_trim_end",            min_args = 1, max_args = 1 }
-char          = { emit = "host:vybe:string:chr",           min_args = 1, max_args = 1 }
-ichar         = { emit = "host:vybe:string:charCodeAt",    min_args = 1, max_args = 1 }
+char          = { emit = "host:ecma:string:fromCharCode",  min_args = 1, max_args = 1 }
+ichar         = { emit = "host:ecma:string:charCodeAt",    min_args = 1, max_args = 1 }
 index         = { emit = "opcode:str_index_of",            min_args = 2, max_args = 2 }
 repeat        = { emit = "opcode:str_repeat",              min_args = 2, max_args = 2 }
 

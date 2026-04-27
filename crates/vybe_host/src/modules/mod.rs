@@ -11,17 +11,16 @@
 
 pub mod console;
 pub mod string;
-pub mod array;
+// `vybe:array` retired — every former caller now routes through
+// `ecma:array.*` (real ECMA-262 §23.1) or stdlib polyfills (`__vybe_*`
+// chunks via `BuiltinEmit::Stdlib`). The module file is gone.
 pub mod convert;
-pub mod json;
 pub mod fs;
 pub mod clock;
 pub mod env;
 pub mod random;
 pub mod http;
 pub mod object;
-pub mod regex;
-pub mod collections;
 pub mod runtime;
 pub mod database;
 pub mod gui;
@@ -467,13 +466,19 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
     // / `vybe:object` / etc. still live under `modules/` until their
     // callers migrate to `ecma:*`.
     string::register(vm);
-    array::register(vm);
     convert::register(vm);
-    json::register(vm);
+    // `vybe:json` retired — JSON.parse / JSON.stringify both flow through
+    // `ecma:json` (registered via `crate::ecma::register` below).
     object::register(vm);
-    regex::register(vm);
-    regex::register_constructor(vm);
-    collections::register(vm);
+    // `vybe:regex` retired — RegExp + String.prototype regex methods now
+    // flow through `ecma:regexp` (registered via `crate::ecma::register`
+    // below). Pattern-first language conventions (PHP preg_*, Python re.*,
+    // VB Regex.*, .NET System.Text.RegularExpressions.Regex) are bridged
+    // via stdlib adapter chunks (`__stdlib_regex_*_pat_first`).
+    // `vybe:collections` retired — JS Map/Set/WeakMap/WeakSet now flow
+    // through `ecma:map` / `ecma:set` / `ecma:weakmap` / `ecma:weakset`
+    // (registered via `crate::ecma::register` below). TypeRegistry
+    // dispatch in `builtin_types.rs` points at the same fns.
     runtime::register(vm);
     types::register(vm);
     data::register(vm);
@@ -483,6 +488,11 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
     // ecma:* — JS runtime (ECMA-262 mirror). All pure computation
     // except `ecma:date`, which is gated under Clock below.
     crate::ecma::register(vm);
+    // web:* — WHATWG / W3C web platform APIs (crypto, url, encoding,
+    // fetch, timers). Some entries hit the network/disk and ought to
+    // be capability-gated; today it's all-on for parity with how
+    // browsers expose them.
+    crate::web::register(vm);
     // wasm:* — real WebAssembly CG proposal host imports
     // (js-string-builtins + stage-1 js-primitive-builtins).
     crate::wasm::register(vm);
