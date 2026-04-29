@@ -236,7 +236,11 @@ console.log(funcs[4]());
 
 #[test]
 fn closure_over_var_in_loop() {
-    assert_eq!(run_js(r#"
+    let handle = std::thread::Builder::new()
+        .name("closure_over_var_in_loop".to_string())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            assert_eq!(run_js(r#"
 var funcs = [];
 for (var i = 0; i < 5; i++) {
     funcs.push((function(j) { return function() { return j; }; })(i));
@@ -245,6 +249,10 @@ console.log(funcs[0]());
 console.log(funcs[2]());
 console.log(funcs[4]());
 "#), &["0", "2", "4"]);
+        })
+        .expect("failed to spawn test thread");
+
+    handle.join().expect("closure_over_var_in_loop thread panicked");
 }
 
 #[test]

@@ -12,7 +12,6 @@
 
 use std::rc::Rc;
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use vybe_host::GuiState;
 

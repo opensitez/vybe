@@ -86,6 +86,19 @@ pub enum StaticMethodTarget {
     Common { emit: String },
 }
 
+/// What an instance-method call resolves to in the Component Model
+/// dispatch path. Mirrors `StaticMethodTarget` plus the `arity` so the
+/// caller can validate `args.len()` against the declared signature.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstanceMethodTarget {
+    /// Method body is a host import (typically an `ecma:*` primitive
+    /// the .NET adapter delegates to).
+    Host { module: String, func: String, arity: u8 },
+    /// Method body is a `compiler_common` emit name routed through
+    /// `dispatch::emit_common`.
+    Common { emit: String, arity: u8 },
+}
+
 pub struct DotnetSurface {
     default_imports: Vec<String>,
     namespace_roots: HashSet<String>,
@@ -155,6 +168,49 @@ impl DotnetSurface {
             .find(|class| class.name.eq_ignore_ascii_case(name))
             .and_then(|class| class.constructor.as_ref())
             .and_then(|ctor| ctor.backing.clone())
+    }
+
+    /// Component Model instance-method dispatch.
+    ///
+    /// Given a receiver class name (e.g. `"Dictionary"`) and a method
+    /// name (e.g. `"Add"`), look up the class in the component descriptor
+    /// and return its `MethodBody`. The .NET-name → ECMA-name translation
+    /// happens at the descriptor level (e.g.
+    /// `Dictionary.Add → MethodBody::HostCall(ecma:map.set)`), so the
+    /// resulting `InstanceMethodTarget` is already in spec terms.
+    ///
+    /// The compiler calls this when a method-call site has a known
+    /// receiver type (typically from `Dim x As New Y(...)` or
+    /// `var x : Y` annotations propagated through the local table).
+    /// Returns `None` for unknown classes or non-instance methods —
+    /// the caller falls through to runtime dispatch (TypeRegistry hint
+    /// + `__type` fallback per the compilation-hints proposal).
+    pub fn lookup_instance_method(&self, class_name: &str, method_name: &str) -> Option<InstanceMethodTarget> {
+        self.component_descriptor
+            .classes
+            .iter()
+            .find(|class| class.name.eq_ignore_ascii_case(class_name))
+            .and_then(|class| {
+                class.methods.iter().find_map(|method| {
+                    if method.is_static || !method.name.eq_ignore_ascii_case(method_name) {
+                        return None;
+                    }
+                    match &method.body {
+                        MethodBody::HostCall(target) => Some(InstanceMethodTarget::Host {
+                            module: target.module.clone(),
+                            func: target.name.clone(),
+                            arity: method.arity,
+                        }),
+                        MethodBody::Common(name) => Some(InstanceMethodTarget::Common {
+                            emit: name.clone(),
+                            arity: method.arity,
+                        }),
+                        // UserChunk paths are compiled by the wrapper builder
+                        // (DotnetClass) — not driven through this lookup.
+                        _ => None,
+                    }
+                })
+            })
     }
 
     pub fn lookup_static_method(&self, prefix: &str, method_parts: &[&str]) -> Option<StaticMethodTarget> {

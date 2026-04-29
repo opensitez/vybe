@@ -20,7 +20,7 @@ console.log(obj.z);
 "#), &["1", "undefined"]);
 }
 
-#[test] #[ignore] fn object_is_frozen() {
+#[test] fn object_is_frozen() {
     assert_eq!(run_js(r#"
 let obj = { a: 1 };
 console.log(Object.isFrozen(obj));
@@ -44,7 +44,7 @@ console.log(obj.z);
 "#), &["99", "undefined"]);
 }
 
-#[test] #[ignore] fn object_is_sealed() {
+#[test] fn object_is_sealed() {
     assert_eq!(run_js(r#"
 let obj = { a: 1 };
 console.log(Object.isSealed(obj));
@@ -57,7 +57,7 @@ console.log(Object.isSealed(obj));
 // OBJECT.CREATE
 // ===================================================================
 
-#[test] #[ignore] fn object_create_basic() {
+#[test] fn object_create_basic() {
     assert_eq!(run_js(r#"
 let proto = {
     greet() { return "Hello, " + this.name; }
@@ -77,7 +77,7 @@ console.log(obj.toString);
 "#), &["42", "undefined"]);
 }
 
-#[test] #[ignore] fn object_create_chain() {
+#[test] fn object_create_chain() {
     assert_eq!(run_js(r#"
 let animal = { type: "animal", speak() { return "..."; } };
 let dog = Object.create(animal);
@@ -94,7 +94,7 @@ console.log(puppy.type);
 // OBJECT.IS
 // ===================================================================
 
-#[test] #[ignore] fn object_is_comparison() {
+#[test] fn object_is_comparison() {
     assert_eq!(run_js(r#"
 console.log(Object.is(42, 42));
 console.log(Object.is("foo", "foo"));
@@ -135,7 +135,7 @@ console.log(obj.PI);
 "#), &["3.14159", "3.14159"]);
 }
 
-#[test] #[ignore] fn define_property_non_enumerable() {
+#[test] fn define_property_non_enumerable() {
     assert_eq!(run_js(r#"
 let obj = { a: 1, b: 2 };
 Object.defineProperty(obj, "hidden", {
@@ -164,7 +164,7 @@ console.log(Object.getOwnPropertyNames(obj).join(","));
 // OBJECT.GETPROTOTYPEOF
 // ===================================================================
 
-#[test] #[ignore] fn get_prototype_of() {
+#[test] fn get_prototype_of() {
     assert_eq!(run_js(r#"
 class Animal {}
 class Dog extends Animal {}
@@ -208,7 +208,7 @@ console.log(Object.keys(child).join(","));
 // PROPERTY SHORTHAND AND COMPUTED
 // ===================================================================
 
-#[test] #[ignore] fn method_shorthand_in_object() {
+#[test] fn method_shorthand_in_object() {
     assert_eq!(run_js(r#"
 let calc = {
     add(a, b) { return a + b; },
@@ -219,7 +219,7 @@ console.log(calc.mul(3, 4));
 "#), &["7", "12"]);
 }
 
-#[test] #[ignore] fn computed_keys_dynamic() {
+#[test] fn computed_keys_dynamic() {
     assert_eq!(run_js(r#"
 let field = "name";
 let obj = { [field]: "Alice", [field + "Length"]: 5 };
@@ -232,7 +232,7 @@ console.log(obj.nameLength);
 // OBJECT.ASSIGN DEEP PATTERNS
 // ===================================================================
 
-#[test] #[ignore] fn object_assign_multiple_sources() {
+#[test] fn object_assign_multiple_sources() {
     assert_eq!(run_js(r#"
 let a = { x: 1 };
 let b = { y: 2 };
@@ -242,7 +242,7 @@ console.log(merged.x + "," + merged.y + "," + merged.z);
 "#), &["1,2,3"]);
 }
 
-#[test] #[ignore] fn object_assign_override_order() {
+#[test] fn object_assign_override_order() {
     assert_eq!(run_js(r#"
 let defaults = { color: "red", size: 10, bold: false };
 let user = { color: "blue", bold: true };
@@ -298,7 +298,7 @@ console.log(Object.keys(obj).join(","));
 "#), &["12", "x,y"]);
 }
 
-#[test] #[ignore] fn object_getprototypeof_object_create_chain() {
+#[test] fn object_getprototypeof_object_create_chain() {
     assert_eq!(run_js(r#"
 let proto = { kind: "base" };
 let obj = Object.create(proto);

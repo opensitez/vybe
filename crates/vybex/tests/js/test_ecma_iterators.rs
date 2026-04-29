@@ -30,7 +30,6 @@ console.log(chars.join(","));
     assert_eq!(out, vec!["a,b,c"]);
 }
 
-#[ignore]
 #[test]
 fn for_of_with_destructuring() {
     let out = run_js(r#"
@@ -80,7 +79,6 @@ console.log(c.join(","));
     assert_eq!(out, vec!["4", "1,2,3,4"]);
 }
 
-#[ignore]
 #[test]
 fn spread_array_clone() {
     let out = run_js(r#"

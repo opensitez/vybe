@@ -466,7 +466,7 @@ console.log(u.name);
 }
 
 #[test]
-fn symbol_toPrimitive_default_hint_used_in_addition() {
+fn symbol_to_primitive_default_hint_used_in_addition() {
     assert_eq!(run_js(r#"
 class Amount {
     constructor(v) { this.v = v; }

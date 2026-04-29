@@ -50,11 +50,42 @@ pub fn register(vm: &mut VM) {
             dispatch(ctx, &receiver, &method, user_args)
         }),
     );
+
+    vm.register_host_fn(
+        "ecma:value",
+        "getMethodForCall",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let receiver = args.first().cloned().unwrap_or(Value::Undefined);
+            let method = match args.get(1) {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => return Value::Undefined,
+            };
+            lookup_method_for_call(&receiver, &method)
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:value",
+        "instanceOf",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let receiver = args.first().cloned().unwrap_or(Value::Undefined);
+            let ctor = args.get(1).cloned().unwrap_or(Value::Undefined);
+            Value::Bool(js_instanceof(&receiver, &ctor))
+        }),
+    );
 }
 
 fn dispatch(ctx: &mut HostContext, receiver: &Value, method: &str, args: &[Value]) -> Value {
     match receiver {
-        Value::String(_) => dispatch_string(receiver, method, args),
+        Value::String(_) => dispatch_string(ctx, receiver, method, args),
+        Value::Symbol(desc) => match method {
+            // ECMA-262 §20.4.3.3 Symbol.prototype.toString — "Symbol(<desc>)"
+            "toString" => Value::String(Arc::from(format!("Symbol({})", desc).as_str())),
+            // ECMA-262 §20.4.3.4 Symbol.prototype.valueOf — returns the symbol itself
+            "valueOf" => receiver.clone(),
+            _ => Value::Undefined,
+        },
         Value::Object(obj) => {
             let kind_tag = {
                 let o = obj.lock().unwrap();
@@ -78,7 +109,7 @@ fn dispatch(ctx: &mut HostContext, receiver: &Value, method: &str, args: &[Value
 
 // ── String methods (`String.prototype.*`) ─────────────────────────────
 
-fn dispatch_string(receiver: &Value, method: &str, args: &[Value]) -> Value {
+fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: &[Value]) -> Value {
     let s = match receiver {
         Value::String(s) => s.clone(),
         _ => return Value::Undefined,
@@ -206,23 +237,46 @@ fn dispatch_string(receiver: &Value, method: &str, args: &[Value]) -> Value {
                 }
             }
             let sep = args.first().map(to_str).unwrap_or_default();
+            let limit = args.get(1).and_then(|v| {
+                let n = v.as_i32();
+                if n > 0 { Some(n as usize) } else { None }
+            });
             let parts: Vec<Value> = if sep.is_empty() {
-                s.chars()
-                    .map(|c| Value::String(Arc::from(c.to_string().as_str())))
-                    .collect()
+                let chars = s.chars()
+                    .map(|c| Value::String(Arc::from(c.to_string().as_str())));
+                match limit {
+                    Some(n) => chars.take(n).collect(),
+                    None => chars.collect(),
+                }
             } else {
-                s.split(sep.as_str())
-                    .map(|p| Value::String(Arc::from(p)))
-                    .collect()
+                let pieces = s.split(sep.as_str())
+                    .map(|p| Value::String(Arc::from(p)));
+                match limit {
+                    Some(n) => pieces.take(n).collect(),
+                    None => pieces.collect(),
+                }
             };
             make_array(parts)
         }
         "replace" => {
             // ECMA-262 §22.1.3.18 — first arg can be String or RegExp.
             // With a RegExp + `g` flag → replace all; else first only.
+            // Replacement may be a callable (function or host fn); per
+            // spec the function is called with (match, ...captures, offset, input)
+            // and its return value is the substitution.
+            let replacement = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let is_callable = matches!(&replacement, Value::Object(o)
+                if matches!(o.lock().unwrap().kind,
+                    vybe_bytecode::value::ObjectKind::Function(_)
+                    | vybe_bytecode::value::ObjectKind::HostFunction(_)));
             if let Some((pat, flags)) = regex_pattern(args.first()) {
                 if let Some(re) = compile_js_regex(&pat, &flags) {
-                    let with = args.get(1).map(to_str).unwrap_or_default();
+                    if is_callable {
+                        let global = flags.contains('g');
+                        let result = replace_with_callback(ctx, &s, &re, &replacement, global);
+                        return Value::String(Arc::from(result.as_str()));
+                    }
+                    let with = to_str(&replacement);
                     let result = if flags.contains('g') {
                         re.replace_all(&s, with.as_str()).into_owned()
                     } else {
@@ -232,7 +286,28 @@ fn dispatch_string(receiver: &Value, method: &str, args: &[Value]) -> Value {
                 }
             }
             let find = args.first().map(to_str).unwrap_or_default();
-            let with = args.get(1).map(to_str).unwrap_or_default();
+            if is_callable {
+                // Plain-string find with callable replacement: replace
+                // first occurrence by invoking the callback once.
+                let result = match s.find(find.as_str()) {
+                    Some(pos) => {
+                        let cb_args = vec![
+                            Value::String(Arc::from(find.as_str())),
+                            Value::I32(pos as i32),
+                            Value::String(s.clone()),
+                        ];
+                        let ret = ctx.invoke(&replacement, &cb_args);
+                        let with = match ret {
+                            Value::String(ref st) => st.to_string(),
+                            other => format!("{}", other),
+                        };
+                        format!("{}{}{}", &s[..pos], with, &s[pos + find.len()..])
+                    }
+                    None => s.to_string(),
+                };
+                return Value::String(Arc::from(result.as_str()));
+            }
+            let with = to_str(&replacement);
             Value::String(Arc::from(s.replacen(find.as_str(), with.as_str(), 1).as_str()))
         }
         "replaceAll" => {
@@ -424,6 +499,24 @@ fn dispatch_array(
             }
             make_array(out)
         }
+        "copyWithin" => {
+            let target = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
+            let end = args.get(2).map(|v| v.as_i32()).unwrap_or(i32::MAX);
+            let mut o = obj.lock().unwrap();
+            if let ObjectKind::Array(ref mut v) = o.kind {
+                let len = v.len() as i32;
+                let t = target.max(0).min(len) as usize;
+                let s = start.max(0).min(len) as usize;
+                let e = end.max(0).min(len) as usize;
+                let slice: Vec<Value> = v[s..e].iter().cloned().collect();
+                let max_copy = (len as usize - t).min(slice.len());
+                v[t..t + max_copy].clone_from_slice(&slice[..max_copy]);
+                sync_length(&mut o);
+            }
+            drop(o);
+            Value::Object(obj)
+        }
         "includes" => {
             let needle = args.first().cloned().unwrap_or(Value::Undefined);
             let from = args.get(1).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
@@ -537,6 +630,33 @@ fn dispatch_array(
                 sync_length(&mut o);
             }
             make_array(deleted)
+        }
+        "keys" => {
+            let o = obj.lock().unwrap();
+            if let ObjectKind::Array(ref v) = o.kind {
+                let out: Vec<Value> = (0..v.len()).map(|i| Value::F64(i as f64)).collect();
+                return crate::ecma::array::make_array_iterator(out);
+            }
+            crate::ecma::array::make_array_iterator(Vec::new())
+        }
+        "values" => {
+            let o = obj.lock().unwrap();
+            if let ObjectKind::Array(ref v) = o.kind {
+                return crate::ecma::array::make_array_iterator(v.clone());
+            }
+            crate::ecma::array::make_array_iterator(Vec::new())
+        }
+        "entries" => {
+            let o = obj.lock().unwrap();
+            if let ObjectKind::Array(ref v) = o.kind {
+                let out: Vec<Value> = v
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| make_array(vec![Value::F64(i as f64), e.clone()]))
+                    .collect();
+                return crate::ecma::array::make_array_iterator(out);
+            }
+            crate::ecma::array::make_array_iterator(Vec::new())
         }
         "forEach" => {
             let cb = match args.first() {
@@ -1034,7 +1154,185 @@ fn dispatch_plain_object(
             return ctx.invoke(&fn_val, &call_args);
         }
     }
+    // Type-tagged object fallback: known stamped-`__type` instances
+    // (Date) get their methods inline. The polymorphic invokeMethod
+    // shim doesn't see the type registry, so `d.toString()` would
+    // otherwise return undefined when the instance has no callable
+    // `toString` property of its own. ECMA-262 §21.4.4 dispatches
+    // these via the Date prototype — same semantics, inline impl.
+    let type_tag = {
+        let o = obj.lock().unwrap();
+        o.properties.get("__type").map(|v| format!("{}", v))
+    };
+    if let Some(tag) = type_tag {
+        if tag == "Date" {
+            let mut call_args = Vec::with_capacity(args.len() + 1);
+            call_args.push(Value::Object(obj));
+            call_args.extend_from_slice(args);
+            if let Some(result) = crate::ecma::date::dispatch_date_method(method, &call_args) {
+                return result;
+            }
+        } else if tag == "RegExp" {
+            let mut call_args = Vec::with_capacity(args.len() + 1);
+            call_args.push(Value::Object(obj));
+            call_args.extend_from_slice(args);
+            if let Some(result) = crate::ecma::regexp::dispatch_regexp_method(method, &call_args) {
+                return result;
+            }
+        }
+    }
     Value::Undefined
+}
+
+fn lookup_method_for_call(receiver: &Value, method: &str) -> Value {
+    let Value::Object(receiver_obj) = receiver else {
+        return Value::Null;
+    };
+
+    let mut current = Some(receiver_obj.clone());
+    while let Some(obj) = current {
+        let (found, next_proto) = {
+            let o = obj.lock().unwrap();
+            (
+                o.properties.get(method).cloned(),
+                o.properties.get("__proto__").cloned(),
+            )
+        };
+
+        if let Some(value) = found {
+            if !matches!(value, Value::Null | Value::Undefined) {
+                return bind_method_receiver(receiver_obj.clone(), value);
+            }
+        }
+
+        current = match next_proto {
+            Some(Value::Object(proto)) => Some(proto),
+            _ => None,
+        };
+    }
+
+    Value::Null
+}
+
+fn bind_method_receiver(receiver: Arc<Mutex<Object>>, method: Value) -> Value {
+    let Value::Object(target) = method else {
+        return method;
+    };
+
+    let (kind, existing_bound) = {
+        let o = target.lock().unwrap();
+        match &o.kind {
+            ObjectKind::HostFunction(_) => {
+                let prev_bound = match o.properties.get("__bound_args") {
+                    Some(Value::Object(bound)) => {
+                        let bo = bound.lock().unwrap();
+                        if let ObjectKind::Array(ref values) = bo.kind {
+                            values.clone()
+                        } else {
+                            Vec::new()
+                        }
+                    }
+                    _ => Vec::new(),
+                };
+                (Some(o.kind.clone()), prev_bound)
+            }
+            _ => (None, Vec::new()),
+        }
+    };
+
+    let Some(kind) = kind else {
+        return Value::Object(target);
+    };
+
+    let mut combined = Vec::with_capacity(existing_bound.len() + 1);
+    combined.push(Value::Object(receiver));
+    combined.extend(existing_bound);
+
+    let mut bound_obj = Object::new();
+    bound_obj.kind = kind;
+    bound_obj.properties.insert(
+        "__bound_args".into(),
+        Value::Object(Arc::new(Mutex::new(Object::new_array(combined)))),
+    );
+    Value::Object(Arc::new(Mutex::new(bound_obj)))
+}
+
+fn js_instanceof(receiver: &Value, ctor: &Value) -> bool {
+    let Value::Object(obj) = receiver else {
+        return false;
+    };
+
+    let ctor_name = match ctor {
+        Value::String(name) => Some(name.to_string()),
+        Value::Object(ctor_obj) => {
+            let ctor_lock = ctor_obj.lock().unwrap();
+            match ctor_lock.properties.get("name") {
+                Some(Value::String(name)) => Some(name.to_string()),
+                Some(other) => Some(format!("{}", other)),
+                None => None,
+            }
+        }
+        _ => None,
+    };
+
+    if let Some(name) = ctor_name.as_deref() {
+        let matched_stamp = {
+            let o = obj.lock().unwrap();
+            if matches!(o.properties.get("__type"), Some(Value::String(tag)) if tag.as_ref() == name) {
+                true
+            } else {
+                match o.properties.get("__types") {
+                    Some(Value::Object(arr)) => {
+                        let arr_lock = arr.lock().unwrap();
+                        if let ObjectKind::Array(ref elems) = arr_lock.kind {
+                            elems.iter().any(|value| matches!(value, Value::String(tag) if tag.as_ref() == name))
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
+                }
+            }
+        };
+        if matched_stamp {
+            return true;
+        }
+    }
+
+    let Value::Object(ctor_obj) = ctor else {
+        return false;
+    };
+
+    let target_proto = {
+        let ctor_lock = ctor_obj.lock().unwrap();
+        match ctor_lock.properties.get("prototype") {
+            Some(Value::Object(proto)) => Some(proto.clone()),
+            _ => None,
+        }
+    };
+
+    let Some(target_proto) = target_proto else {
+        return false;
+    };
+
+    let mut current = Some(obj.clone());
+    while let Some(cur) = current {
+        let next = {
+            let lock = cur.lock().unwrap();
+            lock.properties.get("__proto__").cloned()
+        };
+        match next {
+            Some(Value::Object(proto)) => {
+                if Arc::ptr_eq(&proto, &target_proto) {
+                    return true;
+                }
+                current = Some(proto);
+            }
+            _ => return false,
+        }
+    }
+
+    false
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -1044,6 +1342,47 @@ fn to_str(v: &Value) -> String {
         Value::String(s) => s.to_string(),
         other => format!("{}", other),
     }
+}
+
+/// String.prototype.replace with a callable replacement — ECMA-262
+/// §22.1.3.18 step 8.b.iii. Iterate matches, invoke the callback with
+/// (match, ...captures, offset, input) per match, splice in returns.
+fn replace_with_callback(
+    ctx: &mut HostContext,
+    input: &str,
+    re: &regex::Regex,
+    callback: &Value,
+    global: bool,
+) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut last_end = 0;
+    let captures_iter: Box<dyn Iterator<Item = regex::Captures>> = if global {
+        Box::new(re.captures_iter(input))
+    } else {
+        Box::new(re.captures(input).into_iter())
+    };
+    for caps in captures_iter {
+        let m = match caps.get(0) { Some(m) => m, None => continue };
+        out.push_str(&input[last_end..m.start()]);
+        let mut cb_args: Vec<Value> = Vec::with_capacity(caps.len() + 2);
+        for i in 0..caps.len() {
+            cb_args.push(match caps.get(i) {
+                Some(c) => Value::String(Arc::from(c.as_str())),
+                None => Value::Undefined,
+            });
+        }
+        cb_args.push(Value::I32(m.start() as i32));
+        cb_args.push(Value::String(Arc::from(input)));
+        let ret = ctx.invoke(callback, &cb_args);
+        match ret {
+            Value::String(s) => out.push_str(s.as_ref()),
+            other => out.push_str(&format!("{}", other)),
+        }
+        last_end = m.end();
+        if !global { break; }
+    }
+    out.push_str(&input[last_end..]);
+    out
 }
 
 /// If `arg` is a RegExp object (Object stamped with `__type=RegExp`),

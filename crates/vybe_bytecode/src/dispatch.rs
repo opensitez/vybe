@@ -16,8 +16,8 @@ use crate::opcode::Op;
 use crate::value::{Function, Object, ObjectKind, Upvalue, UpvalueLocation, Value};
 use crate::vm::{
     dyn_truthy,
-    VM, CallFrame, ExceptionHandler, FinalizerEntry, LabelEntry,
-    HostFn, ImportTarget, ActiveContinuation, ResumeMode,
+    VM, ExceptionHandler, FinalizerEntry, LabelEntry,
+    ImportTarget, ActiveContinuation, ResumeMode,
 };
 
 impl VM {
@@ -717,13 +717,11 @@ impl VM {
                             let args: Vec<Value> = self.stack[base..].to_vec();
                             self.stack.truncate(base);
 
-                            let placeholder: HostFn = Arc::new(|_, _| Value::Null);
-                            let host_fn = std::mem::replace(&mut self.host_fns[host_idx], placeholder);
+                            let host_fn = self.host_fns[host_idx].clone();
                             let result = {
                                 let mut ctx = self.make_host_context();
                                 host_fn(&mut ctx, &args)
                             };
-                            self.host_fns[host_idx] = host_fn;
 
                             // JSPI: transparent async suspension
                             if let Value::Object(ref obj) = result {
@@ -1343,6 +1341,7 @@ impl VM {
                             (Value::F64(x), Value::I32(y)) => *x == *y as f64,
                             (Value::I32(x), Value::F64(y)) => *x as f64 == *y,
                             (Value::String(x), Value::String(y)) => x == y,
+                            (Value::Symbol(x), Value::Symbol(y)) => Arc::ptr_eq(x, y),
                             // Bool with anything else → coerce bool to number, retry
                             (Value::Bool(x), other) | (other, Value::Bool(x)) => {
                                 let n = if *x { 1.0 } else { 0.0 };
@@ -1396,6 +1395,7 @@ impl VM {
                             if let Ok(sv) = s.parse::<f64>() { sv != *n as f64 } else { true }
                         }
                         (Value::String(x), Value::String(y)) => x != y,
+                        (Value::Symbol(x), Value::Symbol(y)) => !Arc::ptr_eq(x, y),
                         (Value::Object(x), Value::Object(y)) => !Arc::ptr_eq(x, y),
                         _ => true,
                     };
@@ -2839,11 +2839,21 @@ impl VM {
 
                 // -- wasi-threads: real OS thread spawning --
                 _ if op == Op::THREAD_SPAWN => {
-                    // [func_ref] → [task_object]
-                    // Per wasi-threads: spawn a real OS thread.
+                    // [start_arg, func_ref] → [task_object]
+                    //
+                    // Matches the wasi-threads `thread.spawn(start_arg) -> i32`
+                    // signature: pops a single i32-shaped start argument
+                    // alongside the function ref and forwards it to the
+                    // spawned function as its slot-0 parameter. This is how
+                    // closure-free closure capture works in wasi-threads —
+                    // a `Task.Delay(ms)` lowering can push `[ms, worker_fn,
+                    // THREAD_SPAWN]` and the worker reads ms from slot 0
+                    // without ever needing parent-stack upvalues.
+                    //
                     // Value is now Arc-based (Send+Sync), so chunks and host_fns
                     // can be shared directly — no serialization needed.
                     let func_val = self.pop();
+                    let start_arg = self.pop();
 
                     let function = match &func_val {
                         Value::Object(obj) => {
@@ -2900,7 +2910,16 @@ impl VM {
                             child_vm.strict_isolation = child_strict_isolation;
                             child_vm.module_prefix = child_module_prefix;
 
-                            let result = match child_vm.call_function(&func, 0).and_then(|_| child_vm.execute()) {
+                            // Push the start_arg onto the child VM's stack so
+                            // call_function lays it out at slot 0 of the spawned
+                            // function's frame (per wasi-threads spec). For
+                            // arity-0 worker fns the value sits in an unread
+                            // slot and is harmless; for arity-1 workers (e.g.
+                            // the Task.Delay sleep worker) it's the start_arg.
+                            // Direct push — child VM stack is fresh, can't
+                            // overflow.
+                            child_vm.stack.push(start_arg);
+                            let result = match child_vm.call_function(&func, 1).and_then(|_| child_vm.execute()) {
                                 Ok(val) => {
                                     // Store return value in the shared task object
                                     let mut t = task_for_child.lock().unwrap();

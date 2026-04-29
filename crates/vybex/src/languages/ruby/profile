@@ -69,12 +69,12 @@ srand           = { emit = "noop",                          min_args = 0, max_ar
 
 # ── Misc ─────────────────────────────────────────────────────────────────────
 
-sleep           = { emit = "host:vybe:runtime:sleep",        min_args = 1, max_args = 1 }
+sleep           = { emit = "host:wasi:clocks:sleep",         min_args = 1, max_args = 1 }
 exit            = { emit = "host:wasi:cli:exit",             min_args = 0, max_args = 1 }
-system          = { emit = "host:vybe:types:processStart",   min_args = 1, max_args = 1 }
+system          = { emit = "host:node:child_process:execSync", min_args = 1, max_args = 1 }
 raise           = { emit = "throw",                          min_args = 0, max_args = 1 }
-sprintf         = { emit = "host:vybe:string:format",        min_args = 1, max_args = 255 }
-format          = { emit = "host:vybe:string:format",        min_args = 1, max_args = 255 }
+sprintf         = { emit = "stdlib:sprintf",                 min_args = 1, max_args = 255 }
+format          = { emit = "stdlib:sprintf",                 min_args = 1, max_args = 255 }
 open            = { emit = "host:wasi:filesystem:open",      min_args = 1, max_args = 3 }
 require         = { emit = "noop",                           min_args = 1, max_args = 1 }
 require_relative = { emit = "noop",                          min_args = 1, max_args = 1 }
@@ -110,7 +110,7 @@ rindex          = { emit = "opcode:str_last_index_of",      min_args = 1, max_ar
 capitalize      = { emit = "intrinsic:capitalize",   min_args = 0, max_args = 0 }
 reverse         = { emit = "opcode:str_reverse",            min_args = 0, max_args = 0 }
 chars           = { emit = "intrinsic:chars",        min_args = 0, max_args = 0 }
-bytes           = { emit = "host:vybe:convert:toBytes",     min_args = 0, max_args = 0 }
+bytes           = { emit = "stdlib:to_bytes",     min_args = 0, max_args = 0 }
 center          = { emit = "intrinsic:center",       min_args = 1, max_args = 2 }
 ljust           = { emit = "opcode:str_pad_end",            min_args = 1, max_args = 2 }
 rjust           = { emit = "opcode:str_pad_start",          min_args = 1, max_args = 2 }
@@ -126,25 +126,25 @@ freeze          = { emit = "noop_receiver",                 min_args = 0, max_ar
 dup             = { emit = "host:ecma:array:slice",          min_args = 0, max_args = 0 }
 clone           = { emit = "host:ecma:array:slice",          min_args = 0, max_args = 0 }
 "nil?"          = { emit = "opcode:ref_is_null",            min_args = 0, max_args = 0 }
-"is_a?"         = { emit = "host:vybe:convert:instanceof",  min_args = 1, max_args = 1 }
+"is_a?"         = { emit = "stdlib:instanceof",             min_args = 1, max_args = 1 }
 class           = { emit = "opcode:ref_typeof",             min_args = 0, max_args = 0 }
 "respond_to?"   = { emit = "host:ecma:object:hasOwn",       min_args = 1, max_args = 1 }
-send            = { emit = "host:vybe:object:send",         min_args = 1, max_args = 255 }
+send            = { emit = "host:ecma:value:invokeMethod", min_args = 1, max_args = 255 }
 tap             = { emit = "noop_receiver",                 min_args = 0, max_args = 0 }
 "eql?"          = { emit = "opcode:dyn_eq",                 min_args = 1, max_args = 1 }
 "equal?"        = { emit = "opcode:dyn_eq",                 min_args = 1, max_args = 1 }
-hash            = { emit = "host:vybe:convert:hash",        min_args = 0, max_args = 0 }
-object_id       = { emit = "host:vybe:convert:id",          min_args = 0, max_args = 0 }
-encoding        = { emit = "host:vybe:string:encoding",     min_args = 0, max_args = 0 }
+hash            = { emit = "stdlib:hash",        min_args = 0, max_args = 0 }
+object_id       = { emit = "stdlib:id",          min_args = 0, max_args = 0 }
+encoding        = { emit = "stdlib:encoding",              min_args = 0, max_args = 0 }
 "valid_encoding?" = { emit = "noop_receiver",               min_args = 0, max_args = 0 }
 encode          = { emit = "stdlib:tostring",               min_args = 0, max_args = 1 }
 tr              = { emit = "host:ecma:string:tr",           min_args = 2, max_args = 2 }
-scan            = { emit = "host:vybe:string:findall",      min_args = 1, max_args = 1 }
+scan            = { emit = "host:ecma:regexp:matchAll",     min_args = 1, max_args = 1 }
 "match"         = { emit = "host:ecma:regexp:search",       min_args = 1, max_args = 1 }
 "match?"        = { emit = "host:ecma:regexp:search",       min_args = 1, max_args = 1 }
 chr             = { emit = "opcode:str_from_char_code",     min_args = 0, max_args = 0 }
 ord             = { emit = "intrinsic:asc",                 min_args = 0, max_args = 0 }
-hex             = { emit = "host:vybe:convert:toHex",       min_args = 0, max_args = 0 }
+hex             = { emit = "stdlib:pyhex",                  min_args = 0, max_args = 0 }
 casecmp         = { emit = "opcode:str_compare",            min_args = 1, max_args = 1 }
 
 # ── Array instance methods (common:collections.* / opcode:array_*) ───────────
@@ -174,7 +174,7 @@ shuffle         = { emit = "stdlib:rand_shuffle",           min_args = 0, max_ar
 take            = { emit = "common:collections.slice",      min_args = 1, max_args = 1 }
 rotate          = { emit = "stdlib:rotate",                 min_args = 0, max_args = 1 }
 zip             = { emit = "stdlib:zip",                    min_args = 1, max_args = 255 }
-dig             = { emit = "host:vybe:object:dig",          min_args = 1, max_args = 255 }
+dig             = { emit = "common:ruby.dig",              min_args = 1, max_args = 255 }
 lazy            = { emit = "noop_receiver",                 min_args = 0, max_args = 0 }
 slice           = { emit = "common:collections.slice",      min_args = 1, max_args = 2 }
 
@@ -184,14 +184,14 @@ keys            = { emit = "common:dict.keys",              min_args = 0, max_ar
 values          = { emit = "common:dict.values",            min_args = 0, max_args = 0 }
 "has_key?"      = { emit = "common:dict.has",               min_args = 1, max_args = 1 }
 "key?"          = { emit = "common:dict.has",               min_args = 1, max_args = 1 }
-"has_value?"    = { emit = "host:vybe:object:hasValue",     min_args = 1, max_args = 1 }
-"value?"        = { emit = "host:vybe:object:hasValue",     min_args = 1, max_args = 1 }
+"has_value?"    = { emit = "stdlib:has_value",             min_args = 1, max_args = 1 }
+"value?"        = { emit = "stdlib:has_value",             min_args = 1, max_args = 1 }
 merge           = { emit = "host:ecma:object:assign",       min_args = 1, max_args = 255 }
 delete          = { emit = "host:ecma:object:delete",       min_args = 1, max_args = 1 }
 fetch           = { emit = "common:dict.get_dynamic",       min_args = 1, max_args = 2 }
-"transform_values" = { emit = "host:vybe:object:mapValues", min_args = 0, max_args = 0 }
-"transform_keys"   = { emit = "host:vybe:object:mapKeys",  min_args = 0, max_args = 0 }
-invert          = { emit = "host:vybe:object:invert",       min_args = 0, max_args = 0 }
+"transform_values" = { emit = "stdlib:transform_values",   min_args = 0, max_args = 1 }
+"transform_keys"   = { emit = "stdlib:transform_keys",    min_args = 0, max_args = 1 }
+invert          = { emit = "stdlib:invert",                min_args = 0, max_args = 0 }
 to_h            = { emit = "common:dict.new",               min_args = 0, max_args = 0 }
 
 # ── Numeric instance methods (opcode:f64_*) ──────────────────────────────────

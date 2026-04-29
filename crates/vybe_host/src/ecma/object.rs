@@ -127,17 +127,26 @@ fn register_construction(vm: &mut VM) {
             let mut obj = Object::new();
             if let Some(Value::Object(src)) = args.first() {
                 let s = src.lock().unwrap();
-                if let ObjectKind::Array(ref pairs) = s.kind {
-                    for pair in pairs {
-                        if let Value::Object(p) = pair {
-                            let pl = p.lock().unwrap();
-                            if let ObjectKind::Array(ref kv) = pl.kind {
-                                if kv.len() >= 2 {
-                                    obj.properties.insert(key_string(&kv[0]), kv[1].clone());
+                match s.kind {
+                    ObjectKind::Array(ref pairs) => {
+                        for pair in pairs {
+                            if let Value::Object(p) = pair {
+                                let pl = p.lock().unwrap();
+                                if let ObjectKind::Array(ref kv) = pl.kind {
+                                    if kv.len() >= 2 {
+                                        obj.properties.insert(key_string(&kv[0]), kv[1].clone());
+                                    }
                                 }
                             }
                         }
                     }
+                    // Map iterates as `[key, value]` pairs (§24.1.3.5).
+                    ObjectKind::Map(ref m) => {
+                        for (k, v) in m.iter() {
+                            obj.properties.insert(key_string(k), v.clone());
+                        }
+                    }
+                    _ => {}
                 }
             }
             Value::Object(Arc::new(Mutex::new(obj)))

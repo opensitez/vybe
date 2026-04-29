@@ -22,8 +22,8 @@
 //!     `instanceof RegExp` work via the cross-language type registry.
 
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::value::{Object, ObjectKind, Value};
-use vybe_bytecode::{HostContext, VM};
+use vybe_bytecode::value::{Object, Value};
+use vybe_bytecode::VM;
 
 const REGEXP_TYPE: &str = "RegExp";
 
@@ -49,9 +49,39 @@ fn extract_pattern(args: &[Value], idx: usize) -> (String, String) {
                 .unwrap_or_default();
             (src, flags)
         }
-        Some(Value::String(s)) => (s.to_string(), String::new()),
-        Some(other) => (format!("{}", other), String::new()),
+        Some(Value::String(s)) => split_regex_literal(s.as_ref()),
+        Some(other) => split_regex_literal(&format!("{}", other)),
         None => (String::new(), String::new()),
+    }
+}
+
+/// Pull pattern + flags out of a string in `/pat/flags` shape — what the
+/// JS walker emits when it encounters a regex literal `/\d+/g`. The
+/// pattern may contain escaped slashes (`\/`); we split on the LAST
+/// unescaped `/`. Plain strings (no leading `/`) pass through as the
+/// pattern with empty flags.
+fn split_regex_literal(s: &str) -> (String, String) {
+    if !s.starts_with('/') {
+        return (s.to_string(), String::new());
+    }
+    // Find the LAST `/` not preceded by an odd number of backslashes.
+    let bytes = s.as_bytes();
+    let mut last = None;
+    for (i, &b) in bytes.iter().enumerate().skip(1) {
+        if b == b'/' {
+            let mut bs = 0;
+            let mut k = i;
+            while k > 0 && bytes[k - 1] == b'\\' { bs += 1; k -= 1; }
+            if bs % 2 == 0 { last = Some(i); }
+        }
+    }
+    match last {
+        Some(end) if end > 0 => {
+            let pattern = s[1..end].to_string();
+            let flags = s[end + 1..].to_string();
+            (pattern, flags)
+        }
+        _ => (s.to_string(), String::new()),
     }
 }
 
@@ -130,14 +160,7 @@ fn register_prototype(vm: &mut VM) {
     // anywhere in str. Receiver is `args[0]` per Component-Model
     // `[method]` convention.
     vm.register_host_fn("ecma:regexp", "test",
-        Box::new(|_ctx, args| {
-            let (pattern, flags) = extract_pattern(args, 0);
-            let input = s_arg(args, 1);
-            match compile(&pattern, &flags) {
-                Some(re) => Value::Bool(re.is_match(&input)),
-                None => Value::Bool(false),
-            }
-        }));
+        Box::new(|_ctx, args| regexp_test(args)));
 
     // `regex.exec(str)` — ECMA-262 §22.2.5.2. Returns a match Array
     // `[full, g1, g2, ..., index, input, groups]` or null.
@@ -147,48 +170,87 @@ fn register_prototype(vm: &mut VM) {
     // array. We materialize all of these so `match[0]`, `match.index`,
     // and `match.groups.name` all work.
     vm.register_host_fn("ecma:regexp", "exec",
-        Box::new(|_ctx, args| {
-            let (pattern, flags) = extract_pattern(args, 0);
-            let input = s_arg(args, 1);
-            let re = match compile(&pattern, &flags) {
-                Some(re) => re,
-                None => return Value::Null,
-            };
-            let caps = match re.captures(&input) {
-                Some(c) => c,
-                None => return Value::Null,
-            };
-            // Numeric elements: full match + each capture group.
-            let mut elems: Vec<Value> = Vec::with_capacity(caps.len());
-            for i in 0..caps.len() {
-                elems.push(match caps.get(i) {
-                    Some(m) => s_val(m.as_str()),
-                    None => Value::Undefined,
-                });
-            }
-            let mut match_obj = Object::new_array(elems);
-            // Spec sets `index`, `input`, `groups` as own properties on the
-            // returned Array.
-            let index = caps.get(0).map(|m| m.start() as i32).unwrap_or(0);
-            match_obj.properties.insert("index".into(), Value::I32(index));
-            match_obj.properties.insert("input".into(), s_val(&input));
-            // Named groups
-            let mut groups = Object::new();
-            for name in re.capture_names().flatten() {
-                let val = caps.name(name).map(|m| s_val(m.as_str())).unwrap_or(Value::Undefined);
-                groups.properties.insert(name.to_string(), val);
-            }
-            match_obj.properties.insert("groups".into(),
-                Value::Object(Arc::new(Mutex::new(groups))));
-            Value::Object(Arc::new(Mutex::new(match_obj)))
-        }));
+        Box::new(|_ctx, args| regexp_exec(args)));
 
     // `regex.toString()` — ECMA-262 §22.2.5.17. Returns "/source/flags".
     vm.register_host_fn("ecma:regexp", "toString",
-        Box::new(|_ctx, args| {
-            let (pattern, flags) = extract_pattern(args, 0);
-            s_val(&format!("/{}/{}", pattern, flags))
-        }));
+        Box::new(|_ctx, args| regexp_to_string(args)));
+}
+
+pub fn dispatch_regexp_method(method: &str, args: &[Value]) -> Option<Value> {
+    match method {
+        "test" => Some(regexp_test(args)),
+        "exec" => Some(regexp_exec(args)),
+        "toString" => Some(regexp_to_string(args)),
+        _ => None,
+    }
+}
+
+fn regexp_test(args: &[Value]) -> Value {
+    let (pattern, flags) = extract_pattern(args, 0);
+    let input = s_arg(args, 1);
+    match compile(&pattern, &flags) {
+        Some(re) => Value::Bool(re.is_match(&input)),
+        None => Value::Bool(false),
+    }
+}
+
+fn regexp_exec(args: &[Value]) -> Value {
+    let (pattern, flags) = extract_pattern(args, 0);
+    let input = s_arg(args, 1);
+    let re = match compile(&pattern, &flags) {
+        Some(re) => re,
+        None => return Value::Null,
+    };
+    let is_global_or_sticky = flags.contains('g') || flags.contains('y');
+    let last_index = if is_global_or_sticky {
+        args.first().and_then(|v| match v {
+            Value::Object(obj) => obj.lock().unwrap().properties.get("lastIndex").map(|v| v.as_i32()),
+            _ => None,
+        }).unwrap_or(0).max(0) as usize
+    } else { 0 };
+    let search_start = last_index.min(input.len());
+    let caps = match re.captures(&input[search_start..]) {
+        Some(c) => c,
+        None => {
+            if is_global_or_sticky {
+                if let Some(Value::Object(obj)) = args.first() {
+                    obj.lock().unwrap().properties.insert("lastIndex".into(), Value::I32(0));
+                }
+            }
+            return Value::Null;
+        }
+    };
+    if is_global_or_sticky {
+        let new_idx = caps.get(0).map(|m| (search_start + m.end()) as i32).unwrap_or(0);
+        if let Some(Value::Object(obj)) = args.first() {
+            obj.lock().unwrap().properties.insert("lastIndex".into(), Value::I32(new_idx));
+        }
+    }
+    let mut elems: Vec<Value> = Vec::with_capacity(caps.len());
+    for i in 0..caps.len() {
+        elems.push(match caps.get(i) {
+            Some(m) => s_val(m.as_str()),
+            None => Value::Undefined,
+        });
+    }
+    let mut match_obj = Object::new_array(elems);
+    let index = caps.get(0).map(|m| (search_start + m.start()) as i32).unwrap_or(0);
+    match_obj.properties.insert("index".into(), Value::I32(index));
+    match_obj.properties.insert("input".into(), s_val(&input));
+    let mut groups = Object::new();
+    for name in re.capture_names().flatten() {
+        let val = caps.name(name).map(|m| s_val(m.as_str())).unwrap_or(Value::Undefined);
+        groups.properties.insert(name.to_string(), val);
+    }
+    match_obj.properties.insert("groups".into(),
+        Value::Object(Arc::new(Mutex::new(groups))));
+    Value::Object(Arc::new(Mutex::new(match_obj)))
+}
+
+fn regexp_to_string(args: &[Value]) -> Value {
+    let (pattern, flags) = extract_pattern(args, 0);
+    s_val(&format!("/{}/{}", pattern, flags))
 }
 
 // ── String.prototype regex methods ───────────────────────────────────
@@ -295,19 +357,61 @@ fn register_string_methods(vm: &mut VM) {
         }));
 
     // `str.replace(regex, replacement)` — §22.1.3.18. Replaces first
-    // match (or all if `g` flag is set, per spec). Replacement string
-    // supports `$1`/`$2`/`$<name>` capture refs via the `regex` crate.
+    // match (or all if `g` flag is set, per spec). Replacement is either
+    // a string (with $1/$2/$<name> capture refs) or a function called
+    // with (match, ...captures, offset, input). The function form needs
+    // VM callback dispatch via `ctx.invoke`.
     vm.register_host_fn("ecma:regexp", "replace",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let input = s_arg(args, 0);
             let (pattern, flags) = extract_pattern(args, 1);
-            let replacement = s_arg(args, 2);
             let re = match compile(&pattern, &flags) {
                 Some(re) => re,
                 None => return s_val(&input),
             };
-            // Spec: `g` flag → replace all; else replace first.
-            let result = if flags.contains('g') {
+            let global = flags.contains('g');
+            // Function-form replacement: invoke the callback per match
+            // and substitute its return value. Spec §22.1.3.18 step 8.b.iii.
+            let replacement_arg = args.get(2).cloned().unwrap_or(Value::Undefined);
+            let is_callable = matches!(&replacement_arg, Value::Object(o)
+                if matches!(o.lock().unwrap().kind,
+                    vybe_bytecode::value::ObjectKind::Function(_)
+                    | vybe_bytecode::value::ObjectKind::HostFunction(_)));
+            if is_callable {
+                let mut out = String::with_capacity(input.len());
+                let mut last_end = 0;
+                let captures_iter: Box<dyn Iterator<Item = regex::Captures>> = if global {
+                    Box::new(re.captures_iter(&input))
+                } else {
+                    Box::new(re.captures(&input).into_iter())
+                };
+                for caps in captures_iter {
+                    let m = match caps.get(0) { Some(m) => m, None => continue };
+                    out.push_str(&input[last_end..m.start()]);
+                    // Build callback args: match, ...groups, offset, input
+                    let mut cb_args: Vec<Value> = Vec::with_capacity(caps.len() + 2);
+                    for i in 0..caps.len() {
+                        cb_args.push(match caps.get(i) {
+                            Some(c) => s_val(c.as_str()),
+                            None => Value::Undefined,
+                        });
+                    }
+                    cb_args.push(Value::I32(m.start() as i32));
+                    cb_args.push(s_val(&input));
+                    let ret = ctx.invoke(&replacement_arg, &cb_args);
+                    match ret {
+                        Value::String(s) => out.push_str(s.as_ref()),
+                        other => out.push_str(&format!("{}", other)),
+                    }
+                    last_end = m.end();
+                    if !global { break; }
+                }
+                out.push_str(&input[last_end..]);
+                return s_val(&out);
+            }
+            // String-form replacement: regex crate's $1/$2 syntax.
+            let replacement = s_arg(args, 2);
+            let result = if global {
                 re.replace_all(&input, replacement.as_str()).into_owned()
             } else {
                 re.replace(&input, replacement.as_str()).into_owned()

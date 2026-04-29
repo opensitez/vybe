@@ -18,7 +18,7 @@
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use vybe_bytecode::{VM, Value, HostContext};
-use vybe_bytecode::value::{Object, ObjectKind};
+use vybe_bytecode::value::Object;
 
 fn make_promise_fulfilled(value: Value) -> Value {
     let mut obj = Object::new();

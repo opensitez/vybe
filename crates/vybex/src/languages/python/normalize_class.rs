@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn str_method_maps_to_canonical_tostring() {
-        let method = Statement::new(StmtKind::FunctionDecl {
+        let method = crate::ast::Statement::new(StmtKind::FunctionDecl {
             name: "__str__".into(),
             params: vec![crate::ast::Param {
                 name: "self".into(), type_hint: None, default: None,
@@ -210,7 +210,7 @@ mod tests {
 
     #[test]
     fn add_operator_special_method() {
-        let method = Statement::new(StmtKind::FunctionDecl {
+        let method = crate::ast::Statement::new(StmtKind::FunctionDecl {
             name: "__add__".into(),
             params: vec![],
             return_type: None,
@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn del_becomes_destructor() {
-        let method = Statement::new(StmtKind::FunctionDecl {
+        let method = crate::ast::Statement::new(StmtKind::FunctionDecl {
             name: "__del__".into(),
             params: vec![],
             return_type: None,

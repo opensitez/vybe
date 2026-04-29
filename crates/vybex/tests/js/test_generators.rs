@@ -22,7 +22,7 @@ console.log(g.next().done);
 "#), &["1", "2", "3", "true"]);
 }
 
-#[test] #[ignore] fn generator_for_of() {
+#[test] fn generator_for_of() {
     assert_eq!(run_js(r#"
 function* range(start, end) {
     for (let i = start; i <= end; i++) {

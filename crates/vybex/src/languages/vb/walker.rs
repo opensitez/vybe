@@ -143,6 +143,78 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
     }
 }
 
+/// Walker-level normalization of VB free-function calls that have direct
+/// equivalents in the common-AST HOF surface. Reduces language-specific
+/// helpers to standard array/collection operations so the compiler/emitter
+/// only sees portable shapes — no `vybe:string/filter` host fn needed.
+///
+/// Currently handles:
+///   `Filter(arr, match)` /
+///   `Filter(arr, match, include)` /
+///   `Filter(arr, match, include, compare)`
+///     → `arr.filter(s => InStr(s, match) > 0)` (or `... = 0` when
+///       `include` is False). `compare` is dropped — Vybe strings are
+///       always Unicode-aware substring search via STR_INDEX_OF.
+///
+/// Returns `Some(rewritten)` when normalization applied; `None` otherwise.
+fn canonicalize_call(name: &str, arguments: &[Argument]) -> Option<Expression> {
+    if name.eq_ignore_ascii_case("filter") && (2..=4).contains(&arguments.len()) {
+        let arr_arg = arguments[0].value.clone();
+        let match_arg = arguments[1].value.clone();
+        // include defaults to True; if explicit False, invert the predicate.
+        let include_truthy = match arguments.get(2).map(|a| &a.value.kind) {
+            Some(ExprKind::Lit(Literal::Bool(false))) => false,
+            _ => true,
+        };
+        // s => InStr(s, match) > 0  (1-indexed VB InStr — 0 means not found)
+        let s_param = Param {
+            name: "s".to_string(),
+            type_hint: None,
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        };
+        let instr_call = Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("InStr")),
+            args: vec![
+                Argument::positional(Expression::ident("s")),
+                Argument::positional(match_arg),
+            ],
+            optional: false,
+        });
+        let zero = Expression::new(ExprKind::Lit(Literal::Int(0)));
+        let cmp_op = if include_truthy { BinOp::Gt } else { BinOp::Eq };
+        let predicate_body = Expression::new(ExprKind::Binary {
+            op: cmp_op,
+            left: Box::new(instr_call),
+            right: Box::new(zero),
+        });
+        let lambda = Expression::new(ExprKind::Lambda {
+            params: vec![s_param],
+            body: LambdaBody::Expr(Box::new(predicate_body)),
+            is_async: false,
+            captures: vec![],
+        });
+        // VB profile maps `findall` → `__array_filter` HOF; route through
+        // it rather than the JS-style `.filter()` (which isn't wired in
+        // the [array_methods] table for VB).
+        let callee = Expression::new(ExprKind::Member {
+            object: Box::new(arr_arg),
+            field: "findall".to_string(),
+            null_safe: false,
+        });
+        return Some(Expression::new(ExprKind::Call {
+            callee: Box::new(callee),
+            args: vec![Argument::positional(lambda)],
+            optional: false,
+        }));
+    }
+    None
+}
+
 fn parse_dim_variable(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
     let inner = pair.into_inner();
     let mut name = String::new();
@@ -1847,6 +1919,14 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                 .map(parse_argument_list)
                 .transpose()?
                 .unwrap_or_default();
+
+            // Walker-level normalization for VB-specific helpers that
+            // have direct common-AST HOF equivalents (e.g. `Filter` →
+            // `arr.filter(...)`). Returns the underlying ExprKind so
+            // it slots into the surrounding match-arm naturally.
+            if let Some(rewritten) = canonicalize_call(&name, &arguments) {
+                return Ok(rewritten);
+            }
 
             ExprKind::Call {
                 callee: Box::new(Expression::ident(&name)),

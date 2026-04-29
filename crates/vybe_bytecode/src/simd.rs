@@ -99,11 +99,16 @@ impl VM {
                     return false;
                 }
 
-                // Slow path: type_id == 0 — check __type / __control_type strings
+                // Slow path: type_id == 0 — check __type / __control_type
+                // strings. Both the stamped string and the target are
+                // already canonicalised by the compiler/walker (lowercased
+                // for case-insensitive languages, preserved for case-
+                // sensitive). No forced transform here — let collisions
+                // surface as the language semantics dictate.
                 let obj_type = ob.properties.get("__type")
-                    .map(|v| format!("{}", v).to_lowercase())
+                    .map(|v| format!("{}", v))
                     .or_else(|| ob.properties.get("__control_type")
-                        .map(|v| format!("{}", v).to_lowercase()))
+                        .map(|v| format!("{}", v)))
                     .unwrap_or_default();
 
                 // Direct name match
@@ -122,15 +127,16 @@ impl VM {
                 if let Some(Value::Object(types)) = ob.properties.get("__types") {
                     let t = types.lock().unwrap();
                     if let crate::value::ObjectKind::Array(ref elems) = t.kind {
-                        let target_lower = target_name.to_lowercase();
-                        if elems.iter().any(|e| format!("{}", e).to_lowercase() == target_lower) {
+                        if elems.iter().any(|e| format!("{}", e) == target_name) {
                             return true;
                         }
                     }
                 }
 
-                // Universal: everything is an "object"
-                target_name == "object"
+                // Universal: everything is an "object" (cross-language base
+                // type). Both VB ("object") and JS ("Object") canonicalise
+                // upstream — accept either.
+                target_name.eq_ignore_ascii_case("object")
             }
             Value::String(_) => target_name == "string" || target_name == "object",
             Value::F64(_) | Value::I32(_) | Value::I64(_) => {

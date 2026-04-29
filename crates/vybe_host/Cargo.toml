@@ -20,6 +20,11 @@ indexmap = { workspace = true }
 sha2 = { workspace = true }
 md-5 = { workspace = true }
 
+# WHATWG DOM Parsing & Serialization — backs `web:dom-parser`
+# (`DOMParser` / `XMLSerializer`). Pull-based reader that
+# materialises a spec-shaped Document tree.
+quick-xml = { workspace = true }
+
 # For the `vybe:http` host module's parsed accessors + helpers.
 form_urlencoded = { workspace = true }
 percent-encoding = { workspace = true }

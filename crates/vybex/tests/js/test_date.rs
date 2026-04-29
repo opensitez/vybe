@@ -7,7 +7,7 @@ use super::helpers::run_js;
 // DATE CONSTRUCTION
 // ===================================================================
 
-#[test] #[ignore] fn date_now_returns_number() {
+#[test] fn date_now_returns_number() {
     assert_eq!(run_js(r#"
 let ts = Date.now();
 console.log(typeof ts);
@@ -15,7 +15,7 @@ console.log(ts > 0);
 "#), &["number", "true"]);
 }
 
-#[test] #[ignore] fn date_from_string() {
+#[test] fn date_from_string() {
     assert_eq!(run_js(r#"
 let d = new Date("2024-03-15T00:00:00Z");
 console.log(d.getFullYear());
@@ -24,7 +24,7 @@ console.log(d.getUTCDate());
 "#), &["2024", "2", "15"]);
 }
 
-#[test] #[ignore] fn date_from_components() {
+#[test] fn date_from_components() {
     assert_eq!(run_js(r#"
 let d = new Date(2024, 0, 15);
 console.log(d.getFullYear());
@@ -33,7 +33,7 @@ console.log(d.getDate());
 "#), &["2024", "0", "15"]);
 }
 
-#[test] #[ignore] fn date_from_timestamp() {
+#[test] fn date_from_timestamp() {
     assert_eq!(run_js(r#"
 let d = new Date(0);
 console.log(d.getUTCFullYear());
@@ -46,7 +46,7 @@ console.log(d.getUTCDate());
 // DATE GETTERS
 // ===================================================================
 
-#[test] #[ignore] fn date_getters() {
+#[test] fn date_getters() {
     assert_eq!(run_js(r#"
 let d = new Date(2024, 5, 15, 10, 30, 45);
 console.log(d.getFullYear());
@@ -58,7 +58,7 @@ console.log(d.getSeconds());
 "#), &["2024", "5", "15", "10", "30", "45"]);
 }
 
-#[test] #[ignore] fn date_get_day() {
+#[test] fn date_get_day() {
     assert_eq!(run_js(r#"
 let d = new Date(2024, 0, 1);
 let day = d.getDay();
@@ -66,7 +66,7 @@ console.log(day >= 0 && day <= 6);
 "#), &["true"]);
 }
 
-#[test] #[ignore] fn date_get_time() {
+#[test] fn date_get_time() {
     assert_eq!(run_js(r#"
 let d = new Date(0);
 console.log(d.getTime());
@@ -77,7 +77,7 @@ console.log(d.getTime());
 // DATE SETTERS
 // ===================================================================
 
-#[test] #[ignore] fn date_setters() {
+#[test] fn date_setters() {
     assert_eq!(run_js(r#"
 let d = new Date(2024, 0, 1);
 d.setFullYear(2025);
@@ -89,7 +89,7 @@ console.log(d.getDate());
 "#), &["2025", "11", "25"]);
 }
 
-#[test] #[ignore] fn date_set_hours_minutes() {
+#[test] fn date_set_hours_minutes() {
     assert_eq!(run_js(r#"
 let d = new Date(2024, 0, 1, 0, 0, 0);
 d.setHours(14);
@@ -105,7 +105,7 @@ console.log(d.getSeconds());
 // DATE FORMATTING
 // ===================================================================
 
-#[test] #[ignore] fn date_toisostring() {
+#[test] fn date_toisostring() {
     assert_eq!(run_js(r#"
 let d = new Date("2024-03-15T12:00:00Z");
 let iso = d.toISOString();
@@ -114,7 +114,7 @@ console.log(iso.endsWith("Z"));
 "#), &["true", "true"]);
 }
 
-#[test] #[ignore] fn date_tostring_not_empty() {
+#[test] fn date_tostring_not_empty() {
     assert_eq!(run_js(r#"
 let d = new Date(2024, 0, 1);
 let s = d.toString();
@@ -123,7 +123,7 @@ console.log(typeof s);
 "#), &["true", "string"]);
 }
 
-#[test] #[ignore] fn date_todatestring() {
+#[test] fn date_todatestring() {
     assert_eq!(run_js(r#"
 let d = new Date(2024, 0, 1);
 let s = d.toDateString();
@@ -132,7 +132,7 @@ console.log(s.length > 0);
 "#), &["string", "true"]);
 }
 
-#[test] #[ignore] fn date_json_serialization() {
+#[test] fn date_json_serialization() {
     assert_eq!(run_js(r#"
 let d = new Date("2024-06-15T00:00:00Z");
 let json = JSON.stringify({ date: d });
@@ -144,7 +144,7 @@ console.log(json.includes("2024"));
 // DATE ARITHMETIC
 // ===================================================================
 
-#[test] #[ignore] fn date_add_days() {
+#[test] fn date_add_days() {
     assert_eq!(run_js(r#"
 let d = new Date(2024, 0, 30);
 d.setDate(d.getDate() + 5);
@@ -153,7 +153,7 @@ console.log(d.getDate());
 "#), &["1", "4"]);
 }
 
-#[test] #[ignore] fn date_subtract_dates() {
+#[test] fn date_subtract_dates() {
     assert_eq!(run_js(r#"
 let d1 = new Date(2024, 0, 1);
 let d2 = new Date(2024, 0, 11);
@@ -163,7 +163,7 @@ console.log(diffDays);
 "#), &["10"]);
 }
 
-#[test] #[ignore] fn date_month_overflow() {
+#[test] fn date_month_overflow() {
     assert_eq!(run_js(r#"
 let d = new Date(2024, 11, 31);
 d.setMonth(d.getMonth() + 1);
@@ -176,7 +176,7 @@ console.log(d.getMonth());
 // DATE COMPARISON
 // ===================================================================
 
-#[test] #[ignore] fn date_comparison() {
+#[test] fn date_comparison() {
     assert_eq!(run_js(r#"
 let d1 = new Date(2024, 0, 1);
 let d2 = new Date(2024, 6, 1);
@@ -190,7 +190,7 @@ console.log(d1.getTime() === new Date(2024, 0, 1).getTime());
 // DATE STATIC METHODS
 // ===================================================================
 
-#[test] #[ignore] fn date_parse() {
+#[test] fn date_parse() {
     assert_eq!(run_js(r#"
 let ts = Date.parse("2024-01-01T00:00:00Z");
 console.log(typeof ts);
@@ -198,7 +198,7 @@ console.log(ts > 0);
 "#), &["number", "true"]);
 }
 
-#[test] #[ignore] fn date_utc() {
+#[test] fn date_utc() {
     assert_eq!(run_js(r#"
 let ts = Date.UTC(2024, 0, 1);
 let d = new Date(ts);

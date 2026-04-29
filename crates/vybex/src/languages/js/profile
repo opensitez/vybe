@@ -156,6 +156,10 @@ String              = { emit = "host:ecma:string:String",         min_args = 1, 
 "JSON.parse"         = { emit = "host:ecma:json:parse",          min_args = 1, max_args = 1 }
 "JSON.stringify"     = { emit = "host:ecma:json:stringify",       min_args = 1, max_args = 3 }
 
+# ── HTML structured clone (HTML §2.8 — global on Window/Worker scopes) ──────
+
+structuredClone      = { emit = "host:ecma:structured-clone:clone", min_args = 1, max_args = 2 }
+
 # ── Timers ───────────────────────────────────────────────────────────────────
 
 # setTimeout/setInterval emit Op::set_timer directly (no host call needed —
@@ -223,16 +227,16 @@ queueMicrotask       = { emit = "noop",                          min_args = 1, m
 
 # ── child_process module ─────────────────────────────────────────────────────
 
-"child_process.execSync" = { emit = "host:vybe:types:processStart", min_args = 1, max_args = 2 }
-"child_process.exec"     = { emit = "host:vybe:types:processStart", min_args = 1, max_args = 2 }
-"child_process.spawn"    = { emit = "host:vybe:types:processStart", min_args = 1, max_args = 2 }
+"child_process.execSync" = { emit = "host:node:child_process:execSync",  min_args = 1, max_args = 2 }
+"child_process.exec"     = { emit = "host:node:child_process:execSync",  min_args = 1, max_args = 2 }
+"child_process.spawn"    = { emit = "host:node:child_process:spawnSync", min_args = 1, max_args = 2 }
 
 # ── xml module ───────────────────────────────────────────────────────────────
 
-"xml.parseString"     = { emit = "host:vybe:xml:parse",   min_args = 1, max_args = 1 }
-"xml.parse"           = { emit = "host:vybe:xml:parse",   min_args = 1, max_args = 1 }
-"xml2js.parseString"  = { emit = "host:vybe:xml:parse",   min_args = 1, max_args = 1 }
-"xml2js.parse"        = { emit = "host:vybe:xml:parse",   min_args = 1, max_args = 1 }
+"xml.parseString"     = { emit = "host:web:dom-parser:parse",   min_args = 1, max_args = 1 }
+"xml.parse"           = { emit = "host:web:dom-parser:parse",   min_args = 1, max_args = 1 }
+"xml2js.parseString"  = { emit = "host:web:dom-parser:parse",   min_args = 1, max_args = 1 }
+"xml2js.parse"        = { emit = "host:web:dom-parser:parse",   min_args = 1, max_args = 1 }
 
 # ── Promise ──────────────────────────────────────────────────────────────────
 
@@ -366,7 +370,7 @@ module = "wasi:cli"
 [[esm_default]]
 kind = "namespace"
 alias = "Date"
-module = "wasi:clocks"
+module = "ecma:date"
 
 [[esm_default]]
 kind = "namespace"
@@ -433,6 +437,16 @@ module = "ecma:weakmap"
 kind = "namespace"
 alias = "WeakSet"
 module = "ecma:weakset"
+
+[[esm_default]]
+kind = "namespace"
+alias = "WeakRef"
+module = "ecma:weakref"
+
+[[esm_default]]
+kind = "namespace"
+alias = "FinalizationRegistry"
+module = "ecma:finalization-registry"
 
 [[esm_default]]
 kind = "namespace"
@@ -560,22 +574,24 @@ module = "wasi:cli"
 [[esm_default]]
 kind = "namespace"
 alias = "child_process"
-module = "vybe:types"
+module = "node:child_process"
 
+# Node `url` module → WHATWG URL (`web:url`) — the spec-aligned API
+# Node itself re-exposes via `require('node:url').URL`.
 [[esm_default]]
 kind = "namespace"
 alias = "url"
-module = "vybe:convert"
+module = "web:url"
 
 [[esm_default]]
 kind = "namespace"
 alias = "xml"
-module = "vybe:xml"
+module = "web:dom-parser"
 
 [[esm_default]]
 kind = "namespace"
 alias = "xml2js"
-module = "vybe:xml"
+module = "web:dom-parser"
 
 [[esm_default]]
 kind = "namespace"
@@ -613,10 +629,12 @@ module = "ecma:promise"
 "EvalError"     = ["ecma:error", "EvalError"]
 "AggregateError" = ["ecma:error", "AggregateError"]
 "RegExp"        = ["ecma:regexp", "new"]
-"Date"          = ["wasi:clocks", "Date"]
+"Date"          = ["ecma:date", "new"]
 "Promise"       = ["ecma:promise", "new"]
 "WeakMap"       = ["ecma:weakmap", "new"]
 "WeakSet"       = ["ecma:weakset", "new"]
+"WeakRef"       = ["ecma:weakref", "new"]
+"FinalizationRegistry" = ["ecma:finalization-registry", "new"]
 "ArrayBuffer"   = ["ecma:arraybuffer", "new"]
 "SharedArrayBuffer" = ["ecma:sharedarraybuffer", "new"]
 "Int32Array"    = ["ecma:int32array", "newWithLength"]

@@ -31,10 +31,12 @@ pub fn register(vm: &mut VM) {
     let trace_bare = ensure_namespace(vm, &["Trace"]);
     set_prop(&trace_bare, "writeline", host_fn_ref(vm, "wasi:cli", "log"));
 
-    // System.Diagnostics.Process
-    let proc_ns = ensure_namespace(vm, &["System", "Diagnostics", "Process"]);
-    set_prop(&proc_ns, "start", host_fn_ref(vm, "vybe:types", "processStart"));
-    set_prop(&proc_ns, "getcurrentprocess", host_fn_ref(vm, "vybe:types", "processGetCurrent"));
+    // System.Diagnostics.Process — namespace bindings retired.
+    // `Process.Start(...)` / `GetCurrentProcess()` lower at compile
+    // time via the dotnet surface's Component Model dispatch (see
+    // `emitter::dotnet::core::process_adapter`). The namespace object
+    // itself is still ensured so identifier resolution doesn't fail.
+    ensure_namespace(vm, &["System", "Diagnostics", "Process"]);
 
     // System.Random — constructor bound via known_types ctor_mapping in
     // builtin_types.rs. No namespace host fn needed; `new Random()` goes

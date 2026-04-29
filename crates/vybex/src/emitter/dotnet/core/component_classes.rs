@@ -6,70 +6,117 @@ use vybe_bytecode::component_model::{ClassType, ConstructorDef, HostTarget, Meth
 pub fn class_exports() -> &'static [DotnetClassExport] {
     static EXPORTS: LazyLock<Vec<DotnetClassExport>> = LazyLock::new(|| {
         vec![
-            // Phase 7b: List<T>'s runtime method dispatch goes through
-            // `ecma:array/*` (see vybe_host/src/builtin_types.rs).
-            // The constructor stays on `vybe:types/listNew` because
-            // that's where `__get_count` / `__get_length` auto-getters
-            // get installed so VB `list.Count` (property-style read)
-            // auto-invokes the getter. Once a typed `Common` ctor path
-            // that can install auto-getters lands, the ctor can move
-            // to `collections.new`.
-            collection_class(
+            // .NET `List<T>` is shape-identical to ECMA-262 §23.1 Array.
+            // The constructor materializes a real `ObjectKind::Array` via
+            // `collections.new` (Op::ARRAY_NEW) and every method routes
+            // through the corresponding `collections.*` primitive (which
+            // itself routes to `ecma:array.*` per the WASM spec). The
+            // .NET-name → ECMA-name translation is the wrapper's job.
+            collection_class_common(
                 "dotnet.System.Collections.Generic",
                 "List",
-                "vybe:types",
-                "listNew",
+                "collections.new",
                 &[
-                    ("Add", 1, "vybe:types", "listAdd"),
-                    ("Remove", 1, "vybe:types", "listRemove"),
-                    ("RemoveAt", 1, "vybe:types", "listRemoveAt"),
-                    ("Contains", 1, "vybe:types", "listContains"),
-                    ("Count", 0, "vybe:types", "listCount"),
-                    ("Clear", 0, "vybe:types", "listClear"),
-                    ("IndexOf", 1, "vybe:types", "listIndexOf"),
-                    ("Sort", 0, "vybe:types", "listSort"),
-                    ("Reverse", 0, "vybe:types", "listReverse"),
-                    ("ToArray", 0, "vybe:types", "listToArray"),
-                    ("Item", 1, "vybe:types", "listItem"),
-                    ("Insert", 2, "vybe:types", "listInsert"),
-                    ("AddRange", 1, "vybe:types", "listAddRange"),
+                    ("Add",         1, "collections.push"),
+                    ("Remove",      1, "collections.remove"),
+                    ("RemoveAt",    1, "collections.remove_at"),
+                    ("Contains",    1, "collections.contains"),
+                    ("Count",       0, "collections.length"),
+                    ("Clear",       0, "collections.clear"),
+                    ("IndexOf",     1, "collections.index_of"),
+                    ("Sort",        0, "collections.sort"),
+                    ("Reverse",     0, "collections.reverse"),
+                    ("ToArray",     0, "collections.clone"),
+                    ("Item",        1, "collections.get"),
+                    ("Insert",      2, "collections.insert"),
+                    ("AddRange",    1, "collections.concat"),
                 ],
             ),
-            collection_class(
+            // .NET `Dictionary<K,V>` is shape-identical to ECMA-262 §24.1
+            // `Map`. The wrapper materializes a real `ObjectKind::Map` via
+            // `ecma:map/new` and forwards every method to the corresponding
+            // `Map.prototype.*` host fn. No `vybe:types` involvement.
+            DotnetClassExport::new(
                 "dotnet.System.Collections.Generic",
-                "Dictionary",
-                "vybe:types",
-                "dictNew",
+                ClassType::new("Dictionary")
+                    .with_constructor(ConstructorDef::new(0).with_backing(HostTarget::new("ecma:map", "new")))
+                    .with_method(MethodDef::new("Add",         2, MethodBody::HostCall(HostTarget::new("ecma:map", "set"))))
+                    .with_method(MethodDef::new("Item",        1, MethodBody::HostCall(HostTarget::new("ecma:map", "get"))))
+                    .with_method(MethodDef::new("ContainsKey", 1, MethodBody::HostCall(HostTarget::new("ecma:map", "has"))))
+                    .with_method(MethodDef::new("Remove",      1, MethodBody::HostCall(HostTarget::new("ecma:map", "delete"))))
+                    .with_method(MethodDef::new("Keys",        0, MethodBody::HostCall(HostTarget::new("ecma:map", "keys"))))
+                    .with_method(MethodDef::new("Values",      0, MethodBody::HostCall(HostTarget::new("ecma:map", "values"))))
+                    .with_method(MethodDef::new("Clear",       0, MethodBody::HostCall(HostTarget::new("ecma:map", "clear"))))
+                    .with_method(MethodDef::new("Count",       0, MethodBody::HostCall(HostTarget::new("ecma:map", "size")))),
+            ),
+            // .NET `Queue<T>` is a JS Array used FIFO — `Enqueue` appends
+            // (push), `Dequeue` removes from the front (shift), `Peek`
+            // looks at the front (`ecma:array.first`).
+            collection_class_common(
+                "dotnet.System.Collections.Generic",
+                "Queue",
+                "collections.new",
                 &[
-                    ("Add", 2, "vybe:types", "dictAdd"),
-                    ("Item", 1, "vybe:types", "dictItem"),
-                    ("ContainsKey", 1, "vybe:types", "dictContainsKey"),
-                    ("Remove", 1, "vybe:types", "dictRemove"),
-                    ("Keys", 0, "vybe:types", "dictKeys"),
-                    ("Values", 0, "vybe:types", "dictValues"),
-                    ("Clear", 0, "vybe:types", "dictClear"),
+                    ("Enqueue",  1, "collections.push"),
+                    ("Dequeue",  0, "collections.shift"),
+                    ("Count",    0, "collections.length"),
+                    ("Clear",    0, "collections.clear"),
+                    ("Contains", 1, "collections.contains"),
+                    ("ToArray",  0, "collections.clone"),
                 ],
             ),
-            constructor_class("dotnet.System.Collections.Generic", "Queue", "vybe:types", "queueNew"),
-            constructor_class("dotnet.System.Collections.Generic", "Stack", "vybe:types", "stackNew"),
-            constructor_class("dotnet.System.Collections.Generic", "HashSet", "vybe:types", "hashSetNew"),
+            // .NET `Stack<T>` is a JS Array used LIFO — `Push` appends
+            // (push), `Pop` removes from the end (pop), `Peek` looks at
+            // the end (`ecma:array.last`).
+            collection_class_common(
+                "dotnet.System.Collections.Generic",
+                "Stack",
+                "collections.new",
+                &[
+                    ("Push",     1, "collections.push"),
+                    ("Pop",      0, "collections.pop"),
+                    ("Count",    0, "collections.length"),
+                    ("Clear",    0, "collections.clear"),
+                    ("Contains", 1, "collections.contains"),
+                    ("ToArray",  0, "collections.clone"),
+                ],
+            ),
+            // .NET `HashSet<T>` is a real ECMA-262 §24.2 `Set`. Constructor
+            // creates an `ObjectKind::Set`; methods route through the
+            // matching `ecma:set.*` host fns.
+            DotnetClassExport::new(
+                "dotnet.System.Collections.Generic",
+                ClassType::new("HashSet")
+                    .with_constructor(ConstructorDef::new(0).with_backing(HostTarget::new("ecma:set", "new")))
+                    .with_method(MethodDef::new("Add",      1, MethodBody::HostCall(HostTarget::new("ecma:set", "add"))))
+                    .with_method(MethodDef::new("Remove",   1, MethodBody::HostCall(HostTarget::new("ecma:set", "delete"))))
+                    .with_method(MethodDef::new("Contains", 1, MethodBody::HostCall(HostTarget::new("ecma:set", "has"))))
+                    .with_method(MethodDef::new("Count",    0, MethodBody::HostCall(HostTarget::new("ecma:set", "size"))))
+                    .with_method(MethodDef::new("Clear",    0, MethodBody::HostCall(HostTarget::new("ecma:set", "clear")))),
+            ),
+            // `ConcurrentDictionary` is a thread-safe `Dictionary` — same
+            // shape (ECMA Map). Atomicity isn't modeled; methods route the
+            // same way.
             DotnetClassExport::new(
                 "dotnet.System.Collections.Concurrent",
                 ClassType::new("ConcurrentDictionary")
-                    .with_constructor(ConstructorDef::new(0).with_backing(HostTarget::new("vybe:types", "dictNew")))
-                    .with_method(MethodDef::new("TryAdd",      2, MethodBody::Common("dict.set_dynamic".into())))
-                    .with_method(MethodDef::new("TryGetValue", 2, MethodBody::Common("dict.get_dynamic".into())))
-                    .with_method(MethodDef::new("AddOrUpdate", 3, MethodBody::Common("dict.set_dynamic".into())))
-                    .with_method(MethodDef::new("GetOrAdd",    2, MethodBody::Common("dict.get_dynamic".into())))
-                    .with_method(MethodDef::new("ContainsKey", 1, MethodBody::Common("dict.has".into())))
-                    .with_method(MethodDef::new("Remove",      1, MethodBody::Common("dict.delete".into())))
-                    .with_method(MethodDef::new("Clear",       0, MethodBody::Common("dict.clear".into())))
-                    .with_method(MethodDef::new("Count",       0, MethodBody::Common("dict.size".into()))),
+                    .with_constructor(ConstructorDef::new(0).with_backing(HostTarget::new("ecma:map", "new")))
+                    .with_method(MethodDef::new("TryAdd",      2, MethodBody::HostCall(HostTarget::new("ecma:map", "set"))))
+                    .with_method(MethodDef::new("TryGetValue", 2, MethodBody::HostCall(HostTarget::new("ecma:map", "get"))))
+                    .with_method(MethodDef::new("AddOrUpdate", 3, MethodBody::HostCall(HostTarget::new("ecma:map", "set"))))
+                    .with_method(MethodDef::new("GetOrAdd",    2, MethodBody::HostCall(HostTarget::new("ecma:map", "get"))))
+                    .with_method(MethodDef::new("ContainsKey", 1, MethodBody::HostCall(HostTarget::new("ecma:map", "has"))))
+                    .with_method(MethodDef::new("Remove",      1, MethodBody::HostCall(HostTarget::new("ecma:map", "delete"))))
+                    .with_method(MethodDef::new("Clear",       0, MethodBody::HostCall(HostTarget::new("ecma:map", "clear"))))
+                    .with_method(MethodDef::new("Count",       0, MethodBody::HostCall(HostTarget::new("ecma:map", "size")))),
             ),
+            // ConcurrentQueue / ConcurrentStack — same shape as their
+            // non-concurrent counterparts (Array). Atomicity isn't
+            // modeled at this layer.
             DotnetClassExport::new(
                 "dotnet.System.Collections.Concurrent",
                 ClassType::new("ConcurrentQueue")
-                    .with_constructor(ConstructorDef::new(0).with_backing(HostTarget::new("vybe:types", "listNew")))
+                    .with_constructor(ConstructorDef::new(0).with_common_backing("collections.new"))
                     .with_method(MethodDef::new("Enqueue",    1, MethodBody::Common("collections.push".into())))
                     .with_method(MethodDef::new("TryDequeue", 1, MethodBody::Common("collections.shift".into())))
                     .with_method(MethodDef::new("TryPeek",    1, MethodBody::Common("collections.get".into())))
@@ -78,13 +125,13 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
             DotnetClassExport::new(
                 "dotnet.System.Collections.Concurrent",
                 ClassType::new("ConcurrentStack")
-                    .with_constructor(ConstructorDef::new(0).with_backing(HostTarget::new("vybe:types", "listNew")))
+                    .with_constructor(ConstructorDef::new(0).with_common_backing("collections.new"))
                     .with_method(MethodDef::new("Push",    1, MethodBody::Common("collections.push".into())))
                     .with_method(MethodDef::new("TryPop",  0, MethodBody::Common("collections.pop".into())))
                     .with_method(MethodDef::new("TryPeek", 0, MethodBody::Common("collections.get".into())))
                     .with_method(MethodDef::new("Count",   0, MethodBody::Common("collections.length".into()))),
             ),
-            constructor_class("dotnet.System.Collections.Generic", "SortedList", "vybe:types", "dictNew"),
+            constructor_class("dotnet.System.Collections.Generic", "SortedList", "ecma:map", "new"),
             common_constructor_class("dotnet.System.Collections.Generic", "LinkedList", "collections.new"),
             DotnetClassExport::new(
                 "dotnet.System.Collections",
@@ -115,10 +162,56 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
                     .with_method(MethodDef::new("BinarySearch",  1, MethodBody::Common("collections.binary_search".into())))
                     .with_method(MethodDef::new("AddRange",      1, MethodBody::Common("collections.concat".into()))),
             ),
-            constructor_class("dotnet.System.Collections", "Hashtable", "vybe:types", "dictNew"),
-            constructor_class("dotnet.System.Collections", "Collection", "vybe:types", "listNew"),
-            constructor_class("dotnet.System", "DateTime", "vybe:types", "dateTimeNew"),
+            constructor_class("dotnet.System.Collections", "Hashtable", "ecma:map", "new"),
+            common_constructor_class("dotnet.System.Collections", "Collection", "collections.new"),
+            // .NET `DateTime` is shape-identical to ECMA-262 §21.4 `Date`.
+            // Constructor materializes a real Date via `ecma:date/new`,
+            // which itself reads through `wasi:clocks/wall-clock.now`
+            // for parameterless construction. Static methods (Now /
+            // UtcNow / Today / Parse) lower through
+            // `emitter::dotnet::core::datetime_adapter` —
+            // `ecma:date.now` / `ecma:date.parse` (which read
+            // `wasi:clocks/wall-clock.now`) wrapped in a `{__type:
+            // "DateTime", __time: ms}` object.
+            DotnetClassExport::new(
+                "dotnet.System",
+                ClassType::new("DateTime")
+                    .with_constructor(ConstructorDef::new(0).with_backing(HostTarget::new("ecma:date", "new")))
+                    .with_method(MethodDef::static_method("Now",     0, MethodBody::Common("dotnet.datetime_now".into())))
+                    .with_method(MethodDef::static_method("UtcNow",  0, MethodBody::Common("dotnet.datetime_now".into())))
+                    .with_method(MethodDef::static_method("Today",   0, MethodBody::Common("dotnet.datetime_today".into())))
+                    .with_method(MethodDef::static_method("Parse",   1, MethodBody::Common("dotnet.datetime_parse".into()))),
+            ),
             constructor_class("dotnet.System", "Random", "wasi:random/insecure", "get-insecure-random-u64"),
+            // .NET `System.TimeSpan` factory statics — unit-to-ms
+            // conversion + record build. Pure inline bytecode via
+            // `emitter::dotnet::core::timespan_adapter`. No host fns.
+            DotnetClassExport::new(
+                "dotnet.System",
+                ClassType::new("TimeSpan")
+                    .with_method(MethodDef::static_method("FromDays",         1, MethodBody::Common("dotnet.timespan_from_days".into())))
+                    .with_method(MethodDef::static_method("FromHours",        1, MethodBody::Common("dotnet.timespan_from_hours".into())))
+                    .with_method(MethodDef::static_method("FromMinutes",      1, MethodBody::Common("dotnet.timespan_from_minutes".into())))
+                    .with_method(MethodDef::static_method("FromSeconds",      1, MethodBody::Common("dotnet.timespan_from_seconds".into())))
+                    .with_method(MethodDef::static_method("FromMilliseconds", 1, MethodBody::Common("dotnet.timespan_from_milliseconds".into())))
+                    .with_method(MethodDef::static_method("Zero",             0, MethodBody::Common("dotnet.timespan_zero".into()))),
+            ),
+            // .NET `System.Array` static methods — range operations
+            // (Clear/Copy/Resize) and Sort that don't have 1:1 ECMA
+            // mirrors. Each lowers through
+            // `emitter::dotnet::core::array_adapter` to a stdlib
+            // bytecode chunk composing `ecma:array.*` primitives.
+            // `Reverse` / `IndexOf` route to ecma:array directly.
+            DotnetClassExport::new(
+                "dotnet.System",
+                ClassType::new("Array")
+                    .with_method(MethodDef::static_method("Clear",   3, MethodBody::Common("dotnet.array_clear".into())))
+                    .with_method(MethodDef::static_method("Copy",    3, MethodBody::Common("dotnet.array_copy".into())))
+                    .with_method(MethodDef::static_method("Resize",  2, MethodBody::Common("dotnet.array_resize".into())))
+                    .with_method(MethodDef::static_method("Sort",    1, MethodBody::Common("dotnet.array_sort".into())))
+                    .with_method(MethodDef::static_method("Reverse", 1, MethodBody::HostCall(HostTarget::new("ecma:array", "reverse"))))
+                    .with_method(MethodDef::static_method("IndexOf", 2, MethodBody::HostCall(HostTarget::new("ecma:array", "indexOf")))),
+            ),
             static_only_class(
                 "dotnet.System",
                 "Console",
@@ -142,10 +235,18 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
                     ("ToDateTime", 1, "ecma:string", "String"),
                 ],
             ),
-            static_only_class(
+            // .NET `System.String` static methods — `Format` lowers
+            // through `emitter::dotnet::core::string_format_adapter` to
+            // inline bytecode. No host fns. The dispatch threads `argc`
+            // so any number of placeholder args works.
+            DotnetClassExport::new(
                 "dotnet.System",
-                "String",
-                &[("Format", 2, "vybe:string", "format")],
+                ClassType::new("String")
+                    .with_method(MethodDef::static_method(
+                        "Format",
+                        2,
+                        MethodBody::Common("dotnet.string_format".into()),
+                    )),
             ),
             static_only_class(
                 "dotnet.System",
@@ -163,14 +264,15 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
                     .with_method(MethodDef::static_method(
                         "Delay",
                         1,
-                        // Task.Delay(ms) → vybe:runtime/taskDelay. Returns a
-                        // real async Task whose `iscompleted` flag transitions
-                        // false → true after `ms` milliseconds via a native
-                        // thread-spawn on the host. The WASI-aligned primitives
-                        // underneath are wasi:clocks/monotonic-clock (duration
-                        // timing) and a wasi.thread-spawn-shaped background
-                        // worker (implemented with std::thread in-host).
-                        MethodBody::HostCall(HostTarget::new("vybe:runtime", "taskDelay")),
+                        // Task.Delay(ms) lowers to `Op::THREAD_SPAWN` of a
+                        // tiny worker that calls `wasi:clocks/sleep(ms)`.
+                        // The Task object — `iscompleted` / `isalive` /
+                        // `result` / `status` — is constructed by the VM's
+                        // native THREAD_SPAWN handler when the worker
+                        // returns. Pure WASM: wasi-threads `thread.spawn`
+                        // opcode + WASI `wasi:clocks/sleep` import — zero
+                        // host fns.
+                        MethodBody::Common("threading.task_delay".into()),
                     )),
             ),
             DotnetClassExport::new(
@@ -192,7 +294,25 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
                         MethodBody::Common("threading.atomic_cmpxchg".to_string()),
                     )),
             ),
-            constructor_class("dotnet.System.Text", "StringBuilder", "vybe:types", "stringBuilderNew"),
+            // .NET StringBuilder — no direct ECMA mirror, but the wrapper
+            // materializes a plain Object with a `__buffer` string and
+            // mutates via `Op::DYN_ADD` (string concat) + `STRUCT_SET`.
+            // Pure WASM, zero host fns. The constructor is overloaded
+            // (`StringBuilder()` and `StringBuilder("initial")`); the
+            // dispatch layer threads `argc` so the single Common emit
+            // picks the right shape at compile time.
+            DotnetClassExport::new(
+                "dotnet.System.Text",
+                ClassType::new("StringBuilder")
+                    .with_constructor(ConstructorDef::new(0).with_common_backing("dotnet.string_builder_new"))
+                    .with_method(MethodDef::new("Append",     1, MethodBody::Common("dotnet.sb_append".into())))
+                    .with_method(MethodDef::new("AppendLine", 1, MethodBody::Common("dotnet.sb_append_line".into())))
+                    .with_method(MethodDef::new("ToString",   0, MethodBody::Common("dotnet.sb_to_string".into())))
+                    .with_method(MethodDef::new("Clear",      0, MethodBody::Common("dotnet.sb_clear".into())))
+                    .with_method(MethodDef::new("Length",     0, MethodBody::Common("dotnet.sb_length".into())))
+                    .with_method(MethodDef::new("Insert",     2, MethodBody::Common("dotnet.sb_insert".into())))
+                    .with_method(MethodDef::new("Replace",    2, MethodBody::Common("dotnet.sb_replace".into()))),
+            ),
             constructor_class("dotnet.System.Data", "DataTable", "vybe:data", "dataTableNew"),
             constructor_class("dotnet.System.Data", "DataSet", "vybe:data", "dataSetNew"),
             constructor_class("dotnet.System.Drawing", "Point", "vybe:drawing", "pointNew"),
@@ -223,53 +343,84 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
                 "Trace",
                 &[("WriteLine", 1, "wasi:cli", "log")],
             ),
-            constructor_class("dotnet.System.Diagnostics", "ProcessStartInfo", "vybe:types", "processStartInfoNew"),
-            constructor_and_static_class(
+            // .NET Process / ProcessStartInfo — lowers to
+            // `node:child_process.spawnSync` (Node-shape child process
+            // primitive) plus plain Object structs for the .NET-shape
+            // ProcessStartInfo record. See
+            // `emitter::dotnet::core::process_adapter`. Multi-arity
+            // ProcessStartInfo ctors handled via threaded `argc`.
+            common_constructor_class(
                 "dotnet.System.Diagnostics",
-                "Process",
-                Some(("vybe:types", "processNew")),
-                &[
-                    ("Start", 1, "vybe:types", "processStart"),
-                    ("GetCurrentProcess", 0, "vybe:types", "processGetCurrent"),
-                ],
+                "ProcessStartInfo",
+                "dotnet.process_start_info_new",
+            ),
+            DotnetClassExport::new(
+                "dotnet.System.Diagnostics",
+                ClassType::new("Process")
+                    .with_constructor(ConstructorDef::new(0).with_common_backing("dotnet.process_new"))
+                    .with_method(MethodDef::static_method("Start",             1, MethodBody::Common("dotnet.process_start".into())))
+                    .with_method(MethodDef::static_method("GetCurrentProcess", 0, MethodBody::Common("dotnet.process_get_current".into())))
+                    .with_method(MethodDef::new("WaitForExit",                 0, MethodBody::Common("dotnet.process_wait_for_exit".into()))),
             ),
             constructor_class("dotnet.System.Data.SqlClient", "SqlConnection", "vybe:database", "connect"),
-            constructor_class("dotnet.System.Net.Sockets", "TcpClient", "dotnet:sockets", "tcpClientNew"),
-            constructor_class("dotnet.System.Net.Sockets", "TcpListener", "dotnet:sockets", "tcpListenerNew"),
-            constructor_class("dotnet.System.Net.Sockets", "UdpClient", "dotnet:sockets", "udpClientNew"),
-            static_only_class(
+            // .NET sockets — adapter at the wrapper layer routes every
+            // method through `wasi:sockets/*` (TCP/UDP/IP name lookup)
+            // + `wasi:io/streams.*` for the stream-shaped methods. No
+            // `dotnet:*` host module involved. See
+            // `emitter::dotnet::core::sockets_adapter`.
+            DotnetClassExport::new(
+                "dotnet.System.Net.Sockets",
+                ClassType::new("TcpClient")
+                    .with_constructor(ConstructorDef::new(2).with_common_backing("dotnet.tcp_client_new"))
+                    .with_method(MethodDef::new("GetStream", 0, MethodBody::Common("dotnet.tcp_client_get_stream".into())))
+                    .with_method(MethodDef::new("Close",     0, MethodBody::Common("dotnet.tcp_client_close".into()))),
+            ),
+            DotnetClassExport::new(
+                "dotnet.System.Net.Sockets",
+                ClassType::new("TcpListener")
+                    .with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.tcp_listener_new"))
+                    .with_method(MethodDef::new("Start",            0, MethodBody::Common("dotnet.tcp_listener_start".into())))
+                    .with_method(MethodDef::new("Stop",             0, MethodBody::Common("dotnet.tcp_listener_stop".into())))
+                    .with_method(MethodDef::new("AcceptTcpClient",  0, MethodBody::Common("dotnet.tcp_listener_accept".into())))
+                    .with_method(MethodDef::new("Pending",          0, MethodBody::Common("dotnet.tcp_listener_pending".into()))),
+            ),
+            DotnetClassExport::new(
+                "dotnet.System.Net.Sockets",
+                ClassType::new("UdpClient")
+                    .with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.udp_client_new"))
+                    .with_method(MethodDef::new("Send",    4, MethodBody::Common("dotnet.udp_send".into())))
+                    .with_method(MethodDef::new("Receive", 0, MethodBody::Common("dotnet.udp_receive".into())))
+                    .with_method(MethodDef::new("Close",   0, MethodBody::Common("dotnet.udp_close".into()))),
+            ),
+            DotnetClassExport::new(
                 "dotnet.System.Net",
-                "Dns",
-                &[
-                    ("GetHostAddresses", 1, "dotnet:net", "dnsGetHostAddresses"),
-                    ("GetHostEntry", 1, "dotnet:net", "dnsGetHostEntry"),
-                    ("GetHostName", 0, "dotnet:net", "dnsGetHostName"),
-                ],
+                ClassType::new("Dns")
+                    .with_method(MethodDef::static_method("GetHostAddresses", 1, MethodBody::Common("dotnet.dns_get_host_addresses".into())))
+                    .with_method(MethodDef::static_method("GetHostEntry",     1, MethodBody::Common("dotnet.dns_get_host_entry".into())))
+                    .with_method(MethodDef::static_method("GetHostName",      0, MethodBody::Common("dotnet.dns_get_host_name".into()))),
             ),
-            collection_class(
+            // .NET `System.IO.StreamReader` / `StreamWriter` — text I/O
+            // wrappers, fully migrated to `emitter::dotnet::core::stream_io_adapter`.
+            // Load-whole-file model via `node:fs.{read,write}FileSync`.
+            // No `dotnet:io` host fns.
+            DotnetClassExport::new(
                 "dotnet.System.IO",
-                "StreamReader",
-                "dotnet:io",
-                "streamReaderNew",
-                &[
-                    ("ReadLine",   0, "dotnet:io", "streamReaderReadLine"),
-                    ("ReadToEnd",  0, "dotnet:io", "streamReaderReadToEnd"),
-                    ("Close",      0, "dotnet:io", "streamWriterClose"),
-                    ("Dispose",    0, "dotnet:io", "streamWriterClose"),
-                ],
+                ClassType::new("StreamReader")
+                    .with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.stream_reader_new"))
+                    .with_method(MethodDef::new("ReadLine",  0, MethodBody::Common("dotnet.stream_reader_read_line".into())))
+                    .with_method(MethodDef::new("ReadToEnd", 0, MethodBody::Common("dotnet.stream_reader_read_to_end".into())))
+                    .with_method(MethodDef::new("Close",     0, MethodBody::Common("dotnet.stream_reader_close".into())))
+                    .with_method(MethodDef::new("Dispose",   0, MethodBody::Common("dotnet.stream_reader_close".into()))),
             ),
-            collection_class(
+            DotnetClassExport::new(
                 "dotnet.System.IO",
-                "StreamWriter",
-                "dotnet:io",
-                "streamWriterNew",
-                &[
-                    ("WriteLine",  1, "dotnet:io", "streamWriterWriteLine"),
-                    ("Write",      1, "dotnet:io", "streamWriterWrite"),
-                    ("Flush",      0, "dotnet:io", "streamWriterFlush"),
-                    ("Close",      0, "dotnet:io", "streamWriterClose"),
-                    ("Dispose",    0, "dotnet:io", "streamWriterClose"),
-                ],
+                ClassType::new("StreamWriter")
+                    .with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.stream_writer_new"))
+                    .with_method(MethodDef::new("Write",     1, MethodBody::Common("dotnet.stream_writer_write".into())))
+                    .with_method(MethodDef::new("WriteLine", 1, MethodBody::Common("dotnet.stream_writer_write_line".into())))
+                    .with_method(MethodDef::new("Flush",     0, MethodBody::Common("dotnet.stream_writer_flush".into())))
+                    .with_method(MethodDef::new("Close",     0, MethodBody::Common("dotnet.stream_writer_flush".into())))
+                    .with_method(MethodDef::new("Dispose",   0, MethodBody::Common("dotnet.stream_writer_flush".into()))),
             ),
             static_only_class(
                 "dotnet.System.IO",
@@ -370,25 +521,6 @@ fn constructor_and_static_class(
             *method,
             *arity,
             MethodBody::HostCall(HostTarget::new(*module, *func)),
-        ));
-    }
-    DotnetClassExport::new(interface, class)
-}
-
-fn collection_class(
-    interface: &'static str,
-    name: &'static str,
-    module: &'static str,
-    ctor: &'static str,
-    methods: &[(&'static str, u8, &'static str, &'static str)],
-) -> DotnetClassExport {
-    let mut class = ClassType::new(name)
-        .with_constructor(ConstructorDef::new(0).with_backing(HostTarget::new(module, ctor)));
-    for (method, arity, method_module, method_name) in methods {
-        class = class.with_method(MethodDef::new(
-            *method,
-            *arity,
-            MethodBody::HostCall(HostTarget::new(*method_module, *method_name)),
         ));
     }
     DotnetClassExport::new(interface, class)

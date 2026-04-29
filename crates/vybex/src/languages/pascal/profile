@@ -91,15 +91,15 @@ copy          = { emit = "intrinsic:copy",                 min_args = 2, max_arg
 concat        = { emit = "intrinsic:str_concat",            min_args = 1, max_args = 255 }
 chr           = { emit = "host:ecma:string:fromCharCode",  min_args = 1, max_args = 1 }
 ord           = { emit = "host:ecma:string:charCodeAt",    min_args = 1, max_args = 1 }
-format        = { emit = "host:vybe:string:format",        min_args = 1, max_args = 255 }
+format        = { emit = "stdlib:sprintf",                 min_args = 1, max_args = 255 }
 stringreplace = { emit = "common:strings.replace",         min_args = 3, max_args = 4 }
 stringofchar  = { emit = "opcode:str_repeat",              min_args = 2, max_args = 2 }
 leftstr       = { emit = "intrinsic:leftstr",              min_args = 2, max_args = 2 }
 rightstr      = { emit = "intrinsic:rightstr",             min_args = 2, max_args = 2 }
 comparestr    = { emit = "host:ecma:string:localeCompare",       min_args = 2, max_args = 2 }
 comparetext   = { emit = "host:ecma:string:localeCompare",       min_args = 2, max_args = 2 }
-delete        = { emit = "host:vybe:string:deleteStr",     min_args = 3, max_args = 3 }
-insert        = { emit = "host:vybe:string:insertStr",     min_args = 3, max_args = 3 }
+delete        = { emit = "stdlib:str_remove_range",        min_args = 3, max_args = 3 }
+insert        = { emit = "stdlib:str_insert",              min_args = 3, max_args = 3 }
 
 # ── Type conversion ─────────────────────────────────────────────────────────
 
@@ -143,7 +143,7 @@ dispose       = { emit = "noop",                           min_args = 1, max_arg
 
 # ── Control flow ─────────────────────────────────────────────────────────────
 
-halt          = { emit = "host:vybe:runtime:halt",         min_args = 0, max_args = 1 }
+halt          = { emit = "host:wasi:cli:exit",             min_args = 0, max_args = 1 }
 exit          = { emit = "noop",                           min_args = 0, max_args = 0 }
 
 # ────────────────────────────────────────────────────────────────────────────

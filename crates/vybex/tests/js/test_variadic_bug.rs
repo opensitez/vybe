@@ -44,7 +44,7 @@ fn variadic_args_survive_method_call_in_loop() {
 }
 
 #[test]
-fn variadic_args_survive_through_charAt_only() {
+fn variadic_args_survive_through_char_at_only() {
     // Single iteration with a single charAt — minimal repro.
     let out = run_one(r#"
         function f(fmt, ...args) {

@@ -64,9 +64,13 @@ pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str
     chunk.emit_op_u16(Op::STRUCT_SET, cname_key, line);
     chunk.emit_op(Op::DROP, line);
 
-    // Stamp WASM GC type_id via __tid_ global (set at load time by TypeRegistry)
+    // Stamp WASM GC type_id via __tid_ global. The caller has already
+    // canonicalised `class_name` per the source language's case-
+    // sensitivity, and `register_type` stored the type under that
+    // same name — VM `load_type_table` populates `__tid_<canon>`,
+    // which we look up verbatim here.
     let tid_name = chunk.add_constant(
-        Value::String(Arc::from(format!("__tid_{}", class_name.to_lowercase()).as_str()))
+        Value::String(Arc::from(format!("__tid_{}", class_name).as_str()))
     );
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::GLOBAL_GET, tid_name, line);
@@ -421,8 +425,13 @@ pub fn register_type(
     implements: Vec<String>,
     constructor_chunk: Option<usize>,
 ) {
+    // The walker is responsible for case-canonicalising the name per
+    // its language's case-sensitivity (`Compiler::canon` lowercases
+    // for VB/Pascal/COBOL/PHP, preserves case for JS/TS/Python/C#).
+    // No forced lowercasing here — that would silently collide
+    // distinct types in case-sensitive languages (`B` and `b`).
     chunks[0].types.push(TypeEntry {
-        name: name.to_lowercase(),
+        name: name.to_string(),
         parent: parent.to_string(),
         fields,
         methods,
@@ -442,16 +451,17 @@ pub fn register_interface(
     methods: Vec<String>,
     parent_interfaces: Vec<String>,
 ) {
-    let method_entries: Vec<(String, usize)> = methods.iter()
-        .map(|m| (m.to_lowercase(), 0usize))
+    // Names arrive pre-canonicalised by the walker — see [`register_type`].
+    let method_entries: Vec<(String, usize)> = methods.into_iter()
+        .map(|m| (m, 0usize))
         .collect();
     chunks[0].types.push(TypeEntry {
-        name: name.to_lowercase(),
+        name: name.to_string(),
         parent: String::new(),
         fields: Vec::new(),
         methods: method_entries,
         is_interface: true,
-        implements: parent_interfaces.iter().map(|s| s.to_lowercase()).collect(),
+        implements: parent_interfaces,
         constructor_chunk: None,
     });
 }

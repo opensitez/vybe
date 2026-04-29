@@ -117,7 +117,6 @@ console.log(rest.length);
     assert_eq!(out, vec!["1", "4"]);
 }
 
-#[ignore]
 #[test]
 fn destructure_in_for_of() {
     let out = run_js(r#"

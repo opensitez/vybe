@@ -1,4 +1,4 @@
-//! Per-request state for `vybe:http`.
+//! Per-request state for `node:http`.
 //!
 //! One `RequestContext` is constructed per incoming HTTP request, installed
 //! as a thread-local on the blocking worker that runs the script, and

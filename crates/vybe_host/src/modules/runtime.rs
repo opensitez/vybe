@@ -44,73 +44,23 @@ pub fn register(vm: &mut VM) {
         Value::Undefined
     }));
 
-    // awaitPromise(value) — if value is a Promise, extract its resolved value
-    // For synchronous promises (our model), this is immediate.
-    vm.register_host_fn("vybe:runtime", "awaitPromise", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let val = args.first().cloned().unwrap_or(Value::Null);
-        if let Value::Object(ref obj) = val {
-            let o = obj.lock().unwrap();
-            if o.properties.get("__type").map(|v| format!("{}", v)) == Some("Promise".into()) {
-                let state = o.properties.get("__state").map(|v| format!("{}", v)).unwrap_or_default();
-                if state == "fulfilled" {
-                    return o.properties.get("__value").cloned().unwrap_or(Value::Null);
-                } else if state == "rejected" {
-                    // TODO: throw the rejection reason
-                    return o.properties.get("__value").cloned().unwrap_or(Value::Null);
-                }
-                // pending — in synchronous model this shouldn't happen
-                return Value::Null;
-            }
-        }
-        // Not a Promise — return as-is (await on non-Promise is identity in JS)
-        val
-    }));
-
+    // `awaitPromise` retired — `await` compiles directly to
+    // `Op::PROMISE_SUSPEND` (WASM JSPI, see emitter::functions::emit_await
+    // and crates/vybe_bytecode/src/opcode/vm_internal.rs).
+    //
+    // `goto` retired — was a no-op stub for VB6-style GoTo with no callers.
+    //
     // Promise.{resolve,reject,all} retired — moved to `ecma:promise`
     // (full §27.7 surface incl. race/allSettled/any/try/withResolvers).
     // Error/TypeError/RangeError retired — moved to `ecma:error` (full
     // §20.5: 8 native error subclasses).
 
-    // GoTo support — stores the target label. The caller checks this global
-    // to implement VB6-style GoTo within a subroutine.
-    vm.register_host_fn("vybe:runtime", "goto", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        // In practice, GoTo within a Sub is rare in modern VB.NET.
-        // This stores the label name so error handlers can dispatch.
-        args.first().cloned().unwrap_or(Value::Null)
-    }));
-
-    // ── Async Task runtime — .NET/JS Promise-compat helpers ────────────
-    //
-    // Task.Delay(ms) lowers here. Builds a Task object with
-    // `iscompleted=false`, spawns a native OS thread that sleeps for `ms`
-    // using wasi:clocks-compatible semantics (std::thread::sleep), then
-    // flips `iscompleted=true`. The thread-spawn path is conceptually
-    // what `wasi.thread-spawn` (wasi-preview1 threads proposal) provides;
-    // using std::thread here is an implementation detail.
-    //
-    // Lives in `vybe:runtime` because async Task is a .NET/Promise
-    // language runtime construct, not a WASI primitive. WASI provides
-    // the underlying sleep / pollable primitives; the Task wrapper is
-    // language-level.
-    vm.register_host_fn("vybe:runtime", "taskDelay", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let ms = args.first().map(|v| v.as_f64() as u64).unwrap_or(0);
-        let mut obj = Object::new();
-        obj.properties.insert("__type".into(), Value::String(Arc::from("Task")));
-        obj.properties.insert("iscompleted".into(), Value::Bool(false));
-        obj.properties.insert("isalive".into(), Value::Bool(true));
-        obj.properties.insert("result".into(), Value::Null);
-        obj.properties.insert("status".into(), Value::String(Arc::from("WaitingForActivation")));
-        let task_obj = Arc::new(Mutex::new(obj));
-        let task_for_child = task_obj.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(ms));
-            let mut task = task_for_child.lock().unwrap();
-            task.properties.insert("iscompleted".into(), Value::Bool(true));
-            task.properties.insert("isalive".into(), Value::Bool(false));
-            task.properties.insert("status".into(), Value::String(Arc::from("RanToCompletion")));
-        });
-        Value::Object(task_obj)
-    }));
+    // `taskDelay` retired from `vybe:runtime` — moved to
+    // `wasi:clocks.taskDelay` (alongside sleep / now / hrtime). The
+    // spec-perfect `wasi:clocks/monotonic-clock.subscribe-duration`
+    // returning a pollable + JSPI integration is a separate redesign
+    // (requires HostContext access to the event loop / new Task
+    // variant — both vybe_bytecode-side changes).
 }
 
 fn dispatch_list(ctx: &mut HostContext, obj: &Value, method: &str, args: &[Value]) -> Value {

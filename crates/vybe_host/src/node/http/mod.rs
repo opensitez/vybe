@@ -1,4 +1,4 @@
-//! `vybe:http` — HTTP server host module.
+//! `node:http` — HTTP server host module.
 //!
 //! See `httpserver.md` at the repo root for the full architecture. Briefly:
 //! every supported language exposes idiomatic web APIs (PHP superglobals,
@@ -10,9 +10,9 @@
 //! This module is organized as:
 //!
 //! - [`context`]  — per-request state + thread-local + drop guard
-//! - [`request`]  — `vybe:http/request.*` (raw + parsed accessors)
-//! - [`response`] — `vybe:http/response.*` (status, headers, write, end)
-//! - [`meta`]     — `vybe:http/meta.*` (mode, server_software, request_id)
+//! - [`request`]  — `node:http.*` (raw + parsed accessors)
+//! - [`response`] — `node:http.*` (status, headers, write, end)
+//! - [`meta`]     — `node:http.*` (mode, server_software, request_id)
 //!
 //! Additional utility sub-modules (url, cookie, form, mime, date, etag,
 //! range, negotiate, compress, auth, ws, sse, session, static_serve,
@@ -30,7 +30,7 @@ pub use context::{
 
 use vybe_bytecode::VM;
 
-/// Register every `vybe:http/*` host function on the VM.
+/// Register every `node:http` host function on the VM.
 ///
 /// Called from `register_with_capabilities` when `Capability::HttpServer`
 /// is granted. Safe to call when no server is running — the primitives

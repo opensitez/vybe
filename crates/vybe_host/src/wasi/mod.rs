@@ -10,12 +10,15 @@
 //! older Vybe-shim filesystem surface (flat-string-path APIs that
 //! look nothing like WASI) lives under `vybe:fs`.
 
+pub mod crypto;
 pub mod filesystem;
+pub mod http;
 
 use vybe_bytecode::VM;
 
 /// Register the always-on WASI modules. Capability gating happens
 /// in [`crate::modules`].
 pub fn register(vm: &mut VM) {
+    crypto::register(vm);
     filesystem::register(vm);
 }

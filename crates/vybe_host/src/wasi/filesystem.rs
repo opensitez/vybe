@@ -35,7 +35,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
-use vybe_bytecode::value::{Object, ObjectKind};
+use vybe_bytecode::value::Object;
 use vybe_bytecode::{VM, Value};
 
 // ── Resource registry ─────────────────────────────────────────────

@@ -13,7 +13,7 @@ pub mod stdlib_aliases;
 pub mod gui_state;
 
 pub use modules::{register_all, register_with_capabilities, Capabilities, Capability};
-pub use modules::http_server::{
+pub use node::http::{
     RequestContext, RequestBodyReader, ResponseState, ResponseMessage,
     install_context, take_context, with_context,
 };

@@ -49,7 +49,6 @@ console.log(arr.length);
     assert_eq!(out, vec!["3", "3", "2"]);
 }
 
-#[ignore]
 #[test]
 fn shift_unshift() {
     let out = run_js(r#"
@@ -165,7 +164,6 @@ console.log(arr.join(","));
 
 // ── Search methods ─────────────────────────────────────────
 
-#[ignore]
 #[test]
 fn indexof() {
     let out = run_js(r#"
@@ -293,7 +291,6 @@ console.log(obj.c);
 
 // ── Modern array methods ───────────────────────────────────
 
-#[ignore]
 #[test]
 fn array_at() {
     let out = run_js(r#"

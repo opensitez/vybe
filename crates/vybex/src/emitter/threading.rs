@@ -15,6 +15,7 @@
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Value;
+use crate::emitter::functions::create_function_chunk;
 
 // ── Atomic memory operations (WASM Threads spec) ────────────────────────
 
@@ -133,15 +134,36 @@ pub fn emit_lock_release(chunk: &mut Chunk, addr_slot: u16, line: u32) {
 //   1. Task.Run(fn) — create AND run immediately: cont_new + resume
 //   2. New Thread(fn) — create only: cont_new. Start later with resume.
 
-/// Emit Task.Run(fn) — spawn OS thread and return thread handle.
-/// Stack before: [func_ref]  Stack after: [thread_id: i32]
-pub fn emit_task_run(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::THREAD_SPAWN, line);
+/// Emit Task.Run(fn) — spawn OS thread and return Task handle.
+/// Stack before: [func_ref]  Stack after: [task_object]
+///
+/// THREAD_SPAWN takes `[start_arg, func_ref]` per wasi-threads. Task.Run
+/// has no start arg, so we slot `null` underneath the func_ref via a
+/// scratch local. The spawned function lands `null` in slot 0 and
+/// ignores it.
+pub fn emit_task_run(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_thread_spawn_no_arg(chunks, current, line);
 }
 
-/// Emit New Thread(fn) — spawn OS thread, return thread handle.
-/// Stack before: [func_ref]  Stack after: [thread_id: i32]
-pub fn emit_thread_new(chunk: &mut Chunk, line: u32) {
+/// Emit New Thread(fn) — spawn OS thread, return Task handle.
+/// Stack before: [func_ref]  Stack after: [task_object]
+pub fn emit_thread_new(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_thread_spawn_no_arg(chunks, current, line);
+}
+
+/// Lower a `THREAD_SPAWN` whose caller supplied a func_ref on the stack
+/// but no start_arg. We need `[null, func_ref]` for THREAD_SPAWN; given
+/// `[func_ref]`, the cheapest reorder is via a scratch local.
+fn emit_thread_spawn_no_arg(chunks: &mut [Chunk], current: usize, line: u32) {
+    let slot = chunks[current].local_count;
+    chunks[current].local_count = slot + 1;
+    let chunk = &mut chunks[current];
+    // [func_ref] → stash to scratch slot, drop from stack
+    chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+    chunk.emit_op(Op::DROP, line);
+    // Push null (start_arg), then func_ref back from scratch
+    chunk.emit_op(Op::NULL, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_op(Op::THREAD_SPAWN, line);
 }
 
@@ -174,7 +196,43 @@ pub fn emit_sleep(chunk: &mut Chunk, sleep_import_idx: u16, line: u32) {
     chunk.emit_op(Op::DROP, line);
 }
 
+/// Emit Task.Delay(ms) — spawn a worker that sleeps for `ms`, returning
+/// the Task object that `Op::THREAD_SPAWN` constructs natively.
+///
+/// Pure WASM, zero host fns: `THREAD_SPAWN` matches the wasi-threads
+/// `thread.spawn(start_arg)` shape, so we pass `ms` as the start arg and
+/// the worker reads it from slot 0. The Task object's `iscompleted` /
+/// `isalive` / `result` / `status` fields are populated by the VM's
+/// THREAD_SPAWN handler when the worker fiber returns.
+///
+/// Stack before: [ms]  Stack after: [task_object]
+pub fn emit_task_delay(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    // wasi:clocks/sleep import — all imports flow through chunks[0].
+    let sleep_idx = chunks[0].add_import("wasi:clocks", "sleep");
+
+    // Worker chunk: arity=1 (start_arg = ms), body calls sleep(ms),
+    // returns null. The Task.result field reflects this null on completion.
+    let mut worker = create_function_chunk("__task_delay_worker", 1);
+    worker.emit_op_u16(Op::LOCAL_GET, 0, line);
+    worker.emit_op_u16(Op::CALL_IMPORT, sleep_idx, line);
+    worker.emit(1, line);                 // argc = 1
+    worker.emit_op(Op::DROP, line);       // drop sleep's null return
+    worker.emit_op(Op::NULL, line);
+    worker.emit_op(Op::RETURN, line);
+    worker.local_count = 1;
+    chunks.push(worker);
+    let worker_idx = chunks.len() - 1;
+
+    let chunk = &mut chunks[current];
+    // Stack already has [ms] from the caller. Push the worker func_ref;
+    // THREAD_SPAWN pops [ms, func_ref] and spawns the worker with ms as
+    // its slot-0 arg.
+    chunk.emit_op_u16(Op::REF_FUNC, worker_idx as u16, line);
+    chunk.emit(0, line);   // 0 upvalues — no closure capture needed
+    chunk.emit_op(Op::THREAD_SPAWN, line);
+}
+
 // Backward compat
-pub fn emit_thread_spawn(chunk: &mut Chunk, line: u32) {
-    emit_thread_new(chunk, line);
+pub fn emit_thread_spawn(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_thread_new(chunks, current, line);
 }

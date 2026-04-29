@@ -6,7 +6,7 @@
 //! crate-private for the `dotnet_register` bridge.
 
 use super::*;
-use crate::common::classes::{BaseCall, NormalClass, NormalMethod};
+use crate::common::classes::{BaseCall, NormalMethod};
 
 impl Compiler {
     // ════════════════════════════════════════════════════════════════════════
@@ -165,6 +165,31 @@ impl Compiler {
         self.emit_u16(Op::GLOBAL_SET, idx);
         self.emit(Op::DROP);
 
+        if self.is_js_profile() {
+            let line = self.line;
+            self.emit_common("object.new", 0, line);
+            let proto_slot = self.define_local("__js_fn_proto");
+            self.emit_u16(Op::LOCAL_SET, proto_slot); self.emit(Op::DROP);
+
+            self.emit_var_get(name);
+            self.emit_const(Value::String(Arc::from(name.as_str())));
+            let name_key = self.str_const("name");
+            self.emit_u16(Op::STRUCT_SET, name_key);
+            self.emit(Op::DROP);
+
+            self.emit_u16(Op::LOCAL_GET, proto_slot);
+            self.emit_var_get(name);
+            let ctor_key = self.str_const("constructor");
+            self.emit_u16(Op::STRUCT_SET, ctor_key);
+            self.emit(Op::DROP);
+
+            self.emit_var_get(name);
+            self.emit_u16(Op::LOCAL_GET, proto_slot);
+            let proto_key = self.str_const("prototype");
+            self.emit_u16(Op::STRUCT_SET, proto_key);
+            self.emit(Op::DROP);
+        }
+
         // VB `Handles ctrl.Event` clause on a top-level Sub: register the
         // event handler with the canonical GUI binding. The same canonical
         // emit path serves C# `+=`, JS `addEventListener`, etc.
@@ -296,7 +321,12 @@ impl Compiler {
             } else {
                 m.params.iter().collect()
             };
-            let arity = (user_params.len() + 1) as u8;
+            let uses_js_this = cc.is_js_profile();
+            let arity = if uses_js_this {
+                user_params.len() as u8
+            } else {
+                (user_params.len() + 1) as u8
+            };
 
             let ci = cc.chunks.len();
             let mut chunk = common::functions::create_function_chunk(mname, arity);
@@ -310,7 +340,9 @@ impl Compiler {
             let saved = cc.current;
             cc.current = ci;
 
-            cc.define_local(&self_kw);
+            if !uses_js_this {
+                cc.define_local(&self_kw);
+            }
             for p in &user_params { cc.define_local(&p.name); }
 
             if is_ctor {
@@ -563,6 +595,12 @@ impl Compiler {
         }
         self.define_local(&self_kw); // this_slot = user_arity
         let this_slot = user_arity as u16;
+        if self.is_js_profile() {
+            let js_this = self.str_const("__js_this");
+            self.emit_u16(Op::GLOBAL_GET, js_this);
+            self.emit_u16(Op::LOCAL_SET, this_slot);
+            self.emit(Op::DROP);
+        }
 
         let is_child = parent.is_some();
         let line = self.line;
@@ -797,6 +835,22 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_SET, type_key2);
                 self.emit(Op::DROP);
 
+                // Re-stamp WASM GC type_id with the child's id. Each
+                // ancestor's super-call stamped its own type_id, so by
+                // the time we land here `this.type_id` reflects the
+                // direct parent — overwrite with this class's id so
+                // multi-level chains (`C extends B extends A`) end up
+                // with `c.type_id == C_id`. `is_subtype` then walks the
+                // parent pointers to confirm `C` is a subtype of both
+                // `B` and `A`. Use `self.canon(name)` so the __tid_
+                // global key matches what the VM populated at type-
+                // table load time.
+                let tid_key = self.str_const(&format!("__tid_{}", self.canon(name)));
+                self.emit_u16(Op::LOCAL_GET, this_slot);
+                self.emit_u16(Op::GLOBAL_GET, tid_key);
+                self.emit(Op::SET_TYPE_ID);
+                self.emit(Op::DROP);
+
                 if let Some(parent_name) = parent {
                     let pname = self.canon(parent_name);
                     for method_name in &instance_method_names {
@@ -845,7 +899,10 @@ impl Compiler {
             }
         } else {
             // ── Base class ──────────────────────────────────────────────
-            common::classes::emit_new_typed_object(self.chunk(), this_slot, name, line);
+            // Pass canon'd name so __type stamping and the __tid_<canon>
+            // global lookup match what `register_type` stored above.
+            let canon_name = self.canon(name);
+            common::classes::emit_new_typed_object(self.chunk(), this_slot, &canon_name, line);
 
             // Initialize fields
             for (fname, init) in &field_inits {
@@ -904,6 +961,49 @@ impl Compiler {
         let ctor_local = self.define_local(&format!("__{}_ctor", name));
         common::classes::emit_store_constructor(self.chunk(), name, ctor_idx, ctor_local, line);
 
+        if self.is_js_profile() {
+            self.emit_common("object.new", 0, line);
+            let proto_local = self.define_local(&format!("__{}_prototype", name));
+            self.emit_u16(Op::LOCAL_SET, proto_local); self.emit(Op::DROP);
+
+            if let Some(parent_name) = parent {
+                let pname = self.canon(parent_name);
+                let pidx = self.str_const(&pname);
+                self.emit_u16(Op::GLOBAL_GET, pidx);
+                let parent_proto_key = self.str_const("prototype");
+                self.emit_u16(Op::STRUCT_GET, parent_proto_key);
+                let parent_proto_local = self.define_local(&format!("__{}_parent_prototype", name));
+                self.emit_u16(Op::LOCAL_SET, parent_proto_local); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, parent_proto_local);
+                self.emit(Op::REF_IS_NULL);
+                let skip_parent_proto = self.emit_jump(Op::BR_IF_TRUE);
+                self.emit_u16(Op::LOCAL_GET, proto_local);
+                self.emit_u16(Op::LOCAL_GET, parent_proto_local);
+                let proto_link_key = self.str_const("__proto__");
+                self.emit_u16(Op::STRUCT_SET, proto_link_key);
+                self.emit(Op::DROP);
+                self.patch_jump(skip_parent_proto);
+            }
+
+            self.emit_u16(Op::LOCAL_GET, proto_local);
+            self.emit_u16(Op::LOCAL_GET, ctor_local);
+            let ctor_key = self.str_const("constructor");
+            self.emit_u16(Op::STRUCT_SET, ctor_key);
+            self.emit(Op::DROP);
+
+            self.emit_u16(Op::LOCAL_GET, ctor_local);
+            self.emit_u16(Op::LOCAL_GET, proto_local);
+            let proto_key = self.str_const("prototype");
+            self.emit_u16(Op::STRUCT_SET, proto_key);
+            self.emit(Op::DROP);
+
+            self.emit_u16(Op::LOCAL_GET, ctor_local);
+            self.emit_const(Value::String(Arc::from(name)));
+            let name_key = self.str_const("name");
+            self.emit_u16(Op::STRUCT_SET, name_key);
+            self.emit(Op::DROP);
+        }
+
         // Initialize static fields on the constructor object
         for (fname, init) in &static_field_inits {
             self.emit_u16(Op::LOCAL_GET, ctor_local);
@@ -950,8 +1050,13 @@ impl Compiler {
         }
 
         let all_methods: Vec<(String, usize)> = method_chunks.iter().map(|(n, c, _, _)| (n.clone(), *c)).collect();
-        let parent_str = parent.clone().unwrap_or_default();
-        common::classes::register_type(&mut self.chunks, name, &parent_str, fields, all_methods, false, Vec::new(), Some(ctor_idx));
+        // Canonicalise per language case-sensitivity: case-insensitive
+        // languages (VB/Pascal/COBOL/PHP) lowercase here, case-sensitive
+        // (JS/TS/Python/C#) preserve. Registry stores whatever the walker
+        // produced; runtime `Op::REF_TEST` looks up by the same canon.
+        let canon_name = self.canon(name);
+        let canon_parent = parent.as_ref().map(|p| self.canon(p)).unwrap_or_default();
+        common::classes::register_type(&mut self.chunks, &canon_name, &canon_parent, fields, all_methods, false, Vec::new(), Some(ctor_idx));
 
         Ok(())
     }

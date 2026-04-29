@@ -356,8 +356,14 @@ postfix_op = { "++" | "--" }
 
 // ── Call / Member / Index chain ─────────────────────────────────────────────
 
+// Try `new <primary>` only when `new` is followed by a non-word
+// character — otherwise fall through to `primary` so identifiers
+// like `new_elem` / `newPerson` aren't mis-tokenised. The
+// `new_keyword_lookahead` rule is atomic so the boundary check
+// sits flush with `"new"` (no implicit whitespace gap).
+new_keyword_lookahead = @{ "new" ~ !(ASCII_ALPHANUMERIC | "_" | "$") }
 call_expression = {
-    (new_expression | primary) ~ call_chain*
+    (&new_keyword_lookahead ~ new_expression | primary) ~ call_chain*
 }
 
 new_expression = { "new" ~ primary ~ call_chain* }

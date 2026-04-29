@@ -7,6 +7,86 @@
 use super::*;
 
 impl Compiler {
+    pub(super) fn js_error_instanceof_chain(type_name: &str) -> &'static [&'static str] {
+        match type_name.trim() {
+            "Error" => &["Error"],
+            "EvalError" => &["EvalError", "Error"],
+            "RangeError" => &["RangeError", "Error"],
+            "ReferenceError" => &["ReferenceError", "Error"],
+            "SyntaxError" => &["SyntaxError", "Error"],
+            "TypeError" => &["TypeError", "Error"],
+            "URIError" => &["URIError", "Error"],
+            "AggregateError" => &["AggregateError", "Error"],
+            _ => &[],
+        }
+    }
+
+    pub(super) fn emit_js_exception_ctor_from_message_value(&mut self, type_name: &str) -> Result<(), String> {
+        let msg_val = self.define_local("__exc_msg_val");
+        self.emit_u16(Op::LOCAL_SET, msg_val);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::STRUCT_NEW, 0);
+        self.emit(Op::DUP);
+        self.emit_u16(Op::LOCAL_GET, msg_val);
+        let line = self.line;
+        common::errors::emit_exception_new_finalize(self.chunk(), type_name, line);
+
+        let exc_tmp = self.define_local("__exc_tmp");
+        self.emit_u16(Op::LOCAL_SET, exc_tmp);
+        self.emit(Op::DROP);
+
+        self.emit_const(Value::String(Arc::from(format!("{}: ", type_name))));
+        self.emit_u16(Op::LOCAL_GET, exc_tmp);
+        let msg_k = self.str_const("message");
+        self.emit_u16(Op::STRUCT_GET, msg_k);
+        self.emit(Op::STR_CONCAT);
+        let stack_val = self.define_local("__stack_val");
+        self.emit_u16(Op::LOCAL_SET, stack_val);
+        self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_GET, exc_tmp);
+        self.emit_u16(Op::LOCAL_GET, stack_val);
+        let stack_key = self.str_const("stack");
+        self.emit_u16(Op::STRUCT_SET, stack_key);
+        self.emit(Op::DROP);
+
+        if self.is_js_profile() {
+            for name in Self::js_error_instanceof_chain(type_name) {
+                common::classes::emit_instanceof_chain(&mut self.chunks, self.current, exc_tmp, name, line);
+            }
+        }
+
+        self.emit_u16(Op::LOCAL_GET, exc_tmp);
+        Ok(())
+    }
+
+    pub(super) fn emit_js_exception_ctor_value(&mut self, type_name: &str, args: &[&Expression]) -> Result<(), String> {
+        if let Some(msg_arg) = args.first() {
+            self.compile_expr(msg_arg)?;
+        } else {
+            self.emit_const(Value::String(Arc::from("")));
+        }
+        self.emit_js_exception_ctor_from_message_value(type_name)?;
+
+        if let Some(opts_arg) = args.get(1) {
+            let exc_tmp = self.define_local("__exc_with_cause");
+            self.emit_u16(Op::LOCAL_SET, exc_tmp);
+            self.emit(Op::DROP);
+            self.compile_expr(opts_arg)?;
+            let cause_key = self.str_const("cause");
+            self.emit_u16(Op::STRUCT_GET, cause_key);
+            let cause_val = self.define_local("__cause_val");
+            self.emit_u16(Op::LOCAL_SET, cause_val);
+            self.emit(Op::DROP);
+            self.emit_u16(Op::LOCAL_GET, exc_tmp);
+            self.emit_u16(Op::LOCAL_GET, cause_val);
+            self.emit_u16(Op::STRUCT_SET, cause_key);
+            self.emit(Op::DROP);
+            self.emit_u16(Op::LOCAL_GET, exc_tmp);
+        }
+        Ok(())
+    }
+
     // ════════════════════════════════════════════════════════════════════════
     // Call compilation
     // ════════════════════════════════════════════════════════════════════════
@@ -18,6 +98,16 @@ impl Compiler {
         if let ExprKind::Super = &callee.kind {
             if let Some(ref class_name) = self.current_class.clone() {
                 if let Some(parent_name) = self.pending_classes.get(class_name.as_str()).and_then(|pc| pc.parent.clone()) {
+                    if self.is_js_profile() && common::errors::is_exception_type(&parent_name) {
+                        self.emit_js_exception_ctor_value(&parent_name, &arg_exprs)?;
+                        let self_kw = self.profile.self_keyword.clone();
+                        if let Some(slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
+                            self.emit(Op::DUP);
+                            self.emit_u16(Op::LOCAL_SET, slot);
+                            self.emit(Op::DROP);
+                        }
+                        return Ok(());
+                    }
                     let pname = self.canon(&parent_name);
                     let pidx = self.str_const(&pname);
                     self.emit_u16(Op::GLOBAL_GET, pidx);
@@ -99,6 +189,27 @@ impl Compiler {
         // ── Builtin check: Member("Console.WriteLine") ─────────────
         if let ExprKind::Member { object, field, .. } = &callee.kind {
             if let ExprKind::Ident(obj_name) = &object.kind {
+                if self.is_js_profile() && obj_name == "Object" && field == "create" && arg_exprs.len() == 1 {
+                    let line = self.line;
+                    self.emit_common("object.new", 0, line);
+                    let obj_slot = self.define_local("__js_object_create_obj");
+                    self.emit_u16(Op::LOCAL_SET, obj_slot); self.emit(Op::DROP);
+                    self.compile_expr(arg_exprs[0])?;
+                    let proto_slot = self.define_local("__js_object_create_proto");
+                    self.emit_u16(Op::LOCAL_SET, proto_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, proto_slot);
+                    self.emit(Op::REF_IS_NULL);
+                    let skip_proto = self.emit_jump(Op::BR_IF_TRUE);
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.emit_u16(Op::LOCAL_GET, proto_slot);
+                    let link_key = self.str_const("__proto__");
+                    self.emit_u16(Op::STRUCT_SET, link_key);
+                    self.emit(Op::DROP);
+                    self.patch_jump(skip_proto);
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    return Ok(());
+                }
+
                 let compound = format!("{}.{}", obj_name, field);
                 if self.try_compile_builtin(&compound, &arg_exprs)? { return Ok(()); }
 
@@ -212,7 +323,7 @@ impl Compiler {
                         common::dotnet::DottedResolution::CommonCall { emit } => {
                             for a in &arg_exprs { self.compile_expr(a)?; }
                             let line = self.line;
-                            self.emit_common(&emit, line);
+                            self.emit_common(&emit, arg_exprs.len() as u8, line);
                             return Ok(());
                         }
                         common::dotnet::DottedResolution::HostCall { module, func } => {
@@ -271,7 +382,7 @@ impl Compiler {
                                                 }
                                                 BuiltinEmit::Common(name) => {
                                                     let name = name.clone();
-                                                    self.emit_common(&name, line);
+                                                    self.emit_common(&name, (arg_exprs.len() + 1) as u8, line);
                                                 }
                                                 BuiltinEmit::Opcode(op_name) => {
                                                     self.emit_named_opcode(op_name);
@@ -422,6 +533,31 @@ impl Compiler {
                 let is_class = self.defined_classes.contains(&canon)
                     && self.scope().resolve(obj_name).is_none();
                 if is_class {
+                    if self.is_js_profile() {
+                        let cls_idx = self.str_const(&canon);
+                        self.emit_u16(Op::GLOBAL_GET, cls_idx);
+                        let cls_tmp = self.scope().resolve("__static_cls")
+                            .unwrap_or_else(|| self.define_local("__static_cls"));
+                        self.emit_u16(Op::LOCAL_SET, cls_tmp); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, cls_tmp);
+                        let method_idx = self.str_const(&self.canon(field));
+                        self.emit_u16(Op::STRUCT_GET, method_idx);
+                        let fn_tmp = self.scope().resolve("__static_fn")
+                            .unwrap_or_else(|| self.define_local("__static_fn"));
+                        self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
+                        let saved_js_this = self.save_js_this("__js_prev_this_static_method");
+                        self.emit_u16(Op::LOCAL_GET, cls_tmp);
+                        self.set_js_this_from_stack();
+                        self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                        for a in &arg_exprs { self.compile_expr(a)?; }
+                        self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                        let result_slot = self.define_local("__js_static_method_result");
+                        self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
+                        self.restore_js_this(saved_js_this);
+                        self.emit_u16(Op::LOCAL_GET, result_slot);
+                        return Ok(());
+                    }
+
                     // Push class, dup, struct_get(method) → [class, fn]
                     // Then swap so fn is first, class is second (as this)
                     let cls_idx = self.str_const(&canon);
@@ -461,6 +597,16 @@ impl Compiler {
             if !self.defined_class_methods.contains(&canon_field)
                 && (field == "call" || field == "apply")
             {
+                let saved_js_this = self.save_js_this("__js_prev_this_call");
+                if self.is_js_profile() {
+                    if let Some(this_arg) = arg_exprs.first() {
+                        self.compile_expr(this_arg)?;
+                    } else {
+                        let line = self.line;
+                        common::expressions::emit_undefined(self.chunk(), line);
+                    }
+                    self.set_js_this_from_stack();
+                }
                 self.compile_expr(object)?;                       // [fn]
                 if field == "call" {
                     // Skip thisArg, compile rest as positional args.
@@ -482,7 +628,59 @@ impl Compiler {
                     // before call_ref to flatten the top array.
                     self.emit_u8(Op::CALL_REF, 0);
                 }
+                if saved_js_this.is_some() {
+                    let result_slot = self.define_local("__js_call_result");
+                    self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
+                    self.restore_js_this(saved_js_this);
+                    self.emit_u16(Op::LOCAL_GET, result_slot);
+                }
                 return Ok(());
+            }
+        }
+
+        // ── Component Model instance-method dispatch ────────────────
+        //
+        // When `obj` is a local with a known .NET type (from
+        // `Dim d As New Dictionary(...)` / `var x : Stack` / etc.),
+        // resolve the method against the auto-built component
+        // descriptor and emit the import call directly. This is the
+        // primary dispatch path per the Component Model + ESM
+        // architecture — the .NET adapter at the descriptor level
+        // translates `Dictionary.Add` → `ecma:map.set`, so the
+        // emitted call hits the standardized primitive without any
+        // runtime `__type` lookup. The TypeRegistry-driven runtime
+        // dispatch (compilation-hints proposal style) is the
+        // fallback for dynamically-typed receivers.
+        if let ExprKind::Member { object, field, .. } = &callee.kind {
+            if let ExprKind::Ident(local_name) = &object.kind {
+                let class_name = self.scope().resolve_type_ci(local_name).map(|s| s.to_string())
+                    .or_else(|| {
+                        // Top-level `var x = new Y(...)` lands `x` as a
+                        // global; the walker stamps `Y` into
+                        // `global_type_hints` (keyed by canonical name).
+                        let cn = self.canon(local_name);
+                        self.global_type_hints.get(&cn).cloned()
+                    });
+                if let Some(class_name) = class_name {
+                    let surface = common::dotnet::surface();
+                    if let Some(target) = surface.lookup_instance_method(&class_name, field) {
+                        // Compile receiver, then args.
+                        self.compile_expr(object)?;
+                        for a in &arg_exprs { self.compile_expr(a)?; }
+                        let total_argc = (arg_exprs.len() + 1) as u8;
+                        match target {
+                            common::dotnet::InstanceMethodTarget::Host { module, func, .. } => {
+                                let idx = self.import(&module, &func);
+                                self.emit_host_call(idx, total_argc);
+                            }
+                            common::dotnet::InstanceMethodTarget::Common { emit, .. } => {
+                                let line = self.line;
+                                self.emit_common(&emit, total_argc, line);
+                            }
+                        }
+                        return Ok(());
+                    }
+                }
             }
         }
 
@@ -581,7 +779,7 @@ impl Compiler {
                     BuiltinEmit::Common(name) => {
                         let line = self.line;
                         let name = name.clone();
-                        self.emit_common(&name, line);
+                        self.emit_common(&name, (arg_exprs.len() + 1) as u8, line);
                     }
                     BuiltinEmit::Invoke(method_name) => {
                         let line = self.line;
@@ -1006,6 +1204,156 @@ impl Compiler {
 
         // ── Method call: obj.method(args) ───────────────────────────
         if let ExprKind::Member { object, field, null_safe } = &callee.kind {
+            if self.is_js_profile() {
+                self.compile_expr(object)?;
+                let obj_tmp = self.define_local("__js_obj");
+                self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+
+                let method_name = self.canon(field);
+                let prop = self.str_const(&method_name);
+                let receiver_marker = self.str_const("__vybe_method_receiver");
+
+                if *null_safe {
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit(Op::REF_IS_NULL);
+                    let skip = self.emit_jump(Op::BR_IF_TRUE);
+
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_u16(Op::STRUCT_GET, prop);
+                    let fn_slot = self.define_local("__js_method_fn");
+                    self.emit_u16(Op::LOCAL_SET, fn_slot); self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, fn_slot);
+                    self.emit_u16(Op::STRUCT_GET, receiver_marker);
+                    self.emit(Op::REF_IS_NULL);
+                    let use_js_path = self.emit_jump(Op::BR_IF_TRUE);
+
+                    self.emit_u16(Op::LOCAL_GET, fn_slot);
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    for a in &arg_exprs { self.compile_expr(a)?; }
+                    self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                    let typed_done = self.emit_jump(Op::BR);
+
+                    self.patch_jump(use_js_path);
+                    self.emit_u16(Op::LOCAL_GET, fn_slot);
+                    self.emit(Op::REF_IS_NULL);
+                    let need_lookup = self.emit_jump(Op::BR_IF_TRUE);
+
+                    let saved_js_this = self.save_js_this("__js_prev_this_method");
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.set_js_this_from_stack();
+                    self.emit_u16(Op::LOCAL_GET, fn_slot);
+                    for a in &arg_exprs { self.compile_expr(a)?; }
+                    self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                    let result_slot = self.define_local("__js_method_result");
+                    self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
+                    self.restore_js_this(saved_js_this);
+                    self.emit_u16(Op::LOCAL_GET, result_slot);
+                    let js_done = self.emit_jump(Op::BR);
+
+                    self.patch_jump(need_lookup);
+                    let lookup = self.import("ecma:value", "getMethodForCall");
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_const(Value::String(Arc::from(method_name.as_str())));
+                    self.emit_host_call(lookup, 2);
+                    let lookup_slot = self.define_local("__js_lookup_fn");
+                    self.emit_u16(Op::LOCAL_SET, lookup_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, lookup_slot);
+                    self.emit(Op::REF_IS_NULL);
+                    let have_fn = self.emit_jump(Op::BR_IF_FALSE);
+                    let invoke = self.import("ecma:value", "invokeMethod");
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_const(Value::String(Arc::from(method_name.as_str())));
+                    for a in &arg_exprs { self.compile_expr(a)?; }
+                    self.emit_host_call(invoke, (arg_exprs.len() + 2) as u8);
+                    let after_call = self.emit_jump(Op::BR);
+                    self.patch_jump(have_fn);
+                    let saved_js_this = self.save_js_this("__js_prev_this_lookup");
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.set_js_this_from_stack();
+                    self.emit_u16(Op::LOCAL_GET, lookup_slot);
+                    for a in &arg_exprs { self.compile_expr(a)?; }
+                    self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                    let result_slot = self.define_local("__js_lookup_result");
+                    self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
+                    self.restore_js_this(saved_js_this);
+                    self.emit_u16(Op::LOCAL_GET, result_slot);
+                    self.patch_jump(after_call);
+                    self.patch_jump(js_done);
+                    self.patch_jump(typed_done);
+                    let end = self.emit_jump(Op::BR);
+                    self.patch_jump(skip);
+                    self.emit(Op::NULL);
+                    self.patch_jump(end);
+                    return Ok(());
+                }
+
+                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                self.emit_u16(Op::STRUCT_GET, prop);
+                let fn_slot = self.define_local("__js_method_fn");
+                self.emit_u16(Op::LOCAL_SET, fn_slot); self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, fn_slot);
+                self.emit_u16(Op::STRUCT_GET, receiver_marker);
+                self.emit(Op::REF_IS_NULL);
+                let use_js_path = self.emit_jump(Op::BR_IF_TRUE);
+
+                self.emit_u16(Op::LOCAL_GET, fn_slot);
+                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                for a in &arg_exprs { self.compile_expr(a)?; }
+                self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                let typed_done = self.emit_jump(Op::BR);
+
+                self.patch_jump(use_js_path);
+                self.emit_u16(Op::LOCAL_GET, fn_slot);
+                self.emit(Op::REF_IS_NULL);
+                let need_lookup = self.emit_jump(Op::BR_IF_TRUE);
+
+                let saved_js_this = self.save_js_this("__js_prev_this_method");
+                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                self.set_js_this_from_stack();
+                self.emit_u16(Op::LOCAL_GET, fn_slot);
+                for a in &arg_exprs { self.compile_expr(a)?; }
+                self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                let result_slot = self.define_local("__js_method_result");
+                self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
+                self.restore_js_this(saved_js_this);
+                self.emit_u16(Op::LOCAL_GET, result_slot);
+                let js_done = self.emit_jump(Op::BR);
+
+                self.patch_jump(need_lookup);
+                let lookup = self.import("ecma:value", "getMethodForCall");
+                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                self.emit_const(Value::String(Arc::from(method_name.as_str())));
+                self.emit_host_call(lookup, 2);
+                let lookup_slot = self.define_local("__js_lookup_fn");
+                self.emit_u16(Op::LOCAL_SET, lookup_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, lookup_slot);
+                self.emit(Op::REF_IS_NULL);
+                let have_fn = self.emit_jump(Op::BR_IF_FALSE);
+                let invoke = self.import("ecma:value", "invokeMethod");
+                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                self.emit_const(Value::String(Arc::from(method_name.as_str())));
+                for a in &arg_exprs { self.compile_expr(a)?; }
+                self.emit_host_call(invoke, (arg_exprs.len() + 2) as u8);
+                let after_call = self.emit_jump(Op::BR);
+                self.patch_jump(have_fn);
+                let saved_js_this = self.save_js_this("__js_prev_this_lookup");
+                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                self.set_js_this_from_stack();
+                self.emit_u16(Op::LOCAL_GET, lookup_slot);
+                for a in &arg_exprs { self.compile_expr(a)?; }
+                self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                let result_slot = self.define_local("__js_lookup_result");
+                self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
+                self.restore_js_this(saved_js_this);
+                self.emit_u16(Op::LOCAL_GET, result_slot);
+                self.patch_jump(after_call);
+                self.patch_jump(js_done);
+                self.patch_jump(typed_done);
+                return Ok(());
+            }
+
             self.compile_expr(object)?;
 
             if *null_safe {

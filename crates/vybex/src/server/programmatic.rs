@@ -62,9 +62,9 @@ use super::response_stream::{BoxBody, build_response};
 /// legitimately route `echo` to the response body, and that override
 /// lives in `script.rs` where it applies to the PHP-driven model.
 pub fn register(vm: &mut VM) {
-    vm.register_host_fn("vybe:http/server", "listen", Box::new(listen_host_fn));
-    vm.register_host_fn("vybe:http/server", "close", Box::new(|_ctx, _args| Value::Null));
-    vm.register_host_fn("vybe:http/server", "address", Box::new(|_ctx, _args| Value::Null));
+    vm.register_host_fn("node:http", "listen", Box::new(listen_host_fn));
+    vm.register_host_fn("node:http", "close", Box::new(|_ctx, _args| Value::Null));
+    vm.register_host_fn("node:http", "address", Box::new(|_ctx, _args| Value::Null));
 }
 
 /// Event pushed from the tokio thread to the VM thread per request.

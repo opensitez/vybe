@@ -56,13 +56,6 @@ pub fn emit_parse_float(chunk: &mut Chunk, line: u32) {
     chunk.emit(1, line);
 }
 
-/// Check if value is numeric. Stack: [value] → [bool]
-pub fn emit_is_numeric(chunk: &mut Chunk, line: u32) {
-    let idx = chunk.add_import("vybe:convert", "isNumeric");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(1, line);
-}
-
 /// Dynamic truthiness conversion. Stack: [value] → [bool]
 pub fn emit_to_bool(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::DYN_TO_BOOL, line);

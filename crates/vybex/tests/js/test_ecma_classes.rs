@@ -236,7 +236,6 @@ console.log(d instanceof Animal);
     assert_eq!(out, vec!["true", "true"]);
 }
 
-#[ignore]
 #[test]
 fn class_method_chaining() {
     let out = run_js(r#"
@@ -288,7 +287,7 @@ console.log(d.greet());
 }
 
 #[test]
-fn class_toString_override() {
+fn class_to_string_override() {
     let out = run_js(r#"
 class Point {
     constructor(x, y) { this.x = x; this.y = y; }

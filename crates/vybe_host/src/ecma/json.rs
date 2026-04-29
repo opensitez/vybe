@@ -110,6 +110,25 @@ fn stringify_object(obj: &Arc<Mutex<Object>>, visited: &mut HashSet<usize>) -> S
                 "null".to_string()
             }
             ObjectKind::Ordinary => {
+                // Date receives toJSON treatment per ECMA-262 §25.5.1.1:
+                // if `__type=Date`, serialize as the ISO string. Same logic
+                // V8 uses to make `JSON.stringify(d)` return `"2026-..."`.
+                // Read __time directly while we hold the lock — calling
+                // `dispatch_date_method` would re-lock and deadlock.
+                let is_date = matches!(
+                    o.properties.get("__type"),
+                    Some(Value::String(s)) if s.as_ref() == "Date"
+                );
+                if is_date {
+                    let ms = o.properties.get("__time")
+                        .map(|v| v.as_f64())
+                        .unwrap_or(f64::NAN);
+                    let iso = crate::ecma::date::format_iso_from_ms(ms);
+                    return match iso {
+                        Some(s) => format!("\"{}\"", s),
+                        None => "null".to_string(),
+                    };
+                }
                 stringify_ordinary(&o, visited)
             }
             // Module Namespace Objects serialize their exports like an

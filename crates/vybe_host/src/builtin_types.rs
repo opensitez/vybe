@@ -11,14 +11,11 @@ pub fn register_all(vm: &mut VM) {
     };
 
     // --- Object (type 0, already created) ---
-    // Add universal methods to Object
-    if let Some(idx) = h(vm, "vybe:convert", "toString") {
+    // Universal methods bound to ECMA-262 primitives. `gethashcode` /
+    // `equals` aren't in ECMA — using `String` coercion as a stand-in
+    // until a typed equality / hash primitive lands.
+    if let Some(idx) = h(vm, "ecma:string", "String") {
         vm.type_registry.add_host_method(0, "tostring", idx);
-    }
-    if let Some(idx) = h(vm, "vybe:convert", "typeName") {
-        vm.type_registry.add_host_method(0, "gettype", idx);
-    }
-    if let Some(idx) = h(vm, "vybe:convert", "toString") {
         vm.type_registry.add_host_method(0, "gethashcode", idx);
         vm.type_registry.add_host_method(0, "equals", idx);
     }
@@ -50,12 +47,37 @@ pub fn register_all(vm: &mut VM) {
             ("split", "ecma:string", "split"),
             ("padleft", "ecma:string", "padStart"),
             ("padright", "ecma:string", "padEnd"),
-            ("tostring", "vybe:convert", "toString"),
+            ("tostring", "ecma:string", "String"),
             ("toupperinvariant", "ecma:string", "toUpperCase"),
             ("tolowerinvariant", "ecma:string", "toLowerCase"),
             ("chars", "ecma:string", "charAt"),
-            ("insert", "vybe:string", "mid"),
+            ("insert", "ecma:string", "substring"),
             ("remove", "ecma:string", "slice"),
+            // ── JS-spec methods exposed under the same ecma:string surface
+            // so `s.charAt(...)`, `s.charCodeAt(...)`, etc. dispatch via
+            // the TypeRegistry without language-specific aliasing.
+            ("charat", "ecma:string", "charAt"),
+            ("charcodeat", "ecma:string", "charCodeAt"),
+            ("codepointat", "ecma:string", "codePointAt"),
+            ("at", "ecma:string", "at"),
+            ("concat", "ecma:string", "concat"),
+            ("includes", "ecma:string", "includes"),
+            ("repeat", "ecma:string", "repeat"),
+            ("padstart", "ecma:string", "padStart"),
+            ("padend", "ecma:string", "padEnd"),
+            ("normalize", "ecma:string", "normalize"),
+            ("slice", "ecma:string", "slice"),
+            ("substr", "ecma:string", "substr"),
+            ("trimleft", "ecma:string", "trimStart"),
+            ("trimright", "ecma:string", "trimEnd"),
+            ("localecompare", "ecma:string", "localeCompare"),
+            ("tolocalelowercase", "ecma:string", "toLowerCase"),
+            ("tolocaleuppercase", "ecma:string", "toUpperCase"),
+            // RegExp-driven String.prototype methods (§22.1.3.{11,13,14,17,18}).
+            ("match", "ecma:regexp", "match"),
+            ("matchall", "ecma:regexp", "matchAll"),
+            ("search", "ecma:regexp", "search"),
+            ("replaceall", "ecma:regexp", "replaceAll"),
         ] {
             if let Some(idx) = h(vm, module, fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -89,19 +111,19 @@ pub fn register_all(vm: &mut VM) {
         }
         for (method, module, fname) in &[
             ("add", "ecma:array", "push"),
-            ("remove", "vybe:types", "listRemove"),       // by-value; no ecma:array direct
-            ("removeat", "vybe:types", "listRemoveAt"),   // splice pattern; to migrate
+            ("remove", "ecma:array", "removeValue"),
+            ("removeat", "ecma:array", "removeAt"),
             ("contains", "ecma:array", "includes"),
             ("count", "ecma:array", "length"),
-            ("clear", "vybe:types", "listClear"),          // setLength(0) pattern; to migrate
+            ("clear", "ecma:array", "clear"),
             ("indexof", "ecma:array", "indexOf"),
             ("sort", "ecma:array", "sort"),
             ("reverse", "ecma:array", "reverse"),
             ("toarray", "ecma:array", "slice"),
             ("item", "ecma:array", "get"),
             ("lastindexof", "ecma:array", "lastIndexOf"),
-            ("insert", "vybe:types", "listInsert"),        // splice(idx, 0, v); to migrate
-            ("addrange", "vybe:types", "listAddRange"),    // in-place extend; concat returns new
+            ("insert", "ecma:array", "insertAt"),
+            ("addrange", "ecma:array", "concat"),
             ("capacity", "ecma:array", "length"),
             ("insertrange", "vybe:types", "listInsertRange"),
             ("removerange", "vybe:types", "listRemoveRange"),
@@ -114,7 +136,7 @@ pub fn register_all(vm: &mut VM) {
             ("enqueue", "ecma:array", "push"),
             ("trydequeue", "ecma:array", "shift"),
             ("trypop", "ecma:array", "pop"),
-            ("trypeek", "vybe:types", "listLast"),         // get(length-1); compound
+            ("trypeek", "ecma:array", "last"),
             // JS Array methods — direct pass-through.
             ("push", "ecma:array", "push"),
             ("pop", "ecma:array", "pop"),
@@ -147,51 +169,43 @@ pub fn register_all(vm: &mut VM) {
     let _ = vm.type_registry.register(TypeDef::new("ArrayList").with_parent(list_id));
     let _ = vm.type_registry.register(TypeDef::new("Array").with_parent(list_id));
 
-    // --- Dictionary ---
+    // --- Dictionary (.NET adapter for ECMA-262 §24.1 Map) ---
     //
-    // Phase 7b: Dictionary is a plain JS Object per ECMA-262 §19.1 —
-    // `Dictionary<string, T>` is shape-identical to an object used as
-    // a string-keyed map. Methods route through `ecma:object/*`
-    // host fns (working directly on the object's own properties).
-    //
-    // Transition note: VB/C# `d.Count` is a property read (not a
-    // method call). The old `vybe:types/dictAdd` kept a `count` field
-    // on the dict updated on every write so `struct_get` returned a
-    // number; `ecma:object/length` is a callable returning a count
-    // when invoked. A later step will install `__get_count` auto-getters
-    // on construction so `d.Count` property reads auto-invoke the
-    // length call — until then, `.Count` reads expose the function
-    // value. Code using explicit `d.Count()` works today; bare `d.Count`
-    // is a pending follow-up. Known regression count tracked in the
-    // phase notes.
+    // The Dictionary TypeDef is the .NET adapter layer. Its underlying
+    // runtime shape is `ObjectKind::Map` (constructed by
+    // `ecma:map.new`). Each .NET method name (Add / Item / ContainsKey
+    // / Remove / Count / ...) is an alias that points at the
+    // corresponding `ecma:map.*` host fn — the same primitive JS
+    // `Map.prototype.*` calls. Adapter at the surface, ECMA underneath.
     let dict_id = {
         let mut t = TypeDef::new("Dictionary");
-        for (method, module, fname) in &[
-            ("add", "ecma:object", "set"),
-            ("item", "ecma:object", "get"),
-            // `hasOwn` (own-only, returns Value::Bool) is what VB/C#
-            // `ContainsKey` expects — string-coerces to "true"/"false".
-            // `has` would return I32 ("1"/"0") which breaks VB prints.
-            ("containskey", "ecma:object", "hasOwn"),
-            ("containsvalue", "ecma:object", "hasOwn"),
-            ("remove", "ecma:object", "delete"),
-            ("keys", "ecma:object", "keys"),
-            ("values", "ecma:object", "values"),
-            ("clear", "vybe:types", "dictClear"),
-            ("count", "ecma:object", "length"),
-            ("trygetvalue", "ecma:object", "get"),
-            ("tryadd", "ecma:object", "set"),
-            ("addorupdate", "ecma:object", "set"),
-            ("getoradd", "ecma:object", "get"),
+        for (method, fname) in &[
+            ("add",          "set"),     // Dictionary.Add(k, v)
+            ("item",         "get"),     // Dictionary.Item(k)
+            ("containskey",  "has"),     // Dictionary.ContainsKey(k)
+            ("remove",       "delete"),  // Dictionary.Remove(k)
+            ("keys",         "keys"),
+            ("values",       "values"),
+            ("clear",        "clear"),
+            ("count",        "size"),    // .NET .Count maps to ECMA size
+            ("trygetvalue",  "get"),     // 1-arg form (no `out` param)
+            // ConcurrentDictionary aliases — same shape, same primitives.
+            ("tryadd",       "set"),
+            ("addorupdate",  "set"),
+            ("getoradd",     "get"),
         ] {
-            if let Some(idx) = h(vm, module, fname) {
+            if let Some(idx) = h(vm, "ecma:map", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }
+        // ContainsValue has no ECMA-262 Map equivalent; .NET-only. TODO:
+        // stdlib bytecode adapter that walks values + uses array.includes.
         t.parent = Some(0);
         vm.type_registry.register(t)
     };
     let _ = vm.type_registry.register(TypeDef::new("Hashtable").with_parent(dict_id));
+    let _ = vm.type_registry.register(TypeDef::new("ConcurrentDictionary").with_parent(dict_id));
+    let _ = vm.type_registry.register(TypeDef::new("SortedList").with_parent(dict_id));
 
     // --- Queue ---
     //
@@ -201,16 +215,19 @@ pub fn register_all(vm: &mut VM) {
     // auto-getter installed by `vybe:types/queueNew`.
     {
         let mut t = TypeDef::new("Queue");
-        for (method, module, fname) in &[
-            ("enqueue", "ecma:array", "push"),
-            ("dequeue", "ecma:array", "shift"),
-            ("peek", "vybe:types", "queuePeek"),     // get(0); compound
-            ("count", "ecma:array", "length"),
-            ("clear", "vybe:types", "listClear"),    // setLength(0); to migrate
-            ("contains", "ecma:array", "includes"),
-            ("toarray", "ecma:array", "slice"),
+        // .NET Queue<T> is a JS Array used FIFO. Methods route to
+        // `ecma:array.*` directly; no `vybe:types` involvement.
+        // `peek` looks at the front (`first`), `clear` empties.
+        for (method, fname) in &[
+            ("enqueue",   "push"),
+            ("dequeue",   "shift"),
+            ("peek",      "first"),     // FIFO: front
+            ("count",     "length"),
+            ("clear",     "clear"),
+            ("contains",  "includes"),
+            ("toarray",   "slice"),
         ] {
-            if let Some(idx) = h(vm, module, fname) {
+            if let Some(idx) = h(vm, "ecma:array", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }
@@ -224,15 +241,19 @@ pub fn register_all(vm: &mut VM) {
     // `push` appends at the end, `Pop` → `pop` removes from the end.
     {
         let mut t = TypeDef::new("Stack");
-        for (method, module, fname) in &[
-            ("push", "ecma:array", "push"),
-            ("pop", "ecma:array", "pop"),
-            ("peek", "vybe:types", "stackPeek"),     // get(length-1); compound
-            ("count", "ecma:array", "length"),
-            ("clear", "vybe:types", "listClear"),
-            ("contains", "ecma:array", "includes"),
+        // .NET Stack<T> is a JS Array used LIFO. Methods route to
+        // `ecma:array.*` directly; no `vybe:types` involvement.
+        // `peek` looks at the end (`last`), `clear` empties.
+        for (method, fname) in &[
+            ("push",      "push"),
+            ("pop",       "pop"),
+            ("peek",      "last"),      // LIFO: top
+            ("count",     "length"),
+            ("clear",     "clear"),
+            ("contains",  "includes"),
+            ("toarray",   "slice"),
         ] {
-            if let Some(idx) = h(vm, module, fname) {
+            if let Some(idx) = h(vm, "ecma:array", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }
@@ -260,43 +281,13 @@ pub fn register_all(vm: &mut VM) {
         vm.type_registry.register(t);
     }
 
-    // --- StringBuilder ---
-    {
-        let mut t = TypeDef::new("StringBuilder");
-        for (method, fname) in &[
-            ("append", "sbAppend"), ("appendline", "sbAppendLine"), ("appendformat", "sbAppend"),
-            ("tostring", "sbToString"), ("clear", "sbClear"),
-            ("insert", "sbInsert"), ("replace", "sbReplace"),
-            ("chars", "sbToString"), ("equals", "sbToString"),
-            ("remove", "sbClear"), ("length", "sbToString"),
-            ("ensurecapacity", "sbToString"), ("capacity", "sbToString"),
-            ("copyto", "sbToString"), ("gettype", "sbToString"),
-        ] {
-            if let Some(idx) = h(vm, "vybe:types", fname) {
-                t.methods.insert(method.to_string(), Method::HostFn(idx));
-            }
-        }
-        t.parent = Some(0);
-        vm.type_registry.register(t);
-    }
-
-    // --- DateTime ---
-    {
-        let mut t = TypeDef::new("DateTime");
-        for (method, fname) in &[
-            ("adddays", "dateTimeAddDays"), ("addhours", "dateTimeAddHours"),
-            ("addminutes", "dateTimeAddMinutes"), ("addseconds", "dateTimeAddSeconds"),
-            ("addmonths", "dateTimeAddMonths"), ("addyears", "dateTimeAddYears"),
-            ("tostring", "dateTimeToString"), ("toshortdatestring", "dateTimeToShortDate"),
-            ("tolongdatestring", "dateTimeToString"),
-        ] {
-            if let Some(idx) = h(vm, "vybe:types", fname) {
-                t.methods.insert(method.to_string(), Method::HostFn(idx));
-            }
-        }
-        t.parent = Some(0);
-        vm.type_registry.register(t);
-    }
+    // StringBuilder + DateTime TypeDef registrations retired — both
+    // classes lower at compile time through the dotnet wrapper Component
+    // Model adapters (`stringbuilder_adapter`, `datetime_adapter`). The
+    // `vybe:types/sb*` and `vybe:types/dateTime*` host fns these blocks
+    // queried no longer exist; the adapters compose `ecma:date.*`,
+    // `wasi:clocks/wall-clock.now`, and inline `Op::DYN_ADD` string
+    // mutation directly on the wrapper objects.
 
     // --- SqlConnection ---
     {
@@ -558,6 +549,40 @@ pub fn register_all(vm: &mut VM) {
         vm.type_registry.register(t);
     }
 
+    // --- WeakRef (ECMA-262 §26.1) ---
+    //
+    // Bound to `ecma:weakref.*`. Strong-ref MVP stand-in (WASM GC MVP
+    // doesn't expose weak refs); `deref()` always returns the target.
+    {
+        let mut t = TypeDef::new("WeakRef");
+        for (method, fname) in &[
+            ("deref", "deref"),
+        ] {
+            if let Some(idx) = h(vm, "ecma:weakref", fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+
+    // --- FinalizationRegistry (ECMA-262 §26.2) ---
+    //
+    // Bound to `ecma:finalization-registry.*`. Strong-ref backing means
+    // the cleanup callback never fires — API surface only.
+    {
+        let mut t = TypeDef::new("FinalizationRegistry");
+        for (method, fname) in &[
+            ("register", "register"), ("unregister", "unregister"),
+        ] {
+            if let Some(idx) = h(vm, "ecma:finalization-registry", fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+
     // --- RegExp (ECMA-262 §22.2) ---
     //
     // Bound to `ecma:regexp.*`. Backing object is a plain Object with
@@ -571,6 +596,36 @@ pub fn register_all(vm: &mut VM) {
         ] {
             if let Some(idx) = h(vm, "ecma:regexp", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+
+    // --- Date (ECMA-262 §21.4) ---
+    //
+    // Backing object is a plain Object with `__time` (ms since epoch).
+    // Methods all read/write that property via `ecma:date.*`. The TypeDef
+    // entry here makes `d.getFullYear()` resolve through the vtable
+    // instead of falling through to instance-property lookup (which would
+    // miss because methods aren't stored on each Date instance).
+    // `resolve_method` lowercases lookups, so insert keys lowercased.
+    {
+        let mut t = TypeDef::new("Date");
+        for method in &[
+            "getFullYear", "getMonth", "getDate", "getDay",
+            "getHours", "getMinutes", "getSeconds", "getMilliseconds",
+            "getUTCFullYear", "getUTCMonth", "getUTCDate", "getUTCDay",
+            "getUTCHours", "getUTCMinutes", "getUTCSeconds", "getUTCMilliseconds",
+            "getTime", "getTimezoneOffset", "valueOf",
+            "setTime", "setFullYear", "setMonth", "setDate",
+            "setHours", "setMinutes", "setSeconds", "setMilliseconds",
+            "setUTCFullYear", "setUTCMonth", "setUTCDate",
+            "setUTCHours", "setUTCMinutes", "setUTCSeconds", "setUTCMilliseconds",
+            "toISOString", "toString", "toDateString", "toTimeString", "toJSON",
+        ] {
+            if let Some(idx) = h(vm, "ecma:date", method) {
+                t.methods.insert(method.to_lowercase(), Method::HostFn(idx));
             }
         }
         t.parent = Some(0);
@@ -728,12 +783,13 @@ pub fn register_all(vm: &mut VM) {
     }
 
     // --- Process ---
+    // .NET Process — methods (`Start`, `GetCurrentProcess`,
+    // `WaitForExit`) all lower at compile time via Component Model
+    // dispatch through `emitter::dotnet::core::process_adapter`. The
+    // TypeDef is empty and serves only as a runtime hint for
+    // `__type=Process` stamping.
     {
-        let mut t = TypeDef::new("Process");
-        if let Some(idx) = h(vm, "vybe:types", "processWaitForExit") {
-            t.methods.insert("waitforexit".into(), Method::HostFn(idx));
-        }
-        t.parent = Some(0);
+        let t = TypeDef::new("Process");
         vm.type_registry.register(t);
     }
 
@@ -798,16 +854,24 @@ pub fn register_all(vm: &mut VM) {
     // Register constructors for all types
     // ============================================================
     let ctor_mappings: &[(&str, &str, &str)] = &[
-        ("Dictionary", "vybe:types", "dictNew"),
-        ("Queue", "vybe:types", "queueNew"),
-        ("Stack", "vybe:types", "stackNew"),
-        ("HashSet", "vybe:types", "hashSetNew"),
-        ("StringBuilder", "vybe:types", "stringBuilderNew"),
-        ("DateTime", "vybe:types", "dateTimeNew"),
+        // Runtime-hint constructor dispatch (compilation-hints proposal)
+        // — fallback path when a type isn't statically known.
+        //
+        // Each .NET-shape collection points at its ECMA-262 primitive:
+        //   Dictionary / Hashtable     → ECMA Map (§24.1)
+        //   HashSet                     → ECMA Set (§24.2)
+        //   Queue / Stack / List / etc. → ECMA Array (§23.1) — built
+        //     by the compiler via `collections.new`/Op::ARRAY_NEW; no
+        //     runtime ctor host fn (the bare `new Queue()` syntax in
+        //     dynamic code paths is rare and routes through the dotnet
+        //     wrapper Component Model dispatch at compile time).
+        ("Dictionary", "ecma:map", "new"),
+        ("HashSet", "ecma:set", "new"),
         ("SqlConnection", "vybe:database", "connect"),
-        ("TcpClient", "dotnet:sockets", "tcpClientNew"),
-        ("TcpListener", "dotnet:sockets", "tcpListenerNew"),
-        ("UdpClient", "dotnet:sockets", "udpClientNew"),
+        // StringBuilder / DateTime / TcpClient / TcpListener / UdpClient /
+        // Queue / Stack ctor mappings retired — all lower at compile time
+        // through the dotnet wrapper Common emit path. Queue/Stack don't
+        // need a runtime ctor since they're plain Arrays.
         ("StreamReader", "dotnet:io", "streamReaderNew"),
         ("StreamWriter", "dotnet:io", "streamWriterNew"),
         ("Stopwatch", "wasi:clocks", "stopwatchNew"),
@@ -861,10 +925,18 @@ pub fn register_all(vm: &mut VM) {
     register_new_globals_types(vm);
 
     // ============================================================
+    // Register `__tid_<name>` globals for every built-in type. Built-ins
+    // have canonical names like "String", "Object", "List", "Dictionary"
+    // — we publish under BOTH the lowercased form (case-insensitive
+    // languages: VB/Pascal/COBOL/PHP) AND the source-case form
+    // (case-sensitive languages: JS/TS/Python/C#). Cross-language code
+    // can resolve built-in types regardless of how the caller wrote them.
     for typedef in &vm.type_registry.types {
-        let key = format!("__tid_{}", typedef.name.to_lowercase());
         if let Some(tid) = vm.type_registry.get_id(&typedef.name) {
-            vm.globals.insert(key, Value::I32(tid as i32));
+            let lower = format!("__tid_{}", typedef.name.to_lowercase());
+            vm.globals.insert(lower, Value::I32(tid as i32));
+            let preserved = format!("__tid_{}", typedef.name);
+            vm.globals.entry(preserved).or_insert(Value::I32(tid as i32));
         }
     }
 }
@@ -940,6 +1012,106 @@ fn register_new_globals_types(vm: &mut VM) {
         t.parent = Some(0);
         vm.type_registry.register(t);
     }
+
+    // --- WHATWG DOM types (web:dom-parser) -------------------------
+    // Method tables for `Document` / `Element` so spec-shaped calls
+    // (`elem.querySelector("...")`, `doc.getElementById("x")`,
+    // `elem.getAttribute("href")`) dispatch through the TypeRegistry
+    // vtable per Component Model resource semantics. Properties
+    // (`tagName`, `nodeType`, `childNodes`, …) are set directly on the
+    // node Object during parse and resolve via plain `Op::STRUCT_GET`
+    // — only the *computed* methods need vtable entries here.
+    // `TypeRegistry::resolve_method` lowercases the lookup key, so the
+    // method-table keys must be lowercase too. Names like `querySelector`
+    // here use the spec-cased form for documentation; the `to_lowercase`
+    // call materialises the storage key.
+    let element_id = {
+        let mut t = TypeDef::new("Element");
+        for (method, fname) in &[
+            // Read API
+            ("querySelector",         "querySelector"),
+            ("querySelectorAll",      "querySelectorAll"),
+            ("matches",               "matches"),
+            ("closest",               "closest"),
+            ("getAttribute",          "getAttribute"),
+            ("hasAttribute",          "hasAttribute"),
+            ("getElementsByTagName",  "getElementsByTagName"),
+            ("getElementsByClassName","getElementsByClassName"),
+            // Mutation API
+            ("setAttribute",          "setAttribute"),
+            ("removeAttribute",       "removeAttribute"),
+            ("appendChild",           "appendChild"),
+            ("removeChild",           "removeChild"),
+            ("insertBefore",          "insertBefore"),
+            ("replaceChild",          "replaceChild"),
+            ("cloneNode",             "cloneNode"),
+            // Namespace-aware (Phase 4)
+            ("getAttributeNS",        "getAttributeNS"),
+            ("hasAttributeNS",        "hasAttributeNS"),
+            ("setAttributeNS",        "setAttributeNS"),
+            ("removeAttributeNS",     "removeAttributeNS"),
+            ("getElementsByTagNameNS","getElementsByTagNameNS"),
+        ] {
+            if let Some(idx) = h(vm, "web:dom-parser", fname) {
+                t.methods.insert(method.to_lowercase(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t)
+    };
+    let document_id = {
+        let mut t = TypeDef::new("Document");
+        for (method, fname) in &[
+            // Read API
+            ("querySelector",         "querySelector"),
+            ("querySelectorAll",      "querySelectorAll"),
+            ("getElementById",        "getElementById"),
+            ("getElementsByTagName",  "getElementsByTagName"),
+            ("getElementsByClassName","getElementsByClassName"),
+            // Mutation factories
+            ("createElement",         "createElement"),
+            ("createElementNS",       "createElementNS"),
+            ("createTextNode",        "createTextNode"),
+            ("createComment",         "createComment"),
+            ("createDocumentFragment","createDocumentFragment"),
+            ("appendChild",           "appendChild"),
+            ("removeChild",           "removeChild"),
+            ("insertBefore",          "insertBefore"),
+            ("replaceChild",          "replaceChild"),
+            ("cloneNode",             "cloneNode"),
+            ("getElementsByTagNameNS","getElementsByTagNameNS"),
+        ] {
+            if let Some(idx) = h(vm, "web:dom-parser", fname) {
+                t.methods.insert(method.to_lowercase(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t)
+    };
+    // Bare placeholder TypeDefs for the other DOM node kinds — no
+    // method-table entries today (spec methods like
+    // `Text.splitText(offset)` arrive in Phase 3 mutation work).
+    let text_id = vm.type_registry.register(TypeDef::new("Text"));
+    let comment_id = vm.type_registry.register(TypeDef::new("Comment"));
+    let cdata_id = vm.type_registry.register(TypeDef::new("CDATASection"));
+    let pi_id = vm.type_registry.register(TypeDef::new("ProcessingInstruction"));
+    let attr_id = vm.type_registry.register(TypeDef::new("Attr"));
+    let _ = vm.type_registry.register(TypeDef::new("DOMParser"));
+    let _ = vm.type_registry.register(TypeDef::new("XMLSerializer"));
+    let nnm_id = vm.type_registry.register(TypeDef::new("NamedNodeMap"));
+
+    // Hand the IDs to `web::dom_parser` so the parser stamps each
+    // constructed node's `Object::type_id` for vtable dispatch.
+    crate::web::dom_parser::set_dom_type_ids(crate::web::dom_parser::DomTypeIds {
+        document: document_id as usize,
+        element: element_id as usize,
+        text: text_id as usize,
+        cdata: cdata_id as usize,
+        comment: comment_id as usize,
+        processing_instruction: pi_id as usize,
+        attr: attr_id as usize,
+        named_node_map: nnm_id as usize,
+    });
 }
 
 fn register_enums(vm: &mut VM) {
@@ -1018,21 +1190,44 @@ fn register_enums(vm: &mut VM) {
     // --- Exception types (cross-language: Python/JS/VB/C#/Dart) ---
     // Register base Exception type and common subtypes.
     // These enable `ref_test` and typed catch across all languages.
+    //
+    // Hierarchy:
+    //   Exception (root)
+    //     Error (JS)
+    //       TypeError, RangeError, SyntaxError, ReferenceError, URIError
+    //     ValueError, KeyError, ... (Python/.NET — direct under Exception)
     let exc_base = vm.type_registry.register(TypeDef::new("Exception"));
-    let exc_types = [
-        "ValueError", "TypeError", "KeyError", "IndexError",
+    let mut error_td = TypeDef::new("Error");
+    error_td.parent = Some(exc_base);
+    error_td.add_field("message");
+    error_td.add_field("name");
+    let error_id = vm.type_registry.register(error_td);
+
+    let exc_types_under_exception = [
+        "ValueError", "KeyError", "IndexError",
         "RuntimeError", "StopIteration", "AttributeError",
         "ZeroDivisionError", "FileNotFoundError", "ImportError",
         "NotImplementedError", "OverflowError", "IOError", "OSError",
         // .NET exception types
         "ArgumentException", "ArgumentNullException", "InvalidOperationException",
         "NullReferenceException", "FormatException", "StackOverflowException",
-        // JS error types
-        "Error", "RangeError", "SyntaxError", "ReferenceError", "URIError",
     ];
-    for name in &exc_types {
+    for name in &exc_types_under_exception {
         let mut td = TypeDef::new(name);
         td.parent = Some(exc_base);
+        td.add_field("message");
+        td.add_field("name");
+        vm.type_registry.register(td);
+    }
+
+    // JS error subtypes — inherit from Error (per ECMA-262 §20.5.5).
+    // TypeError is also used by Python for type errors; keep it under
+    // Error so JS `instanceof Error` works while still being catchable
+    // as Exception (Error's parent) in cross-language code.
+    let js_error_types = ["TypeError", "RangeError", "SyntaxError", "ReferenceError", "URIError"];
+    for name in &js_error_types {
+        let mut td = TypeDef::new(name);
+        td.parent = Some(error_id);
         td.add_field("message");
         td.add_field("name");
         vm.type_registry.register(td);

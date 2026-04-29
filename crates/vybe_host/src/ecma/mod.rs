@@ -42,6 +42,7 @@ pub mod string;         // §22.1  String + String.prototype
 pub mod symbol;         // §20.4  Symbol + well-knowns
 pub mod typedarray;     // §23.2  TypedArray family
 pub mod weakmap;        // §24.3/§24.4  WeakMap + WeakSet (co-located)
+pub mod weakref;        // §26.1/§26.2  WeakRef + FinalizationRegistry (co-located)
 
 // ── JS-runtime helpers (not strictly ECMA-262) ───────────────────────
 pub mod fixedarray;     // V8-internal fixed-length array shape
@@ -78,6 +79,7 @@ pub fn register(vm: &mut VM) {
     symbol::register(vm);
     typedarray::register(vm);
     weakmap::register(vm);
+    weakref::register(vm);
     fixedarray::register(vm);
     structured_clone::register(vm);
     value::register(vm);

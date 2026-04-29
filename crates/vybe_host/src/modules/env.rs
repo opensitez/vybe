@@ -9,11 +9,8 @@ pub(crate) fn machine_name_value() -> Value {
     Value::String(Arc::from(name.as_str()))
 }
 
-pub fn register_dotnet_net(vm: &mut VM) {
-    vm.register_host_fn("dotnet:net", "dnsGetHostName", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-        machine_name_value()
-    }));
-}
+// `register_dotnet_net` retired — `Dns.GetHostName()` lowers to
+// `node:os.hostname()` via `emitter::dotnet::core::sockets_adapter`.
 
 pub fn register(vm: &mut VM) {
     // Get command line arguments as array of strings

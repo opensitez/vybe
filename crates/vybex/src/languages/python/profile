@@ -48,11 +48,11 @@ str             = { emit = "host:ecma:string:String",        min_args = 1, max_a
 bool            = { emit = "opcode:dyn_to_bool",            min_args = 1, max_args = 1 }
 chr             = { emit = "opcode:str_from_char_code",     min_args = 1, max_args = 1 }
 ord             = { emit = "intrinsic:asc",                  min_args = 1, max_args = 1 }
-hex             = { emit = "host:vybe:convert:toHex",       min_args = 1, max_args = 1 }
-oct             = { emit = "host:vybe:convert:toOct",       min_args = 1, max_args = 1 }
-bin             = { emit = "host:vybe:convert:toBin",       min_args = 1, max_args = 1 }
+hex             = { emit = "stdlib:pyhex",                  min_args = 1, max_args = 1 }
+oct             = { emit = "stdlib:pyoct",                  min_args = 1, max_args = 1 }
+bin             = { emit = "stdlib:pybin",                  min_args = 1, max_args = 1 }
 repr            = { emit = "host:ecma:string:String",        min_args = 1, max_args = 1 }
-bytes           = { emit = "host:vybe:convert:toBytes",     min_args = 0, max_args = 3 }
+bytes           = { emit = "stdlib:to_bytes",     min_args = 0, max_args = 3 }
 
 # ── Collections ──────────────────────────────────────────────────────────────
 
@@ -107,7 +107,7 @@ divmod          = { emit = "host:ecma:math:divmod",         min_args = 2, max_ar
 "math.lcm"      = { emit = "host:ecma:math:lcm",            min_args = 2, max_args = 2 }
 "math.factorial" = { emit = "host:ecma:math:factorial",     min_args = 1, max_args = 1 }
 "math.isnan"    = { emit = "host:ecma:number:isNaN",       min_args = 1, max_args = 1 }
-"math.isinf"    = { emit = "host:vybe:convert:isInfinite",  min_args = 1, max_args = 1 }
+"math.isinf"    = { emit = "stdlib:isinf",                  min_args = 1, max_args = 1 }
 "math.isfinite" = { emit = "host:ecma:number:isFinite",    min_args = 1, max_args = 1 }
 
 # ── Random module ────────────────────────────────────────────────────────────
@@ -123,22 +123,22 @@ divmod          = { emit = "host:ecma:math:divmod",         min_args = 2, max_ar
 
 # ── Type checking ────────────────────────────────────────────────────────────
 
-type            = { emit = "host:vybe:convert:typeof",       min_args = 1, max_args = 1 }
-isinstance      = { emit = "host:vybe:convert:instanceof",   min_args = 2, max_args = 2 }
-issubclass      = { emit = "host:vybe:convert:issubclass",   min_args = 2, max_args = 2 }
-callable        = { emit = "host:vybe:convert:isCallable",   min_args = 1, max_args = 1 }
+type            = { emit = "opcode:ref_typeof",              min_args = 1, max_args = 1 }
+isinstance      = { emit = "stdlib:instanceof",              min_args = 2, max_args = 2 }
+issubclass      = { emit = "stdlib:instanceof",              min_args = 2, max_args = 2 }
+callable        = { emit = "stdlib:callable",                min_args = 1, max_args = 1 }
 hasattr         = { emit = "host:ecma:object:hasOwn",        min_args = 2, max_args = 2 }
-getattr         = { emit = "host:vybe:object:getattr",       min_args = 2, max_args = 3 }
-setattr         = { emit = "host:vybe:object:setattr",       min_args = 3, max_args = 3 }
-delattr         = { emit = "host:vybe:object:delattr",       min_args = 2, max_args = 2 }
-id              = { emit = "host:vybe:convert:id",            min_args = 1, max_args = 1 }
-hash            = { emit = "host:vybe:convert:hash",          min_args = 1, max_args = 1 }
+getattr         = { emit = "host:ecma:object:get",          min_args = 2, max_args = 3 }
+setattr         = { emit = "host:ecma:object:set",          min_args = 3, max_args = 3 }
+delattr         = { emit = "host:ecma:object:delete",       min_args = 2, max_args = 2 }
+id              = { emit = "stdlib:id",            min_args = 1, max_args = 1 }
+hash            = { emit = "stdlib:hash",          min_args = 1, max_args = 1 }
 vars            = { emit = "host:ecma:object:keys",           min_args = 0, max_args = 1 }
 dir             = { emit = "host:ecma:object:keys",           min_args = 0, max_args = 1 }
 
 # ── String ───────────────────────────────────────────────────────────────────
 
-format          = { emit = "host:vybe:string:format",         min_args = 1, max_args = 255 }
+format          = { emit = "stdlib:sprintf",                  min_args = 1, max_args = 255 }
 
 # ── OS / File I/O ────────────────────────────────────────────────────────────
 
@@ -191,15 +191,15 @@ open            = { emit = "host:wasi:filesystem:open",       min_args = 1, max_
 # ── time module ──────────────────────────────────────────────────────────────
 
 "time.time"      = { emit = "host:wasi:clocks:now",           min_args = 0, max_args = 0 }
-"time.sleep"     = { emit = "host:vybe:runtime:sleep",        min_args = 1, max_args = 1 }
+"time.sleep"     = { emit = "host:wasi:clocks:sleep",         min_args = 1, max_args = 1 }
 
 # ── subprocess module ────────────────────────────────────────────────────────
 
-"subprocess.run"  = { emit = "host:vybe:types:processStart",  min_args = 1, max_args = 3 }
+"subprocess.run"  = { emit = "host:node:child_process:execSync", min_args = 1, max_args = 3 }
 
 # ── threading module ─────────────────────────────────────────────────────────
 
-"threading.Thread" = { emit = "host:vybe:thread:new",          min_args = 0, max_args = 2 }
+"threading.Thread" = { emit = "common:threading.task_run",     min_args = 0, max_args = 2 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # VALUE METHODS — instance .method() calls
@@ -231,14 +231,14 @@ center          = { emit = "intrinsic:center",         min_args = 1, max_args = 
 ljust           = { emit = "opcode:str_pad_end",              min_args = 1, max_args = 2 }
 rjust           = { emit = "opcode:str_pad_start",            min_args = 1, max_args = 2 }
 zfill           = { emit = "intrinsic:zfill",          min_args = 1, max_args = 1 }
-encode          = { emit = "host:vybe:convert:toBytes",       min_args = 0, max_args = 1 }
+encode          = { emit = "stdlib:to_bytes",       min_args = 0, max_args = 1 }
 isdigit         = { emit = "host:ecma:string:isdigit",        min_args = 0, max_args = 0 }
 isalpha         = { emit = "host:ecma:string:isalpha",        min_args = 0, max_args = 0 }
 isalnum         = { emit = "host:ecma:string:isalnum",        min_args = 0, max_args = 0 }
 isspace         = { emit = "host:ecma:string:isspace",        min_args = 0, max_args = 0 }
 isupper         = { emit = "host:ecma:string:isupper",        min_args = 0, max_args = 0 }
 islower         = { emit = "host:ecma:string:islower",        min_args = 0, max_args = 0 }
-format_map      = { emit = "host:vybe:string:format_map",     min_args = 1, max_args = 1 }
+format_map      = { emit = "stdlib:format_map",              min_args = 1, max_args = 1 }
 
 # List instance methods
 append          = { emit = "common:collections.push",         min_args = 1, max_args = 1 }
@@ -257,9 +257,9 @@ copy            = { emit = "host:ecma:array:slice",            min_args = 0, max
 keys            = { emit = "host:ecma:object:keys",        min_args = 0, max_args = 0 }
 values          = { emit = "host:ecma:object:values",      min_args = 0, max_args = 0 }
 items           = { emit = "host:ecma:object:entries",     min_args = 0, max_args = 0 }
-get             = { emit = "host:vybe:object:get",            min_args = 1, max_args = 2 }
+get             = { emit = "host:ecma:object:get",            min_args = 1, max_args = 2 }
 update          = { emit = "host:ecma:object:assign",         min_args = 1, max_args = 1 }
-setdefault      = { emit = "host:vybe:object:setdefault",     min_args = 1, max_args = 2 }
+setdefault      = { emit = "stdlib:setdefault",              min_args = 1, max_args = 2 }
 
 # Set instance methods
 add             = { emit = "common:collections.push",         min_args = 1, max_args = 1 }
@@ -323,10 +323,14 @@ kind = "namespace"
 alias = "json"
 module = "ecma:json"
 
+# Python `re` module → `ecma:regexp` (the spec-aligned ECMA-262 §22
+# RegExp surface). Pattern-first language idioms (`re.search(pat, s)`)
+# are bridged via stdlib adapter chunks; `re` namespace itself just
+# routes identifier lookup to `ecma:regexp`.
 [[esm_default]]
 kind = "namespace"
 alias = "re"
-module = "vybe:string"
+module = "ecma:regexp"
 
 [[esm_default]]
 kind = "namespace"

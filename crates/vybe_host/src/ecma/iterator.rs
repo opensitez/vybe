@@ -12,6 +12,7 @@
 //! once Symbol.iterator dispatch is wired through the VM.
 
 use std::sync::{Arc, Mutex};
+use crate::namespaces::receiver_host_fn_ref;
 use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::{Object, ObjectKind};
 
@@ -28,9 +29,7 @@ fn make_iterator(values: Vec<Value>) -> Value {
     obj.kind = ObjectKind::Array(values);
     if let Some(methods) = METHODS.get() {
         for (name, idx) in methods {
-            let mut method_obj = Object::new();
-            method_obj.kind = ObjectKind::HostFunction(*idx);
-            obj.properties.insert(name.clone(), Value::Object(Arc::new(Mutex::new(method_obj))));
+            obj.properties.insert(name.clone(), receiver_host_fn_ref("ecma:iterator", name, *idx));
         }
     }
     Value::Object(Arc::new(Mutex::new(obj)))

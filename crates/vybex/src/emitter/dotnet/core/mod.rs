@@ -3,6 +3,15 @@ pub mod component_classes;
 pub mod host_map;
 pub mod types;
 pub mod namespaces;
+pub mod sockets_adapter;
+pub mod stringbuilder_adapter;
+pub mod process_adapter;
+pub mod array_adapter;
+pub mod timespan_adapter;
+pub mod datetime_adapter;
+pub mod string_format_adapter;
+pub mod stream_io_adapter;
+pub mod format_picture_adapter;
 
 use vybe_bytecode::component_model::ComponentDescriptor;
 

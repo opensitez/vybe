@@ -9,4 +9,4 @@
 // Layer 3 rule: Node's idiom lives in JS, not Rust. This file IS that
 // layer.
 
-export { listen } from "vybe:http/server";
+export { listen } from "node:http";

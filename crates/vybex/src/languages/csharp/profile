@@ -79,8 +79,8 @@ multi_value_tuple_returns = true
 "Convert.ToDouble"   = { emit = "host:ecma:number:Number",         min_args = 1, max_args = 1 }
 "Convert.ToString"   = { emit = "stdlib:tostring",               min_args = 1, max_args = 1 }
 "Convert.ToBoolean"  = { emit = "opcode:dyn_to_bool",             min_args = 1, max_args = 1 }
-"Convert.ToChar"     = { emit = "host:vybe:convert:cchar",        min_args = 1, max_args = 1 }
-"Convert.ToByte"     = { emit = "host:vybe:convert:cbyte",        min_args = 1, max_args = 1 }
+"Convert.ToChar"     = { emit = "stdlib:cchar",                   min_args = 1, max_args = 1 }
+"Convert.ToByte"     = { emit = "intrinsic:cbyte",                min_args = 1, max_args = 1 }
 "Convert.ToInt64"    = { emit = "intrinsic:clng",         min_args = 1, max_args = 1 }
 "Convert.ToSingle"   = { emit = "host:ecma:number:Number",         min_args = 1, max_args = 1 }
 "Convert.ToDecimal"  = { emit = "host:ecma:number:Number",         min_args = 1, max_args = 1 }
@@ -96,7 +96,7 @@ multi_value_tuple_returns = true
 "String.Join"         = { emit = "common:collections.join",      min_args = 2, max_args = 2 }
 "String.IsNullOrEmpty" = { emit = "stdlib:string_is_null_or_empty", min_args = 1, max_args = 1 }
 "String.IsNullOrWhiteSpace" = { emit = "stdlib:string_is_null_or_whitespace", min_args = 1, max_args = 1 }
-"String.Format"       = { emit = "host:vybe:string:format",       min_args = 1, max_args = 255 }
+"String.Format"       = { emit = "common:dotnet.string_format",   min_args = 1, max_args = 255 }
 "String.Concat"       = { emit = "opcode:str_concat",             min_args = 2, max_args = 255 }
 "string.IsNullOrEmpty" = { emit = "stdlib:string_is_null_or_empty", min_args = 1, max_args = 1 }
 "string.IsNullOrWhiteSpace" = { emit = "stdlib:string_is_null_or_whitespace", min_args = 1, max_args = 1 }
@@ -121,7 +121,7 @@ multi_value_tuple_returns = true
 
 # ── Environment ──────────────────────────────────────────────────────────────
 
-"Environment.NewLine"          = { emit = "host:vybe:convert:newline",  min_args = 0, max_args = 0 }
+"Environment.NewLine"          = { emit = "stdlib:newline",             min_args = 0, max_args = 0 }
 "Environment.GetEnvironmentVariable" = { emit = "host:wasi:cli:getEnv", min_args = 1, max_args = 1 }
 
 # ── Threading ────────────────────────────────────────────────────────────────
@@ -186,22 +186,22 @@ join          = { emit = "common:collections.join",    min_args = 1, max_args = 
 Count         = { emit = "common:collections.length", min_args = 0, max_args = 0 }
 ToArray       = { emit = "noop",                       min_args = 0, max_args = 0 }
 ToList        = { emit = "noop",                       min_args = 0, max_args = 0 }
-GetType       = { emit = "host:vybe:convert:getType",  min_args = 0, max_args = 0 }
+GetType       = { emit = "opcode:ref_typeof",          min_args = 0, max_args = 0 }
 Equals        = { emit = "opcode:dyn_eq",              min_args = 1, max_args = 1 }
 
 # LINQ methods — removed (use [array_methods] below for HOFs)
 
 # Dictionary methods
-ContainsKey   = { emit = "host:vybe:runtime:callMethod", min_args = 1, max_args = 1 }
-ContainsValue = { emit = "host:vybe:runtime:callMethod", min_args = 1, max_args = 1 }
-TryGetValue   = { emit = "host:vybe:runtime:callMethod", min_args = 1, max_args = 2 }
+ContainsKey   = { emit = "common:dict.has",            min_args = 1, max_args = 1 }
+ContainsValue = { emit = "invoke:ContainsValue",        min_args = 1, max_args = 1 }
+TryGetValue   = { emit = "invoke:TryGetValue",          min_args = 1, max_args = 2 }
 
 # Queue/Stack methods
 Enqueue       = { emit = "common:collections.push",          min_args = 1, max_args = 1 }
 Dequeue       = { emit = "common:collections.shift",         min_args = 0, max_args = 0 }
 Push          = { emit = "common:collections.push",          min_args = 1, max_args = 1 }
 Pop           = { emit = "common:collections.pop",           min_args = 0, max_args = 0 }
-Peek          = { emit = "host:vybe:runtime:callMethod", min_args = 0, max_args = 0 }
+Peek          = { emit = "invoke:Peek",                 min_args = 0, max_args = 0 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # ESM DEFAULTS — C# namespace objects → host modules, ECMA-262 §16.2 shape
@@ -217,10 +217,11 @@ kind = "namespace"
 alias = "Math"
 module = "ecma:math"
 
-[[esm_default]]
-kind = "namespace"
-alias = "Convert"
-module = "vybe:convert"
+# `Convert` namespace alias retired — `Convert.To*` methods lower at
+# compile time through the dotnet wrapper Component Model dispatch.
+# The namespace object itself is still registered in
+# `vybe_host::namespaces::convert` (binding `ToInt32` → `ecma:number.parseInt`
+# etc.) for any dynamic identifier-resolution path.
 
 [[esm_default]]
 kind = "namespace"
@@ -277,19 +278,16 @@ module = "wasi:filesystem"
 # ────────────────────────────────────────────────────────────────────────────
 
 [known_types]
-# Exceptions
-"Exception"       = ["vybe:types", "exceptionNew"]
-"ArgumentException" = ["vybe:types", "exceptionNew"]
-"InvalidOperationException" = ["vybe:types", "exceptionNew"]
-"NotImplementedException" = ["vybe:types", "exceptionNew"]
-"NullReferenceException" = ["vybe:types", "exceptionNew"]
-"IndexOutOfRangeException" = ["vybe:types", "exceptionNew"]
-# Other types
-"StringBuilder"   = ["vybe:types", "stringBuilderNew"]
+# Constructor fallbacks for `new TypeName()` when the dotnet wrapper
+# Component Model adapter doesn't handle the type. Most .NET-shape
+# classes lower at compile time and bypass this table entirely.
+#
+# Retired entries:
+#   Exception family, StringBuilder, Timer — all routed through dotnet
+#   wrapper Common emit (no `vybe:types/{exception,sb,timer}New` host fns).
 "Regex"           = ["ecma:regexp", "new"]
 "Random"          = ["wasi:random/insecure", "get-insecure-random-u64"]
 "Stopwatch"       = ["wasi:clocks", "stopwatchNew"]
-"Timer"           = ["vybe:types", "timerNew"]
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACE CONSTANTS — property access, NOT function call

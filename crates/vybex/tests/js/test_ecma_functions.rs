@@ -44,7 +44,6 @@ console.log(obj.name);
     assert_eq!(out, vec!["Alice"]);
 }
 
-#[ignore]
 #[test]
 fn rest_params() {
     let out = run_js(r#"
@@ -60,7 +59,6 @@ console.log(sum(1, 2, 3, 4));
     assert_eq!(out, vec!["10"]);
 }
 
-#[ignore]
 #[test]
 fn rest_params_after_named() {
     let out = run_js(r#"

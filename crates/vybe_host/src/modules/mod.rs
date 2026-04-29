@@ -4,35 +4,44 @@
 //! following the WASI capability-based security model.
 //!
 //! Capabilities control which modules are available:
-//! - Safe (always on): math, string, array, convert, json, object, types, rt
-//! - Requires permission: fs, database, sockets, http, env, gui, crypto
+//! - Safe (always on): console, types, runtime, data, drawing
+//! - Requires permission: fs, database, sockets, http, env, gui, crypto, xml
 //! - Compiled-in (no host fns): threading — WASM threads proposal opcodes
 //!   (thread.spawn / thread.join / atomics) emitted by compiler_common.
 
 pub mod console;
-pub mod string;
 // `vybe:array` retired — every former caller now routes through
 // `ecma:array.*` (real ECMA-262 §23.1) or stdlib polyfills (`__vybe_*`
 // chunks via `BuiltinEmit::Stdlib`). The module file is gone.
-pub mod convert;
+// `vybe:string` retired — VB Left/Mid/InStr/Format and PHP increment
+// helpers now compile to `ecma:string.*` / direct opcodes / stdlib
+// polyfills.
+// `vybe:convert` retired — VB conversion semantics now compile to
+// `ecma:number` / `ecma:string` / direct opcodes.
+// `vybe:crypto` retired — md5/sha256 now flow through `web:crypto`
+// (WHATWG SubtleCrypto) registered via `crate::web::register`.
 pub mod fs;
 pub mod clock;
 pub mod env;
 pub mod random;
-pub mod http;
-pub mod object;
+// `vybe:http` (outbound HTTP client) moved to `crate::wasi::http` —
+// it registers `wasi:http/{get,post,fetch}`, the spec-aligned namespace.
+// `vybe:object` retired — `key in obj` flows through `ecma:object.hasOwn`
+// (compiler normalises arg order); `a instanceof B` flows through
+// `Op::REF_TEST` (WASM GC ref.test) for static type names + an inline
+// __type/name string-compare fallback for dynamic RHS.
 pub mod runtime;
 pub mod database;
 pub mod gui;
 pub mod types;
 pub mod sockets;
-pub mod crypto;
-pub mod xml;
+// `vybe:xml` retired — moved to `crate::web::dom_parser` exposing
+// `web:dom-parser` (the WHATWG DOM Parsing & Serialization namespace).
 pub mod data;
 pub mod drawing;
 pub mod canvas;
-pub mod rt;
-pub mod http_server;
+// `http_server` module retired — moved to `crate::node::http` (Node-aligned
+// `node:http` namespace). The `register` fn is reachable via that path.
 // Note: every `ecma:*` / `wasm:*` host module lives in the sibling
 // `crate::ecma` and `crate::wasm` folders (not under `modules/`). See
 // those `mod.rs` files for the full list. `register_with_capabilities`
@@ -86,6 +95,10 @@ pub enum Capability {
     /// potential — gated separately from FileWrite.
     Process,
 }
+// `vybe:rt` retired — all dyn_* / get_prop / set_prop / new_object / array_* / typeof /
+// global_get / struct_get_idx operations replaced by opcodes (Op::ADD, Op::STRUCT_GET,
+// Op::TYPEOF, etc.). The module was a WASM bridge for the tree-walking interpreter;
+// bytecode emits directly.
 
 impl Capabilities {
     /// Full access — all capabilities granted. For trusted CLI usage.
@@ -465,11 +478,8 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
     // via `crate::ecma::register`). Legacy `vybe:string` / `vybe:json`
     // / `vybe:object` / etc. still live under `modules/` until their
     // callers migrate to `ecma:*`.
-    string::register(vm);
-    convert::register(vm);
     // `vybe:json` retired — JSON.parse / JSON.stringify both flow through
     // `ecma:json` (registered via `crate::ecma::register` below).
-    object::register(vm);
     // `vybe:regex` retired — RegExp + String.prototype regex methods now
     // flow through `ecma:regexp` (registered via `crate::ecma::register`
     // below). Pattern-first language conventions (PHP preg_*, Python re.*,
@@ -483,7 +493,6 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
     types::register(vm);
     data::register(vm);
     drawing::register(vm);
-    rt::register(vm);
 
     // ecma:* — JS runtime (ECMA-262 mirror). All pure computation
     // except `ecma:date`, which is gated under Clock below.
@@ -527,20 +536,20 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
         // commands is a stronger capability than fs read/write.
         crate::node::child_process::register(vm);
     }
-    if caps.has(Capability::FileRead) || caps.has(Capability::FileWrite) || caps.has(Capability::Sockets) {
-        sockets::register_dotnet_io(vm);
-    }
+    // `dotnet:io` host fns retired — `StreamReader` / `StreamWriter` lower
+    // at compile time through `emitter::dotnet::core::stream_io_adapter`
+    // composing `node:fs.{read,write}FileSync`. No host module to register.
     if caps.has(Capability::Environment) {
         env::register(vm);
-        env::register_dotnet_net(vm);
     }
     if caps.has(Capability::Http) {
-        http::register(vm);
+        crate::wasi::http::register(vm);
     }
     if caps.has(Capability::Sockets) {
         sockets::register(vm);
-        sockets::register_dotnet_net(vm);
-        sockets::register_dotnet_sockets(vm);
+        // `register_dotnet_net` / `register_dotnet_sockets` retired —
+        // .NET Dns / TcpClient / TcpListener / UdpClient now lower to
+        // `wasi:sockets/*` via `emitter::dotnet::core::sockets_adapter`.
     }
     if caps.has(Capability::Database) {
         database::register(vm);
@@ -549,14 +558,18 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
     // join / atomics compile to WASM opcodes (Op::THREAD_SPAWN, etc.), and
     // Thread.Sleep uses wasi:clocks/sleep. The capability flag remains as a
     // gate for future wasi-threads primitives.
-    if caps.has(Capability::Crypto) {
-        crypto::register(vm);
-    }
-    if caps.has(Capability::Xml) {
-        xml::register(vm);
-    }
+    // `vybe:crypto` retired — md5/sha256 flow through `web:crypto`
+    // (registered unconditionally via `crate::web::register` above).
+    // The Crypto capability gate remains for future wasi:crypto/* primitives.
+    let _ = caps.has(Capability::Crypto);
+    // `Xml` capability now gates access to `web:dom-parser` (registered
+    // unconditionally via `crate::web::register` above). The flag stays
+    // for future wasi:xml-style proposals or capability-restricted
+    // sandboxes; today it's a no-op since DOM parsing is pure
+    // computation.
+    let _ = caps.has(Capability::Xml);
     if caps.has(Capability::HttpServer) {
-        http_server::register(vm);
+        crate::node::http::register(vm);
     }
 
     // Set up namespace objects, type registry

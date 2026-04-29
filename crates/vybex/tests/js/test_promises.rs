@@ -119,7 +119,7 @@ Promise.allSettled([
 // ASYNC/AWAIT WITH PROMISES
 // ===================================================================
 
-#[test] #[ignore] fn async_await_resolve() {
+#[test] fn async_await_resolve() {
     assert_eq!(run_js(r#"
 async function main() {
     let val = await Promise.resolve(42);
@@ -142,7 +142,7 @@ main();
 "#), &["caught: oops"]);
 }
 
-#[test] #[ignore] fn async_await_sequential() {
+#[test] fn async_await_sequential() {
     assert_eq!(run_js(r#"
 async function step(n) {
     return n * 2;
@@ -157,7 +157,7 @@ main();
 "#), &["8"]);
 }
 
-#[test] #[ignore] fn async_await_with_promise_all() {
+#[test] fn async_await_with_promise_all() {
     assert_eq!(run_js(r#"
 async function main() {
     let [a, b, c] = await Promise.all([

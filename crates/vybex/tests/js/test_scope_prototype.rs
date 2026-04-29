@@ -159,6 +159,38 @@ console.log(ws.has(obj));
 }
 
 // ===================================================================
+// WEAKREF (ECMA-262 §26.1) — strong-ref MVP stand-in, deref always
+// returns the wrapped target (WASM GC MVP doesn't expose weak refs).
+// ===================================================================
+
+#[test]
+fn weakref_deref_returns_target() {
+    assert_eq!(run_js(r#"
+let target = { id: 7 };
+let wr = new WeakRef(target);
+console.log(wr.deref().id);
+console.log(wr.deref() === target);
+"#), &["7", "true"]);
+}
+
+// ===================================================================
+// FINALIZATIONREGISTRY (ECMA-262 §26.2) — API surface only; the
+// cleanup callback never fires under the strong-ref model.
+// ===================================================================
+
+#[test]
+fn finalization_registry_register_unregister() {
+    assert_eq!(run_js(r#"
+let fr = new FinalizationRegistry(() => {});
+let token = {};
+let target = {};
+fr.register(target, "held", token);
+console.log(fr.unregister(token));
+console.log(fr.unregister(token));
+"#), &["true", "false"]);
+}
+
+// ===================================================================
 // PROXY BASICS
 // ===================================================================
 

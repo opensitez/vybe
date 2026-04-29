@@ -27,7 +27,7 @@
 
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::{VM, Value, HostContext};
-use vybe_bytecode::value::{Object, ObjectKind};
+use vybe_bytecode::value::ObjectKind;
 
 /// Resolve a typed-array argument to its backing buffer + offset metadata.
 /// Returns (buffer, byteOffset, elementByteLength) when valid.

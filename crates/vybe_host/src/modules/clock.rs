@@ -10,6 +10,35 @@ pub(crate) fn now_secs() -> u64 {
 }
 
 pub fn register(vm: &mut VM) {
+    // ── wasi:clocks/wall-clock — WASI 0.2.11 spec interface ─────────────
+    // The canonical WASI wall-clock primitive. Returns a `datetime` record
+    // `{ seconds: u64, nanoseconds: u32 }` per the .wit at
+    // proposals/WASI/proposals/clocks/wit/wall-clock.wit. This is the
+    // single source-of-truth timestamp; `ecma:date.now` reads through it.
+    vm.register_host_fn("wasi:clocks/wall-clock", "now", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+        let dur = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let mut rec = Object::new();
+        rec.properties.insert("seconds".into(), Value::F64(dur.as_secs() as f64));
+        rec.properties.insert("nanoseconds".into(), Value::F64(dur.subsec_nanos() as f64));
+        Value::Object(Arc::new(Mutex::new(rec)))
+    }));
+
+    // wasi:clocks/wall-clock.resolution — clock tick resolution per spec.
+    // Most platforms report nanosecond resolution; we return 1ns.
+    vm.register_host_fn("wasi:clocks/wall-clock", "resolution", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+        let mut rec = Object::new();
+        rec.properties.insert("seconds".into(), Value::F64(0.0));
+        rec.properties.insert("nanoseconds".into(), Value::F64(1.0));
+        Value::Object(Arc::new(Mutex::new(rec)))
+    }));
+
+    // ── Legacy flat `wasi:clocks` namespace ─────────────────────────────
+    // Pre-spec shape kept for backward compat with existing callers
+    // (sleep, hrtime, stopwatch). New code should target
+    // `wasi:clocks/wall-clock` / `wasi:clocks/monotonic-clock` per spec.
+
     // Returns milliseconds since Unix epoch (like JS Date.now())
     vm.register_host_fn("wasi:clocks", "now", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         let ms = std::time::SystemTime::now()
@@ -34,6 +63,12 @@ pub fn register(vm: &mut VM) {
         std::thread::sleep(std::time::Duration::from_millis(ms));
         Value::Null
     }));
+
+    // `taskDelay` retired — `Task.Delay(ms)` compiles to
+    // `Op::THREAD_SPAWN` of a worker that calls `wasi:clocks/sleep(ms)`
+    // (see emitter::threading::emit_task_delay). The Task object is
+    // built by the VM's native THREAD_SPAWN handler. Pure WASM, zero
+    // host fns.
 
     vm.register_host_fn("wasi:clocks", "stopwatchStart", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         if let Some(Value::Object(obj)) = args.first() {

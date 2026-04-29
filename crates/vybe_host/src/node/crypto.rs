@@ -2,8 +2,8 @@
 //!
 //! Reference: <https://nodejs.org/api/crypto.html>.
 //!
-//! Phase 1 surface: convenience hash functions backed by the audited
-//! RustCrypto helpers in [`crate::modules::crypto`]. Real Node uses
+//! Phase 1 surface: convenience hash functions backed by the
+//! `wasi:crypto/hashes` shim in [`crate::wasi::crypto`]. Real Node uses
 //! a streaming `crypto.createHash('algo').update(data).digest('hex')`
 //! shape — the streaming form is deferred until a Hash object class
 //! lands.
@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use vybe_bytecode::{VM, Value};
 
-use crate::modules::crypto::{md5_hex, sha256_hex};
+use crate::wasi::crypto::{md5_hex, sha256_hex};
 
 pub fn register(vm: &mut VM) {
     // Vybe-shorthand `sha256(data)` / `md5(data)` — convenience top-

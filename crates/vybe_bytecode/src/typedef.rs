@@ -213,9 +213,14 @@ impl TypeRegistry {
         id
     }
 
-    /// Get type_id by name (case-insensitive).
+    /// Get type_id by name. The lookup is exact-match: callers (compilers
+    /// and the WASM GC `ref.test` opcode) are responsible for passing the
+    /// already-canonicalised name (lowercased for VB/Pascal/COBOL/PHP,
+    /// case-preserved for JS/TS/Python/C#). Forced-lowercase here would
+    /// silently collide distinct types in case-sensitive languages
+    /// (`class B {}` vs `class b {}` becoming the same id).
     pub fn get_id(&self, name: &str) -> Option<usize> {
-        self.name_map.get(&name.to_lowercase()).copied()
+        self.name_map.get(name).copied()
     }
 
     /// Get a type definition by id.

@@ -13,12 +13,19 @@
 //!                          `Headers`)
 //! - `web:timers`         — HTML Timers (`setTimeout`, `clearTimeout`,
 //!                          `setInterval`, `clearInterval`)
+//! - `web:dom-parser`     — WHATWG DOM Parsing and Serialization
+//!                          (`DOMParser.parseFromString`,
+//!                          `XMLSerializer.serializeToString`) —
+//!                          currently exposed as the flat 3-fn surface
+//!                          `parse(s)` / `load(url)` / `toString(node)`
+//!                          pending full Document/Element resource types.
 
 pub mod crypto;
 pub mod url;
 pub mod encoding;
 pub mod fetch;
 pub mod timers;
+pub mod dom_parser;
 
 use vybe_bytecode::VM;
 
@@ -28,4 +35,5 @@ pub fn register(vm: &mut VM) {
     encoding::register(vm);
     fetch::register(vm);
     timers::register(vm);
+    dom_parser::register(vm);
 }

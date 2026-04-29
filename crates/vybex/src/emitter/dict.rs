@@ -367,31 +367,51 @@ pub fn emit_items_from_local(chunks: &mut [Chunk], current: usize, dict_slot: u1
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
-// ── Stack-based (host-call fallback for code without local slots) ────────
+// ── Stack-based (polymorphic dispatch via spec-clean opcodes) ────────────
 
-/// Get dynamic key via host call (handles both __data and flat dicts).
-/// Stack before: [dict, key]  Stack after: [value_or_null]
+/// Get dynamic key. Stack: `[dict, key]` → `[value_or_undefined]`.
+///
+/// `Op::ARRAY_GET` is fully polymorphic — it dispatches per
+/// `ObjectKind` to the right backing (Map / Array / property-bag /
+/// `__getitem__` dunder) and matches `ecma:map.get` / `ecma:object.get`
+/// semantics depending on receiver shape.
 pub fn emit_get(chunks: &mut [Chunk], current: usize, line: u32) {
-    let get_fn = chunks[current].add_import("vybe:types", "dictItem");
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, get_fn, line);
-    chunks[current].emit(2, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
 }
 
-/// Set dynamic key via host call.
-/// Stack before: [dict, key, value]  Stack after: []
+/// Set dynamic key. Stack: `[dict, key, value]` → `[]`.
+///
+/// `Op::ARRAY_SET` mirrors `Op::ARRAY_GET`'s polymorphism — Map insert
+/// vs property-bag write vs `__setitem__` dunder. The opcode pushes
+/// the assigned value onto the stack; we drop it to satisfy the
+/// stack contract (no return).
 pub fn emit_set(chunks: &mut [Chunk], current: usize, line: u32) {
-    let set_fn = chunks[current].add_import("vybe:types", "dictAdd");
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, set_fn, line);
-    chunks[current].emit(3, line);
+    chunks[current].emit_op(Op::ARRAY_SET, line);
     chunks[current].emit_op(Op::DROP, line);
 }
 
-/// Get all keys — tries __keys array first, falls back to host dictKeys.
-/// Stack before: [dict]  Stack after: [array_of_keys]
+/// Collect all values. Stack: `[dict]` → `[array_of_values]`.
+///
+/// `ecma:object.entries(dict)` returns `[[k0,v0], [k1,v1], ...]`;
+/// stdlib chunk `__vybe_dict_values_from_entries` walks that array
+/// and projects out the v slot to give a values-only array. Works
+/// across Map, plain Object, and PHP-array (`__keys`-tracked) shapes
+/// because `entries` itself is polymorphic at the host fn level.
 pub fn emit_values(chunks: &mut [Chunk], current: usize, line: u32) {
-    let vals_fn = chunks[current].add_import("vybe:types", "dictValues");
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, vals_fn, line);
+    // [dict] → entries → [[k,v], ...]
+    let entries_fn = chunks[0].add_import("ecma:object", "entries");
+    chunks[current].emit_op_u16(Op::CALL_IMPORT, entries_fn, line);
     chunks[current].emit(1, line);
+
+    // [[k,v], ...] → call __vybe_dict_values_from_entries → [v0, v1, ...]
+    let global_name = chunks[current].add_constant(Value::String(Arc::from("__vybe_dict_values_from_entries")));
+    let entries_local = chunks[current].local_count;
+    chunks[current].local_count = entries_local + 1;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, entries_local, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::GLOBAL_GET, global_name, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, entries_local, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
 }
 
 /// Get all [key, value] pairs — `Object.entries(obj)` per ECMA-262

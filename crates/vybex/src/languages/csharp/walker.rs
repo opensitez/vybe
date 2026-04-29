@@ -247,6 +247,31 @@ fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
         for decl in &mut declarations {
             decl.type_hint = Some(type_hint.clone());
         }
+    } else {
+        // `var` type inference: `var x = new ClassName(...)` infers
+        // type=ClassName so Component Model instance-method dispatch
+        // (`x.Method(...)`) can resolve at compile time. Without this,
+        // typed-receiver dispatch falls through to runtime hint lookup
+        // via `__type` stamping — slower and weaker. Handles both
+        // bare names (`new Dictionary()`) and namespace-qualified
+        // names (`new System.Text.StringBuilder()`) — the last segment
+        // of the dotted class is the unqualified class name.
+        for decl in &mut declarations {
+            if decl.type_hint.is_none() {
+                if let Some(ref init) = decl.init {
+                    if let crate::ast::ExprKind::New { class, .. } = &init.kind {
+                        let inferred = match &class.kind {
+                            crate::ast::ExprKind::Ident(n) => Some(n.clone()),
+                            crate::ast::ExprKind::Member { field, .. } => Some(field.clone()),
+                            _ => None,
+                        };
+                        if let Some(name) = inferred {
+                            decl.type_hint = Some(name);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     Ok(StmtKind::VarDecl { declarations, kind: VarDeclKind::Let })

@@ -12,111 +12,107 @@ pub fn register(vm: &mut VM) {
 }
 
 fn register_datetime_ns(vm: &mut VM) {
-    // DateTime (direct)
-    let dt = ensure_namespace(vm, &["DateTime"]);
-    set_prop(&dt, "__get_now", host_fn_ref(vm, "vybe:types", "dateTimeNow"));
-    set_prop(&dt, "parse", host_fn_ref(vm, "vybe:types", "dateTimeParse"));
-    set_prop(&dt, "__get_today", host_fn_ref(vm, "vybe:types", "dateTimeNow"));
-
-    // System.DateTime
+    // DateTime / System.DateTime — `Now` / `UtcNow` / `Today` /
+    // `Parse` static-method dispatch handled at compile time through
+    // the dotnet wrapper Component Model adapter
+    // (`emitter::dotnet::core::datetime_adapter` over `ecma:date.*` /
+    // `wasi:clocks/wall-clock.now`). The namespace objects are still
+    // ensured so identifier resolution doesn't fail; `MaxValue` /
+    // `MinValue` constants stay as plain values.
+    ensure_namespace(vm, &["DateTime"]);
     let sys_dt = ensure_namespace(vm, &["System", "DateTime"]);
-    set_prop(&sys_dt, "__get_now", host_fn_ref(vm, "vybe:types", "dateTimeNow"));
-    set_prop(&sys_dt, "parse", host_fn_ref(vm, "vybe:types", "dateTimeParse"));
-    set_prop(&sys_dt, "__get_today", host_fn_ref(vm, "vybe:types", "dateTimeNow"));
-    set_prop(&sys_dt, "__get_utcnow", host_fn_ref(vm, "vybe:types", "dateTimeUtcNow"));
     set_prop(&sys_dt, "maxvalue", Value::F64(253402300799.0)); // 9999-12-31
     set_prop(&sys_dt, "minvalue", Value::F64(0.0));
-    set_prop(&sys_dt, "daysinmonth", host_fn_ref(vm, "vybe:types", "dateTimeNow")); // placeholder
-    set_prop(&sys_dt, "isleapyear", host_fn_ref(vm, "vybe:types", "dateTimeNow")); // placeholder
 }
 
 fn register_stringbuilder_ns(vm: &mut VM) {
-    let sb = ensure_namespace(vm, &["System", "Text", "StringBuilder"]);
-    set_prop(&sb, "new", host_fn_ref(vm, "vybe:types", "stringBuilderNew"));
+    // `System.Text.StringBuilder` namespace ensured (so the
+    // identifier resolves) but the `.new` binding retired —
+    // `new StringBuilder()` lowers at compile time through the
+    // dotnet wrapper Component Model adapter
+    // (`emitter::dotnet::core::stringbuilder_adapter`). No host fn
+    // for the construction path.
+    ensure_namespace(vm, &["System", "Text", "StringBuilder"]);
 }
 
 fn register_collections_ns(vm: &mut VM) {
-    let coll = ensure_namespace(vm, &["System", "Collections", "Generic"]);
-
-    // Namespace paths
-    let queue_ns = ensure_namespace(vm, &["System", "Collections", "Generic", "Queue"]);
-    set_prop(&queue_ns, "new", host_fn_ref(vm, "vybe:types", "queueNew"));
-    let stack_ns = ensure_namespace(vm, &["System", "Collections", "Generic", "Stack"]);
-    set_prop(&stack_ns, "new", host_fn_ref(vm, "vybe:types", "stackNew"));
-    let hs_ns = ensure_namespace(vm, &["System", "Collections", "Generic", "HashSet"]);
-    set_prop(&hs_ns, "new", host_fn_ref(vm, "vybe:types", "hashSetNew"));
-    set_prop(&coll, "list", host_fn_ref(vm, "vybe:types", "listNew"));
-    set_prop(&coll, "dictionary", host_fn_ref(vm, "vybe:types", "dictNew"));
-
-    // Bare globals for `new List<T>()`, `new Dictionary<K,V>()`, etc.
-    vm.globals.insert("list".into(), host_fn_ref(vm, "vybe:types", "listNew"));
-    vm.globals.insert("dictionary".into(), host_fn_ref(vm, "vybe:types", "dictNew"));
-    vm.globals.insert("queue".into(), host_fn_ref(vm, "vybe:types", "queueNew"));
-    vm.globals.insert("stack".into(), host_fn_ref(vm, "vybe:types", "stackNew"));
-    vm.globals.insert("hashset".into(), host_fn_ref(vm, "vybe:types", "hashSetNew"));
-    vm.globals.insert("arraylist".into(), host_fn_ref(vm, "vybe:types", "listNew"));
-    vm.globals.insert("hashtable".into(), host_fn_ref(vm, "vybe:types", "dictNew"));
-    vm.globals.insert("stringbuilder".into(), host_fn_ref(vm, "vybe:types", "stringBuilderNew"));
+    // System.Collections.Generic — Queue / Stack / HashSet / List /
+    // Dictionary constructors all dispatch at compile time through
+    // the dotnet wrapper Component Model. The namespace bindings +
+    // bare globals retired here pointed at `vybe:types/*New` host
+    // fns that are no longer needed (the dotnet adapter routes to
+    // `collections.new` / `ecma:map.new` / `ecma:set.new` directly
+    // and stamps `__type` via `__stamp_type`). Namespace objects are
+    // still ensured so identifier resolution doesn't fail.
+    ensure_namespace(vm, &["System", "Collections", "Generic"]);
+    ensure_namespace(vm, &["System", "Collections", "Generic", "Queue"]);
+    ensure_namespace(vm, &["System", "Collections", "Generic", "Stack"]);
+    ensure_namespace(vm, &["System", "Collections", "Generic", "HashSet"]);
 }
 
 fn register_timespan_ns(vm: &mut VM) {
-    let ts = ensure_namespace(vm, &["TimeSpan"]);
-    set_prop(&ts, "fromdays", host_fn_ref(vm, "vybe:types", "timeSpanfromDays"));
-    set_prop(&ts, "fromhours", host_fn_ref(vm, "vybe:types", "timeSpanfromHours"));
-    set_prop(&ts, "fromminutes", host_fn_ref(vm, "vybe:types", "timeSpanfromMinutes"));
-    set_prop(&ts, "fromseconds", host_fn_ref(vm, "vybe:types", "timeSpanfromSeconds"));
-    set_prop(&ts, "frommilliseconds", host_fn_ref(vm, "vybe:types", "timeSpanfromMilliseconds"));
-    set_prop(&ts, "zero", host_fn_ref(vm, "vybe:types", "timeSpanZero"));
-
-    let sys_ts = ensure_namespace(vm, &["System", "TimeSpan"]);
-    set_prop(&sys_ts, "fromdays", host_fn_ref(vm, "vybe:types", "timeSpanfromDays"));
-    set_prop(&sys_ts, "fromhours", host_fn_ref(vm, "vybe:types", "timeSpanfromHours"));
-    set_prop(&sys_ts, "fromminutes", host_fn_ref(vm, "vybe:types", "timeSpanfromMinutes"));
-    set_prop(&sys_ts, "fromseconds", host_fn_ref(vm, "vybe:types", "timeSpanfromSeconds"));
-    set_prop(&sys_ts, "frommilliseconds", host_fn_ref(vm, "vybe:types", "timeSpanfromMilliseconds"));
-    set_prop(&sys_ts, "zero", host_fn_ref(vm, "vybe:types", "timeSpanZero"));
+    // TimeSpan / System.TimeSpan factory statics retired — all
+    // dispatch handled at compile time through
+    // `emitter::dotnet::core::timespan_adapter` (pure inline
+    // bytecode: unit-to-ms multiply + struct build). The namespace
+    // objects are still ensured so identifier resolution doesn't
+    // fail.
+    ensure_namespace(vm, &["TimeSpan"]);
+    ensure_namespace(vm, &["System", "TimeSpan"]);
 }
 
 fn register_guid_ns(vm: &mut VM) {
+    // .NET `Guid` maps to UUID v4 (RFC 4122). The spec primitive is
+    // `wasi:random/random.uuid()` — WASI-aligned and the closest
+    // upstream-spec match per the user's preference order
+    // (wasi:* > ecma:* > web:*). `Guid.Parse(s)` is a string
+    // passthrough — UUIDs are already strings in this representation.
     let empty_guid = Value::String(Arc::from("00000000-0000-0000-0000-000000000000"));
+    let parse_passthrough = host_fn_ref(vm, "ecma:string", "String");
+    let new_uuid = host_fn_ref(vm, "wasi:random/random", "uuid");
 
     let guid = ensure_namespace(vm, &["Guid"]);
-    set_prop(&guid, "newguid", host_fn_ref(vm, "vybe:types", "guidNewGuid"));
+    set_prop(&guid, "newguid", new_uuid.clone());
     set_prop(&guid, "empty", empty_guid.clone());
-    set_prop(&guid, "parse", host_fn_ref(vm, "vybe:types", "guidParse"));
+    set_prop(&guid, "parse", parse_passthrough.clone());
 
     let sys_guid = ensure_namespace(vm, &["System", "Guid"]);
-    set_prop(&sys_guid, "newguid", host_fn_ref(vm, "vybe:types", "guidNewGuid"));
+    set_prop(&sys_guid, "newguid", new_uuid);
     set_prop(&sys_guid, "empty", empty_guid);
-    set_prop(&sys_guid, "parse", host_fn_ref(vm, "vybe:types", "guidParse"));
+    set_prop(&sys_guid, "parse", parse_passthrough);
 }
 
 fn register_primitives_ns(vm: &mut VM) {
-    // Primitive type namespaces: int.Parse, string.IsNullOrEmpty, etc.
+    // Primitive type namespaces — VB/C# `int.Parse`, `string.Format`, etc.
+    // Bound to ECMA-262 host fns (`ecma:number.parseInt`, `ecma:string.*`).
+    // Language adapters in the emitter handle .NET-shape divergence
+    // (e.g. `string.IsNullOrEmpty(s)` ≡ `s == null || s.length === 0` —
+    // not a single ECMA call, but expressible as a stdlib adapter chunk
+    // in the language layer).
     let int_ns = ensure_namespace(vm, &["int"]);
-    set_prop(&int_ns, "parse", host_fn_ref(vm, "vybe:convert", "cint"));
-    set_prop(&int_ns, "tryparse", host_fn_ref(vm, "vybe:convert", "cint"));
+    set_prop(&int_ns, "parse", host_fn_ref(vm, "ecma:number", "parseInt"));
+    set_prop(&int_ns, "tryparse", host_fn_ref(vm, "ecma:number", "parseInt"));
     set_prop(&int_ns, "maxvalue", Value::F64(i32::MAX as f64));
     set_prop(&int_ns, "minvalue", Value::F64(i32::MIN as f64));
 
+    // `string.Format` / `string.IsNullOrEmpty` have no single ECMA call
+    // target — the bindings are dropped here. Language adapters compile
+    // them to inline expressions / stdlib polyfills.
     let string_ns = ensure_namespace(vm, &["string"]);
-    set_prop(&string_ns, "isnullorempty", host_fn_ref(vm, "vybe:string", "isNullOrEmpty"));
-    set_prop(&string_ns, "isnullorwhitespace", host_fn_ref(vm, "vybe:string", "isNullOrEmpty"));
-    set_prop(&string_ns, "join", host_fn_ref(vm, "vybe:string", "join"));
-    set_prop(&string_ns, "format", host_fn_ref(vm, "vybe:string", "format"));
+    set_prop(&string_ns, "join", host_fn_ref(vm, "ecma:array", "join"));
 
     let double_ns = ensure_namespace(vm, &["double"]);
-    set_prop(&double_ns, "parse", host_fn_ref(vm, "vybe:convert", "cdbl"));
+    set_prop(&double_ns, "parse", host_fn_ref(vm, "ecma:number", "parseFloat"));
     set_prop(&double_ns, "nan", Value::F64(f64::NAN));
     set_prop(&double_ns, "positiveinfinity", Value::F64(f64::INFINITY));
 
     let bool_ns = ensure_namespace(vm, &["bool"]);
-    set_prop(&bool_ns, "parse", host_fn_ref(vm, "vybe:convert", "cbool"));
+    set_prop(&bool_ns, "parse", host_fn_ref(vm, "ecma:boolean", "Boolean"));
 
     // System.Double
     let dbl = ensure_namespace(vm, &["System", "Double"]);
-    set_prop(&dbl, "parse", host_fn_ref(vm, "vybe:types", "doubleParse"));
-    set_prop(&dbl, "tryparse", host_fn_ref(vm, "vybe:types", "doubleTryParse"));
+    set_prop(&dbl, "parse", host_fn_ref(vm, "ecma:number", "parseFloat"));
+    set_prop(&dbl, "tryparse", host_fn_ref(vm, "ecma:number", "parseFloat"));
     set_prop(&dbl, "maxvalue", Value::F64(f64::MAX));
     set_prop(&dbl, "minvalue", Value::F64(f64::MIN));
     set_prop(&dbl, "nan", Value::F64(f64::NAN));
@@ -125,17 +121,17 @@ fn register_primitives_ns(vm: &mut VM) {
 
     // System.Single
     let sng = ensure_namespace(vm, &["System", "Single"]);
-    set_prop(&sng, "parse", host_fn_ref(vm, "vybe:types", "doubleParse"));
+    set_prop(&sng, "parse", host_fn_ref(vm, "ecma:number", "parseFloat"));
     set_prop(&sng, "maxvalue", Value::F64(f32::MAX as f64));
     set_prop(&sng, "minvalue", Value::F64(f32::MIN as f64));
 
     // System.Boolean
     let bln = ensure_namespace(vm, &["System", "Boolean"]);
-    set_prop(&bln, "parse", host_fn_ref(vm, "vybe:types", "booleanParse"));
+    set_prop(&bln, "parse", host_fn_ref(vm, "ecma:boolean", "Boolean"));
 
-    // System.Decimal (alias to Double for now)
+    // System.Decimal (no ECMA decimal type — alias to Number)
     let dec = ensure_namespace(vm, &["System", "Decimal"]);
-    set_prop(&dec, "parse", host_fn_ref(vm, "vybe:types", "doubleParse"));
+    set_prop(&dec, "parse", host_fn_ref(vm, "ecma:number", "parseFloat"));
 
     // System.DBNull
     let dbnull = ensure_namespace(vm, &["System", "DBNull"]);
@@ -147,21 +143,23 @@ fn register_primitives_ns(vm: &mut VM) {
 }
 
 fn register_process_ns(vm: &mut VM) {
-    let proc = ensure_namespace(vm, &["Process"]);
-    set_prop(&proc, "start", host_fn_ref(vm, "vybe:types", "processStart"));
-
-    let sys_proc = ensure_namespace(vm, &["System", "Diagnostics", "Process"]);
-    set_prop(&sys_proc, "start", host_fn_ref(vm, "vybe:types", "processStart"));
+    // Process / System.Diagnostics.Process namespace `start` bindings
+    // retired — handled at compile time by
+    // `emitter::dotnet::core::process_adapter`. Namespace objects are
+    // still ensured so identifier resolution doesn't fail.
+    ensure_namespace(vm, &["Process"]);
+    ensure_namespace(vm, &["System", "Diagnostics", "Process"]);
 }
 
 fn register_array_statics_ns(vm: &mut VM) {
-    let sys_arr = ensure_namespace(vm, &["System", "Array"]);
-    set_prop(&sys_arr, "clear", host_fn_ref(vm, "vybe:types", "arrayClear"));
-    set_prop(&sys_arr, "copy", host_fn_ref(vm, "vybe:types", "arrayCopy"));
-    set_prop(&sys_arr, "resize", host_fn_ref(vm, "vybe:types", "arrayResize"));
-    set_prop(&sys_arr, "sort", host_fn_ref(vm, "vybe:types", "arraySort"));
-    set_prop(&sys_arr, "reverse", host_fn_ref(vm, "ecma:array", "reverse"));
-    set_prop(&sys_arr, "indexof", host_fn_ref(vm, "ecma:array", "indexOf"));
+    // System.Array static methods retired from this namespace
+    // setup — `Array.Clear/Copy/Resize/Sort/Reverse/IndexOf` lower
+    // at compile time through the dotnet wrapper Component Model
+    // adapter (`emitter::dotnet::core::array_adapter`) to bundled
+    // stdlib chunks that compose `ecma:array.*` primitives. The
+    // namespace object itself is still ensured so identifier
+    // resolution doesn't fail.
+    ensure_namespace(vm, &["System", "Array"]);
 
     // System.Tuple
     let tuple = ensure_namespace(vm, &["System", "Tuple"]);

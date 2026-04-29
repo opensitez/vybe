@@ -54,7 +54,12 @@ pub fn namespace_to_host_module(prefix: &str) -> Option<&'static str> {
         // explicit adapter entries.
         "system.array" => Some("ecma:array"),
         "system.environment" => Some("wasi:cli"),
-        "system.io.streamreader" | "system.io.streamwriter" => Some("dotnet:io"),
+        // StreamReader / StreamWriter — retired from `dotnet:io` host
+        // namespace; lower at compile time through
+        // `emitter::dotnet::core::stream_io_adapter` (composes
+        // `node:fs.{read,write}FileSync`). The mapping returns None so
+        // FQN resolution falls through to the explicit class entries in
+        // `component_classes.rs`.
         "system.io" | "system.io.file" | "system.io.path" | "system.io.directory" => Some("wasi:filesystem"),
         "system.threading.thread" => Some("wasi:clocks"),
         // System.Threading / Tasks: spawn+join compile to Op::THREAD_SPAWN /

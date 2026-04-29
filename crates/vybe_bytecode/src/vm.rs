@@ -970,10 +970,13 @@ impl VM {
                     entry
                 }).collect();
                 self.type_registry.load_type_table(&adjusted_types);
-                // Set __tid_<name> globals for each registered type
+                // Set __tid_<name> globals for each registered type. The
+                // name is what the compiler canonicalised on registration —
+                // the constructor will look up the same `__tid_<canon>`
+                // global, so don't re-transform here.
                 for entry in &adjusted_types {
                     if let Some(tid) = self.type_registry.get_id(&entry.name) {
-                        let key = format!("__tid_{}", entry.name.to_lowercase());
+                        let key = format!("__tid_{}", entry.name);
                         self.globals.insert(key, Value::I32(tid as i32));
                     }
                 }

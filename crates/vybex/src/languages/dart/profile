@@ -111,7 +111,7 @@ toList        = { emit = "noop",                       min_args = 0, max_args = 
 toSet         = { emit = "host:ecma:set:fromIterable",  min_args = 0, max_args = 0 }
 
 # Map methods
-putIfAbsent   = { emit = "host:vybe:runtime:callMethod", min_args = 2, max_args = 2 }
+putIfAbsent   = { emit = "invoke:putIfAbsent",          min_args = 2, max_args = 2 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # ARRAY METHODS — higher-order functions routed to compiler_common::loops
@@ -175,20 +175,12 @@ kind = "namespace"
 alias = "Set"
 module = "ecma:set"
 
-[[esm_default]]
-kind = "namespace"
-alias = "DateTime"
-module = "vybe:types"
-
-[[esm_default]]
-kind = "namespace"
-alias = "StringBuffer"
-module = "vybe:types"
-
-[[esm_default]]
-kind = "namespace"
-alias = "Duration"
-module = "vybe:types"
+# DateTime / StringBuffer / Duration namespace aliases retired —
+# these Dart types are constructed via the dotnet wrapper Component
+# Model adapter (`new DateTime()` lowers through `datetime_adapter`,
+# `new StringBuffer()` through `stringbuilder_adapter`). Method
+# dispatch goes through the TypeRegistry vtable; no namespace
+# fallback is needed.
 
 # Random is resolved via known_types -> wasi:random/insecure. No namespace
 # indirection needed.
@@ -203,33 +195,29 @@ kind = "namespace"
 alias = "RegExp"
 module = "ecma:regexp"
 
-[[esm_default]]
-kind = "namespace"
-alias = "Future"
-module = "vybe:runtime"
-
-[[esm_default]]
-kind = "namespace"
-alias = "Stream"
-module = "vybe:runtime"
-
-[[esm_default]]
-kind = "namespace"
-alias = "Process"
-module = "vybe:types"
+# Future / Stream / Process namespace aliases retired:
+#   Future → JSPI promise (Op::PROMISE_*); no namespace object needed.
+#   Stream → `wasi:io/streams` proposal; constructed via stream adapters.
+#   Process → `node:child_process` (`spawnSync` / `execSync`); the
+#     dotnet wrapper Component Model handles `Process.Start` for typed
+#     receivers and lowers through `process_adapter`.
 
 # Dart Isolate spawning compiles to Op::THREAD_SPAWN (WASM threads
 # proposal) — no namespace object needed.
 
+# Dart `utf8` / `base64` from `dart:convert` map to WHATWG primitives:
+# `utf8` → TextEncoder/TextDecoder (`web:encoding`); `base64` → `btoa`/`atob`
+# (also in `web:encoding`). Method dispatch (`utf8.encode` etc.) lowers
+# through the dart adapter at compile time.
 [[esm_default]]
 kind = "namespace"
 alias = "utf8"
-module = "vybe:convert"
+module = "web:encoding"
 
 [[esm_default]]
 kind = "namespace"
 alias = "base64"
-module = "vybe:convert"
+module = "web:encoding"
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACE CONSTANTS
@@ -250,8 +238,8 @@ module = "vybe:convert"
 # ────────────────────────────────────────────────────────────────────────────
 
 [known_types]
-DateTime        = ["vybe:types", "dateTimeNew"]
-StringBuffer    = ["vybe:types", "stringBuilderNew"]
+# DateTime / StringBuffer retired — handled by the dotnet wrapper
+# Component Model at compile time (`datetime_adapter`, `stringbuilder_adapter`).
 Random          = ["wasi:random/insecure", "get-insecure-random-u64"]
 Stopwatch       = ["wasi:clocks", "stopwatchNew"]
 RegExp          = ["ecma:regexp", "new"]

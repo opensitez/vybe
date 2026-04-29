@@ -54,4 +54,38 @@ pub fn register(vm: &mut VM) {
     vm.globals.insert("setInterval".to_string(),   host_fn_ref(vm, "web:timers", "setInterval"));
     vm.globals.insert("clearInterval".to_string(), host_fn_ref(vm, "web:timers", "clearInterval"));
     vm.globals.insert("queueMicrotask".to_string(), host_fn_ref(vm, "web:timers", "queueMicrotask"));
+
+    // ── DOMParser / XMLSerializer (WHATWG DOM Parsing & Serialization) ──
+    // `new DOMParser()` ctor lowers via `known_types` to
+    // `web:dom-parser.parserNew`; static-like helpers live on the
+    // namespace object so `DOMParser.parseFromString(s)` works without
+    // an instance for languages that prefer flat dispatch.
+    let dom_parser = ensure_namespace(vm, &["DOMParser"]);
+    set_prop(&dom_parser, "parseFromString", host_fn_ref(vm, "web:dom-parser", "parseFromString"));
+    let xml_serializer = ensure_namespace(vm, &["XMLSerializer"]);
+    set_prop(&xml_serializer, "serializeToString", host_fn_ref(vm, "web:dom-parser", "serializeToString"));
+
+    // `xml` shorthand — Vybe-side convenience that mirrors what
+    // `import { parse } from "xml"` resolved to historically. Same fns
+    // as `web:dom-parser/*` so language profile entries that reference
+    // `xml.parse` / `xml.parseString` resolve at runtime even before
+    // dotted-name canonicalisation kicks in.
+    let xml = ensure_namespace(vm, &["xml"]);
+    set_prop(&xml, "parse",       host_fn_ref(vm, "web:dom-parser", "parse"));
+    set_prop(&xml, "parseString", host_fn_ref(vm, "web:dom-parser", "parse"));
+    set_prop(&xml, "load",        host_fn_ref(vm, "web:dom-parser", "load"));
+    set_prop(&xml, "toString",    host_fn_ref(vm, "web:dom-parser", "toString"));
+
+    // .NET-style aliases — VB / C# tests use `XDocument.Parse(s)` /
+    // `XmlDocument.LoadXml(s)`. The dotnet wrapper handles the typed
+    // case at compile time via component_classes, but the namespace
+    // objects themselves provide static-method dispatch for untyped
+    // identifier resolution.
+    let xdocument = ensure_namespace(vm, &["XDocument"]);
+    set_prop(&xdocument, "Parse",    host_fn_ref(vm, "web:dom-parser", "parse"));
+    set_prop(&xdocument, "Load",     host_fn_ref(vm, "web:dom-parser", "load"));
+
+    let xml_document = ensure_namespace(vm, &["XmlDocument"]);
+    set_prop(&xml_document, "LoadXml", host_fn_ref(vm, "web:dom-parser", "parse"));
+    set_prop(&xml_document, "Load",    host_fn_ref(vm, "web:dom-parser", "load"));
 }

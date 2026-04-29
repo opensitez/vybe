@@ -72,8 +72,14 @@ pub fn register(vm: &mut VM) {
     // `Symbol(description?)` — fresh unique symbol. Description is
     // stored in the Arc<str> contents so `toString()` round-trips.
     vm.register_host_fn("ecma:symbol", "Symbol", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let desc = args.first().map(|v| format!("{}", v)).unwrap_or_default();
-        Value::Symbol(Arc::from(format!("Symbol({})", desc).as_str()))
+        // Spec §20.4.1.1: store description verbatim. toString wraps it
+        // as `Symbol(<desc>)` per §20.4.3.3 — keeping the wrap there
+        // means Display and toString agree on a single representation.
+        let desc = args.first()
+            .filter(|v| !matches!(v, Value::Undefined))
+            .map(|v| format!("{}", v))
+            .unwrap_or_default();
+        Value::Symbol(Arc::from(desc.as_str()))
     }));
 
     // Symbol.for(key) — global registry lookup; creates if absent.

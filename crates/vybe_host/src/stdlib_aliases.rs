@@ -18,7 +18,8 @@
 
 pub const IMPORT_ALIASES: &[(&str, &str, &str)] = &[
     ("ecma:string",  "String",           "__vybe_tostring"),
-    ("vybe:string",  "count",            "__vybe_count"),
+    // `__vybe_count` (count substring occurrences) has no ECMA equivalent;
+    // the bundled stdlib polyfill keeps running, no host override.
     ("ecma:math",    "pow",              "__vybe_pow"),
     ("ecma:math",    "sin",              "__vybe_sin"),
     ("ecma:math",    "cos",              "__vybe_cos"),
@@ -45,19 +46,17 @@ pub const IMPORT_ALIASES: &[(&str, &str, &str)] = &[
     // a 1:1 spec match for the polyfill, so a host with native
     // toReversed can override the bytecode.
     ("ecma:array",   "toReversed",       "__vybe_reversed"),
-    ("vybe:convert", "isNumeric",        "__vybe_isnumeric"),
+    // `__vybe_isnumeric` has no ECMA single-call equivalent
+    // (`Number.isFinite(Number(s))` composes it). Polyfill keeps running.
     ("ecma:array",   "splice",           "__vybe_splice"),
     ("ecma:math",    "floor",            "__vybe_floor"),
     ("ecma:array",   "slice",            "__vybe_slice"),
     ("ecma:object",  "keys",             "__vybe_keys"),
-    // hasProperty stays under vybe:object — `vybe:object.hasProperty(key, obj)`
-    // takes (key, obj) per the compiled `key in obj` operator. ECMA's
-    // `Object.hasOwn(obj, key)` takes args in the opposite order, so a
-    // direct alias swap would silently mis-bind. Keeping the legacy name
-    // until callers are migrated to ecma:object.hasOwn directly.
-    ("vybe:object",  "hasProperty",      "__vybe_hasproperty"),
+    // `__vybe_hasproperty` retired — compiler normalises `key in obj`
+    // arg order upstream and emits `ecma:object.hasOwn(obj, key)` directly.
+    // `__vybe_instanceof` retired — `a instanceof TypeName` compiles to
+    // `Op::REF_TEST` (WASM GC ref.test) with the type name as a const.
     ("ecma:object",  "assign",           "__vybe_assign"),
-    ("vybe:object",  "instanceOf",       "__vybe_instanceof"),
     ("ecma:object",  "delete",           "__vybe_deleteproperty"),
     ("ecma:array",   "from",             "__vybe_from"),
     // (vybe:array.redim / vybe:array.sliceStep alias entries removed —

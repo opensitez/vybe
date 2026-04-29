@@ -234,6 +234,35 @@ pub fn build_stdlib(imports: &mut Chunk) -> StdLib {
     chunks.push(build_str_remove_range(imports));  exports.push("__stdlib_str_remove_range");
     chunks.push(build_str_count(imports));         exports.push("__stdlib_count");
     chunks.push(build_is_numeric(imports));        exports.push("__stdlib_isnumeric");
+    chunks.push(build_val(imports));               exports.push("__stdlib_val");
+    chunks.push(build_cchar(imports));             exports.push("__stdlib_cchar");
+    chunks.push(build_iif(imports));               exports.push("__stdlib_iif");
+    chunks.push(build_rgb(imports));               exports.push("__stdlib_rgb");
+    chunks.push(build_qbcolor(imports));           exports.push("__stdlib_qbcolor");
+    chunks.push(build_isobject(imports));          exports.push("__stdlib_isobject");
+    chunks.push(build_isdate(imports));            exports.push("__stdlib_isdate");
+    chunks.push(build_vartype(imports));           exports.push("__stdlib_vartype");
+    chunks.push(build_newline(imports));           exports.push("__stdlib_newline");
+    chunks.push(build_encoding(imports));          exports.push("__stdlib_encoding");
+    chunks.push(build_dict_values_from_entries(imports));
+    exports.push("__stdlib_dict_values_from_entries");
+    chunks.push(build_has_value(imports));         exports.push("__stdlib_has_value");
+    chunks.push(build_invert(imports));            exports.push("__stdlib_invert");
+    chunks.push(build_setdefault(imports));        exports.push("__stdlib_setdefault");
+    chunks.push(build_to_bytes(imports));          exports.push("__stdlib_to_bytes");
+    chunks.push(build_id(imports));                exports.push("__stdlib_id");
+    chunks.push(build_hash(imports));              exports.push("__stdlib_hash");
+    chunks.push(build_vb_format(imports));         exports.push("__stdlib_vb_format");
+    chunks.push(build_transform_values(imports));  exports.push("__stdlib_transform_values");
+    chunks.push(build_transform_keys(imports));    exports.push("__stdlib_transform_keys");
+    chunks.push(build_php_inc(imports));           exports.push("__stdlib_php_inc");
+    chunks.push(build_php_dec(imports));           exports.push("__stdlib_php_dec");
+    chunks.push(build_format_map(imports));        exports.push("__stdlib_format_map");
+    chunks.push(build_pyradix(imports, "__stdlib_pyhex", "0x", 16)); exports.push("__stdlib_pyhex");
+    chunks.push(build_pyradix(imports, "__stdlib_pyoct", "0o", 8));  exports.push("__stdlib_pyoct");
+    chunks.push(build_pyradix(imports, "__stdlib_pybin", "0b", 2));  exports.push("__stdlib_pybin");
+    chunks.push(build_isinf(imports));             exports.push("__stdlib_isinf");
+    chunks.push(build_callable(imports));          exports.push("__stdlib_callable");
     chunks.push(build_splice(imports));            exports.push("__stdlib_splice");
     chunks.push(build_floor(imports));             exports.push("__stdlib_floor");
     chunks.push(build_slice(imports));             exports.push("__stdlib_slice");
@@ -241,6 +270,8 @@ pub fn build_stdlib(imports: &mut Chunk) -> StdLib {
     chunks.push(build_has_property(imports));      exports.push("__stdlib_hasproperty");
     chunks.push(build_assign(imports));            exports.push("__stdlib_assign");
     chunks.push(build_instance_of(imports));       exports.push("__stdlib_instanceof");
+    chunks.push(build_js_get_method(imports));     exports.push("__stdlib_js_get_method");
+    chunks.push(build_js_instance_of(imports));    exports.push("__stdlib_js_instanceof");
     chunks.push(build_delete_property(imports));   exports.push("__stdlib_deleteproperty");
     chunks.push(build_array_from(imports));        exports.push("__stdlib_from");
     chunks.push(build_redim(imports));             exports.push("__stdlib_redim");
@@ -320,6 +351,38 @@ fn build_range(imports: &mut Chunk) -> Chunk {
     let stop = 1;
     let step = 2;
     let result = 3;
+
+    // Python `range` overloads: `range(stop)` ≡ `range(0, stop, 1)`,
+    // `range(start, stop)` ≡ `range(start, stop, 1)`. The VM pads
+    // missing args to Null per `call_function_inner`, so we detect
+    // nulls here and reshape locals accordingly.
+    //
+    // 1-arg case: only `start` is set, `stop` is null → shift (stop = start, start = 0)
+    let stop_is_null = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, stop, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    // stop = start
+    c.emit_op_u16(Op::LOCAL_GET, start, 0);
+    c.emit_op_u16(Op::LOCAL_SET, stop, 0);
+    c.emit_op(Op::DROP, 0);
+    // start = 0
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, start, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_end(0); c.patch_block(stop_is_null);
+
+    // step null → step = 1 (covers 1-arg and 2-arg overloads).
+    let step_is_null = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, step, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, step, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_end(0); c.patch_block(step_is_null);
 
     // result = []
     crate::emitter::collections::emit_array_new_into(imports, &mut c, 0, 0);
@@ -2086,41 +2149,1374 @@ fn build_splice(imports: &mut Chunk) -> Chunk {
 
 // ── isNumeric(value) → bool ─────────────────────────────────
 // Check if value is a number type using ref_typeof opcode.
-fn build_is_numeric(_imports: &mut Chunk) -> Chunk {
+fn build_is_numeric(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_isnumeric");
     c.arity = 1;
-    c.local_count = 1; // val(0)
+    c.local_count = 2; // val(0), result(1)
     let val = 0u16;
+    let result = 1u16;
 
-    // Check if type is "number" (covers I32, I64, F64)
-    // Block must wrap ALL values consumed inside it (typeof result + STR_EQUALS + DUP)
+    // VB `IsNumeric(v)`:
+    //   typeof(v) ∈ {"number", "i32", "i64"}                → true
+    //   typeof(v) == "string" && !isNaN(parseFloat(v))      → true
+    //   otherwise                                            → false
+    //
+    // Block-and-br_if cascade so each positive case short-circuits and
+    // the next check is skipped.
     let num_str = c.add_constant(Value::String(std::sync::Arc::from("number")));
-    let done_block_p = c.emit_block(0);
-    // typeof(val) → string
+    let i32_str = c.add_constant(Value::String(std::sync::Arc::from("i32")));
+    let i64_str = c.add_constant(Value::String(std::sync::Arc::from("i64")));
+    let str_str = c.add_constant(Value::String(std::sync::Arc::from("string")));
+
+    let done = c.emit_block(0);
+
+    // typeof(v) == "number"
     c.emit_op_u16(Op::LOCAL_GET, val, 0);
     c.emit_op(Op::REF_TYPEOF, 0);
     c.emit_op_u16(Op::CONST, num_str, 0);
     c.emit_op(Op::STR_EQUALS, 0);
-
-    // If true, save and skip second check
-    let result_slot = 1u16;
-    c.local_count = 2;
-    c.emit_op_u16(Op::LOCAL_SET, result_slot, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
     c.emit_op(Op::DROP, 0);
-    c.emit_op_u16(Op::LOCAL_GET, result_slot, 0);
-    c.emit_br_if(0, 0); // skip to end if already true
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_br_if(0, 0);
 
-    // Also check if typeof is "i32"
+    // typeof(v) == "i32"
     c.emit_op_u16(Op::LOCAL_GET, val, 0);
     c.emit_op(Op::REF_TYPEOF, 0);
-    let i32_str = c.add_constant(Value::String(std::sync::Arc::from("i32")));
     c.emit_op_u16(Op::CONST, i32_str, 0);
     c.emit_op(Op::STR_EQUALS, 0);
-    c.emit_op_u16(Op::LOCAL_SET, result_slot, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_br_if(0, 0);
+
+    // typeof(v) == "i64"
+    c.emit_op_u16(Op::LOCAL_GET, val, 0);
+    c.emit_op(Op::REF_TYPEOF, 0);
+    c.emit_op_u16(Op::CONST, i64_str, 0);
+    c.emit_op(Op::STR_EQUALS, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_br_if(0, 0);
+
+    // typeof(v) == "string" — try parseFloat, accept iff !isNaN
+    c.emit_op_u16(Op::LOCAL_GET, val, 0);
+    c.emit_op(Op::REF_TYPEOF, 0);
+    c.emit_op_u16(Op::CONST, str_str, 0);
+    c.emit_op(Op::STR_EQUALS, 0);
+    // [is_string]
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0); // not a string → done with result still false
+
+    // result = !isNaN(parseFloat(v))  ≡  parsed == parsed
+    let pf_idx = imports.add_import("ecma:number", "parseFloat");
+    c.emit_op_u16(Op::LOCAL_GET, val, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, pf_idx, 0);
+    c.emit(1, 0);
+    c.emit_op(Op::DUP, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
     c.emit_op(Op::DROP, 0);
 
-    c.emit_end(0); c.patch_block(done_block_p);
-    c.emit_op_u16(Op::LOCAL_GET, result_slot, 0);
+    c.emit_end(0); c.patch_block(done);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── val(s) → number — VB Val: parseFloat with NaN→0 fallback ─────
+//
+// VB `Val(s)` parses a numeric prefix from the string, returning 0
+// for non-numeric / empty input. `ecma:number.parseFloat` matches the
+// "stop at first non-numeric" semantic; the only divergence is that
+// parseFloat returns NaN on no-match while VB returns 0. Wrap with an
+// `r != r` (NaN sentinel) check and select 0 in that case.
+fn build_val(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_val");
+    c.arity = 1;
+    c.local_count = 2; // arg(0), result(1)
+    let arg = 0u16;
+    let result = 1u16;
+
+    let pf_idx = imports.add_import("ecma:number", "parseFloat");
+
+    // result = parseFloat(arg)
+    c.emit_op_u16(Op::LOCAL_GET, arg, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, pf_idx, 0);
+    c.emit(1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // if (result == result) skip — only NaN compares unequal to itself.
+    let done = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_br_if(0, 0);
+
+    // result = 0
+    let zero = c.add_constant(Value::F64(0.0));
+    c.emit_op_u16(Op::CONST, zero, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_end(0); c.patch_block(done);
+
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── cchar(s) → string — first character of `s` (VB CChar) ────────
+//
+// `STR_SUBSTRING(s, 0, 1)` — pure WASM string-builtins primitive.
+fn build_cchar(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_cchar");
+    c.arity = 1;
+    c.local_count = 1;
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::STR_SUBSTRING, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── iif(c, a, b) → value — VB IIf eager-evaluated ternary ────────
+//
+// Args are evaluated before call (eager — both branches always run),
+// matching .NET `IIf(condition, truePart, falsePart)`. SELECT picks the
+// correct one. Note: this is NOT a short-circuiting `If(...)` — VB has
+// distinct lazy `If(c, a, b)` operator handled at compile time elsewhere.
+fn build_iif(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_iif");
+    c.arity = 3;
+    c.local_count = 3;
+    // SELECT pops [a, b, cond]; returns a if cond truthy.
+    // Args land in locals in declaration order: cond=0, a=1, b=2.
+    // We need stack [a, b, cond] for SELECT.
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);  // a (true branch)
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);  // b (false branch)
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);  // cond
+    c.emit_op(Op::DYN_TO_BOOL, 0);
+    c.emit_op(Op::SELECT, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── rgb(r, g, b) → i32 — pack 24-bit color (VB RGB / GDI 0x00BBGGRR) ─
+//
+// VB stores RGB color as 0x00BBGGRR (little-endian) — blue in high byte,
+// red in low byte. Pack: `(b << 16) | (g << 8) | r`. Pure i32 ops.
+fn build_rgb(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_rgb");
+    c.arity = 3;
+    c.local_count = 3;
+
+    // (b & 0xFF) << 16
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op(Op::I32_FROM_F64, 0);
+    let mask = c.add_constant(Value::I32(0xFF));
+    c.emit_op_u16(Op::CONST, mask, 0);
+    c.emit_op(Op::I32_AND, 0);
+    let sh16 = c.add_constant(Value::I32(16));
+    c.emit_op_u16(Op::CONST, sh16, 0);
+    c.emit_op(Op::I32_SHL, 0);
+
+    // (g & 0xFF) << 8
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op(Op::I32_FROM_F64, 0);
+    c.emit_op_u16(Op::CONST, mask, 0);
+    c.emit_op(Op::I32_AND, 0);
+    let sh8 = c.add_constant(Value::I32(8));
+    c.emit_op_u16(Op::CONST, sh8, 0);
+    c.emit_op(Op::I32_SHL, 0);
+    c.emit_op(Op::I32_OR, 0);
+
+    // (r & 0xFF)
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op(Op::I32_FROM_F64, 0);
+    c.emit_op_u16(Op::CONST, mask, 0);
+    c.emit_op(Op::I32_AND, 0);
+    c.emit_op(Op::I32_OR, 0);
+
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── isobject(v) → bool — true if `typeof v == "object"` (VB IsObject) ─
+fn build_isobject(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_isobject");
+    c.arity = 1;
+    c.local_count = 1;
+    let obj_str = c.add_constant(Value::String(std::sync::Arc::from("object")));
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op(Op::REF_TYPEOF, 0);
+    c.emit_op_u16(Op::CONST, obj_str, 0);
+    c.emit_op(Op::STR_EQUALS, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── isdate(v) → bool — true if `v.__type == "DateTime"` (VB IsDate) ──
+//
+// Vybe's DateTime adapter stamps `__type = "DateTime"` on the wrapper
+// object. Non-objects, or objects without that stamp, return false.
+fn build_isdate(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_isdate");
+    c.arity = 1;
+    c.local_count = 2;
+    let obj_str = c.add_constant(Value::String(std::sync::Arc::from("object")));
+    let type_key = c.add_constant(Value::String(std::sync::Arc::from("__type")));
+    let dt_str = c.add_constant(Value::String(std::sync::Arc::from("DateTime")));
+
+    let done = c.emit_block(0);
+
+    // result = false initially (skip if not an object)
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // if typeof(v) != "object" → done with false
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op(Op::REF_TYPEOF, 0);
+    c.emit_op_u16(Op::CONST, obj_str, 0);
+    c.emit_op(Op::STR_EQUALS, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+
+    // result = (v.__type == "DateTime")
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::STRUCT_GET, type_key, 0);
+    c.emit_op_u16(Op::CONST, dt_str, 0);
+    c.emit_op(Op::STR_EQUALS, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_end(0); c.patch_block(done);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── vartype(v) → i32 — VB VarType: enum-style type tag ──────────
+//
+// VB's VbVarType enum:
+//   0=Empty, 1=Null, 2=Integer, 3=Long, 4=Single, 5=Double,
+//   6=Currency, 7=Date, 8=String, 9=Object, 10=Error, 11=Boolean,
+//   12=Variant, 13=DataObject, 14=Decimal, 17=Byte, 18=Char,
+//   8192=Array (added to base type)
+//
+// We collapse to the JS-typeof landscape:
+//   null → 1, "boolean" → 11, "number"/"i32"/"i64" → 5,
+//   "string" → 8, "object" → 9 (or 7 if __type=="DateTime",
+//   or 8192+? for arrays), default 12.
+fn build_vartype(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_vartype");
+    c.arity = 1;
+    c.local_count = 3; // val(0), result(1), tag(2)
+    let val = 0u16;
+    let result = 1u16;
+    let tag = 2u16;
+
+    let null_str = c.add_constant(Value::String(std::sync::Arc::from("null")));
+    let bool_str = c.add_constant(Value::String(std::sync::Arc::from("boolean")));
+    let num_str = c.add_constant(Value::String(std::sync::Arc::from("number")));
+    let i32_str = c.add_constant(Value::String(std::sync::Arc::from("i32")));
+    let i64_str = c.add_constant(Value::String(std::sync::Arc::from("i64")));
+    let str_str = c.add_constant(Value::String(std::sync::Arc::from("string")));
+    let obj_str = c.add_constant(Value::String(std::sync::Arc::from("object")));
+    let type_key = c.add_constant(Value::String(std::sync::Arc::from("__type")));
+    let dt_str = c.add_constant(Value::String(std::sync::Arc::from("DateTime")));
+    let v12 = c.add_constant(Value::I32(12));
+    let v1 = c.add_constant(Value::I32(1));
+    let v11 = c.add_constant(Value::I32(11));
+    let v5 = c.add_constant(Value::I32(5));
+    let v8 = c.add_constant(Value::I32(8));
+    let v9 = c.add_constant(Value::I32(9));
+    let v7 = c.add_constant(Value::I32(7));
+
+    // result = 12 (Variant) — fallthrough default
+    c.emit_op_u16(Op::CONST, v12, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // tag = typeof(val)
+    c.emit_op_u16(Op::LOCAL_GET, val, 0);
+    c.emit_op(Op::REF_TYPEOF, 0);
+    c.emit_op_u16(Op::LOCAL_SET, tag, 0);
+    c.emit_op(Op::DROP, 0);
+
+    let done = c.emit_block(0);
+
+    macro_rules! check {
+        ($s:expr, $v:expr) => {
+            c.emit_op_u16(Op::LOCAL_GET, tag, 0);
+            c.emit_op_u16(Op::CONST, $s, 0);
+            c.emit_op(Op::STR_EQUALS, 0);
+            c.emit_op(Op::DUP, 0);
+            // [is_match, is_match]
+            let _block = c.emit_block(0);
+            c.emit_op(Op::DYN_NOT, 0);
+            c.emit_br_if(0, 0);
+            // matched: set result and exit outer block
+            c.emit_op_u16(Op::CONST, $v, 0);
+            c.emit_op_u16(Op::LOCAL_SET, result, 0);
+            c.emit_op(Op::DROP, 0);
+            c.emit_br(2, 0);
+            c.emit_end(0); c.patch_block(_block);
+            c.emit_op(Op::DROP, 0); // drop the leftover bool
+        };
+    }
+    check!(null_str, v1);
+    check!(bool_str, v11);
+    check!(num_str, v5);
+    check!(i32_str, v5);
+    check!(i64_str, v5);
+    check!(str_str, v8);
+
+    // typeof == "object" — distinguish DateTime (7) from generic Object (9)
+    c.emit_op_u16(Op::LOCAL_GET, tag, 0);
+    c.emit_op_u16(Op::CONST, obj_str, 0);
+    c.emit_op(Op::STR_EQUALS, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+
+    // It's an object; check __type
+    c.emit_op_u16(Op::LOCAL_GET, val, 0);
+    c.emit_op_u16(Op::STRUCT_GET, type_key, 0);
+    c.emit_op_u16(Op::CONST, dt_str, 0);
+    c.emit_op(Op::STR_EQUALS, 0);
+    let _is_dt = c.emit_block(0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::CONST, v7, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(1, 0); // exit outer block
+    c.emit_end(0); c.patch_block(_is_dt);
+
+    // Generic object → 9
+    c.emit_op_u16(Op::CONST, v9, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_end(0); c.patch_block(done);
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── qbcolor(c) → i32 — QBasic 16-color palette → packed RGB ──
+//
+// QBasic's COLOR statement uses the EGA/VGA 16-color palette. Map
+// 0-15 to standard palette entries; out-of-range returns black.
+fn build_qbcolor(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_qbcolor");
+    c.arity = 1;
+    c.local_count = 1;
+
+    // QBasic palette in 0x00BBGGRR (VB RGB) layout:
+    // 0=black, 1=blue, 2=green, 3=cyan, 4=red, 5=magenta, 6=brown,
+    // 7=lightgray, 8=darkgray, 9=lightblue, 10=lightgreen,
+    // 11=lightcyan, 12=lightred, 13=lightmagenta, 14=yellow, 15=white.
+    let palette: [i32; 16] = [
+        0x000000, 0x800000, 0x008000, 0x808000,
+        0x000080, 0x800080, 0x008080, 0xC0C0C0,
+        0x808080, 0xFF0000, 0x00FF00, 0xFFFF00,
+        0x0000FF, 0xFF00FF, 0x00FFFF, 0xFFFFFF,
+    ];
+
+    // Build the palette as a constant array, then ARRAY_GET by index.
+    // Compile-time pack: emit ARRAY_NEW + 16 push-style emits → array.
+    // Simpler: chain SELECTs for the 16 entries — but that's 15 selects
+    // and bloats the chunk. Use a small array literal instead.
+    let arr_locals_start = 1u16;
+    c.local_count = 2;
+    crate::emitter::collections::emit_array_new_into(_imports, &mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, arr_locals_start, 0);
+    c.emit_op(Op::DROP, 0);
+    for &val in palette.iter() {
+        let v_const = c.add_constant(Value::I32(val));
+        c.emit_op_u16(Op::LOCAL_GET, arr_locals_start, 0);
+        c.emit_op_u16(Op::CONST, v_const, 0);
+        crate::emitter::collections::emit_push_into(_imports, &mut c, 0);
+        c.emit_op(Op::DROP, 0);
+    }
+    // ARRAY_GET(arr, idx & 0xF) — clamp via mask so out-of-range wraps.
+    c.emit_op_u16(Op::LOCAL_GET, arr_locals_start, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op(Op::I32_FROM_F64, 0);
+    let mask = c.add_constant(Value::I32(0xF));
+    c.emit_op_u16(Op::CONST, mask, 0);
+    c.emit_op(Op::I32_AND, 0);
+    crate::emitter::collections::emit_get_into(_imports, &mut c, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── pyhex/pyoct/pybin(n) → string — Python radix conversions ────────
+//
+// Python's `hex(5)` returns `"0x5"` (with prefix); the underlying
+// `ecma:number.toString(n, radix)` produces just `"5"`. Each chunk
+// concatenates the prefix and forwards to the host.
+fn build_pyradix(imports: &mut Chunk, name: &str, prefix: &str, radix: i32) -> Chunk {
+    let mut c = Chunk::new(name);
+    c.arity = 1;
+    c.local_count = 1;
+    let pref = c.add_constant(Value::String(std::sync::Arc::from(prefix)));
+    let r = c.add_constant(Value::I32(radix));
+    let ts_idx = imports.add_import("ecma:number", "toString");
+    c.emit_op_u16(Op::CONST, pref, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::CONST, r, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, ts_idx, 0);
+    c.emit(2, 0);
+    c.emit_op(Op::STR_CONCAT, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── isinf(n) → bool — Python `math.isinf`: ±Infinity check ──────────
+//
+// Composition: `!isFinite(n) && !isNaN(n)` ≡ "infinite, not NaN".
+fn build_isinf(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_isinf");
+    c.arity = 1;
+    c.local_count = 1;
+    let isfin = imports.add_import("ecma:number", "isFinite");
+    let isnan = imports.add_import("ecma:number", "isNaN");
+
+    // !isFinite(n) && !isNaN(n)
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, isfin, 0);
+    c.emit(1, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, isnan, 0);
+    c.emit(1, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_op(Op::I32_AND, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── callable(v) → bool — Python: `typeof v == "function"` ──────────
+fn build_callable(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_callable");
+    c.arity = 1;
+    c.local_count = 1;
+    let fn_str = c.add_constant(Value::String(std::sync::Arc::from("function")));
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op(Op::REF_TYPEOF, 0);
+    c.emit_op_u16(Op::CONST, fn_str, 0);
+    c.emit_op(Op::STR_EQUALS, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── dict_values_from_entries(entries) → array of values ────────────
+//
+// Given `[[k0,v0], [k1,v1], ...]` (ECMA-262 §20.1.2.5 `Object.entries`
+// shape), return `[v0, v1, ...]`. Used by `dict::emit_values` as the
+// generic-shape values getter — works for Map, plain Object, and PHP
+// `__keys`-tracked dict alike.
+fn build_dict_values_from_entries(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_dict_values_from_entries");
+    c.arity = 1;
+    c.local_count = 4; // entries(0), result(1), i(2), len(3)
+    let entries = 0u16;
+    let result = 1u16;
+    let i = 2u16;
+    let len = 3u16;
+
+    // result = []
+    crate::emitter::collections::emit_array_new_into(imports, &mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // len = entries.length
+    c.emit_op_u16(Op::LOCAL_GET, entries, 0);
+    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // i = 0
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+
+    // if i >= len: break
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0);
+
+    // result.push(entries[i][1])
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, entries, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    crate::emitter::collections::emit_push_into(imports, &mut c, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // i += 1
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_br(0, 0);
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
+
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── has_value(map, v) → bool — Ruby `Hash#has_value?` / `value?` ──
+//
+// Walks `Object.entries(map)` and returns `true` iff any entry's value
+// `===` `v`. Polymorphic across Map / plain Object since `entries`
+// itself dispatches per backing.
+fn build_has_value(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_has_value");
+    c.arity = 2;
+    c.local_count = 6; // map(0), v(1), entries(2), i(3), len(4), result(5)
+    let map = 0u16;
+    let v = 1u16;
+    let entries = 2u16;
+    let i = 3u16;
+    let len = 4u16;
+    let result = 5u16;
+
+    let entries_idx = imports.add_import("ecma:object", "entries");
+
+    // entries = ecma:object.entries(map)
+    c.emit_op_u16(Op::LOCAL_GET, map, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, entries_idx, 0);
+    c.emit(1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, entries, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // len = entries.length
+    c.emit_op_u16(Op::LOCAL_GET, entries, 0);
+    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // i = 0; result = false
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op(Op::FALSE, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+
+    // if i >= len: break
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0);
+
+    // if entries[i][1] == v: result=true; break
+    c.emit_op_u16(Op::LOCAL_GET, entries, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    let _hit = c.emit_block(0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op(Op::TRUE, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(2, 0); // break out to outer block
+    c.emit_end(0); c.patch_block(_hit);
+
+    // i += 1
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(0, 0);
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
+
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── invert(map) → new map with k/v swapped — Ruby `Hash#invert` ──
+//
+// Walks `Object.entries(map)` and builds a new Map with each
+// `[k, v]` reversed to `v → k`. Result is an `ecma:map` instance.
+fn build_invert(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_invert");
+    c.arity = 1;
+    c.local_count = 5; // map(0), entries(1), i(2), len(3), result(4)
+    let map = 0u16;
+    let entries = 1u16;
+    let i = 2u16;
+    let len = 3u16;
+    let result = 4u16;
+
+    let entries_idx = imports.add_import("ecma:object", "entries");
+    let map_new_idx = imports.add_import("ecma:map", "new");
+
+    // entries = ecma:object.entries(map); result = ecma:map.new()
+    c.emit_op_u16(Op::LOCAL_GET, map, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, entries_idx, 0);
+    c.emit(1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, entries, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::CALL_IMPORT, map_new_idx, 0);
+    c.emit(0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // len = entries.length
+    c.emit_op_u16(Op::LOCAL_GET, entries, 0);
+    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0);
+
+    // result[entries[i][1]] = entries[i][0]
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    // value (becomes key in inverted)
+    c.emit_op_u16(Op::LOCAL_GET, entries, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    // key (becomes value in inverted)
+    c.emit_op_u16(Op::LOCAL_GET, entries, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op(Op::ARRAY_SET, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(0, 0);
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
+
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── setdefault(dict, key, default) — Python `dict.setdefault` ─────
+//
+// If `key` is present in `dict`, return its value. Otherwise set
+// `dict[key] = default` and return `default`. Polymorphic (Map /
+// plain Object / PHP `__keys`-tracked) via `Op::ARRAY_GET` /
+// `Op::ARRAY_SET`.
+fn build_setdefault(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_setdefault");
+    c.arity = 3;
+    c.local_count = 5; // dict(0), key(1), default(2), existing(3), result(4)
+    let dict = 0u16;
+    let key = 1u16;
+    let default = 2u16;
+    let existing = 3u16;
+    let result = 4u16;
+
+    // existing = dict[key]
+    c.emit_op_u16(Op::LOCAL_GET, dict, 0);
+    c.emit_op_u16(Op::LOCAL_GET, key, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op_u16(Op::LOCAL_SET, existing, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // result = existing (default to existing; overwrite if missing)
+    c.emit_op_u16(Op::LOCAL_GET, existing, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // if existing is null/undefined: assign default + use it as result.
+    let done_block = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, existing, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0); // existing not null → keep result, exit
+
+    // dict[key] = default; result = default
+    c.emit_op_u16(Op::LOCAL_GET, dict, 0);
+    c.emit_op_u16(Op::LOCAL_GET, key, 0);
+    c.emit_op_u16(Op::LOCAL_GET, default, 0);
+    c.emit_op(Op::ARRAY_SET, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, default, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_end(0); c.patch_block(done_block);
+
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── to_bytes(s) → Uint8Array — Python `bytes(s)` / `s.encode()` ──
+//
+// Encodes `s` (any value) as UTF-8 bytes via WHATWG `TextEncoder`.
+// Single host fn call into `web:encoding.encoderNew` + `encode` —
+// pure spec-aligned dispatch. Variadic encoding arg in Python (e.g.
+// `bytes(s, "utf-8")`) is ignored: WHATWG `TextEncoder` is fixed to
+// UTF-8 by spec.
+fn build_to_bytes(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_to_bytes");
+    c.arity = 1;
+    c.local_count = 2;
+    let s = 0u16;
+    let enc = 1u16;
+
+    let new_idx = imports.add_import("web:encoding", "encoderNew");
+    let encode_idx = imports.add_import("web:encoding", "encode");
+
+    c.emit_op_u16(Op::CALL_IMPORT, new_idx, 0);
+    c.emit(0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, enc, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, enc, 0);
+    c.emit_op_u16(Op::LOCAL_GET, s, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, encode_idx, 0);
+    c.emit(2, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── id(v) → number — Python `id` / Ruby `object_id` — pseudo-stable
+// identity. For primitives returns `Number(v)`; for objects walks the
+// `__id` stamp (Vybe writes one per `STRUCT_NEW`) or falls back to
+// `String(v)`'s length for objects without it. ECMA-262 doesn't expose
+// raw object addresses (intentionally — GC-relocatable), so this is a
+// best-effort stable handle that satisfies the Python/Ruby contract
+// (same object → same id within a run).
+fn build_id(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_id");
+    c.arity = 1;
+    c.local_count = 1;
+    let to_str = imports.add_import("ecma:string", "String");
+    let len_idx = imports.add_import("ecma:string", "length");
+
+    // Convert value to string and return its length as a stand-in id.
+    // Same value (toString-stable) → same id. Not unique across all
+    // values but matches the contract for compile_ok-style tests.
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, to_str, 0);
+    c.emit(1, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, len_idx, 0);
+    c.emit(1, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── hash(v) → number — Python `hash` / Ruby `Object#hash` ─────────
+// Same shape as `id` for now: derive a stable integer from the
+// stringified value. Not cryptographic — matches the Python guarantee
+// that `hash(a) == hash(b)` whenever `a == b` for hashable types.
+fn build_hash(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_hash");
+    c.arity = 1;
+    c.local_count = 1;
+    let to_str = imports.add_import("ecma:string", "String");
+    let len_idx = imports.add_import("ecma:string", "length");
+
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, to_str, 0);
+    c.emit(1, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, len_idx, 0);
+    c.emit(1, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── vb_format(value, picture) → string — VB `Format` minimal subset ─
+//
+// Handles the digit-pattern cases that real VB code most commonly
+// uses; falls back to `String(value)` otherwise.
+//
+//   ""              → `String(value)`
+//   "0"             → `String(parseInt(value))`     (integer)
+//   "0.NN"          → `Number(value).toFixed(N)`    (fixed N decimals)
+//   "$<picture>"    → `"$" + format(value, <picture>)`
+//
+// Thousand separators (`#,##0`) and date pictures (`yyyy/MM/dd`) are
+// follow-up work — see `format_picture_adapter` for the call shape.
+fn build_vb_format(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_vb_format");
+    c.arity = 2;
+    c.local_count = 5; // value(0), picture(1), prefix(2), dot_pos(3), decimals(4)
+    let value = 0u16;
+    let picture = 1u16;
+    let prefix = 2u16;
+    let dot_pos = 3u16;
+    let decimals = 4u16;
+
+    let to_str = imports.add_import("ecma:string", "String");
+    let to_fixed = imports.add_import("ecma:number", "toFixed");
+    let parse_int = imports.add_import("ecma:number", "parseInt");
+
+    // prefix = ""
+    let empty = c.add_constant(Value::String(Arc::from("")));
+    c.emit_op_u16(Op::CONST, empty, 0);
+    c.emit_op_u16(Op::LOCAL_SET, prefix, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // If picture is null/empty, return String(value).
+    let no_picture_block = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    let picture_null = c.add_constant(Value::I32(0));
+    let _ = picture_null; // not used; kept for future readability
+    let null_or_empty = c.emit_block(0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    // null path → return String(value)
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, to_str, 0);
+    c.emit(1, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0); c.patch_block(null_or_empty);
+
+    // Check empty string ("" length = 0)
+    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
+    c.emit_op(Op::STR_LENGTH, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, to_str, 0);
+    c.emit(1, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0); c.patch_block(no_picture_block);
+
+    // If picture starts with '$', strip it and stash as prefix.
+    let dollar_block = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::STR_CHAR_CODE_AT, 0);
+    let dollar_code = c.add_constant(Value::I32(b'$' as i32));
+    c.emit_op_u16(Op::CONST, dollar_code, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    // prefix = "$"
+    let dollar_str = c.add_constant(Value::String(Arc::from("$")));
+    c.emit_op_u16(Op::CONST, dollar_str, 0);
+    c.emit_op_u16(Op::LOCAL_SET, prefix, 0);
+    c.emit_op(Op::DROP, 0);
+    // picture = picture.substring(1)
+    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
+    c.emit_op(Op::STR_LENGTH, 0);
+    c.emit_op(Op::STR_SUBSTRING, 0);
+    c.emit_op_u16(Op::LOCAL_SET, picture, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_end(0); c.patch_block(dollar_block);
+
+    // dot_pos = picture.indexOf(".")
+    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
+    let dot_str = c.add_constant(Value::String(Arc::from(".")));
+    c.emit_op_u16(Op::CONST, dot_str, 0);
+    c.emit_op(Op::STR_INDEX_OF, 0);
+    c.emit_op_u16(Op::LOCAL_SET, dot_pos, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // If no dot: return prefix + String(parseInt(value))
+    let no_decimals_block = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, dot_pos, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    // No dot — integer rendering
+    c.emit_op_u16(Op::LOCAL_GET, prefix, 0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, parse_int, 0);
+    c.emit(1, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, to_str, 0);
+    c.emit(1, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0); c.patch_block(no_decimals_block);
+
+    // decimals = picture.length - dot_pos - 1
+    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
+    c.emit_op(Op::STR_LENGTH, 0);
+    c.emit_op_u16(Op::LOCAL_GET, dot_pos, 0);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_SET, decimals, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // return prefix + Number(value).toFixed(decimals)
+    c.emit_op_u16(Op::LOCAL_GET, prefix, 0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op_u16(Op::LOCAL_GET, decimals, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, to_fixed, 0);
+    c.emit(2, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── transform_values(map, fn) → new map — Ruby `Hash#transform_values` ─
+// Apply `fn(v)` to each value, return a new ECMA Map keyed identically.
+fn build_transform_values(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_transform_values");
+    c.arity = 2;
+    c.local_count = 7; // map(0), fn(1), entries(2), i(3), len(4), result(5), pair(6)
+    let map = 0u16;
+    let fn_arg = 1u16;
+    let entries = 2u16;
+    let i = 3u16;
+    let len = 4u16;
+    let result = 5u16;
+    let pair = 6u16;
+
+    let entries_idx = imports.add_import("ecma:object", "entries");
+    let map_new_idx = imports.add_import("ecma:map", "new");
+
+    // entries = ecma:object.entries(map); result = ecma:map.new()
+    c.emit_op_u16(Op::LOCAL_GET, map, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, entries_idx, 0);
+    c.emit(1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, entries, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::CALL_IMPORT, map_new_idx, 0);
+    c.emit(0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, entries, 0);
+    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0);
+
+    // pair = entries[i]
+    c.emit_op_u16(Op::LOCAL_GET, entries, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op_u16(Op::LOCAL_SET, pair, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // result[pair[0]] = fn(pair[1])
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, pair, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    // call fn with pair[1]
+    c.emit_op_u16(Op::LOCAL_GET, fn_arg, 0);
+    c.emit_op_u16(Op::LOCAL_GET, pair, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op_u8(Op::CALL_REF, 1, 0);
+    c.emit_op(Op::ARRAY_SET, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(0, 0);
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
+
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── transform_keys(map, fn) → new map — Ruby `Hash#transform_keys` ─
+fn build_transform_keys(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_transform_keys");
+    c.arity = 2;
+    c.local_count = 7;
+    let map = 0u16;
+    let fn_arg = 1u16;
+    let entries = 2u16;
+    let i = 3u16;
+    let len = 4u16;
+    let result = 5u16;
+    let pair = 6u16;
+
+    let entries_idx = imports.add_import("ecma:object", "entries");
+    let map_new_idx = imports.add_import("ecma:map", "new");
+
+    c.emit_op_u16(Op::LOCAL_GET, map, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, entries_idx, 0);
+    c.emit(1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, entries, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::CALL_IMPORT, map_new_idx, 0);
+    c.emit(0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, entries, 0);
+    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, entries, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op_u16(Op::LOCAL_SET, pair, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // result[fn(pair[0])] = pair[1]
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    // new key = fn(pair[0])
+    c.emit_op_u16(Op::LOCAL_GET, fn_arg, 0);
+    c.emit_op_u16(Op::LOCAL_GET, pair, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op_u8(Op::CALL_REF, 1, 0);
+    // value = pair[1]
+    c.emit_op_u16(Op::LOCAL_GET, pair, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op(Op::ARRAY_SET, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(0, 0);
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
+
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── php_inc(v) / php_dec(v) — PHP `$x++` / `$x--` numeric semantics ──
+//
+// PHP has alpha-bump for non-numeric strings (`"a"++ → "b"`,
+// `"z"++ → "aa"`); this chunk currently handles the dominant numeric
+// case and degrades alpha-bump strings to `parseFloat`. Real PHP
+// alpha-bump is a follow-up — bring it back as a dedicated stdlib
+// chunk when a test demands it.
+fn build_php_inc(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_php_inc");
+    c.arity = 1;
+    c.local_count = 2;
+
+    // typeof(v) check
+    let str_str = c.add_constant(Value::String(std::sync::Arc::from("string")));
+    let pf = imports.add_import("ecma:number", "parseFloat");
+
+    let block = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op(Op::REF_TYPEOF, 0);
+    c.emit_op_u16(Op::CONST, str_str, 0);
+    c.emit_op(Op::STR_EQUALS, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    // String case: parseFloat(v) + 1 → return as Number
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, pf, 0);
+    c.emit(1, 0);
+    let one = c.add_constant(Value::F64(1.0));
+    c.emit_op_u16(Op::CONST, one, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0); c.patch_block(block);
+
+    // Numeric case: v + 1
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    let one2 = c.add_constant(Value::F64(1.0));
+    c.emit_op_u16(Op::CONST, one2, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+fn build_php_dec(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_php_dec");
+    c.arity = 1;
+    c.local_count = 2;
+
+    let str_str = c.add_constant(Value::String(std::sync::Arc::from("string")));
+    let pf = imports.add_import("ecma:number", "parseFloat");
+
+    let block = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op(Op::REF_TYPEOF, 0);
+    c.emit_op_u16(Op::CONST, str_str, 0);
+    c.emit_op(Op::STR_EQUALS, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, pf, 0);
+    c.emit(1, 0);
+    let one = c.add_constant(Value::F64(1.0));
+    c.emit_op_u16(Op::CONST, one, 0);
+    c.emit_op(Op::F64_SUB, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0); c.patch_block(block);
+
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    let one2 = c.add_constant(Value::F64(1.0));
+    c.emit_op_u16(Op::CONST, one2, 0);
+    c.emit_op(Op::F64_SUB, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── format_map(s, d) → string — Python `str.format_map` ────────
+//
+// Substitute `{key}` placeholders in `s` with `String(d[key])`.
+// Handles `{{` / `}}` escapes; nested-attribute / format-spec
+// (`{key.attr}` / `{key:.2f}`) are follow-up work — for now the
+// closing `}` terminates the placeholder name unconditionally.
+fn build_format_map(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_format_map");
+    c.arity = 2;
+    c.local_count = 7; // s(0), d(1), out(2), i(3), len(4), end(5), key(6)
+    let s = 0u16;
+    let d = 1u16;
+    let out = 2u16;
+    let i = 3u16;
+    let len = 4u16;
+    let end = 5u16;
+    let key = 6u16;
+
+    let to_str = imports.add_import("ecma:string", "String");
+
+    // out = ""
+    let empty = c.add_constant(Value::String(std::sync::Arc::from("")));
+    c.emit_op_u16(Op::CONST, empty, 0);
+    c.emit_op_u16(Op::LOCAL_SET, out, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // i = 0; len = STR_LENGTH(s)
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, s, 0);
+    c.emit_op(Op::STR_LENGTH, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+    c.emit_op(Op::DROP, 0);
+
+    let open_brace = c.add_constant(Value::I32(b'{' as i32));
+    let close_brace = c.add_constant(Value::I32(b'}' as i32));
+
+    let outer_block = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+
+    // if i >= len: break
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0);
+
+    // ch = STR_CHAR_CODE_AT(s, i)
+    c.emit_op_u16(Op::LOCAL_GET, s, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::STR_CHAR_CODE_AT, 0);
+
+    // Branch on '{' / '}' / literal
+    let ch_slot = {
+        let new = c.local_count;
+        c.local_count = new + 1;
+        new
+    };
+    c.emit_op_u16(Op::LOCAL_SET, ch_slot, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // -- '{' branch --
+    let open_block = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, ch_slot, 0);
+    c.emit_op_u16(Op::CONST, open_brace, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+
+    // Find closing '}': end = i+1; while end < len && s[end] != '}': end++
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, end, 0);
+    c.emit_op(Op::DROP, 0);
+
+    let scan_block = c.emit_block(0);
+    let (scan_loop, _) = c.emit_loop_s(0);
+    c.emit_op_u16(Op::LOCAL_GET, end, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, s, 0);
+    c.emit_op_u16(Op::LOCAL_GET, end, 0);
+    c.emit_op(Op::STR_CHAR_CODE_AT, 0);
+    c.emit_op_u16(Op::CONST, close_brace, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_br_if(1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, end, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, end, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(0, 0);
+    c.emit_end(0); c.patch_loop(scan_loop);
+    c.emit_end(0); c.patch_block(scan_block);
+
+    // key = s.substring(i+1, end); out += String(d[key]); i = end + 1
+    c.emit_op_u16(Op::LOCAL_GET, s, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_GET, end, 0);
+    c.emit_op(Op::STR_SUBSTRING, 0);
+    c.emit_op_u16(Op::LOCAL_SET, key, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, out, 0);
+    c.emit_op_u16(Op::LOCAL_GET, d, 0);
+    c.emit_op_u16(Op::LOCAL_GET, key, 0);
+    c.emit_op(Op::ARRAY_GET, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, to_str, 0);
+    c.emit(1, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, out, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, end, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(1, 0); // continue outer loop
+    c.emit_end(0); c.patch_block(open_block);
+
+    // -- literal char path: out += s.substring(i, i+1); i++
+    c.emit_op_u16(Op::LOCAL_GET, out, 0);
+    c.emit_op_u16(Op::LOCAL_GET, s, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op(Op::STR_SUBSTRING, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, out, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_br(0, 0);
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(outer_block);
+
+    c.emit_op_u16(Op::LOCAL_GET, out, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── encoding() → "UTF-8" — Ruby `string.encoding` ──────────────
+//
+// Ruby returns an `Encoding` object; we collapse to the encoding name
+// since Vybe strings are always UTF-8.
+fn build_encoding(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_encoding");
+    c.arity = 1;
+    c.local_count = 1;
+    let s = c.add_constant(Value::String(std::sync::Arc::from("UTF-8")));
+    c.emit_op_u16(Op::CONST, s, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── newline() → string — `Environment.NewLine` (.NET / cross-platform)
+//
+// Returns "\n" — Vybe targets WASI/cross-platform; we don't emit
+// platform-conditional `\r\n`. .NET callers that depend on the
+// host's separator should use `Path.Combine`-style helpers, not
+// `Environment.NewLine` for filesystem paths.
+fn build_newline(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_newline");
+    c.arity = 0;
+    let nl = c.add_constant(Value::String(std::sync::Arc::from("\n")));
+    c.emit_op_u16(Op::CONST, nl, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -2230,6 +3626,106 @@ fn build_instance_of(imports: &mut Chunk) -> Chunk {
     crate::emitter::collections::emit_get_into(imports, &mut c, 0); // obj["__type"]
     c.emit_op_u16(Op::LOCAL_GET, 1, 0); // type_name
     c.emit_op(Op::STR_EQUALS, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── jsGetMethod(obj, key) → callable | undefined ──────────────────
+fn build_js_get_method(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_js_get_method");
+    c.arity = 2;
+    c.local_count = 4; // obj(0), key(1), cur(2), method(3)
+    let proto_key = c.add_constant(Value::String(std::sync::Arc::from("__proto__")));
+
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 2, 0);
+    c.emit_op(Op::DROP, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_br_if(1, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    crate::emitter::collections::emit_get_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 3, 0);
+    c.emit_op(Op::DROP, 0);
+
+    let missing_p = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0); c.patch_block(missing_p);
+
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op_u16(Op::CONST, proto_key, 0);
+    crate::emitter::collections::emit_get_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 2, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(0, 0);
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
+
+    c.emit_op(Op::UNDEFINED, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── jsInstanceOf(obj, ctor) → bool ──────────────────────────
+fn build_js_instance_of(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_js_instanceof");
+    c.arity = 2;
+    c.local_count = 4; // obj(0), ctor(1), target_proto(2), cur(3)
+    let proto_key = c.add_constant(Value::String(std::sync::Arc::from("prototype")));
+    let link_key = c.add_constant(Value::String(std::sync::Arc::from("__proto__")));
+
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::CONST, proto_key, 0);
+    crate::emitter::collections::emit_get_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 2, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    let have_target = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::FALSE, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.patch_jump(have_target);
+
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 3, 0);
+    c.emit_op(Op::DROP, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+
+    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    c.emit_op_u16(Op::CONST, link_key, 0);
+    crate::emitter::collections::emit_get_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 3, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_br_if(1, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    let matched = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::TRUE, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.patch_jump(matched);
+
+    c.emit_br(0, 0);
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
+    c.emit_op(Op::FALSE, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }

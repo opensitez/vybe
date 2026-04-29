@@ -72,7 +72,7 @@ cbool   = { emit = "opcode:dyn_to_bool",           min_args = 1, max_args = 1 }
 clng    = { emit = "intrinsic:clng",       min_args = 1, max_args = 1 }
 csng    = { emit = "host:ecma:number:Number",       min_args = 1, max_args = 1 }
 cbyte   = { emit = "intrinsic:cbyte",              min_args = 1, max_args = 1 }
-cchar   = { emit = "host:vybe:convert:cchar",      min_args = 1, max_args = 1 }
+cchar   = { emit = "stdlib:cchar",                 min_args = 1, max_args = 1 }
 cshort  = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
 cushort = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
 cuint   = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
@@ -82,31 +82,31 @@ ccur    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
 cdec    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
 cvar    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
 cobj    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
-val     = { emit = "host:vybe:convert:val",        min_args = 1, max_args = 1 }
+val     = { emit = "stdlib:val",                   min_args = 1, max_args = 1 }
 hex     = { emit = "intrinsic:hex",        min_args = 1, max_args = 1 }
 "hex$"  = { emit = "intrinsic:hex",        min_args = 1, max_args = 1 }
 oct     = { emit = "intrinsic:oct",        min_args = 1, max_args = 1 }
 "oct$"  = { emit = "intrinsic:oct",        min_args = 1, max_args = 1 }
-str     = { emit = "host:vybe:convert:str",        min_args = 1, max_args = 1 }
-"str$"  = { emit = "host:vybe:convert:str",        min_args = 1, max_args = 1 }
-iif     = { emit = "host:vybe:convert:iif",        min_args = 3, max_args = 3 }
-choose  = { emit = "host:vybe:convert:choose",     min_args = 2, max_args = 255 }
-rgb     = { emit = "host:vybe:convert:rgb",        min_args = 3, max_args = 3 }
-qbcolor = { emit = "host:vybe:convert:rgb",        min_args = 1, max_args = 1 }
+str     = { emit = "host:ecma:string:String",      min_args = 1, max_args = 1 }
+"str$"  = { emit = "host:ecma:string:String",      min_args = 1, max_args = 1 }
+iif     = { emit = "stdlib:iif",                   min_args = 3, max_args = 3 }
+choose  = { emit = "common:dotnet.choose",         min_args = 2, max_args = 255 }
+rgb     = { emit = "stdlib:rgb",                   min_args = 3, max_args = 3 }
+qbcolor = { emit = "stdlib:qbcolor",               min_args = 1, max_args = 1 }
 
 # ── Type Checking ────────────────────────────────────────────────────────────
 
-isnumeric  = { emit = "host:vybe:convert:isNumeric",  min_args = 1, max_args = 1 }
+isnumeric  = { emit = "stdlib:isnumeric",              min_args = 1, max_args = 1 }
 isnothing  = { emit = "opcode:ref_is_null",            min_args = 1, max_args = 1 }
 isnull     = { emit = "opcode:ref_is_null",            min_args = 1, max_args = 1 }
-isempty    = { emit = "host:vybe:convert:isEmpty",     min_args = 1, max_args = 1 }
-isobject   = { emit = "host:vybe:convert:isObject",    min_args = 1, max_args = 1 }
+isempty    = { emit = "stdlib:isempty",                min_args = 1, max_args = 1 }
+isobject   = { emit = "stdlib:isobject",               min_args = 1, max_args = 1 }
 isarray    = { emit = "opcode:ref_is_array",           min_args = 1, max_args = 1 }
-isdate     = { emit = "host:vybe:convert:isDate",      min_args = 1, max_args = 1 }
+isdate     = { emit = "stdlib:isdate",                 min_args = 1, max_args = 1 }
 isdbnull   = { emit = "opcode:ref_is_null",            min_args = 1, max_args = 1 }
 iserror    = { emit = "opcode:ref_is_null",            min_args = 1, max_args = 1 }
 typename   = { emit = "opcode:ref_typeof",             min_args = 1, max_args = 1 }
-vartype    = { emit = "host:vybe:convert:varType",     min_args = 1, max_args = 1 }
+vartype    = { emit = "stdlib:vartype",                min_args = 1, max_args = 1 }
 
 # ── Math — WASM opcodes (zero overhead) ─────────────────────────────────────
 
@@ -218,18 +218,21 @@ space      = { emit = "intrinsic:space",           min_args = 1, max_args = 1 }
 "space$"   = { emit = "intrinsic:space",           min_args = 1, max_args = 1 }
 spc        = { emit = "intrinsic:space",           min_args = 1, max_args = 1 }
 strcomp    = { emit = "opcode:str_compare",        min_args = 2, max_args = 2 }
-format     = { emit = "host:vybe:string:format",   min_args = 1, max_args = 2 }
-"format$"  = { emit = "host:vybe:string:format",   min_args = 1, max_args = 2 }
+format     = { emit = "common:dotnet.format_picture", min_args = 1, max_args = 2 }
+"format$"  = { emit = "common:dotnet.format_picture", min_args = 1, max_args = 2 }
 lset       = { emit = "host:ecma:string:padEnd",     min_args = 2, max_args = 2 }
 rset       = { emit = "host:ecma:string:padStart",     min_args = 2, max_args = 2 }
-filter     = { emit = "host:vybe:string:filter",   min_args = 2, max_args = 4 }
+# `Filter(arr, match, [include], [compare])` retired — VB walker
+# rewrites it to `arr.filter(s => InStr(s, match) > 0)` (or `= 0`
+# when `include` is False) at parse time, dispatched through the
+# common-AST array HOF surface.
 "string.isnullorempty" = { emit = "intrinsic:string_isnullorempty", min_args = 1, max_args = 1 }
 
 # Format variants
-formatnumber   = { emit = "host:vybe:string:format",  min_args = 1, max_args = 2 }
-formatcurrency = { emit = "host:vybe:string:format",  min_args = 1, max_args = 2 }
-formatpercent  = { emit = "host:vybe:string:format",  min_args = 1, max_args = 2 }
-formatdatetime = { emit = "host:vybe:string:format",  min_args = 1, max_args = 2 }
+formatnumber   = { emit = "common:dotnet.format_picture", min_args = 1, max_args = 2 }
+formatcurrency = { emit = "common:dotnet.format_picture", min_args = 1, max_args = 2 }
+formatpercent  = { emit = "common:dotnet.format_picture", min_args = 1, max_args = 2 }
+formatdatetime = { emit = "common:dotnet.format_picture", min_args = 1, max_args = 2 }
 strconv        = { emit = "host:ecma:string:String", min_args = 1, max_args = 2 }
 strdup         = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
 
@@ -254,13 +257,19 @@ day          = { emit = "host:wasi:clocks:vbDay",    min_args = 1, max_args = 1 
 hour         = { emit = "host:wasi:clocks:vbHour",   min_args = 1, max_args = 1 }
 minute       = { emit = "host:wasi:clocks:vbMinute", min_args = 1, max_args = 1 }
 second       = { emit = "host:wasi:clocks:vbSecond", min_args = 1, max_args = 1 }
-dateadd      = { emit = "host:vybe:types:dateTimeAddDays",   min_args = 3, max_args = 3 }
+# DateAdd / DateSerial / TimeSerial profile entries retired — they
+# pointed at `vybe:types/dateTime*` host fns that have been retired in
+# favour of compile-time lowering through
+# `emitter::dotnet::core::datetime_adapter`. No drop-in 0-cost mapping
+# exists for the free-function VB shapes (DateAdd takes a unit string
+# like "d"/"m"/"y" and DateSerial constructs from year/month/day) —
+# bring them back as dedicated adapters when a test demands them.
 datediff     = { emit = "host:wasi:clocks:vbDay",            min_args = 3, max_args = 3 }
 datepart     = { emit = "host:wasi:clocks:vbDay",            min_args = 2, max_args = 2 }
-dateserial   = { emit = "host:vybe:types:dateTimeNew",        min_args = 3, max_args = 3 }
 datevalue    = { emit = "host:ecma:date:parse",      min_args = 1, max_args = 1 }
-timeserial   = { emit = "host:vybe:types:dateTimeNew",        min_args = 3, max_args = 3 }
 timevalue    = { emit = "host:ecma:date:parse",      min_args = 1, max_args = 1 }
+# `timeserial` removed alongside `timeserial`/`dateserial` (see DateAdd
+# comment above).
 cdate        = { emit = "host:ecma:date:parse",      min_args = 1, max_args = 1 }
 monthname    = { emit = "host:ecma:string:String",         min_args = 1, max_args = 1 }
 weekday      = { emit = "host:wasi:clocks:vbDay",             min_args = 1, max_args = 1 }
@@ -328,7 +337,7 @@ performlayout  = { emit = "noop", min_args = 0, max_args = 0 }
 # ── Interaction ──────────────────────────────────────────────────────────────
 
 beep         = { emit = "noop",                            min_args = 0, max_args = 0 }
-shell        = { emit = "host:vybe:types:processStart",    min_args = 1, max_args = 2 }
+shell        = { emit = "host:node:child_process:execSync", min_args = 1, max_args = 2 }
 environ      = { emit = "host:wasi:cli:getEnv",            min_args = 1, max_args = 1 }
 "environ$"   = { emit = "host:wasi:cli:getEnv",            min_args = 1, max_args = 1 }
 command      = { emit = "host:wasi:cli:args",              min_args = 0, max_args = 0 }
@@ -364,12 +373,12 @@ doevents     = { emit = "noop",                            min_args = 0, max_arg
 
 "json.serialize"   = { emit = "host:ecma:json:stringify", min_args = 1, max_args = 1 }
 "json.deserialize" = { emit = "host:ecma:json:parse",    min_args = 1, max_args = 1 }
-"xml.parse"        = { emit = "host:vybe:xml:parse",     min_args = 1, max_args = 1 }
-"xdocument.parse"  = { emit = "host:vybe:xml:parse",     min_args = 1, max_args = 1 }
-"xml.load"         = { emit = "host:vybe:xml:load",      min_args = 1, max_args = 1 }
-"xdocument.load"   = { emit = "host:vybe:xml:load",      min_args = 1, max_args = 1 }
-"xml.save"         = { emit = "host:vybe:xml:toString",  min_args = 1, max_args = 1 }
-"xdocument.save"   = { emit = "host:vybe:xml:toString",  min_args = 1, max_args = 1 }
+"xml.parse"        = { emit = "host:web:dom-parser:parse",     min_args = 1, max_args = 1 }
+"xdocument.parse"  = { emit = "host:web:dom-parser:parse",     min_args = 1, max_args = 1 }
+"xml.load"         = { emit = "host:web:dom-parser:load",      min_args = 1, max_args = 1 }
+"xdocument.load"   = { emit = "host:web:dom-parser:load",      min_args = 1, max_args = 1 }
+"xml.save"         = { emit = "host:web:dom-parser:toString",  min_args = 1, max_args = 1 }
+"xdocument.save"   = { emit = "host:web:dom-parser:toString",  min_args = 1, max_args = 1 }
 # VB Regex.* — .NET pattern-first convention; same arg shape as PHP/Python.
 # `Regex.IsMatch(pat, str)` and `Regex.Match(pat, str)` route to ECMA-262
 # RegExp directly (test/exec accept string-as-pattern as first arg).
@@ -394,9 +403,10 @@ doevents     = { emit = "noop",                            min_args = 0, max_arg
 "encoding.convert"             = { emit = "host:ecma:string:String", min_args = 3, max_args = 3 }
 
 # ── StringBuilder ────────────────────────────────────────────────────────────
-
-stringbuilder = { emit = "host:vybe:types:stringBuilderNew", min_args = 0, max_args = 1 }
-switch        = { emit = "host:vybe:convert:choose",         min_args = 2, max_args = 255 }
+# Free-function `StringBuilder()` retired — `New StringBuilder()`
+# / `New StringBuilder("init")` lower at compile time through the
+# dotnet wrapper Component Model adapter (`stringbuilder_adapter`).
+switch        = { emit = "common:dotnet.choose",             min_args = 2, max_args = 255 }
 
 # ── Legacy VB6 ───────────────────────────────────────────────────────────────
 
@@ -536,14 +546,14 @@ stop           = { emit = "host:wasi:clocks:stopwatchStop",  min_args = 0, max_a
 reset          = { emit = "host:wasi:clocks:stopwatchReset", min_args = 0, max_args = 0 }
 
 # Regex instance methods — extract __pattern from self object
-ismatch        = { emit = "host:vybe:types:regexIsMatch",  min_args = 1, max_args = 1 }
-"match"        = { emit = "host:vybe:types:regexMatch",    min_args = 1, max_args = 1 }
-matches        = { emit = "host:vybe:types:regexMatches",  min_args = 1, max_args = 1 }
-replace        = { emit = "host:vybe:types:regexReplace",  min_args = 2, max_args = 2 }
+ismatch        = { emit = "host:ecma:regexp:test",         min_args = 1, max_args = 1 }
+"match"        = { emit = "host:ecma:regexp:exec",         min_args = 1, max_args = 1 }
+matches        = { emit = "host:ecma:regexp:matchAll",     min_args = 1, max_args = 1 }
+replace        = { emit = "host:ecma:regexp:replace",      min_args = 2, max_args = 2 }
 
 # StringBuilder methods (overloaded with array ops by arity where unambiguous)
-append         = { emit = "host:vybe:types:sbAppend",      min_args = 1, max_args = 1 }
-appendline     = { emit = "host:vybe:types:sbAppendLine",  min_args = 0, max_args = 1 }
+append         = { emit = "common:dotnet.sb_append",       min_args = 1, max_args = 1 }
+appendline     = { emit = "common:dotnet.sb_append_line",  min_args = 0, max_args = 1 }
 
 # Stopwatch extended
 restart             = { emit = "host:wasi:clocks:stopwatchReset",    min_args = 0, max_args = 0 }
@@ -551,14 +561,18 @@ elapsedmilliseconds = { emit = "host:wasi:clocks:stopwatchElapsed",  min_args = 
 isrunning           = { emit = "noop",                               min_args = 0, max_args = 0 }
 
 # List/collection extra
-addrange       = { emit = "host:vybe:types:listAddRange",   min_args = 1, max_args = 1 }
-trygetvalue    = { emit = "host:vybe:types:dictTryGetValue", min_args = 1, max_args = 2 }
+addrange       = { emit = "common:collections.concat",     min_args = 1, max_args = 1 }
+trygetvalue    = { emit = "common:dict.get_dynamic",       min_args = 1, max_args = 2 }
 containsvalue  = { emit = "host:ecma:array:includes",      min_args = 1, max_args = 1 }
 
 # Queue methods
 enqueue        = { emit = "host:ecma:array:push",  min_args = 1, max_args = 1 }
 dequeue        = { emit = "host:ecma:array:shift",  min_args = 0, max_args = 0 }
-peek           = { emit = "host:vybe:types:collectionPeek", min_args = 0, max_args = 0 }
+# `peek` value-method retired — Queue.peek / Stack.peek dispatch
+# through the runtime TypeRegistry to the right ecma:array primitive
+# (Queue → first, Stack → last) per the per-class TypeDef in
+# `vybe_host::builtin_types`. No language-shared value-method entry
+# needed.
 
 # Stack methods
 push           = { emit = "host:ecma:array:push",     min_args = 1, max_args = 1 }
@@ -618,30 +632,27 @@ extra_imports = [
 
 [known_types]
 # name = [host_module, host_function]
-"stringbuilder"  = ["vybe:types", "stringBuilderNew"]
+#
+# Constructor fallbacks for `New TypeName()` when the dotnet wrapper
+# Component Model adapter doesn't handle the type. Most .NET-shape
+# classes lower at compile time and bypass this table entirely.
+#
+# Retired entries (handled by compile-time adapters):
+#   stringbuilder, regex, streamreader, streamwriter, task, thread,
+#   process, queue, stack, hashset — all dispatch through dotnet wrapper
+#   Common emit paths (`stringbuilder_adapter`, `stream_io_adapter`,
+#   `threading::emit_*`, `process_adapter`, `collections.new`).
 "stopwatch"      = ["wasi:clocks", "stopwatchNew"]
 "random"         = ["wasi:random/insecure", "get-insecure-random-u64"]
-"regex"          = ["vybe:types", "regexNew"]
-"streamreader"   = ["dotnet:io", "streamReaderNew"]
-"streamwriter"   = ["dotnet:io", "streamWriterNew"]
-"memorystream"   = ["vybe:types", "listNew"]
+"memorystream"   = ["common", "collections.new"]
 "filestream"     = ["wasi:filesystem", "readFile"]
 "binaryreader"   = ["wasi:filesystem", "readFile"]
 "binarywriter"   = ["wasi:filesystem", "writeFile"]
-"xmldocument"    = ["vybe:xml", "parse"]
-"xdocument"      = ["vybe:xml", "parse"]
+"xmldocument"    = ["web:dom-parser", "parse"]
+"xdocument"      = ["web:dom-parser", "parse"]
 "webrequest"     = ["wasi:http", "fetch"]
 "webclient"      = ["wasi:http", "fetch"]
 "httpclient"     = ["wasi:http", "fetch"]
-"task"           = ["vybe:types", "taskNew"]
-"thread"         = ["vybe:types", "threadNew"]
-# Timer / BindingSource are GUI controls — they route through the canonical
-# `compiler_common::gui` emitter (vybe:gui::new_Timer, etc.), NOT the .NET
-# host bridge. Keep them OUT of known_types so the GUI control branch wins.
-"process"        = ["vybe:types", "processNew"]
-"queue"          = ["vybe:types", "queueNew"]
-"stack"          = ["vybe:types", "stackNew"]
-"hashset"        = ["vybe:types", "hashSetNew"]
 "datatable"      = ["vybe:types", "dataTableNew"]
 "datarow"        = ["vybe:types", "dataRowNew"]
 "dataadapter"    = ["vybe:types", "dataAdapterNew"]

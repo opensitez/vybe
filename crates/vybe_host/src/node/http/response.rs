@@ -1,4 +1,4 @@
-//! `vybe:http/response.*` — per-request response write.
+//! `node:http.*` — per-request response write.
 //!
 //! All mutators silently no-op when no request context is installed.
 //! Setting headers / status after the first body write is also a no-op
@@ -11,7 +11,7 @@ use super::context::with_context;
 
 pub fn register(vm: &mut VM) {
     // Status ───────────────────────────────────────────────────────────────
-    vm.register_host_fn("vybe:http/response", "set_status", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+    vm.register_host_fn("node:http", "set_status", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let code = args.first().map(|v| v.as_f64() as u16).unwrap_or(200);
         with_context(|c| {
             let mut r = c.response.lock().unwrap();
@@ -20,13 +20,13 @@ pub fn register(vm: &mut VM) {
         Value::Null
     }));
 
-    vm.register_host_fn("vybe:http/response", "status", Box::new(|_ctx, _| {
+    vm.register_host_fn("node:http", "status", Box::new(|_ctx, _| {
         with_context(|c| Value::F64(c.response.lock().unwrap().status as f64))
             .unwrap_or(Value::F64(0.0))
     }));
 
     // Headers ──────────────────────────────────────────────────────────────
-    vm.register_host_fn("vybe:http/response", "set_header", Box::new(|_ctx, args| {
+    vm.register_host_fn("node:http", "set_header", Box::new(|_ctx, args| {
         let name = string_arg(args, 0);
         let value = string_arg(args, 1);
         with_context(|c| {
@@ -38,7 +38,7 @@ pub fn register(vm: &mut VM) {
         Value::Null
     }));
 
-    vm.register_host_fn("vybe:http/response", "add_header", Box::new(|_ctx, args| {
+    vm.register_host_fn("node:http", "add_header", Box::new(|_ctx, args| {
         let name = string_arg(args, 0);
         let value = string_arg(args, 1);
         with_context(|c| {
@@ -49,7 +49,7 @@ pub fn register(vm: &mut VM) {
         Value::Null
     }));
 
-    vm.register_host_fn("vybe:http/response", "remove_header", Box::new(|_ctx, args| {
+    vm.register_host_fn("node:http", "remove_header", Box::new(|_ctx, args| {
         let name = string_arg(args, 0);
         with_context(|c| {
             let mut r = c.response.lock().unwrap();
@@ -59,7 +59,7 @@ pub fn register(vm: &mut VM) {
         Value::Null
     }));
 
-    vm.register_host_fn("vybe:http/response", "has_header", Box::new(|_ctx, args| {
+    vm.register_host_fn("node:http", "has_header", Box::new(|_ctx, args| {
         let name = string_arg(args, 0);
         with_context(|c| {
             let r = c.response.lock().unwrap();
@@ -67,13 +67,13 @@ pub fn register(vm: &mut VM) {
         }).unwrap_or(Value::Bool(false))
     }));
 
-    vm.register_host_fn("vybe:http/response", "headers_sent", Box::new(|_ctx, _| {
+    vm.register_host_fn("node:http", "headers_sent", Box::new(|_ctx, _| {
         with_context(|c| Value::Bool(c.response.lock().unwrap().headers_sent))
             .unwrap_or(Value::Bool(false))
     }));
 
     // Body ─────────────────────────────────────────────────────────────────
-    vm.register_host_fn("vybe:http/response", "write", Box::new(|_ctx, args| {
+    vm.register_host_fn("node:http", "write", Box::new(|_ctx, args| {
         let bytes = match args.first() {
             Some(Value::String(s)) => s.as_bytes().to_vec(),
             Some(other) => format!("{}", other).into_bytes(),
@@ -85,7 +85,7 @@ pub fn register(vm: &mut VM) {
         Value::Null
     }));
 
-    vm.register_host_fn("vybe:http/response", "write_text", Box::new(|_ctx, args| {
+    vm.register_host_fn("node:http", "write_text", Box::new(|_ctx, args| {
         let text = string_arg(args, 0);
         with_context(|c| {
             c.response.lock().unwrap().write_bytes(text.into_bytes());
@@ -93,14 +93,14 @@ pub fn register(vm: &mut VM) {
         Value::Null
     }));
 
-    vm.register_host_fn("vybe:http/response", "end", Box::new(|_ctx, _| {
+    vm.register_host_fn("node:http", "end", Box::new(|_ctx, _| {
         with_context(|c| {
             c.response.lock().unwrap().end();
         });
         Value::Null
     }));
 
-    vm.register_host_fn("vybe:http/response", "flush", Box::new(|_ctx, _| {
+    vm.register_host_fn("node:http", "flush", Box::new(|_ctx, _| {
         // Phase 1: writes are unbuffered on the host side (each write_bytes
         // pushes a Data message). Explicit flush is a no-op for now.
         // Phase 2: add an ~8 KiB coalescing buffer and wire flush() to push
@@ -113,7 +113,7 @@ pub fn register(vm: &mut VM) {
     // PHP idiom: `http_response_code()` returns the current status;
     // `http_response_code(404)` sets it. Combined getter/setter in one
     // host fn since PHP's dispatch is arity-based.
-    vm.register_host_fn("vybe:http/response", "http_response_code", Box::new(|_ctx, args| {
+    vm.register_host_fn("node:http", "http_response_code", Box::new(|_ctx, args| {
         if let Some(arg) = args.first() {
             let code = arg.as_f64() as u16;
             if code > 0 {
@@ -135,7 +135,7 @@ pub fn register(vm: &mut VM) {
     // optional `replace` flag and optional status code. Parse it centrally,
     // route to set_status / set_header / add_header. One implementation,
     // every language that has a PHP-compat wrapper benefits.
-    vm.register_host_fn("vybe:http/response", "send_header_raw", Box::new(|_ctx, args| {
+    vm.register_host_fn("node:http", "send_header_raw", Box::new(|_ctx, args| {
         let raw = string_arg(args, 0);
         let replace = args.get(1).map(|v| v.as_bool()).unwrap_or(true);
         let response_code = args.get(2).map(|v| v.as_f64() as u16).unwrap_or(0);
@@ -185,7 +185,7 @@ pub fn register(vm: &mut VM) {
     // from structured args. Options: an associative Map with keys
     // `expires` (int unix), `path`, `domain`, `secure`, `httponly`,
     // `samesite`. Called by PHP's stdlib `setcookie()` idiom.
-    vm.register_host_fn("vybe:http/response", "set_cookie", Box::new(|_ctx, args| {
+    vm.register_host_fn("node:http", "set_cookie", Box::new(|_ctx, args| {
         let name = string_arg(args, 0);
         let value = string_arg(args, 1);
         if name.is_empty() { return Value::Bool(false); }
@@ -197,7 +197,7 @@ pub fn register(vm: &mut VM) {
             let opts = opts_obj.lock().unwrap();
             // Options may arrive as either a Map or an Ordinary object
             // (PHP stdlib construction varies). Read both shapes.
-            let mut get = |key: &str| -> Option<String> {
+            let get = |key: &str| -> Option<String> {
                 if let vybe_bytecode::value::ObjectKind::Map(m) = &opts.kind {
                     let as_str = m.get(&Value::String(std::sync::Arc::from(key)));
                     return as_str.map(|v| format!("{}", v));

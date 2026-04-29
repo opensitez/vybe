@@ -22,12 +22,13 @@ pub fn register(vm: &mut VM) {
     set_prop(&dns, "gethostaddresses", host_fn_ref(vm, "dotnet:net", "dnsGetHostAddresses"));
     set_prop(&dns, "gethostentry", host_fn_ref(vm, "dotnet:net", "dnsGetHostEntry"));
     set_prop(&dns, "gethostname", host_fn_ref(vm, "dotnet:net", "dnsGetHostName"));
-    // System.Security.Cryptography
+    // System.Security.Cryptography — backed by `wasi:crypto/hashes` (the
+    // wasi-crypto sponge proposal collapsed into one-call hex digest).
     let sha = ensure_namespace(vm, &["System", "Security", "Cryptography", "SHA256"]);
-    set_prop(&sha, "create", host_fn_ref(vm, "vybe:crypto", "sha256"));
+    set_prop(&sha, "create", host_fn_ref(vm, "wasi:crypto/hashes", "sha256"));
 
     let md5 = ensure_namespace(vm, &["System", "Security", "Cryptography", "MD5"]);
-    set_prop(&md5, "create", host_fn_ref(vm, "vybe:crypto", "md5"));
+    set_prop(&md5, "create", host_fn_ref(vm, "wasi:crypto/hashes", "md5"));
 
     // System.Xml.Linq.XDocument
     let xdoc = ensure_namespace(vm, &["System", "Xml", "Linq", "XDocument"]);

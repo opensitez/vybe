@@ -162,7 +162,7 @@ mod tests {
     fn dummy_span() -> Span { Span::default() }
 
     fn make_method(src_name: &str) -> ClassMember {
-        ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
+        ClassMember::Method(Box::new(crate::ast::Statement::new(StmtKind::FunctionDecl {
             name: src_name.into(),
             params: vec![],
             return_type: None,

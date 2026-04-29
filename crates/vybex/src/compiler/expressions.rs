@@ -92,9 +92,15 @@ impl Compiler {
                     let kw = self.profile.self_keyword.clone();
                     if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, &kw) {
                         self.emit_u8(Op::UPVALUE_GET, uv);
+                    } else if self.is_js_profile() {
+                        let idx = self.str_const("__js_this");
+                        self.emit_u16(Op::GLOBAL_GET, idx);
                     } else {
                         self.emit(Op::NULL);
                     }
+                } else if self.is_js_profile() {
+                    let idx = self.str_const("__js_this");
+                    self.emit_u16(Op::GLOBAL_GET, idx);
                 } else {
                     self.emit(Op::NULL);
                 }
@@ -155,6 +161,31 @@ impl Compiler {
                     self.compile_expr(right)?;
                     common::math::emit_pow_invoke(self.chunk(), line);
                     return Ok(());
+                }
+                // InstanceOf → WASM GC `ref.test` opcode with the type name
+                // from the const pool. The static (Ident RHS) form covers
+                // every real-world `a instanceof TypeName` usage and matches
+                // both GC `ref.test ht` and Component Model resource handle
+                // typing — both of which require a compile-time-known type.
+                // Dynamic RHS (the rare `a instanceof someVariable` JS form)
+                // falls through to the host-less polyfill in compile_binop.
+                if *op == BinOp::InstanceOf {
+                    if self.is_js_profile() {
+                        self.compile_expr(left)?;
+                        self.compile_expr(right)?;
+                        self.compile_binop(op);
+                        return Ok(());
+                    }
+                    if let crate::ast::ExprKind::Ident(type_name) = &right.kind {
+                        self.compile_expr(left)?;
+                        let line = self.line;
+                        let name_canon = self.canon(type_name);
+                        let idx = self.chunk().add_constant(
+                            vybe_bytecode::Value::String(std::sync::Arc::from(name_canon.as_str())),
+                        );
+                        self.chunk().emit_op_u16(vybe_bytecode::Op::REF_TEST, idx, line);
+                        return Ok(());
+                    }
                 }
                 self.compile_expr(left)?;
                 self.compile_expr(right)?;
@@ -273,6 +304,83 @@ impl Compiler {
                     }
                 }
 
+                if self.is_js_profile() {
+                    if *null_safe {
+                        self.compile_expr(object)?;
+                        self.emit(Op::DUP);
+                        self.emit(Op::REF_IS_NULL);
+                        let non_null = self.emit_jump(Op::BR_IF_FALSE);
+                        self.emit(Op::DROP);
+                        let line = self.line;
+                        common::expressions::emit_undefined(self.chunk(), line);
+                        let end = self.emit_jump(Op::BR);
+                        self.patch_jump(non_null);
+                        let obj_slot = self.define_local("__js_member_obj");
+                        self.emit_u16(Op::LOCAL_SET, obj_slot);
+                        self.emit(Op::DROP);
+                        let field_name = self.canon(field);
+                        let prop = self.str_const(&field_name);
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit_u16(Op::STRUCT_GET, prop);
+                        let val_slot = self.define_local("__js_member_val");
+                        self.emit_u16(Op::LOCAL_SET, val_slot);
+                        self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, val_slot);
+                        self.emit(Op::REF_IS_NULL);
+                        let have_direct = self.emit_jump(Op::BR_IF_FALSE);
+                        let lookup = self.str_const("__vybe_js_get_method");
+                        self.emit_u16(Op::GLOBAL_GET, lookup);
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit_const(Value::String(Arc::from(field_name.as_str())));
+                        self.emit_u8(Op::CALL_REF, 2);
+                        let end_lookup = self.emit_jump(Op::BR);
+                        self.patch_jump(have_direct);
+                        self.emit_u16(Op::LOCAL_GET, val_slot);
+                        self.patch_jump(end_lookup);
+                        self.patch_jump(end);
+                    } else {
+                        self.compile_expr(object)?;
+                        let obj_slot = self.define_local("__js_member_obj");
+                        self.emit_u16(Op::LOCAL_SET, obj_slot);
+                        self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit(Op::REF_IS_NULL);
+                        let non_null = self.emit_jump(Op::BR_IF_FALSE);
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit(Op::REF_IS_UNDEFINED);
+                        let is_null = self.emit_jump(Op::BR_IF_FALSE);
+                        self.emit_const(Value::String(Arc::from("Cannot read properties of undefined")));
+                        let have_msg = self.emit_jump(Op::BR);
+                        self.patch_jump(is_null);
+                        self.emit_const(Value::String(Arc::from("Cannot read properties of null")));
+                        self.patch_jump(have_msg);
+                        self.emit_js_exception_ctor_from_message_value("TypeError")?;
+                        let line = self.line;
+                        common::errors::emit_throw(self.chunk(), line);
+                        self.patch_jump(non_null);
+                        let field_name = self.canon(field);
+                        let prop = self.str_const(&field_name);
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit_u16(Op::STRUCT_GET, prop);
+                        let val_slot = self.define_local("__js_member_val");
+                        self.emit_u16(Op::LOCAL_SET, val_slot);
+                        self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, val_slot);
+                        self.emit(Op::REF_IS_NULL);
+                        let have_direct = self.emit_jump(Op::BR_IF_FALSE);
+                        let lookup = self.str_const("__vybe_js_get_method");
+                        self.emit_u16(Op::GLOBAL_GET, lookup);
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit_const(Value::String(Arc::from(field_name.as_str())));
+                        self.emit_u8(Op::CALL_REF, 2);
+                        let end = self.emit_jump(Op::BR);
+                        self.patch_jump(have_direct);
+                        self.emit_u16(Op::LOCAL_GET, val_slot);
+                        self.patch_jump(end);
+                    }
+                    return Ok(());
+                }
+
                 self.compile_expr(object)?;
 
                 if *null_safe {
@@ -359,7 +467,7 @@ impl Compiler {
                                 self.compile_expr(&a.value)?;
                             }
                             let line = self.line;
-                            common::threading::emit_thread_new(self.chunk(), line);
+                            common::threading::emit_thread_new(&mut self.chunks, self.current, line);
                             return Ok(());
                         }
                         "task" => {
@@ -368,7 +476,7 @@ impl Compiler {
                                 self.compile_expr(&a.value)?;
                             }
                             let line = self.line;
-                            common::threading::emit_thread_new(self.chunk(), line);
+                            common::threading::emit_thread_new(&mut self.chunks, self.current, line);
                             return Ok(());
                         }
                         "mutex" | "semaphore" => {
@@ -385,37 +493,8 @@ impl Compiler {
                     // Python `RuntimeError`, JS `Error`, etc. all produce identical
                     // bytecode and can catch each other cross-language.
                     if common::errors::is_exception_type(bare_str) {
-                        self.emit_u16(Op::STRUCT_NEW, 0);
-                        self.emit(Op::DUP);
-                        if let Some(msg_arg) = args.first() {
-                            self.compile_expr(&msg_arg.value)?;
-                        } else {
-                            self.emit_const(Value::String(Arc::from("")));
-                        }
-                        let line = self.line;
-                        common::errors::emit_exception_new_finalize(self.chunk(), type_name, line);
-                        // Stamp `stack` = "Name: message" using locals.
-                        // Stack after finalize: [obj]
-                        let exc_tmp = self.define_local("__exc_tmp");
-                        self.emit_u16(Op::LOCAL_SET, exc_tmp); self.emit(Op::DROP);
-                        // Build "Name: " + message
-                        self.emit_const(Value::String(Arc::from(format!("{}: ", type_name))));
-                        self.emit_u16(Op::LOCAL_GET, exc_tmp);
-                        let msg_k = self.str_const("message");
-                        self.emit_u16(Op::STRUCT_GET, msg_k);
-                        // Stack: ["Name: ", msg]. str_concat: a=prefix, b=msg → prefix+msg
-                        self.emit(Op::STR_CONCAT);
-                        // Stack: ["Name: msg"]. Save it.
-                        let sv = self.define_local("__stack_val");
-                        self.emit_u16(Op::LOCAL_SET, sv); self.emit(Op::DROP);
-                        // Stamp: obj.stack = stack_val
-                        self.emit_u16(Op::LOCAL_GET, exc_tmp);
-                        self.emit_u16(Op::LOCAL_GET, sv);
-                        let sk = self.str_const("stack");
-                        self.emit_u16(Op::STRUCT_SET, sk);
-                        self.emit(Op::DROP);
-                        // Result: push obj
-                        self.emit_u16(Op::LOCAL_GET, exc_tmp);
+                        let ctor_args: Vec<&Expression> = args.iter().map(|a| &a.value).collect();
+                        self.emit_js_exception_ctor_value(type_name, &ctor_args)?;
                         return Ok(());
                     }
 
@@ -446,6 +525,14 @@ impl Compiler {
                     };
                     if let Some(target) = dotnet_constructor.clone() {
                         for a in args { self.compile_expr(&a.value)?; }
+                        // Proper-case class name (preserve from source) for
+                        // the __type stamp. Some host fns (e.g.
+                        // `vybe:types/collectionPeek`) compare __type with
+                        // exact case, so a lowercase stamp would clobber.
+                        let proper_name: String = type_name
+                            .split('(').next().unwrap_or(type_name).trim()
+                            .rsplit('.').next().unwrap_or(type_name)
+                            .to_string();
                         match target {
                             vybe_bytecode::component_model::ConstructorTarget::Host(target) => {
                                 let idx = self.import(&target.module, &target.name);
@@ -453,22 +540,23 @@ impl Compiler {
                             }
                             vybe_bytecode::component_model::ConstructorTarget::Common(name) => {
                                 let line = self.line;
-                                self.emit_common(&name, line);
-                                // Tag the object with `__type` and install
-                                // `__get_count` / `__get_length` auto-getters
-                                // via the one-shot `vybe:types/__stamp_type`
-                                // import. Common-backed constructors create
-                                // raw JS-shape objects (Array via
-                                // `collections.new`, Object via
-                                // `ecma:object/new`, etc.) — the stamp
-                                // adds the .NET metadata runtime dispatch
-                                // needs without per-class host fns.
-                                // Stack: [obj] → [obj, name] → [obj]
-                                self.emit_const(Value::String(Arc::from(bare_str)));
-                                let stamp_idx = self.import("vybe:types", "__stamp_type");
-                                self.emit_host_call(stamp_idx, 2);
+                                self.emit_common(&name, args.len() as u8, line);
                             }
                         }
+                        // Stamp `__type` with the .NET class name so the
+                        // runtime TypeRegistry dispatches `d.Add(...)` /
+                        // `d.ContainsKey(...)` against the .NET adapter
+                        // TypeDef (e.g. `Dictionary`) — not against the
+                        // underlying ECMA type (e.g. `Map`). The .NET
+                        // adapter's methods are aliases pointing at the
+                        // same `ecma:*` host fns, so the underlying
+                        // implementation is standardized while the
+                        // surface stays .NET-shaped.
+                        //
+                        // Stack: [obj] → [obj, name] → [obj]
+                        self.emit_const(Value::String(Arc::from(proper_name.as_str())));
+                        let stamp_idx = self.import("vybe:types", "__stamp_type");
+                        self.emit_host_call(stamp_idx, 2);
                         return Ok(());
                     }
 
@@ -479,7 +567,7 @@ impl Compiler {
                             for a in args { self.compile_expr(&a.value)?; }
                             if module == "common" {
                                 let line = self.line;
-                                self.emit_common(&func, line);
+                                self.emit_common(&func, args.len() as u8, line);
                             } else {
                                 let idx = self.import(&module, &func);
                                 self.emit_host_call(idx, args.len() as u8);
@@ -501,6 +589,50 @@ impl Compiler {
                         return Ok(());
                     }
                 }
+                if self.is_js_profile() {
+                    self.compile_expr(class)?;
+                    let ctor_slot = self.define_local("__js_ctor");
+                    self.emit_u16(Op::LOCAL_SET, ctor_slot); self.emit(Op::DROP);
+                    let line = self.line;
+                    self.emit_common("object.new", 0, line);
+
+                    let instance_slot = self.define_local("__js_instance");
+                    self.emit_u16(Op::LOCAL_SET, instance_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, ctor_slot);
+                    let proto_key = self.str_const("prototype");
+                    self.emit_u16(Op::STRUCT_GET, proto_key);
+                    let proto_slot = self.define_local("__js_proto");
+                    self.emit_u16(Op::LOCAL_SET, proto_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, proto_slot);
+                    self.emit(Op::REF_IS_NULL);
+                    let skip_proto = self.emit_jump(Op::BR_IF_TRUE);
+                    self.emit_u16(Op::LOCAL_GET, instance_slot);
+                    self.emit_u16(Op::LOCAL_GET, proto_slot);
+                    let proto_link = self.str_const("__proto__");
+                    self.emit_u16(Op::STRUCT_SET, proto_link);
+                    self.emit(Op::DROP);
+                    self.patch_jump(skip_proto);
+
+                    let saved_js_this = self.save_js_this("__js_prev_this_new");
+                    self.emit_u16(Op::LOCAL_GET, instance_slot);
+                    self.set_js_this_from_stack();
+                    self.emit_u16(Op::LOCAL_GET, ctor_slot);
+                    for a in args { self.compile_expr(&a.value)?; }
+                    self.emit_u8(Op::CALL_REF, args.len() as u8);
+                    let result_slot = self.define_local("__js_ctor_result");
+                    self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
+                    self.restore_js_this(saved_js_this);
+                    self.emit_u16(Op::LOCAL_GET, result_slot);
+                    self.emit(Op::REF_IS_NULL);
+                    let use_instance = self.emit_jump(Op::BR_IF_TRUE);
+                    self.emit_u16(Op::LOCAL_GET, result_slot);
+                    let end = self.emit_jump(Op::BR);
+                    self.patch_jump(use_instance);
+                    self.emit_u16(Op::LOCAL_GET, instance_slot);
+                    self.patch_jump(end);
+                    return Ok(());
+                }
+
                 // User-defined class constructor
                 self.compile_expr(class)?;
                 for a in args { self.compile_expr(&a.value)?; }
@@ -721,15 +853,19 @@ impl Compiler {
                         ObjectProperty::Method { key, value } => {
                             self.emit(Op::DUP);
                             if let StmtKind::FunctionDecl { params, body, .. } = &value.kind {
-                                // Object methods receive `this` as implicit first arg
-                                let mut method_params = vec![Param {
-                                    name: self.profile.self_keyword.clone(),
-                                    type_hint: None, default: None,
-                                    pass_by: PassBy::Value, is_rest: false,
-                                    is_kwargs: false, is_optional: false, is_nullable: false,
-                                }];
-                                method_params.extend(params.iter().cloned());
-                                self.compile_lambda(&method_params, &LambdaBody::Block(body.clone()))?;
+                                if self.is_js_profile() {
+                                    self.compile_lambda(params, &LambdaBody::Block(body.clone()))?;
+                                } else {
+                                    // Object methods receive `this` as implicit first arg
+                                    let mut method_params = vec![Param {
+                                        name: self.profile.self_keyword.clone(),
+                                        type_hint: None, default: None,
+                                        pass_by: PassBy::Value, is_rest: false,
+                                        is_kwargs: false, is_optional: false, is_nullable: false,
+                                    }];
+                                    method_params.extend(params.iter().cloned());
+                                    self.compile_lambda(&method_params, &LambdaBody::Block(body.clone()))?;
+                                }
                             } else {
                                 self.emit(Op::NULL);
                             }
@@ -740,15 +876,19 @@ impl Compiler {
                         ObjectProperty::Accessor { kind, key, value } => {
                             self.emit(Op::DUP);
                             if let StmtKind::FunctionDecl { params, body, .. } = &value.kind {
-                                // Accessors receive `this` as first arg
-                                let mut accessor_params = vec![Param {
-                                    name: self.profile.self_keyword.clone(),
-                                    type_hint: None, default: None,
-                                    pass_by: PassBy::Value, is_rest: false,
-                                    is_kwargs: false, is_optional: false, is_nullable: false,
-                                }];
-                                accessor_params.extend(params.iter().cloned());
-                                self.compile_lambda(&accessor_params, &LambdaBody::Block(body.clone()))?;
+                                if self.is_js_profile() {
+                                    self.compile_lambda(params, &LambdaBody::Block(body.clone()))?;
+                                } else {
+                                    // Accessors receive `this` as first arg
+                                    let mut accessor_params = vec![Param {
+                                        name: self.profile.self_keyword.clone(),
+                                        type_hint: None, default: None,
+                                        pass_by: PassBy::Value, is_rest: false,
+                                        is_kwargs: false, is_optional: false, is_nullable: false,
+                                    }];
+                                    accessor_params.extend(params.iter().cloned());
+                                    self.compile_lambda(&accessor_params, &LambdaBody::Block(body.clone()))?;
+                                }
                             } else {
                                 self.emit(Op::NULL);
                             }
@@ -1118,9 +1258,13 @@ impl Compiler {
             // ── FunctionExpr (JS) ───────────────────────────────────────
             ExprKind::FunctionExpr(stmt) => {
                 if let StmtKind::FunctionDecl { name, params, return_type, body, is_sub, is_generator, handles, is_async, .. } = &stmt.kind {
-                    let fn_name = if name.is_empty() { "__anon_fn" } else { name };
-                    self.compile_function_decl(fn_name, params, return_type, body, *is_sub, *is_generator, handles, *is_async)?;
-                    self.emit_var_get(fn_name);
+                    let fn_name = if name.is_empty() {
+                        format!("__anon_fn_{}", self.chunks.len())
+                    } else {
+                        name.clone()
+                    };
+                    self.compile_function_decl(&fn_name, params, return_type, body, *is_sub, *is_generator, handles, *is_async)?;
+                    self.emit_var_get(&fn_name);
                 } else {
                     self.emit(Op::NULL);
                 }

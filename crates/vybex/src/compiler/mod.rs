@@ -143,6 +143,12 @@ pub struct Compiler {
     /// name). Empty map when the caller didn't supply one (Bundle's
     /// legacy compile path, tests that don't use adapters).
     module_exports: HashMap<String, HashMap<String, (String, String)>>,
+    /// Active finally blocks for the current control-flow path.
+    ///
+    /// Used to make early returns execute structured `finally` bodies
+    /// even though the VM's TRY_START handler currently ignores the
+    /// reserved finally offset operand.
+    active_finally_blocks: Vec<Vec<Statement>>,
 }
 
 /// §16.2.1.3 wildcard — `import * as alias from "module"`.
@@ -208,6 +214,7 @@ impl Compiler {
             host_namespace_aliases: HashMap::new(),
             host_package_roots: HashMap::new(),
             module_exports: HashMap::new(),
+            active_finally_blocks: Vec::new(),
         }
     }
 
@@ -712,6 +719,45 @@ impl Compiler {
         self.emit(Op::RETURN);
     }
 
+    fn emit_active_finally_blocks(&mut self) -> Result<(), String> {
+        if self.active_finally_blocks.is_empty() {
+            return Ok(());
+        }
+
+        let original = self.active_finally_blocks.clone();
+        for idx in (0..original.len()).rev() {
+            self.active_finally_blocks = original[..idx].to_vec();
+            for stmt in &original[idx] {
+                self.compile_stmt(stmt)?;
+            }
+        }
+        self.active_finally_blocks = original;
+        Ok(())
+    }
+
+    fn emit_return_through_finally(&mut self, result_count: usize) -> Result<(), String> {
+        if self.active_finally_blocks.is_empty() {
+            self.emit_return();
+            return Ok(());
+        }
+
+        let slots: Vec<u16> = (0..result_count)
+            .map(|idx| self.define_local(&format!("__return_val_{}", idx)))
+            .collect();
+        for idx in (0..result_count).rev() {
+            self.emit_u16(Op::LOCAL_SET, slots[idx]);
+            self.emit(Op::DROP);
+        }
+
+        self.emit_active_finally_blocks()?;
+
+        for slot in &slots {
+            self.emit_u16(Op::LOCAL_GET, *slot);
+        }
+        self.emit_return();
+        Ok(())
+    }
+
     /// Same as `define_local` but with a type hint — sugar around
     /// `Scope::define_typed`. Keeps the sync invariant.
     pub(crate) fn define_local_typed(&mut self, name: &str, type_hint: Option<String>) -> u16 {
@@ -1090,6 +1136,40 @@ impl Compiler {
         false
     }
 
+    fn is_js_profile(&self) -> bool {
+        self.profile.name == "js"
+    }
+
+    fn save_js_this(&mut self, local_name: &str) -> Option<u16> {
+        if !self.is_js_profile() {
+            return None;
+        }
+        let slot = self.scope().resolve(local_name)
+            .unwrap_or_else(|| self.define_local(local_name));
+        let idx = self.str_const("__js_this");
+        self.emit_u16(Op::GLOBAL_GET, idx);
+        self.emit_u16(Op::LOCAL_SET, slot);
+        self.emit(Op::DROP);
+        Some(slot)
+    }
+
+    fn set_js_this_from_stack(&mut self) {
+        if !self.is_js_profile() {
+            return;
+        }
+        let idx = self.str_const("__js_this");
+        self.emit_u16(Op::GLOBAL_SET, idx);
+        self.emit(Op::DROP);
+    }
+
+    fn restore_js_this(&mut self, slot: Option<u16>) {
+        let Some(slot) = slot else { return; };
+        let idx = self.str_const("__js_this");
+        self.emit_u16(Op::LOCAL_GET, slot);
+        self.emit_u16(Op::GLOBAL_SET, idx);
+        self.emit(Op::DROP);
+    }
+
     fn flatten_member_chain(&self, expr: &Expression) -> Vec<String> {
         match &expr.kind {
             ExprKind::Ident(name) => vec![name.clone()],
@@ -1122,12 +1202,31 @@ impl Compiler {
                 match &expr.kind {
                     // Bare identifier that's a known function → call with 0 args
                     ExprKind::Ident(name) if self.defined_functions.contains(name.as_str()) => {
+                        let saved_js_this = self.save_js_this("__js_stmt_prev_this");
+                        if self.is_js_profile() {
+                            let line = self.line;
+                            common::expressions::emit_undefined(self.chunk(), line);
+                            self.set_js_this_from_stack();
+                        }
                         self.emit_var_get(name);
                         self.emit_u8(Op::CALL_REF, 0);
+                        if saved_js_this.is_some() {
+                            let result_slot = self.define_local("__js_stmt_result");
+                            self.emit_u16(Op::LOCAL_SET, result_slot);
+                            self.emit(Op::DROP);
+                            self.restore_js_this(saved_js_this);
+                            self.emit_u16(Op::LOCAL_GET, result_slot);
+                        }
                         self.emit(Op::DROP);
                     }
-                    // obj.method as statement → method call with 0 args
+                    // JS bare member statements evaluate the property access
+                    // and discard the result; they are not implicit calls.
                     ExprKind::Member { object, field, .. } => {
+                        if self.is_js_profile() {
+                            self.compile_expr(expr)?;
+                            self.emit(Op::DROP);
+                            return Ok(());
+                        }
                         self.compile_expr(object)?;
                         let field_name = self.canon(field);
                         let prop = self.str_const(&field_name);
@@ -1596,6 +1695,9 @@ impl Compiler {
             StmtKind::Try { body, catches, else_body, finally } => {
                 let line = self.line;
                 let catch_jump = common::errors::emit_try_start(&mut self.chunks[self.current], line);
+                if let Some(fin) = finally.clone() {
+                    self.active_finally_blocks.push(fin);
+                }
                 for s in body { self.compile_stmt(s)?; }
                 common::errors::emit_try_end(&mut self.chunks[self.current], line);
                 // Python else: runs if no exception
@@ -1642,13 +1744,16 @@ impl Compiler {
                         }
 
                         if let Some(ref var) = c.var_name {
+                            self.scope_mut().begin_scope();
                             let slot = self.define_local(var);
                             self.emit_u16(Op::LOCAL_SET, slot);
                             self.emit(Op::DROP);
                         } else {
+                            self.scope_mut().begin_scope();
                             self.emit(Op::DROP);
                         }
                         for s in &c.body { self.compile_stmt(s)?; }
+                        self.scope_mut().end_scope();
                         end_patches.push(self.emit_jump(Op::BR));
 
                         if let Some(p) = skip_arm { self.patch_jump(p); }
@@ -1659,6 +1764,9 @@ impl Compiler {
                     for p in end_patches { self.patch_jump(p); }
                 }
                 self.patch_jump(skip_to_finally);
+                if finally.is_some() {
+                    self.active_finally_blocks.pop();
+                }
                 if let Some(fin) = finally {
                     for s in fin { self.compile_stmt(s)?; }
                 }
@@ -1675,7 +1783,7 @@ impl Compiler {
                     if let ExprKind::Tuple(elems) = &v.kind {
                         if elems.len() == n as usize {
                             for elem in elems { self.compile_expr(elem)?; }
-                            self.emit_return();
+                            self.emit_return_through_finally(n as usize)?;
                             return Ok(());
                         }
                     }
@@ -1689,7 +1797,7 @@ impl Compiler {
                 } else {
                     self.emit(Op::NULL);
                 }
-                self.emit_return();
+                self.emit_return_through_finally(1)?;
             }
 
             // ── Break ───────────────────────────────────────────────────
@@ -1704,7 +1812,7 @@ impl Compiler {
                         } else {
                             self.emit(Op::NULL);
                         }
-                        self.emit_return();
+                        self.emit_return_through_finally(1)?;
                     }
                     BreakTarget::Implicit | BreakTarget::Kind(_) | BreakTarget::Level(_) => {
                         // If the targeted loop has a did_break slot (Python/
@@ -1734,7 +1842,7 @@ impl Compiler {
                     }
                     BreakTarget::Value(expr) => {
                         self.compile_expr(expr)?;
-                        self.emit_return();
+                        self.emit_return_through_finally(1)?;
                     }
                 }
             }
@@ -2715,9 +2823,36 @@ impl Compiler {
                 self.emit(Op::DYN_NOT);
             }
             BinOp::InstanceOf => {
-                // a instanceof B → check __type chain via host fn
-                let idx = self.import("vybe:object", "instanceOf");
-                self.emit_host_call(idx, 2);
+                if self.is_js_profile() {
+                    let rhs_slot = self.define_local("__js_instanceof_rhs");
+                    let lhs_slot = self.define_local("__js_instanceof_lhs");
+                    self.emit_u16(Op::LOCAL_SET, rhs_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, lhs_slot); self.emit(Op::DROP);
+                    let helper = self.import("ecma:value", "instanceOf");
+                    self.emit_u16(Op::LOCAL_GET, lhs_slot);
+                    self.emit_u16(Op::LOCAL_GET, rhs_slot);
+                    self.emit_host_call(helper, 2);
+                } else {
+                    // Dynamic-RHS fallback: the static `a instanceof TypeName`
+                    // form is intercepted upstream in `expressions.rs` and
+                    // emitted as `Op::REF_TEST` directly. This branch only
+                    // fires for the rare `a instanceof <expression>` shape.
+                    //
+                    // Stack on entry: [val, ctor]. We string-compare
+                    // `val.__type` against `ctor.name` — the same compile-time
+                    // type-stamp the constructors install via `set_type_id`.
+                    let l = self.line;
+                    let t_ctor = self.define_local("__io_ctor");
+                    self.emit_u16(Op::LOCAL_SET, t_ctor); self.emit(Op::DROP);
+                    // val is on top — get its __type
+                    let type_key = self.str_const("__type");
+                    self.chunk().emit_op_u16(Op::STRUCT_GET, type_key, l);
+                    // push ctor.name
+                    self.emit_u16(Op::LOCAL_GET, t_ctor);
+                    let name_key = self.str_const("name");
+                    self.chunk().emit_op_u16(Op::STRUCT_GET, name_key, l);
+                    self.emit(Op::STR_EQUALS);
+                }
             }
             BinOp::NullCoalesce => unreachable!(), // handled in compile_expr
             BinOp::MatMul => {
@@ -2926,7 +3061,7 @@ impl Compiler {
                     // Compile args, then dispatch to compiler_common emitter
                     for a in args { self.compile_expr(a)?; }
                     let line = self.line;
-                    self.emit_common(name.as_str(), line);
+                    self.emit_common(name.as_str(), args.len() as u8, line);
                 }
                 BuiltinEmit::Stdlib(stdlib_name) => {
                     // Push func ref FIRST, then args, then call_ref
@@ -2956,7 +3091,12 @@ impl Compiler {
 
     /// Emit a compiler_common operation by namespaced name.
     /// Used by both `BuiltinEmit::Common` paths.
-    fn emit_common(&mut self, name: &str, line: u32) {
+    ///
+    /// `argc` is how many caller-supplied arguments are currently on
+    /// the stack at the emit site. Multi-arity emits (e.g. .NET
+    /// constructors with overloaded shapes) branch on it; most emits
+    /// ignore it because their stack contract is fixed.
+    fn emit_common(&mut self, name: &str, argc: u8, line: u32) {
         // First try the import-needing dispatch (sleep, etc.). It needs a
         // closure into the compiler to resolve imports against chunk[0].
         // We use a raw pointer to break the borrow of self.
@@ -2966,6 +3106,7 @@ impl Compiler {
             let handled = common::dispatch::emit_common_with_imports(
                 name,
                 chunk,
+                argc,
                 line,
                 |module, fname| unsafe { (*self_ptr).import(module, fname) },
             );
@@ -2973,7 +3114,7 @@ impl Compiler {
         }
         // Then the pure (chunk + line) common ops.
         let line2 = line;
-        let handled = common::dispatch::emit_common(name, &mut self.chunks, self.current, line2);
+        let handled = common::dispatch::emit_common(name, &mut self.chunks, self.current, argc, line2);
         if !handled {
             eprintln!("Unknown common emit: {}", name);
         }

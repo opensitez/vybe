@@ -17,6 +17,7 @@
 //! `crates/vybe_bytecode/src/wasm/JS_BUILTIN_CONVENTIONS.md`.
 
 use std::sync::{Arc, Mutex};
+use crate::namespaces::receiver_host_fn_ref;
 use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::{HostContext, VM};
 
@@ -177,13 +178,39 @@ fn register_adapters(vm: &mut VM) {
 
 fn register_constructors(vm: &mut VM) {
     // new() -> Array
+    // ECMA-262 §23.1.1.1 Array constructor:
+    //   new Array()         → []  (length 0)
+    //   new Array(n)        → array of length `n`, all `undefined` slots
+    //                         (TypeError if n is non-integer or out of range —
+    //                         Vybe falls back to a single-element array)
+    //   new Array(a, b, …)  → [a, b, …]
     vm.register_host_fn(
         "ecma:array",
         "new",
-        Box::new(|_ctx: &mut HostContext, _args: &[Value]| make_array(Vec::new())),
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            match args.len() {
+                0 => make_array(Vec::new()),
+                1 => match &args[0] {
+                    Value::F64(n) if n.fract() == 0.0 && *n >= 0.0 && *n <= u32::MAX as f64 => {
+                        make_array(vec![Value::Undefined; *n as usize])
+                    }
+                    Value::I32(n) if *n >= 0 => {
+                        make_array(vec![Value::Undefined; *n as usize])
+                    }
+                    Value::I64(n) if *n >= 0 => {
+                        make_array(vec![Value::Undefined; *n as usize])
+                    }
+                    other => make_array(vec![other.clone()]),
+                },
+                _ => make_array(args.to_vec()),
+            }
+        }),
     );
 
-    // newWithLength(n: i32) -> Array (n-element, null-filled)
+    // newWithLength(n: i32) -> Array (n-element, null-filled).
+    // Used by language-specific allocations (VB `ReDim`, .NET `new T[n]`)
+    // that expect default-value semantics (null/0). JS callers go through
+    // `new` above which materializes `undefined` slots per spec.
     vm.register_host_fn(
         "ecma:array",
         "newWithLength",
@@ -220,13 +247,28 @@ fn register_constructors(vm: &mut VM) {
             match args.first() {
                 Some(Value::Object(src)) => {
                     let s = src.lock().unwrap();
-                    if let ObjectKind::Array(ref elems) = s.kind {
-                        out.extend(elems.iter().cloned());
-                    } else if let Some(len_val) = s.properties.get("length") {
-                        let len = len_val.as_f64().max(0.0) as usize;
-                        for i in 0..len {
-                            let key = i.to_string();
-                            out.push(s.properties.get(&key).cloned().unwrap_or(Value::Undefined));
+                    match s.kind {
+                        ObjectKind::Array(ref elems) => {
+                            out.extend(elems.iter().cloned());
+                        }
+                        // Map → Array of `[key, value]` pairs (§23.1.2.1).
+                        ObjectKind::Map(ref m) => {
+                            for (k, v) in m.iter() {
+                                out.push(make_array(vec![k.clone(), v.clone()]));
+                            }
+                        }
+                        // Set → Array of values (§23.1.2.1).
+                        ObjectKind::Set(ref set) => {
+                            out.extend(set.iter().cloned());
+                        }
+                        _ => {
+                            if let Some(len_val) = s.properties.get("length") {
+                                let len = len_val.as_f64().max(0.0) as usize;
+                                for i in 0..len {
+                                    let key = i.to_string();
+                                    out.push(s.properties.get(&key).cloned().unwrap_or(Value::Undefined));
+                                }
+                            }
                         }
                     }
                 }
@@ -982,11 +1024,66 @@ fn register_non_mutators(vm: &mut VM) {
 
 // ── Iteration / higher-order callbacks ─────────────────────────────────
 
+/// Captured at register-time so `make_array_iterator` can stamp a
+/// HostFunction property pointing at `iterNext` without re-resolving
+/// the registry on every call.
+static ARRAY_ITER_NEXT_IDX: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+fn iter_result(value: Value, done: bool) -> Value {
+    let mut obj = Object::new();
+    obj.properties.insert("value".into(), value);
+    obj.properties.insert("done".into(), Value::Bool(done));
+    Value::Object(Arc::new(Mutex::new(obj)))
+}
+
+/// Build an Array Iterator (§23.1.5) backed by a materialized Vec.
+/// The iterator's `ObjectKind::Array(...)` lets spread/for-of fall back
+/// to plain-array iteration when the consumer doesn't drive `.next()`
+/// explicitly. `__index` tracks an independent cursor for `.next()`.
+pub(crate) fn make_array_iterator(materialized: Vec<Value>) -> Value {
+    let mut obj = Object::new();
+    obj.kind = ObjectKind::Array(materialized);
+    obj.properties.insert("__type".into(), Value::String(Arc::from("ArrayIterator")));
+    obj.properties.insert("__index".into(), Value::I32(0));
+    if let Some(idx) = ARRAY_ITER_NEXT_IDX.get() {
+        obj.properties.insert("next".into(), receiver_host_fn_ref("ecma:array", "iterNext", *idx));
+    }
+    Value::Object(Arc::new(Mutex::new(obj)))
+}
+
 fn register_iteration(vm: &mut VM) {
-    // keys(arr) / values(arr) / entries(arr) — return Array of keys,
-    // values, or [k, v] pairs. Spec returns iterators; Phase B12 will
-    // upgrade these to real iterator externrefs. MVP returns an Array
-    // which satisfies most callers since arrays are iterable.
+    // `iterNext(this)` — implements §23.1.5.2.1 Array Iterator next().
+    // Reads `__index`, returns `{value, done}`, advances the cursor.
+    vm.register_host_fn(
+        "ecma:array",
+        "iterNext",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let Some(Value::Object(it)) = args.first() else {
+                return iter_result(Value::Undefined, true);
+            };
+            let mut o = it.lock().unwrap();
+            let idx = o.properties.get("__index").map(|v| v.as_i32()).unwrap_or(0);
+            if let ObjectKind::Array(ref items) = o.kind {
+                if (idx as usize) < items.len() {
+                    let value = items[idx as usize].clone();
+                    o.properties.insert("__index".into(), Value::I32(idx + 1));
+                    return iter_result(value, false);
+                }
+            }
+            iter_result(Value::Undefined, true)
+        }),
+    );
+    if let Some(idx) = vm.host_registry
+        .get(&("ecma:array".to_string(), "iterNext".to_string()))
+        .copied()
+    {
+        let _ = ARRAY_ITER_NEXT_IDX.set(idx);
+    }
+
+    // keys(arr) / values(arr) / entries(arr) — §23.1.3.{16,36,7}.
+    // Return a §23.1.5 Array Iterator with `next()` driving the cursor.
+    // The iterator's underlying Array kind keeps spread / for-of working
+    // through plain-array iteration paths.
     vm.register_host_fn(
         "ecma:array",
         "keys",
@@ -995,10 +1092,10 @@ fn register_iteration(vm: &mut VM) {
                 let o = arr.lock().unwrap();
                 if let ObjectKind::Array(ref v) = o.kind {
                     let out: Vec<Value> = (0..v.len()).map(|i| Value::F64(i as f64)).collect();
-                    return make_array(out);
+                    return make_array_iterator(out);
                 }
             }
-            make_array(Vec::new())
+            make_array_iterator(Vec::new())
         }),
     );
 
@@ -1009,10 +1106,10 @@ fn register_iteration(vm: &mut VM) {
             if let Some(arr) = array_of(args, 0) {
                 let o = arr.lock().unwrap();
                 if let ObjectKind::Array(ref v) = o.kind {
-                    return make_array(v.clone());
+                    return make_array_iterator(v.clone());
                 }
             }
-            make_array(Vec::new())
+            make_array_iterator(Vec::new())
         }),
     );
 
@@ -1028,10 +1125,10 @@ fn register_iteration(vm: &mut VM) {
                         .enumerate()
                         .map(|(i, e)| make_array(vec![Value::F64(i as f64), e.clone()]))
                         .collect();
-                    return make_array(out);
+                    return make_array_iterator(out);
                 }
             }
-            make_array(Vec::new())
+            make_array_iterator(Vec::new())
         }),
     );
 

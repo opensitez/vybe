@@ -211,8 +211,8 @@ substr              = { emit = "intrinsic:php_substr",       min_args = 2, max_a
 # PHP code (leading underscores sort under the normal name binding in
 # PHP anyway, but they're not intended to collide).
 
-__php_increment     = { emit = "host:vybe:string:phpIncrement", min_args = 1, max_args = 1 }
-__php_decrement     = { emit = "host:vybe:string:phpDecrement", min_args = 1, max_args = 1 }
+__php_increment     = { emit = "stdlib:php_inc",                 min_args = 1, max_args = 1 }
+__php_decrement     = { emit = "stdlib:php_dec",                 min_args = 1, max_args = 1 }
 
 # ── File I/O ────────────────────────────────────────────────────────────────
 
@@ -248,17 +248,17 @@ set_error_handler   = { emit = "noop",                        min_args = 1, max_
 restore_error_handler = { emit = "noop",                      min_args = 0, max_args = 0 }
 set_exception_handler = { emit = "noop",                      min_args = 1, max_args = 1 }
 trigger_error       = { emit = "noop",                        min_args = 1, max_args = 2 }
-php_sapi_name       = { emit = "host:vybe:http/meta:php_sapi_name", min_args = 0, max_args = 0 }
+php_sapi_name       = { emit = "host:node:http:php_sapi_name", min_args = 0, max_args = 0 }
 getcwd              = { emit = "host:wasi:cli:cwd",          min_args = 0, max_args = 0 }
 gethostname         = { emit = "host:wasi:cli:machineName",  min_args = 0, max_args = 0 }
 
 # ── HTTP / web (vybex --serve) ──────────────────────────────────────────────
-header              = { emit = "host:vybe:http/response:send_header_raw",   min_args = 1, max_args = 3 }
-http_response_code  = { emit = "host:vybe:http/response:http_response_code", min_args = 0, max_args = 1 }
-setcookie           = { emit = "host:vybe:http/response:set_cookie",         min_args = 1, max_args = 3 }
-setrawcookie        = { emit = "host:vybe:http/response:set_cookie",         min_args = 1, max_args = 3 }
-headers_sent        = { emit = "host:vybe:http/response:headers_sent",      min_args = 0, max_args = 2 }
-header_remove       = { emit = "host:vybe:http/response:remove_header",     min_args = 0, max_args = 1 }
+header              = { emit = "host:node:http:send_header_raw",   min_args = 1, max_args = 3 }
+http_response_code  = { emit = "host:node:http:http_response_code", min_args = 0, max_args = 1 }
+setcookie           = { emit = "host:node:http:set_cookie",         min_args = 1, max_args = 3 }
+setrawcookie        = { emit = "host:node:http:set_cookie",         min_args = 1, max_args = 3 }
+headers_sent        = { emit = "host:node:http:headers_sent",      min_args = 0, max_args = 2 }
+header_remove       = { emit = "host:node:http:remove_header",     min_args = 0, max_args = 1 }
 
 # ── Miscellaneous ───────────────────────────────────────────────────────────
 
@@ -272,8 +272,8 @@ defined             = { emit = "noop",                        min_args = 1, max_
 # evaluate the Index expression (producing the value or Null), then call
 # isset_all which checks not-null-not-undefined. Works uniformly across
 # Array, Map, and Ordinary backings.
-isset               = { emit = "host:vybe:object:isset_all",  min_args = 1, max_args = 255 }
-empty               = { emit = "host:vybe:object:is_empty",   min_args = 1, max_args = 1 }
+isset               = { emit = "common:php.isset_all",       min_args = 1, max_args = 255 }
+empty               = { emit = "stdlib:isempty",             min_args = 1, max_args = 1 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # VALUE METHODS — instance method calls on intrinsic types

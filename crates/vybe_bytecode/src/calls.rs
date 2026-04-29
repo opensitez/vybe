@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use crate::error::VMError;
 use crate::value::{Function, Object, ObjectKind, Value};
 use crate::vm::{
-    VM, CallFrame, HostFn, MAX_FRAMES,
+    VM, CallFrame, MAX_FRAMES,
 };
 
 impl VM {
@@ -89,13 +89,11 @@ impl VM {
                         args.extend(self.stack[self.stack.len() - argc..].iter().cloned());
                         for _ in 0..argc { self.stack.pop(); }
                         self.stack.pop();
-                        let placeholder: HostFn = Arc::new(|_, _| Value::Null);
-                        let host_fn = std::mem::replace(&mut self.host_fns[idx], placeholder);
+                        let host_fn = self.host_fns[idx].clone();
                         let result = {
                             let mut ctx = self.make_host_context();
                             host_fn(&mut ctx, &args)
                         };
-                        self.host_fns[idx] = host_fn;
                         self.push(result)?;
                     }
                     _other => {
@@ -219,9 +217,15 @@ impl VM {
             Value::Object(o) => {
                 let ob = o.lock().unwrap();
                 // 1. Instance property (getters handled in struct_get opcode directly)
-                let val = ob.get(name);
-                if !matches!(val, Value::Null) {
-                    return Ok(val);
+                if let Some(v) = ob.properties.get(name) {
+                    return Ok(v.clone());
+                }
+                if let ObjectKind::Array(ref elems) = ob.kind {
+                    if let Ok(idx) = name.parse::<usize>() {
+                        if idx < elems.len() {
+                            return Ok(elems[idx].clone());
+                        }
+                    }
                 }
                 // 1b. Case-insensitive fallback for case-sensitive
                 // languages (C#, Dart) reading PascalCase fields
@@ -232,9 +236,15 @@ impl VM {
                 // write-path to duplicate the value under two keys.
                 let name_lc = name.to_lowercase();
                 if name_lc != name {
-                    let val = ob.get(&name_lc);
-                    if !matches!(val, Value::Null) {
-                        return Ok(val);
+                    if let Some(v) = ob.properties.get(&name_lc) {
+                        return Ok(v.clone());
+                    }
+                    if let ObjectKind::Array(ref elems) = ob.kind {
+                        if let Ok(idx) = name_lc.parse::<usize>() {
+                            if idx < elems.len() {
+                                return Ok(elems[idx].clone());
+                            }
+                        }
                     }
                 }
 
@@ -271,7 +281,7 @@ impl VM {
                     return Ok(self.method_to_value(method));
                 }
 
-                Ok(Value::Null)
+                Ok(Value::Undefined)
             }
             Value::String(s) => {
                 if name == "length" {
@@ -285,13 +295,13 @@ impl VM {
                 if let Some(method) = self.type_registry.resolve_method(0, name) {
                     return Ok(self.method_to_value(method));
                 }
-                Ok(Value::Null)
+                Ok(Value::Undefined)
             }
             _ => {
                 if let Some(method) = self.type_registry.resolve_method(0, name) {
                     return Ok(self.method_to_value(method));
                 }
-                Ok(Value::Null)
+                Ok(Value::Undefined)
             }
         }
     }
@@ -299,15 +309,24 @@ impl VM {
     /// Convert a Method (from TypeRegistry) to a callable Value.
     /// Uses the function table for zero-allocation dispatch.
     pub(crate) fn method_to_value(&self, method: &crate::typedef::Method) -> Value {
+        const RECEIVER_MARKER: &str = "__vybe_method_receiver";
+
         match method {
             crate::typedef::Method::HostFn(idx) => {
-                // Return existing entry from function table — no allocation
                 if *idx < self.func_table.len() {
-                    self.func_table[*idx].clone()
+                    if let Value::Object(func_obj) = &self.func_table[*idx] {
+                        let mut wrapped = Object::new();
+                        wrapped.kind = func_obj.lock().unwrap().kind.clone();
+                        wrapped.properties.insert(RECEIVER_MARKER.into(), Value::Bool(true));
+                        Value::Object(Arc::new(Mutex::new(wrapped)))
+                    } else {
+                        self.func_table[*idx].clone()
+                    }
                 } else {
                     // Fallback: create new (shouldn't happen if registered properly)
                     let mut obj = Object::new();
                     obj.kind = ObjectKind::HostFunction(*idx);
+                    obj.properties.insert(RECEIVER_MARKER.into(), Value::Bool(true));
                     Value::Object(Arc::new(Mutex::new(obj)))
                 }
             }
@@ -319,7 +338,9 @@ impl VM {
                     chunk_index: *idx,
                     upvalues: Vec::new(),
                 };
-                let obj = Object { properties: HashMap::new(), kind: ObjectKind::Function(func), type_id: 0, fields: Vec::new() };
+                let mut properties = HashMap::new();
+                properties.insert(RECEIVER_MARKER.into(), Value::Bool(true));
+                let obj = Object { properties, kind: ObjectKind::Function(func), type_id: 0, fields: Vec::new() };
                 Value::Object(Arc::new(Mutex::new(obj)))
             }
         }

@@ -997,7 +997,25 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             }
         }
         Rule::string_literal => Ok(ExprKind::Lit(Literal::Str(unquote(pair.as_str())))),
-        Rule::regex_literal => Ok(ExprKind::Lit(Literal::Str(pair.as_str().to_string()))),
+        Rule::regex_literal => {
+            // Translate `/pattern/flags` into `new RegExp("pattern", "flags")`.
+            // ECMA-262 §13.2.7: regex literals construct a RegExp instance —
+            // emitting a String here breaks `r.test(...)` and `r.source` usage.
+            // Splitting at the last `/` separates the body from the optional
+            // flag suffix; the leading `/` is always at index 0.
+            let raw = pair.as_str();
+            let (pattern, flags) = match raw.strip_prefix('/').and_then(|s| s.rfind('/').map(|i| (&s[..i], &s[i+1..]))) {
+                Some((p, f)) => (p.to_string(), f.to_string()),
+                None => (raw.to_string(), String::new()),
+            };
+            Ok(ExprKind::New {
+                class: Box::new(Expression::ident("RegExp")),
+                args: vec![
+                    Argument::positional(Expression::string(&pattern)),
+                    Argument::positional(Expression::string(&flags)),
+                ],
+            })
+        }
         Rule::ident_name | Rule::ident_or_keyword => {
             let name = pair.as_str();
             match name {
@@ -1139,7 +1157,10 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             // new_expression = { "new" ~ primary ~ call_chain* }
             // Per JS spec: the FIRST `()` after `new` is the constructor args.
             // Any subsequent member/call/index chains are applied to the RESULT
-            // of the construction (e.g. `new Foo().bar().baz`).
+            // of the construction (e.g. `new Foo().bar().baz`). The
+            // word-boundary check happens at `call_expression`'s
+            // `&new_keyword_lookahead` gate — see the grammar comment for
+            // why the lookahead lives there instead of inside this rule.
             let mut inner = pair.into_inner();
             let first = inner.next().ok_or("Empty new")?;
             let mut expr = walk_expression(first)?;
