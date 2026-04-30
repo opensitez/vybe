@@ -279,6 +279,7 @@ pub fn build_stdlib(imports: &mut Chunk) -> StdLib {
     chunks.push(build_dyn_mul(imports));           exports.push("__stdlib_dynmul");
     chunks.push(build_concat(imports));            exports.push("__stdlib_concat");
     chunks.push(build_string_raw(imports));        exports.push("__stdlib_string_raw");
+    chunks.push(build_drain_generator(imports));   exports.push("__stdlib_drain_generator");
     chunks.push(build_fmod(imports));              exports.push("__stdlib_fmod");
     chunks.push(build_array_insert(imports));      exports.push("__stdlib_array_insert");
     chunks.push(build_array_remove_at(imports));   exports.push("__stdlib_array_remove_at");
@@ -296,6 +297,9 @@ pub fn build_stdlib(imports: &mut Chunk) -> StdLib {
     chunks.push(build_polyfill(
         imports, include_str!("polyfills/sprintf.js"), "js", "sprintf"));
     exports.push("__stdlib_sprintf");
+    chunks.push(build_polyfill(
+        imports, include_str!("polyfills/to_primitive.js"), "js", "__vybe_to_primitive"));
+    exports.push("__stdlib_to_primitive");
     // Order matters: dir() embeds GLOBAL_GET refs to __vybe_dir_read /
     // __vybe_dir_close, which must be registered before dir() runs. The
     // global registration order is the MAPPINGS order (also driven by
@@ -4064,6 +4068,59 @@ fn build_concat(imports: &mut Chunk) -> Chunk {
 // strings[0] + values[0] + strings[1] + values[1] + ... + strings[N]
 // Since this is called as a tagged template, strings is an array and
 // values are individual args. With rest params, values is already an array.
+/// Drain a Continuation (JS generator) into an Array via repeated
+/// `Op::GEN_NEXT` (WASM stack switching). Used by `Array.from(gen())`,
+/// `[...gen()]`, `for ... of gen()` when the iterable variable holds
+/// a generator. Returns an empty array when the input isn't a
+/// Continuation (caller pre-checks via `ecma:value.isGenerator`).
+fn build_drain_generator(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_drain_generator");
+    c.arity = 1;
+    c.local_count = 4; // gen(0) + result(1) + value(2) + has_more(3)
+    let gen_slot = 0u16;
+    let result = 1u16;
+    let value_local = 2u16;
+    let has_more = 3u16;
+
+    // result = []
+    crate::emitter::collections::emit_array_new_into(imports, &mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // loop { (val, has_more) = GEN_NEXT(gen); if !has_more break; result.push(val); }
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+    c.emit_op_u16(Op::LOCAL_GET, gen_slot, 0);
+    c.emit_op(Op::GEN_NEXT, 0);
+    c.emit_op_u16(Op::LOCAL_SET, has_more, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_SET, value_local, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, has_more, 0);
+    c.emit_op(Op::DYN_TO_BOOL, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // exit when has_more == 0
+
+    // result.push(value)
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op_u16(Op::LOCAL_GET, value_local, 0);
+    let push_idx = imports.add_import("ecma:array", "push");
+    c.emit_op_u16(Op::CALL_IMPORT, push_idx, 0);
+    c.emit(2u8, 0);
+    c.emit_op(Op::DROP, 0); // drop new length
+
+    c.emit_br(0, 0); // continue
+    c.emit_op(Op::END, 0);
+    c.patch_loop(loop_p);
+    c.emit_op(Op::END, 0);
+    c.patch_block(block_p);
+
+    // return result
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
 fn build_string_raw(imports: &mut Chunk) -> Chunk {
     use std::sync::Arc;
 

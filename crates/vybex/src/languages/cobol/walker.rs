@@ -2040,6 +2040,7 @@ fn walk_unstring_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
             value: Expression::new(ExprKind::Index {
                 object: Box::new(Expression::ident("__split_result")),
                 index: Box::new(Expression::int(i as i64)),
+                null_safe: false,
             }),
         }));
     }
@@ -3544,6 +3545,7 @@ fn walk_qualified_ident(pair: Pair<Rule>) -> Result<Expression, String> {
             expr = Expression::new(ExprKind::Index {
                 object: Box::new(expr),
                 index: Box::new(adjusted_index),
+                null_safe: false,
             });
 
             // Handle multi-dimensional subscripts: name(i, j)
@@ -3553,6 +3555,7 @@ fn walk_qualified_ident(pair: Pair<Rule>) -> Result<Expression, String> {
                 expr = Expression::new(ExprKind::Index {
                     object: Box::new(expr),
                     index: Box::new(adjusted),
+                    null_safe: false,
                 });
             }
         }

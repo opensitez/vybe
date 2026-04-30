@@ -621,6 +621,7 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 value: Expression::new(ExprKind::Index {
                     object: Box::new(Expression::new(ExprKind::Ident(tmp.clone()))),
                     index: Box::new(Expression::int(i as i64)),
+                    null_safe: false,
                 }),
             }));
         }
@@ -1511,6 +1512,7 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                 return Ok(Expression::new(ExprKind::Index {
                     object: Box::new(expr),
                     index: Box::new(Expression::int(0)),
+                    null_safe: false,
                 }));
             }
 
@@ -1519,6 +1521,7 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                 return Ok(Expression::new(ExprKind::Index {
                     object: Box::new(expr),
                     index: Box::new(Expression::int(-1)),
+                    null_safe: false,
                 }));
             }
 
@@ -1558,6 +1561,7 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
             Ok(Expression::new(ExprKind::Index {
                 object: Box::new(expr),
                 index: Box::new(index),
+                null_safe: false,
             }))
         }
         Rule::block_literal => {
@@ -1584,6 +1588,7 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                 Ok(Expression::new(ExprKind::Index {
                     object: Box::new(expr),
                     index: Box::new(index),
+                    null_safe: false,
                 }))
             } else {
                 Ok(expr)

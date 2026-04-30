@@ -2409,6 +2409,27 @@ impl Compiler {
             BindingPattern::Ident(name) => {
                 if let Some(ref init_expr) = decl.init {
                     self.compile_expr(init_expr)?;
+                    // ECMA-262 §10.2.9 SetFunctionName — anonymous
+                    // function expressions assigned to a binding take
+                    // the binding name as their `name` property.
+                    // Covers `const f = () => x` / `const f = function() {}`.
+                    if self.is_js_profile() {
+                        let is_anon_fn = match &init_expr.kind {
+                            ExprKind::Lambda { .. } => true,
+                            ExprKind::FunctionExpr(stmt) => {
+                                matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name.is_empty())
+                            }
+                            _ => false,
+                        };
+                        if is_anon_fn {
+                            let line = self.line;
+                            self.emit(Op::DUP);
+                            self.emit_const(Value::String(Arc::from(name.as_str())));
+                            let name_key = self.str_const("name");
+                            self.chunk().emit_op_u16(Op::STRUCT_SET, name_key, line);
+                            self.emit(Op::DROP);
+                        }
+                    }
                 } else if let Some(ref bounds) = decl.array_bounds {
                     // Array with bounds: Dim arr(N) — N is the UPPER bound,
                     // so the array length is N+1. Emit through
@@ -2434,12 +2455,16 @@ impl Compiler {
                         _ => self.emit(Op::NULL),
                     }
                 }
-                // Top-level / hoisted vars → globals.
+                // Top-level vars → globals.
                 // `let`/`const` inside a block scope (depth > 0) are locals
                 // even at the top level — they respect block scoping.
+                // ECMA-262 §10.2.11: `var` inside a function is function-
+                // scoped (a local), only script-level `var` is global.
                 let is_toplevel = self.scopes.len() == 1 && self.scope().depth == 0;
-                let is_hoisted = *kind == VarDeclKind::Var && self.profile.hoist_var;
-                if is_toplevel || (is_hoisted && self.scopes.len() <= 2) {
+                let is_hoisted = *kind == VarDeclKind::Var
+                    && self.profile.hoist_var
+                    && self.scopes.len() == 1;
+                if is_toplevel || is_hoisted {
                     let cn = self.canon(name);
                     let idx = self.str_const(&cn);
                     self.emit_u16(Op::GLOBAL_SET, idx);
@@ -2449,99 +2474,115 @@ impl Compiler {
                     }
                     self.defined_globals.insert(cn);
                 } else {
-                    let slot = self.define_local_typed(name, decl.type_hint.clone());
+                    // ECMA-262 §10.2.11: `var` is function-scoped (must
+                    // survive enclosing-block exits). `let` / `const`
+                    // are block-scoped. The scope helper picks the right
+                    // depth based on the kind.
+                    let slot = if *kind == VarDeclKind::Var && self.profile.hoist_var {
+                        self.scope_mut().define_at_function_scope(name, decl.type_hint.clone())
+                    } else {
+                        self.define_local_typed(name, decl.type_hint.clone())
+                    };
                     self.emit_u16(Op::LOCAL_SET, slot);
                     self.emit(Op::DROP);
                 }
             }
-            BindingPattern::Object(props) => {
-                // Destructuring: let { a, b } = expr
+            BindingPattern::Object(_) | BindingPattern::Array(_) => {
+                // Destructuring `let { a, b } = expr` / `let [a, b] = expr`.
+                // Compile RHS, then recursively bind via the helper so
+                // arbitrary nesting (`{ a: { b: { c } } }`) works.
                 if let Some(ref init_expr) = decl.init {
                     self.compile_expr(init_expr)?;
-                    let obj_slot = self.define_local("__destruct_obj");
-                    self.emit_u16(Op::LOCAL_SET, obj_slot); self.emit(Op::DROP);
-                    for prop in props {
-                        self.emit_u16(Op::LOCAL_GET, obj_slot);
-                        let key = self.str_const(&prop.key);
-                        self.emit_u16(Op::STRUCT_GET, key);
-                        if let Some(ref default) = prop.default {
-                            // If value is null, use default
-                            self.emit(Op::DUP);
-                            self.emit(Op::REF_IS_NULL);
-                            let has_val = self.emit_jump(Op::BR_IF_FALSE);
-                            self.emit(Op::DROP);
-                            self.compile_expr(default)?;
-                            self.patch_jump(has_val);
-                        }
-                        match &prop.value {
-                            Some(BindingPattern::Ident(n)) => {
-                                let slot = self.define_local(n);
-                                self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
-                            }
-                            Some(BindingPattern::Object(nested_props)) => {
-                                // Nested destructuring: { nested: { b } }
-                                // Value from struct_get is the nested object
-                                let nested_slot = self.define_local("__nested");
-                                self.emit_u16(Op::LOCAL_SET, nested_slot); self.emit(Op::DROP);
-                                for np in nested_props {
-                                    self.emit_u16(Op::LOCAL_GET, nested_slot);
-                                    let nk = self.str_const(&np.key);
-                                    self.emit_u16(Op::STRUCT_GET, nk);
-                                    let bind = if let Some(BindingPattern::Ident(ref n)) = np.value {
-                                        n.as_str()
-                                    } else {
-                                        &np.key
-                                    };
-                                    let slot = self.define_local(bind);
-                                    self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
-                                }
-                            }
-                            _ => {
-                                let slot = self.define_local(&prop.key);
-                                self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
-                            }
-                        }
+                    self.compile_destructure_bind(&decl.pattern)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Recursively bind a `BindingPattern` from a value on TOS. Consumes
+    /// the value. Used by `let { a: { b: { c } } } = ...` and friends.
+    /// Defines locals at every leaf ident — call sites must already be
+    /// in the right scope.
+    fn compile_destructure_bind(&mut self, pattern: &BindingPattern) -> Result<(), String> {
+        match pattern {
+            BindingPattern::Ident(name) => {
+                let slot = self.define_local(name);
+                self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+            }
+            BindingPattern::Object(props) => {
+                let obj_slot = self.define_local("__destruct_obj");
+                self.emit_u16(Op::LOCAL_SET, obj_slot); self.emit(Op::DROP);
+                for prop in props {
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    let key = self.str_const(&prop.key);
+                    self.emit_u16(Op::STRUCT_GET, key);
+                    if let Some(ref default) = prop.default {
+                        self.emit(Op::DUP);
+                        self.emit(Op::REF_IS_NULL);
+                        let has_val = self.emit_jump(Op::BR_IF_FALSE);
+                        self.emit(Op::DROP);
+                        self.compile_expr(default)?;
+                        self.patch_jump(has_val);
                     }
+                    let target = match &prop.value {
+                        Some(p) => p.clone(),
+                        None => BindingPattern::Ident(prop.key.clone()),
+                    };
+                    self.compile_destructure_bind(&target)?;
                 }
             }
             BindingPattern::Array(elems) => {
-                // Destructuring: let [a, b] = expr
-                if let Some(ref init_expr) = decl.init {
-                    self.compile_expr(init_expr)?;
-                    let arr_slot = self.define_local("__destruct_arr");
-                    self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
-                    for (i, elem) in elems.iter().enumerate() {
-                        match elem {
-                            ArrayPatternElem::Pattern(BindingPattern::Ident(name), default) => {
-                                self.emit_u16(Op::LOCAL_GET, arr_slot);
-                                self.emit_const(Value::F64(i as f64));
-                                { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
-                                if let Some(def) = default {
-                                    self.emit(Op::DUP);
-                                    self.emit(Op::REF_IS_NULL);
-                                    let has_val = self.emit_jump(Op::BR_IF_FALSE);
-                                    self.emit(Op::DROP);
-                                    self.compile_expr(def)?;
-                                    self.patch_jump(has_val);
-                                }
-                                let slot = self.define_local(name);
-                                self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+                // JS profile: if the value is a generator (ObjectKind::
+                // Continuation, e.g. `let [a,b] = gen()`), drain it via
+                // the WASM stack-switching `__stdlib_drain_generator`
+                // helper into a real Array first. ARRAY_GET on a
+                // Continuation returns undefined otherwise.
+                if self.is_js_profile() {
+                    let raw_slot = self.define_local("__destruct_raw");
+                    self.emit_u16(Op::LOCAL_SET, raw_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, raw_slot);
+                    let is_gen_idx = self.import("ecma:value", "isGenerator");
+                    self.emit_host_call(is_gen_idx, 1);
+                    let not_gen = self.emit_jump(Op::BR_IF_FALSE);
+                    let drain_key = self.str_const("__vybe_drain_generator");
+                    self.emit_u16(Op::GLOBAL_GET, drain_key);
+                    self.emit_u16(Op::LOCAL_GET, raw_slot);
+                    self.emit_u8(Op::CALL_REF, 1);
+                    let done = self.emit_jump(Op::BR);
+                    self.patch_jump(not_gen);
+                    self.emit_u16(Op::LOCAL_GET, raw_slot);
+                    self.patch_jump(done);
+                }
+                let arr_slot = self.define_local("__destruct_arr");
+                self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
+                for (i, elem) in elems.iter().enumerate() {
+                    match elem {
+                        ArrayPatternElem::Pattern(pat, default) => {
+                            self.emit_u16(Op::LOCAL_GET, arr_slot);
+                            self.emit_const(Value::F64(i as f64));
+                            { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+                            if let Some(def) = default {
+                                self.emit(Op::DUP);
+                                self.emit(Op::REF_IS_NULL);
+                                let has_val = self.emit_jump(Op::BR_IF_FALSE);
+                                self.emit(Op::DROP);
+                                self.compile_expr(def)?;
+                                self.patch_jump(has_val);
                             }
-                            ArrayPatternElem::Rest(name) => {
-                                // ...rest: slice from current index
-                                self.emit_u16(Op::LOCAL_GET, arr_slot);
-                                self.emit_const(Value::F64(i as f64));
-                                // end = arr.length
-                                self.emit_u16(Op::LOCAL_GET, arr_slot);
-                                { let l = self.line; common::collections::emit_len(&mut self.chunks, self.current, l); }
-                                let line = self.line;
-                                common::collections::emit_slice(&mut self.chunks, self.current, line);
-                                let slot = self.define_local(name);
-                                self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
-                            }
-                            ArrayPatternElem::Hole => { /* skip */ }
-                            _ => { /* nested patterns — simplified as no-op */ }
+                            self.compile_destructure_bind(pat)?;
                         }
+                        ArrayPatternElem::Rest(name) => {
+                            self.emit_u16(Op::LOCAL_GET, arr_slot);
+                            self.emit_const(Value::F64(i as f64));
+                            self.emit_u16(Op::LOCAL_GET, arr_slot);
+                            { let l = self.line; common::collections::emit_len(&mut self.chunks, self.current, l); }
+                            let line = self.line;
+                            common::collections::emit_slice(&mut self.chunks, self.current, line);
+                            let slot = self.define_local(name);
+                            self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+                        }
+                        ArrayPatternElem::Hole => {}
                     }
                 }
             }
@@ -2592,13 +2633,28 @@ impl Compiler {
                 let tmp = self.define_local("__tmp");
                 self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
                 self.compile_expr(object)?;
-                self.emit_u16(Op::LOCAL_GET, tmp);
                 let field_name = self.canon(field);
+                // JS `Object.keys` / `Object.entries` need insertion order
+                // (ECMA-262 §7.3.22). The HashMap backing properties is
+                // non-deterministic, so we mirror each direct write into
+                // `__keys` via the host trackKey helper. Only fires for
+                // JS — other languages don't promise insertion order or
+                // pay the host-call overhead.
+                if self.is_js_profile() && !field_name.starts_with("__") {
+                    let line = self.line;
+                    self.emit(Op::DUP);
+                    self.emit_const(Value::String(Arc::from(field_name.as_str())));
+                    let track_idx = self.import("ecma:object", "trackKey");
+                    self.chunk().emit_op_u16(Op::CALL_IMPORT, track_idx, line);
+                    self.chunk().emit(2, line);
+                    self.emit(Op::DROP);
+                }
+                self.emit_u16(Op::LOCAL_GET, tmp);
                 let idx = self.str_const(&field_name);
                 self.emit_u16(Op::STRUCT_SET, idx);
                 self.emit(Op::DROP);
             }
-            ExprKind::Index { object, index } => {
+            ExprKind::Index { object, index, .. } => {
                 // PHP `$arr[] = v` — empty bracket with null index is the
                 // auto-append form; route through collections::emit_push.
                 // Every emit here goes via common::collections so the
@@ -2684,6 +2740,47 @@ impl Compiler {
                     }
                 }
             }
+            // JS destructuring assignment shorthand `[a, b] = [b, a]` /
+            // `({ x } = obj)` — the walker produces an Array/Object
+            // literal for the LHS, but the assignment target re-uses
+            // the same shape. Treat each element as a separate
+            // assignment to mirror the desugar `let _t = rhs; a = _t[0]; b = _t[1]`.
+            ExprKind::Array(elems) => {
+                let arr_slot = self.define_local("__assign_destruct_arr");
+                self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
+                for (i, elem) in elems.iter().enumerate() {
+                    if elem.spread { continue; }
+                    self.emit_u16(Op::LOCAL_GET, arr_slot);
+                    self.emit_const(Value::F64(i as f64));
+                    { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+                    let target = elem.value.clone();
+                    self.compile_assign_target(&target)?;
+                }
+            }
+            ExprKind::Object(props) => {
+                let obj_slot = self.define_local("__assign_destruct_obj");
+                self.emit_u16(Op::LOCAL_SET, obj_slot); self.emit(Op::DROP);
+                for prop in props {
+                    if let crate::ast::ObjectProperty::Shorthand(name) = prop {
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        let key = self.str_const(name);
+                        self.emit_u16(Op::STRUCT_GET, key);
+                        self.emit_var_set(name);
+                    } else if let crate::ast::ObjectProperty::KeyValue { key, value } = prop {
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        if let ExprKind::Lit(crate::ast::Literal::Str(ref s)) = key.kind {
+                            let k = self.str_const(s);
+                            self.emit_u16(Op::STRUCT_GET, k);
+                        } else {
+                            self.compile_expr(key)?;
+                            let l = self.line;
+                            common::collections::emit_get(&mut self.chunks, self.current, l);
+                        }
+                        let target = value.clone();
+                        self.compile_assign_target(&target)?;
+                    }
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -2692,6 +2789,70 @@ impl Compiler {
     // ════════════════════════════════════════════════════════════════════════
     // Binary operator emission
     // ════════════════════════════════════════════════════════════════════════
+
+    /// JS profile: emit a single `ToPrimitive(hint)` call on the
+    /// top-of-stack value, routed through the `__vybe_to_primitive`
+    /// JS-source polyfill (compiled to bytecode at vybex build time).
+    /// Going through the polyfill — instead of a host fn that calls
+    /// `dispatch` — keeps the JS method-call protocol intact, so
+    /// `__js_this` is set when the user's `valueOf` / `toString`
+    /// body executes.
+    ///
+    /// Critical fast path: only enter the polyfill when the operand
+    /// is an `Object`. Primitives skip it. Without this guard, the
+    /// polyfill's own `<` / `+` / etc. operators (which the JS
+    /// compiler also routes through `emit_to_primitive`) recurse
+    /// into the polyfill on every iteration → infinite loop.
+    fn emit_to_primitive(&mut self, hint: &str) {
+        self.emit(Op::DUP);
+        self.emit(Op::REF_IS_OBJECT);
+        let skip = self.emit_jump(Op::BR_IF_FALSE);
+        let helper = self.str_const("__vybe_to_primitive");
+        let val_slot = self.define_local("__top_v");
+        self.emit_u16(Op::LOCAL_SET, val_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::GLOBAL_GET, helper);
+        self.emit_u16(Op::LOCAL_GET, val_slot);
+        self.emit_const(Value::String(Arc::from(hint)));
+        self.emit_u8(Op::CALL_REF, 2);
+        self.patch_jump(skip);
+    }
+
+    /// JS profile: coerce both top-of-stack operands via the
+    /// ToPrimitive polyfill, then to_f64 via the VM's existing
+    /// `Value::as_f64` once the operand is no longer an Object.
+    /// Used for `-`, `*`, `/`. Passes hint="number" per ECMA §7.1.4
+    /// step 1 (ToNumber unboxes Objects with hint=number first).
+    fn coerce_top_two_to_number(&mut self) {
+        let t_b = self.define_local("__binop_b");
+        self.emit_u16(Op::LOCAL_SET, t_b); self.emit(Op::DROP);
+        // a on top → coerce
+        self.emit_to_primitive("number");
+        self.emit_u16(Op::LOCAL_GET, t_b);
+        self.emit_to_primitive("number");
+    }
+
+    /// JS profile: ToPrimitive(hint=number) on both operands. Used
+    /// before DYN_LT / DYN_GT / DYN_LE / DYN_GE so string-string lex
+    /// compare and Date/valueOf-overriding instances both work.
+    fn coerce_top_two_to_primitive(&mut self) {
+        let t_b = self.define_local("__cmpop_b");
+        self.emit_u16(Op::LOCAL_SET, t_b); self.emit(Op::DROP);
+        self.emit_to_primitive("number");
+        self.emit_u16(Op::LOCAL_GET, t_b);
+        self.emit_to_primitive("number");
+    }
+
+    /// JS profile: ToPrimitive(hint=default) on both operands. Used
+    /// before DYN_ADD per ECMA §13.15.4 — the `+` operator picks the
+    /// "default" hint, which gives valueOf the first shot and falls
+    /// back to toString.
+    fn coerce_top_two_to_default_primitive(&mut self) {
+        let t_b = self.define_local("__addop_b");
+        self.emit_u16(Op::LOCAL_SET, t_b); self.emit(Op::DROP);
+        self.emit_to_primitive("default");
+        self.emit_u16(Op::LOCAL_GET, t_b);
+        self.emit_to_primitive("default");
+    }
 
     fn compile_binop(&mut self, op: &BinOp) {
         match op {
@@ -2704,14 +2865,32 @@ impl Compiler {
                 // coerces both sides via `Value::as_f64()`; `DYN_ADD`
                 // has the JS-style string-concat special case.
                 if self.profile.dynamic_add {
+                    // JS profile: ECMA §13.15.4 — call ToPrimitive on
+                    // both operands with hint "default" before adding.
+                    // The polyfill returns the operand unchanged for
+                    // primitives (fast path) and unboxes Objects via
+                    // their valueOf/toString chain (Date, custom
+                    // valueOf, class instances).
+                    if self.is_js_profile() {
+                        self.coerce_top_two_to_default_primitive();
+                    }
                     self.emit(Op::DYN_ADD);
                 } else {
                     self.emit(Op::F64_ADD);
                 }
             }
-            BinOp::Sub => self.emit(Op::F64_SUB),
-            BinOp::Mul => self.emit(Op::F64_MUL),
-            BinOp::Div => self.emit(Op::F64_DIV),
+            BinOp::Sub => {
+                if self.is_js_profile() { self.coerce_top_two_to_number(); }
+                self.emit(Op::F64_SUB);
+            },
+            BinOp::Mul => {
+                if self.is_js_profile() { self.coerce_top_two_to_number(); }
+                self.emit(Op::F64_MUL);
+            },
+            BinOp::Div => {
+                if self.is_js_profile() { self.coerce_top_two_to_number(); }
+                self.emit(Op::F64_DIV);
+            },
             BinOp::IDiv => { self.emit(Op::F64_DIV); let l = self.line; common::math::emit_trunc(self.chunk(), l); }
             BinOp::FloorDiv => { self.emit(Op::F64_DIV); let l = self.line; common::math::emit_floor(self.chunk(), l); }
             BinOp::Mod => { let idx = self.import("ecma:math", "fmod"); let l = self.line; common::expressions::emit_f64_mod_with_import(self.chunk(), idx, l); },
@@ -2767,10 +2946,22 @@ impl Compiler {
                 self.emit(Op::DYN_NE);
                 self.patch_jump(done);
             }
-            BinOp::Lt => self.emit(Op::DYN_LT),
-            BinOp::Gt => self.emit(Op::DYN_GT),
-            BinOp::LtEq => self.emit(Op::DYN_LE),
-            BinOp::GtEq => self.emit(Op::DYN_GE),
+            BinOp::Lt => {
+                if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
+                self.emit(Op::DYN_LT);
+            },
+            BinOp::Gt => {
+                if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
+                self.emit(Op::DYN_GT);
+            },
+            BinOp::LtEq => {
+                if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
+                self.emit(Op::DYN_LE);
+            },
+            BinOp::GtEq => {
+                if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
+                self.emit(Op::DYN_GE);
+            },
             BinOp::Spaceship => {
                 // a <=> b: returns -1, 0, or 1
                 let i = self.import("ecma:math", "spaceship");
@@ -2783,20 +2974,33 @@ impl Compiler {
             BinOp::BitXor => self.emit(Op::I32_XOR),
             BinOp::Shl => self.emit(Op::I32_SHL),
             BinOp::Shr => self.emit(Op::I32_SHR_S),
-            BinOp::UShr => self.emit(Op::I32_SHR_U),
+            BinOp::UShr => {
+                self.emit(Op::I32_SHR_U);
+                if self.is_js_profile() {
+                    // ECMA-262 §13.10.2: `>>>` produces an unsigned 32-bit
+                    // integer (Number). I32_SHR_U leaves the bit pattern
+                    // in i32, but if the high bit is set (e.g. `-1 >>> 0`)
+                    // the i32 → Number coercion would render as negative.
+                    // Reinterpret as u32 by adding 2^32 when the i32 is
+                    // negative — keeps within the f64 53-bit mantissa.
+                    self.emit(Op::F64_FROM_I32);
+                    self.emit(Op::DUP);
+                    self.emit_const(Value::F64(0.0));
+                    self.emit(Op::F64_LT);
+                    let skip = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit_const(Value::F64(4_294_967_296.0));
+                    self.emit(Op::F64_ADD);
+                    self.patch_jump(skip);
+                }
+            },
             BinOp::Concat => { let l = self.line; common::strings::emit_str_concat(self.chunk(), l); }
             BinOp::In => {
                 // `x in y` — JS: is `x` a property KEY of `y` (not a value).
-                // Route to `ecma:object.hasOwn(y, x)`, which is
-                // polymorphic on Array (integer in range), Map
-                // (IndexMap key with int/string coercion), and Ordinary
-                // (properties HashMap). Previously emitted
-                // `ecma:array.includes` which confused keys with
-                // values once Maps entered the picture — JS `"k" in obj`
-                // checks keys; PHP `in_array($v, $m)` checks values. They
-                // are different operations and now use different imports.
+                // ECMA-262 §13.10.1 walks the prototype chain. PHP
+                // `in_array` / Python `key in dict` are own-only and
+                // route through their language profiles separately.
                 //
-                // Walker stack: `[x, y]`. hasOwn expects `[y, x]`.
+                // Walker stack: `[x, y]`. hasIn expects `[y, x]`.
                 let l = self.line;
                 let t_y = self.define_local("__in_y");
                 let t_x = self.define_local("__in_x");
@@ -2804,7 +3008,11 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, t_x); self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, t_y);
                 self.emit_u16(Op::LOCAL_GET, t_x);
-                let idx = self.import("ecma:object", "hasOwn");
+                // JS uses prototype-walking `hasIn`; other languages
+                // (case-insensitive profiles or non-JS) keep own-only
+                // `hasOwn` semantics for their `in`-shaped operators.
+                let import = if self.is_js_profile() { "hasIn" } else { "hasOwn" };
+                let idx = self.import("ecma:object", import);
                 self.chunk().emit_op_u16(Op::CALL_IMPORT, idx, l);
                 self.chunk().emit(2, l);
             }
@@ -3031,7 +3239,34 @@ impl Compiler {
                     }
                 }
                 BuiltinEmit::HostCall(module, func) => {
-                    for a in args { self.compile_expr(a)?; }
+                    // Iterator-consuming host fns (e.g. `Array.from`,
+                    // `Promise.all`) accept any iterable. JS generators
+                    // (Continuation) need WASM stack-switching to
+                    // drain — a host fn can't drive coroutine resume,
+                    // so we drain via the `__stdlib_drain_generator`
+                    // bytecode helper before the host call.
+                    let drain_first_arg = self.is_js_profile()
+                        && (module == "ecma:array" && func == "from");
+                    if drain_first_arg && !args.is_empty() {
+                        self.compile_expr(args[0])?;
+                        let v_slot = self.define_local("__hc_iter_v");
+                        self.emit_u16(Op::LOCAL_SET, v_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, v_slot);
+                        let is_gen_idx = self.import("ecma:value", "isGenerator");
+                        self.emit_host_call(is_gen_idx, 1);
+                        let not_gen = self.emit_jump(Op::BR_IF_FALSE);
+                        let drain_key = self.str_const("__vybe_drain_generator");
+                        self.emit_u16(Op::GLOBAL_GET, drain_key);
+                        self.emit_u16(Op::LOCAL_GET, v_slot);
+                        self.emit_u8(Op::CALL_REF, 1);
+                        let done = self.emit_jump(Op::BR);
+                        self.patch_jump(not_gen);
+                        self.emit_u16(Op::LOCAL_GET, v_slot);
+                        self.patch_jump(done);
+                        for a in args.iter().skip(1) { self.compile_expr(a)?; }
+                    } else {
+                        for a in args { self.compile_expr(a)?; }
+                    }
                     let idx = self.import(module, func);
                     self.emit_host_call(idx, args.len() as u8);
                 }

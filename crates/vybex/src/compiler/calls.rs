@@ -137,10 +137,39 @@ impl Compiler {
                     let prop = self.str_const(&base_name);
                     self.emit_u16(Op::LOCAL_GET, self_slot);
                     self.emit_u16(Op::STRUCT_GET, prop);
-                    // Call with this as first arg
-                    self.emit_u16(Op::LOCAL_GET, self_slot);
+                    if self.is_js_profile() {
+                        let saved_js_this = self.save_js_this("__js_prev_this_super_method");
+                        self.emit_u16(Op::LOCAL_GET, self_slot);
+                        self.set_js_this_from_stack();
+                        for a in &arg_exprs { self.compile_expr(a)?; }
+                        self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                        let result_slot = self.define_local("__js_super_method_result");
+                        self.emit_u16(Op::LOCAL_SET, result_slot);
+                        self.emit(Op::DROP);
+                        self.restore_js_this(saved_js_this);
+                        self.emit_u16(Op::LOCAL_GET, result_slot);
+                    } else {
+                        // Typed-language method ABI passes the receiver as arg0.
+                        self.emit_u16(Op::LOCAL_GET, self_slot);
+                        for a in &arg_exprs { self.compile_expr(a)?; }
+                        self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                    }
+                    return Ok(());
+                } else if self.is_js_profile() {
+                    let js_this = self.str_const("__js_this");
+                    let prop = self.str_const(&base_name);
+                    self.emit_u16(Op::GLOBAL_GET, js_this);
+                    self.emit_u16(Op::STRUCT_GET, prop);
+                    let saved_js_this = self.save_js_this("__js_prev_this_super_method");
+                    self.emit_u16(Op::GLOBAL_GET, js_this);
+                    self.set_js_this_from_stack();
                     for a in &arg_exprs { self.compile_expr(a)?; }
-                    self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                    self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                    let result_slot = self.define_local("__js_super_method_result");
+                    self.emit_u16(Op::LOCAL_SET, result_slot);
+                    self.emit(Op::DROP);
+                    self.restore_js_this(saved_js_this);
+                    self.emit_u16(Op::LOCAL_GET, result_slot);
                     return Ok(());
                 }
             }
@@ -189,26 +218,14 @@ impl Compiler {
         // ── Builtin check: Member("Console.WriteLine") ─────────────
         if let ExprKind::Member { object, field, .. } = &callee.kind {
             if let ExprKind::Ident(obj_name) = &object.kind {
-                if self.is_js_profile() && obj_name == "Object" && field == "create" && arg_exprs.len() == 1 {
-                    let line = self.line;
-                    self.emit_common("object.new", 0, line);
-                    let obj_slot = self.define_local("__js_object_create_obj");
-                    self.emit_u16(Op::LOCAL_SET, obj_slot); self.emit(Op::DROP);
-                    self.compile_expr(arg_exprs[0])?;
-                    let proto_slot = self.define_local("__js_object_create_proto");
-                    self.emit_u16(Op::LOCAL_SET, proto_slot); self.emit(Op::DROP);
-                    self.emit_u16(Op::LOCAL_GET, proto_slot);
-                    self.emit(Op::REF_IS_NULL);
-                    let skip_proto = self.emit_jump(Op::BR_IF_TRUE);
-                    self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    self.emit_u16(Op::LOCAL_GET, proto_slot);
-                    let link_key = self.str_const("__proto__");
-                    self.emit_u16(Op::STRUCT_SET, link_key);
-                    self.emit(Op::DROP);
-                    self.patch_jump(skip_proto);
-                    self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    return Ok(());
-                }
+                // Note: Object.create is handled via the host fn
+                // (`ecma:object.create`) so it gets the full ECMA-262
+                // §20.1.2.2 behaviour: descriptor second-arg, null
+                // prototype gets `toString` etc. stamped as Undefined,
+                // and parent properties are copied down for member
+                // access. The earlier compiler shortcut here only set
+                // `__proto__` and missed both — falling through to
+                // `try_compile_builtin` below routes to the host fn.
 
                 let compound = format!("{}.{}", obj_name, field);
                 if self.try_compile_builtin(&compound, &arg_exprs)? { return Ok(()); }
@@ -884,7 +901,28 @@ impl Compiler {
                         }
                     }
                     "forEach" | "foreach" => {
-                        common::loops::emit_foreach(&mut self.chunks, self.current, fn_slot, arr_slot, idx_slot, line);
+                        // Polymorphic forEach: arrays iterate by index,
+                        // Maps iterate (val, key, map) per ECMA-262
+                        // §24.1.3.5, Sets iterate (val, val, set). The
+                        // compiler can't know the receiver type so route
+                        // through `ecma:value.invokeMethod` (each impl
+                        // is in dispatch_{array,map,set}). For non-JS
+                        // profiles, keep the array-only stdlib loop —
+                        // PHP / VB iteration semantics differ.
+                        if self.is_js_profile() {
+                            self.emit_u16(Op::LOCAL_GET, arr_slot);
+                            self.emit_u16(Op::LOCAL_GET, fn_slot);
+                            common::invoke::emit_invoke_method(
+                                &mut self.chunks,
+                                self.current,
+                                "forEach",
+                                1,
+                                line,
+                            );
+                            self.emit(Op::DROP); // forEach returns undefined
+                        } else {
+                            common::loops::emit_foreach(&mut self.chunks, self.current, fn_slot, arr_slot, idx_slot, line);
+                        }
                     }
                     "some" => {
                         common::loops::emit_any_every(&mut self.chunks, self.current, fn_slot, arr_slot, idx_slot, true, line);
@@ -893,8 +931,15 @@ impl Compiler {
                         common::loops::emit_any_every(&mut self.chunks, self.current, fn_slot, arr_slot, idx_slot, false, line);
                     }
                     "find" => {
-                        // find uses includes pattern but returns element not bool
-                        self.emit(Op::NULL);
+                        // find uses includes pattern but returns element not bool.
+                        // JS spec §23.1.3.10: returns undefined when no match;
+                        // other languages stick with Null for cross-compat
+                        // (Python None / VB Nothing / .NET null match Null).
+                        if self.is_js_profile() {
+                            self.emit(Op::UNDEFINED);
+                        } else {
+                            self.emit(Op::NULL);
+                        }
                         self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
                         let lp = common::loops::emit_for_in_start(
                             &mut self.chunks, self.current, arr_slot, idx_slot, line);
@@ -936,25 +981,36 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, result_slot);
                     }
                     "includes" => {
-                        // `x.includes(v)` — polymorphic: arrays do element
-                        // membership, strings do substring search, user
-                        // objects fall through to their own method. Route
-                        // through `ecma:value.invokeMethod` so the
-                        // emitted wasm stays spec-compliant on v8 where
-                        // String.prototype.includes and Array.prototype.includes
-                        // are distinct methods on distinct prototypes.
+                        // `x.includes(v[, fromIndex])` — polymorphic:
+                        // arrays do element membership, strings do
+                        // substring search starting from fromIndex,
+                        // user objects fall through to their own
+                        // method. Route through `ecma:value.invokeMethod`
+                        // so emitted wasm stays spec-compliant.
                         self.emit_u16(Op::LOCAL_GET, arr_slot);
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
+                        // Pass remaining args (fromIndex etc.) directly
+                        // — fn_slot already holds args[0].
+                        for extra in arg_exprs.iter().skip(1) {
+                            self.compile_expr(extra)?;
+                        }
                         common::invoke::emit_invoke_method(
                             &mut self.chunks,
                             self.current,
                             "includes",
-                            1,
+                            arg_exprs.len() as u8,
                             line,
                         );
                     }
                     "sort" => {
                         // JS sort(comparatorFn?) — 2-arg comparator or default
+                        // ECMA-262 §23.1.3.30: default comparator is
+                        // ToString-based ("10" < "2"), not numeric.
+                        // Comparator path uses the stdlib (works for JS
+                        // and for all other languages); no-comparator JS
+                        // routes to ecma:array.sort which does the
+                        // spec-compliant lexicographic sort. Other
+                        // languages keep stdlib's numeric default.
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
                         self.emit(Op::REF_IS_NULL);
                         let no_fn = self.emit_jump(Op::BR_IF_TRUE);
@@ -965,10 +1021,18 @@ impl Compiler {
                         self.emit_u8(Op::CALL_REF, 2);
                         let done = self.emit_jump(Op::BR);
                         self.patch_jump(no_fn);
-                        let sort_global = self.str_const("__vybe_sort_in_place");
-                        self.emit_u16(Op::GLOBAL_GET, sort_global);
-                        self.emit_u16(Op::LOCAL_GET, arr_slot);
-                        self.emit_u8(Op::CALL_REF, 1);
+                        if self.is_js_profile() {
+                            // ecma:array.sort returns the sorted array
+                            // (in-place, returns receiver). One-arg call.
+                            let idx = self.import("ecma:array", "sort");
+                            self.emit_u16(Op::LOCAL_GET, arr_slot);
+                            self.emit_host_call(idx, 1);
+                        } else {
+                            let sort_global = self.str_const("__vybe_sort_in_place");
+                            self.emit_u16(Op::GLOBAL_GET, sort_global);
+                            self.emit_u16(Op::LOCAL_GET, arr_slot);
+                            self.emit_u8(Op::CALL_REF, 1);
+                        }
                         self.patch_jump(done);
                     }
                     "sort_by_key" => {
@@ -1213,6 +1277,47 @@ impl Compiler {
                 let prop = self.str_const(&method_name);
                 let receiver_marker = self.str_const("__vybe_method_receiver");
 
+                // Generator `.next()`: if receiver is a Continuation,
+                // drive via Op::GEN_NEXT (WASM stack switching) and
+                // wrap into spec `{value, done}`. Non-Continuations
+                // (Array iterators, custom iterables) fall through to
+                // the regular method dispatch below — `iter.next()`
+                // on an Array iterator hits the host-fn-with-receiver
+                // path that already works.
+                let gen_next_skip_patch = if !*null_safe && method_name == "next" && arg_exprs.is_empty() {
+                    let line = self.line;
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    let is_gen_idx = self.import("ecma:value", "isGenerator");
+                    self.emit_host_call(is_gen_idx, 1);
+                    let not_gen = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit(Op::GEN_NEXT);
+                    let has_more_slot = self.define_local("__gen_has_more");
+                    self.emit_u16(Op::LOCAL_SET, has_more_slot); self.emit(Op::DROP);
+                    let value_slot = self.define_local("__gen_value");
+                    self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+                    common::dict::emit_new(&mut self.chunks, self.current, line);
+                    self.emit(Op::DUP);
+                    self.emit_u16(Op::LOCAL_GET, value_slot);
+                    let value_key = self.str_const("value");
+                    self.emit_u16(Op::STRUCT_SET, value_key);
+                    self.emit(Op::DROP);
+                    self.emit(Op::DUP);
+                    self.emit_u16(Op::LOCAL_GET, has_more_slot);
+                    self.emit(Op::DYN_TO_BOOL);
+                    self.emit(Op::DYN_NOT);
+                    let done_key = self.str_const("done");
+                    self.emit_u16(Op::STRUCT_SET, done_key);
+                    self.emit(Op::DROP);
+                    let skip = self.emit_jump(Op::BR);
+                    self.patch_jump(not_gen);
+                    Some(skip)
+                } else { None };
+                let _ = gen_next_skip_patch;
+                // gen_next_skip_patch is patched at the end of the JS
+                // method dispatch (when result is on stack and we'd
+                // otherwise `return Ok(())`).
+
                 if *null_safe {
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     self.emit(Op::REF_IS_NULL);
@@ -1351,6 +1456,9 @@ impl Compiler {
                 self.patch_jump(after_call);
                 self.patch_jump(js_done);
                 self.patch_jump(typed_done);
+                if let Some(skip) = gen_next_skip_patch {
+                    self.patch_jump(skip);
+                }
                 return Ok(());
             }
 
@@ -1488,17 +1596,71 @@ impl Compiler {
                         if let Some(ref mut k) = known_len { *k += 1; }
                     }
                 }
-                self.emit_var_get(name);
-                self.emit_u16(Op::LOCAL_GET, args_slot);
-                self.emit(Op::SPREAD);
-                let arity = known_len.unwrap_or(16) as u8;
-                self.emit_u8(Op::CALL_REF, arity);
+                if let Some(arity) = known_len {
+                    // All spread sources are statically-sized; safe to
+                    // expand on the stack and use a normal CALL_REF.
+                    self.emit_var_get(name);
+                    self.emit_u16(Op::LOCAL_GET, args_slot);
+                    self.emit(Op::SPREAD);
+                    self.emit_u8(Op::CALL_REF, arity as u8);
+                } else {
+                    // Unknown runtime length → use the VM's variadic
+                    // calling convention: pad the args array to a fixed
+                    // MAX_VARIADIC=16 with NULLs, then SPREAD + CALL_REF
+                    // 16. Non-variadic callees see arity > formal, the
+                    // VM truncates excess; variadic callees (arity=255)
+                    // build their rest array by scanning slots until
+                    // they hit a NULL — same convention used for
+                    // Python `*args` and JS rest params (see the
+                    // rest-arr preamble in `compile_function_decl`).
+                    let line = self.line;
+                    self.emit_u16(Op::LOCAL_GET, args_slot);   // [args]
+                    self.emit_const(Value::I32(16));            // [args, 16]
+                    common::collections::emit_new_with_length(&mut self.chunks, self.current, line); // [args, pad]
+                    common::collections::emit_concat(&mut self.chunks, self.current, line);          // [args++pad]
+                    self.emit_const(Value::F64(0.0));
+                    self.emit_const(Value::F64(16.0));
+                    common::collections::emit_slice(&mut self.chunks, self.current, line);           // [first16]
+                    self.emit_u16(Op::LOCAL_SET, args_slot); self.emit(Op::DROP);
+
+                    self.emit_var_get(name);                    // [callee]
+                    self.emit_u16(Op::LOCAL_GET, args_slot);    // [callee, args16]
+                    self.emit(Op::SPREAD);                      // [callee, e0..e15]
+                    self.emit_u8(Op::CALL_REF, 16);
+                }
                 return Ok(());
             }
             self.emit_var_get(name);
             for a in &arg_exprs { self.compile_expr(a)?; }
             self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
             return Ok(());
+        }
+
+        // ── Computed-member call: `obj[key](args)` ───────────────────
+        // For JS profile, treat this like a method call so `__js_this`
+        // is bound to `obj` before invocation. Without this binding the
+        // callee body sees a stale __js_this and `this.x` traps. Same
+        // semantics as ECMA-262 §13.3.7 (CallMemberExpression).
+        if self.is_js_profile() {
+            if let ExprKind::Index { object, index, .. } = &callee.kind {
+                let obj_tmp = self.define_local("__js_idx_obj");
+                self.compile_expr(object)?;
+                self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+                let saved_js_this = self.save_js_this("__js_prev_this_idx");
+                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                self.set_js_this_from_stack();
+                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                self.compile_expr(index)?;
+                let line = self.line;
+                common::collections::emit_get(&mut self.chunks, self.current, line);
+                for a in &arg_exprs { self.compile_expr(a)?; }
+                self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                let result_slot = self.define_local("__js_idx_result");
+                self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
+                self.restore_js_this(saved_js_this);
+                self.emit_u16(Op::LOCAL_GET, result_slot);
+                return Ok(());
+            }
         }
 
         // ── Fallback: general expression call ───────────────────────

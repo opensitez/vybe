@@ -36,6 +36,110 @@ fn make_array(elems: Vec<Value>) -> Value {
 }
 
 pub fn register(vm: &mut VM) {
+    // ECMA-262 §13.15.4 Application of `+` operator. For Objects we
+    // call their `valueOf` / `toString` per ToPrimitive (§7.1.1) so
+    // class instances with a `.toString()` override stringify
+    // correctly via `"" + obj`. The VM's DYN_ADD opcode falls back to
+    // Display for Objects which yields `[object]` — non-spec for JS.
+    vm.register_host_fn(
+        "ecma:value",
+        "add",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let a = args.first().cloned().unwrap_or(Value::Undefined);
+            let b = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let pa = to_primitive(ctx, &a, "default");
+            let pb = to_primitive(ctx, &b, "default");
+            match (&pa, &pb) {
+                (Value::String(_), _) | (_, Value::String(_)) => {
+                    Value::String(Arc::from(format!("{}{}", pa, pb).as_str()))
+                }
+                _ => {
+                    let na = pa.as_f64();
+                    let nb = pb.as_f64();
+                    Value::F64(na + nb)
+                }
+            }
+        }),
+    );
+
+    // ECMA-262 §7.1.4 ToNumber. For Object operands runs ToPrimitive
+    // with hint "number" then coerces — that's what makes `Date - Date`
+    // produce a millisecond delta (Date.prototype.valueOf returns
+    // __time) rather than NaN. Plain primitives get the same coercion
+    // the VM's `as_f64` already does.
+    vm.register_host_fn(
+        "ecma:value",
+        "toNumber",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let v = args.first().cloned().unwrap_or(Value::Undefined);
+            let p = to_primitive(ctx, &v, "number");
+            Value::F64(p.as_f64())
+        }),
+    );
+
+    // ECMA-262 §7.1.1 ToPrimitive(hint=number). Used by the relational
+    // operators (`<`, `>`, `<=`, `>=`) before falling through to
+    // DYN_LT / DYN_GT / DYN_LE / DYN_GE — those handle string-string
+    // lex compare and numeric compare on primitives, but bottom out
+    // on `as_f64` (NaN) for Object operands. Pre-coercion makes
+    // `Date < Date` and `valueOfObj < n` work without changing the VM.
+    vm.register_host_fn(
+        "ecma:value",
+        "toPrimitive",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let v = args.first().cloned().unwrap_or(Value::Undefined);
+            to_primitive(ctx, &v, "number")
+        }),
+    );
+
+    // Runtime predicate for the JS `.next()` compile path: returns
+    // true when the value is an `ObjectKind::Continuation` so the
+    // compiler can route through `Op::GEN_NEXT` (WASM stack-switching)
+    // for actual generators while keeping the polymorphic dispatch
+    // for user-defined `.next()` methods on custom iterables.
+    vm.register_host_fn(
+        "ecma:value",
+        "isGenerator",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let is_cont = matches!(args.first(), Some(Value::Object(o))
+                if matches!(o.lock().unwrap().kind,
+                    vybe_bytecode::value::ObjectKind::Continuation(_)));
+            Value::Bool(is_cont)
+        }),
+    );
+
+    // ECMA-262 §13.5.3 Table 41 typeof — returns "object" for both
+    // plain objects AND arrays (the VM's REF_TYPEOF opcode reports
+    // "array" which is non-spec). Used by the JS compiler so all
+    // Vybe outputs match v8/SpiderMonkey/QuickJS behaviour.
+    vm.register_host_fn(
+        "ecma:value",
+        "typeof",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let v = args.first().cloned().unwrap_or(Value::Undefined);
+            let tag = match &v {
+                Value::Undefined => "undefined",
+                Value::Null => "object",
+                Value::Bool(_) => "boolean",
+                Value::I32(_) | Value::I64(_) | Value::F64(_) => "number",
+                Value::String(_) => "string",
+                Value::Symbol(_) => "symbol",
+                Value::BigInt(_) => "bigint",
+                Value::V128(_) => "v128",
+                Value::WeakRef(_) => "object",
+                Value::Object(o) => {
+                    let ob = o.lock().unwrap();
+                    match &ob.kind {
+                        ObjectKind::Function(_) | ObjectKind::HostFunction(_) => "function",
+                        // Spec: arrays are "object", not "array".
+                        _ => "object",
+                    }
+                }
+            };
+            Value::String(Arc::from(tag))
+        }),
+    );
+
     vm.register_host_fn(
         "ecma:value",
         "invokeMethod",
@@ -1179,6 +1283,13 @@ fn dispatch_plain_object(
             if let Some(result) = crate::ecma::regexp::dispatch_regexp_method(method, &call_args) {
                 return result;
             }
+        } else if tag == "Promise" {
+            let mut call_args = Vec::with_capacity(args.len() + 1);
+            call_args.push(Value::Object(obj));
+            call_args.extend_from_slice(args);
+            if let Some(result) = crate::ecma::promise::dispatch_promise_method(ctx, method, &call_args) {
+                return result;
+            }
         }
     }
     Value::Undefined
@@ -1341,6 +1452,104 @@ fn to_str(v: &Value) -> String {
     match v {
         Value::String(s) => s.to_string(),
         other => format!("{}", other),
+    }
+}
+
+/// Walk own + `__proto__` chain looking for a method named `key`.
+/// Returns the first non-null value found (so prototype-installed
+/// methods are reachable from instances). Bound to 100 hops to
+/// protect against accidental cycles.
+fn lookup_method_via_proto(obj: &Arc<Mutex<Object>>, key: &str) -> Option<Value> {
+    let mut current = obj.clone();
+    for _ in 0..100 {
+        let next_proto = {
+            let o = current.lock().unwrap();
+            if let Some(v) = o.properties.get(key) {
+                if !matches!(v, Value::Null | Value::Undefined) {
+                    return Some(v.clone());
+                }
+            }
+            match o.properties.get("__proto__").cloned() {
+                Some(Value::Object(p)) => Some(p),
+                _ => None,
+            }
+        };
+        match next_proto {
+            Some(p) => current = p,
+            None => break,
+        }
+    }
+    None
+}
+
+/// ECMA-262 §7.1.1 ToPrimitive — for objects, invoke `valueOf` /
+/// `toString` (in `default` / `number` hint order: valueOf then
+/// toString; in `string` hint order: toString then valueOf). Returns
+/// the first non-Object result; falls back to Display if neither
+/// callable yields a primitive.
+fn to_primitive(ctx: &mut HostContext, v: &Value, hint: &str) -> Value {
+    let obj = match v {
+        Value::Object(o) => o.clone(),
+        _ => return v.clone(),
+    };
+    // Skip the dance for non-Ordinary objects (Functions, Continuations
+    // etc. don't have callable valueOf/toString in our model).
+    let is_ordinary = matches!(
+        obj.lock().unwrap().kind,
+        ObjectKind::Ordinary | ObjectKind::Array(_)
+    );
+    if !is_ordinary {
+        return v.clone();
+    }
+    // Built-in tagged objects: their valueOf / toString live in the
+    // dispatch tables (`dispatch_date_method` etc.) rather than the
+    // prototype chain. Route through the same channel so `Date - Date`
+    // hits ECMA §21.4.4.41 valueOf and yields the ms delta.
+    let type_tag = {
+        let o = obj.lock().unwrap();
+        o.properties.get("__type").and_then(|v| match v {
+            Value::String(s) => Some(s.to_string()),
+            _ => None,
+        })
+    };
+    if type_tag.as_deref() == Some("Date") {
+        let receiver = Value::Object(obj.clone());
+        let prefer = if hint == "string" { ["toString", "valueOf"] } else { ["valueOf", "toString"] };
+        for m in &prefer {
+            let r = dispatch(ctx, &receiver, m, &[]);
+            if !matches!(r, Value::Object(_) | Value::Undefined) {
+                return r;
+            }
+        }
+    }
+    let methods: &[&str] = if hint == "string" {
+        &["toString", "valueOf"]
+    } else {
+        &["valueOf", "toString"]
+    };
+    // Route through `dispatch` (which mirrors the JS method-call
+    // protocol — sets `__js_this`, then calls). Direct ctx.invoke
+    // bypasses __js_this binding, so the user's body sees a stale
+    // global and reads `.v` on null/undefined → throws TypeError.
+    let receiver = Value::Object(obj.clone());
+    for m in methods {
+        let exists = lookup_method_via_proto(&obj, m).is_some();
+        if !exists { continue; }
+        let result = dispatch(ctx, &receiver, m, &[]);
+        if !matches!(result, Value::Object(_) | Value::Undefined) {
+            return result;
+        }
+    }
+    // Class instances with a `__type` tag get the spec-shaped
+    // `[object <Name>]` rather than `[object]` (the Vybe Display
+    // default for Ordinary).
+    let tag = {
+        let o = obj.lock().unwrap();
+        o.properties.get("__type").map(|t| format!("{}", t))
+    };
+    match tag {
+        Some(t) if !t.is_empty() => Value::String(Arc::from(format!("[object {}]", t).as_str())),
+        _ => Value::String(Arc::from("[object Object]")),
     }
 }
 

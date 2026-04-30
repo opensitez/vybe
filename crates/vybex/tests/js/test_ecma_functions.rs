@@ -219,7 +219,6 @@ console.log(r);
     assert!(!out.is_empty());
 }
 
-#[ignore]
 #[test]
 fn spread_in_call() {
     let out = run_js(r#"

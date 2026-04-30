@@ -736,6 +736,7 @@ fn walk_for(pair: Pair<Rule>, is_async: bool) -> Result<StmtKind, String> {
                 value: Expression::new(ExprKind::Index {
                     object: Box::new(Expression::new(ExprKind::Ident(tmp.clone()))),
                     index: Box::new(Expression::new(ExprKind::Lit(Literal::Int(i as i64)))),
+                    null_safe: false,
                 }),
             }));
         }
@@ -1631,6 +1632,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         expr = Expression::new(ExprKind::Index {
                             object: Box::new(expr),
                             index: Box::new(Expression::new(index)),
+                            null_safe: false,
                         });
                     }
                     _ => {
@@ -1639,6 +1641,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         expr = Expression::new(ExprKind::Index {
                             object: Box::new(expr),
                             index: Box::new(val),
+                            null_safe: false,
                         });
                     }
                 }

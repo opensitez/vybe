@@ -204,7 +204,7 @@ fn walk_assign(pair: Pair<Rule>) -> Result<Statement, String> {
                     });
                 } else {
                     let idx = walk_expr(m)?;
-                    target = Expression::new(ExprKind::Index { object: Box::new(target), index: Box::new(idx) });
+                    target = Expression::new(ExprKind::Index { object: Box::new(target), index: Box::new(idx), null_safe: false });
                 }
             }
         }

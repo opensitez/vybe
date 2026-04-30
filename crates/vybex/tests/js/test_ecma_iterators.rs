@@ -117,7 +117,6 @@ console.log(clone.c);
     assert_eq!(out[1], "3");
 }
 
-#[ignore]
 #[test]
 fn spread_in_function_call() {
     let out = run_js(r#"
@@ -138,7 +137,6 @@ console.log(arr.join(","));
     assert_eq!(out, vec!["1,2,3,4,5,6"]);
 }
 
-#[ignore]
 #[test]
 fn for_of_map_entries() {
     let out = run_js(r#"
@@ -154,7 +152,6 @@ console.log(count);
     assert_eq!(out, vec!["3"]);
 }
 
-#[ignore]
 #[test]
 fn for_of_set() {
     let out = run_js(r#"

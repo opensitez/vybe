@@ -135,12 +135,45 @@ impl Compiler {
         self.current_func_name = Some(name.to_string());
         self.current_result_slot = result_slot;
 
+        // ECMA-262 async function semantics: throws inside the body
+        // become rejected Promises, normal returns become fulfilled
+        // Promises (§27.7.5.3). Wrap the body in TRY_START/TRY_END so
+        // uncaught exceptions short-circuit to the Promise.reject
+        // path. The `await` opcode handles per-await suspension via
+        // JSPI; this wrap just covers terminal throw / return.
+        let async_try = if is_async && self.is_js_profile() {
+            let line = self.line;
+            Some(crate::emitter::errors::emit_try_start(&mut self.chunks[self.current], line))
+        } else {
+            None
+        };
+
         for s in body { self.compile_stmt(s)?; }
 
         self.current_func_name = saved_fn;
         self.current_result_slot = saved_rs;
 
-        if let Some(rs) = result_slot {
+        if let Some(catch_jump) = async_try {
+            let line = self.line;
+            // Normal exit: wrap return in Promise.resolve(value).
+            // The body's compile_stmt may have already emitted RETURNs
+            // (early returns); we still need the fall-through path
+            // to leave a fulfilled Promise on the stack.
+            let chunk = &mut self.chunks[self.current];
+            crate::emitter::errors::emit_try_end(chunk, line);
+            // After try_end, the body completed normally. Wrap with
+            // Promise.resolve(undefined) since no value was left.
+            chunk.emit_op(Op::UNDEFINED, line);
+            let resolve_idx = self.import("ecma:promise", "resolve");
+            self.emit_host_call(resolve_idx, 1);
+            self.emit_return();
+            // Catch handler — exception value on TOS.
+            let chunk = &mut self.chunks[self.current];
+            crate::emitter::errors::patch_catch(chunk, catch_jump);
+            let reject_idx = self.import("ecma:promise", "reject");
+            self.emit_host_call(reject_idx, 1);
+            self.emit_return();
+        } else if let Some(rs) = result_slot {
             self.emit_u16(Op::LOCAL_GET, rs);
             self.emit_return();
         } else {
@@ -175,6 +208,15 @@ impl Compiler {
             self.emit_const(Value::String(Arc::from(name.as_str())));
             let name_key = self.str_const("name");
             self.emit_u16(Op::STRUCT_SET, name_key);
+            self.emit(Op::DROP);
+
+            // ECMA-262 §10.2.4 `length`: number of params before the
+            // first one with a default value or rest. Skip rest entirely.
+            let length = params.iter().take_while(|p| p.default.is_none() && !p.is_rest).count();
+            self.emit_var_get(name);
+            self.emit_const(Value::F64(length as f64));
+            let length_key = self.str_const("length");
+            self.emit_u16(Op::STRUCT_SET, length_key);
             self.emit(Op::DROP);
 
             self.emit_u16(Op::LOCAL_GET, proto_slot);
@@ -695,6 +737,31 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_SET, type_key);
                 self.emit(Op::DROP);
 
+                // JS prototype link: `this.__proto__ = ClassName.prototype`.
+                // Lets `Object.getPrototypeOf(d) === Dog.prototype` and
+                // prototype-chain walks (`hasIn`, `to_primitive`'s
+                // proto traversal) reach methods declared on the class.
+                // Skip if the global isn't bound yet (some component
+                // types stamp __type without going through class decl).
+                if self.is_js_profile() {
+                    let class_global = self.str_const(name);
+                    let prototype_key = self.str_const("prototype");
+                    let proto_link_key = self.str_const("__proto__");
+                    let proto_local = self.define_local(&format!("__{}_link_proto", name));
+                    self.emit_u16(Op::GLOBAL_GET, class_global);
+                    self.emit_u16(Op::STRUCT_GET, prototype_key);
+                    self.emit_u16(Op::LOCAL_SET, proto_local);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, proto_local);
+                    self.emit(Op::REF_IS_NULL);
+                    let skip = self.emit_jump(Op::BR_IF_TRUE);
+                    self.emit_u16(Op::LOCAL_GET, this_slot);
+                    self.emit_u16(Op::LOCAL_GET, proto_local);
+                    self.emit_u16(Op::STRUCT_SET, proto_link_key);
+                    self.emit(Op::DROP);
+                    self.patch_jump(skip);
+                }
+
                 for (fname, init) in &field_inits {
                     if let Some(init_expr) = init {
                         common::classes::emit_init_field_start(self.chunk(), this_slot, line);
@@ -926,6 +993,31 @@ impl Compiler {
                 } else {
                     common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
                 }
+            }
+
+            // JS prototype link: `this.__proto__ = ClassName.prototype`.
+            // Mirrors the wiring in the child-class branch (line ~740);
+            // base classes need the same link so prototype-chain walks
+            // (`hasIn`, `to_primitive`'s ToPrimitive proto traversal,
+            // `Object.getPrototypeOf`) reach methods declared on the
+            // class. Skip if the global isn't bound yet.
+            if self.is_js_profile() {
+                let class_global = self.str_const(name);
+                let prototype_key = self.str_const("prototype");
+                let proto_link_key = self.str_const("__proto__");
+                let proto_local = self.define_local(&format!("__{}_link_proto_base", name));
+                self.emit_u16(Op::GLOBAL_GET, class_global);
+                self.emit_u16(Op::STRUCT_GET, prototype_key);
+                self.emit_u16(Op::LOCAL_SET, proto_local);
+                self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, proto_local);
+                self.emit(Op::REF_IS_NULL);
+                let skip = self.emit_jump(Op::BR_IF_TRUE);
+                self.emit_u16(Op::LOCAL_GET, this_slot);
+                self.emit_u16(Op::LOCAL_GET, proto_local);
+                self.emit_u16(Op::STRUCT_SET, proto_link_key);
+                self.emit(Op::DROP);
+                self.patch_jump(skip);
             }
 
             // Auto-init methods declared on the class (e.g. InitializeComponent

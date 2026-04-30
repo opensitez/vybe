@@ -129,7 +129,6 @@ console.log(t._celsius);
     assert_eq!(out, vec!["32", "100"]);
 }
 
-#[ignore]
 #[test]
 fn class_computed_method_name() {
     let out = run_js(r#"
@@ -205,7 +204,6 @@ console.log(v.check(""));
     assert_eq!(out, vec!["true", "false"]);
 }
 
-#[ignore]
 #[test]
 fn class_multi_level_inheritance() {
     let out = run_js(r#"
@@ -268,7 +266,6 @@ console.log(d.describe());
     assert_eq!(out, vec!["unnamed:0"]);
 }
 
-#[ignore]
 #[test]
 fn class_extends_expression() {
     let out = run_js(r#"

@@ -744,6 +744,13 @@ fn register_non_mutators(vm: &mut VM) {
     );
 
     // concat(arr, other) -> new_arr
+    //
+    // Used by both `Array.prototype.concat` (spec — only spreads Arrays
+    // into the result) AND by spread-element compilation in array
+    // literals like `[...s]` (which needs to spread any iterable).
+    // Map/Set/String aren't ECMA-262 §23.1.3.2 concatable, but JS
+    // engines spread them in practice when the literal-spread path
+    // routes here. We handle both in one place.
     vm.register_host_fn(
         "ecma:array",
         "concat",
@@ -755,13 +762,28 @@ fn register_non_mutators(vm: &mut VM) {
                     out.extend(v.iter().cloned());
                 }
             }
-            // Spec: if `other` is an array, spread it; otherwise append as single element
+            // Spec: if `other` is an iterable, spread it; otherwise
+            // append as single element.
             match args.get(1) {
                 Some(Value::Object(o)) => {
                     let lock = o.lock().unwrap();
                     match &lock.kind {
                         ObjectKind::Array(v) => out.extend(v.iter().cloned()),
+                        ObjectKind::Set(s) => out.extend(s.iter().cloned()),
+                        ObjectKind::Map(m) => {
+                            for (k, v) in m.iter() {
+                                let pair = vec![k.clone(), v.clone()];
+                                out.push(make_array(pair));
+                            }
+                        }
                         _ => out.push(Value::Object(o.clone())),
+                    }
+                }
+                Some(Value::String(s)) => {
+                    // Spreading a string yields its code-points (per
+                    // Symbol.iterator on String).
+                    for c in s.chars() {
+                        out.push(Value::String(Arc::from(c.to_string().as_str())));
                     }
                 }
                 Some(v) => out.push(v.clone()),

@@ -119,7 +119,6 @@ fn right_shift() {
     assert_eq!(out, vec!["4"]);
 }
 
-#[ignore]
 #[test]
 fn unsigned_right_shift() {
     let out = run_js("console.log(-1 >>> 0);");
@@ -410,7 +409,6 @@ console.log(obj.b);
 
 // ── void ───────────────────────────────────────────────────
 
-#[ignore]
 #[test]
 fn void_operator() {
     let out = run_js(r#"

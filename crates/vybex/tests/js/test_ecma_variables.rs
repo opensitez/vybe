@@ -128,7 +128,6 @@ for (const [num, letter] of pairs) {
     assert_eq!(out, vec!["1a", "2b", "3c"]);
 }
 
-#[ignore]
 #[test]
 fn destructure_in_function_params() {
     let out = run_js(r#"
@@ -140,7 +139,6 @@ greet({ name: "Bob", age: 25 });
     assert_eq!(out, vec!["Bob is 25"]);
 }
 
-#[ignore]
 #[test]
 fn destructure_nested_object() {
     let out = run_js(r#"
@@ -151,7 +149,6 @@ console.log(c);
     assert_eq!(out, vec!["42"]);
 }
 
-#[ignore]
 #[test]
 fn destructure_with_computed_property() {
     let out = run_js(r#"
@@ -163,7 +160,6 @@ console.log(val);
     assert_eq!(out, vec!["Alice"]);
 }
 
-#[ignore]
 #[test]
 fn destructure_swap() {
     let out = run_js(r#"

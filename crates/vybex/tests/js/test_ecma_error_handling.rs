@@ -55,7 +55,6 @@ try {
     assert_eq!(out, vec!["caught: fail", "cleanup"]);
 }
 
-#[ignore]
 #[test]
 fn finally_always_runs() {
     let out = run_js(r#"
@@ -124,7 +123,6 @@ try {
     assert_eq!(out, vec!["inner: inner", "outer: rethrown"]);
 }
 
-#[ignore]
 #[test]
 fn custom_error_class() {
     let out = run_js(r#"
@@ -173,7 +171,6 @@ try {
     assert_eq!(out, vec!["caught"]);
 }
 
-#[ignore]
 #[test]
 fn error_instanceof() {
     let out = run_js(r#"

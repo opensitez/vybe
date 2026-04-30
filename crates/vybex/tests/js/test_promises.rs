@@ -7,19 +7,19 @@ use super::helpers::run_js;
 // PROMISE BASICS
 // ===================================================================
 
-#[test] #[ignore] fn promise_resolve_then() {
+#[test] fn promise_resolve_then() {
     assert_eq!(run_js(r#"
 Promise.resolve(42).then(v => console.log(v));
 "#), &["42"]);
 }
 
-#[test] #[ignore] fn promise_reject_catch() {
+#[test] fn promise_reject_catch() {
     assert_eq!(run_js(r#"
 Promise.reject("error").catch(e => console.log("caught: " + e));
 "#), &["caught: error"]);
 }
 
-#[test] #[ignore] fn promise_then_chain() {
+#[test] fn promise_then_chain() {
     assert_eq!(run_js(r#"
 Promise.resolve(1)
   .then(v => v + 1)
@@ -28,7 +28,7 @@ Promise.resolve(1)
 "#), &["6"]);
 }
 
-#[test] #[ignore] fn promise_catch_and_continue() {
+#[test] fn promise_catch_and_continue() {
     assert_eq!(run_js(r#"
 Promise.reject("fail")
   .catch(e => "recovered")
@@ -36,7 +36,7 @@ Promise.reject("fail")
 "#), &["recovered"]);
 }
 
-#[test] #[ignore] fn promise_finally_runs() {
+#[test] fn promise_finally_runs() {
     assert_eq!(run_js(r#"
 Promise.resolve("ok")
   .then(v => console.log(v))
@@ -44,7 +44,7 @@ Promise.resolve("ok")
 "#), &["ok", "done"]);
 }
 
-#[test] #[ignore] fn promise_finally_on_reject() {
+#[test] fn promise_finally_on_reject() {
     assert_eq!(run_js(r#"
 Promise.reject("err")
   .catch(e => console.log("caught"))
@@ -52,7 +52,7 @@ Promise.reject("err")
 "#), &["caught", "finally"]);
 }
 
-#[test] #[ignore] fn promise_constructor_resolve() {
+#[test] fn promise_constructor_resolve() {
     assert_eq!(run_js(r#"
 let p = new Promise((resolve, reject) => {
     resolve("hello");
@@ -61,7 +61,7 @@ p.then(v => console.log(v));
 "#), &["hello"]);
 }
 
-#[test] #[ignore] fn promise_constructor_reject() {
+#[test] fn promise_constructor_reject() {
     assert_eq!(run_js(r#"
 let p = new Promise((resolve, reject) => {
     reject("bad");
@@ -74,7 +74,7 @@ p.catch(e => console.log("got: " + e));
 // PROMISE COMBINATORS
 // ===================================================================
 
-#[test] #[ignore] fn promise_all_basic() {
+#[test] fn promise_all_basic() {
     assert_eq!(run_js(r#"
 Promise.all([
     Promise.resolve(1),
@@ -84,7 +84,7 @@ Promise.all([
 "#), &["1,2,3"]);
 }
 
-#[test] #[ignore] fn promise_all_rejects_on_first_failure() {
+#[test] fn promise_all_rejects_on_first_failure() {
     assert_eq!(run_js(r#"
 Promise.all([
     Promise.resolve(1),
@@ -94,7 +94,7 @@ Promise.all([
 "#), &["error: fail"]);
 }
 
-#[test] #[ignore] fn promise_race_first_wins() {
+#[test] fn promise_race_first_wins() {
     assert_eq!(run_js(r#"
 Promise.race([
     Promise.resolve("fast"),
@@ -103,7 +103,7 @@ Promise.race([
 "#), &["fast"]);
 }
 
-#[test] #[ignore] fn promise_allsettled() {
+#[test] fn promise_allsettled() {
     assert_eq!(run_js(r#"
 Promise.allSettled([
     Promise.resolve("ok"),
@@ -129,7 +129,7 @@ main();
 "#), &["42"]);
 }
 
-#[test] #[ignore] fn async_await_try_catch() {
+#[test] fn async_await_try_catch() {
     assert_eq!(run_js(r#"
 async function main() {
     try {

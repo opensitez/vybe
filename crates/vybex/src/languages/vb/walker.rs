@@ -2501,6 +2501,7 @@ fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expres
                     indexed = Expression::new(ExprKind::Index {
                         object: Box::new(indexed),
                         index: Box::new(arg.value),
+                        null_safe: false,
                     });
                 }
                 return Ok(indexed);
@@ -3595,6 +3596,7 @@ fn parse_l_value_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                             indexed = Expression::new(ExprKind::Index {
                                 object: Box::new(indexed),
                                 index: Box::new(idx_expr),
+                                null_safe: false,
                             });
                         }
                         expr = indexed;
@@ -3607,6 +3609,7 @@ fn parse_l_value_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                     expr = Expression::new(ExprKind::Index {
                         object: Box::new(expr),
                         index: Box::new(args.into_iter().next().unwrap()),
+                        null_safe: false,
                     });
                 } else if !args.is_empty() {
                     // Multiple indices: chain Index operations
@@ -3614,6 +3617,7 @@ fn parse_l_value_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                         expr = Expression::new(ExprKind::Index {
                             object: Box::new(expr),
                             index: Box::new(idx_expr),
+                            null_safe: false,
                         });
                     }
                 } else {

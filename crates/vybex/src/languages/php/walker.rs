@@ -631,7 +631,7 @@ fn body_contains_yield(stmts: &[Statement]) -> bool {
             ExprKind::StaticAccess { class: a, member: b } => ey(a) || ey(b),
             ExprKind::Ternary { cond, then, else_ } => ey(cond) || ey(then) || ey(else_),
             ExprKind::Member { object, .. } => ey(object),
-            ExprKind::Index { object, index } => ey(object) || ey(index),
+            ExprKind::Index { object, index, .. } => ey(object) || ey(index),
             ExprKind::Call { callee, args, .. } => ey(callee) || args.iter().any(|a| ey(&a.value)),
             ExprKind::New { class, args } => ey(class) || args.iter().any(|a| ey(&a.value)),
             ExprKind::SuperCall { args, .. } => args.iter().any(|a| ey(&a.value)),
@@ -1609,6 +1609,7 @@ fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span) -> Result<Ex
                 ExprKind::Index {
                     object: Box::new(receiver),
                     index: Box::new(index),
+                    null_safe: false,
                 },
                 span.clone(),
             ))
@@ -2045,6 +2046,7 @@ fn parse_php_interpolation(body: &str) -> Vec<InterpolPart> {
                     expr = Expression::new(ExprKind::Index {
                         object: Box::new(expr),
                         index: Box::new(key_expr),
+                        null_safe: false,
                     });
                 } else if chars.peek() == Some(&'-') {
                     // Look ahead for `->`. If absent, `-` is literal.

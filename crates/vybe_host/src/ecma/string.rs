@@ -190,9 +190,13 @@ fn register_constructor(vm: &mut VM) {
     vm.register_host_fn("ecma:string", "String", Box::new(|ctx, args| {
         let v = args.first().cloned().unwrap_or(Value::Undefined);
         if let Value::Object(ref obj) = v {
-            let to_str_fn = {
+            let (to_str_fn, is_ordinary, type_tag) = {
                 let o = obj.lock().unwrap();
-                o.properties.get("toString").cloned()
+                (
+                    o.properties.get("toString").cloned(),
+                    matches!(o.kind, vybe_bytecode::value::ObjectKind::Ordinary),
+                    o.properties.get("__type").map(|v| format!("{}", v)),
+                )
             };
             if let Some(fn_val) = to_str_fn {
                 if matches!(fn_val, Value::Object(_)) {
@@ -201,6 +205,13 @@ fn register_constructor(vm: &mut VM) {
                         return s_val(&format!("{}", result));
                     }
                 }
+            }
+            // Plain Ordinary objects with no class type tag → spec
+            // Object.prototype.toString output `[object Object]`
+            // (ECMA-262 §20.1.3.6). Class-tagged objects fall through
+            // to the Display impl which emits `[object <ClassName>]`.
+            if is_ordinary && type_tag.is_none() {
+                return s_val("[object Object]");
             }
         }
         s_val(&format!("{}", v))

@@ -109,7 +109,7 @@ function_body = { "{" ~ statement* ~ "}" }
 
 param_list = { param ~ ("," ~ param)* ~ ","? }
 
-param = { "..."? ~ ident_name ~ ("=" ~ assignment_expression)? }
+param = { "..."? ~ binding_pattern ~ ("=" ~ assignment_expression)? }
 
 // ── Class declaration ───────────────────────────────────────────────────────
 
@@ -335,8 +335,9 @@ yield_kw = @{ "yield" ~ !(ASCII_ALPHANUMERIC | "_") }
 /// this into `ExprKind::Yield`, which the compiler lowers to
 /// `Op::SUSPEND` at the bytecode level.
 yield_expression = {
-    yield_kw ~ "*"? ~ assignment_expression?
+    yield_kw ~ yield_delegate? ~ assignment_expression?
 }
+yield_delegate = { "*" }
 
 unary_op = {
     "-" ~ !("-" | "=")
@@ -378,6 +379,7 @@ chain_lead = _{ NEWLINE* }
 
 call_chain = {
     chain_lead ~ "?." ~ "(" ~ argument_list? ~ ")"          // optional call: obj?.()
+    | chain_lead ~ "?." ~ "[" ~ expression ~ "]"            // optional computed: obj?.[expr]
     | chain_lead ~ "?." ~ ident_or_keyword                   // optional member: obj?.prop
     | "(" ~ argument_list? ~ ")"                              // call: f(args)
     | chain_lead ~ "." ~ private_name                         // private member: this.#x

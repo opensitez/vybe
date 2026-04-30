@@ -9,7 +9,7 @@ use super::helpers::run_js;
 // OBJECT.FREEZE
 // ===================================================================
 
-#[test] #[ignore] fn object_freeze_basic() {
+#[test] fn object_freeze_basic() {
     assert_eq!(run_js(r#"
 let obj = { x: 1, y: 2 };
 Object.freeze(obj);
@@ -33,7 +33,7 @@ console.log(Object.isFrozen(obj));
 // OBJECT.SEAL
 // ===================================================================
 
-#[test] #[ignore] fn object_seal_basic() {
+#[test] fn object_seal_basic() {
     assert_eq!(run_js(r#"
 let obj = { x: 1, y: 2 };
 Object.seal(obj);
@@ -68,7 +68,7 @@ console.log(obj.greet());
 "#), &["Hello, Alice"]);
 }
 
-#[test] #[ignore] fn object_create_null_no_proto() {
+#[test] fn object_create_null_no_proto() {
     assert_eq!(run_js(r#"
 let obj = Object.create(null);
 obj.x = 42;
@@ -108,7 +108,7 @@ console.log(Object.is(null, undefined));
 // OBJECT.DEFINEPROPERTY
 // ===================================================================
 
-#[test] #[ignore] fn define_property_getter_setter() {
+#[test] fn define_property_getter_setter() {
     assert_eq!(run_js(r#"
 let obj = { _name: "Alice" };
 Object.defineProperty(obj, "name", {
@@ -121,7 +121,7 @@ console.log(obj.name);
 "#), &["ALICE", "BOB"]);
 }
 
-#[test] #[ignore] fn define_property_non_writable() {
+#[test] fn define_property_non_writable() {
     assert_eq!(run_js(r#"
 let obj = {};
 Object.defineProperty(obj, "PI", {
@@ -151,7 +151,7 @@ console.log(obj.hidden);
 // OBJECT.GETOWNPROPERTYNAMES
 // ===================================================================
 
-#[test] #[ignore] fn get_own_property_names() {
+#[test] fn get_own_property_names() {
     assert_eq!(run_js(r#"
 let obj = { a: 1, b: 2 };
 Object.defineProperty(obj, "hidden", { value: 3, enumerable: false });
@@ -178,7 +178,7 @@ console.log(Object.getPrototypeOf(Dog.prototype) === Animal.prototype);
 // PROPERTY ENUMERATION
 // ===================================================================
 
-#[test] #[ignore] fn for_in_own_vs_inherited() {
+#[test] fn for_in_own_vs_inherited() {
     assert_eq!(run_js(r#"
 let parent = { a: 1 };
 let child = Object.create(parent);
@@ -194,7 +194,7 @@ console.log(all.sort().join(","));
 "#), &["b", "a,b"]);
 }
 
-#[test] #[ignore] fn object_keys_no_inherited() {
+#[test] fn object_keys_no_inherited() {
     assert_eq!(run_js(r#"
 let parent = { x: 1 };
 let child = Object.create(parent);
@@ -253,7 +253,7 @@ console.log(result.bold);
 "#), &["blue", "10", "true"]);
 }
 
-#[test] #[ignore] fn get_own_property_descriptor_value_flags() {
+#[test] fn get_own_property_descriptor_value_flags() {
     assert_eq!(run_js(r#"
 let obj = { a: 1 };
 let d = Object.getOwnPropertyDescriptor(obj, "a");
@@ -264,7 +264,7 @@ console.log(d.configurable);
 "#), &["1", "true", "true", "true"]);
 }
 
-#[test] #[ignore] fn object_defineproperties_multiple_fields() {
+#[test] fn object_defineproperties_multiple_fields() {
     assert_eq!(run_js(r#"
 let obj = {};
 Object.defineProperties(obj, {
@@ -277,7 +277,7 @@ console.log(Object.keys(obj).join(","));
 "#), &["1", "2", "a,b"]);
 }
 
-#[test] #[ignore] fn object_prevent_extensions_blocks_new_properties() {
+#[test] fn object_prevent_extensions_blocks_new_properties() {
     assert_eq!(run_js(r#"
 let obj = { a: 1 };
 Object.preventExtensions(obj);
@@ -287,7 +287,7 @@ console.log(obj.b);
 "#), &["false", "undefined"]);
 }
 
-#[test] #[ignore] fn object_create_with_property_descriptors() {
+#[test] fn object_create_with_property_descriptors() {
     assert_eq!(run_js(r#"
 let obj = Object.create({}, {
     x: { value: 5, enumerable: true },

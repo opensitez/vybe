@@ -495,7 +495,7 @@ pub enum ExprKind {
     // ── Access (struct_get / struct_set) ─────────────────────────────────
 
     Member { object: Box<Expression>, field: String, null_safe: bool },
-    Index { object: Box<Expression>, index: Box<Expression> },
+    Index { object: Box<Expression>, index: Box<Expression>, null_safe: bool },
 
     // ── Calls (call opcode) ─────────────────────────────────────────────
 

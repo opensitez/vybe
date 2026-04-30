@@ -2186,7 +2186,7 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     .transpose()?
                     .unwrap_or(Expression::int(0));
                 expr = Expression::new(ExprKind::Index {
-                    object: Box::new(expr), index: Box::new(index_expr),
+                    object: Box::new(expr), index: Box::new(index_expr), null_safe: false,
                 });
             }
             Rule::null_assert => {
@@ -2218,7 +2218,7 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         .transpose()?
                         .unwrap_or(Expression::int(0));
                     expr = Expression::new(ExprKind::Index {
-                        object: Box::new(expr), index: Box::new(index_expr),
+                        object: Box::new(expr), index: Box::new(index_expr), null_safe: false,
                     });
                 } else if chain_src.starts_with(".") {
                     let name = chain_inner.into_iter()

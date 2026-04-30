@@ -210,7 +210,7 @@ fn body_contains_yield(stmts: &[Statement]) -> bool {
             ExprKind::StaticAccess { class: a, member: b } => ey(a) || ey(b),
             ExprKind::Ternary { cond, then, else_ } => ey(cond) || ey(then) || ey(else_),
             ExprKind::Member { object, .. } => ey(object),
-            ExprKind::Index { object, index } => ey(object) || ey(index),
+            ExprKind::Index { object, index, .. } => ey(object) || ey(index),
             ExprKind::Call { callee, args, .. } => ey(callee) || args.iter().any(|a| ey(&a.value)),
             ExprKind::New { class, args } => ey(class) || args.iter().any(|a| ey(&a.value)),
             ExprKind::SuperCall { args, .. } => args.iter().any(|a| ey(&a.value)),
@@ -307,15 +307,26 @@ fn walk_func_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut params = Vec::new();
     let mut body = Vec::new();
+    let mut param_prologue = Vec::new();
 
     for p in inner {
         match p.as_rule() {
             Rule::ident_name => name = p.as_str().to_string(),
-            Rule::param_list => params = walk_params(p)?,
+            Rule::param_list => {
+                let (parsed_params, prologue) = walk_params_with_prologue(p)?;
+                params = parsed_params;
+                param_prologue = prologue;
+            }
             Rule::function_body => body = walk_body(p)?,
             Rule::async_kw => {}
             _ => {}
         }
+    }
+
+    if !param_prologue.is_empty() {
+        let mut full_body = param_prologue;
+        full_body.extend(body);
+        body = full_body;
     }
 
     let is_generator = body_contains_yield(&body);
@@ -333,33 +344,79 @@ fn walk_func_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
 }
 
 fn walk_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
-    pair.into_inner()
-        .filter(|p| p.as_rule() == Rule::param)
-        .map(walk_param)
-        .collect()
+    walk_params_with_prologue(pair).map(|(params, _)| params)
 }
 
 fn walk_param(pair: Pair<Rule>) -> Result<Param, String> {
+    walk_param_with_prologue(pair, 0).map(|(param, _)| param)
+}
+
+fn walk_params_with_prologue(pair: Pair<Rule>) -> Result<(Vec<Param>, Vec<Statement>), String> {
+    let mut params = Vec::new();
+    let mut prologue = Vec::new();
+    let mut destructure_idx = 0usize;
+
+    for p in pair.into_inner().filter(|p| p.as_rule() == Rule::param) {
+        let (param, init_stmt) = walk_param_with_prologue(p, destructure_idx)?;
+        destructure_idx += 1;
+        params.push(param);
+        if let Some(stmt) = init_stmt {
+            prologue.push(stmt);
+        }
+    }
+
+    Ok((params, prologue))
+}
+
+fn walk_param_with_prologue(pair: Pair<Rule>, destructure_idx: usize) -> Result<(Param, Option<Statement>), String> {
     let src = pair.as_str();
     let is_rest = src.starts_with("...");
-    let mut name = String::new();
+    let mut binding = None;
     let mut default = None;
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::ident_name => name = p.as_str().to_string(),
+            Rule::ident_name => binding = Some(BindingPattern::Ident(p.as_str().to_string())),
+            Rule::binding_pattern => binding = Some(walk_binding_pattern(p)?),
             _ => default = Some(walk_expression(p)?),
         }
     }
-    Ok(Param {
-        name,
-        type_hint: None,
-        default,
-        pass_by: PassBy::Value,
-        is_rest,
-        is_kwargs: false,
-        is_optional: false,
-        is_nullable: false,
-    })
+    let binding = binding.ok_or("Expected parameter binding")?;
+
+    match binding {
+        BindingPattern::Ident(name) => Ok((Param {
+            name,
+            type_hint: None,
+            default,
+            pass_by: PassBy::Value,
+            is_rest,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        }, None)),
+        pattern => {
+            let temp_name = format!("__param_destruct_{}", destructure_idx);
+            let stmt = Statement::new(StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern,
+                    type_hint: None,
+                    init: Some(Expression::ident(&temp_name)),
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Let,
+            });
+            Ok((Param {
+                name: temp_name,
+                type_hint: None,
+                default,
+                pass_by: PassBy::Value,
+                is_rest,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            }, Some(stmt)))
+        }
+    }
 }
 
 fn walk_body(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
@@ -485,13 +542,25 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
             let mut name = String::new();
             let mut param = Param { name: "value".into(), type_hint: None, default: None, pass_by: PassBy::Value, is_rest: false, is_kwargs: false, is_optional: false, is_nullable: false };
             let mut body = Vec::new();
+            let mut param_prologue = Vec::new();
             for p in member_pair.into_inner() {
                 match p.as_rule() {
                     Rule::property_name | Rule::ident_name | Rule::ident_or_keyword => name = p.as_str().to_string(),
-                    Rule::param => param = walk_param(p)?,
+                    Rule::param => {
+                        let (parsed_param, init_stmt) = walk_param_with_prologue(p, 0)?;
+                        param = parsed_param;
+                        if let Some(stmt) = init_stmt {
+                            param_prologue.push(stmt);
+                        }
+                    }
                     Rule::function_body => body = walk_body(p)?,
                     _ => {}
                 }
+            }
+            if !param_prologue.is_empty() {
+                let mut full_body = param_prologue;
+                full_body.extend(body);
+                body = full_body;
             }
             Ok(ClassMember::Property {
                 name,
@@ -507,14 +576,24 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
             let mut params = Vec::new();
             let mut body = Vec::new();
             let mut is_async = false;
+            let mut param_prologue = Vec::new();
             for p in member_pair.into_inner() {
                 match p.as_rule() {
                     Rule::async_kw => is_async = true,
                     Rule::property_name | Rule::ident_name | Rule::ident_or_keyword => name = p.as_str().to_string(),
-                    Rule::param_list => params = walk_params(p)?,
+                    Rule::param_list => {
+                        let (parsed_params, prologue) = walk_params_with_prologue(p)?;
+                        params = parsed_params;
+                        param_prologue = prologue;
+                    }
                     Rule::function_body => body = walk_body(p)?,
                     _ => {}
                 }
+            }
+            if !param_prologue.is_empty() {
+                let mut full_body = param_prologue;
+                full_body.extend(body);
+                body = full_body;
             }
             if name == "constructor" {
                 Ok(ClassMember::Constructor {
@@ -997,25 +1076,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             }
         }
         Rule::string_literal => Ok(ExprKind::Lit(Literal::Str(unquote(pair.as_str())))),
-        Rule::regex_literal => {
-            // Translate `/pattern/flags` into `new RegExp("pattern", "flags")`.
-            // ECMA-262 §13.2.7: regex literals construct a RegExp instance —
-            // emitting a String here breaks `r.test(...)` and `r.source` usage.
-            // Splitting at the last `/` separates the body from the optional
-            // flag suffix; the leading `/` is always at index 0.
-            let raw = pair.as_str();
-            let (pattern, flags) = match raw.strip_prefix('/').and_then(|s| s.rfind('/').map(|i| (&s[..i], &s[i+1..]))) {
-                Some((p, f)) => (p.to_string(), f.to_string()),
-                None => (raw.to_string(), String::new()),
-            };
-            Ok(ExprKind::New {
-                class: Box::new(Expression::ident("RegExp")),
-                args: vec![
-                    Argument::positional(Expression::string(&pattern)),
-                    Argument::positional(Expression::string(&flags)),
-                ],
-            })
-        }
+        Rule::regex_literal => Ok(walk_regex_literal(pair.as_str())),
         Rule::ident_name | Rule::ident_or_keyword => {
             let name = pair.as_str();
             match name {
@@ -1227,7 +1288,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             .transpose()?
                             .unwrap_or(Expression::new(ExprKind::Lit(Literal::Int(0))));
                         expr = Expression::new(ExprKind::Index {
-                            object: Box::new(expr), index: Box::new(index_expr),
+                            object: Box::new(expr), index: Box::new(index_expr), null_safe: false,
                         });
                     }
                 }
@@ -1266,6 +1327,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             while let Some(p) = inner.next() {
                 match p.as_rule() {
                     Rule::yield_kw => {}
+                    Rule::yield_delegate => { is_yield_from = true; }
                     _ if p.as_str() == "*" => { is_yield_from = true; }
                     _ => {
                         value = Some(walk_expression(p)?);
@@ -1280,16 +1342,22 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         }
         Rule::arrow_function | Rule::async_arrow_function => {
             let is_async = pair.as_rule() == Rule::async_arrow_function;
+            let pair_src = pair.as_str().trim_start();
             let mut params = Vec::new();
             let mut body = LambdaBody::Expr(Box::new(Expression::new(ExprKind::Lit(Literal::Null))));
+            let mut param_prologue = Vec::new();
             for p in pair.into_inner() {
                 match p.as_rule() {
-                    Rule::ident_name => params = vec![Param {
+                    Rule::ident_name if !pair_src.starts_with('(') => params = vec![Param {
                         name: p.as_str().to_string(), type_hint: None, default: None,
                         pass_by: PassBy::Value, is_rest: false, is_kwargs: false,
                         is_optional: false, is_nullable: false,
                     }],
-                    Rule::param_list => params = walk_params(p)?,
+                    Rule::param_list => {
+                        let (parsed_params, prologue) = walk_params_with_prologue(p)?;
+                        params = parsed_params;
+                        param_prologue = prologue;
+                    }
                     Rule::arrow_body => {
                         let inner = p.into_inner().next().ok_or("Empty arrow body")?;
                         body = match inner.as_rule() {
@@ -1308,6 +1376,20 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         }
                     }
                 }
+            }
+            if !param_prologue.is_empty() {
+                body = match body {
+                    LambdaBody::Expr(expr) => {
+                        let mut stmts = param_prologue;
+                        stmts.push(Statement::new(StmtKind::Return(Some(*expr))));
+                        LambdaBody::Block(stmts)
+                    }
+                    LambdaBody::Block(stmts) => {
+                        let mut full_body = param_prologue;
+                        full_body.extend(stmts);
+                        LambdaBody::Block(full_body)
+                    }
+                };
             }
             Ok(ExprKind::Lambda { params, body, is_async, captures: Vec::new() })
         }
@@ -1480,27 +1562,36 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
         if chain_src.starts_with("?.") {
             // Optional chaining
-            // Detect optional call: ?.(...) — chain_inner may be empty (no args) or contain argument_list.
-            // Use chain_src to detect the "(" after "?." since grammar literals aren't in chain_inner.
-            let is_optional_call = chain_src.starts_with("?.(")
-                || chain_inner.first().map_or(false, |p| p.as_rule() == Rule::argument_list);
-            if is_optional_call {
-                // ?.( call
-                let args = if let Some(arg_pair) = chain_inner.into_iter().find(|p| p.as_rule() == Rule::argument_list) {
-                    walk_arguments(arg_pair)?
-                } else { Vec::new() };
-                expr = Expression::new(ExprKind::Call {
-                    callee: Box::new(expr), args, optional: true,
+            if chain_src.starts_with("?.[") {
+                let index_expr = chain_inner.into_iter()
+                    .find(|p| p.as_rule() == Rule::expression || matches!(p.as_rule(), Rule::assignment_expression | Rule::conditional_expression | Rule::ident_name | Rule::numeric_literal | Rule::string_literal))
+                    .map(walk_expression)
+                    .transpose()?
+                    .unwrap_or(Expression::new(ExprKind::Lit(Literal::Int(0))));
+                expr = Expression::new(ExprKind::Index {
+                    object: Box::new(expr), index: Box::new(index_expr), null_safe: true,
                 });
             } else {
-                // ?. member
-                let name = chain_inner.into_iter()
-                    .find(|p| p.as_rule() == Rule::ident_or_keyword || p.as_rule() == Rule::ident_name || p.as_rule() == Rule::private_name)
-                    .map(|p| p.as_str().to_string())
-                    .unwrap_or_default();
-                expr = Expression::new(ExprKind::Member {
-                    object: Box::new(expr), field: name, null_safe: true,
-                });
+                // Detect optional call: ?.(...) — chain_inner may be empty (no args) or contain argument_list.
+                // Use chain_src to detect the "(" after "?." since grammar literals aren't in chain_inner.
+                let is_optional_call = chain_src.starts_with("?.(")
+                    || chain_inner.first().map_or(false, |p| p.as_rule() == Rule::argument_list);
+                if is_optional_call {
+                    let args = if let Some(arg_pair) = chain_inner.into_iter().find(|p| p.as_rule() == Rule::argument_list) {
+                        walk_arguments(arg_pair)?
+                    } else { Vec::new() };
+                    expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(expr), args, optional: true,
+                    });
+                } else {
+                    let name = chain_inner.into_iter()
+                        .find(|p| p.as_rule() == Rule::ident_or_keyword || p.as_rule() == Rule::ident_name || p.as_rule() == Rule::private_name)
+                        .map(|p| p.as_str().to_string())
+                        .unwrap_or_default();
+                    expr = Expression::new(ExprKind::Member {
+                        object: Box::new(expr), field: name, null_safe: true,
+                    });
+                }
             }
         } else if chain_src.starts_with("(") {
             // Call
@@ -1525,7 +1616,7 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 .transpose()?
                 .unwrap_or(Expression::new(ExprKind::Lit(Literal::Int(0))));
             expr = Expression::new(ExprKind::Index {
-                object: Box::new(expr), index: Box::new(index_expr),
+                object: Box::new(expr), index: Box::new(index_expr), null_safe: false,
             });
         } else if chain_src.starts_with("`") {
             // Tagged template: tag`parts...${expr}...`
@@ -1585,7 +1676,7 @@ fn body_contains_closure(stmts: &[Statement], _vars: &[String]) -> bool {
                 has_closure_expr(cond) || has_closure_expr(then) || has_closure_expr(else_)
             }
             ExprKind::Array(elems) => elems.iter().any(|e| has_closure_expr(&e.value)),
-            ExprKind::Index { object, index } => has_closure_expr(object) || has_closure_expr(index),
+            ExprKind::Index { object, index, .. } => has_closure_expr(object) || has_closure_expr(index),
             ExprKind::Assign { target: _, value } => has_closure_expr(value),
             _ => false,
         }
@@ -1754,24 +1845,13 @@ fn walk_object_property(pair: Pair<Rule>) -> Result<ObjectProperty, String> {
     if inner.len() >= 2 {
         let has_body = inner.iter().any(|p| p.as_rule() == Rule::function_body);
         if has_body {
-            let key = inner.remove(0).as_str().to_string();
-            let mut params = Vec::new();
-            let mut body = Vec::new();
-            for p in inner {
-                match p.as_rule() {
-                    Rule::param_list => params = walk_params(p)?,
-                    Rule::param => params = vec![walk_param(p)?],
-                    Rule::function_body => body = walk_body(p)?,
-                    _ => {}
-                }
+            let trimmed = src.trim_start();
+            let is_getter = trimmed.starts_with("get ") || trimmed.starts_with("get\t");
+            let is_setter = trimmed.starts_with("set ") || trimmed.starts_with("set\t");
+            if is_getter || is_setter {
+                return walk_object_accessor(inner, is_getter);
             }
-            let is_generator = body_contains_yield(&body);
-            let func = Statement::new(StmtKind::FunctionDecl {
-                name: key.clone(), params, return_type: None, body,
-                modifiers: Modifiers::default(), handles: Vec::new(),
-                is_async: false, is_generator, is_sub: false,
-            });
-            return Ok(ObjectProperty::Method { key, value: Box::new(func) });
+            return walk_object_method(inner);
         }
     }
 
@@ -1893,11 +1973,129 @@ fn extract_for_target(parts: &[Pair<Rule>]) -> Result<(String, Vec<Statement>), 
     Err("Expected identifier or binding pattern in for target".into())
 }
 
+/// `get name() {}` / `set name(v) {}` shorthand inside object literals.
+/// Stored as a `__get_<name>` / `__set_<name>` synthetic key so the VM's
+/// STRUCT_GET / STRUCT_SET accessor dispatch fires. A `this` param is
+/// prepended so the body's `this` refs resolve via local-slot lookup
+/// (the VM's getter dispatch passes the receiver as arg 0). Defined
+/// out-of-line so walk_object_property's stack frame stays small.
+fn walk_object_accessor(mut inner: Vec<Pair<Rule>>, is_getter: bool) -> Result<ObjectProperty, String> {
+    let prop_name = inner.remove(0).as_str().to_string();
+    let mut params = Vec::new();
+    let mut body = Vec::new();
+    for p in inner {
+        match p.as_rule() {
+            Rule::param_list => params = walk_params(p)?,
+            Rule::param => params = vec![walk_param(p)?],
+            Rule::function_body => body = walk_body(p)?,
+            _ => {}
+        }
+    }
+    let mut full_params = vec![Param {
+        name: "this".to_string(),
+        type_hint: None,
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
+    }];
+    full_params.extend(params);
+    let storage_key = if is_getter {
+        format!("__get_{}", prop_name)
+    } else {
+        format!("__set_{}", prop_name)
+    };
+    Ok(ObjectProperty::KeyValue {
+        key: Expression::string(&storage_key),
+        value: Expression::new(ExprKind::Lambda {
+            params: full_params,
+            body: LambdaBody::Block(body),
+            is_async: false,
+            captures: Vec::new(),
+        }),
+    })
+}
+
+/// Method shorthand `{ name() {} }` — emit as a key/value with a
+/// FunctionDecl-wrapped lambda. Out-of-line for the same stack-frame
+/// reason as walk_object_accessor.
+fn walk_object_method(mut inner: Vec<Pair<Rule>>) -> Result<ObjectProperty, String> {
+    let key = inner.remove(0).as_str().to_string();
+    let mut params = Vec::new();
+    let mut body = Vec::new();
+    for p in inner {
+        match p.as_rule() {
+            Rule::param_list => params = walk_params(p)?,
+            Rule::param => params = vec![walk_param(p)?],
+            Rule::function_body => body = walk_body(p)?,
+            _ => {}
+        }
+    }
+    let is_generator = body_contains_yield(&body);
+    let func = Statement::new(StmtKind::FunctionDecl {
+        name: key.clone(),
+        params,
+        return_type: None,
+        body,
+        modifiers: Modifiers::default(),
+        handles: Vec::new(),
+        is_async: false,
+        is_generator,
+        is_sub: false,
+    });
+    Ok(ObjectProperty::Method { key, value: Box::new(func) })
+}
+
+/// Translate a regex literal source `/pattern/flags` into the AST shape
+/// `new RegExp("pattern", "flags")`. Defined out-of-line so the walker's
+/// big match doesn't carry the construction's locals on every recursion
+/// step (debug-build stack frames are ~bytes-per-arm sensitive).
+fn walk_regex_literal(raw: &str) -> ExprKind {
+    let (pattern, flags) = match raw.strip_prefix('/').and_then(|s| s.rfind('/').map(|i| (&s[..i], &s[i+1..]))) {
+        Some((p, f)) => (p.to_string(), f.to_string()),
+        None => (raw.to_string(), String::new()),
+    };
+    ExprKind::New {
+        class: Box::new(Expression::ident("RegExp")),
+        args: vec![
+            Argument::positional(Expression::string(&pattern)),
+            Argument::positional(Expression::string(&flags)),
+        ],
+    }
+}
+
 fn unquote(s: &str) -> String {
     if s.len() < 2 { return s.to_string(); }
     let inner = &s[1..s.len()-1];
-    inner.replace("\\'", "'").replace("\\\"", "\"").replace("\\\\", "\\")
-        .replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r")
+    // Single-pass escape processing — chained `replace` is wrong
+    // because the second pass can re-process literal characters that
+    // were already produced (e.g. `"\\n"` → first replace turns `\\`
+    // into `\` leaving `\n` which the next replace then turns into
+    // newline, losing the user's literal `\` + `n` input).
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some('0') => out.push('\0'),
+            Some('\'') => out.push('\''),
+            Some('"') => out.push('"'),
+            Some('\\') => out.push('\\'),
+            Some('`') => out.push('`'),
+            Some('$') => out.push('$'),
+            Some(other) => { out.push('\\'); out.push(other); }
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 fn compound_to_binop(op: CompoundOp) -> BinOp {

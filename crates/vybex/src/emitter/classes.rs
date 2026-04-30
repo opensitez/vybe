@@ -76,6 +76,7 @@ pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str
     chunk.emit_op_u16(Op::GLOBAL_GET, tid_name, line);
     chunk.emit_op(Op::SET_TYPE_ID, line);
     chunk.emit_op(Op::DROP, line);
+
 }
 
 /// Stamp `class_name` into `this.__types` array for cross-language instanceof.

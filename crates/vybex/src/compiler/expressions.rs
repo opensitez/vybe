@@ -218,13 +218,21 @@ impl Compiler {
                             UnaryOp::Neg => { let l = self.line; common::math::emit_neg(self.chunk(), l); }
                             UnaryOp::Pos => {
                                 // JS `+v` coerces to number — ECMA-262 §7.1.4 ToNumber.
+                                // For Object operands, ToPrimitive(hint=number)
+                                // first (so Symbol.toPrimitive / valueOf
+                                // overrides fire with the JS method-call
+                                // protocol intact), then `Number(...)` to
+                                // finalise the coercion.
+                                if self.is_js_profile() {
+                                    self.emit_to_primitive("number");
+                                }
                                 let idx = self.import("ecma:number", "Number");
                                 self.emit_host_call(idx, 1);
                             }
                             UnaryOp::Not => self.emit(Op::DYN_NOT),
                             UnaryOp::BitNot => { let l = self.line; common::expressions::emit_i32_not(self.chunk(), l); }
                             UnaryOp::Typeof => self.emit(Op::REF_TYPEOF),
-                            UnaryOp::Void => { self.emit(Op::DROP); self.emit(Op::NULL); }
+                            UnaryOp::Void => { self.emit(Op::DROP); self.emit(Op::UNDEFINED); }
                             UnaryOp::Delete => { self.emit(Op::DROP); self.emit(Op::TRUE); }
                             UnaryOp::Deref => { let idx = self.str_const("__value"); self.emit_u16(Op::STRUCT_GET, idx); }
                             UnaryOp::AddrOf => {} // no-op in VM
@@ -403,7 +411,7 @@ impl Compiler {
             }
 
             // ── Index access ────────────────────────────────────────────
-            ExprKind::Index { object, index } => {
+            ExprKind::Index { object, index, null_safe } => {
                 // A Range used as the index is a slice operation
                 // (C# `arr[1..3]` / `s[0..5]`, Python `arr[1:3]` / `s[0:5]`).
                 // Route through compiler_common's polymorphic slice helper so
@@ -415,6 +423,26 @@ impl Compiler {
                     self.compile_expr(start)?;
                     self.compile_expr(end)?;
                     common::collections::emit_slice_invoke(self.chunk(), line);
+                } else if self.is_js_profile() && *null_safe {
+                    self.compile_expr(object)?;
+                    self.emit(Op::DUP);
+                    self.emit(Op::REF_IS_NULL);
+                    let non_null = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit(Op::DROP);
+                    let line = self.line;
+                    common::expressions::emit_undefined(self.chunk(), line);
+                    let end = self.emit_jump(Op::BR);
+                    self.patch_jump(non_null);
+                    let obj_slot = self.define_local("__js_index_obj");
+                    self.emit_u16(Op::LOCAL_SET, obj_slot);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.compile_expr(index)?;
+                    if self.profile.negative_index_wraps {
+                        self.emit_negative_index_wrap();
+                    }
+                    { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+                    self.patch_jump(end);
                 } else {
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
@@ -720,8 +748,29 @@ impl Compiler {
                     for elem in elements {
                         if elem.spread {
                             // Spread: `concat(current, other)` returns a NEW
-                            // array which replaces the one on TOS.
+                            // array which replaces the one on TOS. JS
+                            // generators (Continuation values) can't be
+                            // spread by the host concat fn — the iterator
+                            // protocol needs Op::GEN_NEXT (WASM stack
+                            // switching). Drain via the stdlib helper
+                            // when isGenerator(elem) at runtime.
                             self.compile_expr(&elem.value)?;
+                            if self.is_js_profile() {
+                                let v_slot = self.define_local("__arr_spread_v");
+                                self.emit_u16(Op::LOCAL_SET, v_slot); self.emit(Op::DROP);
+                                self.emit_u16(Op::LOCAL_GET, v_slot);
+                                let is_gen_idx = self.import("ecma:value", "isGenerator");
+                                self.emit_host_call(is_gen_idx, 1);
+                                let not_gen = self.emit_jump(Op::BR_IF_FALSE);
+                                let drain_key = self.str_const("__vybe_drain_generator");
+                                self.emit_u16(Op::GLOBAL_GET, drain_key);
+                                self.emit_u16(Op::LOCAL_GET, v_slot);
+                                self.emit_u8(Op::CALL_REF, 1);
+                                let done = self.emit_jump(Op::BR);
+                                self.patch_jump(not_gen);
+                                self.emit_u16(Op::LOCAL_GET, v_slot);
+                                self.patch_jump(done);
+                            }
                             common::collections::emit_concat(&mut self.chunks, self.current, line);
                         } else {
                             // DUP keeps the array on TOS; push returns the
@@ -904,20 +953,22 @@ impl Compiler {
                             // ecma:array.set expects [obj, key, val] → null
                             self.emit(Op::DUP);
                             self.compile_expr(key)?;
-                            self.emit(Op::DUP); // save key for __keys
+                            self.emit(Op::DUP); // save key for trackKey
                             let key_tmp = self.define_local("__obj_comp_key");
                             self.emit_u16(Op::LOCAL_SET, key_tmp); self.emit(Op::DROP);
                             self.compile_expr(value)?;
                             let l = self.line;
                             common::collections::emit_set(&mut self.chunks, self.current, l);
                             self.emit(Op::DROP); // drop returned null
-                            // Track in __keys
+                            // Track key — host fn checks if it's a
+                            // Symbol and routes to `__sym_keys` so
+                            // Object.keys excludes it (ECMA-262 §7.3.22).
                             self.emit(Op::DUP);
-                            let keys_key = self.str_const("__keys");
-                            self.emit_u16(Op::STRUCT_GET, keys_key);
                             self.emit_u16(Op::LOCAL_GET, key_tmp);
-                            let l = self.line;
-                            common::collections::emit_push(&mut self.chunks, self.current, l);
+                            let track_idx = self.import("ecma:object", "trackKey");
+                            let line = self.line;
+                            self.chunk().emit_op_u16(Op::CALL_IMPORT, track_idx, line);
+                            self.chunk().emit(2, line);
                             self.emit(Op::DROP);
                         }
                     }
@@ -930,16 +981,34 @@ impl Compiler {
                     self.emit_const(Value::String(Arc::from("")));
                     return Ok(());
                 }
-                // Use stdlib __vybe_tostring (pure WASM, populated by bundle::finalize_with_stdlib)
+                // For JS, ECMA-262 §13.2.8 specifies template literal
+                // substitutions go through GetValue → ToString. ToString
+                // on Objects calls ToPrimitive(hint=string) which prefers
+                // toString over valueOf — exactly what the
+                // `__vybe_to_primitive` polyfill implements. Routing
+                // through it ensures user `toString` overrides fire
+                // (sets `__js_this` via the JS method-call protocol),
+                // then `"" + primitive` produces the final string.
+                let use_to_primitive = self.is_js_profile();
                 let tostring_global = self.str_const("__vybe_tostring");
                 for (i, part) in parts.iter().enumerate() {
                     match part {
                         InterpolPart::Text(s) => self.emit_const(Value::String(Arc::from(s.as_str()))),
                         InterpolPart::Expr(e) | InterpolPart::Formatted(e, _) => {
-                            // Push func ref FIRST, then the value, then call_ref
-                            self.emit_u16(Op::GLOBAL_GET, tostring_global);
-                            self.compile_expr(e)?;
-                            self.emit_u8(Op::CALL_REF, 1);
+                            if use_to_primitive {
+                                self.compile_expr(e)?;
+                                self.emit_to_primitive("string");
+                                // After ToPrimitive, the value is a
+                                // primitive (string / number / etc).
+                                // Concat with "" to coerce to string.
+                                self.emit_const(Value::String(Arc::from("")));
+                                let line = self.line;
+                                common::strings::emit_str_concat(self.chunk(), line);
+                            } else {
+                                self.emit_u16(Op::GLOBAL_GET, tostring_global);
+                                self.compile_expr(e)?;
+                                self.emit_u8(Op::CALL_REF, 1);
+                            }
                         }
                     }
                     if i > 0 {
@@ -968,7 +1037,16 @@ impl Compiler {
 
             ExprKind::TypeOf(inner) => {
                 self.compile_expr(inner)?;
-                self.emit(Op::REF_TYPEOF);
+                if self.is_js_profile() {
+                    // ECMA-262 §13.5.3 Table 41: arrays are "object",
+                    // not "array". The VM's REF_TYPEOF emits "array"
+                    // (Vybe-specific), so JS routes through the host
+                    // helper that returns spec-compliant tags.
+                    let idx = self.import("ecma:value", "typeof");
+                    self.emit_host_call(idx, 1);
+                } else {
+                    self.emit(Op::REF_TYPEOF);
+                }
             }
 
             // ── NullCoalesce ────────────────────────────────────────────
@@ -985,30 +1063,68 @@ impl Compiler {
             // ── Spread ──────────────────────────────────────────────────
             ExprKind::Spread(inner) => {
                 self.compile_expr(inner)?;
+                // SPREAD is array-only in the VM (matches WASM
+                // `array.copy_into` semantics). Iterables that aren't
+                // arrays — Set, Map, String — get coerced to an array
+                // first via the polymorphic Symbol.iterator helper
+                // (`ecma:object.iterForOf`). Generators (Continuation
+                // values) need WASM stack-switching (`Op::GEN_NEXT`)
+                // to drive their iterator protocol, which a host fn
+                // can't do — route them through the
+                // `__stdlib_drain_generator` bytecode helper.
+                let inner_slot = self.define_local("__spread_iter");
+                self.emit_u16(Op::LOCAL_SET, inner_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, inner_slot);
+                let is_gen_idx = self.import("ecma:value", "isGenerator");
+                self.emit_host_call(is_gen_idx, 1);
+                let not_gen = self.emit_jump(Op::BR_IF_FALSE);
+                let drain_key = self.str_const("__vybe_drain_generator");
+                self.emit_u16(Op::GLOBAL_GET, drain_key);
+                self.emit_u16(Op::LOCAL_GET, inner_slot);
+                self.emit_u8(Op::CALL_REF, 1);
+                let done = self.emit_jump(Op::BR);
+                self.patch_jump(not_gen);
+                self.emit_u16(Op::LOCAL_GET, inner_slot);
+                let idx = self.import("ecma:object", "iterForOf");
+                self.emit_host_call(idx, 1);
+                self.patch_jump(done);
                 self.emit(Op::SPREAD);
             }
 
             // ── Await ───────────────────────────────────────────────────
             ExprKind::Await(inner) => {
-                // In our synchronous VM, promises are already resolved.
-                // `await p` unwraps the promise's `__value` property.
-                // If the inner value is not a promise, pass through.
+                // ECMA-262 §27.2 await semantics. The synchronous-promise
+                // model unwraps `__value` directly when the promise is
+                // already settled. Rejected promises THROW their reason
+                // (the spec semantics — `await Promise.reject(x)` throws
+                // x at the await site). Pending promises hit the JSPI
+                // suspend path via Op::PROMISE_SUSPEND elsewhere.
                 self.compile_expr(inner)?;
-                // Save to local, try to read __value
                 let await_slot = self.define_local("__await");
                 self.emit_u16(Op::LOCAL_SET, await_slot); self.emit(Op::DROP);
+                // Read __state — if "rejected" we throw __value.
+                self.emit_u16(Op::LOCAL_GET, await_slot);
+                let sk = self.str_const("__state");
+                self.emit_u16(Op::STRUCT_GET, sk);
+                self.emit_const(Value::String(Arc::from("rejected")));
+                self.emit(Op::STR_EQUALS);
+                let not_rejected = self.emit_jump(Op::BR_IF_FALSE);
                 self.emit_u16(Op::LOCAL_GET, await_slot);
                 let vk = self.str_const("__value");
                 self.emit_u16(Op::STRUCT_GET, vk);
-                // If __value is null → not a promise, use original
+                self.emit(Op::THROW);
+                self.patch_jump(not_rejected);
+                // Fulfilled or non-promise: unwrap __value (or pass-through).
+                self.emit_u16(Op::LOCAL_GET, await_slot);
+                let vk = self.str_const("__value");
+                self.emit_u16(Op::STRUCT_GET, vk);
                 self.emit(Op::DUP);
                 self.emit(Op::REF_IS_NULL);
                 let use_original = self.emit_jump(Op::BR_IF_TRUE);
-                // __value exists → use it (drop the null-check dup)
                 let done = self.emit_jump(Op::BR);
                 self.patch_jump(use_original);
-                self.emit(Op::DROP); // drop null __value
-                self.emit_u16(Op::LOCAL_GET, await_slot); // push original
+                self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, await_slot);
                 self.patch_jump(done);
             }
 
@@ -1019,8 +1135,35 @@ impl Compiler {
             }
 
             ExprKind::YieldFrom(inner) => {
+                // ECMA-262 §15.5 `yield*`: drain the inner iterable,
+                // re-yielding each value through the enclosing
+                // generator. Uses the WASM stack-switching `GEN_NEXT`
+                // (pops cont → pushes value+has_more) then `SUSPEND 0`
+                // for the per-value yield.
                 self.compile_expr(inner)?;
-                // Simplified: yield from → just pass through
+                let gen_slot = self.define_local("__yield_star_gen");
+                let val_slot = self.define_local("__yield_star_val");
+                let has_more_slot = self.define_local("__yield_star_has_more");
+                self.emit_u16(Op::LOCAL_SET, gen_slot); self.emit(Op::DROP);
+                let loop_start = self.chunks[self.current].code.len();
+                self.emit_u16(Op::LOCAL_GET, gen_slot);
+                self.emit(Op::GEN_NEXT);
+                // After GEN_NEXT: stack top is has_more (i32), under it value.
+                self.emit_u16(Op::LOCAL_SET, has_more_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, val_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, has_more_slot);
+                self.emit(Op::DYN_TO_BOOL);
+                let exit = self.emit_jump(Op::BR_IF_FALSE);
+                self.emit_u16(Op::LOCAL_GET, val_slot);
+                self.emit_u16(Op::SUSPEND, 0);
+                self.emit(Op::DROP);
+                let line = self.line;
+                self.chunks[self.current].emit_loop(loop_start, line);
+                self.patch_jump(exit);
+                // yield* expression evaluates to the inner generator's
+                // return value (final return statement). We don't track
+                // that yet — push `undefined` per ECMA spec default.
+                self.emit(Op::UNDEFINED);
             }
 
             // ── AddressOf (VB) ──────────────────────────────────────────
@@ -1110,9 +1253,37 @@ impl Compiler {
                         let prop = self.str_const(&base_name);
                         self.emit_u16(Op::LOCAL_GET, self_slot);
                         self.emit_u16(Op::STRUCT_GET, prop);
-                        self.emit_u16(Op::LOCAL_GET, self_slot);
+                        if self.is_js_profile() {
+                            let saved_js_this = self.save_js_this("__js_prev_this_super_expr");
+                            self.emit_u16(Op::LOCAL_GET, self_slot);
+                            self.set_js_this_from_stack();
+                            for a in args { self.compile_expr(&a.value)?; }
+                            self.emit_u8(Op::CALL_REF, args.len() as u8);
+                            let result_slot = self.define_local("__js_super_expr_result");
+                            self.emit_u16(Op::LOCAL_SET, result_slot);
+                            self.emit(Op::DROP);
+                            self.restore_js_this(saved_js_this);
+                            self.emit_u16(Op::LOCAL_GET, result_slot);
+                        } else {
+                            self.emit_u16(Op::LOCAL_GET, self_slot);
+                            for a in args { self.compile_expr(&a.value)?; }
+                            self.emit_u8(Op::CALL_REF, (args.len() + 1) as u8);
+                        }
+                    } else if self.is_js_profile() {
+                        let js_this = self.str_const("__js_this");
+                        let prop = self.str_const(&base_name);
+                        self.emit_u16(Op::GLOBAL_GET, js_this);
+                        self.emit_u16(Op::STRUCT_GET, prop);
+                        let saved_js_this = self.save_js_this("__js_prev_this_super_expr");
+                        self.emit_u16(Op::GLOBAL_GET, js_this);
+                        self.set_js_this_from_stack();
                         for a in args { self.compile_expr(&a.value)?; }
-                        self.emit_u8(Op::CALL_REF, (args.len() + 1) as u8);
+                        self.emit_u8(Op::CALL_REF, args.len() as u8);
+                        let result_slot = self.define_local("__js_super_expr_result");
+                        self.emit_u16(Op::LOCAL_SET, result_slot);
+                        self.emit(Op::DROP);
+                        self.restore_js_this(saved_js_this);
+                        self.emit_u16(Op::LOCAL_GET, result_slot);
                     } else {
                         self.emit(Op::NULL);
                     }
@@ -1197,7 +1368,7 @@ impl Compiler {
             ExprKind::Void(inner) => {
                 self.compile_expr(inner)?;
                 self.emit(Op::DROP);
-                self.emit(Op::NULL); // void always evaluates to undefined
+                self.emit(Op::UNDEFINED); // ECMA-262 §13.5.2: void → undefined
             }
 
             // ── Delete (JS expression) ──────────────────────────────────
@@ -1209,7 +1380,7 @@ impl Compiler {
                     self.emit_const(Value::String(Arc::from(field.as_str())));
                     let idx = self.import("ecma:object", "delete");
                     self.emit_host_call(idx, 2);
-                } else if let ExprKind::Index { object, index } = &inner.kind {
+                } else if let ExprKind::Index { object, index, .. } = &inner.kind {
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
                     let idx = self.import("ecma:object", "delete");

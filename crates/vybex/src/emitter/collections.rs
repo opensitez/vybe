@@ -132,13 +132,22 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, line: u32) {
 /// language profiles or walkers.
 
 /// Push an array of keys. Stack: [iterable] → [array_of_keys].
+///
+/// Uses `iterForIn` so JS `for...in` semantics walk the prototype chain
+/// (ECMA-262 §14.7.5.6 step 8.b). `Object.keys(...)` user calls go
+/// directly to `ecma:object.keys` (own-only) — that's a separate entry.
 pub fn emit_iter_keys(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "ecma:object", "keys", 1, line);
+    emit_import_call(chunks, current, "ecma:object", "iterForIn", 1, line);
 }
 
 /// Push an array of values. Stack: [iterable] → [array_of_values].
+///
+/// Uses `iterForOf` so for-of semantics match Symbol.iterator: Array/Set
+/// yields values, Map yields [k, v] pairs, String yields code-points.
+/// `Object.values(...)` keeps its spec-strict behaviour at the user-facing
+/// `ecma:object.values` entry — that's a different call site.
 pub fn emit_iter_values(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "ecma:object", "values", 1, line);
+    emit_import_call(chunks, current, "ecma:object", "iterForOf", 1, line);
 }
 
 /// Push an array of [key, value] pair arrays. Stack: [iterable] →

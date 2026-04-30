@@ -161,7 +161,6 @@ console.log(obj.c);
     assert_eq!(out, vec!["1", "2", "3"]);
 }
 
-#[ignore]
 #[test]
 fn object_getter_literal() {
     let out = run_js(r#"
@@ -174,7 +173,6 @@ console.log(obj.name);
     assert_eq!(out, vec!["TEST"]);
 }
 
-#[ignore]
 #[test]
 fn object_setter_literal() {
     let out = run_js(r#"
@@ -244,6 +242,7 @@ console.log(Object.entries(obj).map(([k, v]) => k + ":" + v).join(","));
 "#);
     assert_eq!(out, vec!["first:1,second:2,third:3"]);
 }
+
 
 #[test]
 fn object_assign_returns_target_reference() {

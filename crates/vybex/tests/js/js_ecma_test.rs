@@ -721,8 +721,9 @@ fn test_array_find() {
 
 #[test]
 fn test_array_find_not_found() {
+    // ECMA-262 §23.1.3.10: returns undefined when no element matches.
     let code = r#"console.log([1, 2, 3].find((x) => x > 10))"#;
-    assert_eq!(run_js_one(code), "null");
+    assert_eq!(run_js_one(code), "undefined");
 }
 
 // ============================================================

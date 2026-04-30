@@ -1691,11 +1691,12 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 expr = Expression::new(ExprKind::Index {
                     object: Box::new(expr),
                     index: Box::new(range),
+                    null_safe: false,
                 });
             } else if let Some(idx_pair) = exprs.into_iter().next() {
                 let index = walk_expression(idx_pair)?;
                 expr = Expression::new(ExprKind::Index {
-                    object: Box::new(expr), index: Box::new(index),
+                    object: Box::new(expr), index: Box::new(index), null_safe: false,
                 });
             }
         }

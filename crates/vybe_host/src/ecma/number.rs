@@ -59,14 +59,43 @@ fn register_constructor(vm: &mut VM) {
             Value::F64(n) => *n,
             Value::I32(n) => *n as f64,
             Value::I64(n) => *n as f64,
-            Value::String(s) => {
-                let trimmed = s.trim();
-                if trimmed.is_empty() { 0.0 } else { trimmed.parse::<f64>().unwrap_or(f64::NAN) }
+            Value::String(s) => parse_to_number(s),
+            // Arrays / dates / boxed objects: ECMA-262 §7.1.4.1 step 4 →
+            // ToPrimitive(arg, "number"), which for Array.prototype falls
+            // through @@toPrimitive → valueOf (returns receiver, ignored)
+            // → toString (joins comma-separated). Mirror that here for
+            // the common cases without invoking the full polymorphic
+            // dispatch chain (no `ctx` available).
+            Value::Object(obj) => {
+                let o = obj.lock().unwrap();
+                match &o.kind {
+                    vybe_bytecode::value::ObjectKind::Array(elems) => {
+                        // [].toString → ""; [5].toString → "5";
+                        // [1,2].toString → "1,2".
+                        let joined: Vec<String> = elems.iter().map(|v| match v {
+                            Value::Null | Value::Undefined => String::new(),
+                            other => format!("{}", other),
+                        }).collect();
+                        parse_to_number(&joined.join(","))
+                    }
+                    // Date instances coerce to their ms timestamp via valueOf.
+                    _ if matches!(o.properties.get("__type"), Some(Value::String(s)) if s.as_ref() == "Date") => {
+                        o.properties.get("__time").map(|v| v.as_f64()).unwrap_or(f64::NAN)
+                    }
+                    _ => f64::NAN,
+                }
             }
             _ => f64::NAN,
         };
         Value::F64(n)
     }));
+}
+
+/// ECMA-262 §7.1.4.1.1 StringToNumber — same trim + parse the
+/// constructor uses for both String and Object→toString fallbacks.
+fn parse_to_number(s: &str) -> f64 {
+    let trimmed = s.trim();
+    if trimmed.is_empty() { 0.0 } else { trimmed.parse::<f64>().unwrap_or(f64::NAN) }
 }
 
 // ── Constants (registered as 0-arg getters for flat host_registry) ─

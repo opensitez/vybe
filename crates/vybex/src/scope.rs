@@ -51,6 +51,24 @@ impl Scope {
         slot
     }
 
+    /// Define a local at the function-scope depth (depth = 0) regardless
+    /// of the current block depth. Used for `var` declarations in JS,
+    /// which are function-scoped (ECMA-262 §10.2.11) — the binding must
+    /// outlive the block it was declared in. Without this, `end_scope`
+    /// would pop the binding when the enclosing block exits.
+    pub fn define_at_function_scope(&mut self, name: &str, type_hint: Option<String>) -> u16 {
+        let slot = self.next_slot;
+        self.locals.push(Local {
+            name: name.to_string(),
+            depth: 0,
+            slot,
+            is_captured: false,
+            type_hint,
+        });
+        self.next_slot += 1;
+        slot
+    }
+
     pub fn resolve(&self, name: &str) -> Option<u16> {
         for l in self.locals.iter().rev() {
             if l.name == name { return Some(l.slot); }

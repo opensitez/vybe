@@ -63,44 +63,55 @@ pub fn emit_invoke_method(
     argc: u8,
     line: u32,
 ) {
-    // Fast paths for 0 and 1 args avoid allocating temps.
-    if argc == 0 {
-        // Stack: [receiver] → [receiver, name]
-        let c = &mut chunks[current];
-        let name_const = c.add_constant(Value::String(Arc::from(method_name)));
-        c.emit_op_u16(Op::CONST, name_const, line);
-        let idx = chunks[0].add_import("ecma:value", "invokeMethod");
-        let c = &mut chunks[current];
-        c.emit_op_u16(Op::CALL_IMPORT, idx, line);
-        c.emit(2, line);
-        return;
-    }
-
-    // argc >= 1: stash the args + receiver into temp locals, then rebuild
-    // the stack with the name constant slotted in after the receiver.
+    // Always go through the receiver-stash path so we can also bind
+    // `__js_this` before the host call. The host's `invokeMethod` →
+    // `dispatch` → `ctx.invoke` chain runs the user method body with
+    // whatever `__js_this` is currently set to (the bridge JS-compiled
+    // class methods read `this` from). Setting `__js_this = receiver`
+    // here lets `obj.method()` reach a body that does `this.x` even
+    // when the method is bound on the instance and dispatched
+    // dynamically.
     let c = &mut chunks[current];
     let temp_base = c.local_count;
+    // slots: [receiver, prev_js_this, args...]
     c.local_count = c
         .local_count
-        .checked_add(argc as u16 + 1)
+        .checked_add(argc as u16 + 2)
         .expect("emit_invoke_method: local slot overflow");
+    let receiver_slot = temp_base;
+    let prev_this_slot = temp_base + 1;
+    let arg_base = temp_base + 2;
 
     // Pop args into temps (LIFO: last arg lands in highest temp slot).
     for i in (0..argc).rev() {
-        let slot = temp_base + 1 + i as u16; // +1 leaves slot `temp_base` for receiver
+        let slot = arg_base + i as u16;
         c.emit_op_u16(Op::LOCAL_SET, slot, line);
         c.emit_op(Op::DROP, line);
     }
     // Stash receiver.
-    c.emit_op_u16(Op::LOCAL_SET, temp_base, line);
+    c.emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
     c.emit_op(Op::DROP, line);
 
-    // Rebuild: receiver, name, args...
-    c.emit_op_u16(Op::LOCAL_GET, temp_base, line);
+    // Save current __js_this so we can restore after the call. Host
+    // functions don't manage this global — every JS method call site
+    // (here and in compiler/calls.rs) is responsible for save/restore.
+    let js_this_const = c.add_constant(Value::String(Arc::from("__js_this")));
+    c.emit_op_u16(Op::GLOBAL_GET, js_this_const, line);
+    c.emit_op_u16(Op::LOCAL_SET, prev_this_slot, line);
+    c.emit_op(Op::DROP, line);
+
+    // Set __js_this = receiver so JS-compiled method bodies see the
+    // right `this` when dispatch eventually drives `ctx.invoke`.
+    c.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    c.emit_op_u16(Op::GLOBAL_SET, js_this_const, line);
+    c.emit_op(Op::DROP, line);
+
+    // Rebuild call stack: receiver, name, args...
+    c.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     let name_const = c.add_constant(Value::String(Arc::from(method_name)));
     c.emit_op_u16(Op::CONST, name_const, line);
     for i in 0..argc {
-        let slot = temp_base + 1 + i as u16;
+        let slot = arg_base + i as u16;
         c.emit_op_u16(Op::LOCAL_GET, slot, line);
     }
 
@@ -108,4 +119,20 @@ pub fn emit_invoke_method(
     let c = &mut chunks[current];
     c.emit_op_u16(Op::CALL_IMPORT, idx, line);
     c.emit(argc + 2, line);
+
+    // Restore __js_this. Result is on top of stack — stash it, restore
+    // the global, then re-push the result so the caller sees the same
+    // shape as before this helper.
+    let result_slot = chunks[current].local_count;
+    chunks[current].local_count = chunks[current]
+        .local_count
+        .checked_add(1)
+        .expect("emit_invoke_method: local slot overflow");
+    let c = &mut chunks[current];
+    c.emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    c.emit_op(Op::DROP, line);
+    c.emit_op_u16(Op::LOCAL_GET, prev_this_slot, line);
+    c.emit_op_u16(Op::GLOBAL_SET, js_this_const, line);
+    c.emit_op(Op::DROP, line);
+    c.emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }

@@ -212,7 +212,7 @@ fn rewrite_constructor_calls_expr(expr: &mut Expression, classes: &std::collecti
             rewrite_constructor_calls_expr(else_, classes);
         }
         ExprKind::Member { object, .. } => rewrite_constructor_calls_expr(object, classes),
-        ExprKind::Index { object, index } => {
+        ExprKind::Index { object, index, .. } => {
             rewrite_constructor_calls_expr(object, classes);
             rewrite_constructor_calls_expr(index, classes);
         }
@@ -2368,6 +2368,7 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
         return Ok(Expression::new(ExprKind::Index {
             object: Box::new(expr),
             index: Box::new(index_expr),
+            null_safe: false,
         }));
     }
 
