@@ -2676,6 +2676,25 @@ impl Compiler {
                 } else {
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
+                    // JS profile: track insertion order via the
+                    // `__keys` side channel so `Object.keys` /
+                    // `Object.entries` / `Object.values` see the
+                    // correct order. The HashMap backing Ordinary
+                    // objects loses order otherwise, which breaks
+                    // PHP polyfills that build assoc results
+                    // (`array_flip`, `array_diff_assoc`, etc.) and
+                    // any JS code that relies on §7.3.22 ordering.
+                    if self.is_js_profile() {
+                        let key_tmp = self.define_local("__idx_key");
+                        self.emit_u16(Op::LOCAL_SET, key_tmp); self.emit(Op::DROP);
+                        self.emit(Op::DUP);
+                        self.emit_u16(Op::LOCAL_GET, key_tmp);
+                        let track_idx = self.import("ecma:object", "trackKey");
+                        self.chunk().emit_op_u16(Op::CALL_IMPORT, track_idx, line);
+                        self.chunk().emit(2, line);
+                        self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, key_tmp);
+                    }
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     common::collections::emit_set(&mut self.chunks, self.current, line);
                     // ecma:array.set leaves [null]; drop it.
@@ -3503,6 +3522,13 @@ impl Compiler {
             "str_trim_start" => { self.compile_expr(args[0])?; self.emit(Op::STR_TRIM_START); }
             "str_trim_end" => { self.compile_expr(args[0])?; self.emit(Op::STR_TRIM_END); }
             "str_reverse" => { self.compile_expr(args[0])?; self.emit(Op::STR_REVERSE); }
+            "str_last_index_of" => {
+                if args.len() >= 2 {
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    self.emit(Op::STR_LAST_INDEX_OF);
+                }
+            }
             "str_from_char_code" => {
                 // String.fromCharCode(72, 105) → "Hi"
                 self.compile_expr(args[0])?;
@@ -3703,33 +3729,114 @@ impl Compiler {
                     self.emit(Op::NULL);
                 }
             }
-            "php_substr" => {
-                // PHP `substr($s, $start, $length?)` → ECMA `substring(s, start, start + length)`.
-                // 0-based start (matches ECMA); length specifies count
-                // (ECMA wants end index). 2-arg form omits end so ECMA
-                // substring runs to the string's actual length.
-                if args.len() >= 2 {
+            "php_is_float" => {
+                // PHP `is_float` — true only for non-integer numbers.
+                // Composes ecma:number.isInteger + boolean negation
+                // with a leading `typeof v === "number"` guard so
+                // strings / objects don't match (REF_IS_NUMBER opcode
+                // covers the typeof-number predicate).
+                if !args.is_empty() {
                     self.compile_expr(args[0])?;
-                    self.compile_expr(args[1])?;
-                    common::convert::emit_to_int(self.chunk(), line);
-                    if args.len() >= 3 {
-                        // Need start twice: once as substring's `start`,
-                        // again to compute `start + length`. Stash in a
-                        // local so the second use doesn't recompute it
-                        // (and doesn't rely on side-effect-free args).
-                        let start_slot = self.define_local("__substr_start");
-                        self.emit(Op::DUP);
-                        self.emit_u16(Op::LOCAL_SET, start_slot); self.emit(Op::DROP);
-                        self.compile_expr(args[2])?;
-                        common::convert::emit_to_int(self.chunk(), line);
-                        self.emit_u16(Op::LOCAL_GET, start_slot);
-                        self.emit(Op::I32_ADD);
-                    } else {
-                        // No length: pass i32::MAX so ECMA substring
-                        // clamps to the string's length.
-                        self.emit_const(Value::I32(0x7FFF_FFFF));
-                    }
-                    common::strings::emit_substring(self.chunk(), line);
+                    let v_slot = self.define_local("__php_isf_v");
+                    self.emit_u16(Op::LOCAL_SET, v_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, v_slot);
+                    self.emit(Op::REF_IS_NUMBER);
+                    let not_num = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit_u16(Op::LOCAL_GET, v_slot);
+                    let is_int_idx = self.import("ecma:number", "isInteger");
+                    self.emit_host_call(is_int_idx, 1);
+                    self.emit(Op::DYN_NOT);
+                    let done = self.emit_jump(Op::BR);
+                    self.patch_jump(not_num);
+                    self.emit_const(Value::Bool(false));
+                    self.patch_jump(done);
+                } else {
+                    self.emit_const(Value::Bool(false));
+                }
+            }
+            "php_is_string" => {
+                if !args.is_empty() {
+                    self.compile_expr(args[0])?;
+                    self.emit(Op::REF_IS_STRING);
+                } else {
+                    self.emit_const(Value::Bool(false));
+                }
+            }
+            "php_is_array" => {
+                // PHP `is_array` matches any of: ObjectKind::Array,
+                // ObjectKind::Map, ObjectKind::Ordinary (plain assoc
+                // object). REF_IS_ARRAY only checks Array; we layer
+                // an Object check via REF_IS_OBJECT (covers Map and
+                // Ordinary too — both are Object-kind values).
+                if !args.is_empty() {
+                    self.compile_expr(args[0])?;
+                    self.emit(Op::REF_IS_OBJECT);
+                } else {
+                    self.emit_const(Value::Bool(false));
+                }
+            }
+            "php_is_bool" => {
+                if !args.is_empty() {
+                    self.compile_expr(args[0])?;
+                    self.emit(Op::REF_IS_BOOL);
+                } else {
+                    self.emit_const(Value::Bool(false));
+                }
+            }
+            "php_is_null" => {
+                if !args.is_empty() {
+                    self.compile_expr(args[0])?;
+                    self.emit(Op::REF_IS_NULL);
+                } else {
+                    self.emit_const(Value::Bool(true));
+                }
+            }
+            "php_is_object" => {
+                // PHP `is_object` matches user objects but NOT plain
+                // arrays. Approximated as REF_IS_OBJECT && !is_array.
+                // For Phase-1 simplicity the same predicate as is_array
+                // — distinction requires a class-instance vs assoc-array
+                // tag which Vybe doesn't track yet.
+                if !args.is_empty() {
+                    self.compile_expr(args[0])?;
+                    self.emit(Op::REF_IS_OBJECT);
+                } else {
+                    self.emit_const(Value::Bool(false));
+                }
+            }
+            "php_is_callable" => {
+                // PHP `is_callable` matches functions and Closure
+                // instances. ref_typeof on Function / HostFunction
+                // returns "function" — compare via DYN_EQ.
+                if !args.is_empty() {
+                    self.compile_expr(args[0])?;
+                    self.emit(Op::REF_TYPEOF);
+                    self.emit_const(Value::String(Arc::from("function")));
+                    self.emit(Op::DYN_EQ);
+                } else {
+                    self.emit_const(Value::Bool(false));
+                }
+            }
+            "php_rsort" => {
+                // PHP `rsort($arr)` — descending in-place sort. Compose
+                // from existing stdlib: `sort_in_place(arr)` for the
+                // ascending sort, then `array_reverse` for descending.
+                // PHP arrays are JS arrays in our model, so the sort +
+                // reverse mutate the same backing storage the caller's
+                // variable points to.
+                if !args.is_empty() {
+                    self.compile_expr(args[0])?;
+                    let arr_slot = self.define_local("__php_rsort_arr");
+                    self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
+                    let helper = self.str_const("__vybe_sort_in_place");
+                    self.emit_u16(Op::GLOBAL_GET, helper);
+                    self.emit_u16(Op::LOCAL_GET, arr_slot);
+                    self.emit_u8(Op::CALL_REF, 1);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, arr_slot);
+                    common::collections::emit_reverse(&mut self.chunks, self.current, line);
+                    self.emit(Op::DROP);
+                    self.emit(Op::NULL);
                 } else {
                     self.emit(Op::NULL);
                 }

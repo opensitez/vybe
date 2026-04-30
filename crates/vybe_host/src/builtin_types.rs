@@ -35,6 +35,14 @@ pub fn register_all(vm: &mut VM) {
             ("contains", "ecma:string", "includes"),
             ("toupper", "ecma:string", "toUpperCase"),
             ("tolower", "ecma:string", "toLowerCase"),
+            // JS-spec camelCase forms — TypeRegistry lowercases the
+            // lookup key, so `s.toUpperCase()` and `s.toLowerCase()`
+            // both arrive here as `touppercase` / `tolowercase`. These
+            // entries make the JS-shape walker rewrites in php/walker.rs
+            // (`ucfirst`, `lcfirst`, etc.) resolve through the same
+            // ecma:string host fns the JS profile uses.
+            ("touppercase", "ecma:string", "toUpperCase"),
+            ("tolowercase", "ecma:string", "toLowerCase"),
             ("trim", "ecma:string", "trim"),
             ("trimstart", "ecma:string", "trimStart"),
             ("trimend", "ecma:string", "trimEnd"),

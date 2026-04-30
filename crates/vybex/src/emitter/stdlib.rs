@@ -53,6 +53,78 @@ use vybe_bytecode::opcode::Op;
 ///
 /// Errors include the language and export name in the message so build
 /// failures point at the offending polyfill file.
+/// Batch variant: parse + compile the polyfill source ONCE and
+/// extract every requested export. The single-export `build_polyfill`
+/// re-parses the same file per call, which is wasteful when one source
+/// file (e.g. `php_arrays.js` with ~20 exports) bundles many helpers.
+///
+/// Compilation is cached process-wide by source-pointer + language —
+/// `finalize_with_stdlib` runs on every test compile, but the polyfill
+/// bytecode is identical across runs (only the import indices need
+/// per-call remapping). Caching cuts per-test polyfill compile cost
+/// from ~10s to negligible. The cache holds Vec<Chunk> values which
+/// are deep-cloned per call so callers freely mutate their copy.
+pub(crate) fn build_polyfill_batch(
+    imports: &mut Chunk,
+    source: &str,
+    language: &str,
+    export_names: &[&str],
+) -> Vec<Chunk> {
+    use std::sync::Mutex;
+    use std::collections::HashMap;
+    static CACHE: std::sync::OnceLock<Mutex<HashMap<(usize, String), Vec<Chunk>>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = (source.as_ptr() as usize, language.to_string());
+
+    let polyfill_chunks: Vec<Chunk> = {
+        // PoisonError-tolerant: another thread may have panicked
+        // while holding the lock (parallel test runners do this on
+        // assertion failures); we don't store any tainted state so
+        // recovering the inner data is safe.
+        let mut guard = match cache.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(cached) = guard.get(&key) {
+            cached.clone()
+        } else {
+            let lang = crate::languages::find_by_name(language)
+                .unwrap_or_else(|| panic!("polyfill build: unknown language {:?}", language));
+            let module = (lang.parse)(source)
+                .unwrap_or_else(|e| panic!("polyfill build: parse {:?} failed: {}", language, e));
+            let profile = crate::profile::parse_profile((lang.profile_source)())
+                .unwrap_or_else(|e| panic!("polyfill build: profile {:?} parse failed: {}", language, e));
+            let compiled = with_polyfill_guard(|| {
+                crate::compiler::Compiler::with_profile(profile)
+                    .compile(&module)
+                    .unwrap_or_else(|e| panic!("polyfill build: compile {:?} failed: {}", language, e))
+            });
+            guard.insert(key, compiled.clone());
+            compiled
+        }
+    };
+
+    let polyfill_script = polyfill_chunks.first()
+        .unwrap_or_else(|| panic!("polyfill {}: no chunks compiled", language));
+    let remap: Vec<u16> = polyfill_script.imports.iter()
+        .map(|imp| imports.add_import(imp.module.clone(), imp.name.clone()))
+        .collect();
+
+    let mut out = Vec::with_capacity(export_names.len());
+    for &name in export_names {
+        let mut chunk = polyfill_chunks.iter()
+            .find(|c| c.name == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("polyfill build: export {:?} not found in {} source", name, language));
+        if !remap.is_empty() {
+            relocate_call_import_operands(&mut chunk, &remap);
+        }
+        out.push(chunk);
+    }
+    out
+}
+
 pub(crate) fn build_polyfill(
     imports: &mut Chunk,
     source: &str,
@@ -300,6 +372,168 @@ pub fn build_stdlib(imports: &mut Chunk) -> StdLib {
     chunks.push(build_polyfill(
         imports, include_str!("polyfills/to_primitive.js"), "js", "__vybe_to_primitive"));
     exports.push("__stdlib_to_primitive");
+    // PHP loop-heavy array helpers. The simple ones (sort/usort/
+    // array_unique/fill/product/rsort) skip this file and route
+    // through existing common emits + stdlib chunks via the PHP
+    // profile. Only multi-step or assoc-only operations live here.
+    //
+    // Batch-extract: parse + compile the source ONCE and pull all
+    // exports in one pass. Calling `build_polyfill` per name re-parses
+    // and re-compiles the entire file each time — ~90s per test as the
+    // count grew. Order matches MAPPINGS in bundle.rs.
+    let php_arr_src = include_str!("polyfills/php_arrays.js");
+    let php_arr_exports = [
+        "__vybe_php_array_pad",
+        "__vybe_php_array_chunk",
+        "__vybe_php_array_flip",
+        "__vybe_php_array_combine",
+        "__vybe_php_array_diff",
+        "__vybe_php_array_intersect",
+        "__vybe_php_array_diff_assoc",
+        "__vybe_php_array_intersect_key",
+        "__vybe_php_array_replace",
+        "__vybe_php_array_count_values",
+        "__vybe_php_array_column",
+        "__vybe_php_array_key_first",
+        "__vybe_php_array_key_last",
+        "__vybe_php_asort",
+        "__vybe_php_arsort",
+        "__vybe_php_ksort",
+        "__vybe_php_krsort",
+        "__vybe_php_uasort",
+        "__vybe_php_uksort",
+    ];
+    let php_export_aliases = [
+        "__stdlib_php_array_pad",
+        "__stdlib_php_array_chunk",
+        "__stdlib_php_array_flip",
+        "__stdlib_php_array_combine",
+        "__stdlib_php_array_diff",
+        "__stdlib_php_array_intersect",
+        "__stdlib_php_array_diff_assoc",
+        "__stdlib_php_array_intersect_key",
+        "__stdlib_php_array_replace",
+        "__stdlib_php_array_count_values",
+        "__stdlib_php_array_column",
+        "__stdlib_php_array_key_first",
+        "__stdlib_php_array_key_last",
+        "__stdlib_php_asort",
+        "__stdlib_php_arsort",
+        "__stdlib_php_ksort",
+        "__stdlib_php_krsort",
+        "__stdlib_php_uasort",
+        "__stdlib_php_uksort",
+    ];
+    let php_chunks = build_polyfill_batch(imports, php_arr_src, "js", &php_arr_exports);
+    for (chunk, alias) in php_chunks.into_iter().zip(php_export_aliases.iter()) {
+        chunks.push(chunk);
+        exports.push(alias);
+    }
+    // PHP date helpers — checkdate / getdate compose from `new Date()`
+    // + getter methods, all resolved through the existing ECMA Date
+    // host fns when compiled under JS profile.
+    let php_date_src = include_str!("polyfills/php_dates.js");
+    let php_date_exports = ["__vybe_php_checkdate", "__vybe_php_getdate"];
+    let php_date_aliases = ["__stdlib_php_checkdate", "__stdlib_php_getdate"];
+    let php_date_chunks = build_polyfill_batch(imports, php_date_src, "js", &php_date_exports);
+    for (chunk, alias) in php_date_chunks.into_iter().zip(php_date_aliases.iter()) {
+        chunks.push(chunk);
+        exports.push(alias);
+    }
+    // PHP string helpers — compose from JS String.prototype.* and
+    // basic char-iter loops. Same shared-host-fn principle as the
+    // array polyfills: every method call resolves to an existing
+    // ECMA host fn under the JS compiler.
+    let php_str_src = include_str!("polyfills/php_strings.js");
+    let php_str_exports = [
+        "__vybe_php_ucwords",
+        "__vybe_php_str_split",
+        "__vybe_php_str_pad",
+        "__vybe_php_substr_count",
+        "__vybe_php_substr_replace",
+        "__vybe_php_str_ireplace",
+        "__vybe_php_str_word_count",
+        "__vybe_php_strstr",
+        "__vybe_php_stristr",
+        "__vybe_php_urlencode",
+        "__vybe_php_rawurlencode",
+        "__vybe_php_urldecode",
+        "__vybe_php_bin2hex",
+        "__vybe_php_hex2bin",
+        "__vybe_php_chunk_split",
+        "__vybe_php_wordwrap",
+        "__vybe_php_number_format",
+        "__vybe_php_str_replace",
+        "__vybe_php_ctype_alpha",
+        "__vybe_php_ctype_digit",
+        "__vybe_php_ctype_alnum",
+        "__vybe_php_ctype_space",
+        "__vybe_php_ctype_upper",
+        "__vybe_php_ctype_lower",
+        "__vybe_php_ctype_xdigit",
+        "__vybe_php_ctype_punct",
+        "__vybe_php_ctype_print",
+        "__vybe_php_ctype_cntrl",
+    ];
+    let php_str_aliases = [
+        "__stdlib_php_ucwords",
+        "__stdlib_php_str_split",
+        "__stdlib_php_str_pad",
+        "__stdlib_php_substr_count",
+        "__stdlib_php_substr_replace",
+        "__stdlib_php_str_ireplace",
+        "__stdlib_php_str_word_count",
+        "__stdlib_php_strstr",
+        "__stdlib_php_stristr",
+        "__stdlib_php_urlencode",
+        "__stdlib_php_rawurlencode",
+        "__stdlib_php_urldecode",
+        "__stdlib_php_bin2hex",
+        "__stdlib_php_hex2bin",
+        "__stdlib_php_chunk_split",
+        "__stdlib_php_wordwrap",
+        "__stdlib_php_number_format",
+        "__stdlib_php_str_replace",
+        "__stdlib_php_ctype_alpha",
+        "__stdlib_php_ctype_digit",
+        "__stdlib_php_ctype_alnum",
+        "__stdlib_php_ctype_space",
+        "__stdlib_php_ctype_upper",
+        "__stdlib_php_ctype_lower",
+        "__stdlib_php_ctype_xdigit",
+        "__stdlib_php_ctype_punct",
+        "__stdlib_php_ctype_print",
+        "__stdlib_php_ctype_cntrl",
+    ];
+    let php_str_chunks = build_polyfill_batch(imports, php_str_src, "js", &php_str_exports);
+    for (chunk, alias) in php_str_chunks.into_iter().zip(php_str_aliases.iter()) {
+        chunks.push(chunk);
+        exports.push(alias);
+    }
+    // PHP math helpers — variadic min/max + base conversion that don't
+    // map cleanly to a single Math.* primitive.
+    let php_math_src = include_str!("polyfills/php_math.js");
+    let php_math_exports = [
+        "__vybe_php_min",
+        "__vybe_php_max",
+        "__vybe_php_decbin",
+        "__vybe_php_decoct",
+        "__vybe_php_dechex",
+        "__vybe_php_base_convert",
+    ];
+    let php_math_aliases = [
+        "__stdlib_php_min",
+        "__stdlib_php_max",
+        "__stdlib_php_decbin",
+        "__stdlib_php_decoct",
+        "__stdlib_php_dechex",
+        "__stdlib_php_base_convert",
+    ];
+    let php_math_chunks = build_polyfill_batch(imports, php_math_src, "js", &php_math_exports);
+    for (chunk, alias) in php_math_chunks.into_iter().zip(php_math_aliases.iter()) {
+        chunks.push(chunk);
+        exports.push(alias);
+    }
     // Order matters: dir() embeds GLOBAL_GET refs to __vybe_dir_read /
     // __vybe_dir_close, which must be registered before dir() runs. The
     // global registration order is the MAPPINGS order (also driven by

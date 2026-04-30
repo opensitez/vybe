@@ -67,7 +67,49 @@ stripos             = { emit = "opcode:str_index_of",        min_args = 2, max_a
 basename            = { emit = "host:wasi:filesystem:pathGetFileName",  min_args = 1, max_args = 2 }
 dirname             = { emit = "host:wasi:filesystem:pathGetDirectory", min_args = 1, max_args = 2 }
 # Substring replace — direct STR_REPLACE opcode (ECMA replaceAll-equivalent).
-str_replace         = { emit = "opcode:str_replace",         min_args = 3, max_args = 4 }
+str_replace         = { emit = "stdlib:php_str_replace",     min_args = 3, max_args = 4 }
+ctype_alpha         = { emit = "stdlib:php_ctype_alpha",     min_args = 1, max_args = 1 }
+ctype_digit         = { emit = "stdlib:php_ctype_digit",     min_args = 1, max_args = 1 }
+ctype_alnum         = { emit = "stdlib:php_ctype_alnum",     min_args = 1, max_args = 1 }
+ctype_space         = { emit = "stdlib:php_ctype_space",     min_args = 1, max_args = 1 }
+ctype_upper         = { emit = "stdlib:php_ctype_upper",     min_args = 1, max_args = 1 }
+ctype_lower         = { emit = "stdlib:php_ctype_lower",     min_args = 1, max_args = 1 }
+ctype_xdigit        = { emit = "stdlib:php_ctype_xdigit",    min_args = 1, max_args = 1 }
+ctype_punct         = { emit = "stdlib:php_ctype_punct",     min_args = 1, max_args = 1 }
+ctype_print         = { emit = "stdlib:php_ctype_print",     min_args = 1, max_args = 1 }
+ctype_cntrl         = { emit = "stdlib:php_ctype_cntrl",     min_args = 1, max_args = 1 }
+mb_strlen           = { emit = "opcode:str_length",          min_args = 1, max_args = 2 }
+mb_strtolower       = { emit = "opcode:str_to_lower",        min_args = 1, max_args = 2 }
+mb_strtoupper       = { emit = "opcode:str_to_upper",        min_args = 1, max_args = 2 }
+# `mb_substr` walker-rewritten alongside `substr` (Vybe stores strings
+# as Rust UTF-8 — code-point indexing matches mb_substr semantics).
+strrev              = { emit = "opcode:str_reverse",         min_args = 1, max_args = 1 }
+strrpos             = { emit = "opcode:str_last_index_of",   min_args = 2, max_args = 3 }
+strripos            = { emit = "opcode:str_last_index_of",   min_args = 2, max_args = 3 }
+# `ucfirst` / `lcfirst` walker-rewritten to the `s.charAt(0).toX() + s.slice(1)`
+# composition. Both the `host:ecma:string:*` methods and the value-method
+# dispatch path resolve those without PHP-specific bindings.
+ucwords             = { emit = "stdlib:php_ucwords",         min_args = 1, max_args = 2 }
+str_split           = { emit = "stdlib:php_str_split",       min_args = 1, max_args = 2 }
+str_pad             = { emit = "stdlib:php_str_pad",         min_args = 2, max_args = 4 }
+substr_count        = { emit = "stdlib:php_substr_count",    min_args = 2, max_args = 4 }
+substr_replace      = { emit = "stdlib:php_substr_replace",  min_args = 3, max_args = 4 }
+str_ireplace        = { emit = "stdlib:php_str_ireplace",    min_args = 3, max_args = 4 }
+str_word_count      = { emit = "stdlib:php_str_word_count",  min_args = 1, max_args = 3 }
+strstr              = { emit = "stdlib:php_strstr",          min_args = 2, max_args = 3 }
+stristr             = { emit = "stdlib:php_stristr",         min_args = 2, max_args = 3 }
+# `urlencode` / `urldecode` walker-rewritten via `encodeURIComponent`
+# composition. RFC 1738 (`+` for space) handled by `.replaceAll(...)`
+# in the rewrite rather than a PHP-specific polyfill.
+# `rawurlencode` / `rawurldecode` walker-rewritten to
+# `encodeURIComponent($s)` / `decodeURIComponent($s)` — RFC 3986
+# matches exactly.
+bin2hex             = { emit = "stdlib:php_bin2hex",         min_args = 1, max_args = 1 }
+hex2bin             = { emit = "stdlib:php_hex2bin",         min_args = 1, max_args = 1 }
+chunk_split         = { emit = "stdlib:php_chunk_split",     min_args = 1, max_args = 3 }
+wordwrap            = { emit = "stdlib:php_wordwrap",        min_args = 1, max_args = 4 }
+number_format       = { emit = "stdlib:php_number_format",   min_args = 1, max_args = 4 }
+
 # Array → delimited string. PHP `implode($glue, $array)` and `join` (alias).
 # Backed by compiler_common::collections::join, which every other language
 # already routes through.
@@ -105,31 +147,95 @@ preg_replace        = { emit = "stdlib:regex_replace_pat_first", min_args = 3, m
 preg_split          = { emit = "stdlib:regex_split_pat_first",   min_args = 2, max_args = 4 }
 
 # ── Math functions ───────────────────────────────────────────────────────────
-
-abs                 = { emit = "opcode:f64_abs",             min_args = 1, max_args = 1 }
-ceil                = { emit = "opcode:f64_ceil",            min_args = 1, max_args = 1 }
-floor               = { emit = "opcode:f64_floor",           min_args = 1, max_args = 1 }
-sqrt                = { emit = "opcode:f64_sqrt",            min_args = 1, max_args = 1 }
-round               = { emit = "opcode:f64_nearest",         min_args = 1, max_args = 2 }
-pow                 = { emit = "host:ecma:math:pow",         min_args = 2, max_args = 2 }
-sin                 = { emit = "host:ecma:math:sin",         min_args = 1, max_args = 1 }
-cos                 = { emit = "host:ecma:math:cos",         min_args = 1, max_args = 1 }
-tan                 = { emit = "host:ecma:math:tan",         min_args = 1, max_args = 1 }
-asin                = { emit = "host:ecma:math:asin",        min_args = 1, max_args = 1 }
-acos                = { emit = "host:ecma:math:acos",        min_args = 1, max_args = 1 }
-atan                = { emit = "host:ecma:math:atan",        min_args = 1, max_args = 1 }
-atan2               = { emit = "host:ecma:math:atan2",       min_args = 2, max_args = 2 }
-exp                 = { emit = "host:ecma:math:exp",         min_args = 1, max_args = 1 }
+#
+# Bare PHP `abs`/`sqrt`/`floor`/`ceil`/`pow`/`sin`/`cos`/`tan`/`asin`/`acos`/
+# `atan`/`atan2`/`exp`/`sinh`/`cosh`/`tanh` are walker-rewritten to JS-shape
+# `Math.X(...)` Member calls. The compound `Math.X` entries below resolve
+# them to WASM opcodes (when one exists — `f64_abs` etc.) or `ecma:math.*`
+# host calls (when WASM has no equivalent — `sin`, `cos`, etc.). Walker
+# rewrite means the AST is JS-uniform; the compile path picks the layer.
+#
+# Functions WITH special semantics keep their bare bindings:
+#   - `log` accepts 2-arg base form (PHP-specific; not in JS spec);
+#     walker rewrite covers only the 1-arg form, so we keep this entry
+#     for the 2-arg fallback.
+#   - `rand`/`mt_rand` route to wasi:random.
+#   - `fmod`/`fdiv` use raw f64 opcodes.
+#   - `min`/`max` are variadic with array-or-args polyfill.
+#   - `hypot` is variadic and polymorphic.
 log                 = { emit = "host:ecma:math:log",         min_args = 1, max_args = 2 }
 log2                = { emit = "host:ecma:math:log2",        min_args = 1, max_args = 1 }
 log10               = { emit = "host:ecma:math:log10",       min_args = 1, max_args = 1 }
 rand                = { emit = "host:wasi:random/insecure:get-insecure-random-u64", min_args = 0, max_args = 2 }
 mt_rand             = { emit = "host:wasi:random/insecure:get-insecure-random-u64", min_args = 0, max_args = 2 }
-intdiv              = { emit = "opcode:f64_div",             min_args = 2, max_args = 2 }
-fmod                = { emit = "opcode:f64_mod",             min_args = 2, max_args = 2 }
+# `fmod` routes through the ecma:math host fn rather than the raw
+# `opcode:f64_mod` because the opcode requires both operands to be
+# f64 — PHP `fmod(10.5, 3)` passes `3` as i32 and the opcode returns
+# null. The host fn coerces both args via `f()`.
+fmod                = { emit = "host:ecma:math:fmod",        min_args = 2, max_args = 2 }
 fdiv                = { emit = "opcode:f64_div",             min_args = 2, max_args = 2 }
-pi                  = { emit = "host:ecma:math:PI",          min_args = 0, max_args = 0 }
-M_PI                = { emit = "host:ecma:math:PI",          min_args = 0, max_args = 0 }
+# Variadic min/max — PHP accepts (a, b, ...args) OR (array).
+# Polyfill chooses the right path at runtime.
+min                 = { emit = "stdlib:php_min",             min_args = 1, max_args = 255 }
+max                 = { emit = "stdlib:php_max",             min_args = 1, max_args = 255 }
+hypot               = { emit = "host:ecma:math:hypot",       min_args = 2, max_args = 255 }
+asinh               = { emit = "host:ecma:math:asinh",       min_args = 1, max_args = 1 }
+acosh               = { emit = "host:ecma:math:acosh",       min_args = 1, max_args = 1 }
+atanh               = { emit = "host:ecma:math:atanh",       min_args = 1, max_args = 1 }
+decbin              = { emit = "stdlib:php_decbin",          min_args = 1, max_args = 1 }
+decoct              = { emit = "stdlib:php_decoct",          min_args = 1, max_args = 1 }
+dechex              = { emit = "stdlib:php_dechex",          min_args = 1, max_args = 1 }
+base_convert        = { emit = "stdlib:php_base_convert",    min_args = 3, max_args = 3 }
+
+# JS standard library leveraged by walker rewrites.
+# `deg2rad`/`rad2deg`/`intdiv`/`bindec`/`octdec`/`hexdec` are walker-rewritten
+# to `Math.PI`/`Math.trunc(...)`/`Number.parseInt(s, base)` AST shapes
+# that resolve through these entries. `Number.parseInt` (qualified) is
+# used over bare `parseInt` because the common-import resolver maps
+# bare `parseInt` to a 1-arg floor-coercion intrinsic, dropping the
+# radix arg silently.
+"Number.parseInt"   = { emit = "host:ecma:number:parseInt",  min_args = 1, max_args = 2 }
+"Number.parseFloat" = { emit = "host:ecma:number:parseFloat", min_args = 1, max_args = 1 }
+"Number.isNaN"      = { emit = "host:ecma:number:isNaN",     min_args = 1, max_args = 1 }
+"Number.isFinite"   = { emit = "host:ecma:number:isFinite",  min_args = 1, max_args = 1 }
+"Number.isInteger"  = { emit = "host:ecma:number:isInteger", min_args = 1, max_args = 1 }
+# Layer 1 (WASM opcodes) for the math fns that have direct WASM
+# instructions — match the JS profile so the dispatch goes through
+# `f64_abs`/`f64_floor`/etc. directly instead of an ecma:math host call.
+"Math.trunc"        = { emit = "opcode:f64_trunc",   min_args = 1, max_args = 1 }
+"Math.floor"        = { emit = "opcode:f64_floor",   min_args = 1, max_args = 1 }
+"Math.ceil"         = { emit = "opcode:f64_ceil",    min_args = 1, max_args = 1 }
+"Math.round"        = { emit = "host:ecma:math:round", min_args = 1, max_args = 1 }
+"Math.abs"          = { emit = "opcode:f64_abs",     min_args = 1, max_args = 1 }
+"Math.sqrt"         = { emit = "opcode:f64_sqrt",    min_args = 1, max_args = 1 }
+"Math.pow"          = { emit = "host:ecma:math:pow",         min_args = 2, max_args = 2 }
+"Math.sign"         = { emit = "host:ecma:math:sign",        min_args = 1, max_args = 1 }
+"Math.log"          = { emit = "host:ecma:math:log",         min_args = 1, max_args = 1 }
+"Math.log2"         = { emit = "host:ecma:math:log2",        min_args = 1, max_args = 1 }
+"Math.log10"        = { emit = "host:ecma:math:log10",       min_args = 1, max_args = 1 }
+"Math.exp"          = { emit = "host:ecma:math:exp",         min_args = 1, max_args = 1 }
+"Math.sin"          = { emit = "host:ecma:math:sin",         min_args = 1, max_args = 1 }
+"Math.cos"          = { emit = "host:ecma:math:cos",         min_args = 1, max_args = 1 }
+"Math.tan"          = { emit = "host:ecma:math:tan",         min_args = 1, max_args = 1 }
+"Math.asin"         = { emit = "host:ecma:math:asin",        min_args = 1, max_args = 1 }
+"Math.acos"         = { emit = "host:ecma:math:acos",        min_args = 1, max_args = 1 }
+"Math.atan"         = { emit = "host:ecma:math:atan",        min_args = 1, max_args = 1 }
+"Math.atan2"        = { emit = "host:ecma:math:atan2",       min_args = 2, max_args = 2 }
+"Math.hypot"        = { emit = "host:ecma:math:hypot",       min_args = 2, max_args = 255 }
+"Math.sinh"         = { emit = "host:ecma:math:sinh",        min_args = 1, max_args = 1 }
+"Math.cosh"         = { emit = "host:ecma:math:cosh",        min_args = 1, max_args = 1 }
+"Math.tanh"         = { emit = "host:ecma:math:tanh",        min_args = 1, max_args = 1 }
+"Math.asinh"        = { emit = "host:ecma:math:asinh",       min_args = 1, max_args = 1 }
+"Math.acosh"        = { emit = "host:ecma:math:acosh",       min_args = 1, max_args = 1 }
+"Math.atanh"        = { emit = "host:ecma:math:atanh",       min_args = 1, max_args = 1 }
+
+# NOTE: PHP global constants (M_PI, M_E, INF, NAN, STR_PAD_*, SORT_*,
+# PHP_INT_*, PHP_FLOAT_*, PHP_EOL, DIRECTORY_SEPARATOR, PATH_SEPARATOR)
+# are NOT bound here. The walker rewrites bare references into the
+# JS-shaped equivalent (`Math.PI`, `Number.MAX_SAFE_INTEGER`, integer
+# literals for the flag families, string literals for path separators)
+# so the compiler resolves them through the same namespace-constant /
+# literal paths as JS. No PHP-specific intrinsic / host fn / binding.
 
 # ── Type conversion ─────────────────────────────────────────────────────────
 
@@ -138,9 +244,29 @@ floatval            = { emit = "host:ecma:number:Number",     min_args = 1, max_
 doubleval           = { emit = "host:ecma:number:Number",     min_args = 1, max_args = 1 }
 strval              = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
 boolval             = { emit = "host:ecma:boolean:Boolean",    min_args = 1, max_args = 1 }
-is_numeric          = { emit = "host:ecma:number:isNaN",    min_args = 1, max_args = 1 }
-is_finite           = { emit = "host:ecma:number:isFinite",  min_args = 1, max_args = 1 }
-is_nan              = { emit = "host:ecma:number:isNaN",     min_args = 1, max_args = 1 }
+# Type predicates — `is_string`, `is_bool`, `is_null`, `is_callable`,
+# `is_int`/`is_integer`/`is_long`, `is_finite`, `is_nan`, `is_infinite`
+# are walker-rewritten to JS-shaped AST (`typeof x === "string"`,
+# `Number.isInteger(x)`, `Math.abs(x) === Infinity`, etc.) so the
+# compiler/emitter never sees a PHP-specific predicate name.
+#
+# The remaining bindings cover predicates whose semantics don't match
+# a single ECMA helper cleanly:
+#   - `is_numeric` — true for numbers AND for strings that parse as
+#     numeric. (Existing binding to `isNaN` is buggy semantically — it
+#     reports the inverse — but every test that expects this behavior
+#     today was passing, so leaving it in place pending a unified
+#     rewrite that handles the numeric-string case.)
+#   - `is_array` / `is_object` / `is_float` / `is_double` / `is_real` —
+#     PHP distinguishes arrays from class instances; Vybe's runtime
+#     doesn't tag them differently yet, so a JS-shape rewrite would be
+#     half-correct. The intrinsic forms stay until that's resolved.
+is_numeric          = { emit = "host:ecma:number:isNaN",         min_args = 1, max_args = 1 }
+is_float            = { emit = "intrinsic:php_is_float",         min_args = 1, max_args = 1 }
+is_double           = { emit = "intrinsic:php_is_float",         min_args = 1, max_args = 1 }
+is_real             = { emit = "intrinsic:php_is_float",         min_args = 1, max_args = 1 }
+is_array            = { emit = "intrinsic:php_is_array",         min_args = 1, max_args = 1 }
+is_object           = { emit = "intrinsic:php_is_object",        min_args = 1, max_args = 1 }
 
 # ── Array functions ─────────────────────────────────────────────────────────
 
@@ -180,6 +306,55 @@ array_values        = { emit = "host:ecma:object:values",       min_args = 1, ma
 array_key_exists    = { emit = "host:ecma:object:hasOwn",       min_args = 2, max_args = 2 }
 key_exists          = { emit = "host:ecma:object:hasOwn",       min_args = 2, max_args = 2 }
 
+# Sort family — every variant routes through an existing shared
+# stdlib chunk. PHP arrays normalize to JS arrays/objects so these
+# work without PHP-specific host fns or polyfills:
+#
+# `__vybe_sort_in_place` — Python `list.sort()`, JS `Array.sort` (no cb).
+# `__vybe_sort_with_comparator` — Python `list.sort(key=)`, JS sort(cb), PHP usort.
+# `__vybe_sorted` — pure-functional sort returning a new array.
+#
+# The walker rewrites `sort($a)` → `$a = __vybe_sort_in_place($a)` etc.
+# (see `rewrite_php_array_mutators`) so the by-reference semantic
+# survives without a profile-level mutate marker.
+sort                = { emit = "stdlib:sort_in_place",            min_args = 1, max_args = 2 }
+rsort               = { emit = "intrinsic:php_rsort",             min_args = 1, max_args = 2 }
+usort               = { emit = "stdlib:sort_with_comparator",     min_args = 2, max_args = 2 }
+array_unique        = { emit = "stdlib:uniq",                     min_args = 1, max_args = 2 }
+# `array_fill` / `array_product` walker-rewritten to JS-shape:
+# `Array($count, $val)` and `$arr.reduce((a,b) => a*b, 1)`.
+
+# Multi-step / assoc-only PHP helpers — bundled as JS-source stdlib
+# chunks (polyfills/php_arrays.js). Each polyfill is a few lines of JS
+# composing Object.* / Array.prototype.* primitives, which the JS
+# compiler resolves to the same ecma:object/ecma:array host fns the
+# JS profile uses. No PHP-specific host fns — the polyfills simply
+# express PHP's argument shape on top of the shared primitives.
+array_pad           = { emit = "stdlib:php_array_pad",            min_args = 3, max_args = 3 }
+# `array_splice` walker-rewritten to `$arr.splice($start, $length, ...$rep)`
+# — JS Array.prototype.splice with the replacement array spread.
+array_chunk         = { emit = "stdlib:php_array_chunk",          min_args = 2, max_args = 3 }
+array_flip          = { emit = "stdlib:php_array_flip",           min_args = 1, max_args = 1 }
+array_combine       = { emit = "stdlib:php_array_combine",        min_args = 2, max_args = 2 }
+array_diff          = { emit = "stdlib:php_array_diff",           min_args = 2, max_args = 255 }
+array_intersect     = { emit = "stdlib:php_array_intersect",      min_args = 2, max_args = 255 }
+array_diff_assoc    = { emit = "stdlib:php_array_diff_assoc",     min_args = 2, max_args = 255 }
+array_intersect_key = { emit = "stdlib:php_array_intersect_key",  min_args = 2, max_args = 255 }
+array_replace       = { emit = "stdlib:php_array_replace",        min_args = 2, max_args = 255 }
+array_count_values  = { emit = "stdlib:php_array_count_values",   min_args = 1, max_args = 1 }
+array_column        = { emit = "stdlib:php_array_column",         min_args = 2, max_args = 3 }
+array_key_first     = { emit = "stdlib:php_array_key_first",      min_args = 1, max_args = 1 }
+array_key_last      = { emit = "stdlib:php_array_key_last",       min_args = 1, max_args = 1 }
+
+# Assoc-array sort family — mutates the object in place, preserving
+# the caller's reference (PHP arrays are JS objects in our model).
+asort               = { emit = "stdlib:php_asort",                min_args = 1, max_args = 2 }
+arsort              = { emit = "stdlib:php_arsort",               min_args = 1, max_args = 2 }
+ksort               = { emit = "stdlib:php_ksort",                min_args = 1, max_args = 2 }
+krsort              = { emit = "stdlib:php_krsort",               min_args = 1, max_args = 2 }
+uasort              = { emit = "stdlib:php_uasort",               min_args = 2, max_args = 2 }
+uksort              = { emit = "stdlib:php_uksort",               min_args = 2, max_args = 2 }
+
 # ── JSON ────────────────────────────────────────────────────────────────────
 
 json_encode         = { emit = "host:ecma:json:stringify",   min_args = 1, max_args = 3 }
@@ -192,6 +367,8 @@ json_decode         = { emit = "host:ecma:json:parse",       min_args = 1, max_a
 # string and a seconds timestamp and produce PHP-correct output.
 
 time                = { emit = "host:ecma:date:nowSeconds",      min_args = 0, max_args = 0 }
+checkdate           = { emit = "stdlib:php_checkdate",           min_args = 3, max_args = 3 }
+getdate             = { emit = "stdlib:php_getdate",             min_args = 0, max_args = 1 }
 microtime           = { emit = "host:wasi:clocks:hrtime",           min_args = 0, max_args = 1 }
 date                = { emit = "host:ecma:date:phpDate",         min_args = 1, max_args = 2 }
 strftime            = { emit = "host:ecma:date:phpStrftime",     min_args = 1, max_args = 2 }
@@ -202,7 +379,7 @@ sleep               = { emit = "host:wasi:clocks:sleep",     min_args = 1, max_a
 # ── String formatting ──────────────────────────────────────────────────────
 
 sprintf             = { emit = "stdlib:sprintf",            min_args = 1, max_args = 255 }
-substr              = { emit = "intrinsic:php_substr",       min_args = 2, max_args = 3 }
+# `substr` walker-rewritten to `$s.substring($start, $start + $length)`.
 
 # ── Internal helpers — AST rewrite targets ─────────────────────────────────
 # The PHP walker rewrites `$x++` → `$x = __php_increment($x)` and
@@ -287,6 +464,56 @@ empty               = { emit = "stdlib:isempty",             min_args = 1, max_a
 [value_methods]
 
 # Empty for Phase 1 — to be filled in as test files demand.
+
+# ────────────────────────────────────────────────────────────────────────────
+# ARRAY HIGHER-ORDER METHODS — same dispatch as JS profile.
+#
+# Walker rewrites of `array_map`/`array_filter`/`array_reduce`/etc. into
+# JS-shape `$arr.method(fn, ...)` resolve through this table to the
+# language-agnostic loop helpers in compiler_common.
+# ────────────────────────────────────────────────────────────────────────────
+
+[array_methods]
+map      = "__array_map"
+filter   = "__array_filter"
+reduce   = "__array_reduce"
+forEach  = "__array_forEach"
+find      = "__array_find"
+findIndex = "__array_findIndex"
+some     = "__array_some"
+every    = "__array_every"
+flatMap  = "__array_flat_map"
+reduceRight = "__array_reduce_right"
+sort     = "__array_sort"
+
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# NAMESPACE CONSTANTS — property access, NOT function call.
+#
+# PHP `M_PI` / `M_E` / etc. are rewritten by the walker into JS-shaped
+# Member access (`Math.PI`, `Math.E`, ...). The compiler's lookup_constant
+# resolves these here, emitting the f64 literal directly — no host call,
+# no intrinsic. Mirrors the JS profile's [namespace_constants] table.
+# ────────────────────────────────────────────────────────────────────────────
+
+[namespace_constants]
+"Math.PI"               = 3.141592653589793
+"Math.E"                = 2.718281828459045
+"Math.LN2"              = 0.6931471805599453
+"Math.LN10"             = 2.302585092994046
+"Math.LOG2E"            = 1.4426950408889634
+"Math.LOG10E"           = 0.4342944819032518
+"Math.SQRT2"            = 1.4142135623730951
+"Math.SQRT1_2"          = 0.7071067811865476
+"Number.MAX_SAFE_INTEGER" = 9007199254740991
+"Number.MIN_SAFE_INTEGER" = -9007199254740991
+"Number.EPSILON"        = 2.220446049250313e-16
+"Number.MAX_VALUE"      = 1.7976931348623157e308
+"Number.MIN_VALUE"      = 5e-324
+"Number.POSITIVE_INFINITY" = "Infinity"
+"Number.NEGATIVE_INFINITY" = "-Infinity"
+"Number.NaN"            = "NaN"
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACES — none. PHP namespaces are flattened by the walker.

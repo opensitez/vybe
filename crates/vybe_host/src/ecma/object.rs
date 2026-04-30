@@ -472,6 +472,16 @@ fn register_access(vm: &mut VM) {
     vm.register_host_fn("ecma:object", "trackKey",
         Box::new(|_ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
+                // Skip Array-kind receivers: their indexing semantics
+                // already preserve order via the underlying Vec, and
+                // every `arr[i] = v` flowing through here would force
+                // a __keys allocation + push for each numeric index.
+                // Map / Ordinary need the tracker (HashMap loses order).
+                let kind_skip = {
+                    let o = obj.lock().unwrap();
+                    matches!(o.kind, ObjectKind::Array(_))
+                };
+                if kind_skip { return Value::Undefined; }
                 if let Some(Value::Symbol(_)) = args.get(1) {
                     let key = args.get(1).map(key_string).unwrap_or_default();
                     track_sym_key(&obj, &key);

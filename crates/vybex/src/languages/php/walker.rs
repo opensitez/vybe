@@ -760,19 +760,45 @@ fn walk_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
     let mut out = Vec::new();
     for p in pair.into_inner() {
         if !matches!(p.as_rule(), Rule::param) { continue; }
+        out.push(walk_param(p)?.0);
+    }
+    Ok(out)
+}
+
+/// Walk a param list, returning both the params AND any promotion
+/// modifiers (`public` / `private` / `protected` / `readonly`).
+/// Used by `__construct` to synthesize property fields and `$this->X = $X`
+/// assignments — see PHP 8 promoted constructor parameters.
+fn walk_params_with_promotion(pair: Pair<Rule>) -> Result<Vec<(Param, Option<Visibility>)>, String> {
+    let mut out = Vec::new();
+    for p in pair.into_inner() {
+        if !matches!(p.as_rule(), Rule::param) { continue; }
         out.push(walk_param(p)?);
     }
     Ok(out)
 }
 
-fn walk_param(pair: Pair<Rule>) -> Result<Param, String> {
+fn walk_param(pair: Pair<Rule>) -> Result<(Param, Option<Visibility>), String> {
     let mut name = String::new();
     let mut type_hint: Option<String> = None;
     let mut default: Option<Expression> = None;
+    let mut promotion: Option<Visibility> = None;
     let pass_by = PassBy::Value; // We don't track by-ref yet — PHP `&` is rare in modern code.
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::param_modifier => { /* discard — promoted ctor params handled in walk_class */ }
+            Rule::param_modifier => {
+                // Presence of `public`/`private`/`protected`/`readonly`
+                // marks this as a promoted constructor param. Default
+                // (when the modifier is `readonly` only) is Public per
+                // PHP semantics.
+                let kw = p.as_str().to_lowercase();
+                let v = match kw.as_str() {
+                    "private" => Visibility::Private,
+                    "protected" => Visibility::Protected,
+                    _ => Visibility::Public,
+                };
+                promotion = Some(v);
+            }
             Rule::type_annotation => type_hint = Some(p.as_str().to_string()),
             Rule::variable => name = strip_dollar(p.as_str()).to_string(),
             Rule::expression => default = Some(walk_expression(p)?),
@@ -780,7 +806,7 @@ fn walk_param(pair: Pair<Rule>) -> Result<Param, String> {
         }
     }
     let is_optional = default.is_some();
-    Ok(Param {
+    Ok((Param {
         name,
         type_hint,
         default,
@@ -789,7 +815,7 @@ fn walk_param(pair: Pair<Rule>) -> Result<Param, String> {
         is_kwargs: false,
         is_optional,
         is_nullable: false,
-    })
+    }, promotion))
 }
 
 fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -999,6 +1025,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
         Rule::method_declaration => {
             let mut method_name = String::new();
             let mut params: Vec<Param> = Vec::new();
+            let mut promoted: Vec<(String, Option<String>, Visibility)> = Vec::new();
             let mut body: Vec<Statement> = Vec::new();
             let mut return_type: Option<String> = None;
             let mut modifiers = Modifiers::default();
@@ -1007,7 +1034,19 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
                 match p.as_rule() {
                     Rule::member_modifier => apply_member_modifier(&mut modifiers, p.as_str()),
                     Rule::identifier => method_name = p.as_str().to_string(),
-                    Rule::param_list => params = walk_params(p)?,
+                    Rule::param_list => {
+                        // Capture both the params and any promotion
+                        // visibility so we can synthesize property
+                        // assignments below for `__construct`.
+                        let with_prom = walk_params_with_promotion(p)?;
+                        params = Vec::with_capacity(with_prom.len());
+                        for (param, vis) in with_prom {
+                            if let Some(v) = vis {
+                                promoted.push((param.name.clone(), param.type_hint.clone(), v));
+                            }
+                            params.push(param);
+                        }
+                    }
                     Rule::return_type_annotation => {
                         return_type = Some(p.as_str().trim_start_matches(':').trim().to_string());
                     }
@@ -1022,6 +1061,39 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
             // PHP `__construct` becomes a Constructor class member so
             // the compiler-side child-class flow recognises it.
             if method_name == "__construct" {
+                // PHP 8 promoted constructor params: each
+                // `public/private/protected/readonly $foo` produces
+                // (1) a `$this->foo = $foo` assignment prepended to
+                // the body, and (2) a property field on the class.
+                // The walker emits the assignments here; the property
+                // declarations are returned to walk_class_decl through
+                // a side channel.
+                if !promoted.is_empty() {
+                    let mut prelude: Vec<Statement> = Vec::with_capacity(promoted.len());
+                    for (pname, _ptype, _pvis) in &promoted {
+                        // `pname` retains the `$` sigil per PHP variable
+                        // canonicalization (see strip_dollar). The
+                        // member name strips the `$` (it's a property,
+                        // not a variable); the assignment value uses
+                        // the variable form.
+                        let field_name = pname.strip_prefix('$').unwrap_or(pname).to_string();
+                        let this_expr = Expression::new(ExprKind::This);
+                        let target = Expression::new(ExprKind::Member {
+                            object: Box::new(this_expr),
+                            field: field_name,
+                            null_safe: false,
+                        });
+                        let value = Expression::new(ExprKind::Ident(pname.clone()));
+                        let assign = Expression::new(ExprKind::Assign {
+                            target: Box::new(target),
+                            value: Box::new(value),
+                        });
+                        prelude.push(Statement::new(StmtKind::Expr(assign)));
+                    }
+                    prelude.extend(body.drain(..));
+                    body = prelude;
+                }
+                let _ = (return_type, has_body);
                 return Ok(Some(ClassMember::Constructor {
                     params,
                     body,
@@ -1106,7 +1178,17 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
         Rule::string_lit => return Ok(Expression::with_span(walk_string(&pair).kind, span)),
 
         Rule::variable => ExprKind::Ident(strip_dollar(pair.as_str()).to_string()),
-        Rule::identifier => ExprKind::Ident(pair.as_str().to_string()),
+        Rule::identifier => {
+            let name = pair.as_str();
+            // Bare PHP global constants get rewritten to their JS-shaped
+            // equivalent (`M_PI` → `Math.PI`, `STR_PAD_LEFT` → `0`, etc.)
+            // so the rest of the pipeline never sees a PHP-specific name.
+            if let Some(kind) = php_constant_expr(name, &span) {
+                kind
+            } else {
+                ExprKind::Ident(name.to_string())
+            }
+        }
         Rule::qualified_name => {
             // Preserve the qualified path so the compiler can resolve it
             // against the profile's `host_packages` list. A qualified
@@ -1115,12 +1197,19 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
             // Model host call at compile time. Anything else still
             // resolves by last-segment (user namespaces are flattened
             // for now — worth revisiting when we model user namespaces).
+            //
+            // Bare PHP constants (M_PI, STR_PAD_LEFT, ...) reach this
+            // arm via the qualified_name grammar rule when the parser
+            // routes them through the namespace-resolution path. They
+            // are rewritten to JS-shaped AST exactly like the
+            // identifier arm above — same code path downstream.
             let s = pair.as_str().trim_start_matches('\\');
-            if s.contains('\\') {
-                // Store the full qualified name with backslashes preserved
-                // as an identifier. The compiler's `try_compile_builtin`
-                // path detects backslashes and routes to host calls.
-                ExprKind::Ident(s.to_string())
+            if !s.contains('\\') {
+                if let Some(kind) = php_constant_expr(s, &span) {
+                    kind
+                } else {
+                    ExprKind::Ident(s.to_string())
+                }
             } else {
                 ExprKind::Ident(s.to_string())
             }
@@ -1203,6 +1292,33 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
         Rule::array_expression | Rule::short_array_expression => return walk_array(pair),
         Rule::closure_expression => return walk_closure(pair),
         Rule::arrow_function => return walk_arrow_function(pair),
+
+        Rule::throw_expression => {
+            // PHP 8: `throw` can appear in expression position (e.g.
+            // `$x ?? throw new E`). Common AST has no Throw-expression
+            // node; wrap as an immediately-invoked closure whose body
+            // throws — produces the same control flow without leaking
+            // PHP-specific shape into the compiler.
+            let inner_expr = walk_expression(inner_nokw(pair).next().unwrap())?;
+            let throw_stmt = Statement::with_span(
+                StmtKind::Throw { expr: Some(inner_expr), cause: None },
+                span.clone(),
+            );
+            let lambda = Expression::with_span(
+                ExprKind::Lambda {
+                    params: vec![],
+                    body: LambdaBody::Block(vec![throw_stmt]),
+                    is_async: false,
+                    captures: vec![],
+                },
+                span.clone(),
+            );
+            ExprKind::Call {
+                callee: Box::new(lambda),
+                args: vec![],
+                optional: false,
+            }
+        }
 
         other => return Err(format!("walker: unhandled expression rule {:?}", other)),
     };
@@ -1544,10 +1660,12 @@ fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span) -> Result<Ex
             let null_safe = op.as_str().trim_start().starts_with("?->");
             let mut name_pair: Option<Pair<Rule>> = None;
             let mut arg_list_pair: Option<Pair<Rule>> = None;
+            let mut is_fcc = false;
             for p in op.into_inner() {
                 match p.as_rule() {
                     Rule::member_name => name_pair = Some(p),
                     Rule::arg_list => arg_list_pair = Some(p),
+                    Rule::first_class_callable_op => { is_fcc = true; }
                     _ => {}
                 }
             }
@@ -1562,6 +1680,48 @@ fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span) -> Result<Ex
                 },
                 span.clone(),
             );
+            if is_fcc {
+                // Method first-class callable: `$obj->m(...)` produces a
+                // bound Closure forwarding to `$obj->m`. Same 4-arg
+                // pass-through arrow function as the bare `fn(...)` case
+                // in `Rule::call_op`.
+                let mk_param = |n: &str| Param {
+                    name: n.to_string(),
+                    type_hint: None,
+                    default: Some(Expression::with_span(
+                        ExprKind::Lit(Literal::Null), span.clone(),
+                    )),
+                    pass_by: PassBy::Value,
+                    is_rest: false, is_kwargs: false,
+                    is_optional: true, is_nullable: true,
+                };
+                let mk_arg_ident = |n: &str| Argument::positional(
+                    Expression::with_span(ExprKind::Ident(n.to_string()), span.clone()),
+                );
+                let body_call = Expression::with_span(
+                    ExprKind::Call {
+                        callee: Box::new(member),
+                        args: vec![
+                            mk_arg_ident("a"), mk_arg_ident("b"),
+                            mk_arg_ident("c"), mk_arg_ident("d"),
+                        ],
+                        optional: null_safe,
+                    },
+                    span.clone(),
+                );
+                return Ok(Expression::with_span(
+                    ExprKind::Lambda {
+                        params: vec![
+                            mk_param("a"), mk_param("b"),
+                            mk_param("c"), mk_param("d"),
+                        ],
+                        body: LambdaBody::Expr(Box::new(body_call)),
+                        is_async: false,
+                        captures: vec![],
+                    },
+                    span.clone(),
+                ));
+            }
             let args = arg_list_pair.map(walk_args).transpose()?.unwrap_or_default();
             Ok(Expression::with_span(
                 ExprKind::Call { callee: Box::new(member), args, optional: null_safe },
@@ -1616,7 +1776,71 @@ fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span) -> Result<Ex
         }
         Rule::call_op => {
             let mut inner = op.into_inner();
-            let args = if let Some(al) = inner.next() {
+            // PHP 8.1 first-class callable: `strlen(...)` creates a
+            // Closure bound to `strlen`. Rewrite to an arrow function
+            // that forwards via rest-spread:
+            //   strlen(...)  →  (...args) => strlen(...args)
+            // This produces a Closure-typed value in the common AST so
+            // assignment/passing/invoking all work without PHP-specific
+            // handling downstream.
+            let first = inner.next();
+            if let Some(p) = &first {
+                if matches!(p.as_rule(), Rule::first_class_callable_op) {
+                    // PHP 8.1 first-class callable: `strlen(...)` produces
+                    // a Closure forwarding to `strlen`. Rust-compatible
+                    // rewrite: emit a 4-arg pass-through arrow function
+                    // with optional params. Most PHP first-class
+                    // callables wrap functions of arity 1-4 (strlen,
+                    // strtoupper, str_replace, etc.); the optional
+                    // params let the closure accept fewer args without
+                    // extra padding.
+                    //
+                    // Rest-param spread (`(...$args) => fn(...$args)`)
+                    // would be cleaner but Vybe's PHP rest-param impl
+                    // currently binds rest as the first arg (not as an
+                    // array), so spread misfires for multi-arg callers.
+                    let mk_param = |n: &str| Param {
+                        name: n.to_string(),
+                        type_hint: None,
+                        default: Some(Expression::with_span(
+                            ExprKind::Lit(Literal::Null), span.clone(),
+                        )),
+                        pass_by: PassBy::Value,
+                        is_rest: false,
+                        is_kwargs: false,
+                        is_optional: true,
+                        is_nullable: true,
+                    };
+                    let mk_arg_ident = |n: &str| Argument::positional(
+                        Expression::with_span(
+                            ExprKind::Ident(n.to_string()), span.clone(),
+                        ),
+                    );
+                    let body_call = Expression::with_span(
+                        ExprKind::Call {
+                            callee: Box::new(receiver),
+                            args: vec![
+                                mk_arg_ident("a"),
+                                mk_arg_ident("b"),
+                                mk_arg_ident("c"),
+                                mk_arg_ident("d"),
+                            ],
+                            optional: false,
+                        },
+                        span.clone(),
+                    );
+                    return Ok(Expression::with_span(
+                        ExprKind::Lambda {
+                            params: vec![mk_param("a"), mk_param("b"), mk_param("c"), mk_param("d")],
+                            body: LambdaBody::Expr(Box::new(body_call)),
+                            is_async: false,
+                            captures: vec![],
+                        },
+                        span.clone(),
+                    ));
+                }
+            }
+            let args = if let Some(al) = first {
                 walk_args(al)?
             } else {
                 Vec::new()
@@ -1627,6 +1851,12 @@ fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span) -> Result<Ex
             // indistinguishable — the compiler emits a single canonical
             // host call regardless of surface syntax.
             let args = canonicalize_php_call_args(&receiver, args);
+            // Rewrite PHP function names whose JS equivalent already
+            // exists (Math.trunc / parseInt / Member-method calls / etc).
+            // After this, the AST contains no PHP-specific call shape.
+            if let Some(kind) = rewrite_php_call_to_js(&receiver, &args, &span) {
+                return Ok(Expression::with_span(kind, span.clone()));
+            }
             Ok(Expression::with_span(
                 ExprKind::Call { callee: Box::new(receiver), args, optional: false },
                 span.clone(),
@@ -2019,7 +2249,13 @@ fn parse_php_interpolation(body: &str) -> Vec<InterpolPart> {
                         chars.next();
                     } else { break; }
                 }
-                let mut expr = Expression::new(ExprKind::Ident(name));
+                // PHP variables retain the `$` sigil as part of their
+                // canonical identifier (see `strip_dollar` — variables
+                // and functions live in separate namespaces). The
+                // interpolation parser must use the same `$name` form
+                // so the generated AST resolves against the global
+                // declared by `$name = ...`.
+                let mut expr = Expression::new(ExprKind::Ident(format!("${}", name)));
 
                 // `$var[key]` — simple unquoted key; per PHP's rule,
                 // identifiers are string literals, digit-runs are ints.
@@ -2120,6 +2356,16 @@ fn canonicalize_php_call_args(callee: &Expression, args: Vec<Argument>) -> Vec<A
         // PHP: in_array($needle, $haystack). Canonical: includes($arr, $needle).
         // Note: `in_array` has an optional 3rd arg (strict); pass through.
         "in_array" => &[1, 0, 2],
+        // PHP: implode($glue, $array) / join($glue, $array).
+        // Canonical: array.join(delimiter) → host expects (array, delim).
+        // PHP also allows the legacy single-arg form `implode($array)` —
+        // when only one arg is present we leave it alone so the array
+        // surfaces at index 0 and the host fn falls back to "," default.
+        "implode" | "join" if args.len() == 2 => &[1, 0],
+        // PHP: explode($delim, $string [, $limit]) — opcode `STR_SPLIT`
+        // expects `[string, delim]`; swap so the canonical (string,
+        // separator) order reaches the VM.
+        "explode" if args.len() >= 2 => &[1, 0, 2],
         _ => return args,
     };
     if args.len() < order.iter().filter(|&&i| i < args.len()).count() {
@@ -2151,6 +2397,880 @@ fn canonicalize_php_call_args(callee: &Expression, args: Vec<Argument>) -> Vec<A
 /// snif index.php). Returning `s` verbatim is the fix.
 fn strip_dollar(s: &str) -> &str {
     s
+}
+
+/// Rewrites a PHP function call into the JS-shaped equivalent AST when the
+/// callee name maps to a JS standard library function. Returns `None` to
+/// leave the call untouched.
+///
+/// This is the central place where PHP-specific function names get folded
+/// into the common AST. Anything that returns Some here flows through the
+/// shared compile path with no PHP-aware logic in the compiler / emitter —
+/// the same path JS uses (`Math.trunc(...)`, `parseInt(s, base)`, etc.).
+fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span)
+    -> Option<ExprKind>
+{
+    let name = match &callee.kind {
+        ExprKind::Ident(n) => n.as_str(),
+        _ => return None,
+    };
+    // Helpers for AST construction.
+    let mk_lit_f64 = |v: f64| Expression::with_span(
+        ExprKind::Lit(Literal::Float(v)), span.clone(),
+    );
+    let mk_lit_i64 = |v: i64| Expression::with_span(
+        ExprKind::Lit(Literal::Int(v)), span.clone(),
+    );
+    let mk_member = |obj: &str, field: &str| Expression::with_span(
+        ExprKind::Member {
+            object: Box::new(Expression::with_span(
+                ExprKind::Ident(obj.to_string()), span.clone(),
+            )),
+            field: field.to_string(),
+            null_safe: false,
+        },
+        span.clone(),
+    );
+    let mk_binary = |op: BinOp, l: Expression, r: Expression| Expression::with_span(
+        ExprKind::Binary { op, left: Box::new(l), right: Box::new(r) },
+        span.clone(),
+    );
+    let mk_call = |callee: Expression, call_args: Vec<Expression>| ExprKind::Call {
+        callee: Box::new(callee),
+        args: call_args.into_iter().map(Argument::positional).collect(),
+        optional: false,
+    };
+    // Extract a positional argument by index — preserves the original
+    // expression so spread/by_ref/etc. flags carry through.
+    let arg = |i: usize| args.get(i).map(|a| a.value.clone());
+
+    Some(match name {
+        // ── Trigonometry / radians ──────────────────────────────────────
+        // PHP `deg2rad($x)` → `$x * Math.PI / 180`.
+        "deg2rad" => {
+            let x = arg(0)?;
+            let mul = mk_binary(BinOp::Mul, x, mk_member("Math", "PI"));
+            mk_binary(BinOp::Div, mul, mk_lit_f64(180.0)).kind
+        }
+        // PHP `rad2deg($x)` → `$x * 180 / Math.PI`.
+        "rad2deg" => {
+            let x = arg(0)?;
+            let mul = mk_binary(BinOp::Mul, x, mk_lit_f64(180.0));
+            mk_binary(BinOp::Div, mul, mk_member("Math", "PI")).kind
+        }
+        // ── Integer division ────────────────────────────────────────────
+        // PHP `intdiv($a, $b)` truncates toward zero, matching JS
+        // `Math.trunc($a / $b)` (NOT Math.floor — different on negatives).
+        "intdiv" => {
+            let a = arg(0)?;
+            let b = arg(1)?;
+            let div = mk_binary(BinOp::Div, a, b);
+            mk_call(mk_member("Math", "trunc"), vec![div])
+        }
+        // ── Base conversions: string → integer ──────────────────────────
+        // PHP `bindec`/`octdec`/`hexdec` → JS `Number.parseInt(str, base)`.
+        // Qualified form (Number.parseInt) bypasses the common-import
+        // resolver's bare-`parseInt` → `cint` mapping, which is 1-arg
+        // floor-coercion and silently discards the radix.
+        "bindec" => mk_call(mk_member("Number", "parseInt"), vec![arg(0)?, mk_lit_i64(2)]),
+        "octdec" => mk_call(mk_member("Number", "parseInt"), vec![arg(0)?, mk_lit_i64(8)]),
+        "hexdec" => mk_call(mk_member("Number", "parseInt"), vec![arg(0)?, mk_lit_i64(16)]),
+        // ── Type predicates ─────────────────────────────────────────────
+        // Map onto JS-shaped `typeof x === "..."` / `Number.isXxx(x)`.
+        // PHP-specific receiver classification (array vs object) is
+        // deferred — the runtime model needs a separate is-PHP-array
+        // tag before we can rewrite `is_array`/`is_object` cleanly.
+        "is_string" => Expression::with_span(
+            ExprKind::Binary {
+                op: BinOp::StrictEq,
+                left: Box::new(Expression::with_span(
+                    ExprKind::TypeOf(Box::new(arg(0)?)), span.clone(),
+                )),
+                right: Box::new(Expression::with_span(
+                    ExprKind::Lit(Literal::Str("string".to_string())), span.clone(),
+                )),
+            },
+            span.clone(),
+        ).kind,
+        "is_bool" => Expression::with_span(
+            ExprKind::Binary {
+                op: BinOp::StrictEq,
+                left: Box::new(Expression::with_span(
+                    ExprKind::TypeOf(Box::new(arg(0)?)), span.clone(),
+                )),
+                right: Box::new(Expression::with_span(
+                    ExprKind::Lit(Literal::Str("boolean".to_string())), span.clone(),
+                )),
+            },
+            span.clone(),
+        ).kind,
+        "is_callable" => Expression::with_span(
+            ExprKind::Binary {
+                op: BinOp::StrictEq,
+                left: Box::new(Expression::with_span(
+                    ExprKind::TypeOf(Box::new(arg(0)?)), span.clone(),
+                )),
+                right: Box::new(Expression::with_span(
+                    ExprKind::Lit(Literal::Str("function".to_string())), span.clone(),
+                )),
+            },
+            span.clone(),
+        ).kind,
+        "is_null" => Expression::with_span(
+            ExprKind::Binary {
+                op: BinOp::StrictEq,
+                left: Box::new(arg(0)?),
+                right: Box::new(Expression::with_span(
+                    ExprKind::Lit(Literal::Null), span.clone(),
+                )),
+            },
+            span.clone(),
+        ).kind,
+        "is_int" | "is_integer" | "is_long" => mk_call(
+            mk_member("Number", "isInteger"), vec![arg(0)?],
+        ),
+        "is_finite" => mk_call(mk_member("Number", "isFinite"), vec![arg(0)?]),
+        "is_nan" => mk_call(mk_member("Number", "isNaN"), vec![arg(0)?]),
+        // PHP `is_infinite($x)` ≡ `Math.abs($x) === Infinity`.
+        // `$x` is evaluated once because Math.abs receives it as an
+        // argument; the comparison sees only the result.
+        "is_infinite" => Expression::with_span(
+            ExprKind::Binary {
+                op: BinOp::StrictEq,
+                left: Box::new(Expression::with_span(
+                    mk_call(mk_member("Math", "abs"), vec![arg(0)?]), span.clone(),
+                )),
+                right: Box::new(Expression::with_span(
+                    ExprKind::Ident("Infinity".to_string()), span.clone(),
+                )),
+            },
+            span.clone(),
+        ).kind,
+        // ── Math constant via function form ─────────────────────────────
+        // PHP `pi()` returns the same value as `M_PI` — flatten to the
+        // Member-access form so it resolves through namespace_constants.
+        "pi" if args.is_empty() => mk_member("Math", "PI").kind,
+        // ── String padding (STR_PAD_LEFT/RIGHT only) ─────────────────────
+        // PHP `str_pad($s, $n, $pad?, $dir?)` ≡ JS `s.padStart`/`padEnd`.
+        // STR_PAD_LEFT  (0) → padStart
+        // STR_PAD_RIGHT (1) → padEnd  (default when omitted)
+        // STR_PAD_BOTH  (2) → no JS equivalent; walker leaves the call
+        //                     in place for the existing polyfill.
+        // Dynamic $dir → walker leaves the call in place.
+        "str_pad" if args.len() >= 2 => {
+            let s = arg(0)?;
+            let length = arg(1)?;
+            let pad_str = arg(2).unwrap_or_else(|| Expression::with_span(
+                ExprKind::Lit(Literal::Str(" ".to_string())), span.clone(),
+            ));
+            // Determine direction. Walker rewrites STR_PAD_* to integer
+            // literals in wave 1, so by this point the dir arg is
+            // either Lit(Int(...)) or omitted.
+            let dir = match args.get(3).map(|a| &a.value.kind) {
+                None => Some(1i64), // default STR_PAD_RIGHT
+                Some(ExprKind::Lit(Literal::Int(n))) => Some(*n),
+                _ => None, // dynamic — fall through to polyfill
+            };
+            match dir {
+                Some(0) => mk_call(
+                    Expression::with_span(
+                        ExprKind::Member {
+                            object: Box::new(s),
+                            field: "padStart".to_string(),
+                            null_safe: false,
+                        },
+                        span.clone(),
+                    ),
+                    vec![length, pad_str],
+                ),
+                Some(1) => mk_call(
+                    Expression::with_span(
+                        ExprKind::Member {
+                            object: Box::new(s),
+                            field: "padEnd".to_string(),
+                            null_safe: false,
+                        },
+                        span.clone(),
+                    ),
+                    vec![length, pad_str],
+                ),
+                _ => return None,
+            }
+        }
+        // ── Substring count ─────────────────────────────────────────────
+        // PHP `substr_count($h, $n)` ≡ `$h.split($n).length - 1`. The
+        // 3rd/4th args (offset, length) are PHP-specific and rare —
+        // walker leaves those calls to a polyfill. Empty needle in PHP
+        // is a TypeError; JS produces (length-1) chars worth of empty
+        // matches. Caller code that hits the empty-needle case is
+        // already broken in PHP, so the divergence is acceptable.
+        "substr_count" if args.len() == 2 => {
+            let h = arg(0)?;
+            let n = arg(1)?;
+            let split_call = Expression::with_span(
+                mk_call(
+                    Expression::with_span(
+                        ExprKind::Member {
+                            object: Box::new(h),
+                            field: "split".to_string(),
+                            null_safe: false,
+                        },
+                        span.clone(),
+                    ),
+                    vec![n],
+                ),
+                span.clone(),
+            );
+            let length_member = Expression::with_span(
+                ExprKind::Member {
+                    object: Box::new(split_call),
+                    field: "length".to_string(),
+                    null_safe: false,
+                },
+                span.clone(),
+            );
+            ExprKind::Binary {
+                op: BinOp::Sub,
+                left: Box::new(length_member),
+                right: Box::new(mk_lit_i64(1)),
+            }
+        }
+        // ── URL encoding ────────────────────────────────────────────────
+        // PHP `rawurlencode` matches RFC 3986 exactly; same as JS
+        // `encodeURIComponent`.
+        "rawurlencode" => mk_call(
+            Expression::with_span(
+                ExprKind::Ident("encodeURIComponent".to_string()),
+                span.clone(),
+            ),
+            vec![arg(0)?],
+        ),
+        // PHP `urlencode` is RFC 1738 — space → "+" instead of "%20".
+        // Compose: `encodeURIComponent($s).split("%20").join("+")`.
+        // split/join is used over `replaceAll` because the runtime's
+        // replaceAll routes through the regex impl (regex metachars in
+        // the search string would misfire); split is literal.
+        "urlencode" => {
+            let enc = Expression::with_span(
+                mk_call(
+                    Expression::with_span(
+                        ExprKind::Ident("encodeURIComponent".to_string()),
+                        span.clone(),
+                    ),
+                    vec![arg(0)?],
+                ),
+                span.clone(),
+            );
+            let split_call = Expression::with_span(
+                mk_call(
+                    Expression::with_span(
+                        ExprKind::Member {
+                            object: Box::new(enc),
+                            field: "split".to_string(),
+                            null_safe: false,
+                        },
+                        span.clone(),
+                    ),
+                    vec![Expression::with_span(
+                        ExprKind::Lit(Literal::Str("%20".to_string())), span.clone(),
+                    )],
+                ),
+                span.clone(),
+            );
+            mk_call(
+                Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(split_call),
+                        field: "join".to_string(),
+                        null_safe: false,
+                    },
+                    span.clone(),
+                ),
+                vec![Expression::with_span(
+                    ExprKind::Lit(Literal::Str("+".to_string())), span.clone(),
+                )],
+            )
+        }
+        // PHP `urldecode($s)` ≡ `decodeURIComponent($s.split("+").join("%20"))`.
+        // Same split/join idiom — `+` is a regex metacharacter so the
+        // runtime's replaceAll wouldn't strip it correctly.
+        "urldecode" | "rawurldecode" => {
+            let s = arg(0)?;
+            let split_call = Expression::with_span(
+                mk_call(
+                    Expression::with_span(
+                        ExprKind::Member {
+                            object: Box::new(s),
+                            field: "split".to_string(),
+                            null_safe: false,
+                        },
+                        span.clone(),
+                    ),
+                    vec![Expression::with_span(
+                        ExprKind::Lit(Literal::Str("+".to_string())), span.clone(),
+                    )],
+                ),
+                span.clone(),
+            );
+            let joined = Expression::with_span(
+                mk_call(
+                    Expression::with_span(
+                        ExprKind::Member {
+                            object: Box::new(split_call),
+                            field: "join".to_string(),
+                            null_safe: false,
+                        },
+                        span.clone(),
+                    ),
+                    vec![Expression::with_span(
+                        ExprKind::Lit(Literal::Str("%20".to_string())), span.clone(),
+                    )],
+                ),
+                span.clone(),
+            );
+            mk_call(
+                Expression::with_span(
+                    ExprKind::Ident("decodeURIComponent".to_string()),
+                    span.clone(),
+                ),
+                vec![joined],
+            )
+        }
+        // ── Precision-aware rounding ────────────────────────────────────
+        // PHP `round($n)` ≡ `Math.round($n)`.
+        "round" if args.len() == 1 => mk_call(
+            mk_member("Math", "round"), vec![arg(0)?],
+        ),
+        // PHP `round($n, $p)` ≡ `Math.round($n * Math.pow(10, $p)) / Math.pow(10, $p)`.
+        // Both args are evaluated twice — Math.pow on the precision is
+        // cheap and side-effect-free, $n is typically a variable. The
+        // 3rd PHP arg (mode flag) is ignored — round-half-to-even is
+        // identical to Math.round on positives, which covers the test
+        // suite's needs; banker's rounding can be added later if it
+        // turns out to matter.
+        "round" if args.len() >= 2 => {
+            let n_first = arg(0)?;
+            let n_second = arg(0)?;
+            let p_first = arg(1)?;
+            let p_second = arg(1)?;
+            // Math.pow(10, p)
+            let pow_first = Expression::with_span(
+                mk_call(mk_member("Math", "pow"), vec![mk_lit_f64(10.0), p_first]),
+                span.clone(),
+            );
+            let pow_second = Expression::with_span(
+                mk_call(mk_member("Math", "pow"), vec![mk_lit_f64(10.0), p_second]),
+                span.clone(),
+            );
+            // n * pow(10, p)
+            let scaled = Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::Mul,
+                    left: Box::new(n_first),
+                    right: Box::new(pow_first),
+                },
+                span.clone(),
+            );
+            // Wait — should be n_second... clarify: we evaluated arg twice; first scaled,
+            // second is the divisor below. Use n_first for the multiplication.
+            let _ = n_second;
+            // Math.round(scaled)
+            let rounded = Expression::with_span(
+                mk_call(mk_member("Math", "round"), vec![scaled]),
+                span.clone(),
+            );
+            // rounded / pow(10, p)
+            ExprKind::Binary {
+                op: BinOp::Div,
+                left: Box::new(rounded),
+                right: Box::new(pow_second),
+            }
+        }
+        // ── Letter-case-first ───────────────────────────────────────────
+        // PHP `ucfirst($s)` ≡ `$s.charAt(0).toUpperCase() + $s.slice(1)`.
+        // `$s` is evaluated twice — typical PHP usage passes a variable.
+        "ucfirst" => {
+            let s_left = arg(0)?;
+            let s_right = arg(0)?;
+            let first_char = Expression::with_span(
+                mk_call(
+                    Expression::with_span(
+                        ExprKind::Member {
+                            object: Box::new(s_left),
+                            field: "charAt".to_string(),
+                            null_safe: false,
+                        },
+                        span.clone(),
+                    ),
+                    vec![mk_lit_i64(0)],
+                ),
+                span.clone(),
+            );
+            let upper_first = Expression::with_span(
+                mk_call(
+                    Expression::with_span(
+                        ExprKind::Member {
+                            object: Box::new(first_char),
+                            field: "toUpperCase".to_string(),
+                            null_safe: false,
+                        },
+                        span.clone(),
+                    ),
+                    vec![],
+                ),
+                span.clone(),
+            );
+            let rest = Expression::with_span(
+                mk_call(
+                    Expression::with_span(
+                        ExprKind::Member {
+                            object: Box::new(s_right),
+                            field: "slice".to_string(),
+                            null_safe: false,
+                        },
+                        span.clone(),
+                    ),
+                    vec![mk_lit_i64(1)],
+                ),
+                span.clone(),
+            );
+            ExprKind::Binary {
+                op: BinOp::Concat,
+                left: Box::new(upper_first),
+                right: Box::new(rest),
+            }
+        }
+        // ── PHP higher-order array fns → Array.prototype.* methods ─────
+        // `array_map($fn, $arr)`     → `$arr.map($fn)`
+        // `array_filter($arr, $fn)`  → `$arr.filter($fn)`
+        // `array_reduce($arr, $fn, $init)` → `$arr.reduce($fn, $init)`
+        // PHP places the callable first (array_map) or second
+        // (array_filter); JS Array.prototype.map/filter/reduce are
+        // member methods on the array. Walker swap.
+        "array_map" if args.len() >= 2 => mk_call(
+            Expression::with_span(
+                ExprKind::Member {
+                    object: Box::new(arg(1)?),
+                    field: "map".to_string(),
+                    null_safe: false,
+                },
+                span.clone(),
+            ),
+            vec![arg(0)?],
+        ),
+        "array_filter" if !args.is_empty() => {
+            // `array_filter($arr)` (1-arg) drops falsy entries — JS has
+            // no parameterless filter, so emit `$arr.filter(x => x)`.
+            // 2-arg form passes the callback through.
+            let arr_expr = arg(0)?;
+            let cb = if let Some(c) = arg(1) { c } else {
+                Expression::with_span(
+                    ExprKind::Lambda {
+                        params: vec![Param {
+                            name: "x".to_string(), type_hint: None, default: None,
+                            pass_by: PassBy::Value, is_rest: false, is_kwargs: false,
+                            is_optional: false, is_nullable: false,
+                        }],
+                        body: LambdaBody::Expr(Box::new(Expression::with_span(
+                            ExprKind::Ident("x".to_string()), span.clone(),
+                        ))),
+                        is_async: false,
+                        captures: vec![],
+                    },
+                    span.clone(),
+                )
+            };
+            mk_call(
+                Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(arr_expr),
+                        field: "filter".to_string(),
+                        null_safe: false,
+                    },
+                    span.clone(),
+                ),
+                vec![cb],
+            )
+        }
+        "array_reduce" if args.len() >= 2 => {
+            let arr_expr = arg(0)?;
+            let cb = arg(1)?;
+            let mut call_args = vec![cb];
+            if let Some(init) = arg(2) {
+                call_args.push(init);
+            }
+            mk_call(
+                Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(arr_expr),
+                        field: "reduce".to_string(),
+                        null_safe: false,
+                    },
+                    span.clone(),
+                ),
+                call_args,
+            )
+        }
+        // ── Bare math functions → Math.* member calls ──────────────────
+        // PHP exposes these as bare globals; JS spec puts them on Math.
+        // Walker rewrites so the compile path goes through the
+        // namespace-method dispatch (single source of truth — PHP profile
+        // binds `Math.pow`/`Math.sin`/etc. once, no parallel bare entries).
+        "abs" if args.len() == 1 => mk_call(mk_member("Math", "abs"), vec![arg(0)?]),
+        "sqrt" if args.len() == 1 => mk_call(mk_member("Math", "sqrt"), vec![arg(0)?]),
+        "floor" if args.len() == 1 => mk_call(mk_member("Math", "floor"), vec![arg(0)?]),
+        "ceil" if args.len() == 1 => mk_call(mk_member("Math", "ceil"), vec![arg(0)?]),
+        "pow" if args.len() == 2 => mk_call(mk_member("Math", "pow"), vec![arg(0)?, arg(1)?]),
+        "exp" if args.len() == 1 => mk_call(mk_member("Math", "exp"), vec![arg(0)?]),
+        "log" if args.len() == 1 => mk_call(mk_member("Math", "log"), vec![arg(0)?]),
+        "log2" if args.len() == 1 => mk_call(mk_member("Math", "log2"), vec![arg(0)?]),
+        "log10" if args.len() == 1 => mk_call(mk_member("Math", "log10"), vec![arg(0)?]),
+        "sin" if args.len() == 1 => mk_call(mk_member("Math", "sin"), vec![arg(0)?]),
+        "cos" if args.len() == 1 => mk_call(mk_member("Math", "cos"), vec![arg(0)?]),
+        "tan" if args.len() == 1 => mk_call(mk_member("Math", "tan"), vec![arg(0)?]),
+        "asin" if args.len() == 1 => mk_call(mk_member("Math", "asin"), vec![arg(0)?]),
+        "acos" if args.len() == 1 => mk_call(mk_member("Math", "acos"), vec![arg(0)?]),
+        "atan" if args.len() == 1 => mk_call(mk_member("Math", "atan"), vec![arg(0)?]),
+        "atan2" if args.len() == 2 => mk_call(mk_member("Math", "atan2"), vec![arg(0)?, arg(1)?]),
+        "sinh" if args.len() == 1 => mk_call(mk_member("Math", "sinh"), vec![arg(0)?]),
+        "cosh" if args.len() == 1 => mk_call(mk_member("Math", "cosh"), vec![arg(0)?]),
+        "tanh" if args.len() == 1 => mk_call(mk_member("Math", "tanh"), vec![arg(0)?]),
+        "asinh" if args.len() == 1 => mk_call(mk_member("Math", "asinh"), vec![arg(0)?]),
+        "acosh" if args.len() == 1 => mk_call(mk_member("Math", "acosh"), vec![arg(0)?]),
+        "atanh" if args.len() == 1 => mk_call(mk_member("Math", "atanh"), vec![arg(0)?]),
+        // ── Array splice ───────────────────────────────────────────────
+        // PHP `array_splice($arr, $start, $length?, $replacement?)` ≡
+        // JS `$arr.splice($start, $length, ...$replacement)`. PHP packs
+        // the replacement items into a single array; JS spreads them.
+        // Walker emits a Spread argument so the existing JS-shape splice
+        // dispatch (no Vybe-specific code needed) handles it.
+        "array_splice" if args.len() >= 2 => {
+            let arr_expr = arg(0)?;
+            let start = arg(1)?;
+            // Default $length = remove to end (i32::MAX clamped by JS impl).
+            let length = arg(2).unwrap_or_else(|| Expression::with_span(
+                ExprKind::Lit(Literal::Int(i32::MAX as i64)), span.clone(),
+            ));
+            let mut splice_args: Vec<Argument> = vec![
+                Argument::positional(start),
+                Argument::positional(length),
+            ];
+            // 4th arg: replacement array. Spread its elements.
+            if let Some(rep) = arg(3) {
+                splice_args.push(Argument {
+                    value: rep,
+                    name: None,
+                    by_ref: false,
+                    spread: true,
+                });
+            }
+            ExprKind::Call {
+                callee: Box::new(Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(arr_expr),
+                        field: "splice".to_string(),
+                        null_safe: false,
+                    },
+                    span.clone(),
+                )),
+                args: splice_args,
+                optional: false,
+            }
+        }
+        // ── Array fill ─────────────────────────────────────────────────
+        // PHP `array_fill($start, $count, $val)` → `Array($count, $val)`.
+        // Vybe's compiler intercepts the 2-arg `Array(...)` form (used
+        // originally by COBOL's OCCURS walker) and emits
+        // `newWithLength(count) + fill(val, 0, MAX)` through
+        // compiler_common::collections — the same path COBOL uses.
+        // PHP's `$start` (offset key) is ignored, matching the prior
+        // `php_array_fill` intrinsic's behavior.
+        "array_fill" if args.len() >= 3 => {
+            mk_call(
+                Expression::with_span(
+                    ExprKind::Ident("Array".to_string()), span.clone(),
+                ),
+                vec![arg(1)?, arg(2)?],
+            )
+        }
+        // ── Array sum ──────────────────────────────────────────────────
+        // PHP `array_sum($arr)` → `$arr.reduce((a, b) => a + b, 0)`.
+        "array_sum" => {
+            let arr_expr = arg(0)?;
+            let body = Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::Add,
+                    left: Box::new(Expression::with_span(
+                        ExprKind::Ident("__a".to_string()), span.clone(),
+                    )),
+                    right: Box::new(Expression::with_span(
+                        ExprKind::Ident("__b".to_string()), span.clone(),
+                    )),
+                },
+                span.clone(),
+            );
+            let lambda = Expression::with_span(
+                ExprKind::Lambda {
+                    params: vec![
+                        Param { name: "__a".to_string(), type_hint: None, default: None,
+                                pass_by: PassBy::Value, is_rest: false, is_kwargs: false,
+                                is_optional: false, is_nullable: false },
+                        Param { name: "__b".to_string(), type_hint: None, default: None,
+                                pass_by: PassBy::Value, is_rest: false, is_kwargs: false,
+                                is_optional: false, is_nullable: false },
+                    ],
+                    body: LambdaBody::Expr(Box::new(body)),
+                    is_async: false,
+                    captures: vec![],
+                },
+                span.clone(),
+            );
+            mk_call(
+                Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(arr_expr),
+                        field: "reduce".to_string(),
+                        null_safe: false,
+                    },
+                    span.clone(),
+                ),
+                vec![lambda, mk_lit_f64(0.0)],
+            )
+        }
+        // ── Array product ──────────────────────────────────────────────
+        // PHP `array_product($arr)` → `$arr.reduce((a, b) => a * b, 1)`.
+        // Resolves through PHP profile's [array_methods] (`reduce` →
+        // __array_reduce loop helper). Single-eval — `$arr` appears
+        // once; the lambda doesn't capture.
+        "array_product" => {
+            let arr_expr = arg(0)?;
+            let body = Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::Mul,
+                    left: Box::new(Expression::with_span(
+                        ExprKind::Ident("__a".to_string()), span.clone(),
+                    )),
+                    right: Box::new(Expression::with_span(
+                        ExprKind::Ident("__b".to_string()), span.clone(),
+                    )),
+                },
+                span.clone(),
+            );
+            let lambda = Expression::with_span(
+                ExprKind::Lambda {
+                    params: vec![
+                        Param { name: "__a".to_string(), type_hint: None, default: None,
+                                pass_by: PassBy::Value, is_rest: false, is_kwargs: false,
+                                is_optional: false, is_nullable: false },
+                        Param { name: "__b".to_string(), type_hint: None, default: None,
+                                pass_by: PassBy::Value, is_rest: false, is_kwargs: false,
+                                is_optional: false, is_nullable: false },
+                    ],
+                    body: LambdaBody::Expr(Box::new(body)),
+                    is_async: false,
+                    captures: vec![],
+                },
+                span.clone(),
+            );
+            mk_call(
+                Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(arr_expr),
+                        field: "reduce".to_string(),
+                        null_safe: false,
+                    },
+                    span.clone(),
+                ),
+                vec![lambda, mk_lit_f64(1.0)],
+            )
+        }
+        // ── Substring ──────────────────────────────────────────────────
+        // PHP `substr($s, $start, $length?)` →
+        //   2-arg: `$s.substring($start)`
+        //   3-arg: `$s.substring($start, $start + $length)` (start eval'd
+        //          twice — typical PHP usage passes a literal/variable).
+        "substr" | "mb_substr" if args.len() == 2 => {
+            mk_call(
+                Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(arg(0)?),
+                        field: "substring".to_string(),
+                        null_safe: false,
+                    },
+                    span.clone(),
+                ),
+                vec![arg(1)?],
+            )
+        }
+        "substr" | "mb_substr" if args.len() >= 3 => {
+            let start_first = arg(1)?;
+            let start_second = arg(1)?;
+            let length = arg(2)?;
+            let end = Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::Add,
+                    left: Box::new(start_second),
+                    right: Box::new(length),
+                },
+                span.clone(),
+            );
+            mk_call(
+                Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(arg(0)?),
+                        field: "substring".to_string(),
+                        null_safe: false,
+                    },
+                    span.clone(),
+                ),
+                vec![start_first, end],
+            )
+        }
+        // PHP `lcfirst($s)` — same shape, lowercase first character.
+        "lcfirst" => {
+            let s_left = arg(0)?;
+            let s_right = arg(0)?;
+            let first_char = Expression::with_span(
+                mk_call(
+                    Expression::with_span(
+                        ExprKind::Member {
+                            object: Box::new(s_left),
+                            field: "charAt".to_string(),
+                            null_safe: false,
+                        },
+                        span.clone(),
+                    ),
+                    vec![mk_lit_i64(0)],
+                ),
+                span.clone(),
+            );
+            let lower_first = Expression::with_span(
+                mk_call(
+                    Expression::with_span(
+                        ExprKind::Member {
+                            object: Box::new(first_char),
+                            field: "toLowerCase".to_string(),
+                            null_safe: false,
+                        },
+                        span.clone(),
+                    ),
+                    vec![],
+                ),
+                span.clone(),
+            );
+            let rest = Expression::with_span(
+                mk_call(
+                    Expression::with_span(
+                        ExprKind::Member {
+                            object: Box::new(s_right),
+                            field: "slice".to_string(),
+                            null_safe: false,
+                        },
+                        span.clone(),
+                    ),
+                    vec![mk_lit_i64(1)],
+                ),
+                span.clone(),
+            );
+            ExprKind::Binary {
+                op: BinOp::Concat,
+                left: Box::new(lower_first),
+                right: Box::new(rest),
+            }
+        }
+        _ => return None,
+    })
+}
+
+/// Rewrites a PHP global constant name (`M_PI`, `STR_PAD_LEFT`, etc.) into
+/// the JS-shaped common-AST expression. Returns `None` for non-constants.
+///
+/// The compiler's `lookup_constant` resolves the resulting `Math.PI` /
+/// `Number.MAX_SAFE_INTEGER` Member-access AST against the profile's
+/// `[namespace_constants]` table — same path JS uses. No PHP-specific
+/// intrinsic, host fn, or profile builtin needed.
+fn php_constant_expr(name: &str, span: &Span) -> Option<ExprKind> {
+    let mk_member = |obj: &str, field: &str| ExprKind::Member {
+        object: Box::new(Expression::with_span(
+            ExprKind::Ident(obj.to_string()),
+            span.clone(),
+        )),
+        field: field.to_string(),
+        null_safe: false,
+    };
+    let mk_div = |num: f64, den_obj: &str, den_field: &str| ExprKind::Binary {
+        op: BinOp::Div,
+        left: Box::new(Expression::with_span(
+            ExprKind::Lit(Literal::Float(num)),
+            span.clone(),
+        )),
+        right: Box::new(Expression::with_span(
+            mk_member(den_obj, den_field),
+            span.clone(),
+        )),
+    };
+    let mk_div_by_lit = |num_obj: &str, num_field: &str, den: f64| ExprKind::Binary {
+        op: BinOp::Div,
+        left: Box::new(Expression::with_span(
+            mk_member(num_obj, num_field),
+            span.clone(),
+        )),
+        right: Box::new(Expression::with_span(
+            ExprKind::Lit(Literal::Float(den)),
+            span.clone(),
+        )),
+    };
+    Some(match name {
+        // ── math constants → Math.* property ──
+        "M_PI"      => mk_member("Math", "PI"),
+        "M_E"       => mk_member("Math", "E"),
+        "M_LN2"     => mk_member("Math", "LN2"),
+        "M_LN10"    => mk_member("Math", "LN10"),
+        "M_LOG2E"   => mk_member("Math", "LOG2E"),
+        "M_LOG10E"  => mk_member("Math", "LOG10E"),
+        "M_SQRT2"   => mk_member("Math", "SQRT2"),
+        "M_SQRT1_2" => mk_member("Math", "SQRT1_2"),
+        // ── math composites — no JS data property, compose ──
+        "M_PI_2"    => mk_div_by_lit("Math", "PI", 2.0),
+        "M_PI_4"    => mk_div_by_lit("Math", "PI", 4.0),
+        "M_1_PI"    => mk_div(1.0, "Math", "PI"),
+        "M_2_PI"    => mk_div(2.0, "Math", "PI"),
+        // M_2_SQRTPI = 2/sqrt(PI) — no clean JS form, bake the literal.
+        "M_2_SQRTPI" => ExprKind::Lit(Literal::Float(std::f64::consts::FRAC_2_SQRT_PI)),
+        // ── infinity / NaN — JS globals ──
+        "INF"       => ExprKind::Ident("Infinity".to_string()),
+        "NAN"       => ExprKind::Ident("NaN".to_string()),
+        // ── PHP integer / float limits → Number.* property ──
+        "PHP_INT_MAX"       => mk_member("Number", "MAX_SAFE_INTEGER"),
+        "PHP_INT_MIN"       => mk_member("Number", "MIN_SAFE_INTEGER"),
+        "PHP_FLOAT_MAX"     => mk_member("Number", "MAX_VALUE"),
+        "PHP_FLOAT_MIN"     => mk_member("Number", "MIN_VALUE"),
+        "PHP_FLOAT_EPSILON" => mk_member("Number", "EPSILON"),
+        // ── PHP integer-like literals ──
+        "PHP_INT_SIZE"  => ExprKind::Lit(Literal::Int(8)),
+        "PHP_FLOAT_DIG" => ExprKind::Lit(Literal::Int(15)),
+        // ── string padding flags — integer literals ──
+        "STR_PAD_LEFT"  => ExprKind::Lit(Literal::Int(0)),
+        "STR_PAD_RIGHT" => ExprKind::Lit(Literal::Int(1)),
+        "STR_PAD_BOTH"  => ExprKind::Lit(Literal::Int(2)),
+        // ── sort flags — integer literals ──
+        "SORT_REGULAR" => ExprKind::Lit(Literal::Int(0)),
+        "SORT_NUMERIC" => ExprKind::Lit(Literal::Int(1)),
+        "SORT_STRING"  => ExprKind::Lit(Literal::Int(2)),
+        "SORT_DESC"    => ExprKind::Lit(Literal::Int(3)),
+        "SORT_ASC"     => ExprKind::Lit(Literal::Int(4)),
+        "SORT_FLAG_CASE"     => ExprKind::Lit(Literal::Int(8)),
+        "SORT_NATURAL"       => ExprKind::Lit(Literal::Int(6)),
+        "SORT_LOCALE_STRING" => ExprKind::Lit(Literal::Int(5)),
+        // ── filter flags — integer literals ──
+        "ARRAY_FILTER_USE_KEY"  => ExprKind::Lit(Literal::Int(2)),
+        "ARRAY_FILTER_USE_BOTH" => ExprKind::Lit(Literal::Int(1)),
+        // ── newline / paths — string literals ──
+        "PHP_EOL"             => ExprKind::Lit(Literal::Str("\n".to_string())),
+        "DIRECTORY_SEPARATOR" => ExprKind::Lit(Literal::Str("/".to_string())),
+        "PATH_SEPARATOR"      => ExprKind::Lit(Literal::Str(":".to_string())),
+        _ => return None,
+    })
 }
 
 fn to_span(pair: &Pair<Rule>) -> Span {

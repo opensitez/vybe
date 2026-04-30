@@ -2082,15 +2082,81 @@ fn unquote(s: &str) -> String {
             continue;
         }
         match chars.next() {
+            // ECMA-262 §12.8.4 SingleEscapeCharacter
             Some('n') => out.push('\n'),
             Some('t') => out.push('\t'),
             Some('r') => out.push('\r'),
+            Some('b') => out.push('\x08'),
+            Some('f') => out.push('\x0c'),
+            Some('v') => out.push('\x0b'),
             Some('0') => out.push('\0'),
             Some('\'') => out.push('\''),
             Some('"') => out.push('"'),
             Some('\\') => out.push('\\'),
             Some('`') => out.push('`'),
             Some('$') => out.push('$'),
+            // §12.8.4 HexEscapeSequence: \xHH
+            Some('x') => {
+                let hi = chars.next();
+                let lo = chars.next();
+                match (hi, lo) {
+                    (Some(h), Some(l)) => {
+                        let mut buf = [0u8; 2];
+                        buf[0] = h as u8;
+                        buf[1] = l as u8;
+                        let s = std::str::from_utf8(&buf).unwrap_or("");
+                        if let Ok(n) = u32::from_str_radix(s, 16) {
+                            if let Some(c) = char::from_u32(n) {
+                                out.push(c);
+                                continue;
+                            }
+                        }
+                        out.push('\\'); out.push('x');
+                        if let Some(h) = hi { out.push(h); }
+                        if let Some(l) = lo { out.push(l); }
+                    }
+                    _ => out.push('\\'),
+                }
+            }
+            // §12.8.4 UnicodeEscapeSequence: \uHHHH or \u{...}
+            Some('u') => {
+                let mut peek_iter = chars.clone();
+                if peek_iter.next() == Some('{') {
+                    chars.next(); // consume '{'
+                    let mut hex = String::new();
+                    while let Some(h) = chars.clone().next() {
+                        if h == '}' { chars.next(); break; }
+                        if h.is_ascii_hexdigit() { hex.push(h); chars.next(); }
+                        else { break; }
+                    }
+                    if let Ok(n) = u32::from_str_radix(&hex, 16) {
+                        if let Some(c) = char::from_u32(n) {
+                            out.push(c);
+                            continue;
+                        }
+                    }
+                    out.push('\\'); out.push('u'); out.push('{');
+                    out.push_str(&hex);
+                } else {
+                    let mut hex = String::new();
+                    for _ in 0..4 {
+                        if let Some(h) = chars.clone().next() {
+                            if h.is_ascii_hexdigit() { hex.push(h); chars.next(); }
+                            else { break; }
+                        }
+                    }
+                    if hex.len() == 4 {
+                        if let Ok(n) = u32::from_str_radix(&hex, 16) {
+                            if let Some(c) = char::from_u32(n) {
+                                out.push(c);
+                                continue;
+                            }
+                        }
+                    }
+                    out.push('\\'); out.push('u');
+                    out.push_str(&hex);
+                }
+            }
             Some(other) => { out.push('\\'); out.push(other); }
             None => out.push('\\'),
         }

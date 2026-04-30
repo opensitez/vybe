@@ -61,9 +61,15 @@ pub fn resolve_common_import(name: &str) -> Option<CommonImport> {
         "btoa" | "base64_encode" => Some(CommonImport::Host("ecma:string", "btoa")),
         "atob" | "base64_decode" => Some(CommonImport::Host("ecma:string", "atob")),
 
-        "encodeuricomponent" | "urlencode" | "rawurlencode"
+        // Only the JS spelling resolves here — PHP's `urlencode` uses
+        // application/x-www-form-urlencoded semantics (space → "+",
+        // RFC 1738) which differ from RFC 3986 `encodeURIComponent`
+        // (space → "%20"). Let each language bind its own urlencode
+        // variant via the profile so the on-the-wire bytes match the
+        // language's spec.
+        "encodeuricomponent"
             => Some(CommonImport::Host("ecma:string", "encodeURIComponent")),
-        "decodeuricomponent" | "urldecode" | "rawurldecode"
+        "decodeuricomponent"
             => Some(CommonImport::Host("ecma:string", "decodeURIComponent")),
 
         // ── JSON ─────────────────────────────────────────────────────────
@@ -116,6 +122,9 @@ mod tests {
     fn encoding_variants() {
         assert_eq!(host(resolve_common_import("btoa")), Some(("ecma:string", "btoa")));
         assert_eq!(host(resolve_common_import("base64_encode")), Some(("ecma:string", "btoa")));
-        assert_eq!(host(resolve_common_import("urlencode")), Some(("ecma:string", "encodeURIComponent")));
+        // PHP `urlencode` differs from `encodeURIComponent` (space → +
+        // vs %20) — handled per-language via the profile binding.
+        assert!(resolve_common_import("urlencode").is_none());
+        assert_eq!(host(resolve_common_import("encodeuricomponent")), Some(("ecma:string", "encodeURIComponent")));
     }
 }

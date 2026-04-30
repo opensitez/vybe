@@ -886,26 +886,67 @@ fn register_non_mutators(vm: &mut VM) {
         }),
     );
 
-    // join(arr, sep) -> string
+    // join(arr, sep) -> string. Polymorphic over Array and Map (PHP
+    // associative arrays compile to ObjectKind::Map, and `implode` /
+    // `array.join` on them should iterate values in insertion order).
     vm.register_host_fn(
         "ecma:array",
         "join",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let sep = args.get(1).map(|v| format!("{}", v)).unwrap_or_else(|| ",".into());
-            if let Some(arr) = array_of(args, 0) {
-                let o = arr.lock().unwrap();
-                if let ObjectKind::Array(ref v) = o.kind {
-                    let parts: Vec<String> = v
-                        .iter()
-                        .map(|e| match e {
-                            Value::Null | Value::Undefined => String::new(),
-                            _ => format!("{}", e),
-                        })
-                        .collect();
-                    return Value::String(Arc::from(parts.join(&sep).as_str()));
+            let parts: Vec<String> = match args.first() {
+                Some(Value::Object(o)) => {
+                    let inner = o.lock().unwrap();
+                    let stringify = |e: &Value| match e {
+                        Value::Null | Value::Undefined => String::new(),
+                        _ => format!("{}", e),
+                    };
+                    match &inner.kind {
+                        ObjectKind::Array(v) => v.iter().map(stringify).collect(),
+                        ObjectKind::Map(m) => m.values().map(stringify).collect(),
+                        ObjectKind::Ordinary => {
+                            // Plain JS object — iterate values in
+                            // insertion order. The compiler tracks
+                            // insertion order in a side `__keys` array
+                            // when index-assigning string keys; without
+                            // it, `properties` is a HashMap and
+                            // iteration order is randomized per
+                            // process. Honor `__keys` first; fall back
+                            // to the hash-map order only when the
+                            // compiler hasn't installed one (e.g. an
+                            // empty `{}` literal that's never been
+                            // mutated).
+                            //
+                            // Skip internal `__*` metadata keys (Vybe
+                            // stores prototype links and type tags as
+                            // `__type`, `__proto__`, etc.).
+                            let ordered_keys: Option<Vec<String>> =
+                                inner.properties.get("__keys").and_then(|v| {
+                                    if let Value::Object(arr) = v {
+                                        let a = arr.lock().unwrap();
+                                        if let ObjectKind::Array(items) = &a.kind {
+                                            Some(items.iter().map(|k| format!("{}", k)).collect())
+                                        } else { None }
+                                    } else { None }
+                                });
+                            if let Some(keys) = ordered_keys {
+                                keys.iter()
+                                    .filter(|k| !k.starts_with("__"))
+                                    .filter_map(|k| inner.properties.get(k).map(stringify))
+                                    .collect()
+                            } else {
+                                inner.properties.iter()
+                                    .filter(|(k, _)| !k.starts_with("__"))
+                                    .map(|(_, v)| stringify(v))
+                                    .collect()
+                            }
+                        }
+                        _ => Vec::new(),
+                    }
                 }
-            }
-            Value::String(Arc::from(""))
+                _ => Vec::new(),
+            };
+            Value::String(Arc::from(parts.join(&sep).as_str()))
         }),
     );
 
