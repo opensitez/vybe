@@ -10,7 +10,11 @@ extensions = ["php", "phtml"]
 
 [compiler]
 function_return = "explicit"
-self_keyword = "this"
+self_keyword = "$this"              # PHP variables canonicalize with the $
+                                    # sigil (see strip_dollar in walker.rs).
+                                    # `$this` IS the scope name; matching
+                                    # the canonical form is required for
+                                    # `$this->prop` resolution inside methods.
 constructor_name = "__construct"
 case_sensitive = true              # PHP function/class names are case-INSENSITIVE,
                                     # but variables are case-sensitive. We treat
@@ -67,17 +71,17 @@ stripos             = { emit = "opcode:str_index_of",        min_args = 2, max_a
 basename            = { emit = "host:wasi:filesystem:pathGetFileName",  min_args = 1, max_args = 2 }
 dirname             = { emit = "host:wasi:filesystem:pathGetDirectory", min_args = 1, max_args = 2 }
 # Substring replace — direct STR_REPLACE opcode (ECMA replaceAll-equivalent).
-str_replace         = { emit = "stdlib:php_str_replace",     min_args = 3, max_args = 4 }
-ctype_alpha         = { emit = "stdlib:php_ctype_alpha",     min_args = 1, max_args = 1 }
-ctype_digit         = { emit = "stdlib:php_ctype_digit",     min_args = 1, max_args = 1 }
-ctype_alnum         = { emit = "stdlib:php_ctype_alnum",     min_args = 1, max_args = 1 }
-ctype_space         = { emit = "stdlib:php_ctype_space",     min_args = 1, max_args = 1 }
-ctype_upper         = { emit = "stdlib:php_ctype_upper",     min_args = 1, max_args = 1 }
-ctype_lower         = { emit = "stdlib:php_ctype_lower",     min_args = 1, max_args = 1 }
-ctype_xdigit        = { emit = "stdlib:php_ctype_xdigit",    min_args = 1, max_args = 1 }
-ctype_punct         = { emit = "stdlib:php_ctype_punct",     min_args = 1, max_args = 1 }
-ctype_print         = { emit = "stdlib:php_ctype_print",     min_args = 1, max_args = 1 }
-ctype_cntrl         = { emit = "stdlib:php_ctype_cntrl",     min_args = 1, max_args = 1 }
+str_replace         = { emit = "common:php.str_replace",     min_args = 3, max_args = 4 }
+ctype_alpha         = { emit = "common:php.ctype_alpha",     min_args = 1, max_args = 1 }
+ctype_digit         = { emit = "common:php.ctype_digit",     min_args = 1, max_args = 1 }
+ctype_alnum         = { emit = "common:php.ctype_alnum",     min_args = 1, max_args = 1 }
+ctype_space         = { emit = "common:php.ctype_space",     min_args = 1, max_args = 1 }
+ctype_upper         = { emit = "common:php.ctype_upper",     min_args = 1, max_args = 1 }
+ctype_lower         = { emit = "common:php.ctype_lower",     min_args = 1, max_args = 1 }
+ctype_xdigit        = { emit = "common:php.ctype_xdigit",    min_args = 1, max_args = 1 }
+ctype_punct         = { emit = "common:php.ctype_punct",     min_args = 1, max_args = 1 }
+ctype_print         = { emit = "common:php.ctype_print",     min_args = 1, max_args = 1 }
+ctype_cntrl         = { emit = "common:php.ctype_cntrl",     min_args = 1, max_args = 1 }
 mb_strlen           = { emit = "opcode:str_length",          min_args = 1, max_args = 2 }
 mb_strtolower       = { emit = "opcode:str_to_lower",        min_args = 1, max_args = 2 }
 mb_strtoupper       = { emit = "opcode:str_to_upper",        min_args = 1, max_args = 2 }
@@ -89,26 +93,20 @@ strripos            = { emit = "opcode:str_last_index_of",   min_args = 2, max_a
 # `ucfirst` / `lcfirst` walker-rewritten to the `s.charAt(0).toX() + s.slice(1)`
 # composition. Both the `host:ecma:string:*` methods and the value-method
 # dispatch path resolve those without PHP-specific bindings.
-ucwords             = { emit = "stdlib:php_ucwords",         min_args = 1, max_args = 2 }
-str_split           = { emit = "stdlib:php_str_split",       min_args = 1, max_args = 2 }
-str_pad             = { emit = "stdlib:php_str_pad",         min_args = 2, max_args = 4 }
-substr_count        = { emit = "stdlib:php_substr_count",    min_args = 2, max_args = 4 }
-substr_replace      = { emit = "stdlib:php_substr_replace",  min_args = 3, max_args = 4 }
-str_ireplace        = { emit = "stdlib:php_str_ireplace",    min_args = 3, max_args = 4 }
-str_word_count      = { emit = "stdlib:php_str_word_count",  min_args = 1, max_args = 3 }
-strstr              = { emit = "stdlib:php_strstr",          min_args = 2, max_args = 3 }
-stristr             = { emit = "stdlib:php_stristr",         min_args = 2, max_args = 3 }
-# `urlencode` / `urldecode` walker-rewritten via `encodeURIComponent`
-# composition. RFC 1738 (`+` for space) handled by `.replaceAll(...)`
-# in the rewrite rather than a PHP-specific polyfill.
-# `rawurlencode` / `rawurldecode` walker-rewritten to
-# `encodeURIComponent($s)` / `decodeURIComponent($s)` — RFC 3986
-# matches exactly.
-bin2hex             = { emit = "stdlib:php_bin2hex",         min_args = 1, max_args = 1 }
-hex2bin             = { emit = "stdlib:php_hex2bin",         min_args = 1, max_args = 1 }
-chunk_split         = { emit = "stdlib:php_chunk_split",     min_args = 1, max_args = 3 }
-wordwrap            = { emit = "stdlib:php_wordwrap",        min_args = 1, max_args = 4 }
-number_format       = { emit = "stdlib:php_number_format",   min_args = 1, max_args = 4 }
+ucwords             = { emit = "common:php.ucwords",         min_args = 1, max_args = 2 }
+str_split           = { emit = "common:php.str_split",       min_args = 1, max_args = 2 }
+str_pad             = { emit = "common:php.str_pad",         min_args = 2, max_args = 4 }
+substr_count        = { emit = "common:php.substr_count",    min_args = 2, max_args = 4 }
+substr_replace      = { emit = "common:php.substr_replace",  min_args = 3, max_args = 4 }
+str_ireplace        = { emit = "common:php.str_ireplace",    min_args = 3, max_args = 4 }
+str_word_count      = { emit = "common:php.str_word_count",  min_args = 1, max_args = 3 }
+strstr              = { emit = "common:php.strstr",          min_args = 2, max_args = 3 }
+stristr             = { emit = "common:php.stristr",         min_args = 2, max_args = 3 }
+bin2hex             = { emit = "common:php.bin2hex",         min_args = 1, max_args = 1 }
+hex2bin             = { emit = "common:php.hex2bin",         min_args = 1, max_args = 1 }
+chunk_split         = { emit = "common:php.chunk_split",     min_args = 1, max_args = 3 }
+wordwrap            = { emit = "common:php.wordwrap",        min_args = 1, max_args = 4 }
+number_format       = { emit = "common:php.number_format",   min_args = 1, max_args = 4 }
 
 # Array → delimited string. PHP `implode($glue, $array)` and `join` (alias).
 # Backed by compiler_common::collections::join, which every other language
@@ -121,12 +119,12 @@ join                = { emit = "common:collections.join",    min_args = 1, max_a
 strtr               = { emit = "intrinsic:strtr",            min_args = 2, max_args = 3 }
 # `dir($path)` returns a Directory iterator with `read()`/`close()`
 # methods. Backed by an stdlib chunk that wraps wasi:filesystem:listDir.
-dir                 = { emit = "stdlib:dir",                 min_args = 1, max_args = 1 }
+dir                 = { emit = "common:php.dir",            min_args = 1, max_args = 1 }
 # String split — direct STR_SPLIT opcode.
 explode             = { emit = "opcode:str_split",           min_args = 2, max_args = 3 }
 # `file($path)` returns the file as an array of lines. stdlib chunk
 # composing wasi:filesystem:readFile + STR_SPLIT on "\n".
-file                = { emit = "stdlib:file",                min_args = 1, max_args = 3 }
+file                = { emit = "common:php.file",           min_args = 1, max_args = 3 }
 # Regex — PHP PCRE → ECMA-262 §22.2 RegExp (Rust regex backing).
 # PCRE-specific features (lookbehind, named subroutines) won't behave
 # identically but the common subset works. Three-arg form
@@ -176,16 +174,16 @@ fmod                = { emit = "host:ecma:math:fmod",        min_args = 2, max_a
 fdiv                = { emit = "opcode:f64_div",             min_args = 2, max_args = 2 }
 # Variadic min/max — PHP accepts (a, b, ...args) OR (array).
 # Polyfill chooses the right path at runtime.
-min                 = { emit = "stdlib:php_min",             min_args = 1, max_args = 255 }
-max                 = { emit = "stdlib:php_max",             min_args = 1, max_args = 255 }
+min                 = { emit = "common:php.min",            min_args = 1, max_args = 255 }
+max                 = { emit = "common:php.max",            min_args = 1, max_args = 255 }
 hypot               = { emit = "host:ecma:math:hypot",       min_args = 2, max_args = 255 }
 asinh               = { emit = "host:ecma:math:asinh",       min_args = 1, max_args = 1 }
 acosh               = { emit = "host:ecma:math:acosh",       min_args = 1, max_args = 1 }
 atanh               = { emit = "host:ecma:math:atanh",       min_args = 1, max_args = 1 }
-decbin              = { emit = "stdlib:php_decbin",          min_args = 1, max_args = 1 }
-decoct              = { emit = "stdlib:php_decoct",          min_args = 1, max_args = 1 }
-dechex              = { emit = "stdlib:php_dechex",          min_args = 1, max_args = 1 }
-base_convert        = { emit = "stdlib:php_base_convert",    min_args = 3, max_args = 3 }
+decbin              = { emit = "common:php.decbin",         min_args = 1, max_args = 1 }
+decoct              = { emit = "common:php.decoct",         min_args = 1, max_args = 1 }
+dechex              = { emit = "common:php.dechex",         min_args = 1, max_args = 1 }
+base_convert        = { emit = "common:php.base_convert",   min_args = 3, max_args = 3 }
 
 # JS standard library leveraged by walker rewrites.
 # `deg2rad`/`rad2deg`/`intdiv`/`bindec`/`octdec`/`hexdec` are walker-rewritten
@@ -330,30 +328,30 @@ array_unique        = { emit = "stdlib:uniq",                     min_args = 1, 
 # compiler resolves to the same ecma:object/ecma:array host fns the
 # JS profile uses. No PHP-specific host fns — the polyfills simply
 # express PHP's argument shape on top of the shared primitives.
-array_pad           = { emit = "stdlib:php_array_pad",            min_args = 3, max_args = 3 }
+array_pad           = { emit = "common:php.array_pad",            min_args = 3, max_args = 3 }
 # `array_splice` walker-rewritten to `$arr.splice($start, $length, ...$rep)`
 # — JS Array.prototype.splice with the replacement array spread.
-array_chunk         = { emit = "stdlib:php_array_chunk",          min_args = 2, max_args = 3 }
-array_flip          = { emit = "stdlib:php_array_flip",           min_args = 1, max_args = 1 }
-array_combine       = { emit = "stdlib:php_array_combine",        min_args = 2, max_args = 2 }
-array_diff          = { emit = "stdlib:php_array_diff",           min_args = 2, max_args = 255 }
-array_intersect     = { emit = "stdlib:php_array_intersect",      min_args = 2, max_args = 255 }
-array_diff_assoc    = { emit = "stdlib:php_array_diff_assoc",     min_args = 2, max_args = 255 }
-array_intersect_key = { emit = "stdlib:php_array_intersect_key",  min_args = 2, max_args = 255 }
-array_replace       = { emit = "stdlib:php_array_replace",        min_args = 2, max_args = 255 }
-array_count_values  = { emit = "stdlib:php_array_count_values",   min_args = 1, max_args = 1 }
-array_column        = { emit = "stdlib:php_array_column",         min_args = 2, max_args = 3 }
-array_key_first     = { emit = "stdlib:php_array_key_first",      min_args = 1, max_args = 1 }
-array_key_last      = { emit = "stdlib:php_array_key_last",       min_args = 1, max_args = 1 }
+array_chunk         = { emit = "common:php.array_chunk",          min_args = 2, max_args = 3 }
+array_flip          = { emit = "common:php.array_flip",           min_args = 1, max_args = 1 }
+array_combine       = { emit = "common:php.array_combine",        min_args = 2, max_args = 2 }
+array_diff          = { emit = "common:php.array_diff",           min_args = 2, max_args = 255 }
+array_intersect     = { emit = "common:php.array_intersect",      min_args = 2, max_args = 255 }
+array_diff_assoc    = { emit = "common:php.array_diff_assoc",     min_args = 2, max_args = 255 }
+array_intersect_key = { emit = "common:php.array_intersect_key",  min_args = 2, max_args = 255 }
+array_replace       = { emit = "common:php.array_replace",        min_args = 2, max_args = 255 }
+array_count_values  = { emit = "common:php.array_count_values",   min_args = 1, max_args = 1 }
+array_column        = { emit = "common:php.array_column",         min_args = 2, max_args = 3 }
+array_key_first     = { emit = "common:php.array_key_first",      min_args = 1, max_args = 1 }
+array_key_last      = { emit = "common:php.array_key_last",       min_args = 1, max_args = 1 }
 
 # Assoc-array sort family — mutates the object in place, preserving
 # the caller's reference (PHP arrays are JS objects in our model).
-asort               = { emit = "stdlib:php_asort",                min_args = 1, max_args = 2 }
-arsort              = { emit = "stdlib:php_arsort",               min_args = 1, max_args = 2 }
-ksort               = { emit = "stdlib:php_ksort",                min_args = 1, max_args = 2 }
-krsort              = { emit = "stdlib:php_krsort",               min_args = 1, max_args = 2 }
-uasort              = { emit = "stdlib:php_uasort",               min_args = 2, max_args = 2 }
-uksort              = { emit = "stdlib:php_uksort",               min_args = 2, max_args = 2 }
+asort               = { emit = "common:php.asort",                min_args = 1, max_args = 2 }
+arsort              = { emit = "common:php.arsort",               min_args = 1, max_args = 2 }
+ksort               = { emit = "common:php.ksort",                min_args = 1, max_args = 2 }
+krsort              = { emit = "common:php.krsort",               min_args = 1, max_args = 2 }
+uasort              = { emit = "common:php.uasort",               min_args = 2, max_args = 2 }
+uksort              = { emit = "common:php.uksort",               min_args = 2, max_args = 2 }
 
 # ── JSON ────────────────────────────────────────────────────────────────────
 
@@ -367,13 +365,13 @@ json_decode         = { emit = "host:ecma:json:parse",       min_args = 1, max_a
 # string and a seconds timestamp and produce PHP-correct output.
 
 time                = { emit = "host:ecma:date:nowSeconds",      min_args = 0, max_args = 0 }
-checkdate           = { emit = "stdlib:php_checkdate",           min_args = 3, max_args = 3 }
-getdate             = { emit = "stdlib:php_getdate",             min_args = 0, max_args = 1 }
+checkdate           = { emit = "common:php.checkdate",           min_args = 3, max_args = 3 }
+getdate             = { emit = "common:php.getdate",             min_args = 0, max_args = 1 }
 microtime           = { emit = "host:wasi:clocks:hrtime",           min_args = 0, max_args = 1 }
-date                = { emit = "host:ecma:date:phpDate",         min_args = 1, max_args = 2 }
-strftime            = { emit = "host:ecma:date:phpStrftime",     min_args = 1, max_args = 2 }
-strtotime           = { emit = "host:ecma:date:phpStrtotime",    min_args = 1, max_args = 2 }
-mktime              = { emit = "host:ecma:date:phpMktime",       min_args = 0, max_args = 6 }
+date                = { emit = "common:php.date",                min_args = 1, max_args = 2 }
+strftime            = { emit = "common:php.strftime",            min_args = 1, max_args = 2 }
+strtotime           = { emit = "common:php.strtotime",           min_args = 1, max_args = 2 }
+mktime              = { emit = "common:php.mktime",              min_args = 0, max_args = 6 }
 sleep               = { emit = "host:wasi:clocks:sleep",     min_args = 1, max_args = 1 }
 
 # ── String formatting ──────────────────────────────────────────────────────
@@ -388,8 +386,8 @@ sprintf             = { emit = "stdlib:sprintf",            min_args = 1, max_ar
 # PHP code (leading underscores sort under the normal name binding in
 # PHP anyway, but they're not intended to collide).
 
-__php_increment     = { emit = "stdlib:php_inc",                 min_args = 1, max_args = 1 }
-__php_decrement     = { emit = "stdlib:php_dec",                 min_args = 1, max_args = 1 }
+__php_increment     = { emit = "common:php.inc",                 min_args = 1, max_args = 1 }
+__php_decrement     = { emit = "common:php.dec",                 min_args = 1, max_args = 1 }
 
 # ── File I/O ────────────────────────────────────────────────────────────────
 
@@ -398,17 +396,13 @@ file_put_contents   = { emit = "host:wasi:filesystem:writeFile", min_args = 2, m
 # Backed by real WASI 0.2.8 stat-at via stdlib chunks. The shim
 # `wasi:filesystem:exists`/`isFile`/`isDir` are deprecated and will
 # move to `vybe:fs` when the namespace truth-rename lands.
-file_exists         = { emit = "stdlib:file_exists",            min_args = 1, max_args = 1 }
-is_file             = { emit = "stdlib:is_file",                min_args = 1, max_args = 1 }
-is_dir              = { emit = "stdlib:is_dir",                 min_args = 1, max_args = 1 }
-# `filesize($path)` → wasi:filesystem:fileSize. Same semantic.
-filesize            = { emit = "stdlib:filesize",              min_args = 1, max_args = 1 }
-# `filemtime($path)` → seconds since epoch. stdlib chunk that extracts
-# the `.modified` (ms) field from `wasi:filesystem.stat()` and divides
-# by 1000.
-filemtime           = { emit = "stdlib:filemtime",              min_args = 1, max_args = 1 }
+file_exists         = { emit = "common:php.file_exists",        min_args = 1, max_args = 1 }
+is_file             = { emit = "common:php.is_file",            min_args = 1, max_args = 1 }
+is_dir              = { emit = "common:php.is_dir",             min_args = 1, max_args = 1 }
+filesize            = { emit = "common:php.filesize",           min_args = 1, max_args = 1 }
+filemtime           = { emit = "common:php.filemtime",          min_args = 1, max_args = 1 }
 mkdir               = { emit = "host:wasi:filesystem:mkdir",     min_args = 1, max_args = 4 }
-unlink              = { emit = "stdlib:unlink",                 min_args = 1, max_args = 2 }
+unlink              = { emit = "common:php.unlink",             min_args = 1, max_args = 2 }
 
 # ── Environment / CLI ───────────────────────────────────────────────────────
 
@@ -453,6 +447,34 @@ isset               = { emit = "common:php.isset_all",       min_args = 1, max_a
 empty               = { emit = "stdlib:isempty",             min_args = 1, max_args = 1 }
 
 # ────────────────────────────────────────────────────────────────────────────
+# PHP DateTime / DateInterval — bytecode adapters at
+# `emitter/php/datetime_adapter.rs`. The walker rewrites the
+# user-facing forms (`new DateTime(...)`, `$dt->format(...)`, etc.)
+# into compound names that resolve here to `common:php.<name>` emit
+# targets.
+# ────────────────────────────────────────────────────────────────────────────
+
+__php_dt_new           = { emit = "common:php.datetime_new",            min_args = 1, max_args = 1 }
+__php_dt_imm_new       = { emit = "common:php.datetime_immutable_new",  min_args = 1, max_args = 1 }
+__php_dt_format        = { emit = "common:php.datetime_format",         min_args = 2, max_args = 2 }
+__php_dt_get_timestamp = { emit = "common:php.datetime_get_timestamp",  min_args = 1, max_args = 1 }
+__php_dt_modify        = { emit = "common:php.datetime_modify",         min_args = 2, max_args = 2 }
+__php_dt_imm_modify    = { emit = "common:php.datetime_immutable_modify", min_args = 2, max_args = 2 }
+__php_dt_diff          = { emit = "common:php.datetime_diff",           min_args = 2, max_args = 2 }
+__php_dt_add           = { emit = "common:php.datetime_add",            min_args = 2, max_args = 2 }
+__php_dt_sub           = { emit = "common:php.datetime_sub",            min_args = 2, max_args = 2 }
+__php_dt_imm_add       = { emit = "common:php.datetime_immutable_add",  min_args = 2, max_args = 2 }
+__php_dt_imm_sub       = { emit = "common:php.datetime_immutable_sub",  min_args = 2, max_args = 2 }
+__php_dateinterval_components = { emit = "common:php.dateinterval_components", min_args = 6, max_args = 6 }
+__php_dt_add_seconds   = { emit = "common:php.datetime_add_seconds", min_args = 2, max_args = 2 }
+__php_dt_add_minutes   = { emit = "common:php.datetime_add_minutes", min_args = 2, max_args = 2 }
+__php_dt_add_hours     = { emit = "common:php.datetime_add_hours",   min_args = 2, max_args = 2 }
+__php_dt_add_days      = { emit = "common:php.datetime_add_days",    min_args = 2, max_args = 2 }
+__php_dt_add_weeks     = { emit = "common:php.datetime_add_weeks",   min_args = 2, max_args = 2 }
+__php_dt_add_months    = { emit = "common:php.datetime_add_months",  min_args = 2, max_args = 2 }
+__php_dt_add_years     = { emit = "common:php.datetime_add_years",   min_args = 2, max_args = 2 }
+
+# ────────────────────────────────────────────────────────────────────────────
 # VALUE METHODS — instance method calls on intrinsic types
 # ────────────────────────────────────────────────────────────────────────────
 #
@@ -473,18 +495,14 @@ empty               = { emit = "stdlib:isempty",             min_args = 1, max_a
 # language-agnostic loop helpers in compiler_common.
 # ────────────────────────────────────────────────────────────────────────────
 
+# NB: only the higher-order names that PHP code actually reaches via
+# `$arr.method(...)` go here. PHP function names like `find` are
+# popular as user class methods (`$repo->find(1)`); listing them
+# here would intercept those user methods. Keep this table minimal.
 [array_methods]
 map      = "__array_map"
 filter   = "__array_filter"
 reduce   = "__array_reduce"
-forEach  = "__array_forEach"
-find      = "__array_find"
-findIndex = "__array_findIndex"
-some     = "__array_some"
-every    = "__array_every"
-flatMap  = "__array_flat_map"
-reduceRight = "__array_reduce_right"
-sort     = "__array_sort"
 
 
 

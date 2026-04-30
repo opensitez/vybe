@@ -130,7 +130,25 @@ pub fn normalize_class(
                     auto_field: if *is_auto { Some(pname.clone()) } else { None },
                 });
             }
-            other @ (ClassMember::Event { .. } | ClassMember::Const { .. } | ClassMember::NestedType(_)) => {
+            ClassMember::Const { name: cname, value, .. } => {
+                // Class constants are stamped on the class object as
+                // static fields so PHP `Class::CONST` static access
+                // (struct_get on the constructor object) resolves to
+                // the value. Mirrors how `self::CONST` works inside
+                // class methods.
+                static_fields.push(NormalField {
+                    span: span.clone(),
+                    name: cname.clone(),
+                    init: Some(value.clone()),
+                    access: Access::Public,
+                    readonly: true,
+                });
+                // Keep the raw entry too so the legacy `Class.Const`
+                // global path is still emitted for any caller that
+                // resolves consts that way.
+                raw_extra_members.push(member.clone());
+            }
+            other @ (ClassMember::Event { .. } | ClassMember::NestedType(_)) => {
                 raw_extra_members.push(other.clone());
             }
         }

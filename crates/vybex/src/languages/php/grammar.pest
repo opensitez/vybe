@@ -363,7 +363,15 @@ use_trait = {
 }
 
 class_constant = {
-    attribute_group* ~ member_modifier* ~ kw_const ~ type_annotation? ~ identifier ~ "=" ~ expression ~ ";"
+    // The type_annotation is gated by a `&(identifier ~ "=")` lookahead
+    // so it doesn't greedily eat the identifier. PHP's
+    // `const NAME = ...` (no type) and `const TYPE NAME = ...` (PHP 8.3
+    // typed constants) both reach this rule — without the lookahead,
+    // pest commits to type_annotation parsing the only identifier and
+    // the rule fails.
+    attribute_group* ~ member_modifier* ~ kw_const
+        ~ (type_annotation ~ &(identifier ~ "="))?
+        ~ identifier ~ "=" ~ expression ~ ";"
 }
 
 property_declaration = {
@@ -371,11 +379,19 @@ property_declaration = {
 }
 
 method_declaration = {
-    attribute_group* ~ member_modifier* ~ kw_function ~ "&"? ~ identifier
+    // PHP allows reserved words as method names (`list`, `match`, etc.).
+    // Use `method_ident` instead of `identifier` so we don't reject
+    // valid PHP class methods.
+    attribute_group* ~ member_modifier* ~ kw_function ~ "&"? ~ method_ident
     ~ "(" ~ param_list? ~ ")"
     ~ return_type_annotation?
     ~ (block_statement | ";")  // ; for abstract / interface methods
 }
+
+// Identifier that allows reserved words — used for method names where
+// PHP semantics don't conflict (no ambiguity vs control-flow keywords
+// because the surrounding `function NAME (...)` shape pins it).
+method_ident = @{ (ASCII_ALPHA | "_") ~ ident_cont* }
 
 member_modifier = {
     kw_public | kw_private | kw_protected | kw_static | kw_abstract
@@ -610,8 +626,10 @@ inc_dec_op        = { "++" | "--" }
 
 // `member_name` is what comes after `->` — usually an identifier, can also
 // be a `$variable` (variable property access) or `{expr}` (dynamic).
+// PHP also accepts reserved words as member names since the `->` arrow
+// disambiguates from control-flow uses.
 member_name = {
-    identifier
+    method_ident
     | variable
     | "{" ~ expression ~ "}"
 }
@@ -674,7 +692,18 @@ literal = {
 }
 
 new_expression = {
-    kw_new ~ (qualified_name | variable | "(" ~ expression ~ ")") ~ ("(" ~ arg_list? ~ ")")?
+    kw_new ~ (anonymous_class | qualified_name | variable | "(" ~ expression ~ ")") ~ ("(" ~ arg_list? ~ ")")?
+}
+
+// PHP 8 anonymous classes: `new class { ... }`, `new class("arg") { ... }`,
+// `new class extends Base implements I { ... }`. The walker treats this
+// as a synthetic class declaration + immediate `new` of that class.
+anonymous_class = {
+    kw_class
+    ~ ("(" ~ arg_list? ~ ")")?
+    ~ (kw_extends ~ qualified_name)?
+    ~ (kw_implements ~ qualified_name ~ ("," ~ qualified_name)*)?
+    ~ "{" ~ class_member* ~ "}"
 }
 
 clone_expression = {

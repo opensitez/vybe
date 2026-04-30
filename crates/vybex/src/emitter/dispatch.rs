@@ -244,6 +244,218 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         "dotnet.datetime_today"
             => crate::emitter::dotnet::core::datetime_adapter::emit_datetime_today(chunks, current, line),
 
+        // ── PHP DateTime / DateTimeImmutable / DateInterval adapters ──
+        // Bytecode-only — composes existing `ecma:date.*` host fns into
+        // the PHP-shaped surface. See `emitter/php/datetime_adapter.rs`.
+        "php.datetime_new"
+            => crate::emitter::php::datetime_adapter::emit_datetime_new(chunks, current, line),
+        "php.datetime_immutable_new"
+            => crate::emitter::php::datetime_adapter::emit_datetime_immutable_new(chunks, current, line),
+        "php.datetime_format"
+            => crate::emitter::php::datetime_adapter::emit_datetime_format(chunks, current, line),
+        "php.datetime_get_timestamp"
+            => crate::emitter::php::datetime_adapter::emit_datetime_get_timestamp(chunks, current, line),
+        "php.datetime_modify"
+            => crate::emitter::php::datetime_adapter::emit_datetime_modify(chunks, current, line),
+        "php.datetime_immutable_modify"
+            => crate::emitter::php::datetime_adapter::emit_datetime_immutable_modify(chunks, current, line),
+        "php.datetime_diff"
+            => crate::emitter::php::datetime_adapter::emit_datetime_diff(chunks, current, line),
+        "php.datetime_add"
+            => crate::emitter::php::datetime_adapter::emit_datetime_add(chunks, current, line),
+        "php.datetime_sub"
+            => crate::emitter::php::datetime_adapter::emit_datetime_sub(chunks, current, line),
+        "php.datetime_immutable_add"
+            => crate::emitter::php::datetime_adapter::emit_datetime_immutable_add(chunks, current, line),
+        "php.datetime_immutable_sub"
+            => crate::emitter::php::datetime_adapter::emit_datetime_immutable_sub(chunks, current, line),
+        "php.dateinterval_components"
+            => crate::emitter::php::datetime_adapter::emit_dateinterval_components(chunks, current, line),
+        "php.datetime_add_seconds"
+            => crate::emitter::php::datetime_adapter::emit_datetime_add_seconds(chunks, current, line),
+        "php.datetime_add_minutes"
+            => crate::emitter::php::datetime_adapter::emit_datetime_add_minutes(chunks, current, line),
+        "php.datetime_add_hours"
+            => crate::emitter::php::datetime_adapter::emit_datetime_add_hours(chunks, current, line),
+        "php.datetime_add_days"
+            => crate::emitter::php::datetime_adapter::emit_datetime_add_days(chunks, current, line),
+        "php.datetime_add_weeks"
+            => crate::emitter::php::datetime_adapter::emit_datetime_add_weeks(chunks, current, line),
+        "php.datetime_add_months"
+            => crate::emitter::php::datetime_adapter::emit_datetime_add_months(chunks, current, line),
+        "php.datetime_add_years"
+            => crate::emitter::php::datetime_adapter::emit_datetime_add_years(chunks, current, line),
+
+        // ── PHP top-level date functions — Rust opcode emitters ────
+        // Compose `ecma:date.now/parse/UTC/get*` into PHP-shaped
+        // surfaces: `date()`, `strftime()`, `strtotime()`, `mktime()`.
+        // Pure bytecode; no PHP-specific host fns.
+        "php.date"
+            => crate::emitter::php::datetime_adapter::emit_php_date(chunks, current, argc, line),
+        "php.strftime"
+            => crate::emitter::php::datetime_adapter::emit_php_strftime(chunks, current, argc, line),
+        "php.strtotime"
+            => crate::emitter::php::datetime_adapter::emit_php_strtotime(chunks, current, argc, line),
+        "php.mktime"
+            => crate::emitter::php::datetime_adapter::emit_php_mktime(chunks, current, argc, line),
+        "php.checkdate"
+            => crate::emitter::php::datetime_adapter::emit_php_checkdate(chunks, current, argc, line),
+        "php.getdate"
+            => crate::emitter::php::datetime_adapter::emit_php_getdate(chunks, current, argc, line),
+
+        // ── PHP `$x++` / `$x--` arithmetic ─────────────────────────
+        // Composes `ecma:number.parseFloat` for string-numeric coerce.
+        "php.inc"
+            => crate::emitter::php::numeric_adapter::emit_php_inc(chunks, current, argc, line),
+        "php.dec"
+            => crate::emitter::php::numeric_adapter::emit_php_dec(chunks, current, argc, line),
+
+        // ── PHP ctype_* predicates ─────────────────────────────────
+        // Char-iteration loops over the input string; each predicate
+        // accepts a fixed UTF-16 range set (alpha = A-Z+a-z, etc.).
+        "php.ctype_alpha"
+            => crate::emitter::php::ctype_adapter::emit_ctype_alpha(chunks, current, argc, line),
+        "php.ctype_digit"
+            => crate::emitter::php::ctype_adapter::emit_ctype_digit(chunks, current, argc, line),
+        "php.ctype_alnum"
+            => crate::emitter::php::ctype_adapter::emit_ctype_alnum(chunks, current, argc, line),
+        "php.ctype_space"
+            => crate::emitter::php::ctype_adapter::emit_ctype_space(chunks, current, argc, line),
+        "php.ctype_upper"
+            => crate::emitter::php::ctype_adapter::emit_ctype_upper(chunks, current, argc, line),
+        "php.ctype_lower"
+            => crate::emitter::php::ctype_adapter::emit_ctype_lower(chunks, current, argc, line),
+        "php.ctype_xdigit"
+            => crate::emitter::php::ctype_adapter::emit_ctype_xdigit(chunks, current, argc, line),
+        "php.ctype_punct"
+            => crate::emitter::php::ctype_adapter::emit_ctype_punct(chunks, current, argc, line),
+        "php.ctype_print"
+            => crate::emitter::php::ctype_adapter::emit_ctype_print(chunks, current, argc, line),
+        "php.ctype_cntrl"
+            => crate::emitter::php::ctype_adapter::emit_ctype_cntrl(chunks, current, argc, line),
+
+        // ── PHP math helpers ───────────────────────────────────────
+        // min/max (variadic + array form), decbin/decoct/dechex (base
+        // string conv), base_convert (string↔string base conv).
+        "php.min"
+            => crate::emitter::php::math_adapter::emit_php_min(chunks, current, argc, line),
+        "php.max"
+            => crate::emitter::php::math_adapter::emit_php_max(chunks, current, argc, line),
+        "php.decbin"
+            => crate::emitter::php::math_adapter::emit_php_decbin(chunks, current, argc, line),
+        "php.decoct"
+            => crate::emitter::php::math_adapter::emit_php_decoct(chunks, current, argc, line),
+        "php.dechex"
+            => crate::emitter::php::math_adapter::emit_php_dechex(chunks, current, argc, line),
+        "php.base_convert"
+            => crate::emitter::php::math_adapter::emit_php_base_convert(chunks, current, argc, line),
+
+        // ── PHP string helpers ─────────────────────────────────────
+        // Char/index loops + ECMA string ops (`STR_INDEX_OF`,
+        // `STR_TO_LOWER`, `STR_PAD_*`) and `ecma:string.{encode,decode}URIComponent`.
+        "php.ucwords"
+            => crate::emitter::php::string_adapter::emit_ucwords(chunks, current, argc, line),
+        "php.str_split"
+            => crate::emitter::php::string_adapter::emit_str_split(chunks, current, argc, line),
+        "php.str_pad"
+            => crate::emitter::php::string_adapter::emit_str_pad(chunks, current, argc, line),
+        "php.substr_count"
+            => crate::emitter::php::string_adapter::emit_substr_count(chunks, current, argc, line),
+        "php.substr_replace"
+            => crate::emitter::php::string_adapter::emit_substr_replace(chunks, current, argc, line),
+        "php.str_ireplace"
+            => crate::emitter::php::string_adapter::emit_str_ireplace(chunks, current, argc, line),
+        "php.str_word_count"
+            => crate::emitter::php::string_adapter::emit_str_word_count(chunks, current, argc, line),
+        "php.strstr"
+            => crate::emitter::php::string_adapter::emit_strstr(chunks, current, argc, line),
+        "php.stristr"
+            => crate::emitter::php::string_adapter::emit_stristr(chunks, current, argc, line),
+        "php.urlencode"
+            => crate::emitter::php::string_adapter::emit_urlencode(chunks, current, argc, line),
+        "php.rawurlencode"
+            => crate::emitter::php::string_adapter::emit_rawurlencode(chunks, current, argc, line),
+        "php.urldecode"
+            => crate::emitter::php::string_adapter::emit_urldecode(chunks, current, argc, line),
+        "php.bin2hex"
+            => crate::emitter::php::string_adapter::emit_bin2hex(chunks, current, argc, line),
+        "php.hex2bin"
+            => crate::emitter::php::string_adapter::emit_hex2bin(chunks, current, argc, line),
+        "php.chunk_split"
+            => crate::emitter::php::string_adapter::emit_chunk_split(chunks, current, argc, line),
+        "php.number_format"
+            => crate::emitter::php::string_adapter::emit_number_format(chunks, current, argc, line),
+        "php.str_replace"
+            => crate::emitter::php::string_adapter::emit_str_replace(chunks, current, argc, line),
+        "php.wordwrap"
+            => crate::emitter::php::string_adapter::emit_wordwrap(chunks, current, argc, line),
+
+        // ── PHP array helpers ──────────────────────────────────────
+        // Index-based loops + ECMA array/object ops. PHP `array` ≡
+        // `Map` (assoc) or `Array` (sequential).
+        "php.array_pad"
+            => crate::emitter::php::array_adapter::emit_array_pad(chunks, current, argc, line),
+        "php.array_chunk"
+            => crate::emitter::php::array_adapter::emit_array_chunk(chunks, current, argc, line),
+        "php.array_combine"
+            => crate::emitter::php::array_adapter::emit_array_combine(chunks, current, argc, line),
+        "php.array_flip"
+            => crate::emitter::php::array_adapter::emit_array_flip(chunks, current, argc, line),
+        "php.array_diff"
+            => crate::emitter::php::array_adapter::emit_array_diff(chunks, current, argc, line),
+        "php.array_intersect"
+            => crate::emitter::php::array_adapter::emit_array_intersect(chunks, current, argc, line),
+        "php.array_count_values"
+            => crate::emitter::php::array_adapter::emit_array_count_values(chunks, current, argc, line),
+        "php.array_column"
+            => crate::emitter::php::array_adapter::emit_array_column(chunks, current, argc, line),
+        "php.array_key_first"
+            => crate::emitter::php::array_adapter::emit_array_key_first(chunks, current, argc, line),
+        "php.array_key_last"
+            => crate::emitter::php::array_adapter::emit_array_key_last(chunks, current, argc, line),
+        "php.array_diff_assoc"
+            => crate::emitter::php::array_adapter::emit_array_diff_assoc(chunks, current, argc, line),
+        "php.array_intersect_key"
+            => crate::emitter::php::array_adapter::emit_array_intersect_key(chunks, current, argc, line),
+        "php.array_replace"
+            => crate::emitter::php::array_adapter::emit_array_replace(chunks, current, argc, line),
+        "php.asort"
+            => crate::emitter::php::array_adapter::emit_php_asort(chunks, current, argc, line),
+        "php.arsort"
+            => crate::emitter::php::array_adapter::emit_php_arsort(chunks, current, argc, line),
+        "php.ksort"
+            => crate::emitter::php::array_adapter::emit_php_ksort(chunks, current, argc, line),
+        "php.krsort"
+            => crate::emitter::php::array_adapter::emit_php_krsort(chunks, current, argc, line),
+        "php.uasort"
+            => crate::emitter::php::array_adapter::emit_php_uasort(chunks, current, argc, line),
+        "php.uksort"
+            => crate::emitter::php::array_adapter::emit_php_uksort(chunks, current, argc, line),
+
+        // ── PHP filesystem helpers ─────────────────────────────────
+        // Inline opcode emitters compose `wasi:filesystem/preopens` +
+        // `wasi:filesystem/types` host fns into PHP-shaped surfaces.
+        "php.file_exists"
+            => crate::emitter::php::filesystem_adapter::emit_file_exists(chunks, current, argc, line),
+        "php.is_file"
+            => crate::emitter::php::filesystem_adapter::emit_is_file(chunks, current, argc, line),
+        "php.is_dir"
+            => crate::emitter::php::filesystem_adapter::emit_is_dir(chunks, current, argc, line),
+        "php.filesize"
+            => crate::emitter::php::filesystem_adapter::emit_filesize(chunks, current, argc, line),
+        "php.filemtime"
+            => crate::emitter::php::filesystem_adapter::emit_filemtime(chunks, current, argc, line),
+        "php.unlink"
+            => crate::emitter::php::filesystem_adapter::emit_unlink(chunks, current, argc, line),
+        "php.file"
+            => crate::emitter::php::filesystem_adapter::emit_file(chunks, current, argc, line),
+        "php.dir"
+            => crate::emitter::php::filesystem_adapter::emit_dir(chunks, current, argc, line),
+        "php.dir_read"
+            => crate::emitter::php::filesystem_adapter::emit_dir_read(chunks, current, argc, line),
+        "php.dir_close"
+            => crate::emitter::php::filesystem_adapter::emit_dir_close(chunks, current, argc, line),
+
         // ── .NET String.Format adapter — composite-format substitution ──
         // `String.Format(fmt, ...args)` lowers to inline bytecode that
         // walks the format string, parses `{N}` / `{{` / `}}` tokens,

@@ -570,8 +570,12 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
             Rule::catch_clause => {
                 let mut cat = inner_nokw(p);
                 let catch_type = cat.next().unwrap();
+                // PHP catches `\UnhandledMatchError $e` — qualified
+                // names start with `\` for the global namespace. Strip
+                // the leading backslash so the type name matches the
+                // canonical exception form the throw site produces.
                 let types: Vec<String> = catch_type.into_inner()
-                    .map(|q| q.as_str().to_string())
+                    .map(|q| q.as_str().trim_start_matches('\\').to_string())
                     .collect();
                 let mut var: Option<String> = None;
                 let mut catch_body_pair: Option<Pair<Rule>> = None;
@@ -819,11 +823,20 @@ fn walk_param(pair: Pair<Rule>) -> Result<(Param, Option<Visibility>), String> {
 }
 
 fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
+    // Inspect the source slice to know whether the first qualified_name
+    // follows `extends` (parent class) or `implements` (interface
+    // list). Pest doesn't yield `kw_extends` / `kw_implements` as
+    // child pairs, so we'd otherwise misclassify
+    // `class Foo implements Bar` (Bar is the parent) — leading to the
+    // compiler instantiating a non-existent Bar at construction time.
+    let raw = pair.as_str();
+    let has_extends = raw.contains(" extends ");
     let mut name = String::new();
     let mut parents: Vec<String> = Vec::new();
     let mut interfaces: Vec<String> = Vec::new();
     let mut members: Vec<ClassMember> = Vec::new();
     let mut modifiers = ClassModifiers::default();
+    let mut first_qualified = true;
 
     for p in pair.into_inner() {
         match p.as_rule() {
@@ -837,11 +850,12 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             }
             Rule::identifier if name.is_empty() => name = p.as_str().to_string(),
             Rule::qualified_name => {
-                if parents.is_empty() {
+                if first_qualified && has_extends {
                     parents.push(p.as_str().to_string());
                 } else {
                     interfaces.push(p.as_str().to_string());
                 }
+                first_qualified = false;
             }
             Rule::use_trait | Rule::class_constant | Rule::property_declaration
                 | Rule::method_declaration | Rule::empty_statement => {
@@ -857,44 +871,39 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
 }
 
 fn walk_interface_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    // For now we walk interfaces as InterfaceDecl. Member methods become
-    // signature-only entries. Constants become Const members on the
-    // interface, which the compiler treats as static fields.
+    // PHP interfaces behave like classes that carry constants. Walking
+    // them as ClassDecl lets `Interface::CONST` static access resolve
+    // through the standard class-const path. Method signatures are
+    // dropped (no bodies on interface methods) — they're documentation
+    // only at the AST level.
     let mut name = String::new();
     let mut parents: Vec<String> = Vec::new();
-    let mut members: Vec<InterfaceMember> = Vec::new();
+    let mut class_members: Vec<ClassMember> = Vec::new();
 
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::identifier if name.is_empty() => name = p.as_str().to_string(),
             Rule::qualified_name => parents.push(p.as_str().to_string()),
-            Rule::method_declaration => {
-                // Signature only — discard body.
-                let mut method_name = String::new();
-                let mut params: Vec<Param> = Vec::new();
-                let mut return_type: Option<String> = None;
-                for m in p.into_inner() {
-                    match m.as_rule() {
-                        Rule::identifier => method_name = m.as_str().to_string(),
-                        Rule::param_list => params = walk_params(m)?,
-                        Rule::return_type_annotation => {
-                            return_type = Some(m.as_str().trim_start_matches(':').trim().to_string());
-                        }
-                        _ => {}
-                    }
+            Rule::class_constant => {
+                if let Some(m) = walk_class_member(p)? {
+                    class_members.push(m);
                 }
-                members.push(InterfaceMember::Method {
-                    name: method_name,
-                    params,
-                    return_type,
-                    is_sub: false,
-                });
+            }
+            Rule::method_declaration => {
+                // Skip — interface methods have no body, so nothing to
+                // emit. Implementing classes provide their own.
             }
             _ => {}
         }
     }
 
-    Ok(StmtKind::InterfaceDecl { name, parents, members })
+    Ok(StmtKind::ClassDecl {
+        name,
+        parents,
+        interfaces: Vec::new(),
+        members: class_members,
+        modifiers: ClassModifiers::default(),
+    })
 }
 
 fn walk_trait_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -927,30 +936,45 @@ fn walk_trait_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
 }
 
 fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    // PHP enums compile to a class with static constants. The walker
-    // converts each enum case into a Const class member with the case
-    // name as the key.
+    // PHP enums compile to a class with static constants. Each enum
+    // case becomes a Const member whose value is an object literal
+    // `{ name: "Case", value: <backing-value or "Case"> }` so user code
+    // can reach `EnumName::Case->name` and `EnumName::Case->value` via
+    // ordinary member access. A static `cases()` method returns the
+    // ordered list of all cases.
     let mut name = String::new();
     let mut members: Vec<ClassMember> = Vec::new();
+    let mut case_names: Vec<String> = Vec::new();
 
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::identifier if name.is_empty() => name = p.as_str().to_string(),
             Rule::enum_case => {
                 let mut case_name = String::new();
-                let mut value: Option<Expression> = None;
+                let mut backing: Option<Expression> = None;
                 for c in p.into_inner() {
                     match c.as_rule() {
                         Rule::identifier => case_name = c.as_str().to_string(),
-                        Rule::expression => value = Some(walk_expression(c)?),
+                        Rule::expression => backing = Some(walk_expression(c)?),
                         _ => {}
                     }
                 }
-                let value = value.unwrap_or_else(|| Expression::string(&case_name));
+                case_names.push(case_name.clone());
+                let value_expr = backing.unwrap_or_else(|| Expression::string(&case_name));
+                let case_obj = Expression::new(ExprKind::Object(vec![
+                    ObjectProperty::KeyValue {
+                        key: Expression::string("name"),
+                        value: Expression::string(&case_name),
+                    },
+                    ObjectProperty::KeyValue {
+                        key: Expression::string("value"),
+                        value: value_expr,
+                    },
+                ]));
                 members.push(ClassMember::Const {
                     name: case_name,
                     type_hint: None,
-                    value,
+                    value: case_obj,
                     visibility: Visibility::Public,
                 });
             }
@@ -959,6 +983,35 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             }
             _ => {}
         }
+    }
+
+    // Synthesize `static function cases(): array { return [<case>, ...]; }`.
+    if !case_names.is_empty() {
+        let elements: Vec<ArrayElement> = case_names.iter().map(|c| {
+            ArrayElement {
+                key: None,
+                value: Expression::new(ExprKind::StaticAccess {
+                    class: Box::new(Expression::ident(&name)),
+                    member: Box::new(Expression::ident(c)),
+                }),
+                spread: false,
+                by_ref: false,
+            }
+        }).collect();
+        let arr_expr = Expression::new(ExprKind::Array(elements));
+        let return_stmt = Statement::new(StmtKind::Return(Some(arr_expr)));
+        let cases_method = Statement::new(StmtKind::FunctionDecl {
+            name: "cases".to_string(),
+            params: vec![],
+            return_type: Some("array".to_string()),
+            body: vec![return_stmt],
+            modifiers: Modifiers { is_static: true, ..Modifiers::default() },
+            handles: Vec::new(),
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
+        });
+        members.push(ClassMember::Method(Box::new(cases_method)));
     }
 
     Ok(StmtKind::ClassDecl {
@@ -1008,7 +1061,15 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
                 match p.as_rule() {
                     Rule::member_modifier => apply_member_modifier(&mut modifiers, p.as_str()),
                     Rule::type_annotation => type_hint = Some(p.as_str().to_string()),
-                    Rule::variable => name = strip_dollar(p.as_str()).to_string(),
+                    Rule::variable => {
+                        // Property names are stored WITHOUT the `$`
+                        // sigil (member access `$this->prop` looks up
+                        // "prop"). PHP variables in expression context
+                        // keep the `$` (separate namespace), but
+                        // property declarations strip it here.
+                        let raw = p.as_str();
+                        name = raw.strip_prefix('$').unwrap_or(raw).to_string();
+                    }
                     Rule::expression => init = Some(walk_expression(p)?),
                     _ => {}
                 }
@@ -1033,7 +1094,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
             for p in pair.into_inner() {
                 match p.as_rule() {
                     Rule::member_modifier => apply_member_modifier(&mut modifiers, p.as_str()),
-                    Rule::identifier => method_name = p.as_str().to_string(),
+                    Rule::identifier | Rule::method_ident => method_name = p.as_str().to_string(),
                     Rule::param_list => {
                         // Capture both the params and any promotion
                         // visibility so we can synthesize property
@@ -1154,8 +1215,30 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
         Rule::expression => return walk_expression(pair.into_inner().next().unwrap()),
         Rule::assignment_expression => return walk_assignment(pair),
         Rule::yield_expression => return walk_yield(pair),
+        Rule::null_coalesce_expression => {
+            // Right-associative `??` — pest doesn't yield the literal
+            // `??` as a child pair (no named operator rule), so the
+            // generic walk_left_assoc_binary path can't recover the
+            // operator name. Walk the children directly: first is the
+            // left operand, optional second is the recursive right.
+            let span = to_span(&pair);
+            let mut inner = pair.into_inner();
+            let left = walk_expression(inner.next().unwrap())?;
+            return match inner.next() {
+                Some(rhs_pair) => {
+                    let right = walk_expression(rhs_pair)?;
+                    Ok(Expression::with_span(
+                        ExprKind::NullCoalesce {
+                            left: Box::new(left),
+                            right: Box::new(right),
+                        },
+                        span,
+                    ))
+                }
+                None => Ok(left),
+            };
+        }
         Rule::logical_or_expression
-            | Rule::null_coalesce_expression
             | Rule::logic_or_expression
             | Rule::logic_and_expression
             | Rule::bit_or_expression
@@ -1331,27 +1414,102 @@ fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
     let mut inner = pair.into_inner().peekable();
     let mut left = walk_expression(inner.next().unwrap())?;
     while let Some(op_pair) = inner.next() {
-        // op_pair is the operator alternation (eq_op, cmp_op, …) OR a
-        // direct binary operator string. Skip if it's actually an
-        // operand (left-associative chain has alternating operand/op).
         let op_str = op_pair.as_str().to_string();
-        // The next pair should be the right operand.
         let right_pair = match inner.next() {
             Some(p) => p,
             None => break,
         };
         let right = walk_expression(right_pair)?;
         let op = parse_binop(&op_str);
+        let (l, r) = if op == BinOp::Concat {
+            // PHP `$a . $b` invokes `__toString` on objects. Wrap each
+            // operand in an IIFE that calls `__toString` when present:
+            //   ((v) => v && v.__toString ? v.__toString() : v)($x)
+            (php_tostring_coerce(left, &span), php_tostring_coerce(right, &span))
+        } else {
+            (left, right)
+        };
         left = Expression::with_span(
             ExprKind::Binary {
                 op,
-                left: Box::new(left),
-                right: Box::new(right),
+                left: Box::new(l),
+                right: Box::new(r),
             },
             span.clone(),
         );
     }
     Ok(left)
+}
+
+/// Wrap `expr` in an IIFE that invokes `__toString()` when `expr` is an
+/// object with that magic method, returns the value otherwise. PHP-only
+/// — used for `.` concat and string coercion paths to satisfy the
+/// `Stringable` contract without compiler-side runtime probes.
+fn php_tostring_coerce(expr: Expression, span: &Span) -> Expression {
+    let v_ident = || Expression::with_span(
+        ExprKind::Ident("v".to_string()), span.clone()
+    );
+    let ts_member = Expression::with_span(
+        ExprKind::Member {
+            object: Box::new(v_ident()),
+            field: "__toString".to_string(),
+            null_safe: false,
+        },
+        span.clone(),
+    );
+    // v && v.__toString
+    let cond = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::And,
+            left: Box::new(v_ident()),
+            right: Box::new(ts_member),
+        },
+        span.clone(),
+    );
+    // v.__toString()
+    let call = Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::with_span(
+                ExprKind::Member {
+                    object: Box::new(v_ident()),
+                    field: "__toString".to_string(),
+                    null_safe: false,
+                },
+                span.clone(),
+            )),
+            args: vec![],
+            optional: false,
+        },
+        span.clone(),
+    );
+    let body = Expression::with_span(
+        ExprKind::Ternary {
+            cond: Box::new(cond),
+            then: Box::new(call),
+            else_: Box::new(v_ident()),
+        },
+        span.clone(),
+    );
+    Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::with_span(
+                ExprKind::Lambda {
+                    params: vec![Param {
+                        name: "v".to_string(), type_hint: None, default: None,
+                        pass_by: PassBy::Value, is_rest: false, is_kwargs: false,
+                        is_optional: false, is_nullable: false,
+                    }],
+                    body: LambdaBody::Expr(Box::new(body)),
+                    is_async: false,
+                    captures: vec![],
+                },
+                span.clone(),
+            )),
+            args: vec![Argument::positional(expr)],
+            optional: false,
+        },
+        span.clone(),
+    )
 }
 
 fn parse_binop(s: &str) -> BinOp {
@@ -1381,6 +1539,7 @@ fn parse_binop(s: &str) -> BinOp {
         "<<" => BinOp::Shl,
         ">>" => BinOp::Shr,
         "instanceof" | "INSTANCEOF" => BinOp::InstanceOf,
+        "??" => BinOp::NullCoalesce,
         _ => BinOp::Add, // fallback — safer than panic
     }
 }
@@ -1608,6 +1767,14 @@ fn walk_cast(pair: Pair<Rule>) -> Result<Expression, String> {
         _ => None,
     };
     if let Some(name) = helper {
+        // PHP `(string) $x` invokes `__toString` if `$x` is an object
+        // implementing Stringable. Wrap the operand for the string
+        // cast so the host fn receives the coerced value.
+        let arg_expr = if name == "strval" {
+            php_tostring_coerce(expr, &span)
+        } else {
+            expr
+        };
         let callee = Expression::with_span(
             ExprKind::Ident(name.to_string()),
             span.clone(),
@@ -1615,7 +1782,7 @@ fn walk_cast(pair: Pair<Rule>) -> Result<Expression, String> {
         return Ok(Expression::with_span(
             ExprKind::Call {
                 callee: Box::new(callee),
-                args: vec![Argument::positional(expr)],
+                args: vec![Argument::positional(arg_expr)],
                 optional: false,
             },
             span,
@@ -1672,6 +1839,128 @@ fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span) -> Result<Ex
             let name = name_pair
                 .ok_or("method_call_op: missing name")?
                 .into_inner().next().unwrap().as_str().to_string();
+            // PHP exception accessor methods → property reads. Vybe's
+            // exception ctor stamps `message`, `code`, etc. as plain
+            // fields; PHP idiom is `$e->getMessage()`. Rewrite the
+            // common method names to direct property access so the
+            // existing field shape works without an Exception base
+            // class with these methods defined.
+            if !is_fcc && arg_list_pair.is_none() {
+                let prop = match name.as_str() {
+                    "getMessage" => Some("message"),
+                    "getCode" => Some("code"),
+                    "getFile" => Some("file"),
+                    "getLine" => Some("line"),
+                    "getTrace" => Some("trace"),
+                    "getTraceAsString" => Some("stack"),
+                    "getPrevious" => Some("cause"),
+                    _ => None,
+                };
+                if let Some(field) = prop {
+                    return Ok(Expression::with_span(
+                        ExprKind::Member {
+                            object: Box::new(receiver),
+                            field: field.to_string(),
+                            null_safe,
+                        },
+                        span.clone(),
+                    ));
+                }
+            }
+            // PHP DateTime / DateTimeImmutable instance methods →
+            // bytecode adapter calls (see emitter/php/datetime_adapter.rs).
+            // Rewrites `$dt->X(...)` to `__php_dt_X($dt, ...)` which the
+            // PHP profile binds to the corresponding `common:php.X`
+            // emit target. Note: this runs unconditionally — user
+            // classes that define `format`/`modify`/`diff`/etc. would
+            // be rerouted; the trade-off is the same one the exception
+            // accessor rewrite above accepts.
+            if !is_fcc {
+                let target_fn: Option<&str> = match name.as_str() {
+                    "format"        => Some("__php_dt_format"),
+                    "getTimestamp"  => Some("__php_dt_get_timestamp"),
+                    "modify"        => Some("__php_dt_modify"),
+                    "diff"          => Some("__php_dt_diff"),
+                    "add"           => Some("__php_dt_add"),
+                    "sub"           => Some("__php_dt_sub"),
+                    _ => None,
+                };
+                if let Some(fname) = target_fn {
+                    let mut call_args: Vec<Argument> =
+                        vec![Argument::positional(receiver.clone())];
+                    if let Some(al) = arg_list_pair.clone() {
+                        call_args.extend(walk_args(al)?);
+                    }
+                    // `$dt->format("LITERAL")` — pre-parse the format
+                    // string at compile time and emit AST that calls
+                    // ECMA Date getters (`getFullYear` / `getMonth` /
+                    // `getDate` / etc.) with `padStart` for zero-
+                    // padding. Bypasses any non-ECMA host fn.
+                    if fname == "__php_dt_format" && call_args.len() == 2 {
+                        if let ExprKind::Lit(Literal::Str(fmt)) = &call_args[1].value.kind {
+                            let dt_expr = call_args[0].value.clone();
+                            if let Some(formatted) =
+                                crate::emitter::php::datetime_adapter::format_php_literal_to_ast(
+                                    fmt, &dt_expr, &span,
+                                )
+                            {
+                                return Ok(formatted);
+                            }
+                        }
+                    }
+                    // `$dt->modify("LITERAL")` — pre-parse the relative
+                    // delta at compile time and route to the unit-
+                    // specific adapter (`__php_dt_add_months`,
+                    // `__php_dt_add_days`, ...) so the bytecode uses
+                    // ECMA-spec `set<Component>` setters for calendar
+                    // shifts and pure ms arithmetic for fixed-duration
+                    // shifts. No runtime relative-string parser
+                    // required.
+                    if fname == "__php_dt_modify" && call_args.len() == 2 {
+                        if let ExprKind::Lit(Literal::Str(s)) = &call_args[1].value.kind {
+                            if let Some((n, unit)) =
+                                crate::emitter::php::datetime_adapter::parse_relative_delta(s)
+                            {
+                                let adapter = match unit {
+                                    "second" => "__php_dt_add_seconds",
+                                    "minute" => "__php_dt_add_minutes",
+                                    "hour"   => "__php_dt_add_hours",
+                                    "day"    => "__php_dt_add_days",
+                                    "week"   => "__php_dt_add_weeks",
+                                    "month"  => "__php_dt_add_months",
+                                    "year"   => "__php_dt_add_years",
+                                    _ => unreachable!(),
+                                };
+                                return Ok(Expression::with_span(
+                                    ExprKind::Call {
+                                        callee: Box::new(Expression::with_span(
+                                            ExprKind::Ident(adapter.to_string()),
+                                            span.clone(),
+                                        )),
+                                        args: vec![
+                                            call_args.remove(0),
+                                            Argument::positional(Expression::int(n)),
+                                        ],
+                                        optional: false,
+                                    },
+                                    span.clone(),
+                                ));
+                            }
+                        }
+                    }
+                    return Ok(Expression::with_span(
+                        ExprKind::Call {
+                            callee: Box::new(Expression::with_span(
+                                ExprKind::Ident(fname.to_string()),
+                                span.clone(),
+                            )),
+                            args: call_args,
+                            optional: false,
+                        },
+                        span.clone(),
+                    ));
+                }
+            }
             let member = Expression::with_span(
                 ExprKind::Member {
                     object: Box::new(receiver),
@@ -1939,15 +2228,64 @@ fn walk_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
 
 fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
     let span = to_span(&pair);
-    // new_expression = { kw_new ~ (qualified_name | variable | "(" expr ")")
+    // new_expression = { kw_new ~ (anonymous_class | qualified_name | variable | "(" expr ")")
     //                    ~ ("(" arg_list? ")")? }
-    // After filtering kw_new, the first child is the class designator and
-    // the optional second is the arg_list.
     let mut class: Option<Expression> = None;
     let mut args: Vec<Argument> = Vec::new();
     for p in inner_nokw(pair) {
         match p.as_rule() {
             Rule::arg_list => args = walk_args(p)?,
+            Rule::anonymous_class => {
+                // PHP 8: `new class(args) extends Base implements I { ... }`.
+                // Walk to a ClassExpr value; the surrounding `New` then
+                // instantiates it with the provided ctor args.
+                //
+                // Inspect the source slice to know whether the first
+                // qualified_name follows `extends` (parent class) or
+                // `implements` (interface list). Pest doesn't yield
+                // `kw_extends` / `kw_implements` as child pairs, so the
+                // children are: optional arg_list, then qualified_names,
+                // then class members. We check the source text to
+                // determine whether the FIRST qualified name is a parent
+                // or an interface.
+                let raw = p.as_str();
+                let has_extends = raw.contains(" extends ");
+                let mut parent: Option<Expression> = None;
+                let mut members: Vec<ClassMember> = Vec::new();
+                let mut ctor_args: Vec<Argument> = Vec::new();
+                let mut interfaces: Vec<String> = Vec::new();
+                let mut first_qualified = true;
+                for sub in inner_nokw(p) {
+                    match sub.as_rule() {
+                        Rule::arg_list if ctor_args.is_empty() && parent.is_none() && members.is_empty() => {
+                            ctor_args = walk_args(sub)?;
+                        }
+                        Rule::qualified_name => {
+                            if first_qualified && has_extends {
+                                parent = Some(Expression::ident(sub.as_str()));
+                            } else {
+                                interfaces.push(sub.as_str().to_string());
+                            }
+                            first_qualified = false;
+                        }
+                        Rule::use_trait | Rule::class_constant | Rule::property_declaration
+                            | Rule::method_declaration | Rule::empty_statement => {
+                            if let Some(m) = walk_class_member(sub)? { members.push(m); }
+                        }
+                        _ => {}
+                    }
+                }
+                let _ = interfaces; // walker doesn't enforce interface contracts
+                args = ctor_args;
+                class = Some(Expression::with_span(
+                    ExprKind::ClassExpr {
+                        name: None,
+                        parent: parent.map(Box::new),
+                        members,
+                    },
+                    span.clone(),
+                ));
+            }
             _ => {
                 if class.is_none() {
                     class = Some(walk_expression(p)?);
@@ -1955,11 +2293,66 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
             }
         }
     }
+    let class_expr = class.ok_or("new: missing class designator")?;
+    // PHP DateTime / DateTimeImmutable / DateInterval — rewrite to a
+    // bare call against the bytecode adapter binding so the
+    // `emitter/php/datetime_adapter.rs` emit_* functions handle the
+    // construction. Avoids registering host fns and keeps the call
+    // shape JS-uniform downstream.
+    if let ExprKind::Ident(class_name) = &class_expr.kind {
+        let rewrite_target: Option<&str> = match class_name.trim_start_matches('\\') {
+            "DateTime" => Some("__php_dt_new"),
+            "DateTimeImmutable" => Some("__php_dt_imm_new"),
+            "DateInterval" => Some("__php_dateinterval_new"),
+            _ => None,
+        };
+        if let Some(target) = rewrite_target {
+            if target == "__php_dateinterval_new" {
+                // DateInterval(P1Y2M3D) — for STRING-LITERAL ISO
+                // arguments, parse at compile time and synthesize the
+                // y/m/d/h/i/s components as numeric literals so the
+                // adapter can emit them as constants. Dynamic strings
+                // fall through to a runtime parser path (TODO).
+                if let Some(arg) = args.first() {
+                    if let ExprKind::Lit(Literal::Str(s)) = &arg.value.kind {
+                        let (y, mo, d, h, mi, se) =
+                            crate::emitter::php::datetime_adapter::parse_iso_duration(s);
+                        return Ok(Expression::with_span(
+                            ExprKind::Call {
+                                callee: Box::new(Expression::with_span(
+                                    ExprKind::Ident("__php_dateinterval_components".to_string()),
+                                    span.clone(),
+                                )),
+                                args: vec![
+                                    Argument::positional(Expression::int(y)),
+                                    Argument::positional(Expression::int(mo)),
+                                    Argument::positional(Expression::int(d)),
+                                    Argument::positional(Expression::int(h)),
+                                    Argument::positional(Expression::int(mi)),
+                                    Argument::positional(Expression::int(se)),
+                                ],
+                                optional: false,
+                            },
+                            span,
+                        ));
+                    }
+                }
+            }
+            return Ok(Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(Expression::with_span(
+                        ExprKind::Ident(target.to_string()),
+                        span.clone(),
+                    )),
+                    args,
+                    optional: false,
+                },
+                span,
+            ));
+        }
+    }
     Ok(Expression::with_span(
-        ExprKind::New {
-            class: Box::new(class.ok_or("new: missing class designator")?),
-            args,
-        },
+        ExprKind::New { class: Box::new(class_expr), args },
         span,
     ))
 }
@@ -1992,6 +2385,42 @@ fn walk_match(pair: Pair<Rule>) -> Result<Expression, String> {
         arms.push(MatchArm {
             conditions,
             body: body.unwrap_or_else(Expression::null),
+        });
+    }
+    // PHP `match` throws UnhandledMatchError when no arm matches AND no
+    // default is given. Synthesize a default that throws so the runtime
+    // semantics match — JS/Vybe `Match` falls through to null otherwise.
+    let has_default = arms.iter().any(|a| a.conditions.is_none());
+    if !has_default {
+        let throw_expr = Expression::new(ExprKind::New {
+            class: Box::new(Expression::ident("UnhandledMatchError")),
+            args: vec![Argument::positional(Expression::string(
+                "Unhandled match value",
+            ))],
+        });
+        let throw_stmt = Statement::new(StmtKind::Throw {
+            expr: Some(throw_expr),
+            cause: None,
+        });
+        let throw_lambda = Expression::with_span(
+            ExprKind::Call {
+                callee: Box::new(Expression::with_span(
+                    ExprKind::Lambda {
+                        params: vec![],
+                        body: LambdaBody::Block(vec![throw_stmt]),
+                        is_async: false,
+                        captures: vec![],
+                    },
+                    span.clone(),
+                )),
+                args: vec![],
+                optional: false,
+            },
+            span.clone(),
+        );
+        arms.push(MatchArm {
+            conditions: None,
+            body: throw_lambda,
         });
     }
     Ok(Expression::with_span(
@@ -2308,7 +2737,12 @@ fn parse_php_interpolation(body: &str) -> Vec<InterpolPart> {
                     }
                 }
 
-                parts.push(InterpolPart::Expr(expr));
+                // Coerce the final interpolated value to its string
+                // form via `__toString` if it's an object with that
+                // magic method (PHP's Stringable contract).
+                parts.push(InterpolPart::Expr(php_tostring_coerce(
+                    expr, &Span::default(),
+                )));
                 continue;
             }
             // Lone `$` before non-identifier — literal dollar.
@@ -2534,6 +2968,75 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span)
         // PHP `is_infinite($x)` ≡ `Math.abs($x) === Infinity`.
         // `$x` is evaluated once because Math.abs receives it as an
         // argument; the comparison sees only the result.
+        // PHP `gettype($v)` → IIFE chain mapping JS typeof onto PHP names.
+        "gettype" if args.len() == 1 => {
+            let mk_str = |s: &str| Expression::with_span(
+                ExprKind::Lit(Literal::Str(s.to_string())), span.clone(),
+            );
+            let v = Expression::with_span(
+                ExprKind::Ident("v".to_string()), span.clone(),
+            );
+            let typeof_v = Expression::with_span(
+                ExprKind::TypeOf(Box::new(v.clone())), span.clone(),
+            );
+            let strict_eq = |left: Expression, right: Expression| Expression::with_span(
+                ExprKind::Binary { op: BinOp::StrictEq, left: Box::new(left), right: Box::new(right) },
+                span.clone(),
+            );
+            let ternary = |cond: Expression, then: Expression, else_: Expression| Expression::with_span(
+                ExprKind::Ternary { cond: Box::new(cond), then: Box::new(then), else_: Box::new(else_) },
+                span.clone(),
+            );
+            let is_int_call = Expression::with_span(
+                mk_call(mk_member("Number", "isInteger"), vec![v.clone()]),
+                span.clone(),
+            );
+            // typeof v === "number" ? (Number.isInteger(v) ? "integer" : "double") : ...
+            let number_arm = ternary(is_int_call, mk_str("integer"), mk_str("double"));
+            let null_check = strict_eq(v.clone(), Expression::with_span(
+                ExprKind::Lit(Literal::Null), span.clone()
+            ));
+            // Build chain top-down.
+            let chain = ternary(
+                null_check,
+                mk_str("NULL"),
+                ternary(
+                    strict_eq(typeof_v.clone(), mk_str("string")),
+                    mk_str("string"),
+                    ternary(
+                        strict_eq(typeof_v.clone(), mk_str("boolean")),
+                        mk_str("boolean"),
+                        ternary(
+                            strict_eq(typeof_v.clone(), mk_str("number")),
+                            number_arm,
+                            ternary(
+                                strict_eq(typeof_v.clone(), mk_str("array")),
+                                mk_str("array"),
+                                ternary(
+                                    strict_eq(typeof_v, mk_str("object")),
+                                    mk_str("object"),
+                                    mk_str("unknown type"),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            );
+            let lambda = Expression::with_span(
+                ExprKind::Lambda {
+                    params: vec![Param {
+                        name: "v".to_string(), type_hint: None, default: None,
+                        pass_by: PassBy::Value, is_rest: false, is_kwargs: false,
+                        is_optional: false, is_nullable: false,
+                    }],
+                    body: LambdaBody::Expr(Box::new(chain)),
+                    is_async: false,
+                    captures: vec![],
+                },
+                span.clone(),
+            );
+            mk_call(lambda, vec![arg(0)?])
+        }
         "is_infinite" => Expression::with_span(
             ExprKind::Binary {
                 op: BinOp::StrictEq,

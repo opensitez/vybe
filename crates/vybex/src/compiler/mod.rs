@@ -1979,13 +1979,38 @@ impl Compiler {
                             member_names.push(cname);
                         }
                         ClassMember::Const { name: cname, value, .. } => {
+                            // Compile value once, install as global
+                            // `<Class>.<Const>` (legacy access path)
+                            // AND stamp on the class object so PHP
+                            // `Class::Const` static access (struct_get
+                            // on class) resolves to the value.
                             self.compile_expr(value)?;
+                            let val_slot = self.define_local("__class_const_val");
+                            self.emit_u16(Op::LOCAL_SET, val_slot);
+                            self.emit(Op::DROP);
+
                             let cn = self.canon(cname);
                             let idx = self.str_const(&cn);
+                            self.emit_u16(Op::LOCAL_GET, val_slot);
                             self.emit_u16(Op::GLOBAL_SET, idx);
                             self.emit(Op::DROP);
                             self.defined_globals.insert(cn.clone());
-                            member_names.push(cn);
+                            member_names.push(cn.clone());
+
+                            // Stamp on class object for static access.
+                            // `name` here is the enclosing class name; on
+                            // module-level Const blocks it's the module
+                            // name, but the class object lookup will
+                            // miss harmlessly in that case.
+                            let class_canon = self.canon(name);
+                            if self.defined_globals.contains(&class_canon) {
+                                let cg_idx = self.str_const(&class_canon);
+                                self.emit_u16(Op::GLOBAL_GET, cg_idx);
+                                self.emit_u16(Op::LOCAL_GET, val_slot);
+                                let field_idx = self.str_const(cname);
+                                self.emit_u16(Op::STRUCT_SET, field_idx);
+                                self.emit(Op::DROP);
+                            }
                         }
                         ClassMember::NestedType(stmt) => {
                             // Nested class — gets its own global; also attach to module
@@ -2307,10 +2332,39 @@ impl Compiler {
             // ── Echo (PHP/debug print) ──────────────────────────────────
             StmtKind::Echo(exprs) => {
                 let line = self.line;
-                let idx = self.import("wasi:cli", "log");
+                let log_idx = self.import("wasi:cli", "log");
+                let php_echo = self.profile.name == "php";
                 for expr in exprs {
                     self.compile_expr(expr)?;
-                    common::io::emit_print_with_import(self.chunk(), idx, 1, line);
+                    if php_echo {
+                        // PHP: when echoing an object with `__toString`,
+                        // call the method and print its result. Other
+                        // values pass through. The check is a runtime
+                        // struct_get on the value's `__toString` slot;
+                        // if non-null, invoke as a method.
+                        let v_slot = self.define_local("__echo_v");
+                        self.emit_u16(Op::LOCAL_SET, v_slot);
+                        self.emit(Op::DROP);
+                        // Probe __toString.
+                        self.emit_u16(Op::LOCAL_GET, v_slot);
+                        let ts_key = self.str_const("__toString");
+                        self.emit_u16(Op::STRUCT_GET, ts_key);
+                        let fn_slot = self.define_local("__echo_ts_fn");
+                        self.emit_u16(Op::LOCAL_SET, fn_slot);
+                        self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, fn_slot);
+                        self.emit(Op::REF_IS_NULL);
+                        let no_method = self.emit_jump(Op::BR_IF_TRUE);
+                        // Has __toString — invoke (fn, this).
+                        self.emit_u16(Op::LOCAL_GET, fn_slot);
+                        self.emit_u16(Op::LOCAL_GET, v_slot);
+                        self.emit_u8(Op::CALL_REF, 1);
+                        let done = self.emit_jump(Op::BR);
+                        self.patch_jump(no_method);
+                        self.emit_u16(Op::LOCAL_GET, v_slot);
+                        self.patch_jump(done);
+                    }
+                    common::io::emit_print_with_import(self.chunk(), log_idx, 1, line);
                 }
             }
 

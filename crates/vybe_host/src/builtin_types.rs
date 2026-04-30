@@ -640,6 +640,30 @@ pub fn register_all(vm: &mut VM) {
         vm.type_registry.register(t);
     }
 
+    // PHP DateTime / DateTimeImmutable — re-use the ECMA Date method
+    // surface so the walker's compile-time format pre-parse (which
+    // emits `$dt.getFullYear()` / `$dt.getMonth()` / etc.) dispatches
+    // through TypeRegistry to standard `ecma:date.*` host fns. No
+    // PHP-specific method bindings — the adapter does any PHP-shaped
+    // composition above the ECMA surface.
+    for type_name in &["DateTime", "DateTimeImmutable"] {
+        let mut t = TypeDef::new(type_name);
+        for method in &[
+            "getFullYear", "getMonth", "getDate", "getDay",
+            "getHours", "getMinutes", "getSeconds", "getMilliseconds",
+            "getTime", "getTimezoneOffset", "valueOf",
+            "setTime", "setFullYear", "setMonth", "setDate",
+            "setHours", "setMinutes", "setSeconds", "setMilliseconds",
+            "toISOString", "toString",
+        ] {
+            if let Some(idx) = h(vm, "ecma:date", method) {
+                t.methods.insert(method.to_lowercase(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+
     // --- Intl.* (ECMA-402) ---
     //
     // Each Intl class is bound to its `ecma:intl/<class>` host module.

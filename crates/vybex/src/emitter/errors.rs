@@ -138,6 +138,8 @@ pub fn is_exception_type(name: &str) -> bool {
         | "lengthexception" | "outofboundsexception" | "outofrangeexception"
         | "rangeexception" | "underflowexception"
         | "unexpectedvalueexception"
+        | "unhandledmatcherror" | "divisionbyzeroerror" | "argumentcounterror"
+        | "errorexception"
         // JS
         | "rangeerror" | "syntaxerror" | "referenceerror" | "urierror"
         // Ruby
