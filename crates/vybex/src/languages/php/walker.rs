@@ -70,6 +70,14 @@ thread_local! {
     // expressions like `$a++ + $b++` (without uniqueness, both writes
     // would clobber the same global temp).
     static TMP_COUNTER: RefCell<u32> = const { RefCell::new(0) };
+    // Suppression flag for the magic-get/`__get` rewrite: when
+    // `walk_assignment` is processing its LHS, the outermost
+    // `property_access_op` is the assignment TARGET, not a read, and
+    // should not be wrapped in the magic-get ternary (the wrapped
+    // expression isn't an l-value). Walker increments before walking
+    // the LHS and decrements after; `apply_postfix` peeks at the
+    // depth to decide whether to skip the wrap on the LAST chain op.
+    static ASSIGN_LHS_DEPTH: RefCell<u32> = const { RefCell::new(0) };
 }
 
 fn next_tmp_name(prefix: &str) -> String {
@@ -1362,11 +1370,18 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             body
         };
         // tryFrom: returns null on no match.
+        // Two-arg signature `($_self, $v)`: when called as
+        // `EnumName::tryFrom("X")` the static-method dispatch in the
+        // compiler pushes the class object as `$this` slot 0 (via the
+        // Member-shape rewrite for Class::method calls). The Lambda
+        // can't tell apart a regular call from a static method
+        // dispatch, so we accept the class as a leading arg and
+        // ignore it. `$v` is the user's backing value.
         let try_from_body = build_match_chain(
             Statement::new(StmtKind::Return(Some(Expression::null()))),
         );
         let try_from_lambda = Expression::new(ExprKind::Lambda {
-            params: vec![mk_param("v")],
+            params: vec![mk_param("_self"), mk_param("v")],
             body: LambdaBody::Block(try_from_body),
             is_async: false,
             captures: vec![],
@@ -1390,7 +1405,7 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             }),
         );
         let from_lambda = Expression::new(ExprKind::Lambda {
-            params: vec![mk_param("v")],
+            params: vec![mk_param("_self"), mk_param("v")],
             body: LambdaBody::Block(from_body),
             is_async: false,
             captures: vec![],
@@ -1770,26 +1785,74 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
             }
         }
         Rule::kw_parent => ExprKind::Super,
-        Rule::kw_static => ExprKind::Ident("static".to_string()),
+        Rule::kw_static => {
+            // PHP `static::X` (late static binding) resolves to the
+            // calling class at runtime — same `$this` slot that the
+            // static-method dispatch puts the class object into. Walk
+            // `static` to `This` so `static::X` becomes
+            // `StaticAccess { class: This, member: X }`. The compiler
+            // then emits `LOCAL_GET this; STRUCT_GET "X"` — for static
+            // method calls dispatched via `Class.method()` (Member
+            // shape), the `$this` slot holds the class object, so
+            // STRUCT_GET on it returns the class const / static field.
+            ExprKind::This
+        }
 
         Rule::new_expression => return walk_new(pair),
         Rule::clone_expression => {
             let inner = inner_nokw(pair).next().unwrap();
             let arg = walk_expression(inner)?;
-            // Translate to a call: __clone(arg)
+            // PHP `clone $obj` — produce a shallow copy and invoke
+            // the class's `__clone` magic method on the copy if one
+            // is defined. The walker calls into the
+            // `__php_clone_helper` adapter (Rust opcode emitter in
+            // `string_adapter.rs::emit_php_clone`) which handles
+            // both the shallow copy + magic-method dispatch.
             ExprKind::Call {
-                callee: Box::new(Expression::ident("__clone")),
+                callee: Box::new(Expression::ident("__php_clone_helper")),
                 args: vec![Argument::positional(arg)],
                 optional: false,
             }
         }
         Rule::match_expression => return walk_match(pair),
         Rule::isset_expression => {
-            let args: Result<Vec<_>, _> = pair.into_inner()
-                .filter(|p| matches!(p.as_rule(), Rule::expression))
-                .map(walk_expression)
-                .collect();
-            let args: Vec<Argument> = args?.into_iter().map(Argument::positional).collect();
+            // Walk each arg with the LHS-depth flag set so the
+            // property-access walker doesn't wrap `$obj->prop` in the
+            // magic-`__get` ternary. `isset` needs the raw l-value
+            // (or our own `__isset` dispatch wrap) — going through
+            // `__get` would coerce undefined to the user's fallback
+            // and report wrong existence.
+            let mut args: Vec<Argument> = Vec::new();
+            for p in pair.into_inner() {
+                if matches!(p.as_rule(), Rule::expression) {
+                    ASSIGN_LHS_DEPTH.with(|d| *d.borrow_mut() += 1);
+                    let walked = walk_expression(p);
+                    ASSIGN_LHS_DEPTH.with(|d| {
+                        let mut bd = d.borrow_mut();
+                        *bd = bd.saturating_sub(1);
+                    });
+                    let walked = walked?;
+                    // PHP `isset($obj->prop)` magic dispatch: if `prop`
+                    // isn't set on the instance and the class defines
+                    // `__isset`, route through it. Otherwise bool-test
+                    // whether the direct read is non-null. Walker only
+                    // rewrites simple `$var->prop` Member access — more
+                    // complex shapes fall through to the regular
+                    // `isset(value)` check.
+                    let arg_expr = match &walked.kind {
+                        ExprKind::Member { object, field, null_safe }
+                            if !*null_safe && !field.starts_with("__")
+                            && !matches!(object.kind, ExprKind::This) =>
+                        {
+                            let obj = (**object).clone();
+                            let field = field.clone();
+                            build_magic_isset_rewrite(obj, field, &span)
+                        }
+                        _ => walked,
+                    };
+                    args.push(Argument::positional(arg_expr));
+                }
+            }
             ExprKind::Call {
                 callee: Box::new(Expression::ident("isset")),
                 args,
@@ -1805,20 +1868,33 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
             }
         }
         Rule::unset_expression => {
-            // PHP `unset($a, $b)` — emit as a call to a builtin so the
-            // compiler can route through compiler_common's delete path.
-            // The expression-level `Delete` AST node only takes a
-            // single Box<Expression>, so we wrap multi-arg unset() as
-            // a Call instead.
-            let exprs: Result<Vec<_>, _> = pair.into_inner()
-                .filter(|p| matches!(p.as_rule(), Rule::expression))
-                .map(walk_expression)
-                .collect();
-            let args: Vec<Argument> = exprs?.into_iter().map(Argument::positional).collect();
-            ExprKind::Call {
-                callee: Box::new(Expression::ident("unset")),
-                args,
-                optional: false,
+            // PHP `unset($a, $b, $obj->prop, $arr[$k])` — walker
+            // rewrites each target individually based on its shape:
+            //   - Ident:                    $x = null
+            //   - Member ($obj->prop):     `__unset` magic dispatch,
+            //                               else direct property delete
+            //   - Index  ($arr[$k]):        `ecma:object.delete($arr, $k)`
+            // Multi-arg unset becomes a Sequence of these. Walker
+            // suppresses `__get` wrap on each arg via ASSIGN_LHS_DEPTH
+            // so the LHS shape stays raw.
+            let mut stmts: Vec<Expression> = Vec::new();
+            for p in pair.into_inner() {
+                if !matches!(p.as_rule(), Rule::expression) { continue; }
+                ASSIGN_LHS_DEPTH.with(|d| *d.borrow_mut() += 1);
+                let walked = walk_expression(p);
+                ASSIGN_LHS_DEPTH.with(|d| {
+                    let mut bd = d.borrow_mut();
+                    *bd = bd.saturating_sub(1);
+                });
+                let walked = walked?;
+                stmts.push(build_unset_rewrite(walked, &span));
+            }
+            if stmts.is_empty() {
+                ExprKind::Lit(Literal::Null)
+            } else if stmts.len() == 1 {
+                stmts.into_iter().next().unwrap().kind
+            } else {
+                ExprKind::Sequence(stmts)
             }
         }
         Rule::list_expression => {
@@ -2014,6 +2090,725 @@ fn parse_binop(s: &str) -> BinOp {
     }
 }
 
+/// Build the rewrite for a single `unset($target)` operation:
+///   - `$x`         → `$x = null`
+///   - `$obj->prop` → `($_t = $obj, typeof $_t->__unset === "function"
+///                     ? $_t->__unset("prop") : ($_t->prop = null))`
+///   - `$arr[$k]`   → `ecma:object.delete($arr, $k)`
+fn build_unset_rewrite(target: Expression, span: &Span) -> Expression {
+    match &target.kind {
+        ExprKind::Ident(_) => {
+            Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(target),
+                    value: Box::new(Expression::null()),
+                },
+                span.clone(),
+            )
+        }
+        ExprKind::Member { object, field, null_safe } if !*null_safe && !field.starts_with("__") => {
+            let obj = (**object).clone();
+            let field = field.clone();
+            let tmp = next_tmp_name("unset_recv");
+            let tmp_ident = || Expression::with_span(
+                ExprKind::Ident(tmp.clone()), span.clone(),
+            );
+            let save = Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(tmp_ident()),
+                    value: Box::new(obj),
+                },
+                span.clone(),
+            );
+            let unset_member = Expression::with_span(
+                ExprKind::Member {
+                    object: Box::new(tmp_ident()),
+                    field: "__unset".to_string(),
+                    null_safe: false,
+                },
+                span.clone(),
+            );
+            let has_unset = Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::StrictEq,
+                    left: Box::new(Expression::with_span(
+                        ExprKind::TypeOf(Box::new(unset_member)), span.clone(),
+                    )),
+                    right: Box::new(Expression::string("function")),
+                },
+                span.clone(),
+            );
+            let magic_unset_call = Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(Expression::with_span(
+                        ExprKind::Member {
+                            object: Box::new(tmp_ident()),
+                            field: "__unset".to_string(),
+                            null_safe: false,
+                        },
+                        span.clone(),
+                    )),
+                    args: vec![Argument::positional(Expression::string(&field))],
+                    optional: false,
+                },
+                span.clone(),
+            );
+            let direct_delete = Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(Expression::with_span(
+                        ExprKind::Member {
+                            object: Box::new(tmp_ident()),
+                            field: field.clone(),
+                            null_safe: false,
+                        },
+                        span.clone(),
+                    )),
+                    value: Box::new(Expression::null()),
+                },
+                span.clone(),
+            );
+            let ternary = Expression::with_span(
+                ExprKind::Ternary {
+                    cond: Box::new(has_unset),
+                    then: Box::new(magic_unset_call),
+                    else_: Box::new(direct_delete),
+                },
+                span.clone(),
+            );
+            Expression::with_span(
+                ExprKind::Sequence(vec![save, ternary]),
+                span.clone(),
+            )
+        }
+        ExprKind::Index { .. } => {
+            // `unset($arr[$k])` → ExprKind::Delete (compiler routes
+            // to `ecma:object.delete($arr, $k)`, polymorphic over
+            // Array / Map / Ordinary backings).
+            Expression::with_span(
+                ExprKind::Delete(Box::new(target)),
+                span.clone(),
+            )
+        }
+        _ => {
+            // Fallback: assign null. Best we can do without a real
+            // l-value reference.
+            Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(target),
+                    value: Box::new(Expression::null()),
+                },
+                span.clone(),
+            )
+        }
+    }
+}
+
+/// Build the magic-`__isset` rewrite for `isset($obj->prop)` checks:
+///
+///     ($_t = $obj,
+///      typeof $_t->prop === "undefined" &&
+///      typeof $_t->__isset === "function"
+///        ? ($_t->__isset("prop") ? true : null)
+///        : $_t->prop)
+///
+/// The inner `$_t->__isset(name) ? true : null` normalises the user's
+/// `__isset` return value so the outer `isset(...)` host call (which
+/// tests not-null-not-undefined) reports "set" / "not set" correctly.
+fn build_magic_isset_rewrite(
+    obj: Expression, field: String, span: &Span,
+) -> Expression {
+    let tmp = next_tmp_name("isset_recv");
+    let tmp_ident = || Expression::with_span(
+        ExprKind::Ident(tmp.clone()), span.clone(),
+    );
+    let save = Expression::with_span(
+        ExprKind::Assign {
+            target: Box::new(tmp_ident()),
+            value: Box::new(obj),
+        },
+        span.clone(),
+    );
+    let direct_member = Expression::with_span(
+        ExprKind::Member {
+            object: Box::new(tmp_ident()),
+            field: field.clone(),
+            null_safe: false,
+        },
+        span.clone(),
+    );
+    let isset_member_chk = Expression::with_span(
+        ExprKind::Member {
+            object: Box::new(tmp_ident()),
+            field: "__isset".to_string(),
+            null_safe: false,
+        },
+        span.clone(),
+    );
+    let prop_undef = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(Expression::with_span(
+                ExprKind::TypeOf(Box::new(direct_member.clone())), span.clone(),
+            )),
+            right: Box::new(Expression::string("undefined")),
+        },
+        span.clone(),
+    );
+    let has_isset = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(Expression::with_span(
+                ExprKind::TypeOf(Box::new(isset_member_chk)), span.clone(),
+            )),
+            right: Box::new(Expression::string("function")),
+        },
+        span.clone(),
+    );
+    let cond = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::And,
+            left: Box::new(prop_undef),
+            right: Box::new(has_isset),
+        },
+        span.clone(),
+    );
+    let magic_isset_call = Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::with_span(
+                ExprKind::Member {
+                    object: Box::new(tmp_ident()),
+                    field: "__isset".to_string(),
+                    null_safe: false,
+                },
+                span.clone(),
+            )),
+            args: vec![Argument::positional(Expression::string(&field))],
+            optional: false,
+        },
+        span.clone(),
+    );
+    let normalized = Expression::with_span(
+        ExprKind::Ternary {
+            cond: Box::new(magic_isset_call),
+            then: Box::new(Expression::new(
+                ExprKind::Lit(Literal::Bool(true)),
+            )),
+            else_: Box::new(Expression::null()),
+        },
+        span.clone(),
+    );
+    let ternary = Expression::with_span(
+        ExprKind::Ternary {
+            cond: Box::new(cond),
+            then: Box::new(normalized),
+            else_: Box::new(direct_member),
+        },
+        span.clone(),
+    );
+    Expression::with_span(
+        ExprKind::Sequence(vec![save, ternary]),
+        span.clone(),
+    )
+}
+
+/// Build the magic-`__invoke` rewrite for `$var(args)` calls:
+///
+///     typeof $var === "function"
+///       ? $var(args)
+///       : $var->__invoke(args)
+fn build_magic_invoke_rewrite(
+    receiver: Expression, args: Vec<Argument>, span: &Span,
+) -> Expression {
+    let typeof_expr = Expression::with_span(
+        ExprKind::TypeOf(Box::new(receiver.clone())),
+        span.clone(),
+    );
+    let cond = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(typeof_expr),
+            right: Box::new(Expression::string("function")),
+        },
+        span.clone(),
+    );
+    let direct_call = Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(receiver.clone()),
+            args: args.clone(),
+            optional: false,
+        },
+        span.clone(),
+    );
+    let invoke_member = Expression::with_span(
+        ExprKind::Member {
+            object: Box::new(receiver),
+            field: "__invoke".to_string(),
+            null_safe: false,
+        },
+        span.clone(),
+    );
+    let invoke_call = Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(invoke_member),
+            args,
+            optional: false,
+        },
+        span.clone(),
+    );
+    Expression::with_span(
+        ExprKind::Ternary {
+            cond: Box::new(cond),
+            then: Box::new(direct_call),
+            else_: Box::new(invoke_call),
+        },
+        span.clone(),
+    )
+}
+
+/// Build the magic-`__callStatic` rewrite for `Class::method(args)`:
+///
+///     typeof Class::method !== "function" &&
+///     typeof Class.__callStatic === "function"
+///       ? Class.__callStatic("method", [args])
+///       : Class::method(args)
+///
+/// Uses Member-call shape (`Class.__callStatic(...)`) so the compiler's
+/// static-method-call dispatch picks it up and prepends the class
+/// object as `$this`.
+fn build_magic_call_static_rewrite(
+    class_expr: Expression, method_name: String, args: Vec<Argument>, span: &Span,
+) -> Expression {
+    // Use Member-shape (`Class.method(...)`) for both branches so the
+    // compiler's static-method-on-user-class dispatch fires (calls.rs
+    // ~600), which pushes the class object as `$this` slot 0 — load-
+    // bearing for late-static-binding (`static::X` walked as
+    // `$this::X` resolves the class const / static field on `$this`
+    // when `$this` is the calling class).
+    let direct_member = Expression::with_span(
+        ExprKind::Member {
+            object: Box::new(class_expr.clone()),
+            field: method_name.clone(),
+            null_safe: false,
+        },
+        span.clone(),
+    );
+    let direct_call = Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(direct_member.clone()),
+            args: args.clone(),
+            optional: false,
+        },
+        span.clone(),
+    );
+    let static_call_member = Expression::with_span(
+        ExprKind::Member {
+            object: Box::new(class_expr.clone()),
+            field: "__callStatic".to_string(),
+            null_safe: false,
+        },
+        span.clone(),
+    );
+    let lacks_method = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::NotEq,
+            left: Box::new(Expression::with_span(
+                ExprKind::TypeOf(Box::new(direct_member)), span.clone(),
+            )),
+            right: Box::new(Expression::string("function")),
+        },
+        span.clone(),
+    );
+    let has_static = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(Expression::with_span(
+                ExprKind::TypeOf(Box::new(static_call_member)), span.clone(),
+            )),
+            right: Box::new(Expression::string("function")),
+        },
+        span.clone(),
+    );
+    let cond = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::And,
+            left: Box::new(lacks_method),
+            right: Box::new(has_static),
+        },
+        span.clone(),
+    );
+    let args_array = Expression::with_span(
+        ExprKind::Array(
+            args.iter().map(|a| ArrayElement {
+                key: None, value: a.value.clone(),
+                spread: false, by_ref: false,
+            }).collect(),
+        ),
+        span.clone(),
+    );
+    let static_call = Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::with_span(
+                ExprKind::Member {
+                    object: Box::new(class_expr),
+                    field: "__callStatic".to_string(),
+                    null_safe: false,
+                },
+                span.clone(),
+            )),
+            args: vec![
+                Argument::positional(Expression::string(&method_name)),
+                Argument::positional(args_array),
+            ],
+            optional: false,
+        },
+        span.clone(),
+    );
+    Expression::with_span(
+        ExprKind::Ternary {
+            cond: Box::new(cond),
+            then: Box::new(static_call),
+            else_: Box::new(direct_call),
+        },
+        span.clone(),
+    )
+}
+
+/// Build the magic-`__get` rewrite for `$obj->prop` reads:
+///
+///     ($_t = $obj,
+///      typeof $_t->prop === "undefined" &&
+///      typeof $_t->__get === "function"
+///        ? $_t->__get("prop")
+///        : $_t->prop)
+fn build_magic_get_rewrite(
+    obj: Expression, name: String, span: &Span,
+) -> Expression {
+    let tmp = next_tmp_name("get_recv");
+    let tmp_ident = || Expression::with_span(
+        ExprKind::Ident(tmp.clone()), span.clone(),
+    );
+    let save = Expression::with_span(
+        ExprKind::Assign {
+            target: Box::new(tmp_ident()),
+            value: Box::new(obj),
+        },
+        span.clone(),
+    );
+    let direct_member = Expression::with_span(
+        ExprKind::Member {
+            object: Box::new(tmp_ident()),
+            field: name.clone(),
+            null_safe: false,
+        },
+        span.clone(),
+    );
+    let get_member = Expression::with_span(
+        ExprKind::Member {
+            object: Box::new(tmp_ident()),
+            field: "__get".to_string(),
+            null_safe: false,
+        },
+        span.clone(),
+    );
+    let prop_undefined = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(Expression::with_span(
+                ExprKind::TypeOf(Box::new(direct_member.clone())), span.clone(),
+            )),
+            right: Box::new(Expression::string("undefined")),
+        },
+        span.clone(),
+    );
+    let has_get = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(Expression::with_span(
+                ExprKind::TypeOf(Box::new(get_member)), span.clone(),
+            )),
+            right: Box::new(Expression::string("function")),
+        },
+        span.clone(),
+    );
+    let cond = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::And,
+            left: Box::new(prop_undefined),
+            right: Box::new(has_get),
+        },
+        span.clone(),
+    );
+    let magic_get_call = Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::with_span(
+                ExprKind::Member {
+                    object: Box::new(tmp_ident()),
+                    field: "__get".to_string(),
+                    null_safe: false,
+                },
+                span.clone(),
+            )),
+            args: vec![Argument::positional(Expression::string(&name))],
+            optional: false,
+        },
+        span.clone(),
+    );
+    let ternary = Expression::with_span(
+        ExprKind::Ternary {
+            cond: Box::new(cond),
+            then: Box::new(magic_get_call),
+            else_: Box::new(direct_member),
+        },
+        span.clone(),
+    );
+    Expression::with_span(
+        ExprKind::Sequence(vec![save, ternary]),
+        span.clone(),
+    )
+}
+
+/// Build the magic-`__call` rewrite for `$obj->method(args)` invocation:
+///
+///     ($_t = $obj,
+///      typeof $_t->method !== "function" &&
+///      typeof $_t->__call === "function"
+///        ? $_t->__call("method", [args])
+///        : $_t->method(args))
+///
+/// Extracted out of `apply_postfix` so that walker's recursion frame
+/// stays small — the rewrite allocates ~20 Expression nodes, and
+/// nested-closure / chained-call tests would blow the test-thread
+/// stack with all those locals live in one frame.
+fn build_magic_call_rewrite(
+    member_object: Expression,
+    method_name: String,
+    args: Vec<Argument>,
+    span: &Span,
+) -> Expression {
+    let tmp = next_tmp_name("call_recv");
+    let tmp_ident = || Expression::with_span(
+        ExprKind::Ident(tmp.clone()), span.clone(),
+    );
+    let save = Expression::with_span(
+        ExprKind::Assign {
+            target: Box::new(tmp_ident()),
+            value: Box::new(member_object),
+        },
+        span.clone(),
+    );
+    let direct_member = Expression::with_span(
+        ExprKind::Member {
+            object: Box::new(tmp_ident()),
+            field: method_name.clone(),
+            null_safe: false,
+        },
+        span.clone(),
+    );
+    let regular_call = Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(direct_member.clone()),
+            args: args.clone(),
+            optional: false,
+        },
+        span.clone(),
+    );
+    let call_member_for_check = Expression::with_span(
+        ExprKind::Member {
+            object: Box::new(tmp_ident()),
+            field: "__call".to_string(),
+            null_safe: false,
+        },
+        span.clone(),
+    );
+    let has_call = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(Expression::with_span(
+                ExprKind::TypeOf(Box::new(call_member_for_check)), span.clone(),
+            )),
+            right: Box::new(Expression::string("function")),
+        },
+        span.clone(),
+    );
+    let lacks_method = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::NotEq,
+            left: Box::new(Expression::with_span(
+                ExprKind::TypeOf(Box::new(direct_member.clone())), span.clone(),
+            )),
+            right: Box::new(Expression::string("function")),
+        },
+        span.clone(),
+    );
+    let cond = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::And,
+            left: Box::new(lacks_method),
+            right: Box::new(has_call),
+        },
+        span.clone(),
+    );
+    let args_array = Expression::with_span(
+        ExprKind::Array(
+            args.iter().map(|a| ArrayElement {
+                key: None, value: a.value.clone(), spread: false, by_ref: false,
+            }).collect(),
+        ),
+        span.clone(),
+    );
+    let call_member = Expression::with_span(
+        ExprKind::Member {
+            object: Box::new(tmp_ident()),
+            field: "__call".to_string(),
+            null_safe: false,
+        },
+        span.clone(),
+    );
+    let magic_call = Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(call_member),
+            args: vec![
+                Argument::positional(Expression::string(&method_name)),
+                Argument::positional(args_array),
+            ],
+            optional: false,
+        },
+        span.clone(),
+    );
+    let ternary = Expression::with_span(
+        ExprKind::Ternary {
+            cond: Box::new(cond),
+            then: Box::new(magic_call),
+            else_: Box::new(regular_call),
+        },
+        span.clone(),
+    );
+    Expression::with_span(
+        ExprKind::Sequence(vec![save, ternary]),
+        span.clone(),
+    )
+}
+
+/// Build the magic-`__set` rewrite for a `$obj->prop = $val` assignment:
+///
+///     ($_t = $obj, $_v = $val,
+///      (typeof $_t->prop === "undefined" &&
+///       typeof $_t->__set === "function")
+///        ? $_t->__set("prop", $_v)
+///        : ($_t->prop = $_v))
+///
+/// Extracted out of `walk_assignment` so the latter's stack frame stays
+/// small — the rewrite allocates ~15 Expression nodes, and currying /
+/// nested-closure tests would blow the test-thread stack if all those
+/// locals were live at every recursive walk_expression frame.
+fn build_magic_set_rewrite(
+    obj: Expression, field: String, rhs: Expression, span: &Span,
+) -> Expression {
+    let tmp_recv = next_tmp_name("set_recv");
+    let tmp_val = next_tmp_name("set_val");
+    let recv_ident = || Expression::with_span(
+        ExprKind::Ident(tmp_recv.clone()), span.clone(),
+    );
+    let val_ident = || Expression::with_span(
+        ExprKind::Ident(tmp_val.clone()), span.clone(),
+    );
+    let save_recv = Expression::with_span(
+        ExprKind::Assign {
+            target: Box::new(recv_ident()),
+            value: Box::new(obj),
+        },
+        span.clone(),
+    );
+    let save_val = Expression::with_span(
+        ExprKind::Assign {
+            target: Box::new(val_ident()),
+            value: Box::new(rhs),
+        },
+        span.clone(),
+    );
+    let direct_member = Expression::with_span(
+        ExprKind::Member {
+            object: Box::new(recv_ident()),
+            field: field.clone(),
+            null_safe: false,
+        },
+        span.clone(),
+    );
+    let set_member_for_check = Expression::with_span(
+        ExprKind::Member {
+            object: Box::new(recv_ident()),
+            field: "__set".to_string(),
+            null_safe: false,
+        },
+        span.clone(),
+    );
+    let prop_undef = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(Expression::with_span(
+                ExprKind::TypeOf(Box::new(direct_member.clone())), span.clone(),
+            )),
+            right: Box::new(Expression::string("undefined")),
+        },
+        span.clone(),
+    );
+    let has_set = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(Expression::with_span(
+                ExprKind::TypeOf(Box::new(set_member_for_check)), span.clone(),
+            )),
+            right: Box::new(Expression::string("function")),
+        },
+        span.clone(),
+    );
+    let cond = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::And,
+            left: Box::new(prop_undef),
+            right: Box::new(has_set),
+        },
+        span.clone(),
+    );
+    let magic_set_call = Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::with_span(
+                ExprKind::Member {
+                    object: Box::new(recv_ident()),
+                    field: "__set".to_string(),
+                    null_safe: false,
+                },
+                span.clone(),
+            )),
+            args: vec![
+                Argument::positional(Expression::string(&field)),
+                Argument::positional(val_ident()),
+            ],
+            optional: false,
+        },
+        span.clone(),
+    );
+    let direct_assign = Expression::with_span(
+        ExprKind::Assign {
+            target: Box::new(direct_member),
+            value: Box::new(val_ident()),
+        },
+        span.clone(),
+    );
+    let ternary = Expression::with_span(
+        ExprKind::Ternary {
+            cond: Box::new(cond),
+            then: Box::new(magic_set_call),
+            else_: Box::new(direct_assign),
+        },
+        span.clone(),
+    );
+    Expression::with_span(
+        ExprKind::Sequence(vec![save_recv, save_val, ternary]),
+        span.clone(),
+    )
+}
+
 fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
     let span = to_span(&pair);
     let mut inner = pair.into_inner();
@@ -2022,7 +2817,28 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
     if matches!(lhs_pair.as_rule(), Rule::yield_expression) {
         return walk_expression(lhs_pair);
     }
-    let lhs_walked = walk_expression(lhs_pair)?;
+    // Mark that we're walking the LHS of an `=` so the property-access
+    // walker can suppress the magic-`__get` ternary on the OUTERMOST
+    // chain op (that op is the WRITE target, not a read). Inner reads
+    // in a chain like `$a->b->c = $val` (where `->b` is a read) still
+    // get the magic dispatch.
+    //
+    // Only set the flag when an `=` operator actually follows the LHS
+    // pair — pest's `assignment_expression` grammar wraps every
+    // expression so a bare `echo $obj->prop;` would otherwise look
+    // like an assignment LHS.
+    let has_assign_op = inner.peek().is_some();
+    if has_assign_op {
+        ASSIGN_LHS_DEPTH.with(|d| *d.borrow_mut() += 1);
+    }
+    let lhs_result = walk_expression(lhs_pair);
+    if has_assign_op {
+        ASSIGN_LHS_DEPTH.with(|d| {
+            let mut bd = d.borrow_mut();
+            *bd = bd.saturating_sub(1);
+        });
+    }
+    let lhs_walked = lhs_result?;
     // Defer destructure conversion until we confirm there's actually a `=`.
     // The grammar wraps every expression in `assignment_expression`, so
     // an isolated `[]` (without `=`) reaches walk_assignment too — if we
@@ -2037,6 +2853,35 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
     if let Some(op_pair) = inner.next() {
         let op = op_pair.as_str();
         let rhs = walk_expression(inner.next().unwrap())?;
+        // PHP `__set` magic method: when `$obj->prop = $val` is
+        // executed and `prop` isn't an own property of `$obj`, PHP
+        // dispatches to `$obj->__set("prop", $val)` if the class
+        // defines it. Walker rewrites simple-target Assigns:
+        //
+        // Note: walker is conservative about WHEN to wrap to avoid
+        // explosive AST depth in chained / deeply nested forms.
+        //
+        //   $obj->prop = $val
+        //     →
+        //   ($_t = $obj, $_v = $val,
+        //    (typeof $_t->prop === "undefined" &&
+        //     typeof $_t->__set === "function")
+        //       ? $_t->__set("prop", $_v)
+        //       : ($_t->prop = $_v))
+        //
+        // Skipped for `__`-prefixed names (internals like `__type`),
+        // null-safe member access, compound-op assignments (those go
+        // through Read+Op+Write semantics where the read also routes
+        // via `__get` already), and non-Member targets.
+        if op == "=" {
+            if let ExprKind::Member { object, field, null_safe } = &lhs.kind {
+                if !null_safe && !field.starts_with("__") {
+                    let obj = (**object).clone();
+                    let field = field.clone();
+                    return Ok(build_magic_set_rewrite(obj, field, rhs.clone(), &span));
+                }
+            }
+        }
         let kind = match op {
             "=" => ExprKind::Assign {
                 target: Box::new(lhs),
@@ -2278,14 +3123,66 @@ fn walk_cast(pair: Pair<Rule>) -> Result<Expression, String> {
 fn walk_postfix(pair: Pair<Rule>) -> Result<Expression, String> {
     let span = to_span(&pair);
     let mut inner = pair.into_inner();
-    let mut expr = walk_expression(inner.next().unwrap())?;
-    for op_pair in inner {
-        expr = apply_postfix(expr, op_pair, &span)?;
+    let primary = inner.next().unwrap();
+    // Track whether the very first chain element was a `$variable`
+    // primary. This is used by `apply_postfix` to detect the
+    // `$obj(args)` shape — invoking a value held in a variable —
+    // which in PHP must dispatch through `__invoke` if the value
+    // happens to be an object with that magic method. Function names
+    // (bare identifiers) flow through the regular Call path; variables
+    // need the wrapper.
+    //
+    // The primary pair is `Rule::primary_expression` (a non-silent
+    // wrapper around alternatives like `variable | qualified_name |
+    // …`). Peek at its first inner child to find the actual
+    // primary kind.
+    let is_var_primary = if matches!(primary.as_rule(), Rule::primary_expression) {
+        primary.clone().into_inner().next()
+            .map(|p| matches!(p.as_rule(), Rule::variable))
+            .unwrap_or(false)
+    } else {
+        matches!(primary.as_rule(), Rule::variable)
+    };
+    // Suppress the magic-`__get` ternary wrap on the LAST op when
+    // we're at the outermost level walking an Assign LHS. Walker
+    // clears the flag here so nested expressions inside the postfix
+    // chain don't see the suppression — only the LAST op being
+    // applied (the assignment target) skips the wrap.
+    //
+    // The flag is read non-mutably to avoid leaving a 0 depth that
+    // would let nested expressions accidentally claim themselves as
+    // LHS targets. `is_assign_target` only fires when this walk_postfix
+    // call is the OUTERMOST on the LHS (depth>0 AND we're at the
+    // primary's chain) — nested walk_expression calls inside arg
+    // lists / index expressions reset the depth below.
+    let lhs_depth_was = ASSIGN_LHS_DEPTH.with(|d| *d.borrow());
+    // Clear the depth while walking the primary + ops so nested
+    // expressions inside (e.g. method args, indexes) don't inherit it.
+    if lhs_depth_was > 0 {
+        ASSIGN_LHS_DEPTH.with(|d| *d.borrow_mut() = 0);
+    }
+    let mut expr = walk_expression(primary)?;
+    let mut from_variable = is_var_primary;
+    let ops: Vec<_> = inner.collect();
+    let n = ops.len();
+    for (i, op_pair) in ops.into_iter().enumerate() {
+        let is_last_op = i == n - 1;
+        let is_assign_target = lhs_depth_was > 0 && is_last_op;
+        expr = apply_postfix(expr, op_pair, &span, from_variable, is_assign_target)?;
+        // After the first postfix is applied, the chain is a
+        // computed value (member access, call result, etc.), not the
+        // original variable any more.
+        from_variable = false;
+    }
+    // Restore the depth so the outer walk_assignment sees the same
+    // value it originally set.
+    if lhs_depth_was > 0 {
+        ASSIGN_LHS_DEPTH.with(|d| *d.borrow_mut() = lhs_depth_was);
     }
     Ok(expr)
 }
 
-fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span) -> Result<Expression, String> {
+fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span, from_variable: bool, is_assign_target: bool) -> Result<Expression, String> {
     // The grammar wraps all variants in a non-silent `postfix_op` rule, so
     // pest yields a `postfix_op` pair whose single child is the actual
     // op rule (`method_call_op`, `inc_dec_op`, etc.). Unwrap once so the
@@ -2343,6 +3240,54 @@ fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span) -> Result<Ex
                             object: Box::new(receiver),
                             field: field.to_string(),
                             null_safe,
+                        },
+                        span.clone(),
+                    ));
+                }
+            }
+            // PHP `Fiber` instance methods → bytecode adapter calls
+            // that emit the VM's stack-switching ops (`RESUME`,
+            // continuation property reads). Same shape as the
+            // DateTime adapter — `$fiber->X(args)` rewrites to
+            // `__php_fiber_X($fiber, args)`. The walker can't tell
+            // a real Fiber from a user class with these method names,
+            // so this rewrite intercepts unconditionally; users who
+            // need their own `start`/`resume` should rename.
+            if !is_fcc {
+                // Only Fiber-specific names that don't collide with
+                // PHP generators' API (`current` / `next` / `send` /
+                // `getReturn` / `valid` are Generator methods, not
+                // Fiber-specific). `start` / `resume` exist only on
+                // Fibers; the four `isXxx` predicates are also
+                // Fiber-only. Keeping `getReturn` out of this list
+                // means user code calling `$generator->getReturn()`
+                // routes through the VM's native generator dispatch
+                // (which actually returns the generator's return
+                // value); Fiber's `getReturn` is a TODO until VM
+                // exposes a way to read continuation return.
+                let fiber_target: Option<&str> = match name.as_str() {
+                    "start"        => Some("__php_fiber_start"),
+                    "resume"       => Some("__php_fiber_resume"),
+                    "isStarted"    => Some("__php_fiber_is_started"),
+                    "isSuspended"  => Some("__php_fiber_is_suspended"),
+                    "isRunning"    => Some("__php_fiber_is_running"),
+                    "isTerminated" => Some("__php_fiber_is_terminated"),
+                    _ => None,
+                };
+                if let Some(fname) = fiber_target {
+                    let mut call_args: Vec<Argument> =
+                        vec![Argument::positional(receiver.clone())];
+                    if let Some(al) = arg_list_pair.clone() {
+                        call_args.extend(walk_args(al)?);
+                    }
+                    return Ok(Expression::with_span(
+                        ExprKind::Call {
+                            callee: Box::new(Expression::with_span(
+                                ExprKind::Ident(fname.to_string()),
+                                span.clone(),
+                            )),
+                            args: call_args,
+                            optional: false,
                         },
                         span.clone(),
                     ));
@@ -2493,10 +3438,76 @@ fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span) -> Result<Ex
                 ));
             }
             let args = arg_list_pair.map(walk_args).transpose()?.unwrap_or_default();
-            Ok(Expression::with_span(
-                ExprKind::Call { callee: Box::new(member), args, optional: null_safe },
-                span.clone(),
-            ))
+            //
+            //   $obj->method(a, b)
+            //     →
+            //   ($_t = $obj,
+            //    typeof $_t->method === "function"
+            //      ? $_t->method(a, b)
+            //      : $_t->__call("method", [a, b]))
+            //
+            // The temp variable caches the receiver to avoid re-
+            // evaluating side effects (computed property access etc.).
+            // Skipped for null-safe (`?->`) — those keep the original
+            // null-short-circuit semantics — and for the
+            // already-rewritten exception accessor / DateTime adapter
+            // forms (those return early above this branch).
+            if null_safe {
+                return Ok(Expression::with_span(
+                    ExprKind::Call { callee: Box::new(member), args, optional: null_safe },
+                    span.clone(),
+                ));
+            }
+            // `member` was built above as `Member { object: receiver, field: name, .. }`.
+            // Extract field name from `member` for use in __call's literal arg.
+            let (member_object, method_name) = match member.kind.clone() {
+                ExprKind::Member { object, field, .. } => (*object, field),
+                other => {
+                    return Ok(Expression::with_span(
+                        ExprKind::Call {
+                            callee: Box::new(Expression::with_span(other, member.span.clone())),
+                            args,
+                            optional: null_safe,
+                        },
+                        span.clone(),
+                    ));
+                }
+            };
+            // Skip the magic-`__call` wrap for receivers that are
+            // already heavyweight expressions (Calls, Lambdas, Arrays,
+            // etc.) — wrapping them again multiplies the AST depth
+            // through the typeof check that re-traverses the receiver,
+            // and chains of those would overflow the recursive
+            // compiler walker. Simple identifiers, member accesses,
+            // and previously-wrapped Sequences are cheap to clone
+            // since their structure is already shallow.
+            let recv_is_simple = matches!(&member_object.kind,
+                ExprKind::Ident(_)
+                | ExprKind::Member { .. }
+                | ExprKind::This
+                | ExprKind::Sequence(_));
+            if method_name.starts_with("__")
+                || matches!(&member_object.kind, ExprKind::This)
+                || !recv_is_simple
+            {
+                let direct_member = Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(member_object),
+                        field: method_name,
+                        null_safe,
+                    },
+                    span.clone(),
+                );
+                return Ok(Expression::with_span(
+                    ExprKind::Call {
+                        callee: Box::new(direct_member),
+                        args,
+                        optional: null_safe,
+                    },
+                    span.clone(),
+                ));
+            }
+            Ok(build_magic_call_rewrite(member_object, method_name, args, span))
         }
         Rule::property_access_op => {
             // Grammar: ("?->"|"->") ~ member_name. The arrow is a
@@ -2507,19 +3518,72 @@ fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span) -> Result<Ex
             let name_pair = op.into_inner().next()
                 .ok_or("property_access_op: missing name")?;
             let name = name_pair.into_inner().next().unwrap().as_str().to_string();
-            Ok(Expression::with_span(
+            let member = Expression::with_span(
                 ExprKind::Member {
                     object: Box::new(receiver),
-                    field: name,
+                    field: name.clone(),
                     null_safe,
                 },
                 span.clone(),
-            ))
+            );
+            // PHP `__get` magic method: when reading `$obj->prop` and
+            // `prop` isn't an own property of `$obj`, dispatch through
+            // `$obj->__get("prop")` if the class defines that magic
+            // method. Walker wraps the read in:
+            //
+            //   ($_t = $obj,
+            //    typeof $_t->prop !== "undefined"
+            //      ? $_t->prop
+            //      : (typeof $_t->__get === "function"
+            //          ? $_t->__get("prop")
+            //          : $_t->prop))
+            //
+            // Skipped for null-safe access (`?->` keeps its short-
+            // circuit semantics) and for the OUTERMOST chain op when
+            // we're walking an assignment LHS — that op is the WRITE
+            // target and must remain a plain Member l-value. Skipped
+            // for `__` prefixed names so internal accesses (`__type`,
+            // `__call`, etc.) bypass the wrap and don't cause
+            // infinite recursion via the `__get` lookup itself.
+            if null_safe || is_assign_target || name.starts_with("__") {
+                return Ok(member);
+            }
+            // Skip magic-get wrap when the receiver is `$this`. Inside
+            // class methods the receiver is the instance — direct
+            // property access is what user code expects, and the
+            // wrap interferes with chained writes like
+            // `$this->data[$k] = $v` (Index { Sequence(...), $k } as
+            // assign target — the inner Sequence return value isn't
+            // tracked as an l-value through the indexed write).
+            if let ExprKind::Member { object, .. } = &member.kind {
+                if matches!(&object.kind, ExprKind::This) {
+                    return Ok(member);
+                }
+            }
+            // Extract receiver from member to use in temp save.
+            let recv_for_save = match &member.kind {
+                ExprKind::Member { object, .. } => (**object).clone(),
+                _ => return Ok(member),
+            };
+            Ok(build_magic_get_rewrite(recv_for_save, name, span))
         }
         Rule::static_access_op => {
+            // Grammar: `::` ~ class_member_name where class_member_name
+            // can be `kw_class | identifier | variable | "{" expr "}"`.
+            // For static fields PHP uses the `$variable` form
+            // (`Class::$staticField`) — strip the leading `$` so the
+            // member name matches the field key written by the
+            // class-static-field initialiser. For `Class::class` the
+            // member is the literal `"class"` (PHP class-name reflection).
             let mut inner = op.into_inner();
             let name_pair = inner.next().unwrap();
-            let name = name_pair.into_inner().next().unwrap().as_str().to_string();
+            let inner_pair = name_pair.into_inner().next().unwrap();
+            let raw = inner_pair.as_str();
+            let name = if matches!(inner_pair.as_rule(), Rule::variable) {
+                raw.strip_prefix('$').unwrap_or(raw).to_string()
+            } else {
+                raw.to_string()
+            };
             Ok(Expression::with_span(
                 ExprKind::StaticAccess {
                     class: Box::new(receiver),
@@ -2621,6 +3685,30 @@ fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span) -> Result<Ex
             // indistinguishable — the compiler emits a single canonical
             // host call regardless of surface syntax.
             let args = canonicalize_php_call_args(&receiver, args);
+            // PHP `Fiber::suspend($v)` → `__php_fiber_suspend($v)`
+            // which emits the WASM `SUSPEND` op directly. Walker
+            // strips the static-call shape so the rest of the
+            // pipeline doesn't try to look up `Fiber.suspend` on a
+            // class object that doesn't exist.
+            if let ExprKind::StaticAccess { class, member } = &receiver.kind {
+                if let (ExprKind::Ident(class_name), ExprKind::Ident(member_name)) = (&class.kind, &member.kind) {
+                    if class_name.trim_start_matches('\\') == "Fiber"
+                        && member_name == "suspend"
+                    {
+                        return Ok(Expression::with_span(
+                            ExprKind::Call {
+                                callee: Box::new(Expression::with_span(
+                                    ExprKind::Ident("__php_fiber_suspend".to_string()),
+                                    span.clone(),
+                                )),
+                                args,
+                                optional: false,
+                            },
+                            span.clone(),
+                        ));
+                    }
+                }
+            }
             // PHP DateTime / DateTimeImmutable static factory methods
             // route through the PHP datetime adapter layer, same as the
             // instance-method rewrites above.
@@ -2747,11 +3835,102 @@ fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span) -> Result<Ex
                     }
                 }
             }
+            // PHP `parent::method(args)` — calls the parent's method
+            // bound to current `$this`. Walker normalises to the
+            // `super.method(args)` Member-call shape so the existing
+            // super-method dispatch in compile_call (calls.rs lines
+            // 173+) handles `$this` rebinding correctly.
+            if let ExprKind::StaticAccess { class, member } = &receiver.kind {
+                if matches!(class.kind, ExprKind::Super) {
+                    if let ExprKind::Ident(method_name) = &member.kind {
+                        let super_member = Expression::with_span(
+                            ExprKind::Member {
+                                object: Box::new(Expression::with_span(
+                                    ExprKind::Super, span.clone(),
+                                )),
+                                field: method_name.clone(),
+                                null_safe: false,
+                            },
+                            span.clone(),
+                        );
+                        return Ok(Expression::with_span(
+                            ExprKind::Call {
+                                callee: Box::new(super_member),
+                                args,
+                                optional: false,
+                            },
+                            span.clone(),
+                        ));
+                    }
+                }
+            }
+            // PHP `Class::method(args)` (StaticAccess + Call) is
+            // normalised to `Class.method(args)` Member-call shape by
+            // the `__callStatic` magic-rewrite below — its `direct_call`
+            // branch uses Member-shape so the static-method dispatch
+            // in compile_call (calls.rs ~600) fires and pushes the
+            // class object as `$this` slot 0. That makes
+            // `static::X` (walked as `$this::X`) resolve correctly
+            // through late static binding inside the method body.
             // Rewrite PHP function names whose JS equivalent already
             // exists (Math.trunc / parseInt / Member-method calls / etc).
             // After this, the AST contains no PHP-specific call shape.
             if let Some(kind) = rewrite_php_call_to_js(&receiver, &args, &span) {
                 return Ok(Expression::with_span(kind, span.clone()));
+            }
+            // PHP `__invoke` magic method: when invoking a value held in a
+            // variable (`$obj(args)`), PHP dispatches through `$obj->__invoke()`
+            // if the value is a class instance with that method. Walker
+            // wraps the call in a typeof-discriminated ternary so
+            // function values still go through CALL_REF directly while
+            // class instances get the magic-method dispatch.
+            //
+            //   $obj(a, b)
+            //     →
+            //   typeof $obj === "function" ? $obj(a, b) : $obj->__invoke(a, b)
+            //
+            // The wrapping only fires when the chain root was a `$variable`
+            // primary (`from_variable`) — bare-identifier function calls
+            // (`strlen($s)`) don't need the magic dispatch and would lose
+            // optimisation if wrapped.
+            // Skip the magic-`__invoke` wrap when:
+            //   - args use spread / named / by-ref (variadic shapes
+            //     don't fit a fixed-arity ternary)
+            //   - any arg is itself a Call expression (the wrap
+            //     duplicates args across both ternary branches; calls
+            //     in args would double-evaluate AND blow AST depth
+            //     when nested)
+            //   - any arg is itself a Sequence (already a wrap)
+            // Skipping these falls back to the regular Call path —
+            // the wrap is opt-in for shallow `$obj(args)` patterns
+            // where simple-bench tests use it.
+            let has_unwrappable_args = args.iter().any(|a|
+                a.spread || a.by_ref || a.name.is_some()
+                || matches!(&a.value.kind,
+                    ExprKind::Call { .. } | ExprKind::Sequence(_)
+                    | ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_)
+                    | ExprKind::New { .. } | ExprKind::ClassExpr { .. })
+            );
+            if from_variable && !has_unwrappable_args {
+                if let ExprKind::Ident(_) = &receiver.kind {
+                    return Ok(build_magic_invoke_rewrite(receiver, args, &span));
+                }
+            }
+            // PHP `__callStatic` magic method: when `Class::method(args)`
+            // is invoked and the method isn't a function on the class
+            // object, PHP dispatches to `Class::__callStatic("method",
+            // [args])`. Wrap StaticAccess + Call with a typeof check
+            // similar to the instance-method __call rewrite. Only fires
+            // when the class side is a plain Ident (not Super, not
+            // computed) — those use distinct dispatch paths.
+            if let ExprKind::StaticAccess { class, member } = &receiver.kind {
+                if let (ExprKind::Ident(_), ExprKind::Ident(method_name)) =
+                    (&class.kind, &member.kind)
+                {
+                    let mname = method_name.clone();
+                    let class_expr = (**class).clone();
+                    return Ok(build_magic_call_static_rewrite(class_expr, mname, args, &span));
+                }
             }
             Ok(Expression::with_span(
                 ExprKind::Call { callee: Box::new(receiver), args, optional: false },
@@ -2853,12 +4032,43 @@ fn walk_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
 
 fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
     let span = to_span(&pair);
-    // new_expression = { kw_new ~ (anonymous_class | qualified_name | variable | "(" expr ")")
+    // new_expression = { kw_new ~ (anonymous_class | kw_static | kw_self | kw_parent
+    //                              | qualified_name | variable | "(" expr ")")
     //                    ~ ("(" arg_list? ")")? }
     let mut class: Option<Expression> = None;
     let mut args: Vec<Argument> = Vec::new();
-    for p in inner_nokw(pair) {
+    // Iterate raw inner pairs (don't filter keywords) so `kw_static` /
+    // `kw_self` / `kw_parent` as the class designator are visible. The
+    // outer `kw_new` is the first child — skip it explicitly.
+    let mut iter = pair.into_inner().peekable();
+    if let Some(first) = iter.peek() {
+        if matches!(first.as_rule(), Rule::kw_new) {
+            iter.next();
+        }
+    }
+    for p in iter {
         match p.as_rule() {
+            // PHP 8 `new static(...)` / `new self(...)` / `new parent(...)`
+            // — late-static-binding instantiation. Map each to the
+            // existing context expressions so the rest of the
+            // walker/compiler treats them identically:
+            //   static → This (the class object passed as $this slot
+            //                   in static method dispatch)
+            //   self   → Ident(<current class name>) (set by walker
+            //                   class-context push)
+            //   parent → Super
+            Rule::kw_static => {
+                class = Some(Expression::with_span(ExprKind::This, span.clone()));
+            }
+            Rule::kw_self => {
+                let cn = current_class_name().unwrap_or_default();
+                class = Some(Expression::with_span(
+                    ExprKind::Ident(cn), span.clone(),
+                ));
+            }
+            Rule::kw_parent => {
+                class = Some(Expression::with_span(ExprKind::Super, span.clone()));
+            }
             Rule::arg_list => args = walk_args(p)?,
             Rule::anonymous_class => {
                 // PHP 8: `new class(args) extends Base implements I { ... }`.
@@ -2919,6 +4129,26 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
         }
     }
     let class_expr = class.ok_or("new: missing class designator")?;
+    // PHP `new Fiber($cb)` → `__php_fiber_new($cb)` which emits
+    // `CONT_NEW` on the callback. Walker normalises so the rest of
+    // the pipeline never sees `Fiber` as a class name; the
+    // continuation Object that comes out is what `$fiber->start()`
+    // and `Fiber::suspend()` operate on.
+    if let ExprKind::Ident(class_name) = &class_expr.kind {
+        if class_name.trim_start_matches('\\') == "Fiber" {
+            return Ok(Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(Expression::with_span(
+                        ExprKind::Ident("__php_fiber_new".to_string()),
+                        span.clone(),
+                    )),
+                    args,
+                    optional: false,
+                },
+                span.clone(),
+            ));
+        }
+    }
     // PHP DateTime / DateTimeImmutable / DateInterval — rewrite to a
     // bare call against the bytecode adapter binding so the
     // `emitter/php/datetime_adapter.rs` emit_* functions handle the
@@ -3647,18 +4877,69 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span)
             },
             span.clone(),
         ).kind,
-        "is_callable" => Expression::with_span(
+        "is_callable" => {
+            // PHP `is_callable($x)` matches:
+            //   - actual functions/closures (typeof === "function")
+            //   - objects implementing `__invoke` magic method
+            //
+            // Walker emits:
+            //   typeof $x === "function" || (typeof $x === "object" &&
+            //   typeof $x->__invoke === "function")
+            //
+            // The double-typeof check on the same expression is fine —
+            // `arg(0)?` returns a freshly-built clone each call.
+            let left_typeof = Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::StrictEq,
+                    left: Box::new(Expression::with_span(
+                        ExprKind::TypeOf(Box::new(arg(0)?)), span.clone(),
+                    )),
+                    right: Box::new(Expression::string("function")),
+                },
+                span.clone(),
+            );
+            let is_obj = Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::StrictEq,
+                    left: Box::new(Expression::with_span(
+                        ExprKind::TypeOf(Box::new(arg(0)?)), span.clone(),
+                    )),
+                    right: Box::new(Expression::string("object")),
+                },
+                span.clone(),
+            );
+            let invoke_member = Expression::with_span(
+                ExprKind::Member {
+                    object: Box::new(arg(0)?),
+                    field: "__invoke".to_string(),
+                    null_safe: false,
+                },
+                span.clone(),
+            );
+            let invoke_typeof = Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::StrictEq,
+                    left: Box::new(Expression::with_span(
+                        ExprKind::TypeOf(Box::new(invoke_member)), span.clone(),
+                    )),
+                    right: Box::new(Expression::string("function")),
+                },
+                span.clone(),
+            );
+            let obj_with_invoke = Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::And,
+                    left: Box::new(is_obj),
+                    right: Box::new(invoke_typeof),
+                },
+                span.clone(),
+            );
             ExprKind::Binary {
-                op: BinOp::StrictEq,
-                left: Box::new(Expression::with_span(
-                    ExprKind::TypeOf(Box::new(arg(0)?)), span.clone(),
-                )),
-                right: Box::new(Expression::with_span(
-                    ExprKind::Lit(Literal::Str("function".to_string())), span.clone(),
-                )),
-            },
-            span.clone(),
-        ).kind,
+                op: BinOp::Or,
+                left: Box::new(left_typeof),
+                right: Box::new(obj_with_invoke),
+            }
+        }
         "is_null" => Expression::with_span(
             ExprKind::Binary {
                 op: BinOp::StrictEq,

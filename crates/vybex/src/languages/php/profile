@@ -147,6 +147,8 @@ file                = { emit = "common:php.file",           min_args = 1, max_ar
 preg_match          = { emit = "host:ecma:regexp:test",          min_args = 2, max_args = 5 }
 preg_match_all      = { emit = "stdlib:regex_match_all_pat_first", min_args = 2, max_args = 5 }
 preg_replace        = { emit = "stdlib:regex_replace_pat_first", min_args = 3, max_args = 4 }
+preg_replace_callback = { emit = "common:php.preg_replace_callback", min_args = 3, max_args = 5 }
+__php_clone_helper  = { emit = "common:php.clone_helper",        min_args = 1, max_args = 1 }
 preg_split          = { emit = "common:php.preg_split",          min_args = 2, max_args = 4 }
 preg_quote          = { emit = "common:php.preg_quote",          min_args = 1, max_args = 2 }
 
@@ -492,6 +494,24 @@ __php_strtotime_rel_calendar = { emit = "common:php.strtotime_rel_calendar", min
 # 3-arg form. The walker rewrites the call to `$m = __preg_*_groups($p,$s)`.
 __preg_match_all_groups = { emit = "common:php.preg_match_all_groups", min_args = 2, max_args = 2 }
 __preg_match_groups     = { emit = "common:php.preg_match_groups",     min_args = 2, max_args = 2 }
+
+# PHP Fiber adapters (PHP 8.1) — leverage the VM's WASM stack-switching
+# opcodes (`CONT_NEW`, `RESUME`, `SUSPEND`) directly. No host fns; no
+# polyfills. Walker rewrites:
+#   `new Fiber($cb)`     → __php_fiber_new($cb)
+#   `Fiber::suspend(v)`  → __php_fiber_suspend(v)
+#   `$f->start(args...)` → __php_fiber_start($f, args...)
+#   `$f->resume(v)`      → __php_fiber_resume($f, v)
+#   `$f->getReturn()`    → __php_fiber_get_return($f)
+__php_fiber_new           = { emit = "common:php.fiber_new",           min_args = 1, max_args = 1 }
+__php_fiber_suspend       = { emit = "common:php.fiber_suspend",       min_args = 0, max_args = 1 }
+__php_fiber_start         = { emit = "common:php.fiber_start",         min_args = 1, max_args = 16 }
+__php_fiber_resume        = { emit = "common:php.fiber_resume",        min_args = 1, max_args = 2 }
+__php_fiber_get_return    = { emit = "common:php.fiber_get_return",    min_args = 1, max_args = 1 }
+__php_fiber_is_started    = { emit = "common:php.fiber_is_started",    min_args = 1, max_args = 1 }
+__php_fiber_is_suspended  = { emit = "common:php.fiber_is_suspended",  min_args = 1, max_args = 1 }
+__php_fiber_is_running    = { emit = "common:php.fiber_is_running",    min_args = 1, max_args = 1 }
+__php_fiber_is_terminated = { emit = "common:php.fiber_is_terminated", min_args = 1, max_args = 1 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # VALUE METHODS — instance method calls on intrinsic types

@@ -419,6 +419,28 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::php::string_adapter::emit_preg_match_all_groups(chunks, current, argc, line),
         "php.preg_match_groups"
             => crate::emitter::php::string_adapter::emit_preg_match_groups(chunks, current, argc, line),
+        "php.preg_replace_callback"
+            => crate::emitter::php::string_adapter::emit_preg_replace_callback(chunks, current, argc, line),
+        "php.clone_helper"
+            => crate::emitter::php::string_adapter::emit_php_clone(chunks, current, argc, line),
+        "php.fiber_new"
+            => crate::emitter::php::fiber_adapter::emit_php_fiber_new(chunks, current, argc, line),
+        "php.fiber_suspend"
+            => crate::emitter::php::fiber_adapter::emit_php_fiber_suspend(chunks, current, argc, line),
+        "php.fiber_start"
+            => crate::emitter::php::fiber_adapter::emit_php_fiber_start(chunks, current, argc, line),
+        "php.fiber_resume"
+            => crate::emitter::php::fiber_adapter::emit_php_fiber_resume(chunks, current, argc, line),
+        "php.fiber_get_return"
+            => crate::emitter::php::fiber_adapter::emit_php_fiber_get_return(chunks, current, argc, line),
+        "php.fiber_is_started"
+            => crate::emitter::php::fiber_adapter::emit_php_fiber_is_started(chunks, current, argc, line),
+        "php.fiber_is_suspended"
+            => crate::emitter::php::fiber_adapter::emit_php_fiber_is_suspended(chunks, current, argc, line),
+        "php.fiber_is_running"
+            => crate::emitter::php::fiber_adapter::emit_php_fiber_is_running(chunks, current, argc, line),
+        "php.fiber_is_terminated"
+            => crate::emitter::php::fiber_adapter::emit_php_fiber_is_terminated(chunks, current, argc, line),
         "php.echo_stringify"
             => crate::emitter::php::string_adapter::emit_echo_stringify(chunks, current, argc, line),
 

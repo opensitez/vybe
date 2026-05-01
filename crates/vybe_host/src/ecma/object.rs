@@ -544,6 +544,20 @@ fn register_access(vm: &mut VM) {
                     }
                     return Value::Bool(false);
                 }
+                // Map entry delete: remove from the IndexMap backing.
+                // Polymorphism: PHP `array` stores assoc data as Map, so
+                // `unset($arr[$k])` lands here when `$arr` is a Map kind.
+                // Without this branch, the Ordinary fallback below tries
+                // `properties.remove` which doesn't touch the Map data
+                // (Map keys live in `kind`, not `properties`).
+                if let ObjectKind::Map(ref mut m) = o.kind {
+                    let key_value = match &key_raw {
+                        Value::Undefined | Value::Null => Value::String(Arc::from(key.as_str())),
+                        other => other.clone(),
+                    };
+                    let removed = m.shift_remove(&key_value).is_some();
+                    return Value::Bool(removed);
+                }
                 let removed = o.properties.remove(&key).is_some();
                 // Drop the key from `__keys` so re-adding goes to the
                 // end (ECMA-262 §13.5.1 + §7.3.22 ordering — delete

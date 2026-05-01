@@ -30,3 +30,4 @@ pub mod math_adapter;
 pub mod string_adapter;
 pub mod array_adapter;
 pub mod filesystem_adapter;
+pub mod fiber_adapter;

@@ -2428,9 +2428,19 @@ impl Compiler {
                         // values pass through. The check is a runtime
                         // struct_get on the value's `__toString` slot;
                         // if non-null, invoke as a method.
+                        //
+                        // Also: PHP `echo null;` writes no bytes (vs.
+                        // Vybe's normal flow which would log ""); skip
+                        // the log call when the expression is null so
+                        // test-runner output entries match PHP-stdout
+                        // bytes.
                         let v_slot = self.define_local("__echo_v");
                         self.emit_u16(Op::LOCAL_SET, v_slot);
                         self.emit(Op::DROP);
+                        // Skip echo entirely if value is null.
+                        self.emit_u16(Op::LOCAL_GET, v_slot);
+                        self.emit(Op::REF_IS_NULL);
+                        let skip_log = self.emit_jump(Op::BR_IF_TRUE);
                         // Probe __toString.
                         self.emit_u16(Op::LOCAL_GET, v_slot);
                         let ts_key = self.str_const("__toString");
@@ -2450,8 +2460,11 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, v_slot);
                         self.patch_jump(done);
                         self.emit_common("php.echo_stringify", 1, line);
+                        common::io::emit_print_with_import(self.chunk(), log_idx, 1, line);
+                        self.patch_jump(skip_log);
+                    } else {
+                        common::io::emit_print_with_import(self.chunk(), log_idx, 1, line);
                     }
-                    common::io::emit_print_with_import(self.chunk(), log_idx, 1, line);
                 }
             }
 

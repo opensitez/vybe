@@ -45,6 +45,52 @@ fn emit_is_array(chunks: &mut [Chunk], current: usize, arr_slot: u16, line: u32)
     chunks[current].emit_op(Op::DYN_TO_BOOL, line);
 }
 
+/// Emit a callable-aware dispatch: call `fn_slot` as a function, or as
+/// an object's `__invoke` method if the value is a class instance with
+/// that magic method (PHP 8 callable-object pattern). The user-supplied
+/// `push_args` closure pushes user arguments onto the stack; `argc` is
+/// the count of those user args (without `$this`).
+///
+/// Stack on exit: `[result]` — caller `lset`s into a target slot.
+fn emit_call_via_invoke_dispatch<F>(
+    chunks: &mut [Chunk],
+    current: usize,
+    fn_slot: u16,
+    argc: u8,
+    line: u32,
+    mut push_args: F,
+) where F: FnMut(&mut [Chunk], usize) {
+    // Branch on `typeof fn === "function"`.
+    let chunk = &mut chunks[current];
+    lget(chunk, fn_slot, line);
+    chunk.emit_op(Op::REF_TYPEOF, line);
+    push_str(chunk, "function", line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let not_func = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    // Function: call directly.
+    let chunk = &mut chunks[current];
+    lget(chunk, fn_slot, line);
+    push_args(chunks, current);
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u8(Op::CALL_REF, argc, line);
+    let done = chunk.emit_jump(Op::BR, line);
+
+    // Object: call $obj->__invoke(args). PHP method ABI passes `$this`
+    // as arg0, so push fn (the receiver) twice — once as the function
+    // ref (resolved via STRUCT_GET on __invoke), once as `$this`.
+    chunk.patch_jump(not_func);
+    lget(chunk, fn_slot, line);
+    let invoke_key = chunk.add_constant(Value::String(Arc::from("__invoke")));
+    chunk.emit_op_u16(Op::STRUCT_GET, invoke_key, line);
+    lget(chunk, fn_slot, line);
+    push_args(chunks, current);
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u8(Op::CALL_REF, argc + 1, line);
+
+    chunks[current].patch_jump(done);
+}
+
 pub fn emit_array_map(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let arr_slot = alloc_local(chunk);
@@ -98,11 +144,13 @@ pub fn emit_array_map(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     chunk.emit_op(Op::ARRAY_GET, line);
     lset(chunk, key_slot, line);
 
-    lget(chunk, fn_slot, line);
-    lget(chunk, arr_slot, line);
-    lget(chunk, key_slot, line);
-    chunk.emit_op(Op::ARRAY_GET, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    emit_call_via_invoke_dispatch(chunks, current, fn_slot, 1, line, |cs, c| {
+        let ch = &mut cs[c];
+        lget(ch, arr_slot, line);
+        lget(ch, key_slot, line);
+        ch.emit_op(Op::ARRAY_GET, line);
+    });
+    let chunk = &mut chunks[current];
     lset(chunk, mapped_slot, line);
 
     lget(chunk, is_array_slot, line);

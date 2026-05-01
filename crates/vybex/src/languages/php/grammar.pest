@@ -320,10 +320,18 @@ return_type_annotation = { ":" ~ type_annotation }
 
 // PHP 8.0+ allows `null`, `false`, `true` as standalone type atoms.
 // PHP 8.2 added `false`/`null` as types and `true` followed in 8.2.
+// `self` / `static` / `parent` are valid PHP type atoms in method
+// return-type position (PHP 8 added `static`; `self`/`parent` were
+// always allowed). They denote the enclosing class / late-bound
+// class / parent class respectively — the walker drops type
+// annotations, so the parser only needs to accept them.
 type_atom = {
     kw_null
     | kw_true
     | kw_false
+    | kw_self
+    | kw_static
+    | kw_parent
     | qualified_name
     | "(" ~ type_annotation ~ ")"
 }
@@ -719,7 +727,9 @@ literal = {
 }
 
 new_expression = {
-    kw_new ~ (anonymous_class | qualified_name | variable | "(" ~ expression ~ ")") ~ ("(" ~ arg_list? ~ ")")?
+    kw_new ~ (anonymous_class | kw_static | kw_self | kw_parent
+              | qualified_name | variable | "(" ~ expression ~ ")")
+        ~ ("(" ~ arg_list? ~ ")")?
 }
 
 // PHP 8 anonymous classes: `new class { ... }`, `new class("arg") { ... }`,
