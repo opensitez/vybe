@@ -296,6 +296,8 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::php::datetime_adapter::emit_php_strftime(chunks, current, argc, line),
         "php.strtotime"
             => crate::emitter::php::datetime_adapter::emit_php_strtotime(chunks, current, argc, line),
+        "php.strtotime_rel_calendar"
+            => crate::emitter::php::datetime_adapter::emit_php_strtotime_rel_calendar(chunks, current, argc, line),
         "php.mktime"
             => crate::emitter::php::datetime_adapter::emit_php_mktime(chunks, current, argc, line),
         "php.checkdate"

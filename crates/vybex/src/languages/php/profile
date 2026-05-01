@@ -473,6 +473,10 @@ __php_dt_add_days      = { emit = "common:php.datetime_add_days",    min_args = 
 __php_dt_add_weeks     = { emit = "common:php.datetime_add_weeks",   min_args = 2, max_args = 2 }
 __php_dt_add_months    = { emit = "common:php.datetime_add_months",  min_args = 2, max_args = 2 }
 __php_dt_add_years     = { emit = "common:php.datetime_add_years",   min_args = 2, max_args = 2 }
+# `strtotime("+N month", $base)` / `"+N year"` calendar-shift adapter
+# emitted by the walker. Args: (base_secs, n, is_year_bool). Returns
+# new seconds epoch.
+__php_strtotime_rel_calendar = { emit = "common:php.strtotime_rel_calendar", min_args = 3, max_args = 3 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # VALUE METHODS — instance method calls on intrinsic types

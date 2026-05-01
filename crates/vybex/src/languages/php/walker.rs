@@ -3681,6 +3681,46 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span)
                 right: Box::new(rest),
             }
         }
+        // PHP `strtotime("+N unit", $base)` with a literal relative string
+        // is rewritten at compile time to `$base + N * unit_secs` (or
+        // calendar arithmetic for month/year via `ecma:date.UTC` round-
+        // trip). When the string isn't recognised the rewrite returns
+        // `None` so the runtime adapter handles it.
+        "strtotime" if args.len() == 2 => {
+            let s = match &args[0].value.kind {
+                ExprKind::Lit(Literal::Str(s)) => s,
+                _ => return None,
+            };
+            let (n, unit) = crate::emitter::php::datetime_adapter::parse_relative_delta(s)?;
+            let base = arg(1)?;
+            let secs_per_unit: Option<i64> = match unit {
+                "second" => Some(1),
+                "minute" => Some(60),
+                "hour"   => Some(3_600),
+                "day"    => Some(86_400),
+                "week"   => Some(604_800),
+                _ => None, // month / year need calendar arithmetic
+            };
+            if let Some(secs) = secs_per_unit {
+                // base + n * secs_per_unit
+                let delta = mk_lit_i64(n * secs);
+                mk_binary(BinOp::Add, base, delta).kind
+            } else {
+                // month/year — calendar arithmetic via the bytecode
+                // adapter (`__php_strtotime_rel_calendar(base, n, is_year)`).
+                let is_year = unit == "year";
+                let bool_arg = Expression::with_span(
+                    ExprKind::Lit(Literal::Bool(is_year)), span.clone(),
+                );
+                mk_call(
+                    Expression::with_span(
+                        ExprKind::Ident("__php_strtotime_rel_calendar".to_string()),
+                        span.clone(),
+                    ),
+                    vec![base, mk_lit_i64(n), bool_arg],
+                )
+            }
+        }
         _ => return None,
     })
 }

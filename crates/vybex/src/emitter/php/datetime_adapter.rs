@@ -1021,6 +1021,78 @@ pub fn emit_php_getdate(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
 ///   2-arg path falls through to `ecma:date.parse(s)` (which doesn't
 ///   understand relative forms — best-effort; PHP users with dynamic
 ///   relative strings should use DateTimeImmutable->modify()).
+/// `__php_strtotime_rel_calendar(base, n, is_year)` — apply a calendar
+/// shift (months or years) to a seconds-epoch base. Walker emits this
+/// for `strtotime("+N month", $base)` / `"+N year"`.
+///
+/// Stack on entry: `[base_secs, n, is_year_bool]` ; Stack on exit: `[secs]`.
+pub fn emit_php_strtotime_rel_calendar(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let is_year_slot = alloc_local(chunk);
+    let n_slot = alloc_local(chunk);
+    let base_slot = alloc_local(chunk);
+    local_set(chunk, is_year_slot, line);
+    local_set(chunk, n_slot, line);
+    local_set(chunk, base_slot, line);
+
+    // ms = base * 1000
+    local_get(chunk, base_slot, line);
+    push_const(chunk, Value::F64(MS_PER_SECOND), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    let ms_slot = alloc_local(chunk);
+    local_set(chunk, ms_slot, line);
+
+    // Build a Date wrapper: {__type:"Date", __time:ms}
+    local_get(chunk, ms_slot, line);
+    emit_wrap_ms(chunk, "Date", line);
+    let dt_slot = alloc_local(chunk);
+    local_set(chunk, dt_slot, line);
+
+    // is_year ? setFullYear : setMonth
+    local_get(chunk, is_year_slot, line);
+    let do_year = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    // setMonth path
+    local_get(chunk, dt_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:date", "getMonth", 1, line);
+    let chunk = &mut chunks[current];
+    local_get(chunk, n_slot, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    let new_comp_slot = alloc_local(chunk);
+    local_set(chunk, new_comp_slot, line);
+    local_get(chunk, dt_slot, line);
+    local_get(chunk, new_comp_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:date", "setMonth", 2, line);
+    let chunk = &mut chunks[current];
+    let new_ms_slot = alloc_local(chunk);
+    local_set(chunk, new_ms_slot, line);
+    let after_calendar = chunk.emit_jump(Op::BR, line);
+    chunk.patch_jump(do_year);
+
+    // setFullYear path
+    local_get(chunk, dt_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:date", "getFullYear", 1, line);
+    let chunk = &mut chunks[current];
+    local_get(chunk, n_slot, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    local_set(chunk, new_comp_slot, line);
+    local_get(chunk, dt_slot, line);
+    local_get(chunk, new_comp_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:date", "setFullYear", 2, line);
+    let chunk = &mut chunks[current];
+    local_set(chunk, new_ms_slot, line);
+    chunk.patch_jump(after_calendar);
+
+    // floor(new_ms / 1000)
+    local_get(chunk, new_ms_slot, line);
+    push_const(chunk, Value::F64(MS_PER_SECOND), line);
+    chunk.emit_op(Op::F64_DIV, line);
+    chunk.emit_op(Op::F64_FLOOR, line);
+}
+
 pub fn emit_php_strtotime(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     if argc >= 2 {

@@ -146,16 +146,33 @@ pub fn emit_array_pad(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
 
 // ── array_chunk ────────────────────────────────────────────────────
 
-/// PHP `array_chunk(arr, size)` → 2D array of chunks.
-pub fn emit_array_chunk(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+/// PHP `array_chunk(arr, size, preserve_keys?)` → array of chunks.
+///
+/// Iterates the input via `Object.keys` so it works for both Map-backed
+/// PHP assoc arrays and sequential Arrays. When `preserve_keys` is true,
+/// each chunk is a Map carrying the original keys; otherwise each chunk
+/// is a sequential Array.
+pub fn emit_array_chunk(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
+    let preserve_slot = alloc_local(chunk);
     let size_slot = alloc_local(chunk);
     let arr_slot = alloc_local(chunk);
     let out_slot = alloc_local(chunk);
+    let keys_slot = alloc_local(chunk);
     let i_slot = alloc_local(chunk);
-    let len_slot = alloc_local(chunk);
+    let n_slot = alloc_local(chunk);
     let end_slot = alloc_local(chunk);
+    let chunk_slot = alloc_local(chunk);
+    let j_slot = alloc_local(chunk);
+    let key_slot = alloc_local(chunk);
 
+    if argc >= 3 {
+        chunk.emit_op(Op::DYN_TO_BOOL, line);
+        lset(chunk, preserve_slot, line);
+    } else {
+        chunk.emit_op(Op::FALSE, line);
+        lset(chunk, preserve_slot, line);
+    }
     lset(chunk, size_slot, line);
     lset(chunk, arr_slot, line);
 
@@ -172,40 +189,111 @@ pub fn emit_array_chunk(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     let done_invalid = chunk.emit_jump(Op::BR, line);
     chunk.patch_jump(valid);
 
+    // keys = Object.keys(arr)
+    lget(chunk, arr_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:object", "keys", 1, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, keys_slot, line);
+
+    // n = keys.length; i = 0
+    lget(chunk, keys_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, n_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, i_slot, line);
-    lget(chunk, arr_slot, line);
-    chunk.emit_op(Op::ARRAY_LENGTH, line);
-    lset(chunk, len_slot, line);
 
-    let loop_top = chunk.current_offset();
+    // Outer loop: walk keys in `size` strides.
+    let outer_top = chunk.current_offset();
     lget(chunk, i_slot, line);
-    lget(chunk, len_slot, line);
+    lget(chunk, n_slot, line);
     chunk.emit_op(Op::DYN_LT, line);
-    let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    let outer_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
-    // end = i + size
+    // end = min(i + size, n)
     lget(chunk, i_slot, line);
     lget(chunk, size_slot, line);
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, end_slot, line);
-
-    // out.push(arr.slice(i, end))
-    lget(chunk, out_slot, line);
-    lget(chunk, arr_slot, line);
-    lget(chunk, i_slot, line);
     lget(chunk, end_slot, line);
+    lget(chunk, n_slot, line);
+    chunk.emit_op(Op::DYN_GT, line);
+    let in_bounds = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    lget(chunk, n_slot, line);
+    lset(chunk, end_slot, line);
+    chunk.patch_jump(in_bounds);
+
+    // chunk_obj = preserve ? ecma:map.new() : []
+    lget(chunk, preserve_slot, line);
+    let scalar_chunk = chunk.emit_jump(Op::BR_IF_FALSE, line);
     let _ = chunk;
-    call_import(chunks, current, "ecma:array", "slice", 3, line);
-    call_import(chunks, current, "ecma:array", "push", 2, line);
+    call_import(chunks, current, "ecma:map", "new", 0, line);
     let chunk = &mut chunks[current];
-    chunk.emit_op(Op::DROP, line);
+    let after_chunk_init = chunk.emit_jump(Op::BR, line);
+    chunk.patch_jump(scalar_chunk);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.patch_jump(after_chunk_init);
+    lset(chunk, chunk_slot, line);
+
+    // j = i
+    lget(chunk, i_slot, line);
+    lset(chunk, j_slot, line);
+
+    // Inner loop: for j in i..end
+    let inner_top = chunk.current_offset();
+    lget(chunk, j_slot, line);
+    lget(chunk, end_slot, line);
+    chunk.emit_op(Op::DYN_LT, line);
+    let inner_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    // key = keys[j]
+    lget(chunk, keys_slot, line);
+    lget(chunk, j_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    lset(chunk, key_slot, line);
+
+    // if preserve: chunk_obj[key] = arr[key] ; else chunk_obj.push(arr[key])
+    lget(chunk, preserve_slot, line);
+    let scalar_push = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    lget(chunk, chunk_slot, line);
+    lget(chunk, key_slot, line);
+    lget(chunk, arr_slot, line);
+    lget(chunk, key_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_op(Op::ARRAY_SET, line);
+    let after_push = chunk.emit_jump(Op::BR, line);
+    chunk.patch_jump(scalar_push);
+    lget(chunk, chunk_slot, line);
+    lget(chunk, arr_slot, line);
+    lget(chunk, key_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:array", "push", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    let chunk = &mut chunks[current];
+    chunk.patch_jump(after_push);
+
+    // j++
+    lget(chunk, j_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, j_slot, line);
+    chunk.emit_loop(inner_top, line);
+    chunk.patch_jump(inner_exit);
+
+    // out.push(chunk_obj)
+    lget(chunk, out_slot, line);
+    lget(chunk, chunk_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:array", "push", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    let chunk = &mut chunks[current];
 
     // i = end
     lget(chunk, end_slot, line);
     lset(chunk, i_slot, line);
-    chunk.emit_loop(loop_top, line);
-    chunk.patch_jump(exit);
+    chunk.emit_loop(outer_top, line);
+    chunk.patch_jump(outer_exit);
 
     lget(chunk, out_slot, line);
     chunk.patch_jump(done_invalid);
