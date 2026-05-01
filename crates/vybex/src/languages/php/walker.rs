@@ -37,10 +37,60 @@
 //! - **`<?php` open tag**: stripped at the grammar level (`open_tag` is
 //!   silent). User scripts may or may not have it.
 
+use std::cell::RefCell;
 use pest::Parser;
 use pest::iterators::Pair;
 use crate::ast::*;
 use super::{PhpParser, Rule};
+
+// Class context for `self::` resolution. PHP `self::X` inside a method
+// refers to the enclosing class (NOT the runtime instance) — it's a
+// compile-time-known reference. The walker pushes the current class
+// name before walking class members and pops it after, so when
+// `Rule::kw_self` is reached we can rewrite `self` to the class name
+// directly and avoid the runtime "STRUCT_GET on $this" path that
+// can't reach class-level constants/static members.
+thread_local! {
+    static CLASS_STACK: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    // Tracks `use TraitName;` per class. Walker captures the trait name
+    // when it sees `use_trait` inside a class member; the post-pass in
+    // `parse()` reads this to copy trait members into the using class.
+    // Reset at the start of each `parse()` call.
+    static TRAIT_USAGES: RefCell<std::collections::HashMap<String, Vec<String>>> =
+        RefCell::new(std::collections::HashMap::new());
+    // Tracks `use Trait { method as alias; }` adaptations. Map key is
+    // the using-class name, value is a list of (source_method, alias)
+    // pairs. Reset alongside TRAIT_USAGES.
+    // Each entry: (source_trait_name | "" if unqualified, method_name, alias_name).
+    static TRAIT_ALIASES: RefCell<std::collections::HashMap<String, Vec<(String, String, String)>>> =
+        RefCell::new(std::collections::HashMap::new());
+    // Monotonic counter for unique synthetic temp variable names. The
+    // postfix `$x++` walker rewrite needs `(tmp = $x, $x = inc($x), tmp)`
+    // where `tmp` must be unique per use site to avoid collisions in
+    // expressions like `$a++ + $b++` (without uniqueness, both writes
+    // would clobber the same global temp).
+    static TMP_COUNTER: RefCell<u32> = const { RefCell::new(0) };
+}
+
+fn next_tmp_name(prefix: &str) -> String {
+    TMP_COUNTER.with(|c| {
+        let mut n = c.borrow_mut();
+        *n += 1;
+        format!("__php_{}_{}", prefix, *n)
+    })
+}
+
+fn push_class_context(name: &str) {
+    CLASS_STACK.with(|s| s.borrow_mut().push(name.to_string()));
+}
+
+fn pop_class_context() {
+    CLASS_STACK.with(|s| { s.borrow_mut().pop(); });
+}
+
+fn current_class_name() -> Option<String> {
+    CLASS_STACK.with(|s| s.borrow().last().cloned())
+}
 
 /// Returns true for `kw_*` token rules. Pest preserves atomic rule
 /// nodes as siblings inside their parent rule's parse tree, so without
@@ -65,7 +115,7 @@ fn is_kw(r: Rule) -> bool {
         | Rule::kw_readonly | Rule::kw_and | Rule::kw_or | Rule::kw_xor
         | Rule::kw_self | Rule::kw_parent | Rule::kw_isset | Rule::kw_empty
         | Rule::kw_unset | Rule::kw_endif | Rule::kw_endwhile | Rule::kw_endfor
-        | Rule::kw_endforeach | Rule::kw_endswitch
+        | Rule::kw_endforeach | Rule::kw_endswitch | Rule::kw_insteadof
     )
 }
 
@@ -82,7 +132,20 @@ pub fn parse(source: &str) -> Result<Module, String> {
         .map_err(|e| format!("PHP parse error: {}", e))?;
     let program = pairs.next().ok_or("empty parse")?;
 
+    // Reset the per-parse trait-usage maps so prior `parse()` calls
+    // don't leak state. CLASS_STACK should already be empty here (push
+    // and pop are paired inside walk_class_decl/walk_trait_decl/etc).
+    TRAIT_USAGES.with(|t| t.borrow_mut().clear());
+    TRAIT_ALIASES.with(|t| t.borrow_mut().clear());
+
+    // Collect interfaces by name as they're walked so a later
+    // post-pass can fold their `const` members into implementing
+    // classes. PHP interface constants are inherited by implementers
+    // — `class User implements Status { return self::ACTIVE; }`
+    // resolves `ACTIVE` against `Status`.
     let mut body = Vec::new();
+    let mut interface_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut trait_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     for pair in program.into_inner() {
         match pair.as_rule() {
             Rule::EOI => continue,
@@ -100,7 +163,19 @@ pub fn parse(source: &str) -> Result<Module, String> {
             // `<?php … ?>` — walk the contained statements.
             Rule::php_code_segment => {
                 for inner in pair.into_inner() {
+                    let was_interface = matches!(inner.as_rule(), Rule::interface_declaration);
+                    let was_trait = matches!(inner.as_rule(), Rule::trait_declaration);
                     if let Some(stmt) = walk_statement(inner)? {
+                        if was_interface {
+                            if let StmtKind::ClassDecl { ref name, .. } = stmt.kind {
+                                interface_names.insert(name.clone());
+                            }
+                        }
+                        if was_trait {
+                            if let StmtKind::ClassDecl { ref name, .. } = stmt.kind {
+                                trait_names.insert(name.clone());
+                            }
+                        }
                         body.push(stmt);
                     }
                 }
@@ -114,8 +189,170 @@ pub fn parse(source: &str) -> Result<Module, String> {
             // Tag-less convenience: statement at program top level
             // (program_bare branch).
             _ => {
+                let was_interface = matches!(pair.as_rule(), Rule::interface_declaration);
+                let was_trait = matches!(pair.as_rule(), Rule::trait_declaration);
                 if let Some(stmt) = walk_statement(pair)? {
+                    if was_interface {
+                        if let StmtKind::ClassDecl { ref name, .. } = stmt.kind {
+                            interface_names.insert(name.clone());
+                        }
+                    }
+                    if was_trait {
+                        if let StmtKind::ClassDecl { ref name, .. } = stmt.kind {
+                            trait_names.insert(name.clone());
+                        }
+                    }
                     body.push(stmt);
+                }
+            }
+        }
+    }
+
+    // Build a registry of interface const members (interface_name →
+    // [const_member_clones]). Walk the body once, find each ClassDecl
+    // whose name is in `interface_names`, copy out its Const members.
+    let mut interface_consts: std::collections::HashMap<String, Vec<ClassMember>> =
+        std::collections::HashMap::new();
+    for stmt in &body {
+        if let StmtKind::ClassDecl { name, members, .. } = &stmt.kind {
+            if interface_names.contains(name) {
+                let consts: Vec<ClassMember> = members.iter()
+                    .filter(|m| matches!(m, ClassMember::Const { .. }))
+                    .cloned()
+                    .collect();
+                if !consts.is_empty() {
+                    interface_consts.insert(name.clone(), consts);
+                }
+            }
+        }
+    }
+
+    // Fold interface consts into every class that `implements` them.
+    // Skip if the class already declares a const of the same name
+    // (PHP shadowing rules). Apply to ClassDecl entries only — the
+    // interface entries themselves stay untouched.
+    if !interface_consts.is_empty() {
+        for stmt in &mut body {
+            if let StmtKind::ClassDecl { name, interfaces, members, .. } = &mut stmt.kind {
+                if interface_names.contains(name) { continue; }
+                let existing_const_names: std::collections::HashSet<String> = members.iter()
+                    .filter_map(|m| if let ClassMember::Const { name, .. } = m {
+                        Some(name.clone())
+                    } else { None })
+                    .collect();
+                for iface in interfaces.iter() {
+                    if let Some(iface_consts) = interface_consts.get(iface) {
+                        for c in iface_consts {
+                            if let ClassMember::Const { name: cn, .. } = c {
+                                if !existing_const_names.contains(cn) {
+                                    members.push(c.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Build a registry of trait members (name → all members). Traits
+    // are walked as ClassDecl by walk_trait_decl; their bodies become
+    // available here. Copy const + method members into using classes.
+    let mut trait_members: std::collections::HashMap<String, Vec<ClassMember>> =
+        std::collections::HashMap::new();
+    for stmt in &body {
+        if let StmtKind::ClassDecl { name, members, .. } = &stmt.kind {
+            if trait_names.contains(name) {
+                trait_members.insert(name.clone(), members.clone());
+            }
+        }
+    }
+
+    // Snapshot trait usage map, then fold trait members into using
+    // classes. Skip member names already declared on the class (PHP
+    // trait conflict rule: class > trait). For class-vs-class duplicates
+    // across multiple traits, keep the first one (last-wins would
+    // hit the `insteadof` semantic edge cases anyway).
+    let usages: std::collections::HashMap<String, Vec<String>> =
+        TRAIT_USAGES.with(|t| t.borrow().clone());
+    let aliases: std::collections::HashMap<String, Vec<(String, String, String)>> =
+        TRAIT_ALIASES.with(|t| t.borrow().clone());
+    if !trait_members.is_empty() && !usages.is_empty() {
+        for stmt in &mut body {
+            if let StmtKind::ClassDecl { name, members, .. } = &mut stmt.kind {
+                if trait_names.contains(name) { continue; }
+                let Some(used) = usages.get(name) else { continue; };
+                let mut declared: std::collections::HashSet<String> = members.iter()
+                    .filter_map(|m| match m {
+                        ClassMember::Const { name, .. } => Some(name.clone()),
+                        ClassMember::Property { name, .. } => Some(name.clone()),
+                        ClassMember::Method(stmt) => {
+                            if let StmtKind::FunctionDecl { name, .. } = &stmt.kind {
+                                Some(name.clone())
+                            } else { None }
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let class_aliases: &[(String, String, String)] = aliases.get(name)
+                    .map(Vec::as_slice).unwrap_or(&[]);
+                for tname in used {
+                    if let Some(tmembers) = trait_members.get(tname) {
+                        for m in tmembers {
+                            let mname = match m {
+                                ClassMember::Const { name, .. } => Some(name.clone()),
+                                ClassMember::Property { name, .. } => Some(name.clone()),
+                                ClassMember::Method(stmt) => {
+                                    if let StmtKind::FunctionDecl { name, .. } = &stmt.kind {
+                                        Some(name.clone())
+                                    } else { None }
+                                }
+                                _ => None,
+                            };
+                            if let Some(mn) = mname {
+                                if !declared.contains(&mn) {
+                                    members.push(m.clone());
+                                    declared.insert(mn.clone());
+                                }
+                                // Apply any alias targeting this trait+method.
+                                // The alias triple is (source_trait, method, alias);
+                                // an empty source_trait means unqualified
+                                // `method as alias` (matches any trait). When
+                                // qualified, only apply if THIS trait matches
+                                // — that's how `Y::speak as ySpeak` only
+                                // creates the ySpeak alias for Y's speak,
+                                // not X's.
+                                for (src_trait, src, dst) in class_aliases {
+                                    if src != &mn { continue; }
+                                    if !src_trait.is_empty() && src_trait != tname { continue; }
+                                    if declared.contains(dst) { continue; }
+                                    if let ClassMember::Method(stmt) = m {
+                                        if let StmtKind::FunctionDecl {
+                                            params, return_type, body: mbody,
+                                            modifiers, handles, is_async,
+                                            is_generator, is_sub, ..
+                                        } = &stmt.kind {
+                                            let aliased = Statement::new(
+                                                StmtKind::FunctionDecl {
+                                                    name: dst.clone(),
+                                                    params: params.clone(),
+                                                    return_type: return_type.clone(),
+                                                    body: mbody.clone(),
+                                                    modifiers: modifiers.clone(),
+                                                    handles: handles.clone(),
+                                                    is_async: *is_async,
+                                                    is_generator: *is_generator,
+                                                    is_sub: *is_sub,
+                                                },
+                                            );
+                                            members.push(ClassMember::Method(Box::new(aliased)));
+                                            declared.insert(dst.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -840,6 +1077,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut members: Vec<ClassMember> = Vec::new();
     let mut modifiers = ClassModifiers::default();
     let mut first_qualified = true;
+    let mut deferred_members: Vec<Pair<Rule>> = Vec::new();
 
     for p in pair.into_inner() {
         match p.as_rule() {
@@ -862,13 +1100,25 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             }
             Rule::use_trait | Rule::class_constant | Rule::property_declaration
                 | Rule::method_declaration | Rule::empty_statement => {
-                if let Some(member) = walk_class_member(p)? {
-                    members.push(member);
-                }
+                deferred_members.push(p);
             }
             _ => {}
         }
     }
+
+    // Push class context BEFORE walking members so `self::` inside
+    // method bodies resolves to this class's name.
+    push_class_context(&name);
+    let walk_result: Result<(), String> = (|| {
+        for p in deferred_members {
+            if let Some(member) = walk_class_member(p)? {
+                members.push(member);
+            }
+        }
+        Ok(())
+    })();
+    pop_class_context();
+    walk_result?;
 
     Ok(StmtKind::ClassDecl { name, parents, interfaces, members, modifiers })
 }
@@ -882,15 +1132,14 @@ fn walk_interface_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut parents: Vec<String> = Vec::new();
     let mut class_members: Vec<ClassMember> = Vec::new();
+    let mut deferred: Vec<Pair<Rule>> = Vec::new();
 
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::identifier if name.is_empty() => name = p.as_str().to_string(),
             Rule::qualified_name => parents.push(p.as_str().to_string()),
             Rule::class_constant => {
-                if let Some(m) = walk_class_member(p)? {
-                    class_members.push(m);
-                }
+                deferred.push(p);
             }
             Rule::method_declaration => {
                 // Skip — interface methods have no body, so nothing to
@@ -899,6 +1148,18 @@ fn walk_interface_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             _ => {}
         }
     }
+
+    push_class_context(&name);
+    let walk_result: Result<(), String> = (|| {
+        for p in deferred {
+            if let Some(m) = walk_class_member(p)? {
+                class_members.push(m);
+            }
+        }
+        Ok(())
+    })();
+    pop_class_context();
+    walk_result?;
 
     Ok(StmtKind::ClassDecl {
         name,
@@ -915,19 +1176,30 @@ fn walk_trait_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     // chain.
     let mut name = String::new();
     let mut members: Vec<ClassMember> = Vec::new();
+    let mut deferred_members: Vec<Pair<Rule>> = Vec::new();
 
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::identifier if name.is_empty() => name = p.as_str().to_string(),
             Rule::use_trait | Rule::class_constant | Rule::property_declaration
                 | Rule::method_declaration | Rule::empty_statement => {
-                if let Some(member) = walk_class_member(p)? {
-                    members.push(member);
-                }
+                deferred_members.push(p);
             }
             _ => {}
         }
     }
+
+    push_class_context(&name);
+    let walk_result: Result<(), String> = (|| {
+        for p in deferred_members {
+            if let Some(member) = walk_class_member(p)? {
+                members.push(member);
+            }
+        }
+        Ok(())
+    })();
+    pop_class_context();
+    walk_result?;
 
     Ok(StmtKind::ClassDecl {
         name,
@@ -944,49 +1216,76 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     // `{ name: "Case", value: <backing-value or "Case"> }` so user code
     // can reach `EnumName::Case->name` and `EnumName::Case->value` via
     // ordinary member access. A static `cases()` method returns the
-    // ordered list of all cases.
+    // ordered list of all cases. Backed enums (with a backing type
+    // like `: string` or `: int`) additionally get static `from()` and
+    // `tryFrom()` methods that look up cases by their backing value.
     let mut name = String::new();
+    let mut backing_type: Option<String> = None;
+    let mut interfaces: Vec<String> = Vec::new();
     let mut members: Vec<ClassMember> = Vec::new();
     let mut case_names: Vec<String> = Vec::new();
+    let mut case_backings: Vec<(String, Option<Expression>)> = Vec::new();
+    let mut deferred: Vec<Pair<Rule>> = Vec::new();
 
+    // First pass: extract name + simple metadata (no expression walks yet).
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::identifier if name.is_empty() => name = p.as_str().to_string(),
-            Rule::enum_case => {
-                let mut case_name = String::new();
-                let mut backing: Option<Expression> = None;
-                for c in p.into_inner() {
-                    match c.as_rule() {
-                        Rule::identifier => case_name = c.as_str().to_string(),
-                        Rule::expression => backing = Some(walk_expression(c)?),
-                        _ => {}
-                    }
-                }
-                case_names.push(case_name.clone());
-                let value_expr = backing.unwrap_or_else(|| Expression::string(&case_name));
-                let case_obj = Expression::new(ExprKind::Object(vec![
-                    ObjectProperty::KeyValue {
-                        key: Expression::string("name"),
-                        value: Expression::string(&case_name),
-                    },
-                    ObjectProperty::KeyValue {
-                        key: Expression::string("value"),
-                        value: value_expr,
-                    },
-                ]));
-                members.push(ClassMember::Const {
-                    name: case_name,
-                    type_hint: None,
-                    value: case_obj,
-                    visibility: Visibility::Public,
-                });
-            }
-            Rule::class_constant | Rule::method_declaration | Rule::use_trait => {
-                if let Some(m) = walk_class_member(p)? { members.push(m); }
+            Rule::identifier => backing_type = Some(p.as_str().to_string()),
+            Rule::qualified_name => interfaces.push(p.as_str().to_string()),
+            Rule::enum_case | Rule::class_constant | Rule::method_declaration | Rule::use_trait => {
+                deferred.push(p);
             }
             _ => {}
         }
     }
+
+    // Second pass: walk member expressions/bodies with class context
+    // pushed so `self::` inside enum methods/cases resolves to the enum.
+    push_class_context(&name);
+    let walk_result: Result<(), String> = (|| {
+        for p in deferred {
+            match p.as_rule() {
+                Rule::enum_case => {
+                    let mut case_name = String::new();
+                    let mut backing: Option<Expression> = None;
+                    for c in p.into_inner() {
+                        match c.as_rule() {
+                            Rule::identifier => case_name = c.as_str().to_string(),
+                            Rule::expression => backing = Some(walk_expression(c)?),
+                            _ => {}
+                        }
+                    }
+                    case_names.push(case_name.clone());
+                    case_backings.push((case_name.clone(), backing.clone()));
+                    let value_expr = backing.unwrap_or_else(|| Expression::string(&case_name));
+                    let case_obj = Expression::new(ExprKind::Object(vec![
+                        ObjectProperty::KeyValue {
+                            key: Expression::string("name"),
+                            value: Expression::string(&case_name),
+                        },
+                        ObjectProperty::KeyValue {
+                            key: Expression::string("value"),
+                            value: value_expr,
+                        },
+                    ]));
+                    members.push(ClassMember::Const {
+                        name: case_name,
+                        type_hint: None,
+                        value: case_obj,
+                        visibility: Visibility::Public,
+                    });
+                }
+                Rule::class_constant | Rule::method_declaration | Rule::use_trait => {
+                    if let Some(m) = walk_class_member(p)? { members.push(m); }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    })();
+    pop_class_context();
+    walk_result?;
 
     // Synthesize `static function cases(): array { return [<case>, ...]; }`.
     if !case_names.is_empty() {
@@ -1017,10 +1316,97 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         members.push(ClassMember::Method(Box::new(cases_method)));
     }
 
+    // Backed enums (`enum X: string { ... }`) get `from()` and
+    // `tryFrom()` accessible as `EnumName::from(...)`. They're
+    // synthesised as Const members whose value is a Lambda — that way
+    // `EnumName::from` resolves via STRUCT_GET to a plain Closure with
+    // no `$this` slot, sidestepping the static-method dispatch path
+    // that would prepend the class as receiver. Each lambda walks
+    // cases in declaration order and returns the match on `===`.
+    if backing_type.is_some()
+        && case_backings.iter().any(|(_, b)| b.is_some())
+    {
+        let mk_param = |n: &str| Param {
+            name: n.to_string(),
+            type_hint: None,
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false, is_kwargs: false,
+            is_optional: false, is_nullable: false,
+        };
+        let case_ref = |c: &str| Expression::new(ExprKind::StaticAccess {
+            class: Box::new(Expression::ident(&name)),
+            member: Box::new(Expression::ident(c)),
+        });
+        let build_match_chain = |fallback: Statement| -> Vec<Statement> {
+            let mut body: Vec<Statement> = Vec::new();
+            for (case_name, backing) in &case_backings {
+                if let Some(b) = backing {
+                    let cond = Expression::new(ExprKind::Binary {
+                        op: BinOp::StrictEq,
+                        left: Box::new(Expression::ident("v")),
+                        right: Box::new(b.clone()),
+                    });
+                    let then_body = vec![
+                        Statement::new(StmtKind::Return(Some(case_ref(case_name)))),
+                    ];
+                    body.push(Statement::new(StmtKind::If {
+                        cond,
+                        then_body,
+                        elifs: Vec::new(),
+                        else_body: None,
+                    }));
+                }
+            }
+            body.push(fallback);
+            body
+        };
+        // tryFrom: returns null on no match.
+        let try_from_body = build_match_chain(
+            Statement::new(StmtKind::Return(Some(Expression::null()))),
+        );
+        let try_from_lambda = Expression::new(ExprKind::Lambda {
+            params: vec![mk_param("v")],
+            body: LambdaBody::Block(try_from_body),
+            is_async: false,
+            captures: vec![],
+        });
+        members.push(ClassMember::Const {
+            name: "tryFrom".to_string(),
+            type_hint: None,
+            value: try_from_lambda,
+            visibility: Visibility::Public,
+        });
+        // from: throws on no match. Use `throw new Error(...)`.
+        let from_body = build_match_chain(
+            Statement::new(StmtKind::Throw {
+                expr: Some(Expression::new(ExprKind::New {
+                    class: Box::new(Expression::ident("Error")),
+                    args: vec![Argument::positional(
+                        Expression::string(&format!("Invalid backing value for enum \"{}\"", name)),
+                    )],
+                })),
+                cause: None,
+            }),
+        );
+        let from_lambda = Expression::new(ExprKind::Lambda {
+            params: vec![mk_param("v")],
+            body: LambdaBody::Block(from_body),
+            is_async: false,
+            captures: vec![],
+        });
+        members.push(ClassMember::Const {
+            name: "from".to_string(),
+            type_hint: None,
+            value: from_lambda,
+            visibility: Visibility::Public,
+        });
+    }
+
     Ok(StmtKind::ClassDecl {
         name,
         parents: Vec::new(),
-        interfaces: Vec::new(),
+        interfaces,
         members,
         modifiers: ClassModifiers::default(),
     })
@@ -1030,10 +1416,78 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
     match pair.as_rule() {
         Rule::empty_statement => Ok(None),
         Rule::use_trait => {
-            // `use TraitName;` inside a class — for now, no-op. Trait
-            // method copy-in happens via the dotnet/dotnet-style
-            // inheritance chain at compile time, which we don't model
-            // here yet. Future: synthesize parent-trait method bindings.
+            // `use TraitName(, OtherTrait)*;` or
+            // `use TraitName(, OtherTrait)* { adaptations }` inside a
+            // class. Record trait names + alias adaptations against
+            // the enclosing class so the post-pass in `parse()` can
+            // copy trait const + method members and add aliases on
+            // the using class. Returns `None` because the trait usage
+            // itself is metadata; actual members get injected later.
+            if let Some(class_name) = current_class_name() {
+                let mut trait_names: Vec<String> = Vec::new();
+                let mut aliases: Vec<(String, String, String)> = Vec::new();
+                for p in pair.into_inner() {
+                    match p.as_rule() {
+                        Rule::qualified_name => trait_names.push(p.as_str().to_string()),
+                        Rule::trait_adaptation => {
+                            // Two forms:
+                            //   trait_method_ref ~ "insteadof" ~ qualified_name+ ~ ";"
+                            //   trait_method_ref ~ "as" ~ visibility? ~ method_ident? ~ ";"
+                            // We only care about the `as` form here —
+                            // `insteadof` is handled implicitly by the
+                            // first-trait-wins copy order.
+                            let raw = p.as_str();
+                            let is_alias = raw.contains(" as ");
+                            if !is_alias { continue; }
+                            let mut method_trait: String = String::new();
+                            let mut method_name: Option<String> = None;
+                            let mut alias_name: Option<String> = None;
+                            for q in p.into_inner() {
+                                match q.as_rule() {
+                                    Rule::trait_method_ref => {
+                                        // trait_method_ref = qualified_name "::" method_ident | method_ident
+                                        let mut tname: Option<String> = None;
+                                        let mut last_method: Option<String> = None;
+                                        for r in q.into_inner() {
+                                            match r.as_rule() {
+                                                Rule::qualified_name => tname = Some(r.as_str().to_string()),
+                                                Rule::method_ident => last_method = Some(r.as_str().to_string()),
+                                                _ => {}
+                                            }
+                                        }
+                                        if let Some(t) = tname { method_trait = t; }
+                                        method_name = last_method;
+                                    }
+                                    Rule::method_ident => {
+                                        alias_name = Some(q.as_str().to_string());
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            if let (Some(src), Some(dst)) = (method_name, alias_name) {
+                                aliases.push((method_trait, src, dst));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if !trait_names.is_empty() {
+                    TRAIT_USAGES.with(|t| {
+                        t.borrow_mut()
+                            .entry(class_name.clone())
+                            .or_default()
+                            .extend(trait_names);
+                    });
+                }
+                if !aliases.is_empty() {
+                    TRAIT_ALIASES.with(|t| {
+                        t.borrow_mut()
+                            .entry(class_name)
+                            .or_default()
+                            .extend(aliases);
+                    });
+                }
+            }
             Ok(None)
         }
         Rule::class_constant => {
@@ -1301,7 +1755,20 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
             }
         }
 
-        Rule::kw_self => ExprKind::This,  // PHP `self::` inside a method ≈ `this`
+        Rule::kw_self => {
+            // PHP `self::X` is a compile-time reference to the enclosing
+            // class. When inside a class member (walk_class_decl /
+            // walk_trait_decl / walk_enum_decl pushed the class name onto
+            // CLASS_STACK), rewrite `self` to the class name directly so
+            // `self::CONST` becomes `ClassName::CONST` and resolves via
+            // the static field on the class object. Without context (rare
+            // — `self` outside a class is illegal PHP) fall back to
+            // `This` so existing call-site code keeps working.
+            match current_class_name() {
+                Some(cn) => ExprKind::Ident(cn),
+                None => ExprKind::This,
+            }
+        }
         Rule::kw_parent => ExprKind::Super,
         Rule::kw_static => ExprKind::Ident("static".to_string()),
 
@@ -1555,7 +2022,18 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
     if matches!(lhs_pair.as_rule(), Rule::yield_expression) {
         return walk_expression(lhs_pair);
     }
-    let lhs = expression_into_destructure_target(walk_expression(lhs_pair)?);
+    let lhs_walked = walk_expression(lhs_pair)?;
+    // Defer destructure conversion until we confirm there's actually a `=`.
+    // The grammar wraps every expression in `assignment_expression`, so
+    // an isolated `[]` (without `=`) reaches walk_assignment too — if we
+    // converted eagerly, RHS empty arrays would compile to `Op::NULL`
+    // via the `ExprKind::Destructure` arm.
+    let has_assign = inner.peek().is_some();
+    let lhs = if has_assign {
+        expression_into_destructure_target(lhs_walked)
+    } else {
+        lhs_walked
+    };
     if let Some(op_pair) = inner.next() {
         let op = op_pair.as_str();
         let rhs = walk_expression(inner.next().unwrap())?;
@@ -2168,6 +2646,105 @@ fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span) -> Result<Ex
                             ));
                         }
                     }
+                    // PHP `Closure::fromCallable($callable)` — produces a
+                    // Closure forwarding to the named callable. Rewrite at
+                    // walker-time to a 4-arg pass-through arrow function,
+                    // mirroring the PHP 8.1 first-class callable rewrite
+                    // (`fn(...)` at Rule::call_op above). Forms handled:
+                    //   'name'              — bare function/builtin
+                    //   [$obj, 'method']    — instance method
+                    //   ['Class', 'method'] — static method
+                    if class_name.trim_start_matches('\\') == "Closure"
+                        && member_name == "fromCallable"
+                        && args.len() == 1
+                    {
+                        let mk_param = |n: &str| Param {
+                            name: n.to_string(),
+                            type_hint: None,
+                            default: Some(Expression::with_span(
+                                ExprKind::Lit(Literal::Null), span.clone(),
+                            )),
+                            pass_by: PassBy::Value,
+                            is_rest: false, is_kwargs: false,
+                            is_optional: true, is_nullable: true,
+                        };
+                        let mk_arg_ident = |n: &str| Argument::positional(
+                            Expression::with_span(
+                                ExprKind::Ident(n.to_string()), span.clone(),
+                            ),
+                        );
+                        let body_call_opt: Option<Expression> = match &args[0].value.kind {
+                            ExprKind::Lit(Literal::Str(name)) => Some(Expression::with_span(
+                                ExprKind::Call {
+                                    callee: Box::new(Expression::with_span(
+                                        ExprKind::Ident(name.clone()), span.clone(),
+                                    )),
+                                    args: vec![
+                                        mk_arg_ident("a"), mk_arg_ident("b"),
+                                        mk_arg_ident("c"), mk_arg_ident("d"),
+                                    ],
+                                    optional: false,
+                                },
+                                span.clone(),
+                            )),
+                            ExprKind::Array(elems) if elems.len() == 2 => {
+                                let recv = &elems[0].value;
+                                let method = match &elems[1].value.kind {
+                                    ExprKind::Lit(Literal::Str(s)) => Some(s.clone()),
+                                    _ => None,
+                                };
+                                method.map(|m| {
+                                    let callee = match &recv.kind {
+                                        ExprKind::Lit(Literal::Str(cls)) => Expression::with_span(
+                                            ExprKind::StaticAccess {
+                                                class: Box::new(Expression::with_span(
+                                                    ExprKind::Ident(cls.clone()), span.clone(),
+                                                )),
+                                                member: Box::new(Expression::with_span(
+                                                    ExprKind::Ident(m.clone()), span.clone(),
+                                                )),
+                                            },
+                                            span.clone(),
+                                        ),
+                                        _ => Expression::with_span(
+                                            ExprKind::Member {
+                                                object: Box::new(recv.clone()),
+                                                field: m,
+                                                null_safe: false,
+                                            },
+                                            span.clone(),
+                                        ),
+                                    };
+                                    Expression::with_span(
+                                        ExprKind::Call {
+                                            callee: Box::new(callee),
+                                            args: vec![
+                                                mk_arg_ident("a"), mk_arg_ident("b"),
+                                                mk_arg_ident("c"), mk_arg_ident("d"),
+                                            ],
+                                            optional: false,
+                                        },
+                                        span.clone(),
+                                    )
+                                })
+                            }
+                            _ => None,
+                        };
+                        if let Some(body_call) = body_call_opt {
+                            return Ok(Expression::with_span(
+                                ExprKind::Lambda {
+                                    params: vec![
+                                        mk_param("a"), mk_param("b"),
+                                        mk_param("c"), mk_param("d"),
+                                    ],
+                                    body: LambdaBody::Expr(Box::new(body_call)),
+                                    is_async: false,
+                                    captures: vec![],
+                                },
+                                span.clone(),
+                            ));
+                        }
+                    }
                 }
             }
             // Rewrite PHP function names whose JS equivalent already
@@ -2189,17 +2766,18 @@ fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span) -> Result<Ex
             // time so the AST carries a language-neutral call to a
             // stdlib helper:
             //
-            //   $x++   →   $x = __php_increment($x)
-            //   $x--   →   $x = __php_decrement($x)
+            //   $x++   →   ($tmp = $x, $x = __php_increment($x), $tmp)
+            //   $x--   →   ($tmp = $x, $x = __php_decrement($x), $tmp)
+            //
+            // The Sequence form returns the OLD value (PHP postfix
+            // semantics) — required by `yield $n++` and similar
+            // expression-level uses. The temp is unique per call site
+            // (TMP_COUNTER) so nested post-increments like
+            // `$a++ + $b++` don't clobber each other.
             //
             // Downstream compilers, consumers, and other language
-            // walkers see a plain function call + assign — no
-            // compiler-side `if profile.php_*` flag needed. (The
-            // statement form returns the NEW value, not the classic
-            // post-inc OLD value; acceptable for statement-level
-            // mutation — most `$i++` in real code is statement-level.
-            // Expression-level `$y = $x++` would need a sequence
-            // expression rewrite; deferring until a test demands it.)
+            // walkers see a plain Sequence + call + assign — no
+            // compiler-side `if profile.php_*` flag needed.
             let helper = if op.as_str() == "++" { "__php_increment" } else { "__php_decrement" };
             let callee = Expression::with_span(
                 ExprKind::Ident(helper.to_string()),
@@ -2213,11 +2791,28 @@ fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span) -> Result<Ex
                 },
                 span.clone(),
             );
-            Ok(Expression::with_span(
+            let tmp = next_tmp_name("post_inc");
+            let tmp_save = Expression::with_span(
                 ExprKind::Assign {
-                    target: Box::new(receiver),
+                    target: Box::new(Expression::with_span(
+                        ExprKind::Ident(tmp.clone()), span.clone(),
+                    )),
+                    value: Box::new(receiver.clone()),
+                },
+                span.clone(),
+            );
+            let assign = Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(receiver.clone()),
                     value: Box::new(call),
                 },
+                span.clone(),
+            );
+            let read_tmp = Expression::with_span(
+                ExprKind::Ident(tmp), span.clone(),
+            );
+            Ok(Expression::with_span(
+                ExprKind::Sequence(vec![tmp_save, assign, read_tmp]),
                 span.clone(),
             ))
         }
@@ -2239,7 +2834,7 @@ fn walk_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
         let mut value: Option<Expression> = None;
         for sub in p.into_inner() {
             match sub.as_rule() {
-                Rule::identifier => name = Some(sub.as_str().to_string()),
+                Rule::arg_name => name = Some(sub.as_str().to_string()),
                 Rule::expression => value = Some(walk_expression(sub)?),
                 _ => {}
             }
@@ -3654,6 +4249,50 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span)
             )
         }
         // ── Substring ──────────────────────────────────────────────────
+        // PHP 8 `str_contains/str_starts_with/str_ends_with($haystack,
+        // $needle)` → JS `String.prototype.includes/startsWith/endsWith`.
+        // Profile bindings to `opcode:str_*` exist but `emit_builtin_opcode`
+        // doesn't wire those names; routing through the JS member-call
+        // path uses the existing String prototype dispatch.
+        "str_contains" if args.len() == 2 => {
+            mk_call(
+                Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(arg(0)?),
+                        field: "includes".to_string(),
+                        null_safe: false,
+                    },
+                    span.clone(),
+                ),
+                vec![arg(1)?],
+            )
+        }
+        "str_starts_with" if args.len() == 2 => {
+            mk_call(
+                Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(arg(0)?),
+                        field: "startsWith".to_string(),
+                        null_safe: false,
+                    },
+                    span.clone(),
+                ),
+                vec![arg(1)?],
+            )
+        }
+        "str_ends_with" if args.len() == 2 => {
+            mk_call(
+                Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(arg(0)?),
+                        field: "endsWith".to_string(),
+                        null_safe: false,
+                    },
+                    span.clone(),
+                ),
+                vec![arg(1)?],
+            )
+        }
         // PHP `substr($s, $start, $length?)` →
         //   2-arg: `$s.substring($start)`
         //   3-arg: `$s.substring($start, $start + $length)` (start eval'd

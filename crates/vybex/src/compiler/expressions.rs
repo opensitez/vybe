@@ -392,11 +392,19 @@ impl Compiler {
                 self.compile_expr(object)?;
 
                 if *null_safe {
-                    // ?. — check null before accessing
+                    // ?. — null-safe access. PHP `?->` short-circuits to
+                    // null whenever the receiver isn't an Object. That
+                    // also catches the "called a method on a string"
+                    // case (test surface assertion: `"hello"?->length`
+                    // === null). REF_IS_OBJECT is true only for actual
+                    // Object values, false for null / undefined / string
+                    // / number / bool — exactly the right discriminant.
                     self.emit(Op::DUP);
-                    self.emit(Op::REF_IS_NULL);
-                    let skip = self.emit_jump(Op::BR_IF_FALSE);
-                    // Object is null — result is null
+                    self.emit(Op::REF_IS_OBJECT);
+                    let skip = self.emit_jump(Op::BR_IF_TRUE);
+                    // Receiver is not an object — drop it, push null.
+                    self.emit(Op::DROP);
+                    self.emit(Op::NULL);
                     let end = self.emit_jump(Op::BR);
                     self.patch_jump(skip);
                     let field_name = self.canon(field);

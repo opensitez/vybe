@@ -239,9 +239,15 @@ fn regexp_exec(args: &[Value]) -> Value {
     match_obj.properties.insert("index".into(), Value::I32(index));
     match_obj.properties.insert("input".into(), s_val(&input));
     let mut groups = Object::new();
+    let mut group_order: Vec<Value> = Vec::new();
     for name in re.capture_names().flatten() {
         let val = caps.name(name).map(|m| s_val(m.as_str())).unwrap_or(Value::Undefined);
         groups.properties.insert(name.to_string(), val);
+        group_order.push(s_val(name));
+    }
+    if !group_order.is_empty() {
+        groups.properties.insert("__keys".into(),
+            Value::Object(Arc::new(Mutex::new(Object::new_array(group_order)))));
     }
     match_obj.properties.insert("groups".into(),
         Value::Object(Arc::new(Mutex::new(groups))));
@@ -301,9 +307,15 @@ fn register_string_methods(vm: &mut VM) {
                 match_obj.properties.insert("index".into(), Value::I32(index));
                 match_obj.properties.insert("input".into(), s_val(&input));
                 let mut groups = Object::new();
+                let mut group_order: Vec<Value> = Vec::new();
                 for name in re.capture_names().flatten() {
                     let val = caps.name(name).map(|m| s_val(m.as_str())).unwrap_or(Value::Undefined);
                     groups.properties.insert(name.to_string(), val);
+                    group_order.push(s_val(name));
+                }
+                if !group_order.is_empty() {
+                    groups.properties.insert("__keys".into(),
+                        Value::Object(Arc::new(Mutex::new(Object::new_array(group_order)))));
                 }
                 match_obj.properties.insert("groups".into(),
                     Value::Object(Arc::new(Mutex::new(groups))));

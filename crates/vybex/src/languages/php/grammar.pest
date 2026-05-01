@@ -83,6 +83,7 @@ kw_extends = @{ ^"extends"     ~ !ident_cont }
 kw_implements = @{ ^"implements"  ~ !ident_cont }
 kw_interface = @{ ^"interface"   ~ !ident_cont }
 kw_trait = @{ ^"trait"       ~ !ident_cont }
+kw_insteadof = @{ ^"insteadof"   ~ !ident_cont }
 kw_enum = @{ ^"enum"        ~ !ident_cont }
 kw_new = @{ ^"new"         ~ !ident_cont }
 kw_clone = @{ ^"clone"       ~ !ident_cont }
@@ -148,7 +149,7 @@ reserved = _{
     | kw_private | kw_protected | kw_abstract | kw_final | kw_const
     | kw_match | kw_fn | kw_use | kw_namespace | kw_yield_from | kw_yield
     | kw_list | kw_global | kw_readonly | kw_and | kw_or | kw_xor
-    | kw_self | kw_parent | kw_isset | kw_empty | kw_unset
+    | kw_self | kw_parent | kw_isset | kw_empty | kw_unset | kw_insteadof
     | kw_endif | kw_endwhile | kw_endfor | kw_endforeach | kw_endswitch
 }
 
@@ -357,10 +358,29 @@ class_member = _{
     | empty_statement
 }
 
-// `use TraitName, OtherTrait;` inside a class body
+// `use TraitName(, OtherTrait)*;` or
+// `use TraitName(, OtherTrait)* { adaptations }` inside a class body.
+// Adaptations resolve method conflicts:
+//   `A::method insteadof B;` — when both A and B provide `method`,
+//                              keep A's; the `insteadof` clause can
+//                              list multiple trait names to skip.
+//   `A::method as alias;`    — bind A's `method` under the new name
+//                              `alias` on the using class.
+//   `method as alias;`       — same, but the trait is implicit (only
+//                              works when no conflict).
 use_trait = {
-    kw_use ~ qualified_name ~ ("," ~ qualified_name)* ~ ";"
+    kw_use ~ qualified_name ~ ("," ~ qualified_name)*
+    ~ (";" | "{" ~ trait_adaptation* ~ "}")
 }
+
+trait_adaptation = {
+    trait_method_ref ~ kw_insteadof ~ qualified_name ~ ("," ~ qualified_name)* ~ ";"
+    | trait_method_ref ~ kw_as ~ trait_visibility? ~ method_ident? ~ ";"
+}
+
+// `MyTrait::method` or just `method` (when unambiguous).
+trait_method_ref = { qualified_name ~ "::" ~ method_ident | method_ident }
+trait_visibility = { kw_public | kw_private | kw_protected }
 
 class_constant = {
     // The type_annotation is gated by a `&(identifier ~ "=")` lookahead
@@ -648,12 +668,19 @@ class_member_name = {
 arg_list = { argument ~ ("," ~ argument)* ~ ","? }
 
 argument = {
-    // Named arg: `name: value`
-    identifier ~ ":" ~ !":" ~ expression
+    // Named arg: `name: value`. Uses `arg_name` (not `identifier`) so
+    // reserved words like `class`, `match`, `list` work as parameter
+    // labels — PHP accepts them in named-arg position.
+    arg_name ~ ":" ~ !":" ~ expression
     | "..." ~ expression
     | "&" ~ expression
     | expression
 }
+
+// Identifier permitted as a named-argument label. Allows reserved words
+// (`class`, `match`, `list`, ...) — PHP's named-arg grammar treats the
+// label position like a method-name slot, where reserved words are OK.
+arg_name = @{ (ASCII_ALPHA | "_") ~ ident_cont* }
 
 // ── Primary expressions ──────────────────────────────────────────────────────
 
