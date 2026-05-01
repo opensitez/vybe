@@ -460,8 +460,8 @@ foreach_statement = {
 
 // `as $value` or `as $key => $value`
 foreach_target = {
-    variable ~ "=>" ~ "&"? ~ variable
-    | "&"? ~ variable
+    variable ~ "=>" ~ "&"? ~ (variable | list_expression | short_array_expression)
+    | "&"? ~ (variable | list_expression | short_array_expression)
 }
 
 switch_statement = {

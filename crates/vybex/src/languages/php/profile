@@ -278,6 +278,9 @@ in_array            = { emit = "opcode:array_contains",            min_args = 2,
 array_search        = { emit = "opcode:array_index_of",            min_args = 2, max_args = 3 }
 array_slice         = { emit = "opcode:array_slice",               min_args = 2, max_args = 4 }
 array_merge         = { emit = "opcode:array_concat",              min_args = 1, max_args = 255 }
+array_map           = { emit = "common:php.array_map",             min_args = 2, max_args = 2 }
+array_filter        = { emit = "common:php.array_filter",          min_args = 1, max_args = 3 }
+array_walk_recursive = { emit = "common:php.array_walk_recursive", min_args = 2, max_args = 3 }
 # These stay on `opcode:array_*` because they dispatch through
 # `emit_builtin_opcode` which has the variadic-aware per-arg logic
 # (PHP `array_push($a, v1, v2, ...)`, `array_merge($a, $b, $c, ...)`).
@@ -456,6 +459,8 @@ empty               = { emit = "stdlib:isempty",             min_args = 1, max_a
 
 __php_dt_new           = { emit = "common:php.datetime_new",            min_args = 1, max_args = 1 }
 __php_dt_imm_new       = { emit = "common:php.datetime_immutable_new",  min_args = 1, max_args = 1 }
+__php_dt_create_from_format = { emit = "common:php.datetime_create_from_format", min_args = 2, max_args = 2 }
+__php_dt_imm_create_from_format = { emit = "common:php.datetime_immutable_create_from_format", min_args = 2, max_args = 2 }
 __php_dt_format        = { emit = "common:php.datetime_format",         min_args = 2, max_args = 2 }
 __php_dt_get_timestamp = { emit = "common:php.datetime_get_timestamp",  min_args = 1, max_args = 1 }
 __php_dt_modify        = { emit = "common:php.datetime_modify",         min_args = 2, max_args = 2 }

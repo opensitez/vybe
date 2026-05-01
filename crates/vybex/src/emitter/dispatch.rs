@@ -251,6 +251,10 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::php::datetime_adapter::emit_datetime_new(chunks, current, line),
         "php.datetime_immutable_new"
             => crate::emitter::php::datetime_adapter::emit_datetime_immutable_new(chunks, current, line),
+        "php.datetime_create_from_format"
+            => crate::emitter::php::datetime_adapter::emit_datetime_create_from_format(chunks, current, line),
+        "php.datetime_immutable_create_from_format"
+            => crate::emitter::php::datetime_adapter::emit_datetime_immutable_create_from_format(chunks, current, line),
         "php.datetime_format"
             => crate::emitter::php::datetime_adapter::emit_datetime_format(chunks, current, line),
         "php.datetime_get_timestamp"
@@ -391,12 +395,20 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::php::string_adapter::emit_str_replace(chunks, current, argc, line),
         "php.wordwrap"
             => crate::emitter::php::string_adapter::emit_wordwrap(chunks, current, argc, line),
+        "php.echo_stringify"
+            => crate::emitter::php::string_adapter::emit_echo_stringify(chunks, current, argc, line),
 
         // ── PHP array helpers ──────────────────────────────────────
         // Index-based loops + ECMA array/object ops. PHP `array` ≡
         // `Map` (assoc) or `Array` (sequential).
         "php.array_pad"
             => crate::emitter::php::array_adapter::emit_array_pad(chunks, current, argc, line),
+        "php.array_map"
+            => crate::emitter::php::array_adapter::emit_array_map(chunks, current, argc, line),
+        "php.array_filter"
+            => crate::emitter::php::array_adapter::emit_array_filter(chunks, current, argc, line),
+        "php.array_walk_recursive"
+            => crate::emitter::php::array_adapter::emit_array_walk_recursive(chunks, current, argc, line),
         "php.array_chunk"
             => crate::emitter::php::array_adapter::emit_array_chunk(chunks, current, argc, line),
         "php.array_combine"

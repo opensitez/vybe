@@ -94,6 +94,47 @@ impl Compiler {
     pub(super) fn compile_call(&mut self, callee: &Expression, args: &[Argument]) -> Result<(), String> {
         let arg_exprs: Vec<&Expression> = args.iter().map(|a| &a.value).collect();
 
+        if self.is_php_profile() {
+            if let ExprKind::Ident(name) = &callee.kind {
+                if name == "compact" {
+                    let line = self.line;
+                    common::collections::emit_map_new(&mut self.chunks, self.current, line);
+                    for arg in args {
+                        let ExprKind::Lit(Literal::Str(var_name)) = &arg.value.kind else {
+                            self.emit(Op::NULL);
+                            return Ok(());
+                        };
+                        let php_var_name = format!("${}", var_name);
+                        self.emit(Op::DUP);
+                        self.emit_const(Value::String(Arc::from(var_name.as_str())));
+                        self.emit_var_get(&php_var_name);
+                        common::collections::emit_set(&mut self.chunks, self.current, line);
+                        self.emit(Op::DROP);
+                    }
+                    return Ok(());
+                }
+
+                if name == "extract" && arg_exprs.len() == 1 {
+                    if let ExprKind::Array(elements) = &arg_exprs[0].kind {
+                        let mut count = 0i64;
+                        for elem in elements {
+                            let Some(key_expr) = &elem.key else { continue; };
+                            let bind_name = match &key_expr.kind {
+                                ExprKind::Lit(Literal::Str(s)) => format!("${}", s),
+                                ExprKind::Lit(Literal::Int(n)) => format!("${}", n),
+                                _ => continue,
+                            };
+                            self.compile_expr(&elem.value)?;
+                            self.emit_var_set(&bind_name);
+                            count += 1;
+                        }
+                        self.emit_const(Value::I64(count));
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
         // ── super(args) → call parent constructor, store result as this ──
         if let ExprKind::Super = &callee.kind {
             if let Some(ref class_name) = self.current_class.clone() {
@@ -1463,26 +1504,25 @@ impl Compiler {
             }
 
             self.compile_expr(object)?;
+            let obj_tmp = self.define_local("__obj");
+            self.reserve_local_slot(obj_tmp);
+            self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+
+            let field_name = self.canon(field);
+            let prop = self.str_const(&field_name);
 
             if *null_safe {
                 // obj?.method() — short-circuit to null if obj is null/undefined.
-                // Stack: [obj]. Check null, if null leave null on stack and skip call.
-                self.emit(Op::DUP);
+                self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit(Op::REF_IS_NULL);
                 let obj_not_null = self.emit_jump(Op::BR_IF_FALSE);
-                // obj IS null — leave null on stack, skip call
+                self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 let end = self.emit_jump(Op::BR);
                 self.patch_jump(obj_not_null);
-                // obj is not null — do the method call
-                let field_name = self.canon(field);
-                let prop = self.str_const(&field_name);
-                self.emit(Op::DUP);
+                self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_u16(Op::STRUCT_GET, prop);
                 let fn_tmp = self.define_local("__fn");
                 self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
-                let obj_tmp = self.define_local("__obj");
-                self.reserve_local_slot(obj_tmp);
-                self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 for a in &arg_exprs { self.compile_expr(a)?; }
@@ -1491,15 +1531,281 @@ impl Compiler {
                 return Ok(());
             }
 
-            let field_name = self.canon(field);
-            let prop = self.str_const(&field_name);
-            self.emit(Op::DUP);
+            if self.is_php_profile() {
+                let is_php_generator_method = (field_name == "current" && arg_exprs.is_empty())
+                    || (field_name == "send" && arg_exprs.len() == 1)
+                    || (field_name == "next" && arg_exprs.is_empty())
+                    || (field_name == "valid" && arg_exprs.is_empty())
+                    || (field_name == "getReturn" && arg_exprs.is_empty());
+
+                if is_php_generator_method {
+                let started_key = self.str_const("__php_gen_started");
+                let current_key = self.str_const("__php_gen_current");
+                let done_key = self.str_const("__php_gen_done");
+                let return_key = self.str_const("__php_gen_return");
+
+                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                let is_gen_idx = self.import("ecma:value", "isGenerator");
+                self.emit_host_call(is_gen_idx, 1);
+                let not_gen = self.emit_jump(Op::BR_IF_FALSE);
+
+                    match field_name.as_str() {
+                        "getReturn" => {
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::STRUCT_GET, return_key);
+                        }
+                        "valid" => {
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::STRUCT_GET, started_key);
+                            self.emit(Op::DYN_TO_BOOL);
+                            let need_start = self.emit_jump(Op::BR_IF_FALSE);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::STRUCT_GET, done_key);
+                            self.emit(Op::DYN_TO_BOOL);
+                            self.emit(Op::DYN_NOT);
+                            let handled = self.emit_jump(Op::BR);
+
+                            self.patch_jump(need_start);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit(Op::GEN_NEXT);
+                            let has_more_slot = self.define_local("__php_gen_has_more");
+                            self.emit_u16(Op::LOCAL_SET, has_more_slot); self.emit(Op::DROP);
+                            let value_slot = self.define_local("__php_gen_value");
+                            self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_const(Value::Bool(true));
+                            self.emit_u16(Op::STRUCT_SET, started_key);
+                            self.emit(Op::DROP);
+
+                            self.emit_u16(Op::LOCAL_GET, has_more_slot);
+                            self.emit(Op::DYN_TO_BOOL);
+                            let no_more = self.emit_jump(Op::BR_IF_FALSE);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_const(Value::Bool(false));
+                            self.emit_u16(Op::STRUCT_SET, done_key);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::LOCAL_GET, value_slot);
+                            self.emit_u16(Op::STRUCT_SET, current_key);
+                            self.emit(Op::DROP);
+                            self.emit_const(Value::Bool(true));
+                            let start_done = self.emit_jump(Op::BR);
+
+                            self.patch_jump(no_more);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_const(Value::Bool(true));
+                            self.emit_u16(Op::STRUCT_SET, done_key);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::LOCAL_GET, value_slot);
+                            self.emit_u16(Op::STRUCT_SET, return_key);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_const(Value::Bool(false));
+                            self.emit_u16(Op::STRUCT_SET, current_key);
+                            self.emit(Op::DROP);
+                            self.emit_const(Value::Bool(false));
+
+                            self.patch_jump(handled);
+                            self.patch_jump(start_done);
+                        }
+                        "current" => {
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::STRUCT_GET, started_key);
+                            self.emit(Op::DYN_TO_BOOL);
+                            let need_start = self.emit_jump(Op::BR_IF_FALSE);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::STRUCT_GET, done_key);
+                            self.emit(Op::DYN_TO_BOOL);
+                            let not_done = self.emit_jump(Op::BR_IF_FALSE);
+                            self.emit_const(Value::Bool(false));
+                            let current_done = self.emit_jump(Op::BR);
+
+                            self.patch_jump(not_done);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::STRUCT_GET, current_key);
+                            let handled = self.emit_jump(Op::BR);
+
+                            self.patch_jump(need_start);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit(Op::GEN_NEXT);
+                            let has_more_slot = self.define_local("__php_gen_has_more");
+                            self.emit_u16(Op::LOCAL_SET, has_more_slot); self.emit(Op::DROP);
+                            let value_slot = self.define_local("__php_gen_value");
+                            self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_const(Value::Bool(true));
+                            self.emit_u16(Op::STRUCT_SET, started_key);
+                            self.emit(Op::DROP);
+
+                            self.emit_u16(Op::LOCAL_GET, has_more_slot);
+                            self.emit(Op::DYN_TO_BOOL);
+                            let no_more = self.emit_jump(Op::BR_IF_FALSE);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_const(Value::Bool(false));
+                            self.emit_u16(Op::STRUCT_SET, done_key);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::LOCAL_GET, value_slot);
+                            self.emit_u16(Op::STRUCT_SET, current_key);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, value_slot);
+                            let start_done = self.emit_jump(Op::BR);
+
+                            self.patch_jump(no_more);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_const(Value::Bool(true));
+                            self.emit_u16(Op::STRUCT_SET, done_key);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::LOCAL_GET, value_slot);
+                            self.emit_u16(Op::STRUCT_SET, return_key);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_const(Value::Bool(false));
+                            self.emit_u16(Op::STRUCT_SET, current_key);
+                            self.emit(Op::DROP);
+                            self.emit_const(Value::Bool(false));
+
+                            self.patch_jump(current_done);
+                            self.patch_jump(handled);
+                            self.patch_jump(start_done);
+                        }
+                        "send" | "next" => {
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::STRUCT_GET, started_key);
+                            self.emit(Op::DYN_TO_BOOL);
+                            let need_start = self.emit_jump(Op::BR_IF_FALSE);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::STRUCT_GET, done_key);
+                            self.emit(Op::DYN_TO_BOOL);
+                            let can_resume = self.emit_jump(Op::BR_IF_FALSE);
+                            self.emit_const(Value::Bool(false));
+                            let done_already = self.emit_jump(Op::BR);
+
+                            self.patch_jump(can_resume);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            if field_name == "send" {
+                                self.compile_expr(arg_exprs[0])?;
+                            } else {
+                                self.emit(Op::NULL);
+                            }
+                            self.emit_u16(Op::RESUME, 0);
+                            let value_slot = self.define_local("__php_gen_resume_value");
+                            self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            let is_done_idx = self.import("ecma:value", "isGeneratorDone");
+                            self.emit_host_call(is_done_idx, 1);
+                            let yielded = self.emit_jump(Op::BR_IF_FALSE);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_const(Value::Bool(true));
+                            self.emit_u16(Op::STRUCT_SET, done_key);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::LOCAL_GET, value_slot);
+                            self.emit_u16(Op::STRUCT_SET, return_key);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_const(Value::Bool(false));
+                            self.emit_u16(Op::STRUCT_SET, current_key);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, value_slot);
+                            let handled = self.emit_jump(Op::BR);
+
+                            self.patch_jump(yielded);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_const(Value::Bool(false));
+                            self.emit_u16(Op::STRUCT_SET, done_key);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::LOCAL_GET, value_slot);
+                            self.emit_u16(Op::STRUCT_SET, current_key);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, value_slot);
+                            let resume_done = self.emit_jump(Op::BR);
+
+                            self.patch_jump(need_start);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit(Op::GEN_NEXT);
+                            let has_more_slot = self.define_local("__php_gen_has_more");
+                            self.emit_u16(Op::LOCAL_SET, has_more_slot); self.emit(Op::DROP);
+                            let start_value_slot = self.define_local("__php_gen_value");
+                            self.emit_u16(Op::LOCAL_SET, start_value_slot); self.emit(Op::DROP);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_const(Value::Bool(true));
+                            self.emit_u16(Op::STRUCT_SET, started_key);
+                            self.emit(Op::DROP);
+
+                            self.emit_u16(Op::LOCAL_GET, has_more_slot);
+                            self.emit(Op::DYN_TO_BOOL);
+                            let start_no_more = self.emit_jump(Op::BR_IF_FALSE);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_const(Value::Bool(false));
+                            self.emit_u16(Op::STRUCT_SET, done_key);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::LOCAL_GET, start_value_slot);
+                            self.emit_u16(Op::STRUCT_SET, current_key);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, start_value_slot);
+                            let start_done = self.emit_jump(Op::BR);
+
+                            self.patch_jump(start_no_more);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_const(Value::Bool(true));
+                            self.emit_u16(Op::STRUCT_SET, done_key);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::LOCAL_GET, start_value_slot);
+                            self.emit_u16(Op::STRUCT_SET, return_key);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_const(Value::Bool(false));
+                            self.emit_u16(Op::STRUCT_SET, current_key);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, start_value_slot);
+
+                            self.patch_jump(done_already);
+                            self.patch_jump(handled);
+                            self.patch_jump(resume_done);
+                            self.patch_jump(start_done);
+                        }
+                        _ => unreachable!(),
+                    }
+
+                    let end = self.emit_jump(Op::BR);
+                    self.patch_jump(not_gen);
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_u16(Op::STRUCT_GET, prop);
+                    let fn_tmp = self.define_local("__fn");
+                    self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    for a in &arg_exprs { self.compile_expr(a)?; }
+                    self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                    let generic_done = self.emit_jump(Op::BR);
+
+                    self.patch_jump(end);
+                    self.patch_jump(generic_done);
+                    return Ok(());
+                }
+            }
+
+            self.emit_u16(Op::LOCAL_GET, obj_tmp);
             self.emit_u16(Op::STRUCT_GET, prop);
             let fn_tmp = self.define_local("__fn");
             self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
-            let obj_tmp = self.define_local("__obj");
-            self.reserve_local_slot(obj_tmp);
-            self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
             self.emit_u16(Op::LOCAL_GET, fn_tmp);
             self.emit_u16(Op::LOCAL_GET, obj_tmp);
             for a in &arg_exprs { self.compile_expr(a)?; }

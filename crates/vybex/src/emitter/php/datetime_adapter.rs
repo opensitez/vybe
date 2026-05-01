@@ -113,6 +113,181 @@ pub fn emit_datetime_immutable_new(chunks: &mut [Chunk], current: usize, line: u
     emit_datetime_ctor(chunks, current, "DateTimeImmutable", true, line);
 }
 
+fn emit_parse_int_base10(chunks: &mut [Chunk], current: usize, str_slot: u16, line: u32) {
+    let chunk = &mut chunks[current];
+    local_get(chunk, str_slot, line);
+    push_const(chunk, Value::F64(10.0), line);
+    call_import(chunks, current, "ecma:number", "parseInt", 2, line);
+}
+
+fn emit_array_get_const_index(chunk: &mut Chunk, array_slot: u16, index: f64, line: u32) {
+    local_get(chunk, array_slot, line);
+    push_const(chunk, Value::F64(index), line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+}
+
+fn emit_datetime_create_from_format_impl(
+    chunks: &mut [Chunk],
+    current: usize,
+    type_tag: &'static str,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    let value_slot = alloc_local(chunk);
+    let fmt_slot = alloc_local(chunk);
+    local_set(chunk, value_slot, line);
+    local_set(chunk, fmt_slot, line);
+
+    // `U` → unix seconds string.
+    local_get(chunk, fmt_slot, line);
+    push_str(chunk, "U", line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let not_unix = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    emit_parse_int_base10(chunks, current, value_slot, line);
+    let chunk = &mut chunks[current];
+    push_const(chunk, Value::F64(MS_PER_SECOND), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    emit_wrap_ms(chunk, type_tag, line);
+    let done_unix = chunk.emit_jump(Op::BR, line);
+    chunk.patch_jump(not_unix);
+
+    // `d/m/Y` → UTC(y, m-1, d)
+    let chunk = &mut chunks[current];
+    local_get(chunk, fmt_slot, line);
+    push_str(chunk, "d/m/Y", line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let not_dmy = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    local_get(chunk, value_slot, line);
+    push_str(chunk, "/", line);
+    chunk.emit_op(Op::STR_SPLIT, line);
+    let date_parts_slot = alloc_local(chunk);
+    local_set(chunk, date_parts_slot, line);
+    emit_array_get_const_index(chunk, date_parts_slot, 2.0, line);
+    let year_slot = alloc_local(chunk);
+    local_set(chunk, year_slot, line);
+    emit_parse_int_base10(chunks, current, year_slot, line);
+    let chunk = &mut chunks[current];
+    local_set(chunk, year_slot, line);
+    emit_array_get_const_index(chunk, date_parts_slot, 1.0, line);
+    let month_slot = alloc_local(chunk);
+    local_set(chunk, month_slot, line);
+    emit_parse_int_base10(chunks, current, month_slot, line);
+    let chunk = &mut chunks[current];
+    local_set(chunk, month_slot, line);
+    emit_array_get_const_index(chunk, date_parts_slot, 0.0, line);
+    let day_slot = alloc_local(chunk);
+    local_set(chunk, day_slot, line);
+    emit_parse_int_base10(chunks, current, day_slot, line);
+    let chunk = &mut chunks[current];
+    local_set(chunk, day_slot, line);
+    local_get(chunk, year_slot, line);
+    local_get(chunk, month_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    local_get(chunk, day_slot, line);
+    call_import(chunks, current, "ecma:date", "UTC", 3, line);
+    let chunk = &mut chunks[current];
+    emit_wrap_ms(chunk, type_tag, line);
+    let done_dmy = chunk.emit_jump(Op::BR, line);
+    chunk.patch_jump(not_dmy);
+
+    // `d/m/Y H:i` → UTC(y, m-1, d, h, i, 0)
+    let chunk = &mut chunks[current];
+    local_get(chunk, fmt_slot, line);
+    push_str(chunk, "d/m/Y H:i", line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let not_dmy_hi = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    local_get(chunk, value_slot, line);
+    push_str(chunk, " ", line);
+    chunk.emit_op(Op::STR_SPLIT, line);
+    let parts_slot = alloc_local(chunk);
+    local_set(chunk, parts_slot, line);
+    emit_array_get_const_index(chunk, parts_slot, 0.0, line);
+    let date_str_slot = alloc_local(chunk);
+    local_set(chunk, date_str_slot, line);
+    emit_array_get_const_index(chunk, parts_slot, 1.0, line);
+    let time_str_slot = alloc_local(chunk);
+    local_set(chunk, time_str_slot, line);
+    local_get(chunk, date_str_slot, line);
+    push_str(chunk, "/", line);
+    chunk.emit_op(Op::STR_SPLIT, line);
+    let date_parts_slot = alloc_local(chunk);
+    local_set(chunk, date_parts_slot, line);
+    local_get(chunk, time_str_slot, line);
+    push_str(chunk, ":", line);
+    chunk.emit_op(Op::STR_SPLIT, line);
+    let time_parts_slot = alloc_local(chunk);
+    local_set(chunk, time_parts_slot, line);
+
+    emit_array_get_const_index(chunk, date_parts_slot, 2.0, line);
+    let year_slot = alloc_local(chunk);
+    local_set(chunk, year_slot, line);
+    emit_parse_int_base10(chunks, current, year_slot, line);
+    let chunk = &mut chunks[current];
+    local_set(chunk, year_slot, line);
+
+    emit_array_get_const_index(chunk, date_parts_slot, 1.0, line);
+    let month_slot = alloc_local(chunk);
+    local_set(chunk, month_slot, line);
+    emit_parse_int_base10(chunks, current, month_slot, line);
+    let chunk = &mut chunks[current];
+    local_set(chunk, month_slot, line);
+
+    emit_array_get_const_index(chunk, date_parts_slot, 0.0, line);
+    let day_slot = alloc_local(chunk);
+    local_set(chunk, day_slot, line);
+    emit_parse_int_base10(chunks, current, day_slot, line);
+    let chunk = &mut chunks[current];
+    local_set(chunk, day_slot, line);
+
+    emit_array_get_const_index(chunk, time_parts_slot, 0.0, line);
+    let hour_slot = alloc_local(chunk);
+    local_set(chunk, hour_slot, line);
+    emit_parse_int_base10(chunks, current, hour_slot, line);
+    let chunk = &mut chunks[current];
+    local_set(chunk, hour_slot, line);
+
+    emit_array_get_const_index(chunk, time_parts_slot, 1.0, line);
+    let minute_slot = alloc_local(chunk);
+    local_set(chunk, minute_slot, line);
+    emit_parse_int_base10(chunks, current, minute_slot, line);
+    let chunk = &mut chunks[current];
+    local_set(chunk, minute_slot, line);
+
+    local_get(chunk, year_slot, line);
+    local_get(chunk, month_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    local_get(chunk, day_slot, line);
+    local_get(chunk, hour_slot, line);
+    local_get(chunk, minute_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    call_import(chunks, current, "ecma:date", "UTC", 6, line);
+    let chunk = &mut chunks[current];
+    emit_wrap_ms(chunk, type_tag, line);
+    let done_dmy_hi = chunk.emit_jump(Op::BR, line);
+    chunk.patch_jump(not_dmy_hi);
+
+    // Fallback: best-effort ECMA parse for already-ISO-ish inputs.
+    let chunk = &mut chunks[current];
+    local_get(chunk, value_slot, line);
+    call_import(chunks, current, "ecma:date", "parse", 1, line);
+    let chunk = &mut chunks[current];
+    emit_wrap_ms(chunk, type_tag, line);
+
+    chunk.patch_jump(done_unix);
+    chunk.patch_jump(done_dmy);
+    chunk.patch_jump(done_dmy_hi);
+}
+
+pub fn emit_datetime_create_from_format(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_datetime_create_from_format_impl(chunks, current, "DateTime", line);
+}
+
+pub fn emit_datetime_immutable_create_from_format(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_datetime_create_from_format_impl(chunks, current, "DateTimeImmutable", line);
+}
+
 /// PHP `$dt->format($fmt)`.
 ///
 /// Stack on entry: `[dt, fmt]` ; Stack on exit: `[string]`.

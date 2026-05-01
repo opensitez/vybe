@@ -108,6 +108,26 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
+    vm.register_host_fn(
+        "ecma:value",
+        "isGeneratorDone",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let is_done = match args.first() {
+                Some(Value::Object(o)) => {
+                    let obj = o.lock().unwrap();
+                    match &obj.kind {
+                        vybe_bytecode::value::ObjectKind::Continuation(cs) => {
+                            matches!(*cs.state.lock().unwrap(), vybe_bytecode::value::ContinuationPhase::Done)
+                        }
+                        _ => false,
+                    }
+                }
+                _ => false,
+            };
+            Value::Bool(is_done)
+        }),
+    );
+
     // ECMA-262 §13.5.3 Table 41 typeof — returns "object" for both
     // plain objects AND arrays (the VM's REF_TYPEOF opcode reports
     // "array" which is non-spec). Used by the JS compiler so all

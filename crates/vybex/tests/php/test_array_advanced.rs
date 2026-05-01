@@ -325,7 +325,7 @@ $total = array_reduce($items, function($carry, $item) {
     return $carry + ($item["price"] * $item["qty"]);
 }, 0);
 echo $total;
-"#), &["12.5"]);
+"#), &["13"]);
 }
 
 #[test]

@@ -492,22 +492,25 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 
     let target = target_pair.ok_or("foreach: missing target")?;
-    // foreach_target = { variable "=>" "&"? variable | "&"? variable }
+    let target_suffix = target.as_span().start();
+    // foreach_target = { variable "=>" value-target | value-target }
     let mut tparts = target.into_inner();
     let first = tparts.next().ok_or("foreach: empty target")?;
     let second = tparts.next();
 
-    let (key, var) = if let Some(second_var) = second {
+    let (key, value_target) = if let Some(second_var) = second {
         // key => value form
         let k = strip_dollar(first.as_str()).to_string();
-        let v = strip_dollar(second_var.as_str()).to_string();
-        (Some(k), v)
+        (Some(k), walk_foreach_value_target(second_var)?)
     } else {
-        let v = strip_dollar(first.as_str()).to_string();
-        (None, v)
+        (None, walk_foreach_value_target(first)?)
     };
 
-    let body = walk_statement_into_body(body_stmt.ok_or("foreach: missing body")?)?;
+    let mut body = walk_statement_into_body(body_stmt.ok_or("foreach: missing body")?)?;
+    let (var, prefix) = foreach_binding_target(value_target, target_suffix)?;
+    if let Some(prefix_stmt) = prefix {
+        body.insert(0, prefix_stmt);
+    }
     Ok(StmtKind::ForIn {
         var,
         key,
@@ -1552,7 +1555,7 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
     if matches!(lhs_pair.as_rule(), Rule::yield_expression) {
         return walk_expression(lhs_pair);
     }
-    let lhs = walk_expression(lhs_pair)?;
+    let lhs = expression_into_destructure_target(walk_expression(lhs_pair)?);
     if let Some(op_pair) = inner.next() {
         let op = op_pair.as_str();
         let rhs = walk_expression(inner.next().unwrap())?;
@@ -2140,6 +2143,33 @@ fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span) -> Result<Ex
             // indistinguishable — the compiler emits a single canonical
             // host call regardless of surface syntax.
             let args = canonicalize_php_call_args(&receiver, args);
+            // PHP DateTime / DateTimeImmutable static factory methods
+            // route through the PHP datetime adapter layer, same as the
+            // instance-method rewrites above.
+            if let ExprKind::StaticAccess { class, member } = &receiver.kind {
+                if let (ExprKind::Ident(class_name), ExprKind::Ident(member_name)) = (&class.kind, &member.kind) {
+                    if member_name == "createFromFormat" {
+                        let target_fn = match class_name.trim_start_matches('\\') {
+                            "DateTime" => Some("__php_dt_create_from_format"),
+                            "DateTimeImmutable" => Some("__php_dt_imm_create_from_format"),
+                            _ => None,
+                        };
+                        if let Some(fname) = target_fn {
+                            return Ok(Expression::with_span(
+                                ExprKind::Call {
+                                    callee: Box::new(Expression::with_span(
+                                        ExprKind::Ident(fname.to_string()),
+                                        span.clone(),
+                                    )),
+                                    args,
+                                    optional: false,
+                                },
+                                span.clone(),
+                            ));
+                        }
+                    }
+                }
+            }
             // Rewrite PHP function names whose JS equivalent already
             // exists (Math.trunc / parseInt / Member-method calls / etc).
             // After this, the AST contains no PHP-specific call shape.
@@ -2462,6 +2492,90 @@ fn walk_array(pair: Pair<Rule>) -> Result<Expression, String> {
         }
     }
     Ok(Expression::with_span(ExprKind::Array(elems), span))
+}
+
+fn walk_foreach_value_target(pair: Pair<Rule>) -> Result<Expression, String> {
+    Ok(expression_into_destructure_target(walk_expression(pair)?))
+}
+
+fn foreach_binding_target(target: Expression, suffix: usize) -> Result<(String, Option<Statement>), String> {
+    match target.kind {
+        ExprKind::Ident(name) => Ok((name, None)),
+        ExprKind::Destructure(pattern) => {
+            let tmp = format!("__php_foreach_item_{}", suffix);
+            let assign = Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(Expression::with_span(ExprKind::Destructure(pattern), target.span)),
+                    value: Box::new(Expression::with_span(ExprKind::Ident(tmp.clone()), target.span)),
+                },
+                target.span,
+            );
+            Ok((tmp, Some(Statement::with_span(StmtKind::Expr(assign), target.span))))
+        }
+        _ => Err("foreach: unsupported target".into()),
+    }
+}
+
+fn expression_into_destructure_target(expr: Expression) -> Expression {
+    if let Some(pattern) = expression_to_destructure_pattern(&expr) {
+        Expression::with_span(ExprKind::Destructure(pattern), expr.span)
+    } else {
+        expr
+    }
+}
+
+fn expression_to_destructure_pattern(expr: &Expression) -> Option<DestructurePattern> {
+    match &expr.kind {
+        ExprKind::Destructure(pattern) => Some(pattern.clone()),
+        ExprKind::Array(elems) => array_elements_to_destructure_pattern(elems),
+        _ => None,
+    }
+}
+
+fn array_elements_to_destructure_pattern(elems: &[ArrayElement]) -> Option<DestructurePattern> {
+    let has_keys = elems.iter().any(|elem| elem.key.is_some());
+    if has_keys {
+        let mut props = Vec::with_capacity(elems.len());
+        for elem in elems {
+            let key_expr = elem.key.as_ref()?;
+            let key = literal_key_name(key_expr)?;
+            let value = expression_to_binding_pattern(&elem.value)?;
+            props.push(ObjectPatternProp {
+                key,
+                value: Some(value),
+                default: None,
+            });
+        }
+        Some(DestructurePattern::Object(props))
+    } else {
+        let mut out = Vec::with_capacity(elems.len());
+        for elem in elems {
+            let pat = expression_to_binding_pattern(&elem.value)?;
+            out.push(ArrayPatternElem::Pattern(pat, None));
+        }
+        Some(DestructurePattern::Array(out))
+    }
+}
+
+fn expression_to_binding_pattern(expr: &Expression) -> Option<BindingPattern> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some(BindingPattern::Ident(name.clone())),
+        ExprKind::Destructure(DestructurePattern::Array(elems)) => Some(BindingPattern::Array(elems.clone())),
+        ExprKind::Destructure(DestructurePattern::Object(props)) => Some(BindingPattern::Object(props.clone())),
+        ExprKind::Array(elems) => match array_elements_to_destructure_pattern(elems)? {
+            DestructurePattern::Array(elems) => Some(BindingPattern::Array(elems)),
+            DestructurePattern::Object(props) => Some(BindingPattern::Object(props)),
+        },
+        _ => None,
+    }
+}
+
+fn literal_key_name(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(s)) => Some(s.clone()),
+        ExprKind::Lit(Literal::Int(n)) => Some(n.to_string()),
+        _ => None,
+    }
 }
 
 fn walk_closure(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -3343,58 +3457,10 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span)
                 right: Box::new(rest),
             }
         }
-        // ── PHP higher-order array fns → Array.prototype.* methods ─────
-        // `array_map($fn, $arr)`     → `$arr.map($fn)`
-        // `array_filter($arr, $fn)`  → `$arr.filter($fn)`
-        // `array_reduce($arr, $fn, $init)` → `$arr.reduce($fn, $init)`
-        // PHP places the callable first (array_map) or second
-        // (array_filter); JS Array.prototype.map/filter/reduce are
-        // member methods on the array. Walker swap.
-        "array_map" if args.len() >= 2 => mk_call(
-            Expression::with_span(
-                ExprKind::Member {
-                    object: Box::new(arg(1)?),
-                    field: "map".to_string(),
-                    null_safe: false,
-                },
-                span.clone(),
-            ),
-            vec![arg(0)?],
-        ),
-        "array_filter" if !args.is_empty() => {
-            // `array_filter($arr)` (1-arg) drops falsy entries — JS has
-            // no parameterless filter, so emit `$arr.filter(x => x)`.
-            // 2-arg form passes the callback through.
-            let arr_expr = arg(0)?;
-            let cb = if let Some(c) = arg(1) { c } else {
-                Expression::with_span(
-                    ExprKind::Lambda {
-                        params: vec![Param {
-                            name: "x".to_string(), type_hint: None, default: None,
-                            pass_by: PassBy::Value, is_rest: false, is_kwargs: false,
-                            is_optional: false, is_nullable: false,
-                        }],
-                        body: LambdaBody::Expr(Box::new(Expression::with_span(
-                            ExprKind::Ident("x".to_string()), span.clone(),
-                        ))),
-                        is_async: false,
-                        captures: vec![],
-                    },
-                    span.clone(),
-                )
-            };
-            mk_call(
-                Expression::with_span(
-                    ExprKind::Member {
-                        object: Box::new(arr_expr),
-                        field: "filter".to_string(),
-                        null_safe: false,
-                    },
-                    span.clone(),
-                ),
-                vec![cb],
-            )
-        }
+        // ── PHP higher-order array fns with PHP-specific semantics ────
+        // `array_map` preserves associative keys for the 1-array form
+        // and `array_filter` has PHP-only flag modes like
+        // ARRAY_FILTER_USE_KEY, so both stay on the PHP adapter layer.
         "array_reduce" if args.len() >= 2 => {
             let arr_expr = arg(0)?;
             let cb = arg(1)?;

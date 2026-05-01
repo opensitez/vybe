@@ -47,7 +47,6 @@ struct LoopCtx {
 // ════════════════════════════════════════════════════════════════════════════
 // Pending class bookkeeping
 // ════════════════════════════════════════════════════════════════════════════
-
 struct PendingClass {
     parent: Option<String>,
     fields: Vec<String>,
@@ -496,6 +495,17 @@ impl Compiler {
         let cont_slot = self.define_local("__gen_cont");
         self.emit_u16(Op::LOCAL_SET, cont_slot); self.emit(Op::DROP);
 
+        self.compile_generator_for_in_cont(var, cont_slot, body, else_body)
+    }
+
+    fn compile_generator_for_in_cont(
+        &mut self,
+        var: &str,
+        cont_slot: u16,
+        body: &[Statement],
+        else_body: Option<&[Statement]>,
+    ) -> Result<(), String> {
+
         let line = self.line;
         let block_patch = self.chunk().emit_block(line);
         let (loop_patch, _) = self.chunk().emit_loop_s(line);
@@ -504,14 +514,63 @@ impl Compiler {
         // Advance the generator. GEN_NEXT pops cont and pushes (value, has_more).
         self.emit_u16(Op::LOCAL_GET, cont_slot);
         self.emit(Op::GEN_NEXT);
-        // Stack: [value, has_more]. If has_more == 0, break to $exit (label 1).
-        // Unbox-to-bool semantics: DYN_NOT flips, br_if jumps on truthy.
-        self.emit(Op::DYN_TO_BOOL);
-        self.emit(Op::DYN_NOT);
-        // br_if_label 1 → jump to $exit when has_more was 0.
-        self.emit_u8(Op::BR_IF_LABEL, 1);
+        let has_more_slot = self.define_local("__gen_has_more");
+        self.emit_u16(Op::LOCAL_SET, has_more_slot); self.emit(Op::DROP);
+        let value_slot = self.define_local("__gen_value");
+        self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+
+        if self.is_php_profile() {
+            let started_key = self.str_const("__php_gen_started");
+            let current_key = self.str_const("__php_gen_current");
+            let done_key = self.str_const("__php_gen_done");
+            let return_key = self.str_const("__php_gen_return");
+
+            self.emit_u16(Op::LOCAL_GET, cont_slot);
+            self.emit_const(Value::Bool(true));
+            self.emit_u16(Op::STRUCT_SET, started_key);
+            self.emit(Op::DROP);
+
+            self.emit_u16(Op::LOCAL_GET, has_more_slot);
+            self.emit(Op::DYN_TO_BOOL);
+            let exhausted = self.emit_jump(Op::BR_IF_FALSE);
+
+            self.emit_u16(Op::LOCAL_GET, cont_slot);
+            self.emit_const(Value::Bool(false));
+            self.emit_u16(Op::STRUCT_SET, done_key);
+            self.emit(Op::DROP);
+            self.emit_u16(Op::LOCAL_GET, cont_slot);
+            self.emit_u16(Op::LOCAL_GET, value_slot);
+            self.emit_u16(Op::STRUCT_SET, current_key);
+            self.emit(Op::DROP);
+            let loop_ready = self.emit_jump(Op::BR);
+
+            self.patch_jump(exhausted);
+            self.emit_u16(Op::LOCAL_GET, cont_slot);
+            self.emit_const(Value::Bool(true));
+            self.emit_u16(Op::STRUCT_SET, done_key);
+            self.emit(Op::DROP);
+            self.emit_u16(Op::LOCAL_GET, cont_slot);
+            self.emit_u16(Op::LOCAL_GET, value_slot);
+            self.emit_u16(Op::STRUCT_SET, return_key);
+            self.emit(Op::DROP);
+            self.emit_u16(Op::LOCAL_GET, cont_slot);
+            self.emit_const(Value::Bool(false));
+            self.emit_u16(Op::STRUCT_SET, current_key);
+            self.emit(Op::DROP);
+            self.emit_u8(Op::BR_LABEL, 1);
+
+            self.patch_jump(loop_ready);
+        } else {
+            self.emit_u16(Op::LOCAL_GET, has_more_slot);
+            self.emit(Op::DYN_TO_BOOL);
+            self.emit(Op::DYN_NOT);
+            // br_if_label 1 → jump to $exit when has_more was 0.
+            self.emit_u8(Op::BR_IF_LABEL, 1);
+        }
+
         // Pop the value into `var`.
         let var_slot = self.define_local(var);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
         self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
 
         // Compile loop body inside a `$body` block so `continue` can
@@ -1140,6 +1199,10 @@ impl Compiler {
         self.profile.name == "js"
     }
 
+    fn is_php_profile(&self) -> bool {
+        self.profile.name == "php"
+    }
+
     fn save_js_this(&mut self, local_name: &str) -> Option<u16> {
         if !self.is_js_profile() {
             return None;
@@ -1461,6 +1524,25 @@ impl Compiler {
                 } else {
                     let line = self.line;
                     self.compile_expr(iter)?;
+                    let iter_slot = self.define_local("__forin_iter");
+                    self.emit_u16(Op::LOCAL_SET, iter_slot); self.emit(Op::DROP);
+
+                    let runtime_generator_done = if *of && key.is_none() {
+                        self.emit_u16(Op::LOCAL_GET, iter_slot);
+                        let is_gen_idx = self.import("ecma:value", "isGenerator");
+                        self.emit_host_call(is_gen_idx, 1);
+                        let not_gen = self.emit_jump(Op::BR_IF_FALSE);
+                        self.compile_generator_for_in_cont(var, iter_slot, body, else_body.as_deref())?;
+                        Some((not_gen, self.emit_jump(Op::BR)))
+                    } else {
+                        None
+                    };
+
+                    if let Some((not_gen, _)) = runtime_generator_done {
+                        self.patch_jump(not_gen);
+                    }
+
+                    self.emit_u16(Op::LOCAL_GET, iter_slot);
 
                     // Pick the polymorphic iteration primitive. All three
                     // dispatch on Array / Map / Ordinary uniformly so PHP
@@ -1551,6 +1633,10 @@ impl Compiler {
                         self.chunk().emit_end(line);
                         self.chunk().patch_block(skip);
                         self.label_depth -= 1;
+                    }
+
+                    if let Some((_, done)) = runtime_generator_done {
+                        self.patch_jump(done);
                     }
                 }
             }
@@ -2363,6 +2449,7 @@ impl Compiler {
                         self.patch_jump(no_method);
                         self.emit_u16(Op::LOCAL_GET, v_slot);
                         self.patch_jump(done);
+                        self.emit_common("php.echo_stringify", 1, line);
                     }
                     common::io::emit_print_with_import(self.chunk(), log_idx, 1, line);
                 }
@@ -2569,8 +2656,8 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, obj_slot); self.emit(Op::DROP);
                 for prop in props {
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    let key = self.str_const(&prop.key);
-                    self.emit_u16(Op::STRUCT_GET, key);
+                    self.emit_const(Value::String(Arc::from(prop.key.as_str())));
+                    { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
                     if let Some(ref default) = prop.default {
                         self.emit(Op::DUP);
                         self.emit(Op::REF_IS_NULL);
@@ -2777,8 +2864,8 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, obj_slot); self.emit(Op::DROP);
                         for prop in props {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
-                            let key = self.str_const(&prop.key);
-                            self.emit_u16(Op::STRUCT_GET, key);
+                            self.emit_const(Value::String(Arc::from(prop.key.as_str())));
+                            { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
                             let bind_name = if let Some(BindingPattern::Ident(ref n)) = prop.value {
                                 n.clone()
                             } else {
@@ -2915,6 +3002,36 @@ impl Compiler {
         self.emit_to_primitive("number");
     }
 
+    fn maybe_unbox_php_datetime_slot(&mut self, slot: u16) {
+        self.emit_u16(Op::LOCAL_GET, slot);
+        self.emit(Op::REF_IS_OBJECT);
+        let not_object = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, slot);
+        let time_key = self.str_const("__time");
+        self.emit_u16(Op::STRUCT_GET, time_key);
+        let time_slot = self.define_local("__php_cmp_time");
+        self.emit_u16(Op::LOCAL_SET, time_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_GET, time_slot);
+        self.emit(Op::REF_IS_NULL);
+        let no_time = self.emit_jump(Op::BR_IF_TRUE);
+        self.emit_u16(Op::LOCAL_GET, time_slot);
+        self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+        self.patch_jump(no_time);
+        self.patch_jump(not_object);
+    }
+
+    fn coerce_top_two_php_datetime_for_compare(&mut self) {
+        let t_b = self.define_local("__php_cmp_b");
+        let t_a = self.define_local("__php_cmp_a");
+        self.emit_u16(Op::LOCAL_SET, t_b); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, t_a); self.emit(Op::DROP);
+        self.maybe_unbox_php_datetime_slot(t_a);
+        self.maybe_unbox_php_datetime_slot(t_b);
+        self.emit_u16(Op::LOCAL_GET, t_a);
+        self.emit_u16(Op::LOCAL_GET, t_b);
+    }
+
     /// JS profile: ToPrimitive(hint=default) on both operands. Used
     /// before DYN_ADD per ECMA §13.15.4 — the `+` operator picks the
     /// "default" hint, which gives valueOf the first shot and falls
@@ -3021,18 +3138,22 @@ impl Compiler {
             }
             BinOp::Lt => {
                 if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
+                else if self.is_php_profile() { self.coerce_top_two_php_datetime_for_compare(); }
                 self.emit(Op::DYN_LT);
             },
             BinOp::Gt => {
                 if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
+                else if self.is_php_profile() { self.coerce_top_two_php_datetime_for_compare(); }
                 self.emit(Op::DYN_GT);
             },
             BinOp::LtEq => {
                 if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
+                else if self.is_php_profile() { self.coerce_top_two_php_datetime_for_compare(); }
                 self.emit(Op::DYN_LE);
             },
             BinOp::GtEq => {
                 if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
+                else if self.is_php_profile() { self.coerce_top_two_php_datetime_for_compare(); }
                 self.emit(Op::DYN_GE);
             },
             BinOp::Spaceship => {
