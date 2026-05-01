@@ -5,6 +5,7 @@
 //! `vybex::ast::Module`. From there everything goes through the
 //! shared compiler — no COBOL-specific code in `compiler.rs`.
 
+pub mod normalize_class;
 pub mod walker;
 
 use pest_derive::Parser;

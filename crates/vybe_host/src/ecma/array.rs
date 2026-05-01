@@ -219,6 +219,14 @@ fn register_constructors(vm: &mut VM) {
             make_array(vec![Value::Null; n])
         }),
     );
+    vm.register_host_fn(
+        "vybe:js-array",
+        "newWithLength",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let n = args.first().map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
+            make_array(vec![Value::Null; n])
+        }),
+    );
 
     // of(...values) -> Array
     //
@@ -708,6 +716,27 @@ fn register_mutators(vm: &mut VM) {
                     let slice: Vec<Value> = v[s..e].iter().cloned().collect();
                     let max_copy = (len as usize - t).min(slice.len());
                     v[t..t + max_copy].clone_from_slice(&slice[..max_copy]);
+                }
+            }
+            args.first().cloned().unwrap_or(Value::Null)
+        }),
+    );
+    vm.register_host_fn(
+        "vybe:js-array",
+        "fill",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let val = args.get(1).cloned().unwrap_or(Value::Null);
+            let start = args.get(2).map(|v| v.as_i32()).unwrap_or(0);
+            let end = args.get(3).map(|v| v.as_i32()).unwrap_or(i32::MAX);
+            if let Some(arr) = array_of(args, 0) {
+                let mut o = arr.lock().unwrap();
+                if let ObjectKind::Array(ref mut v) = o.kind {
+                    let len = v.len() as i32;
+                    let s = start.max(0).min(len) as usize;
+                    let e = end.max(0).min(len) as usize;
+                    for i in s..e {
+                        v[i] = val.clone();
+                    }
                 }
             }
             args.first().cloned().unwrap_or(Value::Null)

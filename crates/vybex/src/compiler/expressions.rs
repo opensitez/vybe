@@ -1428,6 +1428,7 @@ impl Compiler {
                     expr.span.clone(),
                     &class_name,
                     &parents,
+                    &[],
                     members,
                     &crate::ast::ClassModifiers::default(),
                 )?;

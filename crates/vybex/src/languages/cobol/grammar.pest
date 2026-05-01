@@ -27,12 +27,16 @@ period = { "." }
 
 program = {
     SOI
-    ~ identification_division
-    ~ environment_division?
-    ~ data_division?
-    ~ procedure_division?
-    ~ nested_program*
-    ~ end_program?
+        ~ (
+                identification_division
+                ~ environment_division?
+                ~ data_division?
+                ~ procedure_division?
+                ~ nested_program*
+                ~ end_program?
+            | class_id_paragraph
+            | interface_id_paragraph
+        )+
     ~ EOI
 }
 
@@ -48,7 +52,17 @@ identification_division = {
 }
 
 program_id_paragraph = {
-    kw_program_id ~ period ~ ident_or_keyword ~ period
+    kw_program_id ~ period ~ ident_or_keyword ~ program_id_options? ~ period
+}
+
+program_id_options = {
+    kw_is? ~ program_id_option+
+}
+
+program_id_option = {
+    kw_initial
+  | kw_common
+  | kw_recursive
 }
 
 class_id_paragraph = {
@@ -132,6 +146,7 @@ method_signature = {
 method_def = {
     kw_method_id ~ period ~ ident_or_keyword ~ method_modifiers? ~ period
     ~ method_data_division?
+    ~ method_local_section*
     ~ method_procedure_division?
     ~ kw_end_method ~ period? ~ ident_or_keyword? ~ period?
 }
@@ -146,12 +161,19 @@ method_data_division = {
     ~ ( kw_working_storage ~ kw_section ~ period ~ data_item* )?
 }
 
+method_local_section = {
+        linkage_section
+    | working_storage_section
+    | local_storage_section
+}
+
 method_procedure_division = {
     kw_procedure ~ kw_division
     ~ using_clause?
     ~ returning_clause?
     ~ period
     ~ statement_list
+    ~ procedure_block*
 }
 
 using_clause    = { kw_using ~ (kw_by? ~ (kw_reference | kw_content)? ~ ident_name)+ }
@@ -174,20 +196,62 @@ configuration_section = {
 
 special_names_paragraph = {
     kw_special_names ~ period
-    ~ special_name_entry*
+        ~ special_name_entry+
+        ~ period
 }
 
 special_name_entry = {
     decimal_point_entry
   | currency_sign_entry
   | class_name_entry
+    | alphabet_name_entry
+    | symbolic_characters_entry
+    | console_entry
 }
 
-decimal_point_entry = { kw_decimal_point ~ kw_is? ~ kw_comma ~ period }
-currency_sign_entry = { kw_currency ~ kw_sign? ~ kw_is? ~ string_literal ~ period }
-class_name_entry    = { kw_class ~ ident_name ~ kw_is? ~ free_text ~ period }
+decimal_point_entry = { kw_decimal_point ~ kw_is? ~ kw_comma }
+currency_sign_entry = { kw_currency ~ kw_sign? ~ kw_is? ~ string_literal }
+class_name_entry    = { kw_class ~ ident_name ~ kw_is? ~ class_name_spec+ }
+alphabet_name_entry = { kw_alphabet ~ ident_name ~ kw_is? ~ alphabet_name_spec+ }
+symbolic_characters_entry = {
+        kw_symbolic ~ kw_characters ~ symbolic_character_mapping+
+}
+symbolic_character_mapping = { ident_name ~ kw_is? ~ number_literal }
+console_entry = { kw_console ~ kw_is? ~ ident_or_keyword }
 
-repository_paragraph = { kw_repository ~ period ~ (free_text ~ period)* }
+class_name_spec = { string_literal ~ (kw_thru ~ string_literal)? }
+alphabet_name_spec = {
+        string_literal ~ (kw_thru ~ string_literal)?
+    | ident_or_keyword
+}
+
+repository_paragraph = {
+    kw_repository ~ period
+    ~ repository_entry+
+    ~ period
+}
+
+repository_entry = {
+    repository_function_entry
+  | repository_class_entry
+  | repository_interface_entry
+}
+
+repository_function_entry = {
+    kw_function
+    ~ (
+        kw_all ~ kw_intrinsic
+      | function_name ~ (kw_as ~ string_literal)?
+    )
+}
+
+repository_class_entry = {
+    kw_class ~ ident_name ~ kw_as ~ string_literal
+}
+
+repository_interface_entry = {
+    kw_interface_bare ~ ident_name ~ kw_as ~ string_literal
+}
 
 input_output_section = {
     kw_input_output ~ kw_section ~ period
@@ -218,11 +282,7 @@ select_clause = {
 
 data_division = {
     kw_data ~ kw_division ~ period
-    ~ file_section?
-    ~ working_storage_section?
-    ~ local_storage_section?
-    ~ linkage_section?
-    ~ screen_section?
+    ~ (file_section | working_storage_section | local_storage_section | linkage_section | screen_section)*
 }
 
 file_section = {
@@ -240,6 +300,14 @@ fd_clause = {
   | kw_block ~ kw_contains? ~ number_literal ~ (kw_to ~ number_literal)? ~ kw_characters?
   | kw_label ~ kw_record? ~ kw_is? ~ (kw_standard | kw_omitted)
   | kw_data ~ kw_record? ~ kw_is? ~ ident_name
+    | linage_clause
+}
+
+linage_clause = {
+        kw_linage ~ kw_is? ~ (number_literal | ident_name) ~ kw_lines
+        ~ (kw_with ~ kw_footing ~ kw_at ~ (number_literal | ident_name))?
+        ~ (kw_lines ~ kw_at ~ kw_top ~ (number_literal | ident_name))?
+        ~ (kw_lines ~ kw_at ~ kw_bottom ~ (number_literal | ident_name))?
 }
 
 working_storage_section = {
@@ -259,8 +327,60 @@ linkage_section = {
 
 screen_section = {
     kw_screen ~ kw_section ~ period
-    ~ data_item*
+        ~ screen_item*
 }
+
+screen_item = {
+        level_88_item
+    | screen_data_item
+}
+
+screen_data_item = {
+        level_number ~ screen_item_name?
+        ~ screen_clause*
+        ~ period
+        ~ screen_item*
+}
+
+screen_item_name = @{
+        !(kw_blank | kw_line | kw_column | kw_pic | kw_picture | kw_value
+            | kw_using | kw_from | kw_highlight | kw_reverse_video | kw_blink
+            | kw_auto | kw_required | kw_protected | kw_secure
+            | kw_foreground_color | kw_background_color)
+        ~ ident_start ~ (ident_cont | "-" ~ ident_cont)*
+}
+
+screen_clause = {
+        blank_screen_clause
+    | line_clause
+    | column_clause
+    | pic_clause
+    | value_clause
+    | screen_source_clause
+    | highlight_clause
+    | reverse_video_clause
+    | blink_clause
+    | auto_clause
+    | required_clause
+    | protected_clause
+    | secure_clause
+    | foreground_color_clause
+    | background_color_clause
+}
+
+blank_screen_clause     = { kw_blank ~ kw_screen }
+line_clause             = { kw_line ~ expression }
+column_clause           = { kw_column ~ expression }
+screen_source_clause    = { (kw_using | kw_from) ~ ident_name }
+highlight_clause        = { kw_highlight }
+reverse_video_clause    = { kw_reverse_video }
+blink_clause            = { kw_blink }
+auto_clause             = { kw_auto }
+required_clause         = { kw_required }
+protected_clause        = { kw_protected }
+secure_clause           = { kw_secure }
+foreground_color_clause = { kw_foreground_color ~ expression }
+background_color_clause = { kw_background_color ~ expression }
 
 // ── Data Items ──────────────────────────────────────────────────────────────
 
@@ -317,7 +437,10 @@ pic_clause = { (kw_pic | kw_picture) ~ kw_is? ~ pic_string }
 pic_string = @{ pic_char+ }
 pic_char   = _{ ASCII_ALPHANUMERIC | "(" | ")" | "+" | "-" | "*" | "/" | "$" | "," | "." ~ &ASCII_DIGIT }
 
-value_clause = { kw_value ~ kw_is? ~ literal }
+value_clause = {
+    kw_value ~ kw_is?
+    ~ (string_literal | number_literal | figurative_constant | ident_or_keyword | boolean_literal)
+}
 
 occurs_clause = {
     kw_occurs ~ (number_literal | level_number)
@@ -361,6 +484,44 @@ procedure_division = {
     ~ returning_clause?
     ~ period
     ~ statement_list
+    ~ declaratives_block?
+    ~ procedure_block*
+}
+
+declaratives_block = {
+    kw_declaratives ~ period
+    ~ declarative_section*
+    ~ kw_end ~ kw_declaratives ~ period
+}
+
+declarative_section = {
+    paragraph_name ~ kw_section ~ period
+    ~ use_stmt ~ period
+    ~ statement_list
+}
+
+use_stmt = {
+    kw_use ~ after_use_clause
+  | kw_use ~ debugging_use_clause
+}
+
+after_use_clause = {
+    kw_after ~ kw_standard ~ (kw_error | kw_exception) ~ kw_procedure
+    ~ (kw_on ~ (ident_name | kw_input | kw_output | kw_all))?
+}
+
+debugging_use_clause = {
+    kw_for ~ kw_debugging ~ kw_on ~ ((kw_all ~ kw_procedures) | ident_name)
+}
+
+procedure_block = {
+    section
+  | paragraph
+}
+
+section = {
+    paragraph_name ~ kw_section ~ period
+    ~ statement_list
     ~ paragraph*
 }
 
@@ -392,13 +553,19 @@ statement = _{
   | unstring_stmt
   | inspect_stmt
   | call_stmt
+    | cancel_stmt
+    | release_stmt
+    | return_stmt
   | initialize_stmt
   | set_stmt
+    | alter_stmt
   | go_to_stmt
   | stop_run_stmt
+    | stop_stmt
   | goback_stmt
   | continue_stmt
   | raise_stmt
+    | xml_stmt
   | json_stmt
   | open_stmt
   | close_stmt
@@ -445,13 +612,28 @@ accept_stmt = {
 }
 
 accept_source = {
-    kw_date
+    accept_environment_source
+  | accept_day_of_week_source
+  | accept_date_source
+  | accept_day_source
   | kw_time
-  | kw_day
-  | kw_day_of_week
   | kw_command_line
   | kw_console
 }
+
+accept_environment_source = {
+    kw_environment ~ (kw_name ~ ident_name | string_literal)
+}
+
+accept_date_source = {
+    kw_date ~ kw_yyyymmdd?
+}
+
+accept_day_source = {
+    kw_day ~ kw_yyyyddd?
+}
+
+accept_day_of_week_source = { kw_day_of_week }
 
 // ── MOVE ────────────────────────────────────────────────────────────────────
 
@@ -460,14 +642,18 @@ move_stmt = {
   | kw_move ~ expression ~ kw_to ~ move_target+
 }
 
-move_target = { ident_name ~ subscript_or_refmod? ~ qualification? }
+data_target = { (ident_name | kw_sd) ~ subscript_or_refmod? ~ qualification? }
+
+move_target = { data_target }
 
 // ── ADD ─────────────────────────────────────────────────────────────────────
 
 add_stmt = {
     kw_add ~ (kw_corresponding | kw_corr) ~ ident_name ~ kw_to ~ ident_name
-  | kw_add ~ arith_operand+ ~ kw_giving ~ ident_name ~ rounded_clause?
-  | kw_add ~ arith_operand+ ~ kw_to ~ ident_name ~ giving_clause? ~ rounded_clause?
+        | kw_add ~ arith_operand+ ~ kw_giving ~ data_target ~ rounded_clause?
+        ~ size_error_clause?
+        ~ kw_end_add?
+    | kw_add ~ arith_operand+ ~ kw_to ~ data_target ~ giving_clause? ~ rounded_clause?
     ~ size_error_clause?
     ~ kw_end_add?
 }
@@ -476,14 +662,23 @@ add_stmt = {
 // COBOL arithmetic operands are literals, identifiers, or subscripted names.
 arith_operand = { atom ~ (subscript_or_refmod | qualification)? }
 
-giving_clause  = { kw_giving ~ ident_name }
-rounded_clause = { kw_rounded }
+giving_clause  = { kw_giving ~ data_target }
+rounded_clause = { kw_rounded ~ (kw_mode ~ rounded_mode_spec)? }
+rounded_mode_spec = {
+        kw_truncation
+    | kw_nearest_even
+    | kw_nearest_toward_zero
+    | kw_toward_greater
+    | kw_toward_lesser
+    | kw_away_from_zero
+    | kw_prohibited
+}
 
 // ── SUBTRACT ────────────────────────────────────────────────────────────────
 
 subtract_stmt = {
     kw_subtract ~ (kw_corresponding | kw_corr) ~ ident_name ~ kw_from ~ ident_name
-  | kw_subtract ~ arith_operand ~ kw_from ~ ident_name ~ giving_clause? ~ rounded_clause?
+    | kw_subtract ~ arith_operand ~ kw_from ~ data_target ~ giving_clause? ~ rounded_clause?
     ~ size_error_clause?
     ~ kw_end_subtract?
 }
@@ -491,17 +686,20 @@ subtract_stmt = {
 // ── MULTIPLY ────────────────────────────────────────────────────────────────
 
 multiply_stmt = {
-    kw_multiply ~ arith_operand ~ kw_by ~ ident_name ~ giving_clause? ~ rounded_clause?
-    ~ size_error_clause?
-    ~ kw_end_multiply?
+        kw_multiply ~ arith_operand ~ kw_by ~ data_target ~ giving_clause? ~ rounded_clause?
+        ~ size_error_clause?
+        ~ kw_end_multiply?
+    | kw_multiply ~ arith_operand ~ kw_by ~ arith_operand ~ kw_giving ~ data_target ~ rounded_clause?
+        ~ size_error_clause?
+        ~ kw_end_multiply?
 }
 
 // ── DIVIDE ──────────────────────────────────────────────────────────────────
 
 divide_stmt = {
     kw_divide ~ arith_operand ~ (kw_by | kw_into) ~ arith_operand
-    ~ kw_giving ~ ident_name ~ rounded_clause?
-    ~ remainder_clause?
+    ~ (kw_giving ~ data_target ~ remainder_clause?)?
+    ~ rounded_clause?
     ~ size_error_clause?
     ~ kw_end_divide?
 }
@@ -511,7 +709,7 @@ remainder_clause = { kw_remainder ~ ident_name }
 // ── COMPUTE ─────────────────────────────────────────────────────────────────
 
 compute_stmt = {
-    kw_compute ~ ident_name ~ "=" ~ expression ~ rounded_clause?
+    kw_compute ~ ident_name ~ rounded_clause? ~ "=" ~ expression
     ~ size_error_clause?
     ~ kw_end_compute?
 }
@@ -611,7 +809,7 @@ string_stmt = {
 }
 
 string_source = {
-    expression ~ kw_delimited ~ kw_by ~ (kw_size | expression)
+        expression ~ kw_delimited ~ (kw_size | kw_by ~ (kw_size | expression))
   | expression
 }
 
@@ -690,6 +888,17 @@ call_stmt = {
     ~ kw_end_call?
 }
 
+cancel_stmt = { kw_cancel ~ (string_literal | ident_name) }
+
+release_stmt = { kw_release ~ ident_name ~ (kw_from ~ ident_name)? }
+
+return_stmt = {
+    kw_return ~ ident_name
+    ~ (kw_into ~ ident_name)?
+    ~ at_end_clause?
+    ~ kw_end_return?
+}
+
 call_arg = {
     (kw_by ~ (kw_reference | kw_content | kw_value))? ~ ident_name
 }
@@ -713,6 +922,10 @@ set_stmt = {
   | kw_set ~ ident_name ~ (kw_up | kw_down) ~ kw_by ~ expression
 }
 
+// ── ALTER ───────────────────────────────────────────────────────────────────
+
+alter_stmt = { kw_alter ~ ident_name ~ kw_to ~ kw_proceed ~ kw_to ~ ident_name }
+
 // ── GO TO ───────────────────────────────────────────────────────────────────
 
 go_to_stmt = { kw_go ~ kw_to? ~ ident_name }
@@ -720,6 +933,8 @@ go_to_stmt = { kw_go ~ kw_to? ~ ident_name }
 // ── STOP RUN ────────────────────────────────────────────────────────────────
 
 stop_run_stmt = { kw_stop ~ kw_run }
+
+stop_stmt = { kw_stop ~ literal }
 
 // ── GOBACK ──────────────────────────────────────────────────────────────────
 
@@ -734,6 +949,32 @@ continue_stmt = { kw_continue }
 raise_stmt = { kw_raise ~ kw_exception? ~ expression }
 
 // ── JSON GENERATE / PARSE ───────────────────────────────────────────────────
+
+xml_stmt = {
+        kw_xml ~ kw_generate ~ ident_name ~ kw_from ~ expression
+        ~ xml_generate_option*
+        ~ on_exception_clause?
+        ~ kw_end_xml?
+    | kw_xml ~ kw_parse ~ expression
+        ~ kw_processing ~ kw_procedure ~ ident_name
+        ~ xml_parse_option*
+        ~ on_exception_clause?
+        ~ kw_end_xml?
+}
+
+xml_generate_option = {
+        kw_count ~ kw_in ~ ident_name
+    | kw_encoding ~ expression
+    | kw_with ~ kw_xml_declaration
+    | kw_with ~ kw_attributes
+    | kw_namespace ~ kw_is? ~ string_literal
+    | kw_namespace_prefix ~ kw_is? ~ string_literal
+    | kw_suppress ~ kw_when ~ (kw_zero | kw_spaces)
+}
+
+xml_parse_option = {
+        kw_encoding ~ expression
+}
 
 json_stmt = {
     kw_json ~ kw_generate ~ ident_name ~ kw_from ~ ident_name
@@ -766,14 +1007,16 @@ read_stmt = {
     ~ kw_end_read?
 }
 
+clause_statement_list = { statement ~ period? ~ (statement ~ period?)* }
+
 at_end_clause = {
-    (kw_at? ~ kw_end ~ statement_list)?
-    ~ (kw_not ~ kw_at? ~ kw_end ~ statement_list)?
+    (kw_at? ~ kw_end ~ clause_statement_list)?
+    ~ (kw_not ~ kw_at? ~ kw_end ~ clause_statement_list)?
 }
 
 invalid_key_clause = {
-    (kw_invalid ~ kw_key? ~ statement_list)?
-    ~ (kw_not ~ kw_invalid ~ kw_key? ~ statement_list)?
+    (kw_invalid ~ kw_key? ~ clause_statement_list)?
+    ~ (kw_not ~ kw_invalid ~ kw_key? ~ clause_statement_list)?
 }
 
 // ── WRITE ───────────────────────────────────────────────────────────────────
@@ -782,8 +1025,14 @@ write_stmt = {
     kw_write ~ ident_name
     ~ (kw_from ~ ident_name)?
     ~ write_advancing?
+    ~ end_of_page_clause?
     ~ invalid_key_clause?
     ~ kw_end_write?
+}
+
+end_of_page_clause = {
+    (kw_at ~ kw_end_of_page ~ statement_list)?
+    ~ (kw_not ~ kw_at ~ kw_end_of_page ~ statement_list)?
 }
 
 write_advancing = {
@@ -823,19 +1072,24 @@ sort_stmt = {
     kw_sort ~ ident_name
     ~ kw_on? ~ (kw_ascending | kw_descending) ~ kw_key? ~ ident_name
     ~ (kw_on? ~ (kw_ascending | kw_descending) ~ kw_key? ~ ident_name)*
+        ~ sort_duplicates_clause?
     ~ sort_input?
     ~ sort_output?
 }
 
+sort_duplicates_clause = { kw_with ~ kw_duplicates ~ kw_in ~ kw_order }
+
 sort_input = {
-    kw_using ~ ident_name+
+        kw_using ~ sort_file_operand+
   | kw_input ~ kw_procedure ~ kw_is? ~ ident_name ~ (kw_thru ~ ident_name)?
 }
 
 sort_output = {
-    kw_giving ~ ident_name+
+        kw_giving ~ sort_file_operand+
   | kw_output ~ kw_procedure ~ kw_is? ~ ident_name ~ (kw_thru ~ ident_name)?
 }
+
+sort_file_operand = { ident_name | string_literal }
 
 // ── MERGE ───────────────────────────────────────────────────────────────────
 
@@ -843,18 +1097,21 @@ merge_stmt = {
     kw_merge ~ ident_name
     ~ kw_on? ~ (kw_ascending | kw_descending) ~ kw_key? ~ ident_name
     ~ (kw_on? ~ (kw_ascending | kw_descending) ~ kw_key? ~ ident_name)*
-    ~ (kw_using ~ ident_name ~ ident_name+)?
-    ~ (kw_giving ~ ident_name+ | kw_output ~ kw_procedure ~ kw_is? ~ ident_name)?
+    ~ sort_duplicates_clause?
+    ~ (kw_using ~ sort_file_operand+)?
+    ~ (kw_giving ~ sort_file_operand+ | kw_output ~ kw_procedure ~ kw_is? ~ ident_name)?
 }
 
 // ── SEARCH ──────────────────────────────────────────────────────────────────
 
 search_stmt = {
-    kw_search ~ kw_all? ~ ident_name ~ kw_varying? ~ ident_name?
+    kw_search ~ kw_all? ~ search_subject ~ kw_varying? ~ ident_name?
     ~ (kw_at ~ kw_end ~ statement_list)?
     ~ (kw_when ~ condition ~ statement_list)+
     ~ kw_end_search?
 }
+
+search_subject = { ident_name ~ subscript_or_refmod? }
 
 // ── COPY ────────────────────────────────────────────────────────────────────
 
@@ -874,7 +1131,7 @@ pseudo_text = @{ "==" ~ (!"==" ~ ANY)* ~ "==" }
 // ── INVOKE (OO COBOL) ──────────────────────────────────────────────────────
 
 invoke_stmt = {
-    kw_invoke ~ ident_name ~ ("::" ~ ident_name | ident_name)
+    kw_invoke ~ ident_name ~ ("::" ~ ident_name | ident_name | kw_new)
     ~ (kw_using ~ ident_name+)?
     ~ (kw_returning ~ ident_name)?
 }
@@ -952,14 +1209,14 @@ not_condition = {
 }
 
 comparison = {
-    expression ~ class_condition_test
-  | expression ~ sign_condition_test
-  | expression ~ comparison_op ~ expression
-  | expression
+        expression ~ class_condition_test
+    | expression ~ sign_condition_test
+    | expression ~ comparison_op ~ expression
+    | expression ~ !comparison_op
 }
 
 class_condition_test = {
-    kw_is ~ kw_not? ~ (kw_numeric | kw_alphabetic_lower | kw_alphabetic_upper | kw_alphabetic)
+    kw_is ~ kw_not? ~ (kw_numeric | kw_alphabetic_lower | kw_alphabetic_upper | kw_alphabetic | ident_name)
 }
 
 sign_condition_test = {
@@ -1083,7 +1340,7 @@ figurative_constant = {
 boolean_literal = { kw_true | kw_false }
 
 number_literal = @{
-    "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)?
+    "-"? ~ (ASCII_DIGIT+ ~ (("." | ",") ~ ASCII_DIGIT+)? | ("." | ",") ~ ASCII_DIGIT+)
 }
 
 string_literal = @{
@@ -1110,6 +1367,7 @@ strict_keyword = _{
     | ^"pic" | ^"picture" | ^"value" | ^"occurs" | ^"times"
     | ^"redefines" | ^"indexed" | ^"usage" | ^"filler"
     | ^"display" | ^"accept" | ^"move" | ^"to" | ^"corresponding" | ^"corr"
+    | ^"alter" | ^"proceed"
     | ^"add" | ^"subtract" | ^"from" | ^"giving" | ^"multiply" | ^"by"
     | ^"divide" | ^"remainder" | ^"compute"
     | ^"if" | ^"else" | ^"end-if" | ^"then"
@@ -1121,8 +1379,9 @@ strict_keyword = _{
     | ^"inspect" | ^"tallying" | ^"replacing" | ^"all" | ^"leading" | ^"first"
     | ^"for" | ^"characters" | ^"converting"
     | ^"search" | ^"end-search" | ^"at"
-    | ^"call" | ^"using" | ^"end-call" | ^"returning"
+    | ^"call" | ^"cancel" | ^"using" | ^"end-call" | ^"returning" | ^"return"
     | ^"go" | ^"stop" | ^"run" | ^"goback"
+    | ^"release" | ^"order"
     | ^"initialize" | ^"set" | ^"continue"
     | ^"raise" | ^"exception"
     | ^"json" | ^"generate" | ^"parse"
@@ -1184,6 +1443,8 @@ kw_input_output    = @{ ^"input-output"    ~ !ident_cont }
 kw_file_control    = @{ ^"file-control"    ~ !ident_cont }
 kw_decimal_point   = @{ ^"decimal-point"   ~ !ident_cont }
 kw_currency        = @{ ^"currency"        ~ !ident_cont }
+kw_alphabet        = @{ ^"alphabet"        ~ !ident_cont }
+kw_symbolic        = @{ ^"symbolic"        ~ !ident_cont }
 kw_comma           = @{ ^"comma"           ~ !ident_cont }
 
 // Data division sections
@@ -1277,6 +1538,9 @@ kw_through         = @{ ^"through"         ~ !ident_cont }
 kw_string          = @{ ^"string"          ~ !ident_cont }
 kw_unstring        = @{ ^"unstring"        ~ !ident_cont }
 kw_inspect         = @{ ^"inspect"         ~ !ident_cont }
+kw_cancel          = @{ ^"cancel"          ~ !ident_cont }
+kw_release         = @{ ^"release"         ~ !ident_cont }
+kw_return          = @{ ^"return"          ~ !ident_cont }
 kw_tallying        = @{ ^"tallying"        ~ !ident_cont }
 kw_replacing       = @{ ^"replacing"       ~ !ident_cont }
 kw_converting      = @{ ^"converting"      ~ !ident_cont }
@@ -1284,6 +1548,8 @@ kw_leading         = @{ ^"leading"         ~ !ident_cont }
 kw_trailing        = @{ ^"trailing"        ~ !ident_cont }
 kw_first           = @{ ^"first"           ~ !ident_cont }
 kw_initial         = @{ ^"initial"         ~ !ident_cont }
+kw_common          = @{ ^"common"          ~ !ident_cont }
+kw_recursive       = @{ ^"recursive"       ~ !ident_cont }
 kw_call            = @{ ^"call"            ~ !ident_cont }
 kw_using           = @{ ^"using"           ~ !ident_cont }
 kw_returning       = @{ ^"returning"       ~ !ident_cont }
@@ -1298,8 +1564,21 @@ kw_continue        = @{ ^"continue"        ~ !ident_cont }
 kw_raise           = @{ ^"raise"           ~ !ident_cont }
 kw_exception       = @{ ^"exception"       ~ !ident_cont }
 kw_json            = @{ ^"json"            ~ !ident_cont }
+kw_xml             = @{ ^"xml"             ~ !ident_cont }
 kw_generate        = @{ ^"generate"        ~ !ident_cont }
 kw_parse           = @{ ^"parse"           ~ !ident_cont }
+kw_processing      = @{ ^"processing"      ~ !ident_cont }
+kw_encoding        = @{ ^"encoding"        ~ !ident_cont }
+kw_attributes      = @{ ^"attributes"      ~ !ident_cont }
+kw_xml_declaration = @{ ^"xml-declaration" ~ !ident_cont }
+kw_namespace       = @{ ^"namespace"       ~ !ident_cont }
+kw_namespace_prefix = @{ ^"namespace-prefix" ~ !ident_cont }
+kw_suppress        = @{ ^"suppress"        ~ !ident_cont }
+kw_linage          = @{ ^"linage"          ~ !ident_cont }
+kw_footing         = @{ ^"footing"         ~ !ident_cont }
+kw_top             = @{ ^"top"             ~ !ident_cont }
+kw_bottom          = @{ ^"bottom"          ~ !ident_cont }
+kw_end_of_page     = @{ ^"end-of-page"     ~ !ident_cont }
 kw_open            = @{ ^"open"            ~ !ident_cont }
 kw_close           = @{ ^"close"           ~ !ident_cont }
 kw_read            = @{ ^"read"            ~ !ident_cont }
@@ -1342,6 +1621,13 @@ kw_on              = @{ ^"on"              ~ !ident_cont }
 kw_size            = @{ ^"size"            ~ !ident_cont }
 kw_error           = @{ ^"error"           ~ !ident_cont }
 kw_rounded         = @{ ^"rounded"         ~ !ident_cont }
+kw_truncation      = @{ ^"truncation"      ~ !ident_cont }
+kw_nearest_even    = @{ ^"nearest-even"    ~ !ident_cont }
+kw_nearest_toward_zero = @{ ^"nearest-toward-zero" ~ !ident_cont }
+kw_toward_greater  = @{ ^"toward-greater"  ~ !ident_cont }
+kw_toward_lesser   = @{ ^"toward-lesser"   ~ !ident_cont }
+kw_away_from_zero  = @{ ^"away-from-zero"  ~ !ident_cont }
+kw_prohibited      = @{ ^"prohibited"      ~ !ident_cont }
 kw_remainder       = @{ ^"remainder"       ~ !ident_cont }
 kw_corresponding   = @{ ^"corresponding"   ~ !ident_cont }
 kw_corr            = @{ ^"corr"            ~ !ident_cont }
@@ -1368,8 +1654,22 @@ kw_page            = @{ ^"page"            ~ !ident_cont }
 kw_advancing       = @{ ^"advancing"       ~ !ident_cont }
 kw_lines           = @{ ^"lines"           ~ !ident_cont }
 kw_line            = @{ ^"line"            ~ !ident_cont }
+kw_column          = @{ ^"column"          ~ !ident_cont }
 kw_upon            = @{ ^"upon"            ~ !ident_cont }
 kw_no              = @{ ^"no"              ~ !ident_cont }
+kw_auto            = @{ ^"auto"            ~ !ident_cont }
+kw_required        = @{ ^"required"        ~ !ident_cont }
+kw_protected       = @{ ^"protected"       ~ !ident_cont }
+kw_secure          = @{ ^"secure"          ~ !ident_cont }
+kw_highlight       = @{ ^"highlight"       ~ !ident_cont }
+kw_reverse_video   = @{ ^"reverse-video"   ~ !ident_cont }
+kw_blink           = @{ ^"blink"           ~ !ident_cont }
+kw_foreground_color = @{ ^"foreground-color" ~ !ident_cont }
+kw_background_color = @{ ^"background-color" ~ !ident_cont }
+kw_declaratives    = @{ ^"declaratives"    ~ !ident_cont }
+kw_use             = @{ ^"use"             ~ !ident_cont }
+kw_debugging       = @{ ^"debugging"       ~ !ident_cont }
+kw_procedures      = @{ ^"procedures"      ~ !ident_cont }
 
 // Condition keywords
 kw_numeric         = @{ ^"numeric"         ~ !ident_cont }
@@ -1437,6 +1737,8 @@ kw_mode            = @{ ^"mode"            ~ !ident_cont }
 kw_random          = @{ ^"random"          ~ !ident_cont }
 kw_dynamic         = @{ ^"dynamic"         ~ !ident_cont }
 kw_alternate       = @{ ^"alternate"       ~ !ident_cont }
+kw_alter           = @{ ^"alter"           ~ !ident_cont }
+kw_order           = @{ ^"order"           ~ !ident_cont }
 kw_duplicates      = @{ ^"duplicates"      ~ !ident_cont }
 
 // SET sub-keywords
@@ -1446,6 +1748,7 @@ kw_down            = @{ ^"down"            ~ !ident_cont }
 // REFERENCE / CONTENT / VALUE for CALL BY
 kw_reference       = @{ ^"reference"       ~ !ident_cont }
 kw_content         = @{ ^"content"         ~ !ident_cont }
+kw_proceed         = @{ ^"proceed"         ~ !ident_cont }
 
 // INITIALIZE sub-keywords
 kw_alphanumeric    = @{ ^"alphanumeric"    ~ !ident_cont }
@@ -1458,6 +1761,9 @@ kw_separate        = @{ ^"separate"        ~ !ident_cont }
 kw_method_id_bare  = @{ ^"method"         ~ !ident_cont }
 kw_interface_bare  = @{ ^"interface"      ~ !ident_cont }
 kw_program_bare    = @{ ^"program"        ~ !ident_cont }
+kw_intrinsic       = @{ ^"intrinsic"      ~ !ident_cont }
+kw_yyyymmdd        = @{ ^"yyyymmdd"       ~ !ident_cont }
+kw_yyyyddd         = @{ ^"yyyyddd"        ~ !ident_cont }
 
 // Scope terminators (accept both END-IF and END IF forms)
 // kw_end is defined above in the main keyword section
@@ -1473,6 +1779,7 @@ kw_end_start       = { ^"end-start" | kw_end ~ kw_start }
 kw_end_string      = { ^"end-string" | kw_end ~ kw_string }
 kw_end_unstring    = { ^"end-unstring" | kw_end ~ kw_unstring }
 kw_end_search      = { ^"end-search" | kw_end ~ kw_search }
+kw_end_return      = { ^"end-return" | kw_end ~ kw_return }
 kw_end_add         = { ^"end-add" | kw_end ~ kw_add }
 kw_end_subtract    = { ^"end-subtract" | kw_end ~ kw_subtract }
 kw_end_multiply    = { ^"end-multiply" | kw_end ~ kw_multiply }
@@ -1485,6 +1792,7 @@ kw_end_object      = { ^"end-object" | kw_end ~ kw_object }
 kw_end_interface   = { ^"end-interface" | kw_end ~ kw_interface_bare }
 kw_end_validate    = { ^"end-validate" | kw_end ~ kw_validate }
 kw_end_json        = { ^"end-json" | kw_end ~ kw_json }
+kw_end_xml         = { ^"end-xml" | kw_end ~ kw_xml }
 kw_end_program     = { ^"end-program" | kw_end ~ kw_program_bare }
 
 // JSON sub-keywords

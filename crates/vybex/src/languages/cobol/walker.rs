@@ -51,7 +51,8 @@ fn is_kw(r: Rule) -> bool {
         | kw_procedure | kw_division | kw_section | kw_program_id | kw_class_id
         | kw_interface_id | kw_method_id | kw_author | kw_date_written
         | kw_special_names | kw_repository | kw_input_output | kw_file_control
-        | kw_decimal_point | kw_currency | kw_comma | kw_working_storage
+        | kw_decimal_point | kw_currency | kw_alphabet | kw_symbolic
+        | kw_comma | kw_working_storage
         | kw_local_storage | kw_linkage | kw_file | kw_screen | kw_pic
         | kw_picture | kw_value | kw_occurs | kw_times | kw_depending
         | kw_redefines | kw_usage | kw_indexed | kw_filler | kw_blank
@@ -65,24 +66,38 @@ fn is_kw(r: Rule) -> bool {
         | kw_low_value | kw_high_values | kw_high_value | kw_quotes
         | kw_quote | kw_nulls | kw_null | kw_all | kw_display | kw_accept
         | kw_move | kw_add | kw_subtract | kw_multiply | kw_divide
+        | kw_cancel | kw_release | kw_return
+        | kw_alter | kw_proceed
         | kw_compute | kw_if | kw_else | kw_then | kw_evaluate | kw_when
         | kw_other | kw_perform | kw_until | kw_varying | kw_thru
         | kw_through | kw_string | kw_unstring | kw_inspect | kw_tallying
         | kw_replacing | kw_converting | kw_leading | kw_trailing | kw_first
-        | kw_initial | kw_call | kw_using | kw_returning | kw_initialize
+        | kw_initial | kw_common | kw_recursive | kw_call | kw_using
+        | kw_returning | kw_initialize
         | kw_set | kw_go | kw_to | kw_stop | kw_run | kw_goback
-        | kw_continue | kw_raise | kw_exception | kw_json | kw_generate
-        | kw_parse | kw_open | kw_close | kw_read | kw_write | kw_rewrite
+        | kw_continue | kw_raise | kw_exception | kw_json | kw_xml
+        | kw_generate | kw_parse | kw_processing | kw_encoding
+        | kw_attributes | kw_xml_declaration | kw_namespace
+        | kw_namespace_prefix | kw_suppress | kw_linage | kw_footing
+        | kw_top | kw_bottom | kw_end_of_page | kw_open | kw_close
+        | kw_read | kw_write | kw_rewrite
         | kw_delete | kw_start | kw_sort | kw_merge | kw_search | kw_copy
         | kw_invoke | kw_validate | kw_free | kw_allocate | kw_typedef
         | kw_exit | kw_not | kw_and | kw_or | kw_true | kw_false | kw_any
         | kw_with | kw_test | kw_before | kw_after | kw_async | kw_giving
         | kw_from | kw_by | kw_into | kw_on | kw_size | kw_error
-        | kw_rounded | kw_remainder | kw_corresponding | kw_corr
+        | kw_rounded | kw_truncation | kw_nearest_even
+        | kw_nearest_toward_zero | kw_toward_greater | kw_toward_lesser
+        | kw_away_from_zero | kw_prohibited | kw_remainder
+        | kw_corresponding | kw_corr
         | kw_delimited | kw_delimiter | kw_count | kw_overflow | kw_input
         | kw_output | kw_extend | kw_i_o | kw_ascending | kw_descending
         | kw_key | kw_at | kw_end | kw_invalid | kw_next | kw_page
-        | kw_advancing | kw_lines | kw_line | kw_upon | kw_no | kw_numeric
+        | kw_advancing | kw_lines | kw_line | kw_column | kw_upon | kw_no
+        | kw_auto | kw_required | kw_protected | kw_secure | kw_highlight
+        | kw_reverse_video | kw_blink | kw_foreground_color
+        | kw_background_color | kw_declaratives | kw_use | kw_debugging
+        | kw_procedures | kw_numeric
         | kw_alphabetic | kw_alphabetic_lower | kw_alphabetic_upper
         | kw_positive | kw_negative | kw_equal | kw_greater | kw_less
         | kw_than | kw_not_less | kw_not_greater | kw_inherits
@@ -93,14 +108,16 @@ fn is_kw(r: Rule) -> bool {
         | kw_time | kw_day | kw_day_of_week | kw_command_line | kw_console
         | kw_select | kw_assign | kw_organization | kw_sequential
         | kw_relative | kw_file_status | kw_access | kw_mode | kw_random
-        | kw_dynamic | kw_alternate | kw_duplicates | kw_up | kw_down
+        | kw_dynamic | kw_alternate | kw_order | kw_duplicates | kw_up | kw_down
         | kw_reference | kw_content | kw_alphanumeric | kw_sign | kw_separate
         | kw_end_if | kw_end_evaluate | kw_end_perform | kw_end_call
         | kw_end_read | kw_end_write | kw_end_rewrite | kw_end_delete
         | kw_end_start | kw_end_string | kw_end_unstring | kw_end_search
         | kw_end_add | kw_end_subtract | kw_end_multiply | kw_end_divide
+        | kw_end_return
         | kw_end_compute | kw_end_class | kw_end_method | kw_end_factory
         | kw_end_object | kw_end_interface | kw_end_validate | kw_end_json
+        | kw_end_xml
         | kw_end_program | kw_name | kw_class | kw_paragraph | kw_program
         | kw_method | kw_cycle | kw_when_ | kw_left | kw_right | kw_function
         | kw_length | kw_upper_case | kw_lower_case | kw_trim | kw_reverse
@@ -168,6 +185,12 @@ pub fn parse(source: &str) -> Result<Module, String> {
             Rule::identification_division => {
                 walk_identification_division(pair, &mut module)?;
             }
+            Rule::class_id_paragraph => {
+                walk_class_id(pair, &mut module.body)?;
+            }
+            Rule::interface_id_paragraph => {
+                walk_interface_id(pair, &mut module.body)?;
+            }
             Rule::environment_division => {
                 // Environment division is mostly declarative config.
                 // We extract file SELECT entries as comments / empty stmts.
@@ -199,7 +222,9 @@ fn walk_identification_division(pair: Pair<Rule>, module: &mut Module) -> Result
         match child.as_rule() {
             Rule::program_id_paragraph => {
                 let parts = inner_nokw(child);
-                if let Some(name_pair) = parts.into_iter().find(|p| p.as_rule() == Rule::ident_name) {
+                if let Some(name_pair) = parts.into_iter().find(|p| {
+                    matches!(p.as_rule(), Rule::ident_name | Rule::ident_or_keyword)
+                }) {
                     module.name = name_pair.as_str().to_string();
                 }
             }
@@ -246,9 +271,11 @@ fn walk_data_division(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(),
             }
             Rule::working_storage_section
             | Rule::local_storage_section
-            | Rule::linkage_section
-            | Rule::screen_section => {
+            | Rule::linkage_section => {
                 walk_storage_section(child, body)?;
+            }
+            Rule::screen_section => {
+                walk_screen_section(child, body)?;
             }
             _ => {}
         }
@@ -282,6 +309,113 @@ fn walk_storage_section(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(
             walk_data_item(child, body)?;
         }
     }
+    Ok(())
+}
+
+fn walk_screen_section(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), String> {
+    for child in pair.into_inner() {
+        if child.as_rule() == Rule::screen_item {
+            walk_screen_item(child, body)?;
+        }
+    }
+    Ok(())
+}
+
+fn walk_screen_item(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), String> {
+    let span = to_span(&pair);
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::level_88_item => {
+                let stmt = walk_level_88(child)?;
+                body.push(Statement::with_span(stmt, span));
+            }
+            Rule::screen_data_item => {
+                walk_screen_data_item(child, body)?;
+            }
+            Rule::screen_item => {
+                walk_screen_item(child, body)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn walk_screen_data_item(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), String> {
+    let span = to_span(&pair);
+    let children: Vec<Pair<Rule>> = pair.into_inner().collect();
+
+    let mut name = String::new();
+    let mut pic_str: Option<String> = None;
+    let mut init_value: Option<Expression> = None;
+    let mut nested_items: Vec<Pair<Rule>> = Vec::new();
+
+    for child in children {
+        match child.as_rule() {
+            Rule::screen_item_name => {
+                if name.is_empty() {
+                    name = child.as_str().to_string();
+                }
+            }
+            Rule::pic_clause => {
+                for part in child.into_inner() {
+                    if part.as_rule() == Rule::pic_string {
+                        pic_str = Some(part.as_str().to_string());
+                    }
+                }
+            }
+            Rule::value_clause => {
+                for part in inner_nokw(child) {
+                    if part.as_rule() == Rule::literal {
+                        init_value = Some(walk_literal(part)?);
+                    }
+                }
+            }
+            Rule::screen_item => nested_items.push(child),
+            Rule::screen_source_clause
+            | Rule::blank_screen_clause
+            | Rule::line_clause
+            | Rule::column_clause
+            | Rule::highlight_clause
+            | Rule::reverse_video_clause
+            | Rule::blink_clause
+            | Rule::auto_clause
+            | Rule::required_clause
+            | Rule::protected_clause
+            | Rule::secure_clause
+            | Rule::foreground_color_clause
+            | Rule::background_color_clause
+            | Rule::level_number
+            | Rule::period => {}
+            _ => {
+                if is_kw(child.as_rule()) {
+                    continue;
+                }
+            }
+        }
+    }
+
+    for nested in nested_items {
+        walk_screen_item(nested, body)?;
+    }
+
+    if name.is_empty() {
+        return Ok(());
+    }
+
+    body.push(Statement::with_span(
+        StmtKind::VarDecl {
+            kind: VarDeclKind::Dim,
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(name),
+                type_hint: pic_str.as_ref().map(|p| pic_to_type_hint(p)),
+                init: init_value.or_else(|| pic_str.as_ref().map(|_| default_value_for_pic(&pic_str))),
+                array_bounds: None,
+                with_events: false,
+            }],
+        },
+        span,
+    ));
     Ok(())
 }
 
@@ -476,6 +610,15 @@ fn walk_data_clause(
                 for p in parts {
                     if p.as_rule() == Rule::literal {
                         *init_value = Some(walk_literal(p)?);
+                    } else if matches!(p.as_rule(), Rule::ident_name | Rule::ident_or_keyword) {
+                        let name = p.as_str();
+                        if name.eq_ignore_ascii_case("true") {
+                            *init_value = Some(Expression::bool(true));
+                        } else if name.eq_ignore_ascii_case("false") {
+                            *init_value = Some(Expression::bool(false));
+                        } else {
+                            *init_value = Some(Expression::ident(name));
+                        }
                     }
                 }
             }
@@ -638,6 +781,21 @@ fn walk_procedure_division(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Resul
             Rule::statement_list => {
                 walk_statement_list(child, body)?;
             }
+            Rule::declaratives_block => {
+                // Parsed for compatibility; no shared AST lowering yet.
+            }
+            Rule::procedure_block => {
+                for part in child.into_inner() {
+                    match part.as_rule() {
+                        Rule::section => walk_section(part, body)?,
+                        Rule::paragraph => walk_paragraph(part, body)?,
+                        _ => {}
+                    }
+                }
+            }
+            Rule::section => {
+                walk_section(child, body)?;
+            }
             Rule::paragraph => {
                 walk_paragraph(child, body)?;
             }
@@ -681,6 +839,49 @@ fn walk_paragraph(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), Str
             params: Vec::new(),
             return_type: None,
             body: para_body,
+            modifiers: Modifiers::default(),
+            handles: Vec::new(),
+            is_async: false,
+            is_generator: false,
+            is_sub: true,
+        },
+        span,
+    ));
+    Ok(())
+}
+
+fn walk_section(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), String> {
+    let span = to_span(&pair);
+    let parts = filter_nokw(pair.into_inner());
+
+    let mut name = String::new();
+    let mut section_body = Vec::new();
+
+    for p in parts {
+        match p.as_rule() {
+            Rule::paragraph_name => {
+                name = p.as_str().to_string();
+            }
+            Rule::statement_list => {
+                walk_statement_list(p, &mut section_body)?;
+            }
+            Rule::paragraph => {
+                walk_paragraph(p, &mut section_body)?;
+            }
+            _ => {}
+        }
+    }
+
+    if name.is_empty() {
+        return Ok(());
+    }
+
+    body.push(Statement::with_span(
+        StmtKind::FunctionDecl {
+            name,
+            params: Vec::new(),
+            return_type: None,
+            body: section_body,
             modifiers: Modifiers::default(),
             handles: Vec::new(),
             is_async: false,
@@ -798,6 +999,18 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
             walk_call_stmt(pair)?
         }
 
+        Rule::cancel_stmt => {
+            StmtKind::Empty
+        }
+
+        Rule::release_stmt => {
+            StmtKind::Empty
+        }
+
+        Rule::return_stmt => {
+            StmtKind::Empty
+        }
+
         // ── INITIALIZE ──────────────────────────────────────────────────
         Rule::initialize_stmt => {
             walk_initialize_stmt(pair)?
@@ -806,6 +1019,11 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
         // ── SET ─────────────────────────────────────────────────────────
         Rule::set_stmt => {
             walk_set_stmt(pair)?
+        }
+
+        // ── ALTER ──────────────────────────────────────────────────────
+        Rule::alter_stmt => {
+            StmtKind::Empty
         }
 
         // ── GO TO ───────────────────────────────────────────────────────
@@ -828,6 +1046,10 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
             StmtKind::Return(None)
         }
 
+        Rule::stop_stmt => {
+            StmtKind::Empty
+        }
+
         // ── GOBACK ──────────────────────────────────────────────────────
         Rule::goback_stmt => {
             StmtKind::Return(None)
@@ -848,7 +1070,10 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
             StmtKind::Throw { expr, cause: None }
         }
 
-        // ── JSON GENERATE / PARSE ───────────────────────────────────────
+        // ── XML / JSON GENERATE / PARSE ─────────────────────────────────
+        Rule::xml_stmt => {
+            walk_xml_stmt(pair)?
+        }
         Rule::json_stmt => {
             walk_json_stmt(pair)?
         }
@@ -1095,6 +1320,7 @@ fn walk_accept_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
     let mut var_name = String::new();
     let mut source: Option<String> = None;
+    let mut args: Vec<Argument> = Vec::new();
 
     for child in &children {
         match child.as_rule() {
@@ -1106,16 +1332,41 @@ fn walk_accept_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
             Rule::accept_source => {
                 // Determine the accept source
                 for inner in child.clone().into_inner() {
-                    let s = match inner.as_rule() {
-                        Rule::kw_date => "DATE",
-                        Rule::kw_time => "TIME",
-                        Rule::kw_day => "DAY",
-                        Rule::kw_day_of_week => "DAY-OF-WEEK",
-                        Rule::kw_command_line => "COMMAND-LINE",
-                        Rule::kw_console => "CONSOLE",
-                        _ => continue,
-                    };
-                    source = Some(s.to_string());
+                    match inner.as_rule() {
+                        Rule::accept_environment_source => {
+                            source = Some("ENVIRONMENT".to_string());
+                            for env_inner in inner.into_inner() {
+                                match env_inner.as_rule() {
+                                    Rule::ident_name => {
+                                        args.push(Argument::positional(Expression::ident(env_inner.as_str())));
+                                    }
+                                    Rule::string_literal => {
+                                        args.push(Argument::positional(walk_string_literal(&env_inner)?));
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        Rule::accept_date_source => {
+                            source = Some("DATE".to_string());
+                        }
+                        Rule::accept_day_source => {
+                            source = Some("DAY".to_string());
+                        }
+                        Rule::accept_day_of_week_source => {
+                            source = Some("DAY-OF-WEEK".to_string());
+                        }
+                        Rule::kw_time => {
+                            source = Some("TIME".to_string());
+                        }
+                        Rule::kw_command_line => {
+                            source = Some("COMMAND-LINE".to_string());
+                        }
+                        Rule::kw_console => {
+                            source = Some("CONSOLE".to_string());
+                        }
+                        _ => {}
+                    }
                 }
             }
             _ => {}
@@ -1123,6 +1374,7 @@ fn walk_accept_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 
     let call_callee = match source.as_deref() {
+        Some("ENVIRONMENT") => "getenv",
         Some("DATE") | Some("DAY") | Some("DAY-OF-WEEK") => "__accept_date",
         Some("TIME") => "__accept_time",
         Some("COMMAND-LINE") => "__accept_command_line",
@@ -1134,7 +1386,7 @@ fn walk_accept_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
         targets: vec![Expression::ident(&var_name)],
         value: Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident(call_callee)),
-            args: Vec::new(),
+            args,
             optional: false,
         }),
     })
@@ -1185,7 +1437,7 @@ fn walk_move_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 if child.as_rule() == Rule::expression {
                     src_expr = Some(walk_expression(child)?);
                 }
-            } else if child.as_rule() == Rule::ident_name {
+            } else if matches!(child.as_rule(), Rule::ident_name | Rule::kw_sd) {
                 targets.push(Expression::ident(child.as_str()));
             }
         }
@@ -1368,6 +1620,7 @@ fn walk_multiply_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
     let mut src_expr: Option<Expression> = None;
+    let mut by_expr: Option<Expression> = None;
     let mut by_name: Option<String> = None;
     let mut giving_name: Option<String> = None;
     let mut in_by = false;
@@ -1390,8 +1643,17 @@ fn walk_multiply_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
 
         if in_by {
-            if child.as_rule() == Rule::ident_name {
+            if child.as_rule() == Rule::arith_operand {
+                if let Some(inner) = child.clone().into_inner().next() {
+                    by_expr = Some(walk_atom(inner)?);
+                }
+            } else if child.as_rule() == Rule::ident_name {
                 by_name = Some(child.as_str().to_string());
+                by_expr = Some(Expression::ident(child.as_str()));
+            }
+        } else if child.as_rule() == Rule::arith_operand {
+            if let Some(inner) = child.clone().into_inner().next() {
+                src_expr = Some(walk_atom(inner)?);
             }
         } else if child.as_rule() == Rule::expression {
             src_expr = Some(walk_expression(child.clone())?);
@@ -1401,7 +1663,7 @@ fn walk_multiply_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let src = src_expr.unwrap_or(Expression::int(1));
 
     if let Some(giving) = giving_name {
-        let by_expr = by_name.map(|n| Expression::ident(&n)).unwrap_or(Expression::int(1));
+        let by_expr = by_expr.unwrap_or_else(|| by_name.map(|n| Expression::ident(&n)).unwrap_or(Expression::int(1)));
         Ok(StmtKind::Assign {
             targets: vec![Expression::ident(&giving)],
             value: binary(BinOp::Mul, src, by_expr),
@@ -2342,6 +2604,68 @@ fn walk_set_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 // ── JSON ────────────────────────────────────────────────────────────────────
 
+fn walk_xml_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
+    let children: Vec<Pair<Rule>> = pair.into_inner().collect();
+    let has_generate = children.iter().any(|c| c.as_rule() == Rule::kw_generate);
+    let has_parse = children.iter().any(|c| c.as_rule() == Rule::kw_parse);
+
+    if has_generate {
+        let mut target = String::new();
+        let mut source: Option<Expression> = None;
+        let mut saw_from = false;
+
+        for child in children {
+            match child.as_rule() {
+                Rule::kw_from => saw_from = true,
+                Rule::ident_name if !saw_from && target.is_empty() => {
+                    target = child.as_str().to_string();
+                }
+                Rule::expression if saw_from && source.is_none() => {
+                    source = Some(walk_expression(child)?);
+                }
+                _ => {}
+            }
+        }
+
+        Ok(StmtKind::Assign {
+            targets: vec![Expression::ident(&target)],
+            value: Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("xml_generate")),
+                args: vec![Argument::positional(source.unwrap_or(Expression::null()))],
+                optional: false,
+            }),
+        })
+    } else if has_parse {
+        let mut source: Option<Expression> = None;
+        let mut handler = String::new();
+        let mut saw_processing = false;
+
+        for child in children {
+            match child.as_rule() {
+                Rule::expression if source.is_none() => {
+                    source = Some(walk_expression(child)?);
+                }
+                Rule::kw_processing => saw_processing = true,
+                Rule::ident_name if saw_processing && handler.is_empty() => {
+                    handler = child.as_str().to_string();
+                }
+                _ => {}
+            }
+        }
+
+        Ok(StmtKind::Expr(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("xml_parse")),
+            args: vec![
+                Argument::positional(source.unwrap_or(Expression::null())),
+                Argument::positional(Expression::ident(&handler)),
+            ],
+            optional: false,
+        })))
+    } else {
+        Ok(StmtKind::Empty)
+    }
+}
+
 fn walk_json_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
@@ -2630,19 +2954,45 @@ fn walk_search_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
 // ── INVOKE (OO COBOL) ──────────────────────────────────────────────────────
 
 fn walk_invoke_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let parts = inner_nokw(pair);
-    let idents: Vec<String> = parts.iter()
-        .filter(|p| p.as_rule() == Rule::ident_name)
-        .map(|p| p.as_str().to_string())
-        .collect();
+    let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
-    let obj = idents.first().cloned().unwrap_or_default();
-    let method = idents.get(1).cloned().unwrap_or_default();
-    let args: Vec<Argument> = idents.iter().skip(2)
-        .map(|name| Argument::positional(Expression::ident(name)))
-        .collect();
+    let mut obj = String::new();
+    let mut method = String::new();
+    let mut args: Vec<Argument> = Vec::new();
+    let mut returning_var: Option<String> = None;
+    let mut in_using = false;
+    let mut in_returning = false;
 
-    Ok(StmtKind::Expr(Expression::new(ExprKind::Call {
+    for child in children {
+        match child.as_rule() {
+            Rule::kw_using => {
+                in_using = true;
+                in_returning = false;
+            }
+            Rule::kw_returning => {
+                in_returning = true;
+                in_using = false;
+            }
+            Rule::kw_new => {
+                method = "new".to_string();
+            }
+            Rule::ident_name => {
+                let name = child.as_str().to_string();
+                if obj.is_empty() {
+                    obj = name;
+                } else if in_returning {
+                    returning_var = Some(name);
+                } else if method.is_empty() {
+                    method = name;
+                } else if in_using {
+                    args.push(Argument::positional(Expression::ident(&name)));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let call_expr = Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(Expression::ident(&obj)),
             field: method,
@@ -2650,7 +3000,16 @@ fn walk_invoke_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
         })),
         args,
         optional: false,
-    })))
+    });
+
+    if let Some(ret_var) = returning_var {
+        Ok(StmtKind::Assign {
+            targets: vec![Expression::ident(&ret_var)],
+            value: call_expr,
+        })
+    } else {
+        Ok(StmtKind::Expr(call_expr))
+    }
 }
 
 // ── EXIT ────────────────────────────────────────────────────────────────────
@@ -3172,21 +3531,40 @@ fn walk_class_condition_test(pair: Pair<Rule>, expr: Expression) -> Result<Expre
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
     let is_negated = children.iter().any(|c| c.as_rule() == Rule::kw_not);
 
-    let func_name = if children.iter().any(|c| c.as_rule() == Rule::kw_numeric) {
-        "__is_numeric"
+    let call = if children.iter().any(|c| c.as_rule() == Rule::kw_numeric) {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__is_numeric")),
+            args: vec![Argument::positional(expr)],
+            optional: false,
+        })
     } else if children.iter().any(|c| c.as_rule() == Rule::kw_alphabetic_lower) {
-        "__is_alphabetic_lower"
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__is_alphabetic_lower")),
+            args: vec![Argument::positional(expr)],
+            optional: false,
+        })
     } else if children.iter().any(|c| c.as_rule() == Rule::kw_alphabetic_upper) {
-        "__is_alphabetic_upper"
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__is_alphabetic_upper")),
+            args: vec![Argument::positional(expr)],
+            optional: false,
+        })
+    } else if let Some(class_name) = children.iter().find(|c| c.as_rule() == Rule::ident_name) {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__is_class")),
+            args: vec![
+                Argument::positional(expr),
+                Argument::positional(Expression::string(class_name.as_str())),
+            ],
+            optional: false,
+        })
     } else {
-        "__is_alphabetic"
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__is_alphabetic")),
+            args: vec![Argument::positional(expr)],
+            optional: false,
+        })
     };
-
-    let call = Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::ident(func_name)),
-        args: vec![Argument::positional(expr)],
-        optional: false,
-    });
 
     if is_negated {
         Ok(negate_expr(call))
@@ -3644,13 +4022,19 @@ fn walk_boolean_literal(pair: Pair<Rule>) -> Result<Expression, String> {
 
 fn parse_number_literal(s: &str) -> Expression {
     let trimmed = s.trim();
-    if trimmed.contains('.') {
-        match trimmed.parse::<f64>() {
+    let normalized = if trimmed.contains(',') && !trimmed.contains('.') {
+        trimmed.replace(',', ".")
+    } else {
+        trimmed.to_string()
+    };
+
+    if normalized.contains('.') {
+        match normalized.parse::<f64>() {
             Ok(f) => Expression::float(f),
             Err(_) => Expression::int(0),
         }
     } else {
-        match trimmed.parse::<i64>() {
+        match normalized.parse::<i64>() {
             Ok(n) => Expression::int(n),
             Err(_) => Expression::int(0),
         }

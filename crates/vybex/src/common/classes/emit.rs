@@ -22,6 +22,7 @@
 use super::types::*;
 use crate::ast::{ClassMember, ClassModifiers, Span};
 use crate::compiler::Compiler;
+use crate::languages::cobol;
 use crate::languages::js;
 
 /// Entry point from `compile_stmt`. Receives the raw AST fields from
@@ -32,6 +33,7 @@ pub fn emit_class_from_ast(
     span: Span,
     cname: &str,
     parents: &[String],
+    interfaces: &[String],
     members: &[ClassMember],
     modifiers: &ClassModifiers,
 ) -> Result<(), String> {
@@ -40,7 +42,7 @@ pub fn emit_class_from_ast(
         span,
         cname,
         parents,
-        &[],       // interfaces not yet plumbed from AST
+        interfaces,
         members,
         modifiers,
     )?;
@@ -86,6 +88,9 @@ fn normalize_for_profile(
             span, name, parents, interfaces, members, modifiers,
         )),
         "csharp" => Ok(crate::languages::csharp::normalize_class::normalize_class(
+            span, name, parents, interfaces, members, modifiers,
+        )),
+        "cobol" => Ok(cobol::normalize_class::normalize_class(
             span, name, parents, interfaces, members, modifiers,
         )),
         other => Err(format!(

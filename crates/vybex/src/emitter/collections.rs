@@ -50,7 +50,7 @@ fn emit_import_call_into(imports: &mut Chunk, code: &mut Chunk, module: &str, na
 }
 
 /// Create an empty array (common case). Stack: [] → [array] via
-/// `ecma:array.newWithLength(0)`.
+/// `vybe:js-array.newWithLength(0)`.
 ///
 /// Non-zero counts still use `ARRAY_NEW_FIXED` because packing N
 /// stack values into one array doesn't have a single-op ecma:array
@@ -59,16 +59,16 @@ fn emit_import_call_into(imports: &mut Chunk, code: &mut Chunk, module: &str, na
 pub fn emit_array_new(chunks: &mut [Chunk], current: usize, count: u16, line: u32) {
     if count == 0 {
         chunks[current].emit_op(Op::I32_CONST_0, line);
-        emit_import_call(chunks, current, "ecma:array", "newWithLength", 1, line);
+        emit_import_call(chunks, current, "vybe:js-array", "newWithLength", 1, line);
     } else {
         chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, count, line);
     }
 }
 
 /// Create a length-N null-filled array. Stack: [length_i32] → [array]
-/// via `ecma:array.newWithLength`.
+/// via `vybe:js-array.newWithLength`.
 pub fn emit_new_with_length(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "ecma:array", "newWithLength", 1, line);
+    emit_import_call(chunks, current, "vybe:js-array", "newWithLength", 1, line);
 }
 
 /// Length of a collection OR string — runtime-dispatched between
@@ -254,9 +254,9 @@ pub fn emit_shift(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_import_call(chunks, current, "ecma:array", "shift", 1, line);
 }
 
-/// Array fill. Stack: [array, value, start, end] → [array] via `ecma:array.fill`.
+/// Array fill. Stack: [array, value, start, end] → [array] via `vybe:js-array.fill`.
 pub fn emit_fill(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "ecma:array", "fill", 4, line);
+    emit_import_call(chunks, current, "vybe:js-array", "fill", 4, line);
 }
 
 /// Array sort (in-place). Stack: [array] → [array] via `ecma:array.sort`.
@@ -469,14 +469,14 @@ pub fn emit_array_pair(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_array_new_into(imports: &mut Chunk, code: &mut Chunk, count: u16, line: u32) {
     if count == 0 {
         code.emit_op(Op::I32_CONST_0, line);
-        emit_import_call_into(imports, code, "ecma:array", "newWithLength", 1, line);
+        emit_import_call_into(imports, code, "vybe:js-array", "newWithLength", 1, line);
     } else {
         code.emit_op_u16(Op::ARRAY_NEW_FIXED, count, line);
     }
 }
 
 pub fn emit_new_with_length_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    emit_import_call_into(imports, code, "ecma:array", "newWithLength", 1, line);
+    emit_import_call_into(imports, code, "vybe:js-array", "newWithLength", 1, line);
 }
 
 pub fn emit_len_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
@@ -569,7 +569,7 @@ pub fn emit_shift_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
 }
 
 pub fn emit_fill_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    emit_import_call_into(imports, code, "ecma:array", "fill", 4, line);
+    emit_import_call_into(imports, code, "vybe:js-array", "fill", 4, line);
 }
 
 /// Pack two values from stack into a new two-element array.
