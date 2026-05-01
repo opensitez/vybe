@@ -395,6 +395,30 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::php::string_adapter::emit_str_replace(chunks, current, argc, line),
         "php.wordwrap"
             => crate::emitter::php::string_adapter::emit_wordwrap(chunks, current, argc, line),
+        "php.str_getcsv"
+            => crate::emitter::php::string_adapter::emit_str_getcsv(chunks, current, argc, line),
+        "php.soundex"
+            => crate::emitter::php::string_adapter::emit_soundex(chunks, current, argc, line),
+        "php.levenshtein"
+            => crate::emitter::php::string_adapter::emit_levenshtein(chunks, current, argc, line),
+        "php.similar_text"
+            => crate::emitter::php::string_adapter::emit_similar_text(chunks, current, argc, line),
+        "php.metaphone"
+            => crate::emitter::php::string_adapter::emit_metaphone(chunks, current, argc, line),
+        "php.preg_quote"
+            => crate::emitter::php::string_adapter::emit_preg_quote(chunks, current, argc, line),
+        "php.trim"
+            => crate::emitter::php::string_adapter::emit_php_trim(chunks, current, argc, line),
+        "php.ltrim"
+            => crate::emitter::php::string_adapter::emit_php_ltrim(chunks, current, argc, line),
+        "php.rtrim"
+            => crate::emitter::php::string_adapter::emit_php_rtrim(chunks, current, argc, line),
+        "php.preg_split"
+            => crate::emitter::php::string_adapter::emit_preg_split(chunks, current, argc, line),
+        "php.preg_match_all_groups"
+            => crate::emitter::php::string_adapter::emit_preg_match_all_groups(chunks, current, argc, line),
+        "php.preg_match_groups"
+            => crate::emitter::php::string_adapter::emit_preg_match_groups(chunks, current, argc, line),
         "php.echo_stringify"
             => crate::emitter::php::string_adapter::emit_echo_stringify(chunks, current, argc, line),
 

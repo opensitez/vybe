@@ -53,9 +53,9 @@ error_log           = { emit = "host:wasi:cli:error",        min_args = 1, max_a
 strlen              = { emit = "opcode:str_length",          min_args = 1, max_args = 1 }
 strtolower          = { emit = "opcode:str_to_lower",        min_args = 1, max_args = 1 }
 strtoupper          = { emit = "opcode:str_to_upper",        min_args = 1, max_args = 1 }
-trim                = { emit = "opcode:str_trim",            min_args = 1, max_args = 2 }
-ltrim               = { emit = "opcode:str_trim_start",      min_args = 1, max_args = 2 }
-rtrim               = { emit = "opcode:str_trim_end",        min_args = 1, max_args = 2 }
+trim                = { emit = "common:php.trim",            min_args = 1, max_args = 2 }
+ltrim               = { emit = "common:php.ltrim",           min_args = 1, max_args = 2 }
+rtrim               = { emit = "common:php.rtrim",           min_args = 1, max_args = 2 }
 str_contains        = { emit = "opcode:str_contains",        min_args = 2, max_args = 2 }
 str_starts_with     = { emit = "opcode:str_starts_with",     min_args = 2, max_args = 2 }
 str_ends_with       = { emit = "opcode:str_ends_with",       min_args = 2, max_args = 2 }
@@ -107,6 +107,11 @@ hex2bin             = { emit = "common:php.hex2bin",         min_args = 1, max_a
 chunk_split         = { emit = "common:php.chunk_split",     min_args = 1, max_args = 3 }
 wordwrap            = { emit = "common:php.wordwrap",        min_args = 1, max_args = 4 }
 number_format       = { emit = "common:php.number_format",   min_args = 1, max_args = 4 }
+str_getcsv          = { emit = "common:php.str_getcsv",      min_args = 1, max_args = 5 }
+soundex             = { emit = "common:php.soundex",         min_args = 1, max_args = 1 }
+levenshtein         = { emit = "common:php.levenshtein",     min_args = 2, max_args = 5 }
+similar_text        = { emit = "common:php.similar_text",    min_args = 2, max_args = 3 }
+metaphone           = { emit = "common:php.metaphone",       min_args = 1, max_args = 2 }
 
 # Array → delimited string. PHP `implode($glue, $array)` and `join` (alias).
 # Backed by compiler_common::collections::join, which every other language
@@ -142,7 +147,8 @@ file                = { emit = "common:php.file",           min_args = 1, max_ar
 preg_match          = { emit = "host:ecma:regexp:test",          min_args = 2, max_args = 5 }
 preg_match_all      = { emit = "stdlib:regex_match_all_pat_first", min_args = 2, max_args = 5 }
 preg_replace        = { emit = "stdlib:regex_replace_pat_first", min_args = 3, max_args = 4 }
-preg_split          = { emit = "stdlib:regex_split_pat_first",   min_args = 2, max_args = 4 }
+preg_split          = { emit = "common:php.preg_split",          min_args = 2, max_args = 4 }
+preg_quote          = { emit = "common:php.preg_quote",          min_args = 1, max_args = 2 }
 
 # ── Math functions ───────────────────────────────────────────────────────────
 #
@@ -482,6 +488,10 @@ __php_dt_add_years     = { emit = "common:php.datetime_add_years",   min_args = 
 # emitted by the walker. Args: (base_secs, n, is_year_bool). Returns
 # new seconds epoch.
 __php_strtotime_rel_calendar = { emit = "common:php.strtotime_rel_calendar", min_args = 3, max_args = 3 }
+# Walker-emitted helpers for `preg_match_all($p,$s,$m)` / `preg_match($p,$s,$m)`
+# 3-arg form. The walker rewrites the call to `$m = __preg_*_groups($p,$s)`.
+__preg_match_all_groups = { emit = "common:php.preg_match_all_groups", min_args = 2, max_args = 2 }
+__preg_match_groups     = { emit = "common:php.preg_match_groups",     min_args = 2, max_args = 2 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # VALUE METHODS — instance method calls on intrinsic types

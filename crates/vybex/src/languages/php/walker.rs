@@ -3787,6 +3787,114 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span)
                 )
             }
         }
+        // PHP `preg_match($pat, $str, $matches)` and `preg_match_all` —
+        // PHP populates `$matches` by reference with capture groups
+        // and returns the count. Rewrite the 3-arg form to a Sequence
+        // expression: `($matches = __preg_match_all_groups(pat, str),
+        // count_of_matches)` so both assignment side-effect AND
+        // count-as-result behave like real PHP.
+        "preg_match_all" if args.len() == 3 => {
+            let target = args[2].value.clone();
+            let groups_call = mk_call(
+                Expression::with_span(
+                    ExprKind::Ident("__preg_match_all_groups".to_string()),
+                    span.clone(),
+                ),
+                vec![arg(0)?, arg(1)?],
+            );
+            let assign = Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(target.clone()),
+                    value: Box::new(Expression::with_span(groups_call, span.clone())),
+                },
+                span.clone(),
+            );
+            // Count = $matches[0].length (length of full-match column).
+            let zero = Expression::with_span(
+                ExprKind::Lit(Literal::Int(0)),
+                span.clone(),
+            );
+            let column0 = Expression::with_span(
+                ExprKind::Index {
+                    object: Box::new(target),
+                    index: Box::new(zero),
+                    null_safe: false,
+                },
+                span.clone(),
+            );
+            let count = Expression::with_span(
+                ExprKind::Member {
+                    object: Box::new(column0),
+                    field: "length".to_string(),
+                    null_safe: false,
+                },
+                span.clone(),
+            );
+            ExprKind::Sequence(vec![assign, count])
+        }
+        // 3-arg `preg_match` returns 0 or 1 (match found?). Walker
+        // rewrite: assign matches map, then yield 0/1 based on whether
+        // the map is non-empty.
+        "preg_match" if args.len() == 3 => {
+            let target = args[2].value.clone();
+            let groups_call = mk_call(
+                Expression::with_span(
+                    ExprKind::Ident("__preg_match_groups".to_string()),
+                    span.clone(),
+                ),
+                vec![arg(0)?, arg(1)?],
+            );
+            let assign = Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(target.clone()),
+                    value: Box::new(Expression::with_span(groups_call, span.clone())),
+                },
+                span.clone(),
+            );
+            // 1 if $matches has at least one numeric entry; else 0.
+            // Simplest probe: `$matches[0] !== undefined` ternary → 1/0.
+            let zero = Expression::with_span(
+                ExprKind::Lit(Literal::Int(0)),
+                span.clone(),
+            );
+            let m0 = Expression::with_span(
+                ExprKind::Index {
+                    object: Box::new(target),
+                    index: Box::new(zero),
+                    null_safe: false,
+                },
+                span.clone(),
+            );
+            let undef = Expression::with_span(
+                ExprKind::Lit(Literal::Undefined),
+                span.clone(),
+            );
+            let cmp = Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::StrictNotEq,
+                    left: Box::new(m0),
+                    right: Box::new(undef),
+                },
+                span.clone(),
+            );
+            let one = Expression::with_span(
+                ExprKind::Lit(Literal::Int(1)),
+                span.clone(),
+            );
+            let zero2 = Expression::with_span(
+                ExprKind::Lit(Literal::Int(0)),
+                span.clone(),
+            );
+            let count = Expression::with_span(
+                ExprKind::Ternary {
+                    cond: Box::new(cmp),
+                    then: Box::new(one),
+                    else_: Box::new(zero2),
+                },
+                span.clone(),
+            );
+            ExprKind::Sequence(vec![assign, count])
+        }
         _ => return None,
     })
 }

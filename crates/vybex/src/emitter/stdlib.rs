@@ -4512,11 +4512,16 @@ fn build_array_last_index_of(imports: &mut Chunk) -> Chunk {
 // `ecma:regexp.replace`.
 
 fn build_regex_replace_pat_first(imports: &mut Chunk) -> Chunk {
-    let idx = imports.add_import("ecma:regexp", "replace");
+    // PHP `preg_replace` and Python `re.sub` are GLOBAL by default
+    // (replace every match). JS `str.replace` is single-match unless
+    // the regex has `/g`. Route through `ecma:regexp.replaceAll` so
+    // the always-global semantic is preserved without forcing a `/g`
+    // flag through the pattern string.
+    let idx = imports.add_import("ecma:regexp", "replaceAll");
     let mut c = Chunk::new("__stdlib_regex_replace_pat_first");
     c.arity = 3;
     c.local_count = 3; // pat(0), repl(1), str(2)
-    // Push (str, pat, repl) — ecma:regexp.replace order
+    // Push (str, pat, repl) — ecma:regexp.replaceAll order.
     c.emit_op_u16(Op::LOCAL_GET, 2, 0);
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
