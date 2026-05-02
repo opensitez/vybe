@@ -6,14 +6,16 @@ use super::helpers::run_prints;
 
 #[test]
 fn len_string() {
+    // Fortran `len(s)` returns the declared length, not the stored content length.
     let out = run_prints("program t\ncharacter(len=10) :: s = \"hello\"\nprint *, len(s)\nend program t\n");
-    assert_eq!(out, vec!["5"]);
+    assert_eq!(out, vec!["10"]);
 }
 
 #[test]
 fn trim_string() {
+    // Fortran `trim` only strips trailing blanks, leaves leading intact.
     let out = run_prints("program t\nprint *, trim(\"  hello  \")\nend program t\n");
-    assert_eq!(out, vec!["hello"]);
+    assert_eq!(out, vec!["  hello"]);
 }
 
 #[test]

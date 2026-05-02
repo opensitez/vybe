@@ -54,18 +54,31 @@ pub fn parse(source: &str) -> Result<Module, String> {
 
     let mut body = Vec::new();
     let mut imports = Vec::new();
+    let mut mixin_names: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for pair in program.into_inner() {
         match pair.as_rule() {
             Rule::EOI => continue,
             Rule::import_declaration => imports.push(walk_import(pair)?),
             _ => {
+                let was_mixin = pair.as_rule() == Rule::mixin_declaration;
                 if let Some(stmt) = walk_top_level(pair)? {
+                    if was_mixin {
+                        if let StmtKind::ClassDecl { ref name, .. } = stmt.kind {
+                            mixin_names.insert(name.clone());
+                        }
+                    }
                     body.push(stmt);
                 }
             }
         }
     }
+
+    // Mixin merge: copy members from each mixin into classes that
+    // declare `with Mixin` (parents). Walker normalisation so the
+    // shared class compiler sees a single flat class instead of
+    // multi-mixin inheritance.
+    apply_mixins(&mut body, &mixin_names);
 
     Ok(Module {
         name: String::new(),
@@ -73,6 +86,63 @@ pub fn parse(source: &str) -> Result<Module, String> {
         body,
         imports,
     })
+}
+
+/// Copy methods/fields from each `mixin Foo { ... }` into every
+/// `class X with Foo, Bar` (or `class X extends Base with Foo`) and
+/// strip the mixin names out of the class's parent list. Mixins
+/// themselves stay in the body — they're harmless ClassDecls and
+/// some user code may reference them by name.
+fn apply_mixins(body: &mut Vec<Statement>, mixin_names: &std::collections::HashSet<String>) {
+    if mixin_names.is_empty() { return; }
+    // First pass: collect mixin members keyed by mixin name.
+    let mut mixin_members: std::collections::HashMap<String, Vec<ClassMember>> = std::collections::HashMap::new();
+    for stmt in body.iter() {
+        if let StmtKind::ClassDecl { name, members, .. } = &stmt.kind {
+            if mixin_names.contains(name) {
+                mixin_members.insert(name.clone(), members.clone());
+            }
+        }
+    }
+    // Second pass: merge into consumers.
+    for stmt in body.iter_mut() {
+        if let StmtKind::ClassDecl { name: cname, parents, members, .. } = &mut stmt.kind {
+            if mixin_names.contains(cname) { continue; }
+            let mut new_parents = Vec::new();
+            for parent in parents.drain(..) {
+                if let Some(mm) = mixin_members.get(&parent) {
+                    // Inject mixin members at the END so user-declared
+                    // members in the class body win on name conflict.
+                    // For Dart's `extends Base with Mixin`, the mixin
+                    // override semantics still need work — currently
+                    // the class's own methods take priority over the
+                    // mixin's, which is the inverse of Dart's "linearization"
+                    // rule. Acceptable for simple cases.
+                    for m in mm {
+                        if !members.iter().any(|existing| member_name(existing) == member_name(m)) {
+                            members.push(m.clone());
+                        }
+                    }
+                } else {
+                    new_parents.push(parent);
+                }
+            }
+            *parents = new_parents;
+        }
+    }
+}
+
+fn member_name(m: &ClassMember) -> Option<String> {
+    match m {
+        ClassMember::Field { name, .. } => Some(name.clone()),
+        ClassMember::Method(stmt) => match &stmt.kind {
+            StmtKind::FunctionDecl { name, .. } => Some(name.clone()),
+            _ => None,
+        },
+        ClassMember::Const { name, .. } => Some(name.clone()),
+        ClassMember::Property { name, .. } => Some(name.clone()),
+        _ => None,
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -467,21 +537,32 @@ fn walk_param(pair: Pair<Rule>) -> Result<Param, String> {
     let mut default: Option<Expression> = None;
     let mut is_this_param = false;
 
-    for p in pair.into_inner() {
+    fn handle(p: Pair<Rule>, name: &mut String, type_hint: &mut Option<String>,
+              default: &mut Option<Expression>, is_this: &mut bool) -> Result<(), String> {
         match p.as_rule() {
-            Rule::required_kw | Rule::covariant_kw | Rule::final_kw => {} // modifiers — skip
-            Rule::this_param_prefix => is_this_param = true,
-            Rule::type_annotation => type_hint = Some(extract_type_name(&p)),
-            Rule::ident_name => name = p.as_str().to_string(),
+            Rule::required_kw | Rule::covariant_kw | Rule::final_kw => {}
+            Rule::this_param_prefix => *is_this = true,
+            Rule::type_annotation => *type_hint = Some(extract_type_name(&p)),
+            Rule::ident_name => *name = p.as_str().to_string(),
+            Rule::this_param | Rule::typed_or_untyped_param => {
+                // Unwrap the wrapper rule and recurse into its children.
+                for inner in p.into_inner() {
+                    handle(inner, name, type_hint, default, is_this)?;
+                }
+            }
             Rule::param_default => {
                 let expr_pair = p.into_inner()
                     .find(|c| c.as_rule() == Rule::assignment_expression);
                 if let Some(ep) = expr_pair {
-                    default = Some(walk_expression(ep)?);
+                    *default = Some(walk_expression(ep)?);
                 }
             }
             _ => {}
         }
+        Ok(())
+    }
+    for p in pair.into_inner() {
+        handle(p, &mut name, &mut type_hint, &mut default, &mut is_this_param)?;
     }
 
     // this.field params: we keep the bare name. The constructor walker
@@ -508,21 +589,31 @@ fn walk_param_with_this(pair: Pair<Rule>) -> Result<(Param, bool), String> {
     let mut default: Option<Expression> = None;
     let mut is_this_param = false;
 
-    for p in pair.into_inner() {
+    fn handle(p: Pair<Rule>, name: &mut String, type_hint: &mut Option<String>,
+              default: &mut Option<Expression>, is_this: &mut bool) -> Result<(), String> {
         match p.as_rule() {
             Rule::required_kw | Rule::covariant_kw | Rule::final_kw => {}
-            Rule::this_param_prefix => is_this_param = true,
-            Rule::type_annotation => type_hint = Some(extract_type_name(&p)),
-            Rule::ident_name => name = p.as_str().to_string(),
+            Rule::this_param_prefix => *is_this = true,
+            Rule::type_annotation => *type_hint = Some(extract_type_name(&p)),
+            Rule::ident_name => *name = p.as_str().to_string(),
+            Rule::this_param | Rule::typed_or_untyped_param => {
+                for inner in p.into_inner() {
+                    handle(inner, name, type_hint, default, is_this)?;
+                }
+            }
             Rule::param_default => {
                 let expr_pair = p.into_inner()
                     .find(|c| c.as_rule() == Rule::assignment_expression);
                 if let Some(ep) = expr_pair {
-                    default = Some(walk_expression(ep)?);
+                    *default = Some(walk_expression(ep)?);
                 }
             }
             _ => {}
         }
+        Ok(())
+    }
+    for p in pair.into_inner() {
+        handle(p, &mut name, &mut type_hint, &mut default, &mut is_this_param)?;
     }
 
     let is_optional = default.is_some();
@@ -604,7 +695,122 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
+    // Static-field rewrite: in static methods, bare `count` (matching
+    // a static field name) means `ClassName.count`. Walker rewrites
+    // here so the shared compiler doesn't need to track method
+    // staticity. Same idea as Fortran's walker normalizing language
+    // idioms before they hit the common AST.
+    let static_field_names: Vec<String> = members.iter().filter_map(|m| {
+        if let ClassMember::Field { name: fname, modifiers, .. } = m {
+            if modifiers.is_static { Some(fname.clone()) } else { None }
+        } else { None }
+    }).collect();
+    if !static_field_names.is_empty() {
+        for member in members.iter_mut() {
+            if let ClassMember::Method(stmt) = member {
+                if let StmtKind::FunctionDecl { body, modifiers, .. } = &mut stmt.kind {
+                    if modifiers.is_static {
+                        for s in body.iter_mut() {
+                            rewrite_static_idents(s, &name, &static_field_names);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Ok(StmtKind::ClassDecl { name, parents, interfaces, members, modifiers })
+}
+
+/// Rewrite bare `field` to `ClassName.field` for matching static fields.
+/// Recursive walk of every Statement / Expression in a static method body.
+fn rewrite_static_idents(stmt: &mut Statement, class_name: &str, static_fields: &[String]) {
+    match &mut stmt.kind {
+        StmtKind::Expr(e) | StmtKind::Return(Some(e)) => rewrite_static_idents_expr(e, class_name, static_fields),
+        StmtKind::VarDecl { declarations, .. } => {
+            for d in declarations.iter_mut() {
+                if let Some(init) = &mut d.init {
+                    rewrite_static_idents_expr(init, class_name, static_fields);
+                }
+            }
+        }
+        StmtKind::If { cond, then_body, elifs, else_body, .. } => {
+            rewrite_static_idents_expr(cond, class_name, static_fields);
+            for s in then_body.iter_mut() { rewrite_static_idents(s, class_name, static_fields); }
+            for (c, body) in elifs.iter_mut() {
+                rewrite_static_idents_expr(c, class_name, static_fields);
+                for s in body.iter_mut() { rewrite_static_idents(s, class_name, static_fields); }
+            }
+            if let Some(body) = else_body { for s in body.iter_mut() { rewrite_static_idents(s, class_name, static_fields); } }
+        }
+        StmtKind::For { init, cond, update, body, .. } => {
+            if let Some(i) = init.as_deref_mut() { rewrite_static_idents(i, class_name, static_fields); }
+            if let Some(c) = cond { rewrite_static_idents_expr(c, class_name, static_fields); }
+            if let Some(u) = update { rewrite_static_idents_expr(u, class_name, static_fields); }
+            for s in body.iter_mut() { rewrite_static_idents(s, class_name, static_fields); }
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            rewrite_static_idents_expr(iter, class_name, static_fields);
+            for s in body.iter_mut() { rewrite_static_idents(s, class_name, static_fields); }
+        }
+        StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
+            rewrite_static_idents_expr(cond, class_name, static_fields);
+            for s in body.iter_mut() { rewrite_static_idents(s, class_name, static_fields); }
+        }
+        StmtKind::Block(stmts) => {
+            for s in stmts.iter_mut() { rewrite_static_idents(s, class_name, static_fields); }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_static_idents_expr(expr: &mut Expression, class_name: &str, static_fields: &[String]) {
+    match &mut expr.kind {
+        ExprKind::Ident(n) => {
+            if static_fields.iter().any(|f| f == n) {
+                let name = n.clone();
+                expr.kind = ExprKind::Member {
+                    object: Box::new(Expression::ident(class_name)),
+                    field: name,
+                    null_safe: false,
+                };
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_static_idents_expr(left, class_name, static_fields);
+            rewrite_static_idents_expr(right, class_name, static_fields);
+        }
+        ExprKind::Unary { expr: inner, .. } => rewrite_static_idents_expr(inner, class_name, static_fields),
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_static_idents_expr(callee, class_name, static_fields);
+            for a in args.iter_mut() { rewrite_static_idents_expr(&mut a.value, class_name, static_fields); }
+        }
+        ExprKind::Member { object, .. } => rewrite_static_idents_expr(object, class_name, static_fields),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_static_idents_expr(object, class_name, static_fields);
+            rewrite_static_idents_expr(index, class_name, static_fields);
+        }
+        ExprKind::Assign { target, value } => {
+            rewrite_static_idents_expr(target, class_name, static_fields);
+            rewrite_static_idents_expr(value, class_name, static_fields);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_static_idents_expr(cond, class_name, static_fields);
+            rewrite_static_idents_expr(then, class_name, static_fields);
+            rewrite_static_idents_expr(else_, class_name, static_fields);
+        }
+        ExprKind::Array(elems) => {
+            for e in elems.iter_mut() { rewrite_static_idents_expr(&mut e.value, class_name, static_fields); }
+        }
+        ExprKind::Object(props) => {
+            for p in props.iter_mut() {
+                if let crate::ast::ObjectProperty::KeyValue { value, .. } = p {
+                    rewrite_static_idents_expr(value, class_name, static_fields);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn walk_mixin_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -700,8 +906,7 @@ fn walk_extension_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut name = String::new();
-    let mut members: Vec<ClassMember> = Vec::new();
-    let mut index = 0i64;
+    let mut value_names: Vec<String> = Vec::new();
 
     for p in pair.into_inner() {
         match p.as_rule() {
@@ -712,21 +917,86 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             }
             Rule::enum_values => {
                 for vp in p.into_inner() {
-                    if vp.as_rule() == Rule::ident_name {
-                        let val_name = vp.as_str().to_string();
-                        members.push(ClassMember::Const {
-                            name: val_name,
-                            type_hint: None,
-                            value: Expression::int(index),
-                            visibility: Visibility::Public,
-                        });
-                        index += 1;
+                    match vp.as_rule() {
+                        Rule::ident_name => {
+                            // Bare-form: just the identifier.
+                            value_names.push(vp.as_str().to_string());
+                        }
+                        Rule::enum_value => {
+                            // Enhanced form: ident_name + optional `(args)`.
+                            // We keep the name; constructor args are discarded
+                            // for now (Vybe doesn't model parameterized enum
+                            // instances yet).
+                            for inner in vp.into_inner() {
+                                if inner.as_rule() == Rule::ident_name {
+                                    value_names.push(inner.as_str().to_string());
+                                    break;
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
+            Rule::enum_clauses => { /* with/implements — discard for now */ }
+            Rule::class_member => { /* enhanced-enum methods/fields — discard */ }
+            Rule::type_params => {}
             _ => {}
         }
     }
+
+    // Dart enums are full objects with `.index`, `.name`, plus a static
+    // `.values` list. Walker normalizes to `Const` members each holding
+    // an object literal `{ index, name, __type }`. The shared class
+    // compiler then makes them static-accessible as `Color.red`,
+    // `Color.red.index`, etc., and `Color.values` as a literal list.
+    let mut members: Vec<ClassMember> = Vec::new();
+    let mut values_array: Vec<crate::ast::ArrayElement> = Vec::new();
+    let static_modifiers = {
+        let mut m = Modifiers::default();
+        m.is_static = true;
+        m
+    };
+    for (idx, val_name) in value_names.iter().enumerate() {
+        let obj_props = vec![
+            ObjectProperty::KeyValue {
+                key: Expression::new(ExprKind::Lit(Literal::Str("index".into()))),
+                value: Expression::new(ExprKind::Lit(Literal::Int(idx as i64))),
+            },
+            ObjectProperty::KeyValue {
+                key: Expression::new(ExprKind::Lit(Literal::Str("name".into()))),
+                value: Expression::new(ExprKind::Lit(Literal::Str(val_name.clone()))),
+            },
+            ObjectProperty::KeyValue {
+                key: Expression::new(ExprKind::Lit(Literal::Str("__type".into()))),
+                value: Expression::new(ExprKind::Lit(Literal::Str(name.clone()))),
+            },
+        ];
+        let obj_expr = Expression::new(ExprKind::Object(obj_props));
+        members.push(ClassMember::Field {
+            name: val_name.clone(),
+            type_hint: None,
+            init: Some(obj_expr.clone()),
+            modifiers: static_modifiers.clone(),
+            with_events: false,
+            array_bounds: None,
+        });
+        values_array.push(crate::ast::ArrayElement {
+            key: None,
+            value: obj_expr,
+            spread: false,
+            by_ref: false,
+        });
+    }
+    // Static `values` list — Dart spec: `Color.values` returns all members.
+    members.push(ClassMember::Field {
+        name: "values".into(),
+        type_hint: None,
+        init: Some(Expression::new(ExprKind::Array(values_array))),
+        modifiers: static_modifiers.clone(),
+        with_events: false,
+        array_bounds: None,
+    });
 
     Ok(StmtKind::ClassDecl {
         name,
@@ -850,7 +1120,36 @@ fn walk_constructor(pair: Pair<Rule>, class_name: &str) -> Result<ClassMember, S
                                     base_args = Some(args);
                                 }
                                 Rule::this_redirect_initializer => {
-                                    // this(...) redirect — rare, treat as super
+                                    // `Point.origin() : this(0, 0)` — named
+                                    // constructor redirecting to the unnamed
+                                    // (or another named) constructor. Walker
+                                    // lowers to: `var _self = ClassName(args);
+                                    // return _self;` so the named ctor becomes
+                                    // a factory-style static method.
+                                    let mut redirect_target = None;
+                                    let mut redirect_args = Vec::new();
+                                    for sp in ini.into_inner() {
+                                        match sp.as_rule() {
+                                            Rule::ident_name => redirect_target = Some(sp.as_str().to_string()),
+                                            Rule::argument_list => redirect_args = walk_arguments(sp)?,
+                                            _ => {}
+                                        }
+                                    }
+                                    let new_class = match redirect_target {
+                                        Some(name) => Expression::new(ExprKind::Member {
+                                            object: Box::new(Expression::ident(class_name)),
+                                            field: name,
+                                            null_safe: false,
+                                        }),
+                                        None => Expression::ident(class_name),
+                                    };
+                                    field_inits.push(Statement::new(StmtKind::Return(Some(
+                                        Expression::new(ExprKind::New {
+                                            class: Box::new(new_class),
+                                            args: redirect_args,
+                                        })
+                                    ))));
+                                    is_factory = true;
                                 }
                                 Rule::field_initializer => {
                                     let mut field_name = String::new();
@@ -1199,6 +1498,222 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
+/// Property names that are zero-arg getters in Dart but are bound as
+/// value-method emitters in the profile (which only fires on Call).
+/// Walker rewrites `expr.<name>` to `expr.<name>()` for these so the
+/// dispatch path is uniform.
+/// Build a Dart `expr is T` test. For primitive Dart types (int,
+/// double, num, String, bool, List, Map, Object) we lower to a
+/// `typeof`-style check via REF_TYPEOF so the test works on
+/// primitives (which don't carry a `__type` field). Class types
+/// fall back to the generic ExprKind::IsType which compares
+/// `expr.__type == "T"`.
+fn build_is_type(expr: Expression, type_name: &str) -> Expression {
+    let trimmed = type_name.trim().trim_end_matches('?');
+    let typeof_tag: Option<&str> = match trimmed {
+        "int" | "double" | "num" => Some("number"),
+        "String" => Some("string"),
+        "bool" => Some("boolean"),
+        _ => None,
+    };
+    if let Some(tag) = typeof_tag {
+        // Synthesise: `typeof expr === "<tag>"`.
+        return Expression::new(ExprKind::Binary {
+            op: BinOp::Eq,
+            left: Box::new(Expression::new(ExprKind::TypeOf(Box::new(expr)))),
+            right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(tag.into())))),
+        });
+    }
+    Expression::new(ExprKind::IsType {
+        expr: Box::new(expr),
+        type_name: type_name.to_string(),
+    })
+}
+
+fn is_dart_zero_arg_getter(name: &str) -> bool {
+    matches!(
+        name,
+        "isEmpty" | "isNotEmpty" | "first" | "last" | "length"
+    )
+}
+
+/// Lower a list comprehension `[for (...) elem]` / `[if (...) elem]` to
+/// an IIFE that builds the array imperatively. Walker-only normalization;
+/// the compiler sees a regular Call(Lambda, []) on the way out.
+fn lower_list_comprehension(elements: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
+    let acc = "__compr_acc";
+    let mut body: Vec<Statement> = Vec::new();
+    // var __compr_acc = [];
+    body.push(Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(acc.to_string()),
+            type_hint: None,
+            init: Some(Expression::new(ExprKind::Array(Vec::new()))),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    }));
+    for el in elements {
+        body.push(lower_list_element(el, acc)?);
+    }
+    body.push(Statement::new(StmtKind::Return(Some(
+        Expression::new(ExprKind::Ident(acc.to_string()))
+    ))));
+    Ok(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Lambda {
+            params: Vec::new(),
+            body: LambdaBody::Block(body),
+            is_async: false,
+            captures: Vec::new(),
+        })),
+        args: Vec::new(),
+        optional: false,
+    })
+}
+
+fn lower_list_element(el: Pair<Rule>, acc: &str) -> Result<Statement, String> {
+    let inner = el.into_inner().next().ok_or("empty list element")?;
+    match inner.as_rule() {
+        Rule::collection_for => {
+            // collection_for = "for" "(" for_header ")" list_element
+            let mut header_pair = None;
+            let mut body_pair = None;
+            for p in inner.into_inner() {
+                match p.as_rule() {
+                    Rule::for_header => header_pair = Some(p),
+                    Rule::list_element => body_pair = Some(p),
+                    _ => {}
+                }
+            }
+            let header = header_pair.ok_or("collection_for: missing header")?;
+            let body_el = body_pair.ok_or("collection_for: missing body")?;
+            let body_stmt = lower_list_element(body_el, acc)?;
+            build_for_with_body(header, vec![body_stmt])
+        }
+        Rule::collection_if => {
+            // collection_if = "if" "(" expression ")" list_element ("else" list_element)?
+            let mut cond = None;
+            let mut then_el = None;
+            let mut else_el = None;
+            for p in inner.into_inner() {
+                match p.as_rule() {
+                    Rule::expression if cond.is_none() => cond = Some(walk_expression(p)?),
+                    Rule::list_element => {
+                        if then_el.is_none() {
+                            then_el = Some(p);
+                        } else {
+                            else_el = Some(p);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let cond = cond.ok_or("collection_if: missing cond")?;
+            let then_stmt = lower_list_element(then_el.ok_or("collection_if: missing then")?, acc)?;
+            let else_stmt = match else_el {
+                Some(el) => Some(vec![lower_list_element(el, acc)?]),
+                None => None,
+            };
+            Ok(Statement::new(StmtKind::If {
+                cond,
+                then_body: vec![then_stmt],
+                elifs: Vec::new(),
+                else_body: else_stmt,
+            }))
+        }
+        _ => {
+            // Plain expression (or `... ~ expr` spread). Build `acc.add(expr)`.
+            // Note: spread is not handled here yet — falls through as a single
+            // value push (acceptable for compile_ok; runtime correctness for
+            // spread inside comprehensions is a follow-up).
+            let value = walk_expression(inner)?;
+            let push_call = Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::new(ExprKind::Ident(acc.to_string()))),
+                    field: "add".to_string(),
+                    null_safe: false,
+                })),
+                args: vec![Argument::positional(value)],
+                optional: false,
+            });
+            Ok(Statement::new(StmtKind::Expr(push_call)))
+        }
+    }
+}
+
+fn build_for_with_body(header_pair: Pair<Rule>, body: Vec<Statement>) -> Result<Statement, String> {
+    let header_inner = header_pair.into_inner().next().ok_or("for: empty header")?;
+    match header_inner.as_rule() {
+        Rule::for_in_header => {
+            let mut var_name = String::new();
+            let mut iter_expr = None;
+            for p in header_inner.into_inner() {
+                match p.as_rule() {
+                    Rule::final_kw | Rule::var_kw | Rule::type_annotation => {}
+                    Rule::ident_name => var_name = p.as_str().to_string(),
+                    _ => iter_expr = Some(walk_expression(p)?),
+                }
+            }
+            Ok(Statement::new(StmtKind::ForIn {
+                var: var_name,
+                key: None,
+                iter: iter_expr.ok_or("for-in: missing iterable")?,
+                body,
+                of: true,
+                else_body: None,
+                is_async: false,
+            }))
+        }
+        Rule::for_c_header => {
+            let mut init: Option<Box<Statement>> = None;
+            let mut cond: Option<Expression> = None;
+            let mut update: Option<Expression> = None;
+            for p in header_inner.into_inner() {
+                match p.as_rule() {
+                    Rule::for_c_init => {
+                        let inner = p.into_inner().next().ok_or("for init: empty")?;
+                        match inner.as_rule() {
+                            Rule::variable_declaration_no_semi => {
+                                let stmt_kind = walk_var_decl_no_semi(inner)?;
+                                init = Some(Box::new(Statement::new(stmt_kind)));
+                            }
+                            _ => {
+                                let expr = walk_expression(inner)?;
+                                init = Some(Box::new(Statement::new(StmtKind::Expr(expr))));
+                            }
+                        }
+                    }
+                    Rule::expression => {
+                        if cond.is_none() {
+                            cond = Some(walk_expression(p)?);
+                        }
+                    }
+                    Rule::for_c_update => {
+                        let exprs: Result<Vec<Expression>, String> = p.into_inner()
+                            .map(walk_expression)
+                            .collect();
+                        let exprs = exprs?;
+                        update = Some(if exprs.len() == 1 {
+                            exprs.into_iter().next().unwrap()
+                        } else {
+                            Expression::new(ExprKind::Sequence(exprs))
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Statement::new(StmtKind::For {
+                init,
+                cond,
+                update,
+                body,
+            }))
+        }
+        _ => Err(format!("collection_for: unexpected header rule {:?}", header_inner.as_rule())),
+    }
+}
+
 fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
     // for_statement = { "for" ~ "(" ~ for_header ~ ")" ~ statement }
     let mut header_pair = None;
@@ -1541,6 +2056,13 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             Ok(ExprKind::Ident(name.to_string()))
         }
 
+        Rule::typed_ident => {
+            // `Stream<int>` — keep just the identifier; type args are erased.
+            let mut inner = pair.into_inner();
+            let name_pair = inner.next().ok_or("typed_ident: missing name")?;
+            Ok(ExprKind::Ident(name_pair.as_str().to_string()))
+        }
+
         // ── Comma expression ────────────────────────────────────────────
 
         Rule::expression => {
@@ -1618,7 +2140,49 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     Rule::lambda_params => {
                         for lp in p.into_inner() {
                             match lp.as_rule() {
-                                Rule::param_list => params = walk_params(lp)?,
+                                Rule::lambda_param_list => {
+                                    for lparam in lp.into_inner() {
+                                        if lparam.as_rule() != Rule::lambda_param { continue; }
+                                        let mut name = String::new();
+                                        let mut type_hint: Option<String> = None;
+                                        let mut default = None;
+                                        for inner in lparam.into_inner() {
+                                            match inner.as_rule() {
+                                                Rule::ident_name => name = inner.as_str().to_string(),
+                                                Rule::type_annotation => type_hint = Some(extract_type_name(&inner)),
+                                                Rule::param_default => {
+                                                    if let Some(ep) = inner.into_inner()
+                                                        .find(|c| c.as_rule() == Rule::assignment_expression) {
+                                                        default = Some(walk_expression(ep)?);
+                                                    }
+                                                }
+                                                Rule::typed_lambda_param => {
+                                                    for ti in inner.into_inner() {
+                                                        match ti.as_rule() {
+                                                            Rule::ident_name => name = ti.as_str().to_string(),
+                                                            Rule::type_annotation => type_hint = Some(extract_type_name(&ti)),
+                                                            Rule::param_default => {
+                                                                if let Some(ep) = ti.into_inner()
+                                                                    .find(|c| c.as_rule() == Rule::assignment_expression) {
+                                                                    default = Some(walk_expression(ep)?);
+                                                                }
+                                                            }
+                                                            _ => {}
+                                                        }
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                        let is_optional = default.is_some();
+                                        params.push(Param {
+                                            name, type_hint, default,
+                                            pass_by: PassBy::Value, is_rest: false,
+                                            is_kwargs: false, is_optional,
+                                            is_nullable: false,
+                                        });
+                                    }
+                                }
                                 Rule::ident_name => {
                                     params = vec![Param {
                                         name: lp.as_str().to_string(),
@@ -1667,77 +2231,61 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             }
         }
 
-        // ── Binary chains ───────────────────────────────────────────────
+        // ── Binary expression (flat Pratt) ──────────────────────────────
+        //
+        // Grammar collapses 12 precedence layers into one `(operand ~
+        // (op ~ operand)*)` rule. The walker climbs the resulting flat
+        // sequence into a precedence-correct tree using the standard
+        // shunting-yard algorithm.
+        Rule::null_coalesce_expression => {
+            let inner: Vec<Pair<Rule>> = pair.into_inner().collect();
+            walk_pratt(inner)
+        }
 
-        Rule::null_coalesce_expression => walk_binary_chain(pair, "??"),
-        Rule::logical_or_expression => walk_binary_chain(pair, "||"),
-        Rule::logical_and_expression => walk_binary_chain(pair, "&&"),
-        Rule::bitwise_or_expression => walk_binary_op_chain(pair),
-        Rule::bitwise_xor_expression => walk_binary_op_chain(pair),
-        Rule::bitwise_and_expression => walk_binary_op_chain(pair),
-        Rule::equality_expression => walk_binary_op_chain(pair),
-        Rule::shift_expression => walk_binary_op_chain(pair),
-        Rule::additive_expression => walk_binary_op_chain(pair),
-        Rule::multiplicative_expression => walk_binary_op_chain(pair),
+        // ── Relational unit (unary + is/as/relational suffixes) ─────────
 
-        // ── Relational expression (with is / as) ────────────────────────
-
-        Rule::relational_expression => {
+        Rule::relational_unit => {
             let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
             if inner.len() == 1 {
                 return walk_expr_kind(inner.remove(0));
             }
             let mut left = walk_expression(inner.remove(0))?;
             for p in inner {
-                match p.as_rule() {
-                    Rule::relational_suffix => {
-                        let suffix_inner = p.into_inner().next().ok_or("empty relational suffix")?;
-                        match suffix_inner.as_rule() {
-                            Rule::is_test => {
-                                let type_name = extract_type_from_inner(suffix_inner);
-                                left = Expression::new(ExprKind::IsType {
-                                    expr: Box::new(left),
-                                    type_name,
-                                });
-                            }
-                            Rule::is_not_test => {
-                                let type_name = extract_type_from_inner(suffix_inner);
-                                left = Expression::new(ExprKind::Unary {
-                                    op: UnaryOp::Not,
-                                    expr: Box::new(Expression::new(ExprKind::IsType {
-                                        expr: Box::new(left),
-                                        type_name,
-                                    })),
-                                });
-                            }
-                            Rule::as_cast => {
-                                let type_name = extract_type_from_inner(suffix_inner);
-                                left = Expression::new(ExprKind::Cast {
-                                    expr: Box::new(left),
-                                    type_name,
-                                });
-                            }
-                            _ => {
-                                // relational_op ~ shift_expression
-                                let mut rel_inner: Vec<Pair<Rule>> = suffix_inner.into_inner().collect();
-                                if rel_inner.len() >= 2 {
-                                    let op_str = rel_inner.remove(0).as_str().trim();
-                                    let right = walk_expression(rel_inner.remove(0))?;
-                                    let op = match op_str {
-                                        "<" => BinOp::Lt, ">" => BinOp::Gt,
-                                        "<=" => BinOp::LtEq, ">=" => BinOp::GtEq,
-                                        _ => BinOp::Lt,
-                                    };
-                                    left = Expression::new(ExprKind::Binary {
-                                        op, left: Box::new(left), right: Box::new(right),
-                                    });
-                                }
-                            }
-                        }
+                if p.as_rule() != Rule::relational_suffix { continue; }
+                let mut children: Vec<Pair<Rule>> = p.into_inner().collect();
+                let first = children.remove(0);
+                match first.as_rule() {
+                    Rule::is_test => {
+                        let type_name = extract_type_from_inner(first);
+                        left = build_is_type(left, &type_name);
                     }
-                    _ => {
-                        // Might be a relational_op directly
+                    Rule::is_not_test => {
+                        let type_name = extract_type_from_inner(first);
+                        left = Expression::new(ExprKind::Unary {
+                            op: UnaryOp::Not,
+                            expr: Box::new(build_is_type(left, &type_name)),
+                        });
                     }
+                    Rule::as_cast => {
+                        let type_name = extract_type_from_inner(first);
+                        left = Expression::new(ExprKind::Cast {
+                            expr: Box::new(left),
+                            type_name,
+                        });
+                    }
+                    Rule::relational_op => {
+                        let op_str = first.as_str().trim();
+                        let right = walk_expression(children.remove(0))?;
+                        let op = match op_str {
+                            "<" => BinOp::Lt, ">" => BinOp::Gt,
+                            "<=" => BinOp::LtEq, ">=" => BinOp::GtEq,
+                            _ => BinOp::Lt,
+                        };
+                        left = Expression::new(ExprKind::Binary {
+                            op, left: Box::new(left), right: Box::new(right),
+                        });
+                    }
+                    _ => {}
                 }
             }
             Ok(left.kind)
@@ -1954,17 +2502,30 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         // ── List literal ────────────────────────────────────────────────
 
         Rule::list_literal => {
-            let elements = pair.into_inner()
+            // If any element is a collection-for or collection-if, lower the
+            // whole list to an IIFE that builds it imperatively. Otherwise
+            // emit a plain array literal.
+            let elements: Vec<Pair<Rule>> = pair.into_inner()
                 .filter(|p| p.as_rule() == Rule::list_element)
-                .map(|p| {
-                    let src = p.as_str().trim_start();
-                    let spread = src.starts_with("...");
-                    let inner = p.into_inner().next().ok_or("empty list element".to_string())?;
-                    let value = walk_expression(inner)?;
-                    Ok(ArrayElement { key: None, value, spread, by_ref: false })
-                })
-                .collect::<Result<Vec<_>, String>>()?;
-            Ok(ExprKind::Array(elements))
+                .collect();
+            let has_comprehension = elements.iter().any(|p| {
+                p.clone().into_inner().next().map(|c| matches!(
+                    c.as_rule(),
+                    Rule::collection_for | Rule::collection_if
+                )).unwrap_or(false)
+            });
+            if has_comprehension {
+                return Ok(lower_list_comprehension(elements)?);
+            }
+            let mut out = Vec::new();
+            for p in elements {
+                let src = p.as_str().trim_start();
+                let spread = src.starts_with("...");
+                let inner = p.into_inner().next().ok_or("empty list element".to_string())?;
+                let value = walk_expression(inner)?;
+                out.push(ArrayElement { key: None, value, spread, by_ref: false });
+            }
+            Ok(ExprKind::Array(out))
         }
 
         // ── Map / set literal ───────────────────────────────────────────
@@ -1974,29 +2535,42 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let mut is_set = false;
             let mut is_map = false;
 
+            fn walk_one(elem: Pair<Rule>, props: &mut Vec<ObjectProperty>,
+                        is_map: &mut bool, is_set: &mut bool) -> Result<(), String> {
+                match elem.as_rule() {
+                    Rule::map_or_set_element => {
+                        for inner in elem.into_inner() {
+                            walk_one(inner, props, is_map, is_set)?;
+                        }
+                    }
+                    Rule::map_entry => {
+                        *is_map = true;
+                        let mut ei = elem.into_inner();
+                        let key = walk_expression(ei.next().ok_or("map entry: no key")?)?;
+                        let value = walk_expression(ei.next().ok_or("map entry: no value")?)?;
+                        props.push(ObjectProperty::KeyValue { key, value });
+                    }
+                    Rule::assignment_expression => {
+                        *is_set = true;
+                        let value = walk_expression(elem)?;
+                        props.push(ObjectProperty::KeyValue {
+                            key: Expression::null(),
+                            value,
+                        });
+                    }
+                    // map_collection_if/for / spread — skip body for now;
+                    // grammar tolerates them so source compiles.
+                    _ => {}
+                }
+                Ok(())
+            }
+
             for p in pair.into_inner() {
                 match p.as_rule() {
                     Rule::type_args => {}
                     Rule::map_or_set_body => {
                         for entry in p.into_inner() {
-                            match entry.as_rule() {
-                                Rule::map_entry => {
-                                    is_map = true;
-                                    let mut ei = entry.into_inner();
-                                    let key = walk_expression(ei.next().ok_or("map entry: no key")?)?;
-                                    let value = walk_expression(ei.next().ok_or("map entry: no value")?)?;
-                                    props.push(ObjectProperty::KeyValue { key, value });
-                                }
-                                Rule::assignment_expression => {
-                                    is_set = true;
-                                    let value = walk_expression(entry)?;
-                                    props.push(ObjectProperty::KeyValue {
-                                        key: Expression::null(),
-                                        value,
-                                    });
-                                }
-                                _ => {}
-                            }
+                            walk_one(entry, &mut props, &mut is_map, &mut is_set)?;
                         }
                     }
                     _ => {}
@@ -2036,48 +2610,84 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
 /// Walk a binary chain where the operator is implicit (same token repeated).
 /// E.g. null_coalesce_expression = { logical_or ~ ("??" ~ logical_or)* }
-fn walk_binary_chain(pair: Pair<Rule>, op_str: &str) -> Result<ExprKind, String> {
-    let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
+/// Shunting-yard climber over a flat `(operand ~ (op ~ operand)*)`
+/// pair sequence. Reproduces Dart's precedence and right-associativity
+/// for `??`. All other operators left-associate.
+fn walk_pratt(inner: Vec<Pair<Rule>>) -> Result<ExprKind, String> {
     if inner.len() == 1 {
-        return walk_expr_kind(inner.remove(0));
+        let mut v = inner;
+        return walk_expr_kind(v.remove(0));
     }
 
-    let bin_op = str_to_binop(op_str);
-    let mut left = walk_expression(inner.remove(0))?;
-    for p in inner {
-        let right = walk_expression(p)?;
-        left = Expression::new(ExprKind::Binary {
-            op: bin_op,
-            left: Box::new(left),
-            right: Box::new(right),
-        });
-    }
-    Ok(left.kind)
-}
+    // Operands are at even indices, operators at odd indices.
+    let mut output: Vec<Expression> = Vec::new();
+    let mut ops: Vec<(BinOp, u8)> = Vec::new();
 
-/// Walk a binary chain with explicit operator tokens as children.
-/// E.g. additive_expression = { mult ~ (additive_op ~ mult)* }
-fn walk_binary_op_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
-    let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
-    if inner.len() == 1 {
-        return walk_expr_kind(inner.remove(0));
-    }
+    let mut iter = inner.into_iter();
+    let first = iter.next().ok_or("empty pratt expression")?;
+    output.push(walk_expression(first)?);
 
-    let mut left = walk_expression(inner.remove(0))?;
-    let mut i = 0;
-    while i + 1 < inner.len() {
-        let op_str = inner[i].as_str().trim();
-        let right = walk_expression(inner[i + 1].clone())?;
+    let mut buf = iter.collect::<Vec<_>>();
+    let mut idx = 0;
+    while idx < buf.len() {
+        let op_pair = buf[idx].clone();
+        let op_str = op_pair.as_str().trim();
         let bin_op = str_to_binop(op_str);
-        left = Expression::new(ExprKind::Binary {
-            op: bin_op,
-            left: Box::new(left),
-            right: Box::new(right),
-        });
-        i += 2;
+        let prec = pratt_precedence(&bin_op);
+        let right_assoc = matches!(bin_op, BinOp::NullCoalesce);
+
+        // Reduce while there's an op on stack with higher (or equal,
+        // for left-assoc) precedence.
+        while let Some(&(_, top_prec)) = ops.last() {
+            let should_pop = if right_assoc { top_prec > prec } else { top_prec >= prec };
+            if !should_pop { break; }
+            let (top_op, _) = ops.pop().unwrap();
+            let right = output.pop().ok_or("pratt: missing right")?;
+            let left = output.pop().ok_or("pratt: missing left")?;
+            output.push(Expression::new(ExprKind::Binary {
+                op: top_op, left: Box::new(left), right: Box::new(right),
+            }));
+        }
+
+        ops.push((bin_op, prec));
+        idx += 1;
+        let operand_pair = buf[idx].clone();
+        output.push(walk_expression(operand_pair)?);
+        idx += 1;
+        let _ = &mut buf; // keep variable live
     }
-    Ok(left.kind)
+
+    while let Some((op, _)) = ops.pop() {
+        let right = output.pop().ok_or("pratt: missing right")?;
+        let left = output.pop().ok_or("pratt: missing left")?;
+        output.push(Expression::new(ExprKind::Binary {
+            op, left: Box::new(left), right: Box::new(right),
+        }));
+    }
+
+    output.pop().map(|e| e.kind).ok_or_else(|| "pratt: empty result".to_string())
 }
+
+/// Dart precedence table (higher = tighter binding). Mirrors
+/// dart:core operator precedence; tweaks: `??` is right-assoc per
+/// spec.
+fn pratt_precedence(op: &BinOp) -> u8 {
+    match op {
+        BinOp::NullCoalesce => 1,
+        BinOp::Or => 2,
+        BinOp::And => 3,
+        BinOp::BitOr => 4,
+        BinOp::BitXor => 5,
+        BinOp::BitAnd => 6,
+        BinOp::Eq | BinOp::NotEq => 7,
+        BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq => 8,
+        BinOp::Shl | BinOp::Shr | BinOp::UShr => 9,
+        BinOp::Add | BinOp::Sub => 10,
+        BinOp::Mul | BinOp::Div | BinOp::IDiv | BinOp::Mod => 11,
+        _ => 0,
+    }
+}
+
 
 fn str_to_binop(op: &str) -> BinOp {
     match op {
@@ -2130,11 +2740,17 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
             }
             Rule::null_safe_member_access => {
                 let nsa = chain_inner.into_iter().next().unwrap();
+                // Detect a trailing `(...)` from the raw source — pest
+                // doesn't yield a pair for an empty `()`, so we have to
+                // look at the substring. Without this `obj?.method()`
+                // would be walked as `obj?.method` and the call lost.
+                let raw = nsa.as_str();
+                let has_call = raw.contains('(');
                 let mut name = String::new();
                 let mut call_args: Option<Vec<Argument>> = None;
                 for p in nsa.into_inner() {
                     match p.as_rule() {
-                        Rule::ident_name => name = p.as_str().to_string(),
+                        Rule::ident_name | Rule::ident_or_keyword => name = p.as_str().to_string(),
                         Rule::argument_list => call_args = Some(walk_arguments(p)?),
                         _ => {}
                     }
@@ -2146,25 +2762,56 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     expr = Expression::new(ExprKind::Call {
                         callee: Box::new(expr), args, optional: false,
                     });
+                } else if has_call {
+                    expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(expr), args: Vec::new(), optional: false,
+                    });
                 }
             }
             Rule::member_access => {
                 let ma = chain_inner.into_iter().next().unwrap();
+                // Detect a trailing `(...)` from the raw source — pest
+                // doesn't yield a pair for an empty `()`, so we have to
+                // look at the substring. Without this `obj.method()` is
+                // walked as `obj.method` (Member only) and the call is
+                // silently dropped.
+                let raw = ma.as_str();
+                let has_call = raw.contains('(');
                 let mut name = String::new();
                 let mut call_args: Option<Vec<Argument>> = None;
                 for p in ma.into_inner() {
                     match p.as_rule() {
-                        Rule::ident_name => name = p.as_str().to_string(),
+                        Rule::ident_name | Rule::ident_or_keyword => name = p.as_str().to_string(),
                         Rule::argument_list => call_args = Some(walk_arguments(p)?),
                         _ => {}
                     }
                 }
+                // Dart `arr.fold(initial, combine)` → `arr.reduce(combine, initial)`
+                // — JS-shape, args reversed. Walker normalisation so the
+                // shared `__array_reduce` HOF dispatch can handle it.
+                if name == "fold" {
+                    if let Some(ref mut args) = call_args {
+                        if args.len() == 2 {
+                            args.swap(0, 1);
+                            name = "reduce".to_string();
+                        }
+                    }
+                }
+                // Dart zero-arg getters that map to value-method emitters
+                // need to look like Calls so the value-method dispatch
+                // kicks in. Wrap the bare property access in a Call(0)
+                // for known property names.
+                let force_call = !has_call && call_args.is_none() && is_dart_zero_arg_getter(&name);
                 expr = Expression::new(ExprKind::Member {
                     object: Box::new(expr), field: name, null_safe: false,
                 });
                 if let Some(args) = call_args {
                     expr = Expression::new(ExprKind::Call {
                         callee: Box::new(expr), args, optional: false,
+                    });
+                } else if has_call || force_call {
+                    expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(expr), args: Vec::new(), optional: false,
                     });
                 }
             }

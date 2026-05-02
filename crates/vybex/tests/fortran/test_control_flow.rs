@@ -83,7 +83,6 @@ end program test
 }
 
 #[test]
-#[ignore] // hangs — while loop variable update issue
 fn do_while_loop() {
     let out = run_prints(r#"
 program test

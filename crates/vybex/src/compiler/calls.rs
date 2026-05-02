@@ -759,7 +759,7 @@ impl Compiler {
         // This is a heuristic — the cleaner fix is per-class method sets
         // plus receiver-type inference, tracked in the user's pending
         // "JS/C# compilers don't use common::classes" migration.
-        if let ExprKind::Member { object, field, .. } = &callee.kind {
+        if let ExprKind::Member { object, field, null_safe } = &callee.kind {
             let canon_field = self.canon(field);
             let receiver_is_direct = matches!(
                 object.kind,
@@ -767,7 +767,16 @@ impl Compiler {
             );
             let user_method_shadow = receiver_is_direct
                 && self.defined_class_methods.contains(&canon_field);
-            let matched_value_method = self.profile.lookup_value_method(field, arg_exprs.len() as u8).cloned();
+            // Skip value-method dispatch on null-safe member calls — the
+            // null short-circuit must run BEFORE we apply any built-in
+            // operator (e.g. `null?.toUpperCase()` returns null, not "").
+            // Falls through to the generic Member-access path which
+            // handles null_safe correctly.
+            let matched_value_method = if *null_safe {
+                None
+            } else {
+                self.profile.lookup_value_method(field, arg_exprs.len() as u8).cloned()
+            };
             let prefer_string_stdlib_value_method = matches!(
                 matched_value_method.as_ref().map(|d| &d.emit),
                 Some(BuiltinEmit::Stdlib(_))

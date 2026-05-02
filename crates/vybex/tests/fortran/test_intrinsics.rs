@@ -84,12 +84,13 @@ end program test
 
 #[test]
 fn trim_function() {
+    // Fortran `trim` only strips trailing blanks, leaves leading intact.
     let out = run_prints(r#"
 program test
     print *, trim("  hello  ")
 end program test
 "#);
-    assert_eq!(out, vec!["hello"]);
+    assert_eq!(out, vec!["  hello"]);
 }
 
 #[test]

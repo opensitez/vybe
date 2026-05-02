@@ -6,6 +6,7 @@
 //! shared compiler — no Fortran-specific code in `compiler.rs`.
 
 pub mod walker;
+pub mod normalize_class;
 
 use pest_derive::Parser;
 

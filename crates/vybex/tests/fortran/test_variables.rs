@@ -42,8 +42,9 @@ fn logical_false() {
 
 #[test]
 fn character_init() {
+    // Fortran fixed-length characters pad shorter literals with trailing blanks.
     let out = run_prints("program t\ncharacter(len=10) :: s = \"hello\"\nprint *, s\nend program t\n");
-    assert_eq!(out, vec!["hello"]);
+    assert_eq!(out, vec!["hello     "]);
 }
 
 #[test]

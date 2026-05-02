@@ -60,10 +60,20 @@ typedef_declaration = {
 // ── Enum ────────────────────────────────────────────────────────────────────
 
 enum_declaration = {
-    "enum" ~ ident_name ~ "{" ~ enum_values ~ "}"
+    "enum" ~ ident_name ~ type_params? ~ enum_clauses
+    ~ "{" ~ enum_values ~ (";" ~ class_member*)? ~ "}"
+}
+enum_clauses = {
+    ("with" ~ type_annotation ~ ("," ~ type_annotation)*)?
+    ~ ("implements" ~ type_annotation ~ ("," ~ type_annotation)*)?
 }
 
-enum_values = { (ident_name ~ ("," ~ ident_name)* ~ ","?)? }
+// Enhanced-enum (Dart 2.17+) values can carry constructor args:
+// `mercury(3.303e+23, 2.4397e6)`. Walker keeps the bare ident name
+// and discards the args (Vybe enums don't yet model parameterized
+// instances — runtime fidelity is a follow-up).
+enum_values = { (enum_value ~ ("," ~ enum_value)* ~ ","?)? }
+enum_value = { ident_name ~ ("(" ~ argument_list? ~ ")")? }
 
 // ── Class ───────────────────────────────────────────────────────────────────
 
@@ -93,8 +103,8 @@ class_member = _{
         operator_declaration
         | getter_declaration
         | setter_declaration
-        | method_declaration
         | constructor_declaration
+        | method_declaration
         | field_declaration
     )
 }
@@ -103,7 +113,7 @@ class_member = _{
 
 member_modifiers = {
     static_kw? ~ abstract_kw? ~ override_kw? ~ const_kw? ~ factory_kw?
-    ~ final_kw? ~ late_kw?
+    ~ late_kw? ~ final_kw? ~ late_kw?
 }
 
 // ── Constructor ─────────────────────────────────────────────────────────────
@@ -170,7 +180,7 @@ setter_declaration = {
 method_declaration = {
     member_modifiers ~ (type_annotation ~ ident_name | ident_name) ~ type_params?
     ~ "(" ~ param_list? ~ ")"
-    ~ async_kw? ~ generator_marker? ~ function_body
+    ~ (async_kw | sync_kw)? ~ generator_marker? ~ function_body
 }
 
 generator_marker = { "*" }
@@ -187,7 +197,7 @@ field_declaration = {
 // ── Extension ───────────────────────────────────────────────────────────────
 
 extension_declaration = {
-    "extension" ~ ident_name? ~ "on" ~ type_annotation
+    "extension" ~ ident_name? ~ type_params? ~ "on" ~ type_annotation
     ~ "{" ~ class_member* ~ "}"
 }
 
@@ -202,7 +212,7 @@ top_level_function_or_variable = _{
 function_declaration = {
     type_annotation? ~ ident_name ~ type_params?
     ~ "(" ~ param_list? ~ ")"
-    ~ async_kw? ~ generator_marker? ~ function_body
+    ~ (async_kw | sync_kw)? ~ generator_marker? ~ function_body
 }
 
 // ── Function body ───────────────────────────────────────────────────────────
@@ -270,9 +280,11 @@ statement = _{
     | rethrow_statement
     | try_statement
     | assert_statement
-    | function_declaration
+    | yield_statement
     | expression_statement
 }
+
+yield_statement = { yield_kw ~ "*"? ~ expression ~ ";" }
 
 empty_statement = { ";" }
 
@@ -281,9 +293,16 @@ block_statement = { "{" ~ statement* ~ "}" }
 // ── Variable declarations ───────────────────────────────────────────────────
 
 variable_declaration_statement = {
+    // Order matters — try the strict (with type) form first, then fall
+    // back to the modifier-only form which omits the type. The strict
+    // form requires var_declarator to follow type, so PEG won't accept
+    // partial matches that consume the identifier and stall.
     var_modifiers ~ type_or_var ~ var_declarator ~ ("," ~ var_declarator)* ~ ";"
+  | var_modifiers_required ~ var_declarator ~ ("," ~ var_declarator)* ~ ";"
 }
 
+// `final` or `const` (with optional `late`) — type spec optional.
+var_modifiers_required = { late_kw? ~ (final_kw | const_kw) }
 var_modifiers = { late_kw? ~ (final_kw | const_kw)? }
 
 type_or_var = {
@@ -306,7 +325,7 @@ else_clause = { "else" ~ statement }
 // ── For ─────────────────────────────────────────────────────────────────────
 
 for_statement = {
-    "for" ~ "(" ~ for_header ~ ")" ~ statement
+    "await"? ~ "for" ~ "(" ~ for_header ~ ")" ~ statement
 }
 
 for_header = {
@@ -327,6 +346,7 @@ for_c_init = {
 
 variable_declaration_no_semi = {
     var_modifiers ~ type_or_var ~ var_declarator ~ ("," ~ var_declarator)*
+  | var_modifiers_required ~ var_declarator ~ ("," ~ var_declarator)*
 }
 
 for_c_update = { expression ~ ("," ~ expression)* }
@@ -390,8 +410,21 @@ expression_statement = { expression ~ ";" }
 expression = { assignment_expression ~ ("," ~ assignment_expression)* }
 
 assignment_expression = {
-    lambda_expression
+    &lambda_lookahead ~ lambda_expression
     | conditional_expression ~ (assignment_op ~ assignment_expression)?
+}
+
+// Cheap lookahead so `assignment_expression` doesn't descend through
+// `lambda_expression` → `lambda_params` → `typed_lambda_param` →
+// `type_annotation` (5+ rules) for every non-lambda expression. Only
+// proceed into lambda parsing when the input is plausibly a lambda
+// header. Without this guard the precedence chain doubles its
+// effective stack depth on every nested expression — visible as
+// debug-build stack overflow on `void main() { f((e) { p(e); }); }`.
+lambda_lookahead = _{
+    async_kw
+    | "("
+    | ident_name ~ "=>"
 }
 
 assignment_op = {
@@ -427,47 +460,37 @@ conditional_expression = {
     null_coalesce_expression ~ ("?" ~ expression ~ ":" ~ expression)?
 }
 
-// ── Null coalesce ───────────────────────────────────────────────────────────
+// ── Binary operator chain (collapsed) ───────────────────────────────────────
+//
+// Instead of 12 separate precedence-layer rules (null_coalesce →
+// logical_or → logical_and → bitwise_or → bitwise_xor → bitwise_and
+// → equality → relational → shift → additive → multiplicative →
+// unary), we parse one flat operand chain. The walker handles
+// precedence via a Pratt-style climber over the resulting pairs.
+//
+// Why: the per-rule call depth in pest_derive is the hot stack-burner
+// for nested expressions (lambdas in calls in lambdas). Collapsing to
+// one rule cuts ~12 frames per expression — visible as fixing the
+// debug-build stack overflow on simple code like
+// `void main() { f((e) { p(e); }); }`.
+null_coalesce_expression = { binop_operand ~ (binop ~ binop_operand)* }
+binop_operand = _{ relational_unit }
+relational_unit = { unary_expression ~ relational_suffix* }
 
-null_coalesce_expression = { logical_or_expression ~ ("??" ~ logical_or_expression)* }
-
-// ── Logical OR ──────────────────────────────────────────────────────────────
-
-logical_or_expression = { logical_and_expression ~ ("||" ~ logical_and_expression)* }
-
-// ── Logical AND ─────────────────────────────────────────────────────────────
-
-logical_and_expression = { bitwise_or_expression ~ ("&&" ~ bitwise_or_expression)* }
-
-// ── Bitwise OR ──────────────────────────────────────────────────────────────
-
-bitwise_or_expression = { bitwise_xor_expression ~ (bitor_op ~ bitwise_xor_expression)* }
-bitor_op = { "|" ~ !("|" | "=") }
-
-// ── Bitwise XOR ─────────────────────────────────────────────────────────────
-
-bitwise_xor_expression = { bitwise_and_expression ~ (bitxor_op ~ bitwise_and_expression)* }
-bitxor_op = { "^" ~ !"=" }
-
-// ── Bitwise AND ─────────────────────────────────────────────────────────────
-
-bitwise_and_expression = { equality_expression ~ (bitand_op ~ equality_expression)* }
-bitand_op = { "&" ~ !("&" | "=") }
-
-// ── Equality ────────────────────────────────────────────────────────────────
-
-equality_expression = { relational_expression ~ (equality_op ~ relational_expression)* }
-equality_op = { "==" | "!=" }
-
-// ── Relational ──────────────────────────────────────────────────────────────
-
-relational_expression = { shift_expression ~ (relational_suffix)* }
+binop = {
+    "??" | "||" | "&&"
+  | "|" ~ !("|" | "=") | "^" ~ !"=" | "&" ~ !("&" | "=")
+  | "==" | "!="
+  | ">>>" ~ !"=" | ">>" ~ !(">" | "=") | "<<" ~ !"="
+  | "+" ~ !("+" | "=") | "-" ~ !("-" | "=")
+  | "~/" ~ !"=" | "*" ~ !"=" | "/" ~ !"=" | "%" ~ !"="
+}
 
 relational_suffix = {
     is_not_test
     | is_test
     | as_cast
-    | relational_op ~ shift_expression
+    | relational_op ~ unary_expression
 }
 
 is_not_test = { "is" ~ "!" ~ type_annotation }
@@ -475,26 +498,6 @@ is_test = { is_kw ~ type_annotation }
 as_cast = { as_kw ~ type_annotation }
 
 relational_op = { "<=" | ">=" | "<" ~ !"<" | ">" ~ !">" }
-
-// ── Shift ───────────────────────────────────────────────────────────────────
-
-shift_expression = { additive_expression ~ (shift_op ~ additive_expression)* }
-shift_op = { ">>>" ~ !"=" | ">>" ~ !(">" | "=") | "<<" ~ !"=" }
-
-// ── Additive ────────────────────────────────────────────────────────────────
-
-additive_expression = { multiplicative_expression ~ (additive_op ~ multiplicative_expression)* }
-additive_op = { "+" ~ !("+" | "=") | "-" ~ !("-" | "=") }
-
-// ── Multiplicative ──────────────────────────────────────────────────────────
-
-multiplicative_expression = { unary_expression ~ (multiplicative_op ~ unary_expression)* }
-multiplicative_op = {
-    "~/" ~ !"="
-    | "*" ~ !"="
-    | "/" ~ !("/" | "=")
-    | "%" ~ !"="
-}
 
 // ── Unary ───────────────────────────────────────────────────────────────────
 
@@ -558,7 +561,9 @@ null_safe_member_access = { "?." ~ ident_or_keyword ~ ("(" ~ argument_list? ~ ")
 member_access = { "." ~ ident_or_keyword ~ ("(" ~ argument_list? ~ ")")? }
 call_args = { "(" ~ argument_list? ~ ")" }
 index_access = { "[" ~ expression ~ "]" }
-null_assert = { "!" }
+// Postfix `!` (null-assert). Negative lookahead on `=` keeps `!=`
+// (binary not-equal) from being eaten here.
+null_assert = { "!" ~ !"=" }
 
 // ── Arguments ───────────────────────────────────────────────────────────────
 
@@ -587,8 +592,13 @@ primary = {
     | null_kw
     | numeric_literal
     | string_literal
+    | typed_ident
     | ident_name
 }
+
+// `Stream<int>` / `Future<List<String>>` — type-parameterized identifier
+// used as an expression. Walker drops the type args (Vybe is dynamic).
+typed_ident = { ident_name ~ type_args ~ &("." | "(") }
 
 // ── Switch expression (Dart 3) ──────────────────────────────────────────────
 
@@ -668,8 +678,19 @@ list_literal = {
 }
 
 list_element = {
-    "..." ~ assignment_expression
+    "...?" ~ assignment_expression
+    | "..." ~ assignment_expression
+    | collection_if
+    | collection_for
     | assignment_expression
+}
+
+// `if (cond) elem [else elem]` and `for (...) elem` inside collection literals.
+collection_if = {
+    "if" ~ "(" ~ expression ~ ")" ~ list_element ~ ("else" ~ list_element)?
+}
+collection_for = {
+    "for" ~ "(" ~ for_header ~ ")" ~ list_element
 }
 
 // ── Map / Set literal ───────────────────────────────────────────────────────
@@ -679,8 +700,22 @@ map_or_set_literal = {
 }
 
 map_or_set_body = {
-    map_entry ~ ("," ~ map_entry)* ~ ","?
-    | assignment_expression ~ ("," ~ assignment_expression)* ~ ","?
+    map_or_set_element ~ ("," ~ map_or_set_element)* ~ ","?
+}
+
+map_or_set_element = {
+    "...?" ~ assignment_expression
+    | "..." ~ assignment_expression
+    | map_collection_if
+    | map_collection_for
+    | map_entry
+    | assignment_expression
+}
+map_collection_if = {
+    "if" ~ "(" ~ expression ~ ")" ~ map_or_set_element ~ ("else" ~ map_or_set_element)?
+}
+map_collection_for = {
+    "for" ~ "(" ~ for_header ~ ")" ~ map_or_set_element
 }
 
 map_entry = { assignment_expression ~ ":" ~ assignment_expression }
@@ -689,8 +724,17 @@ map_entry = { assignment_expression ~ ":" ~ assignment_expression }
 
 type_annotation = {
     function_type
+    | record_type
     | simple_type
 }
+
+// Dart record types `(int, int)` / `({String name, int age})`.
+record_type = {
+    "(" ~ record_type_field ~ ("," ~ record_type_field)* ~ ","? ~ ")" ~ nullable_marker?
+  | "(" ~ record_type_field ~ ("," ~ record_type_field)* ~ "," ~ "{" ~ record_type_field ~ ("," ~ record_type_field)* ~ ","? ~ "}" ~ ")" ~ nullable_marker?
+  | "(" ~ "{" ~ record_type_field ~ ("," ~ record_type_field)* ~ ","? ~ "}" ~ ")" ~ nullable_marker?
+}
+record_type_field = { type_annotation ~ ident_name? }
 
 simple_type = {
     type_name ~ type_args? ~ nullable_marker?

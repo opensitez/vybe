@@ -1963,11 +1963,10 @@ impl Compiler {
             }
 
             // ── Class declaration ───────────────────────────────────────
-            StmtKind::ClassDecl { name, parents, members, modifiers, .. } => {
+            StmtKind::ClassDecl { name, parents, interfaces, members, modifiers, .. } => {
                 let cname = self.canon(name);
                 self.defined_globals.insert(cname.clone());
                 self.defined_classes.insert(cname.clone());
-                let _ = parents;
                 // Every language's profile has `uses_normalize_class = true`
                 // after Phase 3. ClassDecl always goes through
                 // walker → normalize_class → emit_class → compile_class.
@@ -1976,7 +1975,7 @@ impl Compiler {
                 // loudly rather than silently picking a legacy path.
                 let span = stmt.span.clone();
                 crate::common::classes::emit::emit_class_from_ast(
-                    self, span, &cname, parents, members, modifiers,
+                    self, span, &cname, parents, interfaces, members, modifiers,
                 )?;
             }
 
@@ -2028,7 +2027,7 @@ impl Compiler {
                 self.defined_globals.insert(cn.clone());
                 let span = stmt.span.clone();
                 crate::common::classes::emit::emit_class_from_ast(
-                    self, span, &cn, &[], members, &crate::ast::ClassModifiers::default(),
+                    self, span, &cn, &[], &[], members, &crate::ast::ClassModifiers::default(),
                 )?;
             }
 
@@ -3413,23 +3412,28 @@ impl Compiler {
             }
         }
 
-        // Check common import table first
-        if let Some(resolved) = common::imports::resolve_common_import(name) {
-            match resolved {
-                common::imports::CommonImport::Host(module, func) => {
-                    for a in args { self.compile_expr(a)?; }
-                    let idx = self.import(module, func);
-                    self.emit_host_call(idx, args.len() as u8);
+        // Look up in language profile FIRST — language profiles can
+        // override the common import defaults (e.g. Dart `print` needs
+        // toString conversion before logging, which is different from
+        // generic `wasi:cli.log`).
+        let builtin = self.profile.lookup_builtin(name).cloned();
+        // Check common import table only if the profile didn't bind it.
+        if builtin.is_none() {
+            if let Some(resolved) = common::imports::resolve_common_import(name) {
+                match resolved {
+                    common::imports::CommonImport::Host(module, func) => {
+                        for a in args { self.compile_expr(a)?; }
+                        let idx = self.import(module, func);
+                        self.emit_host_call(idx, args.len() as u8);
+                    }
+                    common::imports::CommonImport::Intrinsic(intrinsic_name) => {
+                        self.emit_intrinsic(intrinsic_name, args)?;
+                    }
                 }
-                common::imports::CommonImport::Intrinsic(intrinsic_name) => {
-                    self.emit_intrinsic(intrinsic_name, args)?;
-                }
+                return Ok(true);
             }
-            return Ok(true);
         }
 
-        // Look up in language profile
-        let builtin = self.profile.lookup_builtin(name).cloned();
         if let Some(def) = builtin {
             match &def.emit {
                 BuiltinEmit::Print => {
@@ -3602,6 +3606,7 @@ impl Compiler {
                 self.emit(Op::I32_CONST_0);
                 self.emit(Op::DYN_GE);
             }
+            "str_contains" => self.emit(Op::STR_CONTAINS),
             "str_substring" => self.emit(Op::STR_SUBSTRING),
             "str_split" => self.emit(Op::STR_SPLIT),
             "str_replace" => self.emit(Op::STR_REPLACE),
@@ -3697,7 +3702,11 @@ impl Compiler {
             "f64_nearest" => { self.compile_expr(args[0])?; self.emit(Op::F64_NEAREST); }
             "f64_min" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::F64_MIN); } }
             "f64_max" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::F64_MAX); } }
-            "i32_from_f64" => { self.compile_expr(args[0])?; self.emit(Op::I32_FROM_F64); }
+            "i32_from_f64" | "to_int" => {
+                self.compile_expr(args[0])?;
+                let line = self.line;
+                common::convert::emit_to_int(self.chunk(), line);
+            }
             "f64_from_i32" => { self.compile_expr(args[0])?; self.emit(Op::F64_FROM_I32); }
             "dyn_to_bool" => { self.compile_expr(args[0])?; self.emit(Op::DYN_TO_BOOL); }
             "ref_is_null" => { self.compile_expr(args[0])?; self.emit(Op::REF_IS_NULL); }

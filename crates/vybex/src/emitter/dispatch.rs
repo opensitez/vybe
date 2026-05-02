@@ -556,6 +556,22 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         // ALL args are non-null. Inline emit folds an AND chain.
         "php.isset_all" => emit_isset_all(&mut chunks[current], argc, line),
 
+        // ── Fortran `max(a, b, c, ...)` / `min(a, b, c, ...)` — variadic.
+        // Pure WASM (chained f64.max / f64.min); no host calls.
+        "fortran.max" => crate::emitter::fortran::math_adapter::emit_fortran_max(chunks, current, argc, line),
+        "fortran.min" => crate::emitter::fortran::math_adapter::emit_fortran_min(chunks, current, argc, line),
+        "fortran.len_trim" => crate::emitter::fortran::string_adapter::emit_fortran_len_trim(chunks, current, line),
+        "fortran.adjustl" => crate::emitter::fortran::string_adapter::emit_fortran_adjustl(chunks, current, line),
+
+        // ── Dart string surfaces (isEmpty / isNotEmpty / replaceFirst etc.) ──
+        "dart.is_empty" => crate::emitter::dart::string_adapter::emit_dart_is_empty(chunks, current, line),
+        "dart.is_not_empty" => crate::emitter::dart::string_adapter::emit_dart_is_not_empty(chunks, current, line),
+        "dart.replace_first" => crate::emitter::dart::string_adapter::emit_dart_replace_first(chunks, current, line),
+        "dart.list_first" => crate::emitter::dart::string_adapter::emit_dart_list_first(chunks, current, line),
+        "dart.list_last" => crate::emitter::dart::string_adapter::emit_dart_list_last(chunks, current, line),
+        "dart.length" => crate::emitter::dart::string_adapter::emit_dart_length(chunks, current, line),
+        "dart.print" => crate::emitter::dart::string_adapter::emit_dart_print(chunks, current, argc, line),
+
         // ── Ruby `obj.dig(k1, k2, ..., kN)` — variadic property walk.
         // Returns `obj[k1]?[k2]?...[kN]`, or `nil` if any link is null.
         // `argc` includes receiver: `argc == N + 1`. Inline emit chains

@@ -136,7 +136,11 @@ pub fn normalize_class(
         is_sealed: modifiers.is_sealed,
         is_partial: false,
         explicit_self_param: false,
-        implicit_self_fields: false, // Dart requires `this.field` for ambiguous refs
+        // Dart resolves bare identifiers in instance methods to `this.field`
+        // (the `this.` is only needed when a local shadows). Setting this true
+        // lets `String toString() => '($x, $y)'` and `_balance += v` reach
+        // the instance fields without explicit `this.` qualification.
+        implicit_self_fields: true,
         instance_fields,
         static_fields,
         instance_methods,

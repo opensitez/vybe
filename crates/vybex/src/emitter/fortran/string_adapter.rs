@@ -1,0 +1,30 @@
+//! Fortran string helpers — Rust inline opcode emitters.
+//!
+//! Implements Fortran-faithful intrinsics that aren't a single
+//! WASM opcode or single ECMA host fn:
+//!
+//! - `len_trim(s)` — `s.trimEnd().length`
+//! - `adjustl(s)` — `s.trimStart() + spaces(N - s.trimStart().length)`
+//!   (stub: trimStart for now; full adjustl needs declared length).
+//! - `adjustr(s)` — symmetric.
+
+use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
+
+/// Fortran `len_trim(s)` — length of string after stripping trailing
+/// blanks. Composes `STR_TRIM_END` + `STR_LENGTH`.
+///
+/// Stack on entry: `[s]`. Stack on exit: `[length_i32]`.
+pub fn emit_fortran_len_trim(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::STR_TRIM_END, line);
+    chunk.emit_op(Op::STR_LENGTH, line);
+}
+
+/// Fortran `adjustl(s)` — left-justify by moving leading blanks to
+/// the end. Approximated as `s.trimStart()` for now (does not pad
+/// to declared length — that's a fixed-len-string concern).
+pub fn emit_fortran_adjustl(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::STR_TRIM_START, line);
+}

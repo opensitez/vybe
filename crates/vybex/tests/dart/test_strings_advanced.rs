@@ -71,6 +71,7 @@ use super::helpers::{compile_ok, run_prints};
     assert_eq!(out, ["HELLO"]);
 }
 
+
 #[test] fn trim_result() {
     let out = run_prints("void main() { print('  hi  '.trim()); }");
     assert_eq!(out, ["hi"]);

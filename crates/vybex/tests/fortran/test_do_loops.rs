@@ -29,14 +29,12 @@ fn do_print_each() {
 }
 
 #[test]
-#[ignore] // hangs — while loop variable reassignment not updating condition
 fn do_while_simple() {
     let out = run_prints("program t\ninteger :: i\ni = 0\ndo while (i < 5)\ni = i + 1\nend do\nprint *, i\nend program t\n");
     assert_eq!(out, vec!["5"]);
 }
 
 #[test]
-#[ignore]
 fn do_while_accumulate() {
     let out = run_prints("program t\ninteger :: i, s\ni = 1\ns = 0\ndo while (i <= 10)\ns = s + i\ni = i + 1\nend do\nprint *, s\nend program t\n");
     assert_eq!(out, vec!["55"]);

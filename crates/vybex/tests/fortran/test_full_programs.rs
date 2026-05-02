@@ -65,7 +65,6 @@ fn swap_variables() {
 }
 
 #[test]
-#[ignore] // do while hang
 fn count_down() {
     let out = run_prints("program t\ninteger :: i\ni = 5\ndo while (i > 0)\nprint *, i\ni = i - 1\nend do\nend program t\n");
     assert_eq!(out, vec!["5", "4", "3", "2", "1"]);
@@ -101,7 +100,6 @@ fn quadratic_discriminant() {
 }
 
 #[test]
-#[ignore] // do while hang
 fn gcd_iterative() {
     let out = run_prints("program t\ninteger :: a, b, tmp\na = 48\nb = 18\ndo while (b /= 0)\ntmp = b\nb = mod(a, b)\na = tmp\nend do\nprint *, a\nend program t\n");
     assert_eq!(out, vec!["6"]);

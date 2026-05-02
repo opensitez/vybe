@@ -42,10 +42,10 @@ sqrt          = { emit = "opcode:f64_sqrt",                min_args = 1, max_arg
 floor         = { emit = "opcode:f64_floor",               min_args = 1, max_args = 1 }
 ceiling       = { emit = "opcode:f64_ceil",                min_args = 1, max_args = 1 }
 nint          = { emit = "opcode:f64_nearest",             min_args = 1, max_args = 1 }
-min           = { emit = "opcode:f64_min",                 min_args = 2, max_args = 2 }
-max           = { emit = "opcode:f64_max",                 min_args = 2, max_args = 2 }
-real          = { emit = "opcode:to_float",                min_args = 1, max_args = 1 }
-dble          = { emit = "opcode:to_float",                min_args = 1, max_args = 1 }
+min           = { emit = "common:fortran.min",             min_args = 2, max_args = 255 }
+max           = { emit = "common:fortran.max",             min_args = 2, max_args = 255 }
+real          = { emit = "opcode:f64_from_i32",            min_args = 1, max_args = 1 }
+dble          = { emit = "opcode:f64_from_i32",            min_args = 1, max_args = 1 }
 int           = { emit = "opcode:to_int",                  min_args = 1, max_args = 1 }
 
 # ── Math — host calls ───────────────────────────────────────────────────────
@@ -61,14 +61,15 @@ exp           = { emit = "host:ecma:math:exp",             min_args = 1, max_arg
 log           = { emit = "host:ecma:math:log",             min_args = 1, max_args = 1 }
 log10         = { emit = "host:ecma:math:log10",           min_args = 1, max_args = 1 }
 mod           = { emit = "host:ecma:math:fmod",            min_args = 2, max_args = 2 }
+modulo        = { emit = "host:ecma:math:fmod",            min_args = 2, max_args = 2 }
 sign          = { emit = "host:ecma:math:sign",            min_args = 2, max_args = 2 }
 random_number = { emit = "host:ecma:math:random",          min_args = 0, max_args = 0 }
 
 # ── String functions ─────────────────────────────────────────────────────────
 
 len           = { emit = "common:strings.length",          min_args = 1, max_args = 1 }
-len_trim      = { emit = "common:strings.length",          min_args = 1, max_args = 1 }
-trim          = { emit = "common:strings.trim",            min_args = 1, max_args = 1 }
+len_trim      = { emit = "common:fortran.len_trim",        min_args = 1, max_args = 1 }
+trim          = { emit = "opcode:str_trim_end",            min_args = 1, max_args = 1 }
 adjustl       = { emit = "opcode:str_trim_start",          min_args = 1, max_args = 1 }
 adjustr       = { emit = "opcode:str_trim_end",            min_args = 1, max_args = 1 }
 char          = { emit = "host:ecma:string:fromCharCode",  min_args = 1, max_args = 1 }

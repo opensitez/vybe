@@ -18,8 +18,11 @@ program = { SOI ~ line* ~ EOI }
 
 line = _{ statement_line | NEWLINE | COMMENT }
 
+// Statement line — optional leading numeric label (Fortran 77 GOTO
+// targets), then one or more statements separated by `;`. The walker
+// records the label for later GOTO resolution.
 statement_line = {
-    statement ~ (";" ~ statement)* ~ (NEWLINE | &EOI)
+    statement_label? ~ statement ~ (";" ~ statement)* ~ (NEWLINE | &EOI)
 }
 
 // ── Statements ─────────────────────────────────────────────────────────────
@@ -30,14 +33,52 @@ statement = _{
   | use_statement
   | implicit_statement
   | contains_statement
+  | access_statement
+  | import_statement
+  | select_type_statement
+  | select_rank_statement
+  | procedure_decl
   | subroutine_decl
   | function_decl
   | type_decl
   | interface_decl
+  | arithmetic_if_statement
   | if_statement
+  | do_concurrent_statement
   | do_statement
   | do_while_statement
   | select_case_statement
+  | forall_statement
+  | where_statement
+  | block_statement
+  | associate_statement
+  | change_team_statement
+  | computed_goto_statement
+  | goto_statement
+  | assigned_goto_statement
+  | assign_label_statement
+  | continue_statement
+  | common_statement
+  | data_statement
+  | external_statement
+  | intrinsic_statement
+  | save_statement
+  | namelist_statement
+  | format_statement
+  | block_data_unit
+  | entry_statement
+  | labeled_do_statement
+  | sync_statement
+  | event_statement
+  | notify_statement
+  | form_team_statement
+  | critical_statement
+  | lock_statement
+  | unlock_statement
+  | error_stop_statement
+  | submodule_unit
+  | enum_statement
+  | abstract_interface_decl
   | print_statement
   | write_statement
   | read_statement
@@ -58,7 +99,7 @@ statement = _{
 program_unit = {
     kw_program ~ identifier ~ (NEWLINE | ";")
     ~ line*
-    ~ kw_end_program ~ identifier? ~ (NEWLINE | &EOI)?
+    ~ kw_end_program ~ identifier?
 }
 
 kw_end_program = { kw_end ~ kw_program }
@@ -68,7 +109,7 @@ kw_end_program = { kw_end ~ kw_program }
 module_unit = {
     kw_module ~ identifier ~ (NEWLINE | ";")
     ~ line*
-    ~ kw_end_module ~ identifier? ~ (NEWLINE | &EOI)?
+    ~ kw_end_module ~ identifier?
 }
 
 kw_end_module = { kw_end ~ kw_module }
@@ -76,19 +117,74 @@ kw_end_module = { kw_end ~ kw_module }
 // ── Use statement ──────────────────────────────────────────────────────────
 
 use_statement = {
-    kw_use ~ identifier ~ ("," ~ kw_only ~ ":" ~ use_name_list)?
+    kw_use ~ ("," ~ use_modifier)? ~ "::"? ~ identifier ~ ("," ~ kw_only ~ ":" ~ use_name_list)?
+                                                       ~ ("," ~ use_name_list)?
 }
+use_modifier = { kw_intrinsic | kw_non_intrinsic }
 
 use_name_list = { use_name ~ ("," ~ use_name)* }
 use_name = { identifier ~ ("=>" ~ identifier)? }
 
 // ── Implicit ───────────────────────────────────────────────────────────────
 
-implicit_statement = { kw_implicit ~ kw_none }
+implicit_statement = {
+    kw_implicit ~ kw_none ~ ("(" ~ implicit_none_spec ~ ("," ~ implicit_none_spec)* ~ ")")?
+}
+implicit_none_spec = { kw_type | kw_external }
 
 // ── Contains ───────────────────────────────────────────────────────────────
 
 contains_statement = { kw_contains }
+
+// `private` / `public` / `protected` / `private :: a, b` — module-level
+// access-control statement. Walker drops attributes; the AST currently
+// has no visibility model for module members.
+access_statement = {
+    (kw_private | kw_public | kw_protected) ~ ("::" ~ identifier ~ ("," ~ identifier)*)?
+}
+
+// Procedure declaration (F2003): `procedure([interface-name]) [, attrs]* :: name [=> init]`
+procedure_decl = {
+    kw_procedure ~ "(" ~ identifier? ~ ")" ~ ("," ~ proc_attribute)* ~ "::" ~ proc_decl_item ~ ("," ~ proc_decl_item)*
+}
+proc_attribute = {
+    kw_pointer | kw_save | kw_optional | kw_intent ~ "(" ~ intent_spec ~ ")"
+  | kw_public | kw_private | kw_protected
+  | kw_pass ~ ("(" ~ identifier ~ ")")? | kw_nopass | kw_deferred | kw_non_overridable
+  | kw_bind ~ "(" ~ identifier ~ ("," ~ kw_name ~ "=" ~ expression)? ~ ")"
+}
+proc_decl_item = {
+    identifier ~ ("=>" ~ (kw_null ~ "(" ~ ")" | identifier))?
+}
+
+// `import [ :: ] name1, name2` — F2003 host-association control inside
+// an interface body. Walker discards.
+import_statement = {
+    kw_import ~ ("::"? ~ (identifier ~ ("," ~ identifier)*))?
+}
+
+// `select type (sel) ... type is (T) ... class is (T) ... class default ... end select`
+select_type_statement = {
+    kw_select ~ kw_type ~ "(" ~ (identifier ~ "=>")? ~ expression ~ ")" ~ (NEWLINE | ";")
+    ~ select_type_clause*
+    ~ kw_end ~ kw_select ~ identifier?
+}
+select_type_clause = {
+    kw_type ~ kw_is ~ "(" ~ identifier ~ ")" ~ (NEWLINE | ";") ~ line*
+  | kw_class ~ kw_is ~ "(" ~ identifier ~ ")" ~ (NEWLINE | ";") ~ line*
+  | kw_class ~ kw_default ~ (NEWLINE | ";") ~ line*
+}
+
+// `select rank (x) ... rank(N) ... rank(*) ... rank default ... end select` (F2018)
+select_rank_statement = {
+    kw_select ~ kw_rank ~ "(" ~ (identifier ~ "=>")? ~ expression ~ ")" ~ (NEWLINE | ";")
+    ~ select_rank_clause*
+    ~ kw_end ~ kw_select ~ identifier?
+}
+select_rank_clause = {
+    kw_rank ~ "(" ~ (expression | "*") ~ ")" ~ (NEWLINE | ";") ~ line*
+  | kw_rank ~ kw_default ~ (NEWLINE | ";") ~ line*
+}
 
 // ── Variable declaration ───────────────────────────────────────────────────
 
@@ -96,14 +192,36 @@ var_declaration = {
     type_spec ~ var_attributes? ~ "::" ~ var_declarator_list
 }
 
+// Numeric type specifiers — Fortran allows a `(kind=N)` or `(N)` or
+// `*N` suffix for kind selection (`integer(kind=8)`, `real(8)`,
+// `integer*4`). Parsed and discarded by the walker (the AST doesn't
+// distinguish kinds yet — all integers are i64, all reals are f64).
 type_spec = {
-    kw_integer
-  | kw_real
+    kw_integer ~ kind_selector?
+  | kw_real ~ kind_selector?
   | kw_double ~ kw_precision
-  | kw_complex
-  | kw_character ~ ("(" ~ (kw_len ~ "=" )? ~ (expression | "*") ~ ")")?
-  | kw_logical
-  | kw_type ~ "(" ~ identifier ~ ")"
+  | kw_double ~ kw_complex
+  | kw_complex ~ kind_selector?
+  | kw_character ~ ("(" ~ char_len_spec ~ ("," ~ kw_kind ~ "=" ~ expression)? ~ ")")?
+  | kw_character ~ "*" ~ (number_literal | "(" ~ expression ~ ")")
+  | kw_logical ~ kind_selector?
+  | kw_type ~ "(" ~ identifier ~ ("(" ~ pdt_param_args? ~ ")")? ~ ")"
+  | kw_class ~ "(" ~ (identifier | "*") ~ ("(" ~ pdt_param_args? ~ ")")? ~ ")"
+}
+
+// PDT parameter arg: integer literal, identifier, or `*` (assumed) or `:` (deferred).
+pdt_param_args = { pdt_param_arg ~ ("," ~ pdt_param_arg)* }
+pdt_param_arg = { (identifier ~ "=")? ~ (expression | "*" | ":") }
+
+// `(kind=4)` / `(4)` / `*4` — all parse as a kind suffix.
+kind_selector = {
+    "(" ~ (kw_kind ~ "=" )? ~ expression ~ ")"
+  | "*" ~ number_literal
+}
+
+char_len_spec = {
+    kw_len ~ "=" ~ (expression | "*" | ":")
+  | (expression | "*" | ":")
 }
 
 var_attributes = { "," ~ var_attribute ~ ("," ~ var_attribute)* }
@@ -120,23 +238,47 @@ var_attribute = {
   | kw_value
   | kw_private
   | kw_public
+  | kw_kind
+  | kw_len
+  | kw_protected
+  | kw_volatile
+  | kw_asynchronous
+  | kw_contiguous
+  | kw_external
+  | kw_intrinsic
+  | kw_codimension ~ "[" ~ codimension_spec_list ~ "]"
+  | kw_bind ~ "(" ~ identifier ~ ("," ~ kw_name ~ "=" ~ expression)? ~ ")"
 }
 
 intent_spec = { kw_in ~ kw_out? | kw_out | kw_inout }
 
 dimension_spec_list = { dimension_spec ~ ("," ~ dimension_spec)* }
-dimension_spec = { expression? ~ ":" ~ expression? | expression | ":" }
+dimension_spec = { ".." | expression? ~ ":" ~ expression? | expression | ":" }
 
 var_declarator_list = { var_declarator ~ ("," ~ var_declarator)* }
 
+// Variable declarator with optional dimension `(n,m)`, coarray
+// `[*]` / `[lb:ub, *]` (Fortran 2008+), and trailing length `*N`
+// for character types (`character :: s*10`). The walker drops
+// codimensions for now — the AST doesn't model PGAS coarrays;
+// they parse as plain scalars / arrays so the bytecode stays
+// single-image. Real PGAS support layers atop wasi:threads later.
 var_declarator = {
-    identifier ~ ("(" ~ dimension_spec_list ~ ")")? ~ ("=" ~ expression)?
+    identifier
+    ~ ("(" ~ dimension_spec_list ~ ")")?
+    ~ ("[" ~ codimension_spec_list ~ "]")?
+    ~ ("*" ~ (number_literal | "(" ~ expression ~ ")"))?
+    ~ ("=>" ~ kw_null ~ "(" ~ ")")?
+    ~ ("=" ~ expression)?
 }
+
+codimension_spec_list = { codimension_spec ~ ("," ~ codimension_spec)* }
+codimension_spec = { expression ~ ":" ~ "*" | expression? ~ ":" ~ expression? | "*" | expression }
 
 // ── Subroutine ─────────────────────────────────────────────────────────────
 
 subroutine_decl = {
-    kw_subroutine ~ identifier ~ ("(" ~ param_list? ~ ")")? ~ (NEWLINE | ";")
+    proc_prefix* ~ kw_subroutine ~ identifier ~ ("(" ~ param_list? ~ ")")? ~ proc_suffix* ~ (NEWLINE | ";")
     ~ line*
     ~ kw_end ~ kw_subroutine ~ identifier?
 }
@@ -144,9 +286,20 @@ subroutine_decl = {
 // ── Function ───────────────────────────────────────────────────────────────
 
 function_decl = {
-    type_spec? ~ kw_function ~ identifier ~ "(" ~ param_list? ~ ")" ~ result_clause? ~ (NEWLINE | ";")
+    proc_prefix* ~ type_spec? ~ proc_prefix* ~ kw_function ~ identifier ~ "(" ~ param_list? ~ ")" ~ proc_suffix* ~ (NEWLINE | ";")
     ~ line*
     ~ kw_end ~ kw_function ~ identifier?
+}
+
+// Procedure prefix qualifiers (F2003/F2008): `pure`, `elemental`, `recursive`, `module`, `impure`, `non_recursive`.
+proc_prefix = {
+    kw_pure | kw_elemental | kw_recursive | kw_module | kw_impure | kw_non_recursive
+}
+
+// Procedure suffix clauses: `result(name)`, `bind(c[, name=...])`.
+proc_suffix = {
+    kw_result ~ "(" ~ identifier ~ ")"
+  | kw_bind ~ "(" ~ identifier ~ ("," ~ kw_name ~ "=" ~ expression)? ~ ")"
 }
 
 result_clause = { kw_result ~ "(" ~ identifier ~ ")" }
@@ -156,26 +309,47 @@ param_list = { identifier ~ ("," ~ identifier)* }
 // ── Derived type ───────────────────────────────────────────────────────────
 
 type_decl = {
-    kw_type ~ ("," ~ type_attribute)* ~ "::"? ~ identifier ~ ("(" ~ identifier ~ ")")? ~ (NEWLINE | ";")
+    kw_type ~ ("," ~ type_attribute)* ~ "::"? ~ identifier ~ ("(" ~ identifier ~ ("," ~ identifier)* ~ ")")? ~ (NEWLINE | ";")
     ~ type_member*
     ~ (kw_contains ~ (NEWLINE | ";") ~ type_bound_procedure*)?
     ~ kw_end ~ kw_type ~ identifier?
 }
 
-type_attribute = { kw_public | kw_private | kw_extends ~ "(" ~ identifier ~ ")" | kw_abstract }
+type_attribute = {
+    kw_public | kw_private | kw_extends ~ "(" ~ identifier ~ ")" | kw_abstract
+  | kw_bind ~ "(" ~ identifier ~ ("," ~ kw_name ~ "=" ~ expression)? ~ ")"
+  | kw_sequence
+}
 
-type_member = { var_declaration | NEWLINE | COMMENT }
+type_member = { var_declaration | sequence_statement | private_statement | NEWLINE | COMMENT }
+sequence_statement = { kw_sequence }
+private_statement = { kw_private }
 
 type_bound_procedure = {
-    kw_procedure ~ ("::" | ",")? ~ identifier ~ ("=>" ~ identifier)? ~ (NEWLINE | ";")
+    kw_procedure ~ ("(" ~ identifier ~ ")")? ~ ("," ~ tbp_attribute)* ~ "::" ~ tbp_binding ~ ("," ~ tbp_binding)* ~ (NEWLINE | ";")
+  | kw_procedure ~ ("(" ~ identifier ~ ")")? ~ ("," ~ tbp_attribute)* ~ tbp_binding ~ (NEWLINE | ";")
+  | kw_generic ~ "::" ~ identifier ~ "=>" ~ identifier ~ ("," ~ identifier)* ~ (NEWLINE | ";")
+  | kw_final ~ "::" ~ identifier ~ ("," ~ identifier)* ~ (NEWLINE | ";")
 }
+tbp_attribute = { kw_deferred | kw_pass ~ ("(" ~ identifier ~ ")")? | kw_nopass | kw_public | kw_private | kw_non_overridable }
+tbp_binding = { identifier ~ ("=>" ~ identifier)? }
 
 // ── Interface ──────────────────────────────────────────────────────────────
 
 interface_decl = {
-    kw_interface ~ (kw_operator ~ "(" ~ operator ~ ")" | identifier)? ~ (NEWLINE | ";")
-    ~ (subroutine_decl | function_decl | kw_module ~ kw_procedure ~ identifier ~ (NEWLINE | ";") | NEWLINE | COMMENT)*
-    ~ kw_end ~ kw_interface ~ identifier?
+    kw_interface ~ interface_designator? ~ (NEWLINE | ";")
+    ~ (subroutine_decl | function_decl
+        | kw_module ~ kw_procedure ~ "::"? ~ identifier ~ ("," ~ identifier)* ~ (NEWLINE | ";")
+        | kw_procedure ~ "::"? ~ identifier ~ ("," ~ identifier)* ~ (NEWLINE | ";")
+        | NEWLINE | COMMENT)*
+    ~ kw_end ~ kw_interface ~ interface_designator?
+}
+interface_designator = {
+    kw_operator ~ "(" ~ operator ~ ")"
+  | kw_assignment ~ "(" ~ "=" ~ ")"
+  | kw_read ~ "(" ~ identifier ~ ")"
+  | kw_write ~ "(" ~ identifier ~ ")"
+  | identifier
 }
 
 operator = { "+" | "-" | "*" | "/" | "**" | "==" | "/=" | "<" | ">" | "<=" | ">=" | ".and." | ".or." | ".not." }
@@ -204,22 +378,276 @@ else_clause = {
 single_statement = _{
     print_statement | write_statement | call_statement | assignment_statement
   | return_statement | cycle_statement | exit_statement | stop_statement
-  | allocate_statement | deallocate_statement | expression_statement
+  | error_stop_statement | allocate_statement | deallocate_statement
+  | goto_statement | continue_statement | sync_statement
+  | expression_statement
 }
 
 // ── Do loop ────────────────────────────────────────────────────────────────
 
+// Named DO loops: `label: do i = 1, n ... end do label`. The label
+// is the identifier followed by ":". Walker drops the label into the
+// AST as a `Labeled` wrapper; the optional trailing `end do label`
+// just confirms the matching close. `cycle label` / `exit label`
+// inherit the same identifier as a target.
 do_statement = {
-    kw_do ~ identifier ~ "=" ~ expression ~ "," ~ expression ~ ("," ~ expression)? ~ (NEWLINE | ";")
+    (loop_label ~ ":")? ~ kw_do ~ identifier ~ "=" ~ expression ~ "," ~ expression ~ ("," ~ expression)? ~ (NEWLINE | ";")
     ~ line*
-    ~ kw_end ~ kw_do
+    ~ kw_end ~ kw_do ~ identifier?
 }
 
 do_while_statement = {
-    kw_do ~ kw_while ~ "(" ~ expression ~ ")" ~ (NEWLINE | ";")
+    (loop_label ~ ":")? ~ kw_do ~ kw_while ~ "(" ~ expression ~ ")" ~ (NEWLINE | ";")
     ~ line*
-    ~ kw_end ~ kw_do
+    ~ kw_end ~ kw_do ~ identifier?
 }
+
+// `do concurrent ([type-spec ::] index = lower:upper[:stride] [, ...] [, mask])
+//   [locality-spec]*`
+//   F2008 parallel-friendly loop. Walker lowers to nested DO for now.
+do_concurrent_statement = {
+    (loop_label ~ ":")? ~ kw_do ~ kw_concurrent ~ "(" ~ concurrent_header ~ ")" ~ concurrent_locality* ~ (NEWLINE | ";")
+    ~ line*
+    ~ kw_end ~ kw_do ~ identifier?
+}
+concurrent_header = {
+    concurrent_index ~ ("," ~ concurrent_index)* ~ ("," ~ expression)?
+}
+concurrent_index = { identifier ~ "=" ~ expression ~ ":" ~ expression ~ (":" ~ expression)? }
+concurrent_locality = {
+    kw_local ~ "(" ~ identifier ~ ("," ~ identifier)* ~ ")"
+  | kw_local_init ~ "(" ~ identifier ~ ("," ~ identifier)* ~ ")"
+  | kw_shared ~ "(" ~ identifier ~ ("," ~ identifier)* ~ ")"
+  | kw_default ~ "(" ~ kw_none ~ ")"
+}
+
+// Fortran 95 FORALL — element-wise array assignment with optional
+// triplet bounds and a mask. Both block and statement forms.
+// Walker treats it as a nested DO loop family for now (parallel
+// semantics are deferred). Triplets: `i = lower:upper:stride`.
+forall_statement = {
+    kw_forall ~ "(" ~ forall_triplet ~ ("," ~ forall_triplet)* ~ ("," ~ expression)? ~ ")"
+    ~ (
+        (NEWLINE | ";") ~ line* ~ kw_end ~ kw_forall
+      | assignment_statement
+    )
+}
+forall_triplet = { identifier ~ "=" ~ expression ~ ":" ~ expression ~ (":" ~ expression)? }
+
+// Fortran 95 WHERE — array-conditional assignment with optional
+// elsewhere/else clauses. Both block and statement forms; walker
+// emits as masked element-wise loops.
+where_statement = {
+    kw_where ~ "(" ~ expression ~ ")" ~ (
+        (NEWLINE | ";") ~ line*
+        ~ (kw_elsewhere ~ ("(" ~ expression ~ ")")? ~ (NEWLINE | ";") ~ line*)*
+        ~ kw_end ~ kw_where
+      | assignment_statement
+    )
+}
+
+// Fortran 2008 BLOCK construct — nested local scope with its own
+// declarations. Walker maps to a local scope; the AST `Block` is a
+// statement list, declarations included.
+block_statement = {
+    (loop_label ~ ":")? ~ kw_block ~ (NEWLINE | ";")
+    ~ line*
+    ~ kw_end ~ kw_block ~ identifier?
+}
+
+// Fortran 2003 ASSOCIATE — alias an expression as a name in a scope.
+associate_statement = {
+    kw_associate ~ "(" ~ associate_binding ~ ("," ~ associate_binding)* ~ ")" ~ (NEWLINE | ";")
+    ~ line*
+    ~ kw_end ~ kw_associate
+}
+associate_binding = { identifier ~ "=>" ~ expression }
+
+// Fortran 2018 CHANGE TEAM construct — coarray team scope.
+change_team_statement = {
+    kw_change ~ kw_team ~ "(" ~ expression ~ ("," ~ argument)* ~ ")" ~ (NEWLINE | ";")
+    ~ line*
+    ~ kw_end ~ kw_team
+}
+
+// ── F77 legacy / control-flow ─────────────────────────────────────────────
+//
+// All of these parse for source compatibility; the walker lowers
+// them where possible and ignores them otherwise (block_data /
+// entry / namelist are no-ops).
+
+// `GOTO 100` / `GO TO 100` — labelled jump.
+goto_statement = { (kw_goto | kw_go ~ kw_to) ~ statement_label }
+
+// `GOTO (10, 20, 30) i` — computed goto.
+computed_goto_statement = {
+    (kw_goto | kw_go ~ kw_to) ~ "(" ~ statement_label ~ ("," ~ statement_label)* ~ ")" ~ ","? ~ expression
+}
+
+// `GOTO label` (variable form, F77) and `assign 10 to label`.
+assigned_goto_statement = {
+    (kw_goto | kw_go ~ kw_to) ~ identifier ~ ("(" ~ statement_label ~ ("," ~ statement_label)* ~ ")")?
+}
+assign_label_statement = { kw_assign ~ statement_label ~ kw_to ~ identifier }
+
+// Arithmetic IF: `if (x) lneg, lzero, lpos` — Fortran 66.
+arithmetic_if_statement = {
+    kw_if ~ "(" ~ expression ~ ")" ~ statement_label ~ "," ~ statement_label ~ "," ~ statement_label
+}
+
+// `CONTINUE` — labelled no-op terminator.
+continue_statement = { kw_continue }
+
+// `COMMON /name/ var, var, var` (or `// var, var` blank common).
+common_statement = {
+    kw_common
+    ~ ( ("/" ~ identifier? ~ "/" ~ common_var_list)
+      | common_var_list)
+    ~ ( ","? ~ "/" ~ identifier? ~ "/" ~ common_var_list )*
+}
+common_var_list = { common_var ~ ("," ~ common_var)* }
+common_var = { identifier ~ ("(" ~ dimension_spec_list ~ ")")? }
+
+// `DATA var /val/[, var /val/...]` and `DATA (a(i), i=1,n) /vals/`.
+data_statement = {
+    kw_data ~ data_set ~ ("," ~ data_set)*
+}
+data_set = {
+    data_var_list ~ "/" ~ data_value_list ~ "/"
+}
+data_var_list = { data_var ~ ("," ~ data_var)* }
+data_var = {
+    data_implied_do
+  | identifier ~ ("(" ~ argument_list ~ ")")?
+}
+data_implied_do = {
+    "(" ~ (data_var_simple ~ ",")+ ~ identifier ~ "=" ~ expression ~ "," ~ expression ~ ("," ~ expression)? ~ ")"
+}
+data_var_simple = { identifier ~ ("(" ~ argument_list ~ ")")? }
+data_value_list = { data_value ~ ("," ~ data_value)* }
+data_value = {
+    expression ~ ("*" ~ expression)?
+}
+
+// `EXTERNAL fn1, fn2, ...` and `INTRINSIC fn1, fn2, ...` — declares
+// external linkage / intrinsic visibility. Walker ignores; the AST
+// resolves names at compile time anyway.
+external_statement  = { kw_external ~ "::"? ~ identifier ~ ("," ~ identifier)* }
+intrinsic_statement = { kw_intrinsic ~ "::"? ~ identifier ~ ("," ~ identifier)* }
+
+// `SAVE` (with or without var list).
+save_statement = { kw_save ~ (identifier ~ ("," ~ identifier)*)? }
+
+// `NAMELIST /name/ vars` — F90 I/O grouping.
+namelist_statement = {
+    kw_namelist ~ ("/" ~ identifier ~ "/" ~ identifier ~ ("," ~ identifier)*)+
+}
+
+// `FORMAT (...)` statement — F77 I/O. Treat the parenthesised
+// edit-descriptor list as opaque source until I/O lowering needs it.
+format_statement = {
+    kw_format ~ format_body
+}
+format_body = @{ "(" ~ format_inner ~ ")" }
+format_inner = @{ (format_paren | format_string | (!(")" | "(" | "'" | "\"") ~ ANY))* }
+format_paren = @{ "(" ~ format_inner ~ ")" }
+format_string = @{ "'" ~ (!"'" ~ ANY)* ~ "'" | "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+
+// `BLOCK DATA name` ... `END BLOCK DATA` — F77 module-init form.
+block_data_unit = {
+    kw_block ~ kw_data ~ identifier? ~ (NEWLINE | ";")
+    ~ line*
+    ~ kw_end ~ (kw_block ~ kw_data)? ~ identifier?
+}
+
+// `ENTRY name(args)` — F77 alternate-entry form.
+entry_statement = {
+    kw_entry ~ identifier ~ ("(" ~ param_list? ~ ")")?
+}
+
+// Labelled DO: `do 100 i = 1, n ... 100 continue` (F77 form). Pest
+// can't track that the closing label matches the DO's, so this
+// rule deliberately does NOT specify a terminator — the surrounding
+// `line*` of the enclosing program/subprogram absorbs the body and
+// the `100 continue` line as if they were sibling statements.
+// Walker post-processes labels into a goto-loop structure during
+// AST normalisation. Mismatched / missing closing labels surface
+// at compile time, not at parse time.
+labeled_do_statement = {
+    kw_do ~ statement_label ~ identifier ~ "=" ~ expression ~ "," ~ expression ~ ("," ~ expression)?
+}
+
+statement_label = @{ ASCII_DIGIT+ }
+
+// ── Coarray / parallel constructs (F2008 / F2018) ─────────────────────────
+//
+// Walker treats these as no-ops (single-image execution). The
+// grammar accepts them so source compatibility is maintained.
+
+sync_statement = {
+    kw_sync ~ (kw_all | kw_images ~ "(" ~ (expression | "*") ~ ("," ~ stat_clause)* ~ ")"
+                       | kw_memory | kw_team ~ "(" ~ expression ~ ")")
+              ~ ("(" ~ stat_clause ~ ("," ~ stat_clause)* ~ ")")?
+}
+stat_clause = { identifier ~ "=" ~ expression }
+
+// `event post(ev)`, `event wait(ev[, ...])`, `event query(ev, count[, ...])`
+event_statement = {
+    kw_event ~ (kw_post | kw_wait | kw_query) ~ "(" ~ argument_list? ~ ")"
+}
+// `form team(num, t [, ...])`, `change team(t)` (parsed as separate)
+form_team_statement = {
+    kw_form ~ kw_team ~ "(" ~ argument_list ~ ")"
+}
+// `notify wait(...)` and `notify post(...)`
+notify_statement = {
+    kw_notify ~ (kw_post | kw_wait) ~ "(" ~ argument_list? ~ ")"
+}
+
+critical_statement = {
+    (loop_label ~ ":")? ~ kw_critical ~ ("(" ~ stat_clause ~ ("," ~ stat_clause)* ~ ")")? ~ (NEWLINE | ";")
+    ~ line*
+    ~ kw_end ~ kw_critical ~ identifier?
+}
+
+lock_statement = {
+    kw_lock ~ "(" ~ expression ~ ("," ~ stat_clause)* ~ ")"
+}
+unlock_statement = {
+    kw_unlock ~ "(" ~ expression ~ ("," ~ stat_clause)* ~ ")"
+}
+
+// `error stop [code [, quiet=...]]` — F2018 controlled abort.
+error_stop_statement = {
+    kw_error ~ kw_stop ~ (expression ~ ("," ~ stat_clause)*)?
+}
+
+// Submodules (F2008): `submodule (parent) name ... end submodule`.
+submodule_unit = {
+    kw_submodule ~ "(" ~ identifier ~ (":" ~ identifier)? ~ ")" ~ identifier ~ (NEWLINE | ";")
+    ~ line*
+    ~ kw_end ~ (kw_submodule)? ~ identifier?
+}
+
+// `enum, bind(c) ; enumerator :: A, B = 5 ; end enum` — F2003 enums.
+enum_statement = {
+    kw_enum ~ ("," ~ kw_bind ~ "(" ~ identifier ~ ")")? ~ (NEWLINE | ";")
+    ~ enumerator_decl*
+    ~ kw_end ~ kw_enum
+}
+enumerator_decl = {
+    kw_enumerator ~ "::"? ~ enumerator_value ~ ("," ~ enumerator_value)* ~ (NEWLINE | ";")
+}
+enumerator_value = { identifier ~ ("=" ~ expression)? }
+
+// `abstract interface ... end interface` — F2003 abstract interface.
+abstract_interface_decl = {
+    kw_abstract ~ kw_interface ~ identifier? ~ (NEWLINE | ";")
+    ~ (subroutine_decl | function_decl | NEWLINE | COMMENT)*
+    ~ kw_end ~ kw_interface ~ identifier?
+}
+
+loop_label = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
 // ── Select case ────────────────────────────────────────────────────────────
 
@@ -235,7 +663,7 @@ case_block = {
 }
 
 case_value_list = { case_value ~ ("," ~ case_value)* }
-case_value = { expression ~ (":" ~ expression)? }
+case_value = { expression? ~ ":" ~ expression? | expression }
 
 // ── I/O ────────────────────────────────────────────────────────────────────
 
@@ -251,7 +679,7 @@ read_statement = {
     kw_read ~ "(" ~ write_spec ~ ("," ~ write_spec)* ~ ")" ~ identifier? ~ ("," ~ identifier)*
 }
 
-write_spec = { "*" | expression }
+write_spec = { "*" | identifier ~ "=" ~ (expression | "*") | expression }
 
 // ── Memory ─────────────────────────────────────────────────────────────────
 
@@ -261,7 +689,9 @@ alloc_item = { identifier ~ "(" ~ dimension_spec_list ~ ")" }
 
 // ── Call / Return / Cycle / Exit / Stop ────────────────────────────────────
 
-call_statement = { kw_call ~ identifier ~ ("(" ~ argument_list? ~ ")")? }
+call_statement = {
+    kw_call ~ identifier ~ ("%" ~ identifier)* ~ ("(" ~ argument_list? ~ ")")?
+}
 
 return_statement = { kw_return ~ expression? }
 
@@ -273,14 +703,18 @@ stop_statement = { kw_stop ~ expression? }
 
 // ── Assignment ─────────────────────────────────────────────────────────────
 
+// Assignment / pointer-assignment statement. `=>` is the Fortran
+// pointer-assign operator; the walker treats it the same as `=` for
+// AST purposes (the runtime distinction lives at allocate/nullify).
 assignment_statement = {
-    identifier ~ member_or_index* ~ "=" ~ expression
+    identifier ~ member_or_index* ~ ("=>" | "=") ~ expression
 }
 
 member_or_index = {
     "%" ~ identifier
   | "(" ~ expression ~ ("," ~ expression)* ~ ")"
   | "(" ~ expression ~ ":" ~ expression? ~ ")"
+  | "[" ~ expression ~ ("," ~ expression)* ~ "]"
 }
 
 // ── Expression statement ───────────────────────────────────────────────────
@@ -327,34 +761,100 @@ unary = {
 }
 
 primary_expr = {
-    "(" ~ expression ~ ")"
+    primary_atom ~ postfix_op*
+}
+
+primary_atom = {
+    array_constructor
+  | complex_literal
+  | "(" ~ expression ~ ")"
   | literal
   | function_call_or_subscript
   | identifier
 }
 
+// Postfix chain: derived-type member (`%field`), function/array call
+// (`(args)`), coarray coindex (`[args]`). Note: function_call_or_subscript
+// already handles the first `(args)` after a bare identifier, so postfix
+// only needs to chain further accesses (`f(x)%field`, `obj%method(a)`).
+postfix_op = {
+    "%" ~ identifier
+  | "(" ~ argument_list? ~ ")"
+  | "[" ~ argument_list ~ "]"
+}
+
+// Fortran complex constant: `(real_part, imag_part)`. Distinct from
+// the parenthesized expression by the comma — pest tries it first
+// in primary_expr so `(1.0, 2.0)` parses as complex_literal, not as
+// a parenthesised expression that fails on the comma.
+complex_literal = { "(" ~ expression ~ "," ~ expression ~ ")" }
+
+// Fortran 90 array constructors: `[1, 2, 3]` (modern) or
+// `(/ 1, 2, 3 /)` (legacy F77 with the `(/ ... /)` delimiters).
+// Implied-do form `[(i, i = 1, 10)]` is recognised so the parser
+// accepts the source; walker emits a placeholder Array for now.
+array_constructor = {
+    "[" ~ array_constructor_body? ~ "]"
+  | "(/" ~ array_constructor_body? ~ "/)"
+}
+array_constructor_body = { array_constructor_value ~ ("," ~ array_constructor_value)* }
+array_constructor_value = {
+    "(" ~ expression ~ "," ~ identifier ~ "=" ~ expression ~ "," ~ expression ~ ("," ~ expression)? ~ ")"
+  | expression
+}
+
+// Function call / array subscript / coarray coindex / mixed:
+//   `f(x)`            — call or array subscript
+//   `arr[2]`          — coarray coindex
+//   `arr(i)[j]`       — array element on a remote image
+//   `obj%field(i)[k]` — derived-type member on remote image
+// Walker collapses [...] coindexes into args (single-image semantics).
+// Required: at least one parenthesised or bracketed clause to keep
+// this distinct from a bare identifier.
 function_call_or_subscript = {
-    identifier ~ "(" ~ argument_list? ~ ")"
+    identifier ~ "(" ~ argument_list? ~ ")" ~ ("[" ~ argument_list ~ "]")?
+  | identifier ~ "[" ~ argument_list ~ "]" ~ ("(" ~ argument_list? ~ ")")?
 }
 
 argument_list = { argument ~ ("," ~ argument)* }
-argument = { (identifier ~ "=")? ~ expression }
+argument = { slice_arg | operator_arg | star_arg | (identifier ~ "=")? ~ expression }
+star_arg = { "*" }
+slice_arg = { expression? ~ ":" ~ expression? ~ (":" ~ expression)? }
+// `operator(+)` / `operator(.eq.)` — operator-as-procedure-pointer.
+operator_arg = { kw_operator ~ "(" ~ operator_designator ~ ")" }
+operator_designator = @{
+    "+" | "-" | "*" | "/" | "**" | "//"
+  | "==" | "/=" | "<=" | ">=" | "<" | ">"
+  | "=" | ".eq." | ".ne." | ".lt." | ".le." | ".gt." | ".ge."
+  | ".and." | ".or." | ".not." | ".eqv." | ".neqv."
+  | "." ~ ASCII_ALPHA+ ~ "."
+}
 
 // ── Literals ───────────────────────────────────────────────────────────────
 
 literal = {
     logical_literal
+  | boz_literal
   | number_literal
   | string_literal
 }
 
-logical_literal = { ".true." | ".false." | kw_true_dot | kw_false_dot }
+// BOZ literals: `b'01'`, `o'77'`, `z'FF'` (hex/octal/binary). Walker
+// converts to the integer value of the bit pattern.
+boz_literal = @{
+    (^"b" | ^"o" | ^"z") ~ ("'" ~ ASCII_HEX_DIGIT* ~ "'" | "\"" ~ ASCII_HEX_DIGIT* ~ "\"")
+}
+
+logical_literal = @{ (".true." | ".false." | "_TRUE_" | "_FALSE_" | ^".true." | ^".false.") ~ kind_suffix? }
 
 number_literal = @{
-    ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT* ~ (("e" | "E" | "d" | "D") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ ("_" ~ identifier)?
-  | "." ~ ASCII_DIGIT+ ~ (("e" | "E" | "d" | "D") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ ("_" ~ identifier)?
-  | ASCII_DIGIT+ ~ (("e" | "E" | "d" | "D") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ ("_" ~ identifier)?
+    ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT* ~ (("e" | "E" | "d" | "D") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ kind_suffix?
+  | "." ~ ASCII_DIGIT+ ~ (("e" | "E" | "d" | "D") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ kind_suffix?
+  | ASCII_DIGIT+ ~ (("e" | "E" | "d" | "D") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ kind_suffix?
 }
+
+// Kind suffix: `_4`, `_8`, `_kind`, etc.
+kind_suffix = @{ "_" ~ (ASCII_DIGIT+ | (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")*) }
 
 string_literal = @{
     "'" ~ (!"'" ~ ANY | "''")* ~ "'"
@@ -365,20 +865,23 @@ string_literal = @{
 
 identifier = @{ !strict_keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
+// Truly reserved keywords for the grammar — used in `!strict_keyword`
+// guard on `identifier`. Fortran is intentionally context-sensitive
+// (`result`, `parameter`, `precision`, `pointer`, `target`, `result`,
+// `optional`, `intent`, `dimension`, `value`, `save`, `allocatable`,
+// `procedure`, `extends`, `default`, `only`, `none`, `contains`,
+// `operator`, `abstract`, `public`, `private`, `data`, `kind`, `len`)
+// are used as ordinary identifiers throughout real-world code, so
+// they must NOT be in this list. Only words whose presence in
+// expression context would make the grammar ambiguous belong here.
 strict_keyword = _{
-    ( ^"program" | ^"end" | ^"module" | ^"use" | ^"implicit" | ^"none"
-    | ^"subroutine" | ^"function" | ^"result" | ^"contains"
-    | ^"integer" | ^"real" | ^"double" | ^"precision" | ^"complex"
-    | ^"character" | ^"logical" | ^"type"
-    | ^"intent" | ^"dimension" | ^"allocatable" | ^"parameter" | ^"save"
-    | ^"optional" | ^"pointer" | ^"target" | ^"value"
+    ( ^"program" | ^"end" | ^"module" | ^"use"
+    | ^"subroutine" | ^"function"
     | ^"if" | ^"then" | ^"else" | ^"elseif" | ^"endif" | ^"enddo" | ^"do" | ^"while"
-    | ^"select" | ^"case" | ^"default"
+    | ^"select" | ^"case"
     | ^"print" | ^"write" | ^"read" | ^"call" | ^"return"
-    | ^"cycle" | ^"exit" | ^"stop" | ^"allocate" | ^"deallocate"
-    | ^"interface" | ^"operator" | ^"abstract" | ^"extends"
-    | ^"public" | ^"private" | ^"procedure"
-    | ^"only"
+    | ^"cycle" | ^"exit" | ^"stop"
+    | ^"interface" | ^"type"
     ) ~ !(ASCII_ALPHANUMERIC | "_")
 }
 
@@ -406,6 +909,67 @@ kw_character  = @{ ^"character"  ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_logical    = @{ ^"logical"    ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_type       = @{ ^"type"       ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_len        = @{ ^"len"        ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_kind       = @{ ^"kind"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_class      = @{ ^"class"      ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_null       = @{ ^"null"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_forall     = @{ ^"forall"     ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_where      = @{ ^"where"      ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_elsewhere  = @{ ^"elsewhere"  ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_block      = @{ ^"block"      ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_associate  = @{ ^"associate"  ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_goto       = @{ ^"goto"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_go         = @{ ^"go"         ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_to         = @{ ^"to"         ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_assign     = @{ ^"assign"     ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_common     = @{ ^"common"     ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_data       = @{ ^"data"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_external   = @{ ^"external"   ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_intrinsic  = @{ ^"intrinsic"  ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_namelist   = @{ ^"namelist"   ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_format     = @{ ^"format"     ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_entry      = @{ ^"entry"      ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_continue   = @{ ^"continue"   ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_sync       = @{ ^"sync"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_all        = @{ ^"all"        ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_images     = @{ ^"images"     ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_memory     = @{ ^"memory"     ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_team       = @{ ^"team"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_change     = @{ ^"change"     ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_deferred   = @{ ^"deferred"   ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_pass       = @{ ^"pass"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_nopass     = @{ ^"nopass"     ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_generic    = @{ ^"generic"    ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_final      = @{ ^"final"      ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_sequence   = @{ ^"sequence"   ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_non_overridable = @{ ^"non_overridable" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_pure       = @{ ^"pure"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_elemental  = @{ ^"elemental"  ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_recursive  = @{ ^"recursive"  ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_impure     = @{ ^"impure"     ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_non_recursive = @{ ^"non_recursive" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_concurrent = @{ ^"concurrent" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_local      = @{ ^"local"      ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_local_init = @{ ^"local_init" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_shared     = @{ ^"shared"     ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_import     = @{ ^"import"     ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_is         = @{ ^"is"         ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_event      = @{ ^"event"      ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_post       = @{ ^"post"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_wait       = @{ ^"wait"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_query      = @{ ^"query"      ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_form       = @{ ^"form"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_notify     = @{ ^"notify"     ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_non_intrinsic = @{ ^"non_intrinsic" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_assignment = @{ ^"assignment" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_rank       = @{ ^"rank"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_critical   = @{ ^"critical"   ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_lock       = @{ ^"lock"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_unlock     = @{ ^"unlock"     ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_error      = @{ ^"error"      ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_submodule  = @{ ^"submodule"  ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_enum       = @{ ^"enum"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_enumerator = @{ ^"enumerator" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_bind       = @{ ^"bind"       ~ !(ASCII_ALPHANUMERIC | "_") }
 
 // Attribute keywords
 kw_intent     = @{ ^"intent"     ~ !(ASCII_ALPHANUMERIC | "_") }
@@ -422,6 +986,12 @@ kw_target     = @{ ^"target"     ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_value      = @{ ^"value"      ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_private    = @{ ^"private"    ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_public     = @{ ^"public"     ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_protected  = @{ ^"protected"  ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_volatile   = @{ ^"volatile"   ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_asynchronous = @{ ^"asynchronous" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_contiguous = @{ ^"contiguous" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_codimension = @{ ^"codimension" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_name       = @{ ^"name"       ~ !(ASCII_ALPHANUMERIC | "_") }
 
 // Control flow
 kw_if         = @{ ^"if"         ~ !(ASCII_ALPHANUMERIC | "_") }

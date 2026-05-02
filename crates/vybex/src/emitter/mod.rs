@@ -29,6 +29,8 @@ pub mod imports;
 pub mod gui;
 pub mod dotnet;
 pub mod php;
+pub mod fortran;
+pub mod dart;
 pub mod dispatch;
 pub mod type_registry;
 pub mod canonical;

@@ -19,6 +19,9 @@ string_indexing = "zero_based"
 # Route `class` declarations through common::classes::normalize_class
 # + emit_class (see classnormalization.md).
 uses_normalize_class = true
+entry_point = "main"
+# Dart `+` on strings concatenates (per dart:core String.+).
+dynamic_add = true
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — bare global function calls
@@ -28,7 +31,7 @@ uses_normalize_class = true
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
-print               = { emit = "print",                          min_args = 1, max_args = 255 }
+print               = { emit = "common:dart.print",              min_args = 1, max_args = 1 }
 
 # ── String functions ─────────────────────────────────────────────────────────
 
@@ -99,6 +102,18 @@ padLeft       = { emit = "opcode:str_pad_start",       min_args = 1, max_args = 
 padRight      = { emit = "opcode:str_pad_end",         min_args = 1, max_args = 2 }
 toString      = { emit = "stdlib:tostring",            min_args = 0, max_args = 0 }
 codeUnitAt    = { emit = "opcode:str_char_code_at",    min_args = 1, max_args = 1 }
+isEmpty       = { emit = "common:dart.is_empty",       min_args = 0, max_args = 0 }
+isNotEmpty    = { emit = "common:dart.is_not_empty",   min_args = 0, max_args = 0 }
+compareTo     = { emit = "opcode:str_compare",         min_args = 1, max_args = 1 }
+replaceFirst  = { emit = "host:ecma:string:replace",   min_args = 2, max_args = 2 }
+
+# List/Iterable property-style accessors (zero-arg getters).
+first         = { emit = "common:dart.list_first",     min_args = 0, max_args = 0 }
+containsKey   = { emit = "host:ecma:object:has",       min_args = 1, max_args = 1 }
+containsValue = { emit = "host:ecma:object:hasOwn",    min_args = 1, max_args = 1 }
+keys          = { emit = "host:ecma:object:keys",      min_args = 0, max_args = 0 }
+last          = { emit = "common:dart.list_last",      min_args = 0, max_args = 0 }
+length        = { emit = "common:dart.length",         min_args = 0, max_args = 0 }
 
 # Array/List instance methods
 add           = { emit = "common:collections.push",    min_args = 1, max_args = 1 }
