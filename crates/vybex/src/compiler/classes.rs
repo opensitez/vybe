@@ -466,7 +466,15 @@ impl Compiler {
             } else if m.return_type.is_some() && result_style == ReturnStyle::ResultSlot {
                 let slot_name = cc.profile.result_slot_name.clone();
                 let rs = cc.define_local(&slot_name);
-                cc.emit(Op::NULL); cc.emit_u16(Op::LOCAL_SET, rs); cc.emit(Op::DROP);
+                let returns_self_type = m.return_type.as_deref()
+                    .is_some_and(|rt| rt.eq_ignore_ascii_case(&class.name));
+                if returns_self_type && body_has_result_member_assign(&m.body) {
+                    cc.emit_var_get(&class.name);
+                    cc.emit_u8(Op::CALL_REF, 0);
+                } else {
+                    cc.emit(Op::NULL);
+                }
+                cc.emit_u16(Op::LOCAL_SET, rs); cc.emit(Op::DROP);
                 let saved_fn = cc.current_func_name.take();
                 let saved_rs = cc.current_result_slot.take();
                 cc.current_func_name = Some(mname.clone());
@@ -1291,4 +1299,53 @@ impl Compiler {
         Ok(())
     }
 
+}
+
+fn body_has_result_member_assign(body: &[Statement]) -> bool {
+    body.iter().any(stmt_has_result_member_assign)
+}
+
+fn stmt_has_result_member_assign(stmt: &Statement) -> bool {
+    match &stmt.kind {
+        StmtKind::Assign { targets, .. } => targets.iter().any(expr_is_result_member),
+        StmtKind::Block(body)
+        | StmtKind::FunctionDecl { body, .. }
+        | StmtKind::With { body, .. }
+        | StmtKind::Using { body, .. }
+        | StmtKind::Lock { body, .. } => body_has_result_member_assign(body),
+        StmtKind::If { then_body, elifs, else_body, .. } => {
+            body_has_result_member_assign(then_body)
+                || elifs.iter().any(|(_, body)| body_has_result_member_assign(body))
+                || else_body.as_ref().is_some_and(|body| body_has_result_member_assign(body))
+        }
+        StmtKind::For { init, body, .. } => {
+            init.as_ref().is_some_and(|stmt| stmt_has_result_member_assign(stmt))
+                || body_has_result_member_assign(body)
+        }
+        StmtKind::ForIn { body, else_body, .. }
+        | StmtKind::While { body, else_body, .. } => {
+            body_has_result_member_assign(body)
+                || else_body.as_ref().is_some_and(|body| body_has_result_member_assign(body))
+        }
+        StmtKind::DoWhile { body, .. } => body_has_result_member_assign(body),
+        StmtKind::Switch { cases, default, .. } => {
+            cases.iter().any(|case| body_has_result_member_assign(&case.body))
+                || default.as_ref().is_some_and(|body| body_has_result_member_assign(body))
+        }
+        StmtKind::Try { body, catches, else_body, finally, .. } => {
+            body_has_result_member_assign(body)
+                || catches.iter().any(|catch| body_has_result_member_assign(&catch.body))
+                || else_body.as_ref().is_some_and(|body| body_has_result_member_assign(body))
+                || finally.as_ref().is_some_and(|body| body_has_result_member_assign(body))
+        }
+        _ => false,
+    }
+}
+
+fn expr_is_result_member(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Member { object, .. }
+            if matches!(&object.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Result"))
+    )
 }

@@ -3,6 +3,8 @@ use pest::iterators::Pair;
 use super::{PascalParser, Rule};
 use crate::ast::*;
 
+const PASCAL_HELPER_TARGET_PREFIX: &str = "__pascal_helper_target__:";
+
 pub fn parse(source: &str) -> Result<Module, String> {
     let source = source.trim_start_matches('\u{feff}');
     let pairs = PascalParser::parse(Rule::program, source)
@@ -63,15 +65,12 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // FunctionDecls back into the matching ClassDecl so the compiler sees them as
     // ordinary class members.
     merge_separated_methods(&mut body);
+    lower_pascal_helpers(&mut body);
 
-    // Synthesize a minimal `Exception` class at the top of every Pascal
-    // program — must be inserted BEFORE the `TFoo.Create(...)` →
-    // `New { ... }` rewrite below so the rewrite's class-name set
-    // picks `Exception` up. Object Pascal / Delphi / Free Pascal expose
-    // `Exception` as an RTL builtin (sysutils unit) that user code
-    // routinely raises via `raise Exception.Create('msg')`. We don't
-    // model the RTL unit system, so the walker injects the class
-    // declaration unconditionally.
+    // Synthesize minimal RTL classes at the top of every Pascal program
+    // before constructor-call rewriting so known runtime base types exist
+    // during later passes.
+    body.insert(0, synthesize_tinterfacedobject_class());
     body.insert(0, synthesize_exception_class());
 
     // Now that class declarations are stable, rewrite `TFoo.Create(args)` (Pascal's
@@ -100,6 +99,20 @@ pub fn parse(source: &str) -> Result<Module, String> {
     }).collect();
     for stmt in body.iter_mut() {
         default_init_struct_locals_stmt(stmt, &struct_names);
+    }
+
+    // Pascal allows user functions to shadow builtin type names. When that
+    // happens, `Double(x)` should stay a function call rather than getting
+    // frozen into a builtin cast during expression walking.
+    let free_function_names: std::collections::HashSet<String> = body.iter().filter_map(|stmt| {
+        if let StmtKind::FunctionDecl { name, .. } = &stmt.kind {
+            Some(name.to_lowercase())
+        } else {
+            None
+        }
+    }).collect();
+    for stmt in body.iter_mut() {
+        rewrite_shadowed_builtin_casts_stmt(stmt, &free_function_names);
     }
 
     Ok(Module {
@@ -173,6 +186,246 @@ fn default_init_struct_locals_stmt(stmt: &mut Statement, struct_names: &std::col
     }
 }
 
+fn rewrite_shadowed_builtin_casts_stmt(
+    stmt: &mut Statement,
+    free_function_names: &std::collections::HashSet<String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) => rewrite_shadowed_builtin_casts_expr(expr, free_function_names),
+        StmtKind::Return(expr) => {
+            if let Some(expr) = expr {
+                rewrite_shadowed_builtin_casts_expr(expr, free_function_names);
+            }
+        }
+        StmtKind::Throw { expr, cause } => {
+            if let Some(expr) = expr {
+                rewrite_shadowed_builtin_casts_expr(expr, free_function_names);
+            }
+            if let Some(cause) = cause {
+                rewrite_shadowed_builtin_casts_expr(cause, free_function_names);
+            }
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_shadowed_builtin_casts_expr(init, free_function_names);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_shadowed_builtin_casts_expr(target, free_function_names);
+            }
+            rewrite_shadowed_builtin_casts_expr(value, free_function_names);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_shadowed_builtin_casts_expr(target, free_function_names);
+            rewrite_shadowed_builtin_casts_expr(value, free_function_names);
+        }
+        StmtKind::If { cond, then_body, elifs, else_body } => {
+            rewrite_shadowed_builtin_casts_expr(cond, free_function_names);
+            for stmt in then_body {
+                rewrite_shadowed_builtin_casts_stmt(stmt, free_function_names);
+            }
+            for (cond, body) in elifs {
+                rewrite_shadowed_builtin_casts_expr(cond, free_function_names);
+                for stmt in body {
+                    rewrite_shadowed_builtin_casts_stmt(stmt, free_function_names);
+                }
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    rewrite_shadowed_builtin_casts_stmt(stmt, free_function_names);
+                }
+            }
+        }
+        StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
+            rewrite_shadowed_builtin_casts_expr(cond, free_function_names);
+            for stmt in body {
+                rewrite_shadowed_builtin_casts_stmt(stmt, free_function_names);
+            }
+        }
+        StmtKind::For { init, cond, update, body, .. } => {
+            if let Some(init) = init {
+                rewrite_shadowed_builtin_casts_stmt(init, free_function_names);
+            }
+            if let Some(cond) = cond {
+                rewrite_shadowed_builtin_casts_expr(cond, free_function_names);
+            }
+            if let Some(update) = update {
+                rewrite_shadowed_builtin_casts_expr(update, free_function_names);
+            }
+            for stmt in body {
+                rewrite_shadowed_builtin_casts_stmt(stmt, free_function_names);
+            }
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            rewrite_shadowed_builtin_casts_expr(iter, free_function_names);
+            for stmt in body {
+                rewrite_shadowed_builtin_casts_stmt(stmt, free_function_names);
+            }
+        }
+        StmtKind::FunctionDecl { body, .. }
+        | StmtKind::With { body, .. }
+        | StmtKind::Using { body, .. }
+        | StmtKind::Lock { body, .. } => {
+            for stmt in body {
+                rewrite_shadowed_builtin_casts_stmt(stmt, free_function_names);
+            }
+        }
+        StmtKind::Try { body, catches, else_body, finally, .. } => {
+            for stmt in body {
+                rewrite_shadowed_builtin_casts_stmt(stmt, free_function_names);
+            }
+            for catch in catches {
+                for stmt in &mut catch.body {
+                    rewrite_shadowed_builtin_casts_stmt(stmt, free_function_names);
+                }
+            }
+            if let Some(else_body) = else_body {
+                for stmt in else_body {
+                    rewrite_shadowed_builtin_casts_stmt(stmt, free_function_names);
+                }
+            }
+            if let Some(finally_body) = finally {
+                for stmt in finally_body {
+                    rewrite_shadowed_builtin_casts_stmt(stmt, free_function_names);
+                }
+            }
+        }
+        StmtKind::Block(body) => {
+            for stmt in body {
+                rewrite_shadowed_builtin_casts_stmt(stmt, free_function_names);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_shadowed_builtin_casts_expr(
+    expr: &mut Expression,
+    free_function_names: &std::collections::HashSet<String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Cast { expr: inner, type_name } => {
+            rewrite_shadowed_builtin_casts_expr(inner, free_function_names);
+            if free_function_names.contains(&type_name.to_lowercase()) {
+                let arg = (**inner).clone();
+                expr.kind = ExprKind::Call {
+                    callee: Box::new(Expression::ident(type_name)),
+                    args: vec![Argument::positional(arg)],
+                    optional: false,
+                };
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_shadowed_builtin_casts_expr(left, free_function_names);
+            rewrite_shadowed_builtin_casts_expr(right, free_function_names);
+        }
+        ExprKind::Unary { expr: inner, .. }
+        | ExprKind::Await(inner)
+        | ExprKind::Yield(Some(inner))
+        | ExprKind::Spread(inner) => {
+            rewrite_shadowed_builtin_casts_expr(inner, free_function_names);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_shadowed_builtin_casts_expr(cond, free_function_names);
+            rewrite_shadowed_builtin_casts_expr(then, free_function_names);
+            rewrite_shadowed_builtin_casts_expr(else_, free_function_names);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_shadowed_builtin_casts_expr(callee, free_function_names);
+            for arg in args {
+                rewrite_shadowed_builtin_casts_expr(&mut arg.value, free_function_names);
+            }
+        }
+        ExprKind::Member { object, .. } => {
+            rewrite_shadowed_builtin_casts_expr(object, free_function_names);
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_shadowed_builtin_casts_expr(object, free_function_names);
+            rewrite_shadowed_builtin_casts_expr(index, free_function_names);
+        }
+        ExprKind::New { class, args } => {
+            rewrite_shadowed_builtin_casts_expr(class, free_function_names);
+            for arg in args {
+                rewrite_shadowed_builtin_casts_expr(&mut arg.value, free_function_names);
+            }
+        }
+        ExprKind::Array(elements) => {
+            for element in elements {
+                if let Some(key) = &mut element.key {
+                    rewrite_shadowed_builtin_casts_expr(key, free_function_names);
+                }
+                rewrite_shadowed_builtin_casts_expr(&mut element.value, free_function_names);
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_shadowed_builtin_casts_expr(item, free_function_names);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        rewrite_shadowed_builtin_casts_expr(key, free_function_names);
+                        rewrite_shadowed_builtin_casts_expr(value, free_function_names);
+                    }
+                    ObjectProperty::Spread(value) => {
+                        rewrite_shadowed_builtin_casts_expr(value, free_function_names);
+                    }
+                    ObjectProperty::Shorthand(_) | ObjectProperty::Method { .. } | ObjectProperty::Accessor { .. } => {}
+                }
+            }
+        }
+        ExprKind::Range { start, end, .. } => {
+            rewrite_shadowed_builtin_casts_expr(start, free_function_names);
+            rewrite_shadowed_builtin_casts_expr(end, free_function_names);
+        }
+        ExprKind::TypeOf(inner)
+        | ExprKind::YieldFrom(inner)
+        | ExprKind::Void(inner)
+        | ExprKind::Delete(inner) => {
+            rewrite_shadowed_builtin_casts_expr(inner, free_function_names);
+        }
+        ExprKind::NullCoalesce { left, right } => {
+            rewrite_shadowed_builtin_casts_expr(left, free_function_names);
+            rewrite_shadowed_builtin_casts_expr(right, free_function_names);
+        }
+        ExprKind::Interpolation(parts) => {
+            for part in parts {
+                match part {
+                    InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
+                        rewrite_shadowed_builtin_casts_expr(expr, free_function_names);
+                    }
+                    InterpolPart::Text(_) => {}
+                }
+            }
+        }
+        ExprKind::Assign { target, value } => {
+            rewrite_shadowed_builtin_casts_expr(target, free_function_names);
+            rewrite_shadowed_builtin_casts_expr(value, free_function_names);
+        }
+        ExprKind::SuperCall { args, .. } => {
+            for arg in args {
+                rewrite_shadowed_builtin_casts_expr(&mut arg.value, free_function_names);
+            }
+        }
+        ExprKind::Yield(None)
+        | ExprKind::Lit(_)
+        | ExprKind::Ident(_)
+        | ExprKind::This
+        | ExprKind::Super
+        | ExprKind::Lambda { .. }
+        | ExprKind::ClassExpr { .. }
+        | ExprKind::FunctionExpr(_)
+        | ExprKind::IsType { .. } => {}
+        _ => {}
+    }
+}
+
 fn synthesize_exception_class() -> Statement {
     // class Exception { Message: String; constructor Create(msg: String); }
     // The Create body assigns `Self.Message := msg` so `e.Message`
@@ -224,6 +477,19 @@ fn synthesize_exception_class() -> Statement {
             modifiers: ClassModifiers::default(),
         },
         span,
+    )
+}
+
+fn synthesize_tinterfacedobject_class() -> Statement {
+    Statement::with_span(
+        StmtKind::ClassDecl {
+            name: "TInterfacedObject".into(),
+            parents: Vec::new(),
+            interfaces: Vec::new(),
+            members: Vec::new(),
+            modifiers: ClassModifiers::default(),
+        },
+        Span::default(),
     )
 }
 
@@ -431,8 +697,11 @@ fn merge_separated_methods(body: &mut Vec<Statement>) {
     // Collect class indices by canonicalized (lowercase) name
     let mut class_idx: HashMap<String, usize> = HashMap::new();
     for (i, s) in body.iter().enumerate() {
-        if let StmtKind::ClassDecl { name, .. } = &s.kind {
-            class_idx.insert(name.to_lowercase(), i);
+        match &s.kind {
+            StmtKind::ClassDecl { name, .. } | StmtKind::StructDecl { name, .. } => {
+                class_idx.insert(name.to_lowercase(), i);
+            }
+            _ => {}
         }
     }
 
@@ -447,7 +716,10 @@ fn merge_separated_methods(body: &mut Vec<Statement>) {
         };
 
         let Some(&ci) = class_idx.get(&class_name.to_lowercase()) else { continue };
-        let StmtKind::ClassDecl { members, .. } = &mut body[ci].kind else { continue };
+        let members = match &mut body[ci].kind {
+            StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => members,
+            _ => continue,
+        };
 
         // Try constructor first: any ClassMember::Constructor whose params arity matches,
         // when the method name is "Create" (Pascal convention) — fall back to first ctor.
@@ -520,6 +792,140 @@ fn merge_separated_methods(body: &mut Vec<Statement>) {
     }
 }
 
+fn lower_pascal_helpers(body: &mut Vec<Statement>) {
+    use std::collections::HashMap;
+
+    let mut target_idx: HashMap<String, usize> = HashMap::new();
+    for (idx, stmt) in body.iter().enumerate() {
+        match &stmt.kind {
+            StmtKind::ClassDecl { name, parents, .. } => {
+                if !parents.iter().any(|p| p.starts_with(PASCAL_HELPER_TARGET_PREFIX)) {
+                    target_idx.insert(name.to_lowercase(), idx);
+                }
+            }
+            StmtKind::StructDecl { name, interfaces, .. } => {
+                if !interfaces.iter().any(|i| i.starts_with(PASCAL_HELPER_TARGET_PREFIX)) {
+                    target_idx.insert(name.to_lowercase(), idx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut merges: Vec<(usize, Vec<ClassMember>)> = Vec::new();
+    let mut removals = Vec::new();
+    let mut lifted_functions = Vec::new();
+
+    for (idx, stmt) in body.iter().enumerate() {
+        let helper_target = match &stmt.kind {
+            StmtKind::ClassDecl { parents, .. } => parents.iter()
+                .find_map(|p| p.strip_prefix(PASCAL_HELPER_TARGET_PREFIX))
+                .map(str::to_string),
+            StmtKind::StructDecl { interfaces, .. } => interfaces.iter()
+                .find_map(|p| p.strip_prefix(PASCAL_HELPER_TARGET_PREFIX))
+                .map(str::to_string),
+            _ => None,
+        };
+        let Some(target_name) = helper_target else { continue };
+        removals.push(idx);
+
+        let Some(&target_stmt_idx) = target_idx.get(&target_name.to_lowercase()) else {
+            let helper_members = match &stmt.kind {
+                StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => members,
+                _ => continue,
+            };
+            lifted_functions.extend(lower_pascal_builtin_helper_members(&target_name, helper_members));
+            continue;
+        };
+        let helper_members = match &stmt.kind {
+            StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => members.clone(),
+            _ => Vec::new(),
+        };
+        merges.push((target_stmt_idx, helper_members));
+    }
+
+    for (idx, mut helper_members) in merges {
+        match &mut body[idx].kind {
+            StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
+                members.append(&mut helper_members);
+            }
+            _ => {}
+        }
+    }
+
+    for idx in removals.into_iter().rev() {
+        body.remove(idx);
+    }
+
+    let insert_at = body.iter().position(|stmt| {
+        !matches!(stmt.kind,
+            StmtKind::VarDecl { .. }
+                | StmtKind::FunctionDecl { .. }
+                | StmtKind::ClassDecl { .. }
+                | StmtKind::StructDecl { .. }
+                | StmtKind::InterfaceDecl { .. }
+                | StmtKind::EnumDecl { .. }
+                | StmtKind::ModuleDecl { .. }
+                | StmtKind::NamespaceDecl { .. }
+                | StmtKind::DelegateDecl { .. }
+        )
+    }).unwrap_or(body.len());
+    body.splice(insert_at..insert_at, lifted_functions);
+}
+
+fn lower_pascal_builtin_helper_members(target_name: &str, members: &[ClassMember]) -> Vec<Statement> {
+    let mut lifted = Vec::new();
+    for member in members {
+        let ClassMember::Method(stmt) = member else { continue };
+        let StmtKind::FunctionDecl {
+            name,
+            params,
+            return_type,
+            body,
+            modifiers,
+            is_sub,
+            ..
+        } = &stmt.kind else { continue };
+        let helper_method = name.rsplit('.').next().unwrap_or(name);
+        let mut lifted_params = Vec::with_capacity(params.len() + 1);
+        lifted_params.push(Param {
+            name: "Self".to_string(),
+            type_hint: Some(target_name.to_string()),
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        });
+        lifted_params.extend(params.clone());
+        lifted.push(Statement::with_span(
+            StmtKind::FunctionDecl {
+                name: pascal_helper_function_name(target_name, helper_method),
+                params: lifted_params,
+                return_type: return_type.clone(),
+                body: body.clone(),
+                modifiers: modifiers.clone(),
+                handles: Vec::new(),
+                is_async: false,
+                is_generator: false,
+                is_sub: *is_sub,
+            },
+            stmt.span.clone(),
+        ));
+    }
+    lifted
+}
+
+fn pascal_helper_function_name(target_name: &str, method_name: &str) -> String {
+    let sanitize = |text: &str| {
+        text.chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '_' })
+            .collect::<String>()
+    };
+    format!("__pascal_helper_{}_{}", sanitize(target_name), sanitize(method_name))
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Declaration section
 // ════════════════════════════════════════════════════════════════════════════
@@ -588,7 +994,7 @@ fn walk_var_decl(pair: Pair<Rule>) -> Result<Vec<VarDeclarator>, String> {
             Rule::type_ref => {
                 type_hint = Some(type_ref_to_string(&p));
             }
-            Rule::var_init => {
+            Rule::inline_var_init => {
                 for inner in p.into_inner() {
                     if inner.as_rule() == Rule::expression {
                         init = Some(walk_expression(inner)?);
@@ -599,13 +1005,21 @@ fn walk_var_decl(pair: Pair<Rule>) -> Result<Vec<VarDeclarator>, String> {
         }
     }
 
-    Ok(names.into_iter().map(|n| VarDeclarator {
+    Ok(build_var_declarators(names, type_hint, init))
+}
+
+fn build_var_declarators(
+    names: Vec<String>,
+    type_hint: Option<String>,
+    init: Option<Expression>,
+) -> Vec<VarDeclarator> {
+    names.into_iter().map(|n| VarDeclarator {
         pattern: BindingPattern::Ident(n),
         type_hint: type_hint.clone(),
         init: init.clone(),
         array_bounds: None,
         with_events: false,
-    }).collect())
+    }).collect()
 }
 
 // ── Const section ──────────────────────────────────────────────────────────
@@ -667,7 +1081,7 @@ fn walk_type_decl(pair: Pair<Rule>) -> Result<Statement, String> {
 
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::identifier => name = p.as_str().to_string(),
+            Rule::identifier if name.is_empty() => name = p.as_str().to_string(),
             Rule::type_def => type_def_pair = Some(p),
             _ => {}
         }
@@ -678,7 +1092,9 @@ fn walk_type_decl(pair: Pair<Rule>) -> Result<Statement, String> {
 
     match inner.as_rule() {
         Rule::class_type => walk_class_type(inner, &name, span),
+        Rule::class_helper_type => walk_class_helper_type(inner, &name, span),
         Rule::record_type => walk_record_type(inner, &name, span),
+        Rule::record_helper_type => walk_record_helper_type(inner, &name, span),
         Rule::interface_type => walk_interface_type(inner, &name, span),
         Rule::enum_type => walk_enum_type(inner, &name, span),
         Rule::array_type => {
@@ -704,6 +1120,18 @@ fn walk_type_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 declarations: vec![VarDeclarator {
                     pattern: BindingPattern::Ident(name),
                     type_hint: Some(format!("^{}", target)),
+                    init: None,
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Const,
+            }, span))
+        }
+        Rule::subrange_type => {
+            Ok(Statement::with_span(StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Ident(name),
+                    type_hint: Some(type_ref_to_string(&inner)),
                     init: None,
                     array_bounds: None,
                     with_events: false,
@@ -746,36 +1174,7 @@ fn walk_class_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statement
                     }
                 }
             }
-            Rule::class_body => {
-                for m in p.into_inner() {
-                    match m.as_rule() {
-                        Rule::field_decl => {
-                            members.extend(walk_field_decl_members(m)?);
-                        }
-                        Rule::class_constructor => {
-                            members.push(walk_class_constructor_sig(m)?);
-                        }
-                        Rule::class_destructor => {
-                            members.push(walk_class_method_sig(m, true)?);
-                        }
-                        Rule::class_procedure => {
-                            members.push(walk_class_method_sig(m, false)?);
-                        }
-                        Rule::class_function => {
-                            members.push(walk_class_method_sig(m, false)?);
-                        }
-                        Rule::class_class_member => {
-                            members.push(walk_class_class_member(m)?);
-                        }
-                        Rule::class_property_decl => {
-                            members.push(walk_class_property_decl(m)?);
-                        }
-                        _ => {
-                            // visibility markers are silent (_) rules, skip
-                        }
-                    }
-                }
-            }
+            Rule::class_body => members = walk_class_body_members(p)?,
             _ => {}
         }
     }
@@ -789,6 +1188,45 @@ fn walk_class_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statement
     }, span))
 }
 
+fn walk_class_helper_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statement, String> {
+    let mut target = String::new();
+    let mut members = Vec::new();
+
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::type_ref => target = type_ref_to_string(&p),
+            Rule::class_body => members = walk_class_body_members(p)?,
+            _ => {}
+        }
+    }
+
+    Ok(Statement::with_span(StmtKind::ClassDecl {
+        name: name.to_string(),
+        parents: vec![format!("{}{}", PASCAL_HELPER_TARGET_PREFIX, target)],
+        interfaces: Vec::new(),
+        members,
+        modifiers: ClassModifiers::default(),
+    }, span))
+}
+
+fn walk_class_body_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
+    let mut members = Vec::new();
+    for m in pair.into_inner() {
+        match m.as_rule() {
+            Rule::field_decl => members.extend(walk_field_decl_members(m)?),
+            Rule::class_constructor => members.push(walk_class_constructor_sig(m)?),
+            Rule::class_destructor => members.push(walk_class_method_sig(m, true)?),
+            Rule::class_procedure | Rule::class_function => {
+                members.push(walk_class_method_sig(m, false)?);
+            }
+            Rule::class_class_member => members.push(walk_class_class_member(m)?),
+            Rule::class_property_decl => members.push(walk_class_property_decl(m)?),
+            _ => {}
+        }
+    }
+    Ok(members)
+}
+
 // ── Record type ────────────────────────────────────────────────────────────
 
 fn walk_record_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statement, String> {
@@ -796,23 +1234,7 @@ fn walk_record_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statemen
 
     for p in pair.into_inner() {
         if p.as_rule() == Rule::record_body {
-            for m in p.into_inner() {
-                match m.as_rule() {
-                    Rule::field_decl => {
-                        members.extend(walk_field_decl_members(m)?);
-                    }
-                    Rule::record_method_sig => {
-                        members.push(walk_record_method_sig(m)?);
-                    }
-                    Rule::record_class_method => {
-                        members.push(walk_record_class_method(m)?);
-                    }
-                    Rule::record_operator_method => {
-                        members.push(walk_record_operator_method(m)?);
-                    }
-                    _ => {}
-                }
-            }
+            members = walk_record_body_members(p)?;
         }
     }
 
@@ -822,6 +1244,40 @@ fn walk_record_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statemen
         members,
         visibility: Visibility::Public,
     }, span))
+}
+
+fn walk_record_helper_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statement, String> {
+    let mut target = String::new();
+    let mut members = Vec::new();
+
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::type_ref => target = type_ref_to_string(&p),
+            Rule::record_body => members = walk_record_body_members(p)?,
+            _ => {}
+        }
+    }
+
+    Ok(Statement::with_span(StmtKind::StructDecl {
+        name: name.to_string(),
+        interfaces: vec![format!("{}{}", PASCAL_HELPER_TARGET_PREFIX, target)],
+        members,
+        visibility: Visibility::Public,
+    }, span))
+}
+
+fn walk_record_body_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
+    let mut members = Vec::new();
+    for m in pair.into_inner() {
+        match m.as_rule() {
+            Rule::field_decl => members.extend(walk_field_decl_members(m)?),
+            Rule::record_method_sig => members.push(walk_record_method_sig(m)?),
+            Rule::record_class_method => members.push(walk_record_class_method(m)?),
+            Rule::record_operator_method => members.push(walk_record_operator_method(m)?),
+            _ => {}
+        }
+    }
+    Ok(members)
 }
 
 // ── Interface type ─────────────────────────────────────────────────────────
@@ -1509,11 +1965,13 @@ fn walk_standalone_procedure(pair: Pair<Rule>, span: Span) -> Result<Statement, 
     let mut params = Vec::new();
     let mut body = Vec::new();
     let mut is_forward = false;
+    let mut modifiers = Modifiers::default();
 
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::identifier => name = p.as_str().to_string(),
+            Rule::identifier if name.is_empty() => name = p.as_str().to_string(),
             Rule::param_clause => params = walk_param_clause(p)?,
+            Rule::method_directives => walk_method_directives(p, &mut modifiers),
             Rule::forward_directive => is_forward = true,
             Rule::procedure_body => {
                 for bp in p.into_inner() {
@@ -1538,7 +1996,7 @@ fn walk_standalone_procedure(pair: Pair<Rule>, span: Span) -> Result<Statement, 
         params,
         return_type: None,
         body,
-        modifiers: Modifiers::default(),
+        modifiers,
         handles: Vec::new(),
         is_async: false,
         is_generator: false,
@@ -1552,12 +2010,14 @@ fn walk_standalone_function(pair: Pair<Rule>, span: Span) -> Result<Statement, S
     let mut return_type: Option<String> = None;
     let mut body = Vec::new();
     let mut is_forward = false;
+    let mut modifiers = Modifiers::default();
 
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::identifier => name = p.as_str().to_string(),
+            Rule::identifier if name.is_empty() => name = p.as_str().to_string(),
             Rule::param_clause => params = walk_param_clause(p)?,
             Rule::type_ref => return_type = Some(type_ref_to_string(&p)),
+            Rule::method_directives => walk_method_directives(p, &mut modifiers),
             Rule::forward_directive => is_forward = true,
             Rule::function_body => {
                 for bp in p.into_inner() {
@@ -1581,7 +2041,7 @@ fn walk_standalone_function(pair: Pair<Rule>, span: Span) -> Result<Statement, S
         params,
         return_type,
         body,
-        modifiers: Modifiers::default(),
+        modifiers,
         handles: Vec::new(),
         is_async: false,
         is_generator: false,
@@ -1698,6 +2158,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         Rule::compound_statement => {
             StmtKind::Block(walk_compound_statement(inner)?)
         }
+        Rule::inline_var_statement => walk_inline_var_statement(inner)?,
         Rule::if_statement => walk_if_statement(inner)?,
         Rule::for_statement => walk_for_statement(inner)?,
         Rule::for_in_statement => walk_for_in_statement(inner)?,
@@ -1718,6 +2179,38 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     };
 
     Ok(Statement::with_span(kind, span))
+}
+
+fn walk_inline_var_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
+    let mut names = Vec::new();
+    let mut type_hint: Option<String> = None;
+    let mut init: Option<Expression> = None;
+
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::identifier_list => {
+                for id in p.into_inner() {
+                    if id.as_rule() == Rule::identifier {
+                        names.push(id.as_str().to_string());
+                    }
+                }
+            }
+            Rule::type_ref => type_hint = Some(type_ref_to_string(&p)),
+            Rule::inline_var_init => {
+                for inner in p.into_inner() {
+                    if inner.as_rule() == Rule::expression {
+                        init = Some(walk_expression(inner)?);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(StmtKind::VarDecl {
+        declarations: build_var_declarators(names, type_hint, init),
+        kind: VarDeclKind::Dim,
+    })
 }
 
 // ── If ─────────────────────────────────────────────────────────────────────
@@ -1756,17 +2249,28 @@ fn walk_for_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let is_downto = src.contains(" downto ");
 
     let mut parts: Vec<Pair<Rule>> = pair.into_inner().collect();
-    // for identifier := expr (to|downto) expr do statement
-    let var_name = parts.remove(0).as_str().to_string(); // identifier
-    let start_expr = walk_expression(parts.remove(0))?; // start expression
+    let binding = parts.remove(0);
+    let (var_name, type_hint, start_expr) = walk_for_binding(binding)?;
     let end_expr = walk_expression(parts.remove(0))?; // end expression
     let body_stmt = walk_statement(parts.remove(0))?; // body statement
 
-    // Build C-style for: init, cond, update
-    let init = Statement::new(StmtKind::Assign {
-        targets: vec![Expression::ident(&var_name)],
-        value: start_expr,
-    });
+    let init = if let Some(type_hint) = type_hint {
+        Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(var_name.clone()),
+                type_hint: Some(type_hint),
+                init: Some(start_expr),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Dim,
+        })
+    } else {
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(&var_name)],
+            value: start_expr,
+        })
+    };
 
     let cond = Expression::new(ExprKind::Binary {
         op: if is_downto { BinOp::GtEq } else { BinOp::LtEq },
@@ -1790,6 +2294,24 @@ fn walk_for_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
         update: Some(update_assign),
         body: flatten_stmt(body_stmt),
     })
+}
+
+fn walk_for_binding(pair: Pair<Rule>) -> Result<(String, Option<String>, Expression), String> {
+    let mut name = String::new();
+    let mut type_hint = None;
+    let mut start_expr = None;
+
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::identifier if name.is_empty() => name = p.as_str().to_string(),
+            Rule::type_ref => type_hint = Some(type_ref_to_string(&p)),
+            Rule::expression => start_expr = Some(walk_expression(p)?),
+            _ => {}
+        }
+    }
+
+    let start_expr = start_expr.ok_or("for binding missing start expression")?;
+    Ok((name, type_hint, start_expr))
 }
 
 // ── For-in ─────────────────────────────────────────────────────────────────
@@ -2425,6 +2947,7 @@ fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Rule::char_literal => walk_expr_kind(inner),
         Rule::identifier => Ok(ExprKind::Ident(inner.as_str().to_string())),
         Rule::set_literal => walk_set_literal(inner),
+        Rule::tuple_array_literal => walk_tuple_array_literal(inner),
         Rule::new_expression => walk_new_expression(inner),
         Rule::lambda_procedure => walk_lambda_procedure(inner),
         Rule::lambda_function => walk_lambda_function(inner),
@@ -2515,6 +3038,10 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
         }));
     }
 
+    if op_src.starts_with('<') && parts.iter().all(|p| p.as_rule() != Rule::arg_list) {
+        return Ok(expr);
+    }
+
     if op_src.starts_with('(') || op_src.starts_with('<') {
         // Function call: `F(args)` or generic call `F<T>(args)`. The
         // grammar collapses `generic_args` (silent rule) into the
@@ -2590,6 +3117,17 @@ fn walk_arg_list(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
 // ── Set literal ────────────────────────────────────────────────────────────
 
 fn walk_set_literal(pair: Pair<Rule>) -> Result<ExprKind, String> {
+    let elements: Vec<ArrayElement> = pair.into_inner()
+        .filter(|p| p.as_rule() == Rule::expression)
+        .map(|p| {
+            let value = walk_expression(p)?;
+            Ok(ArrayElement { key: None, value, spread: false, by_ref: false })
+        })
+        .collect::<Result<_, String>>()?;
+    Ok(ExprKind::Array(elements))
+}
+
+fn walk_tuple_array_literal(pair: Pair<Rule>) -> Result<ExprKind, String> {
     let elements: Vec<ArrayElement> = pair.into_inner()
         .filter(|p| p.as_rule() == Rule::expression)
         .map(|p| {

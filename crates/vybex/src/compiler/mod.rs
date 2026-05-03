@@ -3352,6 +3352,39 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, t_b);
     }
 
+    fn emit_pascal_relational_compare(&mut self, compare_op: Op) {
+        let t_b = self.define_local("__pas_cmp_b");
+        let t_a = self.define_local("__pas_cmp_a");
+        self.emit_u16(Op::LOCAL_SET, t_b); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, t_a); self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, t_a);
+        self.emit(Op::REF_TYPEOF);
+        self.emit_const(Value::String(Arc::from("string")));
+        self.emit(Op::DYN_EQ);
+        let fallback_a = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, t_b);
+        self.emit(Op::REF_TYPEOF);
+        self.emit_const(Value::String(Arc::from("string")));
+        self.emit(Op::DYN_EQ);
+        let fallback_b = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, t_a);
+        self.emit_u16(Op::LOCAL_GET, t_b);
+        self.emit(Op::STR_COMPARE);
+        self.emit_const(Value::I32(0));
+        self.emit(compare_op);
+        let done = self.emit_jump(Op::BR);
+
+        self.patch_jump(fallback_a);
+        self.patch_jump(fallback_b);
+        self.emit_u16(Op::LOCAL_GET, t_a);
+        self.emit_u16(Op::LOCAL_GET, t_b);
+        self.emit(compare_op);
+        self.patch_jump(done);
+    }
+
     /// JS profile: ToPrimitive(hint=default) on both operands. Used
     /// before DYN_ADD per ECMA §13.15.4 — the `+` operator picks the
     /// "default" hint, which gives valueOf the first shot and falls
@@ -3459,22 +3492,26 @@ impl Compiler {
             BinOp::Lt => {
                 if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
                 else if self.is_php_profile() { self.coerce_top_two_php_datetime_for_compare(); }
-                self.emit(Op::DYN_LT);
+                if self.profile.name == "pascal" { self.emit_pascal_relational_compare(Op::DYN_LT); }
+                else { self.emit(Op::DYN_LT); }
             },
             BinOp::Gt => {
                 if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
                 else if self.is_php_profile() { self.coerce_top_two_php_datetime_for_compare(); }
-                self.emit(Op::DYN_GT);
+                if self.profile.name == "pascal" { self.emit_pascal_relational_compare(Op::DYN_GT); }
+                else { self.emit(Op::DYN_GT); }
             },
             BinOp::LtEq => {
                 if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
                 else if self.is_php_profile() { self.coerce_top_two_php_datetime_for_compare(); }
-                self.emit(Op::DYN_LE);
+                if self.profile.name == "pascal" { self.emit_pascal_relational_compare(Op::DYN_LE); }
+                else { self.emit(Op::DYN_LE); }
             },
             BinOp::GtEq => {
                 if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
                 else if self.is_php_profile() { self.coerce_top_two_php_datetime_for_compare(); }
-                self.emit(Op::DYN_GE);
+                if self.profile.name == "pascal" { self.emit_pascal_relational_compare(Op::DYN_GE); }
+                else { self.emit(Op::DYN_GE); }
             },
             BinOp::Spaceship => {
                 // a <=> b: returns -1, 0, or 1

@@ -187,6 +187,9 @@ impl Compiler {
                         return Ok(());
                     }
                 }
+                if self.try_compile_pascal_binary_operator(op, left, right)? {
+                    return Ok(());
+                }
                 self.compile_expr(left)?;
                 self.compile_expr(right)?;
                 self.compile_binop(op);
@@ -305,10 +308,47 @@ impl Compiler {
                     // Constructor call with 0 args: ClassName.Create
                     let ctor_nm = &self.profile.constructor_name;
                     let is_ctor = if self.case_sensitive { field == ctor_nm } else { field.eq_ignore_ascii_case(ctor_nm) };
-                    if is_ctor && self.defined_globals.contains(obj_name.as_str()) {
+                    let canon_obj = self.canon(obj_name);
+                    let is_known_class = self.defined_classes.contains(&canon_obj)
+                        && self.scope().resolve(obj_name).is_none();
+                    if is_ctor && is_known_class {
                         self.emit_var_get(obj_name);
                         self.emit_u8(Op::CALL_REF, 0);
                         return Ok(());
+                    }
+
+                    // Pascal allows parameterless class functions to be used
+                    // without `()`: `TShape.Circle`. Only auto-invoke when the
+                    // member resolves to a known static method whose chunk arity
+                    // is receiver-only (the class object plus zero user args).
+                    if self.profile.name == "pascal" {
+                        let is_class = self.defined_classes.contains(&canon_obj)
+                            && self.scope().resolve(obj_name).is_none();
+                        if is_class {
+                            let method_name = self.canon(field);
+                            let zero_arg_static = self.pending_classes.get(canon_obj.as_str())
+                                .map(|pc| !pc.static_fields.iter().any(|name| name == &method_name))
+                                .unwrap_or(false);
+                            if zero_arg_static {
+                                let cls_idx = self.str_const(&canon_obj);
+                                self.emit_u16(Op::GLOBAL_GET, cls_idx);
+                                self.emit(Op::DUP);
+                                let method_idx = self.str_const(&method_name);
+                                self.emit_u16(Op::STRUCT_GET, method_idx);
+                                let fn_tmp = self.scope().resolve("__pascal_static_fn")
+                                    .unwrap_or_else(|| self.define_local("__pascal_static_fn"));
+                                self.emit_u16(Op::LOCAL_SET, fn_tmp);
+                                self.emit(Op::DROP);
+                                let cls_tmp = self.scope().resolve("__pascal_static_cls")
+                                    .unwrap_or_else(|| self.define_local("__pascal_static_cls"));
+                                self.emit_u16(Op::LOCAL_SET, cls_tmp);
+                                self.emit(Op::DROP);
+                                self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                                self.emit_u16(Op::LOCAL_GET, cls_tmp);
+                                self.emit_u8(Op::CALL_REF, 1);
+                                return Ok(());
+                            }
+                        }
                     }
                 }
 
@@ -1116,18 +1156,73 @@ impl Compiler {
 
             // ── Type operations ─────────────────────────────────────────
             ExprKind::IsType { expr: inner, type_name } => {
-                // Compare against canonicalized class name (case-insensitive
-                // languages like VB/Pascal store class __type lowercased).
                 let canon_type = self.canon(type_name);
                 self.compile_expr(inner)?;
-                let key = self.str_const("__type");
-                self.emit_u16(Op::STRUCT_GET, key);
+                let obj_slot = self.define_local("__is_type_obj");
+                self.emit_u16(Op::LOCAL_SET, obj_slot);
+                self.emit(Op::DROP);
+
+                let line = self.line;
+                let type_idx = self.chunk().add_constant(
+                    vybe_bytecode::Value::String(std::sync::Arc::from(canon_type.as_str())),
+                );
+                let mut match_patches = Vec::new();
+
+                self.emit_u16(Op::LOCAL_GET, obj_slot);
+                self.chunk().emit_op_u16(vybe_bytecode::Op::REF_TEST, type_idx, line);
+                match_patches.push(self.emit_jump(Op::BR_IF_TRUE));
+
+                self.emit_u16(Op::LOCAL_GET, obj_slot);
+                let type_key = self.str_const("__type");
+                self.emit_u16(Op::STRUCT_GET, type_key);
                 self.emit_const(Value::String(Arc::from(canon_type.as_str())));
                 self.emit(Op::DYN_EQ);
+                match_patches.push(self.emit_jump(Op::BR_IF_TRUE));
+
+                self.emit_u16(Op::LOCAL_GET, obj_slot);
+                let types_key = self.str_const("__types");
+                self.emit_u16(Op::STRUCT_GET, types_key);
+                self.emit(Op::DUP);
+                self.emit(Op::REF_IS_NULL);
+                let has_types = self.emit_jump(Op::BR_IF_FALSE);
+                self.emit(Op::DROP);
+                self.emit(Op::FALSE);
+                let done = self.emit_jump(Op::BR);
+
+                self.patch_jump(has_types);
+                self.emit_const(Value::String(Arc::from(canon_type.as_str())));
+                common::collections::emit_contains(&mut self.chunks, self.current, line);
+                match_patches.push(self.emit_jump(Op::BR_IF_TRUE));
+                self.emit(Op::FALSE);
+                let end_false = self.emit_jump(Op::BR);
+
+                for patch in match_patches {
+                    self.patch_jump(patch);
+                }
+                self.emit(Op::TRUE);
+                self.patch_jump(done);
+                self.patch_jump(end_false);
             }
 
             ExprKind::Cast { expr: inner, .. } => {
-                // Cast is a no-op in our dynamic VM
+                // Pascal allows user functions to shadow builtin type names
+                // (`function Double(x: Integer)`). When the parser produced a
+                // builtin-style cast node for such a name, honour the user
+                // function instead of treating the cast as a no-op.
+                if let ExprKind::Cast { type_name, .. } = &expr.kind {
+                    let canon_type = self.canon(type_name);
+                    let shadows_cast = self.defined_functions.contains(&canon_type)
+                        || (!self.case_sensitive
+                            && self.defined_functions.iter().any(|name| name.eq_ignore_ascii_case(type_name)));
+                    if shadows_cast {
+                        self.emit_var_get(type_name);
+                        self.compile_expr(inner)?;
+                        self.emit_u8(Op::CALL_REF, 1);
+                        return Ok(());
+                    }
+                }
+
+                // Cast is otherwise a no-op in our dynamic VM.
                 self.compile_expr(inner)?;
             }
 
@@ -1343,15 +1438,24 @@ impl Compiler {
                         self.emit(Op::NULL);
                     }
                 } else if let Some(mname) = method {
-                    // MyBase.Method(args) → this.__base_method(this, args)
-                    let base_name = format!("__base_{}", self.canon(mname));
-                    if let Some(self_slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
-                        let prop = self.str_const(&base_name);
-                        self.emit_u16(Op::LOCAL_GET, self_slot);
-                        self.emit_u16(Op::STRUCT_GET, prop);
+                    let parent_name = self.current_class.as_ref()
+                        .and_then(|class_name| self.pending_classes.get(class_name.as_str()))
+                        .and_then(|pc| pc.parent.clone());
+                    if let Some(parent_name) = parent_name {
+                        let parent_canon = self.canon(&parent_name);
+                        let method_name = self.canon(mname);
+                        let method_idx = self.str_const(&method_name);
+                        self.emit_var_get(&parent_canon);
+                        self.emit_u16(Op::STRUCT_GET, method_idx);
+
                         if self.is_js_profile() {
                             let saved_js_this = self.save_js_this("__js_prev_this_super_expr");
-                            self.emit_u16(Op::LOCAL_GET, self_slot);
+                            if let Some(self_slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
+                                self.emit_u16(Op::LOCAL_GET, self_slot);
+                            } else {
+                                let js_this = self.str_const("__js_this");
+                                self.emit_u16(Op::GLOBAL_GET, js_this);
+                            }
                             self.set_js_this_from_stack();
                             for a in args { self.compile_expr(&a.value)?; }
                             self.emit_u8(Op::CALL_REF, args.len() as u8);
@@ -1360,26 +1464,13 @@ impl Compiler {
                             self.emit(Op::DROP);
                             self.restore_js_this(saved_js_this);
                             self.emit_u16(Op::LOCAL_GET, result_slot);
-                        } else {
+                        } else if let Some(self_slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
                             self.emit_u16(Op::LOCAL_GET, self_slot);
                             for a in args { self.compile_expr(&a.value)?; }
                             self.emit_u8(Op::CALL_REF, (args.len() + 1) as u8);
+                        } else {
+                            self.emit(Op::NULL);
                         }
-                    } else if self.is_js_profile() {
-                        let js_this = self.str_const("__js_this");
-                        let prop = self.str_const(&base_name);
-                        self.emit_u16(Op::GLOBAL_GET, js_this);
-                        self.emit_u16(Op::STRUCT_GET, prop);
-                        let saved_js_this = self.save_js_this("__js_prev_this_super_expr");
-                        self.emit_u16(Op::GLOBAL_GET, js_this);
-                        self.set_js_this_from_stack();
-                        for a in args { self.compile_expr(&a.value)?; }
-                        self.emit_u8(Op::CALL_REF, args.len() as u8);
-                        let result_slot = self.define_local("__js_super_expr_result");
-                        self.emit_u16(Op::LOCAL_SET, result_slot);
-                        self.emit(Op::DROP);
-                        self.restore_js_this(saved_js_this);
-                        self.emit_u16(Op::LOCAL_GET, result_slot);
                     } else {
                         self.emit(Op::NULL);
                     }
@@ -1591,6 +1682,85 @@ impl Compiler {
             }
         }
         Ok(())
+    }
+
+    fn try_compile_pascal_binary_operator(
+        &mut self,
+        op: &BinOp,
+        left: &Expression,
+        right: &Expression,
+    ) -> Result<bool, String> {
+        if self.profile.name != "pascal" {
+            return Ok(false);
+        }
+
+        let method_name = match op {
+            BinOp::Add => "Add",
+            BinOp::Eq | BinOp::NotEq => "Equal",
+            _ => return Ok(false),
+        };
+
+        let Some(type_name) = self.pascal_binary_operator_type(left, right, method_name) else {
+            return Ok(false);
+        };
+
+        let callee = Expression::new(ExprKind::Member {
+            object: Box::new(Expression::ident(&type_name)),
+            field: method_name.to_string(),
+            null_safe: false,
+        });
+        let args = vec![
+            Argument::positional(left.clone()),
+            Argument::positional(right.clone()),
+        ];
+        self.compile_call(&callee, &args)?;
+        if *op == BinOp::NotEq {
+            self.emit(Op::DYN_NOT);
+        }
+        Ok(true)
+    }
+
+    fn pascal_binary_operator_type(
+        &self,
+        left: &Expression,
+        right: &Expression,
+        method_name: &str,
+    ) -> Option<String> {
+        let left_type = self.pascal_expr_static_type(left)?;
+        let right_type = self.pascal_expr_static_type(right)?;
+        if !left_type.eq_ignore_ascii_case(&right_type) {
+            return None;
+        }
+
+        let bare_type = left_type.split('<').next().unwrap_or(left_type.as_str()).trim();
+        let canon_type = self.canon(bare_type);
+        if !self.defined_globals.contains(&canon_type) {
+            return None;
+        }
+        if !self.defined_class_methods.contains(&self.canon(method_name)) {
+            return None;
+        }
+        Some(bare_type.to_string())
+    }
+
+    pub(super) fn pascal_expr_static_type(&self, expr: &Expression) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
+            _ => None,
+        }
+    }
+
+    pub(super) fn pascal_helper_function_name(&self, type_name: &str, method_name: &str) -> String {
+        let sanitize = |text: &str| {
+            text.chars()
+                .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '_' })
+                .collect::<String>()
+        };
+        format!(
+            "__pascal_helper_{}_{}",
+            sanitize(type_name),
+            sanitize(method_name),
+        )
     }
 
 }

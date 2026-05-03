@@ -50,10 +50,11 @@ declaration = _{
 
 // ── Var Section ────────────────────────────────────────────────────────────────
 
-var_section = { ^"var" ~ var_decl+ }
+var_section = { ^"var" ~ var_decl+ ~ (^"var" ~ var_decl+)* }
 
 var_decl = { identifier_list ~ ":" ~ type_ref ~ var_init? ~ ";" }
 var_init = { "=" ~ expression }
+inline_var_init = { ":=" ~ expression }
 
 identifier_list = { identifier ~ ("," ~ identifier)* }
 
@@ -67,19 +68,26 @@ const_decl = { identifier ~ (":" ~ type_ref)? ~ "=" ~ expression ~ ";" }
 
 type_section = { ^"type" ~ type_decl+ }
 
-type_decl = { identifier ~ "=" ~ type_def ~ ";" }
+type_decl = { type_name_decl ~ "=" ~ type_def ~ ";" }
+type_name_decl = _{ identifier ~ generic_params? }
 
 type_def = {
-    record_type
+    record_helper_type
+    | record_type
+    | class_helper_type
     | class_type
     | interface_type
     | array_type
+    | subrange_type
     | pointer_type
     | enum_type
     | type_alias
 }
 
+subrange_type = { expression ~ ".." ~ expression }
+
 // Record
+record_helper_type = { ^"record" ~ ^"helper" ~ ^"for" ~ type_ref ~ record_body ~ ^"end" }
 record_type = { ^"record" ~ record_body ~ ^"end" }
 
 record_body = { record_member* }
@@ -94,13 +102,19 @@ record_member = _{
 
 record_visibility = _{ public_kw | private_kw | protected_kw }
 
-record_class_method = { ^"class" ~ (^"procedure" | ^"function") ~ method_sig_body }
+record_class_method = {
+    ^"class" ~ (
+        ^"operator" ~ method_sig_body
+        | (^"procedure" | ^"function") ~ method_sig_body
+    )
+}
 
 record_operator_method = { ^"operator" ~ method_sig_body }
 
 record_method_sig = { method_kind_keyword ~ method_sig_body }
 
 // Class
+class_helper_type = { ^"class" ~ ^"helper" ~ ^"for" ~ type_ref ~ class_body }
 class_type = { (^"class" | ^"object") ~ class_heritage? ~ class_body? }
 
 class_heritage = { "(" ~ identifier ~ ("," ~ identifier)* ~ ")" }
@@ -227,24 +241,33 @@ method_directive = {
 
 // Detect method impl: `procedure ClassName.MethodName`
 // vs standalone: `procedure ProcName`
-procedure_decl_or_method = { ^"procedure" ~ (method_impl_proc | standalone_procedure) }
-function_decl_or_method = { ^"function" ~ (method_impl_func | standalone_function) }
+procedure_decl_or_method = {
+    (^"class" ~ ^"procedure" ~ method_impl_proc)
+    | (^"procedure" ~ (method_impl_proc | standalone_procedure))
+}
+function_decl_or_method = {
+    (^"class" ~ ^"operator" ~ method_impl_func)
+    |
+    (^"class" ~ ^"function" ~ method_impl_func)
+    | (^"function" ~ (method_impl_func | standalone_function))
+}
 constructor_method_impl = { ^"constructor" ~ method_impl_body_proc }
 destructor_method_impl = { ^"destructor" ~ method_impl_body_proc }
 
 // Method implementation: ClassName.MethodName
-method_impl_proc = { identifier ~ "." ~ identifier ~ param_clause? ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
-method_impl_func = { identifier ~ "." ~ identifier ~ param_clause? ~ ":" ~ type_ref ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
-method_impl_body_proc = { identifier ~ "." ~ identifier ~ param_clause? ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
+qualified_type_name = _{ identifier ~ generic_args? }
+method_impl_proc = { qualified_type_name ~ "." ~ identifier ~ param_clause? ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
+method_impl_func = { qualified_type_name ~ "." ~ identifier ~ param_clause? ~ ":" ~ type_ref ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
+method_impl_body_proc = { qualified_type_name ~ "." ~ identifier ~ param_clause? ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
 
 // Standalone procedure
-standalone_procedure = { identifier ~ generic_params? ~ param_clause? ~ ";" ~ (forward_directive | procedure_body) }
+standalone_procedure = { identifier ~ generic_params? ~ param_clause? ~ ";" ~ method_directives ~ (forward_directive | procedure_body) }
 procedure_body = { decl_section ~ compound_statement ~ ";"? }
 
 // Standalone function — accepts generic type params: `function Max<T>(...)`.
 // Generics are erased at compile time (the dynamic VM doesn't carry type
 // info), so `generic_params` is captured-and-discarded by the walker.
-standalone_function = { identifier ~ generic_params? ~ param_clause? ~ ":" ~ type_ref ~ ";" ~ (forward_directive | function_body) }
+standalone_function = { identifier ~ generic_params? ~ param_clause? ~ ":" ~ type_ref ~ ";" ~ method_directives ~ (forward_directive | function_body) }
 function_body = { decl_section ~ compound_statement ~ ";"? }
 
 // Pascal / Delphi generic type parameters: `<T>` or `<T, U>`. Constraints
@@ -273,6 +296,7 @@ param_default = { "=" ~ expression }
 type_ref = {
     procedural_type
     | array_type_ref
+    | set_type_ref
     | simple_type_ref
 }
 
@@ -287,18 +311,20 @@ array_type_ref = {
     ^"array" ~ ("[" ~ (!"}" ~ !"]" ~ ANY)* ~ "]")? ~ ^"of" ~ type_ref
 }
 
+set_type_ref = { ^"set" ~ ^"of" ~ type_ref }
+
 // Simple type ref: identifier with optional generic `<Type>`
 builtin_type_keyword = @{ builtin_type ~ !(ASCII_ALPHANUMERIC | "_") }
 
 simple_type_ref = {
     builtin_type_keyword
-    | identifier ~ ("<" ~ type_ref ~ ">")?
+    | identifier ~ generic_args?
 }
 
 builtin_type = {
     ^"string"
     | ^"integer" | ^"longint" | ^"int64" | ^"cardinal" | ^"word" | ^"byte" | ^"shortint"
-    | ^"real" | ^"double" | ^"single" | ^"extended"
+    | ^"real" | ^"single" | ^"extended"
     | ^"boolean"
     | ^"char"
     | ^"pointer"
@@ -312,6 +338,7 @@ statement_list = { (statement ~ ";")* ~ statement? }
 
 statement = {
     compound_statement
+    | inline_var_statement
     | if_statement
     | for_statement
     | for_in_statement
@@ -331,6 +358,8 @@ statement = {
 
 empty_statement = { "" }
 
+inline_var_statement = { ^"var" ~ identifier_list ~ ":" ~ type_ref ~ inline_var_init? }
+
 // ── If ─────────────────────────────────────────────────────────────────────────
 
 if_statement = { ^"if" ~ expression ~ ^"then" ~ statement ~ else_clause? }
@@ -340,7 +369,12 @@ else_clause = { ^"else" ~ statement }
 // ── For ────────────────────────────────────────────────────────────────────────
 
 for_statement = {
-    ^"for" ~ identifier ~ ":=" ~ expression ~ (^"to" | ^"downto") ~ expression ~ ^"do" ~ statement
+    ^"for" ~ for_binding ~ (^"to" | ^"downto") ~ expression ~ ^"do" ~ statement
+}
+
+for_binding = {
+    ^"var" ~ identifier ~ (":" ~ type_ref)? ~ ":=" ~ expression
+    | identifier ~ ":=" ~ expression
 }
 
 for_in_statement = {
@@ -502,6 +536,7 @@ postfix_op = {
     | "." ~ identifier                  // field access: obj.Field
     | "[" ~ expression ~ "]"            // index: arr[i]
     | "^"                               // dereference: ptr^
+    | generic_args                       // generic instantiation: TBox<T>.Create(...)
     | generic_args ~ arg_list           // generic call: F<T>(args)
     | arg_list                          // function call: F(args)
 }
@@ -530,8 +565,11 @@ primary = {
     | type_cast_builtin
     | result_keyword
     | identifier
+    | tuple_array_literal
     | "(" ~ expression ~ ")"
 }
+
+tuple_array_literal = { "(" ~ expression ~ ("," ~ expression)+ ~ ")" }
 
 // Inherited expression: `inherited Method(args)` or bare `inherited`
 inherited_expression = { ^"inherited" ~ (identifier ~ arg_list?)? }
@@ -602,7 +640,7 @@ keyword = _{
         | ^"single" | ^"double" | ^"extended"
         | ^"pointer"
         | ^"exit" | ^"break" | ^"continue" | ^"halt"
-        | ^"new" | ^"dispose" | ^"result"
+        | ^"new" | ^"dispose"
         | ^"constructor" | ^"destructor"
         | ^"public" | ^"private" | ^"protected" | ^"published"
         | ^"property" | ^"out"

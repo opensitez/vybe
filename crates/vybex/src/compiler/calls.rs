@@ -226,6 +226,13 @@ impl Compiler {
                     }
                     return Ok(());
                 }
+
+                // Pascal / VB / C# allow `inherited Foo` / `MyBase.Foo` in a
+                // root class even when there is no parent implementation. Treat
+                // it as a no-op instead of falling through to the generic member
+                // call pipeline and recursing back into the current method.
+                self.emit(Op::NULL);
+                return Ok(());
             }
         }
 
@@ -1371,11 +1378,31 @@ impl Compiler {
             if let ExprKind::Ident(class_name) = &object.kind {
                 let ctor_nm = &self.profile.constructor_name.clone();
                 let is_ctor = if self.case_sensitive { field == ctor_nm } else { field.eq_ignore_ascii_case(ctor_nm) };
-                if is_ctor && self.defined_globals.contains(class_name.as_str()) {
+                let canon_class = self.canon(class_name);
+                let is_known_class = self.defined_classes.contains(&canon_class)
+                    && self.scope().resolve(class_name).is_none();
+                if is_ctor && is_known_class {
                     self.emit_var_get(class_name);
                     for a in &arg_exprs { self.compile_expr(a)?; }
                     self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
                     return Ok(());
+                }
+            }
+        }
+
+        // ── Pascal builtin helper dispatch: value.Helper(args) ───────
+        if self.profile.name == "pascal" {
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if let Some(type_name) = self.pascal_expr_static_type(object) {
+                    let helper_name = self.pascal_helper_function_name(&type_name, field);
+                    let helper_canon = self.canon(&helper_name);
+                    if self.defined_functions.contains(&helper_canon) {
+                        self.emit_var_get(&helper_name);
+                        self.compile_expr(object)?;
+                        for a in &arg_exprs { self.compile_expr(a)?; }
+                        self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                        return Ok(());
+                    }
                 }
             }
         }
