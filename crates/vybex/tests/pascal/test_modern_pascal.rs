@@ -52,7 +52,7 @@ end."#), &["30"]);
 // TYPE CASTS
 // ===================================================================
 
-#[test] #[ignore] fn cast_integer() {
+#[test] fn cast_integer() {
     assert_eq!(run_pascal("program T; begin WriteLn(Integer(3.7)); end."), &["3"]);
 }
 
@@ -199,7 +199,7 @@ end."#), &["A3", "B2", "A1"]);
 // PARAMETER DEFAULTS
 // ===================================================================
 
-#[test] #[ignore] fn param_default_value() {
+#[test] fn param_default_value() {
     assert_eq!(run_pascal(r#"program T;
 function Greet(name: String = 'World'): String;
 begin

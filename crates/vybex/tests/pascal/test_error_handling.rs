@@ -1,6 +1,6 @@
 /// Tests for Pascal exception handling: try/except/finally/raise.
 /// NOTE: Exception class is not auto-registered in the VM yet, so
-/// raise Exception.Create(...) fails. These are #[ignore] until the
+/// raise Exception.Create(...) fails. These are until the
 /// runtime registers a built-in Exception constructor.
 
 use super::helpers::run_pascal;
@@ -9,7 +9,7 @@ use super::helpers::run_pascal;
 // BASIC TRY/EXCEPT
 // ===================================================================
 
-#[test] #[ignore] fn try_except_basic() {
+#[test] fn try_except_basic() {
     assert_eq!(run_pascal(r#"program T;
 begin
   try
@@ -31,7 +31,7 @@ begin
 end."#), &["ok"]);
 }
 
-#[test] #[ignore] fn try_except_on_clause() {
+#[test] fn try_except_on_clause() {
     assert_eq!(run_pascal(r#"program T;
 begin
   try
@@ -42,7 +42,7 @@ begin
 end."#), &["got: bad"]);
 }
 
-#[test] #[ignore] fn try_except_multiple_on_clauses() {
+#[test] fn try_except_multiple_on_clauses() {
     assert_eq!(run_pascal(r#"program T;
 begin
   try
@@ -68,7 +68,7 @@ begin
 end."#), &["body", "cleanup"]);
 }
 
-#[test] #[ignore] fn try_finally_with_exception() {
+#[test] fn try_finally_with_exception() {
     // finally runs even if exception thrown; outer try catches it
     assert_eq!(run_pascal(r#"program T;
 begin
@@ -88,7 +88,7 @@ end."#), &["finally ran", "caught"]);
 // RAISE
 // ===================================================================
 
-#[test] #[ignore] fn raise_exception_create() {
+#[test] fn raise_exception_create() {
     assert_eq!(run_pascal(r#"program T;
 begin
   try
@@ -99,7 +99,7 @@ begin
 end."#), &["test error"]);
 }
 
-#[test] #[ignore] fn raise_in_function() {
+#[test] fn raise_in_function() {
     assert_eq!(run_pascal(r#"program T;
 procedure DoStuff;
 begin
@@ -118,7 +118,7 @@ end."#), &["from proc"]);
 // NESTED TRY
 // ===================================================================
 
-#[test] #[ignore] fn nested_try_except() {
+#[test] fn nested_try_except() {
     assert_eq!(run_pascal(r#"program T;
 begin
   try
@@ -134,7 +134,7 @@ begin
 end."#), &["inner caught", "still running"]);
 }
 
-#[test] #[ignore] fn try_except_continue_after() {
+#[test] fn try_except_continue_after() {
     assert_eq!(run_pascal(r#"program T;
 begin
   try
@@ -150,7 +150,7 @@ end."#), &["handled", "after"]);
 // TRY IN LOOP
 // ===================================================================
 
-#[test] #[ignore] fn try_in_loop() {
+#[test] fn try_in_loop() {
     assert_eq!(run_pascal(r#"program T;
 var i: Integer;
 begin

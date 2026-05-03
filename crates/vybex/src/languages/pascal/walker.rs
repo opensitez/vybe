@@ -64,6 +64,16 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // ordinary class members.
     merge_separated_methods(&mut body);
 
+    // Synthesize a minimal `Exception` class at the top of every Pascal
+    // program — must be inserted BEFORE the `TFoo.Create(...)` →
+    // `New { ... }` rewrite below so the rewrite's class-name set
+    // picks `Exception` up. Object Pascal / Delphi / Free Pascal expose
+    // `Exception` as an RTL builtin (sysutils unit) that user code
+    // routinely raises via `raise Exception.Create('msg')`. We don't
+    // model the RTL unit system, so the walker injects the class
+    // declaration unconditionally.
+    body.insert(0, synthesize_exception_class());
+
     // Now that class declarations are stable, rewrite `TFoo.Create(args)` (Pascal's
     // constructor invocation syntax) into the canonical `New { class: TFoo, args }`
     // AST so every language ends up with the same instantiation node.
@@ -76,12 +86,145 @@ pub fn parse(source: &str) -> Result<Module, String> {
         rewrite_constructor_calls_stmt(stmt, &class_names);
     }
 
+    // Default-initialize record / struct variables. `var p: TPoint;`
+    // declares an uninitialised value-type local — without an init,
+    // the compiler emits `null` and the first `p.X := 10` writes to
+    // an undefined receiver. Pascal records are value types: the
+    // declaration allocates a fresh instance. Mirror by emitting
+    // `new <TypeName>()` for any var/local whose type_hint matches a
+    // walked StructDecl.
+    let struct_names: std::collections::HashSet<String> = body.iter().filter_map(|s| {
+        if let StmtKind::StructDecl { name, .. } = &s.kind {
+            Some(name.to_lowercase())
+        } else { None }
+    }).collect();
+    for stmt in body.iter_mut() {
+        default_init_struct_locals_stmt(stmt, &struct_names);
+    }
+
     Ok(Module {
         name,
         language: Lang::Pascal,
         body,
         imports,
     })
+}
+
+/// Walk a single statement and stamp `init: Some(new <Type>())` on
+/// any declarator whose `type_hint` names a walked record. Recurses
+/// into block / control structures.
+fn default_init_struct_locals_stmt(stmt: &mut Statement, struct_names: &std::collections::HashSet<String>) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations.iter_mut() {
+                if decl.init.is_none() {
+                    if let Some(ref type_hint) = decl.type_hint {
+                        let bare = type_hint.split('<').next().unwrap_or(type_hint).trim();
+                        if struct_names.contains(&bare.to_lowercase()) {
+                            decl.init = Some(Expression::new(ExprKind::New {
+                                class: Box::new(Expression::ident(bare)),
+                                args: Vec::new(),
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+        StmtKind::Block(inner) => {
+            for s in inner { default_init_struct_locals_stmt(s, struct_names); }
+        }
+        StmtKind::If { then_body, elifs, else_body, .. } => {
+            for s in then_body { default_init_struct_locals_stmt(s, struct_names); }
+            for (_, body) in elifs {
+                for s in body { default_init_struct_locals_stmt(s, struct_names); }
+            }
+            if let Some(eb) = else_body {
+                for s in eb { default_init_struct_locals_stmt(s, struct_names); }
+            }
+        }
+        StmtKind::For { body, .. }
+        | StmtKind::ForIn { body, .. }
+        | StmtKind::While { body, .. }
+        | StmtKind::DoWhile { body, .. } => {
+            for s in body { default_init_struct_locals_stmt(s, struct_names); }
+        }
+        StmtKind::Try { body, catches, finally, .. } => {
+            for s in body { default_init_struct_locals_stmt(s, struct_names); }
+            for c in catches.iter_mut() {
+                for s in c.body.iter_mut() { default_init_struct_locals_stmt(s, struct_names); }
+            }
+            if let Some(f) = finally {
+                for s in f { default_init_struct_locals_stmt(s, struct_names); }
+            }
+        }
+        StmtKind::FunctionDecl { body, .. } => {
+            for s in body { default_init_struct_locals_stmt(s, struct_names); }
+        }
+        StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
+            for m in members {
+                if let ClassMember::Method(box_stmt) = m {
+                    default_init_struct_locals_stmt(box_stmt, struct_names);
+                } else if let ClassMember::Constructor { body, .. } = m {
+                    for s in body { default_init_struct_locals_stmt(s, struct_names); }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn synthesize_exception_class() -> Statement {
+    // class Exception { Message: String; constructor Create(msg: String); }
+    // The Create body assigns `Self.Message := msg` so `e.Message`
+    // returns the constructor argument inside catch handlers.
+    let span = Span::default();
+    let msg_param = Param {
+        name: "msg".into(),
+        type_hint: Some("String".into()),
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false, is_kwargs: false, is_optional: false, is_nullable: false,
+    };
+    // Self.Message := msg
+    let assign_msg = Statement::with_span(
+        StmtKind::Assign {
+            targets: vec![Expression::with_span(
+                ExprKind::Member {
+                    object: Box::new(Expression::with_span(ExprKind::This, span.clone())),
+                    field: "Message".into(),
+                    null_safe: false,
+                },
+                span.clone(),
+            )],
+            value: Expression::with_span(ExprKind::Ident("msg".into()), span.clone()),
+        },
+        span.clone(),
+    );
+    Statement::with_span(
+        StmtKind::ClassDecl {
+            name: "Exception".into(),
+            parents: Vec::new(),
+            interfaces: Vec::new(),
+            members: vec![
+                ClassMember::Field {
+                    name: "Message".into(),
+                    type_hint: Some("String".into()),
+                    init: None,
+                    modifiers: Modifiers::default(),
+                    with_events: false,
+                    array_bounds: None,
+                },
+                ClassMember::Constructor {
+                    params: vec![msg_param],
+                    body: vec![assign_msg],
+                    base_args: None,
+                    visibility: Visibility::Public,
+                },
+            ],
+            modifiers: ClassModifiers::default(),
+        },
+        span,
+    )
 }
 
 /// Walk a statement and rewrite `ClassName.Create(args)` into `New { class, args }`
@@ -2372,8 +2515,12 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
         }));
     }
 
-    if op_src.starts_with('(') {
-        // Function call: F(args)
+    if op_src.starts_with('(') || op_src.starts_with('<') {
+        // Function call: `F(args)` or generic call `F<T>(args)`. The
+        // grammar collapses `generic_args` (silent rule) into the
+        // postfix_op, so we just look for the `arg_list` child.
+        // Generic type args are captured-and-discarded — the dynamic
+        // VM is type-erased.
         let args = parts.into_iter()
             .find(|p| p.as_rule() == Rule::arg_list)
             .map(walk_arg_list)

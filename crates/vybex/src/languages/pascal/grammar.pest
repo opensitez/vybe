@@ -238,12 +238,21 @@ method_impl_func = { identifier ~ "." ~ identifier ~ param_clause? ~ ":" ~ type_
 method_impl_body_proc = { identifier ~ "." ~ identifier ~ param_clause? ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
 
 // Standalone procedure
-standalone_procedure = { identifier ~ param_clause? ~ ";" ~ (forward_directive | procedure_body) }
+standalone_procedure = { identifier ~ generic_params? ~ param_clause? ~ ";" ~ (forward_directive | procedure_body) }
 procedure_body = { decl_section ~ compound_statement ~ ";"? }
 
-// Standalone function
-standalone_function = { identifier ~ param_clause? ~ ":" ~ type_ref ~ ";" ~ (forward_directive | function_body) }
+// Standalone function — accepts generic type params: `function Max<T>(...)`.
+// Generics are erased at compile time (the dynamic VM doesn't carry type
+// info), so `generic_params` is captured-and-discarded by the walker.
+standalone_function = { identifier ~ generic_params? ~ param_clause? ~ ":" ~ type_ref ~ ";" ~ (forward_directive | function_body) }
 function_body = { decl_section ~ compound_statement ~ ";"? }
+
+// Pascal / Delphi generic type parameters: `<T>` or `<T, U>`. Constraints
+// (`<T: class>`, `<T: constructor>`) are accepted but discarded — the
+// dynamic VM is type-erased.
+generic_params = _{ "<" ~ generic_param_list ~ ">" }
+generic_param_list = _{ generic_param ~ ("," ~ generic_param)* }
+generic_param = _{ identifier ~ (":" ~ type_ref)? }
 
 forward_directive = { ^"forward" ~ ";" }
 
@@ -489,12 +498,17 @@ unary = {
 postfix = { primary ~ postfix_op* }
 
 postfix_op = {
-    "." ~ identifier ~ arg_list        // method call: obj.Method(args)
+    "." ~ identifier ~ generic_args? ~ arg_list   // method call: obj.Method<T>(args)
     | "." ~ identifier                  // field access: obj.Field
     | "[" ~ expression ~ "]"            // index: arr[i]
     | "^"                               // dereference: ptr^
+    | generic_args ~ arg_list           // generic call: F<T>(args)
     | arg_list                          // function call: F(args)
 }
+
+// Generic-instantiation argument list at the call site.
+// Captured-and-discarded by the walker — type erasure.
+generic_args = _{ "<" ~ type_ref ~ ("," ~ type_ref)* ~ ">" }
 
 arg_list = { "(" ~ (expression ~ ("," ~ expression)*)? ~ ")" }
 

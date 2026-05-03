@@ -46,7 +46,7 @@ use super::helpers::run_pascal;
 // CHR / ORD — character conversion
 // ===================================================================
 
-#[test] #[ignore] fn str_chr() {
+#[test] fn str_chr() {
     assert_eq!(run_pascal("program T; begin WriteLn(Chr(65)); end."), &["A"]);
 }
 
@@ -54,7 +54,7 @@ use super::helpers::run_pascal;
     assert_eq!(run_pascal("program T; begin WriteLn(Ord('A')); end."), &["65"]);
 }
 
-#[test] #[ignore] fn str_chr_ord_roundtrip() {
+#[test] fn str_chr_ord_roundtrip() {
     assert_eq!(run_pascal("program T; begin WriteLn(Chr(Ord('Z'))); end."), &["Z"]);
 }
 
@@ -98,7 +98,7 @@ use super::helpers::run_pascal;
 // COMPARESTR
 // ===================================================================
 
-#[test] #[ignore] fn str_comparestr_equal() {
+#[test] fn str_comparestr_equal() {
     assert_eq!(run_pascal("program T; begin WriteLn(CompareStr('abc', 'abc')); end."), &["0"]);
 }
 

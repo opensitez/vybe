@@ -160,7 +160,7 @@ begin
 end."#), &["60"]);
 }
 
-#[test] #[ignore] fn array_return_from_function() {
+#[test] fn array_return_from_function() {
     assert_eq!(run_pascal(r#"program T;
 function MakeArray: array of Integer;
 begin

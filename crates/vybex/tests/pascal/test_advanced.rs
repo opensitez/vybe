@@ -7,7 +7,7 @@ use super::helpers::run_pascal;
 // PROPERTIES (GETTERS / SETTERS)
 // ===================================================================
 
-#[test] #[ignore] fn property_read_write() {
+#[test] fn property_read_write() {
     assert_eq!(run_pascal(r#"program T;
 type TBox = class
   private FWidth: Integer;
@@ -25,7 +25,7 @@ begin
 end."#), &["10", "25"]);
 }
 
-#[test] #[ignore] fn property_getter_method() {
+#[test] fn property_getter_method() {
     assert_eq!(run_pascal(r#"program T;
 type TItem = class
   private FName: String;
@@ -79,7 +79,7 @@ begin d := TDog.Create; WriteLn(d.Sound()); end."#), &["generic woof"]);
 // RECORDS
 // ===================================================================
 
-#[test] #[ignore] fn record_basic() {
+#[test] fn record_basic() {
     assert_eq!(run_pascal(r#"program T;
 type TPoint = record
   X: Integer;
@@ -93,7 +93,7 @@ begin
 end."#), &["30"]);
 }
 
-#[test] #[ignore] fn record_as_param() {
+#[test] fn record_as_param() {
     assert_eq!(run_pascal(r#"program T;
 type TPoint = record X: Integer; Y: Integer; end;
 function Magnitude(p: TPoint): Integer;
@@ -110,7 +110,7 @@ end."#), &["7"]);
 // WITH STATEMENT
 // ===================================================================
 
-#[test] #[ignore] fn with_class_fields() {
+#[test] fn with_class_fields() {
     assert_eq!(run_pascal(r#"program T;
 type TFoo = class
   public FX: Integer; FY: Integer;
@@ -186,7 +186,7 @@ begin f := TFoo.Create; WriteLn(ClassName(f)); end."#), &["tfoo"]);
 // ARRAY OPERATIONS
 // ===================================================================
 
-#[test] #[ignore] fn array_append() {
+#[test] fn array_append() {
     assert_eq!(run_pascal(r#"program T;
 var a: array of Integer;
 begin
