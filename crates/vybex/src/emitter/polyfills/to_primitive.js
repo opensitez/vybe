@@ -26,13 +26,13 @@ function __vybe_to_primitive(v, hint) {
     }
     // ECMA-262 §7.1.1 step 2.b: when the value has @@toPrimitive
     // (Symbol.toPrimitive), call it first and trust its return. The
-    // walker stores the computed property under the literal source
-    // string `[Symbol.toPrimitive]` (Vybe doesn't model Symbols as
-    // unique keys yet — they're stringified at bind time).
-    var symKey = "[Symbol.toPrimitive]";
-    var sym = v[symKey];
+    // walker rewrites `[Symbol.toPrimitive]` to source name
+    // `Symbol.toPrimitive`, which the canonical resolver maps to
+    // `toprimitive` — the cross-language name where the method
+    // actually lives at runtime.
+    var sym = v.toprimitive;
     if (typeof sym === "function") {
-        var sr = v[symKey](hint);
+        var sr = v.toprimitive(hint);
         if (sr === null || typeof sr !== "object") return sr;
     }
     if (hint === "string") {

@@ -31,6 +31,7 @@ pub mod dotnet;
 pub mod php;
 pub mod fortran;
 pub mod dart;
+pub mod js;
 pub mod dispatch;
 pub mod type_registry;
 pub mod canonical;

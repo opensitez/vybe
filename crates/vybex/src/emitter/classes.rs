@@ -163,10 +163,12 @@ pub fn emit_bind_method_with_aliases(chunk: &mut Chunk, this_slot: u16, method_n
 /// if the language treats the method as a callable, not a property).
 pub fn cross_language_aliases(method_name: &str) -> &'static [&'static str] {
     match method_name {
-        // String representation: Python __str__ ↔ JS toString() ↔ VB/C# ToString()
+        // String representation: Python __str__ ↔ JS toString() ↔ VB/C# ToString() ↔ Ruby to_s.
         // Note: __get_tostring removed — ToString is a method, not a property.
-        "__str__" | "tostring" | "toString" =>
-            &["__str__", "toString", "tostring"],
+        // C#/VB walkers preserve source-case `ToString` as the bound name; include
+        // the PascalCase + Ruby spellings so cross-language invocation finds it.
+        "__str__" | "tostring" | "toString" | "ToString" | "to_s" | "__toString" =>
+            &["__str__", "toString", "tostring", "ToString", "to_s", "__toString"],
 
         // Debug representation: Python __repr__
         "__repr__" | "todebugstring" | "toDebugString" =>
@@ -349,8 +351,31 @@ pub fn emit_constructor_return(chunk: &mut Chunk, this_slot: u16, line: u32) {
 /// Store a constructor function as a local + global variable.
 /// Stack: unchanged
 pub fn emit_store_constructor(chunk: &mut Chunk, class_name: &str, ctor_chunk_idx: usize, local_slot: u16, line: u32) {
+    emit_store_constructor_with_upvalues(chunk, class_name, ctor_chunk_idx, local_slot, &[], line);
+}
+
+/// Store a constructor function with upvalue capture. Used for closure-bound
+/// parents (e.g. JS mixin pattern `(Base) => class extends Base`) where the
+/// constructor body references variables from an enclosing scope.
+///
+/// Each upvalue entry is `(is_local, index)` — the same wire format the VM
+/// reads after `REF_FUNC`. Pass an empty slice for non-closure constructors.
+///
+/// Stack: unchanged
+pub fn emit_store_constructor_with_upvalues(
+    chunk: &mut Chunk,
+    class_name: &str,
+    ctor_chunk_idx: usize,
+    local_slot: u16,
+    upvalues: &[(bool, u8)],
+    line: u32,
+) {
     chunk.emit_op_u16(Op::REF_FUNC, ctor_chunk_idx as u16, line);
-    chunk.emit(0, line);
+    chunk.emit(upvalues.len() as u8, line);
+    for (is_local, index) in upvalues {
+        chunk.emit(if *is_local { 1 } else { 0 }, line);
+        chunk.emit(*index, line);
+    }
     chunk.emit_op_u16(Op::LOCAL_SET, local_slot, line);
     // Store under original name (case-sensitive lookup)
     let global_name = chunk.add_constant(Value::String(Arc::from(class_name)));

@@ -192,13 +192,19 @@ pub fn emit_get(chunks: &mut [Chunk], current: usize, line: u32) {
 /// + length sync), Map IndexMap insert (mirrors `ecma:map.set`,
 /// ECMA-262 §24.1.3.9), or plain Object property-bag write.
 ///
-/// Stack discipline differs from the old `ecma:array.set` host fn —
-/// the opcode leaves the assigned value on the stack so callers don't
-/// need to DUP first. Existing `emit(Op::DROP)` calls after `emit_set`
-/// still drop the topmost (the value), preserving the void-style
-/// behavior for legacy call sites.
+/// Set element / property. Stack: [obj, key, val] → [retval] via
+/// `ecma:array.set`. The host fn is the single dispatch point: Array
+/// (with ECMA-262 §6.1.7.2 sparse-fill semantics — holes are
+/// Undefined), Map (Value-keyed IndexMap insert), and Ordinary
+/// (property bag). Routing through one place keeps PHP `$a[$k]=v`,
+/// Python `d[k]=v`, JS `a[i]=v`, Ruby `h[k]=v` etc. on identical
+/// runtime semantics regardless of source language.
+///
+/// The host fn returns `Null` per its spec; existing `emit(Op::DROP)`
+/// calls after `emit_set` discard it without breaking the void-style
+/// statement form `arr[i] = v;`.
 pub fn emit_set(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_op(Op::ARRAY_SET, line);
+    emit_import_call(chunks, current, "ecma:array", "set", 3, line);
 }
 
 /// Array slice. Stack: [array, start, end] → [array] via `ecma:array.slice`.
@@ -225,6 +231,26 @@ pub fn emit_slice_invoke(chunk: &mut Chunk, line: u32) {
 
 /// Array join. Stack: [array, delimiter] → [string] via `ecma:array.join`.
 pub fn emit_join(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_import_call(chunks, current, "ecma:array", "join", 2, line);
+}
+
+/// .NET-style `String.Join(separator, array)` — separator-first arg
+/// order. Swaps to the array-first order `ecma:array.join` expects,
+/// then dispatches. Also handles the `params object[]` 1-arg form by
+/// JS-spec coercion (caller arity check guarantees 2 args by the time
+/// we get here). Stack: [separator, array] → [string].
+pub fn emit_join_sep_first(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let sep_slot = {
+        let s = chunk.local_count;
+        chunk.local_count = s + 2;
+        s
+    };
+    let arr_slot = sep_slot + 1;
+    chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, sep_slot, line); chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, sep_slot, line);
     emit_import_call(chunks, current, "ecma:array", "join", 2, line);
 }
 

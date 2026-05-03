@@ -54,8 +54,11 @@ pub fn emit_exception_constructor(chunk: &mut Chunk, this_slot: u16, exc_name: &
 pub fn canonical_exception_name(name: &str) -> &str {
     // Defensive: walkers occasionally include trailing whitespace from the
     // type span (e.g. C# `catch (Exception e)` produces "Exception "). Trim
-    // before matching, otherwise the lowercase compare misses.
-    match name.trim().to_lowercase().as_str() {
+    // before matching AND in the fallthrough so the runtime-side
+    // `STRUCT_GET __exception_type` compare doesn't miss on a trailing
+    // space mismatch.
+    let trimmed = name.trim();
+    match trimmed.to_lowercase().as_str() {
         // Python → canonical
         "valueerror" | "formaterror" | "formatexception" => "ValueError",
         "typeerror" => "TypeError",
@@ -72,7 +75,7 @@ pub fn canonical_exception_name(name: &str) -> &str {
         "ioerror" | "ioexception" => "IOError",
         "oserror" => "OSError",
         "exception" | "error" => "Exception",
-        _ => name,
+        _ => trimmed,
     }
 }
 
@@ -224,4 +227,43 @@ pub fn emit_catch_dispatch(chunk: &mut Chunk, expected_canon: &str, line: u32) -
     chunk.emit_op_u16(Op::CONST, v, line);
     chunk.emit_op(Op::DYN_EQ, line);
     chunk.emit_jump(Op::BR_IF_FALSE, line)
+}
+
+/// Emit the disposal half of a resource-management block (C# `using`,
+/// Python `with`, Java try-with-resources, JS `using x = …`). Reads
+/// the resource from `slot` and calls its lifecycle method (`Dispose`,
+/// `__exit__`, `close`, …) if defined. Guards against the method
+/// being absent so resources without a disposer don't trap.
+///
+/// ECMA-334 §13.14 / Python §8.5 / JS Stage 3 explicit-resource-
+/// management share the same lowering: `try { body; } finally {
+/// dispose; }`. We emit just the dispose tail; full try/finally
+/// wrapping is the caller's job (or future enhancement here).
+///
+/// `dispose_method`: the canonical method name (`"Dispose"` for .NET,
+/// `"__exit__"` for Python, `"close"` for Java AutoCloseable, etc.).
+pub fn emit_resource_dispose(
+    chunk: &mut Chunk,
+    slot: u16,
+    dispose_method: &str,
+    line: u32,
+) {
+    let dispose_key = chunk.add_constant(Value::String(Arc::from(dispose_method)));
+    let dispose_block = chunk.emit_block(line);
+    // method = resource[<dispose_method>]
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, dispose_key, line);
+    // if method is null/undefined, skip the call.
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_br_if(0, line);
+    // Stack: [method]. Push receiver and CALL_REF(1). Drop result.
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op(Op::DROP, line);
+    // Skipped path leaves `method` (null/undef) on stack — the END
+    // closes the block, after which we DROP unconditionally.
+    chunk.emit_end(line);
+    chunk.patch_block(dispose_block);
+    chunk.emit_op(Op::DROP, line);
 }

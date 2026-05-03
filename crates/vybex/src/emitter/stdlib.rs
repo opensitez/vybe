@@ -374,6 +374,8 @@ pub fn build_stdlib(imports: &mut Chunk) -> StdLib {
     chunks.push(build_polyfill(
         imports, include_str!("polyfills/to_primitive.js"), "js", "__vybe_to_primitive"));
     exports.push("__stdlib_to_primitive");
+    chunks.push(build_iter_drain(imports));
+    exports.push("__stdlib_iter_drain");
     // PHP runtime helpers — all centralized under `emitter/php/`.
     // Inline opcode emitters in `php/<category>_adapter.rs` reached
     // via `common:php.*` dispatch arms. No JS polyfills, no PHP
@@ -896,6 +898,220 @@ fn build_reversed(imports: &mut Chunk) -> Chunk {
     c.emit_end(0); c.patch_loop(loop_p);
     c.emit_end(0); c.patch_block(block_p);
 
+    c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+// ── __vybe_iter_drain(v) → [...v.iterator()] ────────────────
+//
+// User-defined `[Symbol.iterator]()` drain — what for-of and array-spread
+// route through (JS profile) when the source isn't a built-in iterable.
+// Walker rewrites `[Symbol.iterator]` to canonical method name `iterator`,
+// so we look up that key. The protocol drives `.next()` until `{ done:
+// true }` and collects values into an array. For non-iterable receivers
+// we return the input unchanged so existing iterForOf / concat paths see
+// the natural shape (Array → as-is, String → per-codepoint at the host
+// level, etc.).
+//
+// Method-call protocol: `__js_this` is bound to the receiver before each
+// method invocation per ECMA-262 §13.3.7 (CallMemberExpression). We save
+// the caller's `__js_this` on entry and restore on exit so calling
+// iter_drain doesn't leak our internal `this` rebinds.
+fn build_iter_drain(imports: &mut Chunk) -> Chunk {
+    use std::sync::Arc;
+    let mut c = Chunk::new("__stdlib_iter_drain");
+    c.arity = 1;
+    // v(0) + result(1) + out(2) + it(3) + method(4) + step(5) + counter(6) + saved_this(7)
+    c.local_count = 8;
+    let v = 0u16;
+    let result = 1;
+    let out = 2;
+    let it = 3;
+    let method = 4;
+    let step = 5;
+    let counter = 6;
+    let saved_this = 7;
+    let js_this = c.add_constant(vybe_bytecode::Value::String(Arc::from("__js_this")));
+    let iter_key = c.add_constant(vybe_bytecode::Value::String(Arc::from("iterator")));
+    let iter_alt_key = c.add_constant(vybe_bytecode::Value::String(Arc::from("__iter__")));
+    let next_key = c.add_constant(vybe_bytecode::Value::String(Arc::from("next")));
+    let done_key = c.add_constant(vybe_bytecode::Value::String(Arc::from("done")));
+    let value_key = c.add_constant(vybe_bytecode::Value::String(Arc::from("value")));
+    let func_str = c.add_constant(vybe_bytecode::Value::String(Arc::from("function")));
+
+    // Single function-level outer block as the structured-control-flow
+    // exit label. Every "early return" sets `result` and `br exit` to
+    // here. Single RETURN at the function's true end keeps the VM's
+    // label_stack invariants intact (RETURN doesn't unwind active
+    // BLOCK labels, so RETURN-from-inside-a-block leaks labels to the
+    // caller — a real bug observed when this fn ran inside nested
+    // for-of loops).
+    let exit_block = c.emit_block(0);
+
+    // saved_this = __js_this
+    c.emit_op_u16(Op::GLOBAL_GET, js_this, 0);
+    c.emit_op_u16(Op::LOCAL_SET, saved_this, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // Fast path: built-in Array → result = v, exit. Walking the
+    // prototype chain for `iterator` would resolve to Array.prototype's
+    // iterator and turn a plain `[1,2,3]` into a user-iterator drain.
+    let arr_step = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    c.emit_op(Op::REF_IS_ARRAY, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0); // not array → continue past this block
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(1, 0); // exit
+    c.emit_end(0); c.patch_block(arr_step);
+
+    // method = v.iterator (or v.__iter__ if null)
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    c.emit_op_u16(Op::STRUCT_GET, iter_key, 0);
+    c.emit_op_u16(Op::LOCAL_SET, method, 0);
+    c.emit_op(Op::DROP, 0);
+
+    let try_alt = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, method, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0); // method already set → skip
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    c.emit_op_u16(Op::STRUCT_GET, iter_alt_key, 0);
+    c.emit_op_u16(Op::LOCAL_SET, method, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_end(0); c.patch_block(try_alt);
+
+    // typeof method !== "function" → result = v, exit
+    let has_method = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, method, 0);
+    c.emit_op(Op::REF_TYPEOF, 0);
+    c.emit_op_u16(Op::CONST, func_str, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_br_if(0, 0); // is function → skip early-exit
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(1, 0); // exit
+    c.emit_end(0); c.patch_block(has_method);
+
+    // __js_this = v; it = method()
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    c.emit_op_u16(Op::GLOBAL_SET, js_this, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, method, 0);
+    c.emit_op_u8(Op::CALL_REF, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, it, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // out = []
+    crate::emitter::collections::emit_array_new_into(imports, &mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, out, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // it null/undefined → result = out, exit
+    let it_ok = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, it, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, out, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(1, 0); // exit
+    c.emit_end(0); c.patch_block(it_ok);
+
+    // method = it.next
+    c.emit_op_u16(Op::LOCAL_GET, it, 0);
+    c.emit_op_u16(Op::STRUCT_GET, next_key, 0);
+    c.emit_op_u16(Op::LOCAL_SET, method, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // typeof method !== "function" → result = out, exit
+    let next_ok = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, method, 0);
+    c.emit_op(Op::REF_TYPEOF, 0);
+    c.emit_op_u16(Op::CONST, func_str, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, out, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(1, 0); // exit
+    c.emit_end(0); c.patch_block(next_ok);
+
+    // counter = 0
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, counter, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // Drain loop: while (counter < cap) {
+    //   __js_this = it; step = method();
+    //   if step null/undefined or step.done → break
+    //   out.push(step.value); counter++;
+    // }
+    let drain_block = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+
+    c.emit_op_u16(Op::LOCAL_GET, counter, 0);
+    let one_mil = c.add_constant(vybe_bytecode::Value::I32(1_000_000));
+    c.emit_op_u16(Op::CONST, one_mil, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0); // counter >= cap → break
+
+    c.emit_op_u16(Op::LOCAL_GET, it, 0);
+    c.emit_op_u16(Op::GLOBAL_SET, js_this, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, method, 0);
+    c.emit_op_u8(Op::CALL_REF, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, step, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, step, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_br_if(1, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, step, 0);
+    c.emit_op_u16(Op::STRUCT_GET, done_key, 0);
+    c.emit_op(Op::DYN_TO_BOOL, 0);
+    c.emit_br_if(1, 0);
+
+    // out.push(step.value); push returns new length → drop it.
+    c.emit_op_u16(Op::LOCAL_GET, out, 0);
+    c.emit_op_u16(Op::LOCAL_GET, step, 0);
+    c.emit_op_u16(Op::STRUCT_GET, value_key, 0);
+    crate::emitter::collections::emit_push_into(imports, &mut c, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, counter, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, counter, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_br(0, 0); // continue loop
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(drain_block);
+
+    // result = out
+    c.emit_op_u16(Op::LOCAL_GET, out, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // exit_block end — single function-level RETURN follows.
+    c.emit_end(0); c.patch_block(exit_block);
+
+    // Restore __js_this and return result. RETURN is at the function's
+    // top level, so structured control flow has fully unwound by the
+    // time we hit it — no leaked labels.
+    c.emit_op_u16(Op::LOCAL_GET, saved_this, 0);
+    c.emit_op_u16(Op::GLOBAL_SET, js_this, 0);
+    c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op(Op::RETURN, 0);
     c

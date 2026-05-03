@@ -186,7 +186,7 @@ END CLASS MATH-UTILS.
 // PROPERTY GET/SET
 // ═══════════════════════════════════════════════════════════
 #[test]
-#[ignore] // OO COBOL PROPERTY GET/SET with data items needs parser work
+ // OO COBOL PROPERTY GET/SET with data items needs parser work
 fn property_get_set() {
     compile_ok(r#"
 IDENTIFICATION DIVISION.

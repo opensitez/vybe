@@ -367,7 +367,7 @@ PROCESS-PARA.
 }
 
 #[test]
-#[ignore] // COMPUTE with subscripted target needs parser work
+ // COMPUTE with subscripted target needs parser work
 fn nested_perform_with_compute() {
     compile_ok(r#"
 IDENTIFICATION DIVISION.

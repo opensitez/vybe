@@ -122,6 +122,7 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_array_last_index_of", "__vybe_array_last_index_of"),
     ("__stdlib_sprintf",             "__vybe_sprintf"),
     ("__stdlib_to_primitive",        "__vybe_to_primitive"),
+    ("__stdlib_iter_drain",          "__vybe_iter_drain"),
     // PHP runtime helpers — all inline opcode emitters under
     // `emitter/php/<cat>_adapter.rs`. Reached through `common:php.*`
     // dispatch arms; no `__vybe_*` global indirection.

@@ -82,6 +82,7 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         "collections.sorted" => collections::emit_sorted(chunks, current, line),
         "collections.reverse" => collections::emit_reverse(chunks, current, line),
         "collections.join" => collections::emit_join(chunks, current, line),
+        "collections.join_sep_first" => collections::emit_join_sep_first(chunks, current, line),
         "collections.slice" => collections::emit_slice(chunks, current, line),
         "collections.new" => collections::emit_array_new(chunks, current, 0, line),
         "collections.shift" => collections::emit_shift(chunks, current, line),
@@ -100,6 +101,9 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         "collections.remove" => collections::emit_remove_value(chunks, current, line),
         "collections.insert" => collections::emit_insert_at(chunks, current, line),
         "collections.clear" => collections::emit_clear(chunks, current, line),
+        "collections.sum" => collections::emit_sum(chunks, current, line),
+        "collections.min" => collections::emit_pymin(chunks, current, line),
+        "collections.max" => collections::emit_pymax(chunks, current, line),
 
         // ── String ops ──
         "strings.length" => strings::emit_length(&mut chunks[current], line),
@@ -551,6 +555,62 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::dotnet::core::stream_io_adapter::emit_stream_writer_write_line(chunks, current, line),
         "dotnet.stream_writer_flush"
             => crate::emitter::dotnet::core::stream_io_adapter::emit_stream_writer_flush(chunks, current, line),
+        "dotnet.console_writeline"
+            => crate::emitter::dotnet::core::console_adapter::emit_console_writeline(chunks, current, line),
+
+        // ── LINQ surface — composed bytecode shared by every .NET-shape language ──
+        "dotnet.linq_first"
+            => crate::emitter::dotnet::core::linq_adapter::emit_linq_first(chunks, current, line),
+        "dotnet.linq_last"
+            => crate::emitter::dotnet::core::linq_adapter::emit_linq_last(chunks, current, line),
+        "dotnet.linq_skip"
+            => crate::emitter::dotnet::core::linq_adapter::emit_linq_skip(chunks, current, line),
+        "dotnet.linq_take"
+            => crate::emitter::dotnet::core::linq_adapter::emit_linq_take(chunks, current, line),
+        "dotnet.linq_identity"
+            => crate::emitter::dotnet::core::linq_adapter::emit_linq_identity(chunks, current, line),
+        "dotnet.linq_average"
+            => crate::emitter::dotnet::core::linq_adapter::emit_linq_average(chunks, current, line),
+        "dotnet.linq_first_or_default"
+            => crate::emitter::dotnet::core::linq_adapter::emit_linq_first_or_default(chunks, current, line),
+        "dotnet.linq_distinct"
+            => crate::emitter::dotnet::core::linq_adapter::emit_linq_distinct(chunks, current, line),
+        "dotnet.linq_count_pred"
+            => crate::emitter::dotnet::core::linq_adapter::emit_linq_count_pred(chunks, current, line),
+        "dotnet.linq_aggregate"
+            => crate::emitter::dotnet::core::linq_adapter::emit_linq_aggregate(chunks, current, line),
+        "dotnet.linq_order_by_descending"
+            => crate::emitter::dotnet::core::linq_adapter::emit_linq_order_by_descending(chunks, current, line),
+
+        // ── Static Array.* helpers — same dotnet/core home as LINQ ──
+        "dotnet.array_reverse"
+            => crate::emitter::dotnet::core::array_adapter::emit_array_reverse(chunks, current, line),
+        "dotnet.array_index_of"
+            => crate::emitter::dotnet::core::array_adapter::emit_array_index_of(chunks, current, line),
+        "dotnet.array_exists"
+            => crate::emitter::dotnet::core::array_adapter::emit_array_exists(chunks, current, line),
+        "dotnet.array_true_for_all"
+            => crate::emitter::dotnet::core::array_adapter::emit_array_true_for_all(chunks, current, line),
+        "dotnet.array_find"
+            => crate::emitter::dotnet::core::array_adapter::emit_array_find(chunks, current, line),
+        "dotnet.array_find_all"
+            => crate::emitter::dotnet::core::array_adapter::emit_array_find_all(chunks, current, line),
+        "dotnet.array_convert_all"
+            => crate::emitter::dotnet::core::array_adapter::emit_array_convert_all(chunks, current, line),
+        "dotnet.array_for_each"
+            => crate::emitter::dotnet::core::array_adapter::emit_array_for_each(chunks, current, line),
+        "dotnet.list_add_range"
+            => crate::emitter::dotnet::core::array_adapter::emit_list_add_range(chunks, current, line),
+
+        // ── .NET parse helpers — `int.Parse`, `double.Parse`, `bool.Parse`
+        // Throw a `FormatException`-shape error on invalid input
+        // (matches ECMA-335; JS `Number(s)` returns NaN silently).
+        "dotnet.parse_int"
+            => crate::emitter::dotnet::core::parse_adapter::emit_parse_int(chunks, current, line),
+        "dotnet.parse_double"
+            => crate::emitter::dotnet::core::parse_adapter::emit_parse_double(chunks, current, line),
+        "dotnet.parse_bool"
+            => crate::emitter::dotnet::core::parse_adapter::emit_parse_bool(chunks, current, line),
 
         // ── PHP `isset(...)` — variadic null check, returns true iff
         // ALL args are non-null. Inline emit folds an AND chain.
