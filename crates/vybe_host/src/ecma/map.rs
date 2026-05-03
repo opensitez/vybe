@@ -214,6 +214,22 @@ pub fn register(vm: &mut VM) {
             Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
         }));
 
+    // .NET `Dictionary<K,V>.ContainsValue(v)` — linear-scan check
+    // against the Map's values. No ECMA-262 spec equivalent (Map only
+    // exposes `has(key)`); the .NET adapter routes `ContainsValue`
+    // here to keep all collection state in `ObjectKind::Map`.
+    vm.register_host_fn("ecma:map", "containsValue",
+        Box::new(|_ctx, args| {
+            let needle = args.get(1).cloned().unwrap_or(Value::Undefined);
+            if let Some(mapobj) = is_map(args, 0) {
+                let m = mapobj.lock().unwrap();
+                if let ObjectKind::Map(ref im) = m.kind {
+                    return Value::Bool(im.values().any(|v| v == &needle));
+                }
+            }
+            Value::Bool(false)
+        }));
+
     vm.register_host_fn("ecma:map", "entries",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {

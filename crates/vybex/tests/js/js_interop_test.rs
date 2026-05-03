@@ -187,7 +187,7 @@ fn test_a11_static_method_on_class() {
 // Known bug: fn.call(thisArg, ...) does not bind `this` to thisArg.
 // Expected: "Hello Alice", Actual: "Hello null" (this.name resolves to null).
 #[test]
-#[ignore = "known bug"]
+
 fn test_a12_function_call_with_this_arg() {
     let code = r#"
         function greet(greeting) {
@@ -705,7 +705,7 @@ fn test_e48_multiple_invokes_preserve_state() {
 // be extracted; it does NOT call vm.invoke (which would hang under
 // `--include-ignored`).
 #[test]
-#[ignore = "known bug — vm.invoke on extracted method hangs (this-binding)"]
+
 fn test_e49_invoke_class_method_with_this() {
     let code = r#"
         class Adder {

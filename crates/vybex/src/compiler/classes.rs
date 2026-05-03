@@ -60,11 +60,21 @@ impl Compiler {
         // Define params
         for p in params {
             self.define_local(&p.name);
-            // Default parameters
+            // Default parameters: ECMA-262 §15.2.3 — only `undefined`
+            // triggers the default (not `null`). The VM now pads
+            // missing positional args with `Undefined`, distinct from
+            // an explicitly-passed `Null`, so `REF_IS_UNDEFINED` is
+            // the correct discriminant for JS. Other languages don't
+            // distinguish missing/null and use `REF_IS_NULL` (matches
+            // either tag).
             if let Some(ref default) = p.default {
                 let slot = self.scope().resolve(&p.name).unwrap();
                 self.emit_u16(Op::LOCAL_GET, slot);
-                self.emit(Op::REF_IS_NULL);
+                if self.is_js_profile() {
+                    self.emit(Op::REF_IS_UNDEFINED);
+                } else {
+                    self.emit(Op::REF_IS_NULL);
+                }
                 let has_val = self.emit_jump(Op::BR_IF_FALSE);
                 self.compile_expr(default)?;
                 self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
@@ -306,9 +316,14 @@ impl Compiler {
         }
 
         // Store field list for implicit self resolution
+        let static_field_names: Vec<String> = static_field_inits
+            .iter()
+            .map(|(n, _)| n.clone())
+            .collect();
         self.pending_classes.insert(name.to_string(), PendingClass {
             parent: parent.clone(),
             fields: fields.clone(),
+            static_fields: static_field_names,
             statics: Vec::new(), // filled after methods are compiled
         });
 
@@ -364,7 +379,10 @@ impl Compiler {
                 m.params.iter().collect()
             };
             let uses_js_this = cc.is_js_profile();
-            let arity = if uses_js_this {
+            let has_rest = user_params.last().map_or(false, |p| p.is_rest);
+            let arity = if has_rest {
+                255u8
+            } else if uses_js_this {
                 user_params.len() as u8
             } else {
                 (user_params.len() + 1) as u8
@@ -386,6 +404,58 @@ impl Compiler {
                 cc.define_local(&self_kw);
             }
             for p in &user_params { cc.define_local(&p.name); }
+
+            // Rest param preamble: collect excess args into an array.
+            // Mirrors `compile_function_decl` so methods with `params T[] xs`
+            // get the same variadic semantics as free functions.
+            if has_rest {
+                let rest_name = &user_params.last().unwrap().name;
+                let rest_slot = cc.scope().resolve(rest_name).unwrap();
+                let line = cc.line;
+                let max_rest = 16u16;
+                for i in 1..max_rest {
+                    cc.define_local(&format!("__rest_reserved_{}", i));
+                }
+                common::collections::emit_array_new(&mut cc.chunks, cc.current, 0, line);
+                let rest_arr = cc.define_local("__rest_arr");
+                cc.emit_u16(Op::LOCAL_SET, rest_arr); cc.emit(Op::DROP);
+                let mut done_patches: Vec<usize> = Vec::new();
+                for i in 0..max_rest {
+                    let slot = rest_slot + i;
+                    cc.emit_u16(Op::LOCAL_GET, slot);
+                    cc.emit(Op::REF_IS_NULL);
+                    done_patches.push(cc.emit_jump(Op::BR_IF_TRUE));
+                    cc.emit_u16(Op::LOCAL_GET, rest_arr);
+                    cc.emit_u16(Op::LOCAL_GET, slot);
+                    common::collections::emit_push(&mut cc.chunks, cc.current, line);
+                    cc.emit(Op::DROP);
+                }
+                for p in done_patches { cc.patch_jump(p); }
+                cc.emit_u16(Op::LOCAL_GET, rest_arr);
+                cc.emit_u16(Op::LOCAL_SET, rest_slot);
+                cc.emit(Op::DROP);
+            }
+
+            // Default parameters (C# `string greeting = "Hello"`): if
+            // the slot is null/undefined when the method runs, install
+            // the default. JS profile uses `REF_IS_UNDEFINED` (only
+            // explicit `undefined` triggers); other languages use
+            // `REF_IS_NULL` which matches either tag.
+            for p in &user_params {
+                if let Some(ref default) = p.default {
+                    let slot = cc.scope().resolve(&p.name).unwrap();
+                    cc.emit_u16(Op::LOCAL_GET, slot);
+                    if uses_js_this {
+                        cc.emit(Op::REF_IS_UNDEFINED);
+                    } else {
+                        cc.emit(Op::REF_IS_NULL);
+                    }
+                    let has_val = cc.emit_jump(Op::BR_IF_FALSE);
+                    cc.compile_expr(default)?;
+                    cc.emit_u16(Op::LOCAL_SET, slot); cc.emit(Op::DROP);
+                    cc.patch_jump(has_val);
+                }
+            }
 
             if is_ctor {
                 for s in &m.body { cc.compile_stmt(s)?; }
@@ -417,7 +487,18 @@ impl Compiler {
             cc.scopes.pop();
             cc.current = saved;
 
-            let bound_name = cc.canon(mname);
+            // `[Symbol.iterator]()` lands as source_name="Symbol.iterator"
+            // but must be reachable under canonical `iterator`. For
+            // ordinary names, keep source-derived binding so language
+            // dunders (PHP `__toString`, Python `__str__`) bind under
+            // their literal name + cross-lang aliases via
+            // `emit_bind_method_with_aliases`. Only the Symbol.* pseudo-
+            // names need the canonical rewrite.
+            let bound_name = if mname.starts_with("Symbol.") && !m.canonical_name.is_empty() {
+                m.canonical_name.clone()
+            } else {
+                cc.canon(mname)
+            };
             method_chunks.push((bound_name, ci, is_ctor, is_static));
             Ok(())
         };
@@ -600,7 +681,19 @@ impl Compiler {
                 params.iter().map(|p| p.name.clone()).collect()
             }
         }).unwrap_or_default();
-        let user_arity = user_params.len() as u8;
+        // ECMA-262 §15.7.10: a derived class without an explicit constructor
+        // gets the implicit `constructor(...args) { super(...args); }`. We
+        // model that by synthesizing 16 forwarding slots — the same
+        // MAX_VARIADIC convention the spread-call path uses. The parent
+        // ctor truncates to its own arity (Undefined-padded for the rest),
+        // so the chain composes correctly through any depth of mixins.
+        const IMPLICIT_CTOR_FORWARD_ARGS: u8 = 16;
+        let synthesized_forward_args = ctor_body.is_none() && parent.is_some();
+        let user_arity = if synthesized_forward_args {
+            IMPLICIT_CTOR_FORWARD_ARGS
+        } else {
+            user_params.len() as u8
+        };
 
         // ── Single constructor function (not split wrapper + body) ──────
         // This is the ONLY function that `new ClassName(args)` calls.
@@ -633,6 +726,13 @@ impl Compiler {
                 self.compile_expr(default)?;
                 self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
                 self.patch_jump(has_val);
+            }
+        }
+        // Synthesized implicit ctor — reserve the forwarding slots so
+        // `this_slot` lands above them, matching `user_arity`.
+        if synthesized_forward_args {
+            for i in 0..IMPLICIT_CTOR_FORWARD_ARGS {
+                self.define_local(&format!("__implicit_arg_{}", i));
             }
         }
         self.define_local(&self_kw); // this_slot = user_arity
@@ -690,8 +790,12 @@ impl Compiler {
                     // Explicit base_args provided (C#-style `: base(args)`)
                     if let Some(parent_name) = parent {
                         let pname = self.canon(parent_name);
-                        let pidx = self.str_const(&pname);
-                        self.emit_u16(Op::GLOBAL_GET, pidx);
+                        // Walk local/upvalue scope first so parent
+                        // resolved from a closure capture (e.g.
+                        // `(Base) => class extends Base`) works.
+                        // Falls through to global_get for normal
+                        // top-level classes.
+                        self.emit_var_get(&pname);
                         for a in *bargs { self.compile_expr(a)?; }
                         self.emit_u8(Op::CALL, bargs.len() as u8);
                         self.emit_u16(Op::LOCAL_SET, this_slot);
@@ -702,8 +806,7 @@ impl Compiler {
                     // body has no super() → auto-call parent() with 0 args.
                     if let Some(parent_name) = parent {
                         let pname = self.canon(parent_name);
-                        let pidx = self.str_const(&pname);
-                        self.emit_u16(Op::GLOBAL_GET, pidx);
+                        self.emit_var_get(&pname);
                         self.emit_u8(Op::CALL, 0);
                         self.emit_u16(Op::LOCAL_SET, this_slot);
                         self.emit(Op::DROP);
@@ -711,15 +814,18 @@ impl Compiler {
                 }
                 // else: JS pattern — body calls super() itself, sets this_slot
             } else {
-                // No explicit constructor — auto-call parent with user args
+                // No explicit constructor — auto-call parent with all
+                // received args (per ECMA-262 §15.7.10 implicit ctor:
+                // `constructor(...args) { super(...args); }`). The
+                // synthesized arity is IMPLICIT_CTOR_FORWARD_ARGS; the
+                // parent ctor truncates to its own arity.
                 if let Some(parent_name) = parent {
                     let pname = self.canon(parent_name);
-                    let pidx = self.str_const(&pname);
-                    self.emit_u16(Op::GLOBAL_GET, pidx);
+                    self.emit_var_get(&pname);
                     for i in 0..user_arity {
-                        self.emit_u16(Op::LOCAL_GET, (i as u16) + 1);
+                        self.emit_u16(Op::LOCAL_GET, i as u16);
                     }
-                    self.emit_u8(Op::CALL, user_arity);
+                    self.emit_u8(Op::CALL_REF, user_arity);
                     self.emit_u16(Op::LOCAL_SET, this_slot);
                     self.emit(Op::DROP);
                 }
@@ -1044,14 +1150,28 @@ impl Compiler {
 
         let locals = self.scope().next_slot.max(self.chunks[ctor_idx].local_count);
         self.chunks[ctor_idx].local_count = locals;
+        // Capture the ctor's upvalues before popping the scope —
+        // mixin / closure-captured parents (`(Base) => class extends
+        // Base`) materialize as upvalue references on the ctor body
+        // and must be threaded into the runtime function ref.
+        let ctor_upvalues = self.scope().upvalues.clone();
         self.scopes.pop();
         self.current = saved_cur;
         self.current_class = saved_class2;
         self.current_class_implicit_self = saved_implicit2;
 
-        // Store constructor globally and register type
+        // Store constructor globally and register type. Emit upvalue
+        // captures inline with REF_FUNC so closure-bound parents
+        // resolve at runtime (mirrors `compile_function_decl`'s
+        // `emit_ref_func` pattern).
         let ctor_local = self.define_local(&format!("__{}_ctor", name));
-        common::classes::emit_store_constructor(self.chunk(), name, ctor_idx, ctor_local, line);
+        let uv_pairs: Vec<(bool, u8)> = ctor_upvalues
+            .iter()
+            .map(|uv| (uv.is_local, uv.index))
+            .collect();
+        common::classes::emit_store_constructor_with_upvalues(
+            self.chunk(), name, ctor_idx, ctor_local, &uv_pairs, line,
+        );
 
         if self.is_js_profile() {
             self.emit_common("object.new", 0, line);
@@ -1060,8 +1180,7 @@ impl Compiler {
 
             if let Some(parent_name) = parent {
                 let pname = self.canon(parent_name);
-                let pidx = self.str_const(&pname);
-                self.emit_u16(Op::GLOBAL_GET, pidx);
+                self.emit_var_get(&pname);
                 let parent_proto_key = self.str_const("prototype");
                 self.emit_u16(Op::STRUCT_GET, parent_proto_key);
                 let parent_proto_local = self.define_local(&format!("__{}_parent_prototype", name));
@@ -1139,6 +1258,25 @@ impl Compiler {
         // Store statics in PendingClass for grandchildren to inherit
         if let Some(pc) = self.pending_classes.get_mut(name) {
             pc.statics = all_statics;
+        }
+
+        // Attach instance methods to the class object so static
+        // `super.method()` dispatch can reach them. ECMA-262
+        // §13.3.7.4 / §10.2.4 / §10.2.10.2: `super` resolves via
+        // [[HomeObject]].[[Prototype]] (the parent class's prototype),
+        // NOT the instance prototype chain. Multi-level inheritance
+        // (C → B → A) needs B.method when called from C, A.method
+        // when called from B — both at compile time. We mirror the
+        // method bindings on the class constructor so
+        // `GLOBAL_GET(ParentClass) ~ STRUCT_GET(method)` returns the
+        // class-level method ref. Instance bindings are unchanged
+        // (still per-instance for `this.method()` and override).
+        for (mname, mci, _, _) in &instance_methods {
+            // Skip getter/setter wrappers — they're bound differently.
+            if mname.starts_with("__get_") || mname.starts_with("__set_") {
+                continue;
+            }
+            common::classes::emit_attach_static_method(self.chunk(), ctor_local, mname, *mci, line);
         }
 
         let all_methods: Vec<(String, usize)> = method_chunks.iter().map(|(n, c, _, _)| (n.clone(), *c)).collect();

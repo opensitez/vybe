@@ -358,4 +358,114 @@ pub fn register(vm: &mut VM) {
             }
             Value::I32(0)
         }));
+
+    // .NET HashSet mutating set algebra — `UnionWith` / `IntersectWith` /
+    // `ExceptWith` / `SymmetricExceptWith` modify the receiver in place.
+    // Distinct from the immutable ES2025 `union` / `intersection` / etc.
+    // which return a fresh Set. The ES variants are still registered above;
+    // these mutate variants are the .NET-shape entry points.
+    vm.register_host_fn("ecma:set", "unionWith",
+        Box::new(|_ctx, args| {
+            if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
+                let to_add: Vec<Value> = {
+                    let block = b.lock().unwrap();
+                    if let ObjectKind::Set(ref bvs) = block.kind {
+                        bvs.iter().cloned().collect()
+                    } else {
+                        Vec::new()
+                    }
+                };
+                let mut alock = a.lock().unwrap();
+                if let ObjectKind::Set(ref mut avs) = alock.kind {
+                    for v in to_add { avs.insert(v); }
+                }
+                sync_set_size(&mut alock);
+            }
+            Value::Undefined
+        }));
+
+    vm.register_host_fn("ecma:set", "intersectWith",
+        Box::new(|_ctx, args| {
+            if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
+                let b_snapshot: Vec<Value> = {
+                    let block = b.lock().unwrap();
+                    if let ObjectKind::Set(ref bvs) = block.kind {
+                        bvs.iter().cloned().collect()
+                    } else {
+                        Vec::new()
+                    }
+                };
+                let mut alock = a.lock().unwrap();
+                if let ObjectKind::Set(ref mut avs) = alock.kind {
+                    avs.retain(|v| b_snapshot.contains(v));
+                }
+                sync_set_size(&mut alock);
+            }
+            Value::Undefined
+        }));
+
+    vm.register_host_fn("ecma:set", "exceptWith",
+        Box::new(|_ctx, args| {
+            if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
+                let b_snapshot: Vec<Value> = {
+                    let block = b.lock().unwrap();
+                    if let ObjectKind::Set(ref bvs) = block.kind {
+                        bvs.iter().cloned().collect()
+                    } else {
+                        Vec::new()
+                    }
+                };
+                let mut alock = a.lock().unwrap();
+                if let ObjectKind::Set(ref mut avs) = alock.kind {
+                    avs.retain(|v| !b_snapshot.contains(v));
+                }
+                sync_set_size(&mut alock);
+            }
+            Value::Undefined
+        }));
+
+    vm.register_host_fn("ecma:set", "symmetricExceptWith",
+        Box::new(|_ctx, args| {
+            if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
+                let b_snapshot: Vec<Value> = {
+                    let block = b.lock().unwrap();
+                    if let ObjectKind::Set(ref bvs) = block.kind {
+                        bvs.iter().cloned().collect()
+                    } else {
+                        Vec::new()
+                    }
+                };
+                let mut alock = a.lock().unwrap();
+                if let ObjectKind::Set(ref mut avs) = alock.kind {
+                    let mut to_remove = Vec::new();
+                    let mut to_add = Vec::new();
+                    for v in &b_snapshot {
+                        if avs.contains(v) {
+                            to_remove.push(v.clone());
+                        } else {
+                            to_add.push(v.clone());
+                        }
+                    }
+                    avs.retain(|v| !to_remove.contains(v));
+                    for v in to_add { avs.insert(v); }
+                }
+                sync_set_size(&mut alock);
+            }
+            Value::Undefined
+        }));
+
+    vm.register_host_fn("ecma:set", "overlaps",
+        Box::new(|_ctx, args| {
+            if let (Some(a), Some(b)) = (is_set(args, 0), is_set(args, 1)) {
+                let alock = a.lock().unwrap();
+                let block = b.lock().unwrap();
+                if let (ObjectKind::Set(avs), ObjectKind::Set(bvs))
+                    = (&alock.kind, &block.kind)
+                {
+                    let overlap = avs.iter().any(|v| bvs.contains(v));
+                    return Value::Bool(overlap);
+                }
+            }
+            Value::Bool(false)
+        }));
 }

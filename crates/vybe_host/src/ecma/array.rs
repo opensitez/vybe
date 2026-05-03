@@ -402,16 +402,36 @@ fn register_property_access(vm: &mut VM) {
                 let mut o = obj.lock().unwrap();
                 match &mut o.kind {
                     ObjectKind::Array(v) => {
-                        let i = key.as_i32();
-                        if i < 0 {
-                            return Value::Null;
+                        // Numeric keys → element store. Non-numeric keys
+                        // (e.g. PHP/Python writing string-keyed entries
+                        // onto an Array-kind value) → property-bag write
+                        // per ECMA-262 §10.4.2.2 (string-named props on
+                        // Array exotic objects). Mirrors `Object::set`
+                        // which falls through to `properties.insert` when
+                        // the key isn't a valid array index.
+                        let numeric_idx = match &key {
+                            Value::I32(n) if *n >= 0 => Some(*n as usize),
+                            Value::I64(n) if *n >= 0 => Some(*n as usize),
+                            Value::F64(n) if n.fract() == 0.0 && *n >= 0.0 => Some(*n as usize),
+                            Value::String(s) => s.parse::<usize>().ok(),
+                            _ => None,
+                        };
+                        if let Some(idx) = numeric_idx {
+                            // ECMA-262 §6.1.7.2 / §23.1.3 — holes from
+                            // sparse `arr[hi] = v` writes read as
+                            // Undefined, distinct from explicit `Null`.
+                            while v.len() <= idx {
+                                v.push(Value::Undefined);
+                            }
+                            v[idx] = val;
+                            sync_length(&mut o);
+                        } else {
+                            let key_str = match &key {
+                                Value::String(s) => s.to_string(),
+                                other => format!("{}", other),
+                            };
+                            o.properties.insert(key_str, val);
                         }
-                        let idx = i as usize;
-                        while v.len() <= idx {
-                            v.push(Value::Null);
-                        }
-                        v[idx] = val;
-                        sync_length(&mut o);
                     }
                     ObjectKind::Map(m) => {
                         let map_key = match &key {
@@ -446,6 +466,7 @@ fn register_property_access(vm: &mut VM) {
                 return match &lock.kind {
                     ObjectKind::Array(v) => Value::I32(v.len() as i32),
                     ObjectKind::Map(m) => Value::I32(m.len() as i32),
+                    ObjectKind::Set(s) => Value::I32(s.len() as i32),
                     ObjectKind::TypedArray(t) => Value::I32(t.length as i32),
                     _ => lock.properties.get("length")
                         .map(|v| Value::I32(v.as_i32()))
@@ -747,17 +768,30 @@ fn register_mutators(vm: &mut VM) {
 // ── Non-mutators ──────────────────────────────────────────────────────
 
 fn register_non_mutators(vm: &mut VM) {
-    // slice(arr, start, end) -> new_arr
+    // slice(arr, start, end) -> new_arr | substring
     //
-    // Array-only per ECMA-262. String slicing goes through
-    // `ecma:value.invokeMethod` (or `wasm:js-string.slice` under the
-    // js-string-builtins proposal when v8 hosts it).
+    // Array slicing is the spec contract (ECMA-262 §23.1.3.28). The
+    // compiler's `__vybe_slice` polyfill is the user-facing entry point
+    // and dispatches both string and array inputs through the SAME
+    // global func ref — when this `ecma:array.slice` host fn shadows the
+    // polyfill, it must keep the polymorphic shape so `s[0..5]` (which
+    // lowers to `__vybe_slice(s, 0, 5)`) keeps producing a substring.
+    // Equivalent to `wasm:js-string.slice` but routed through the
+    // single override entry point.
     vm.register_host_fn(
         "ecma:array",
         "slice",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
             let end = args.get(2).map(|v| v.as_i32()).unwrap_or(i32::MAX);
+            if let Some(Value::String(s)) = args.first() {
+                let chars: Vec<char> = s.chars().collect();
+                let len = chars.len() as i32;
+                let si = (if start < 0 { len + start } else { start }).max(0).min(len) as usize;
+                let ei = (if end < 0 { len + end } else { end }).max(0).min(len) as usize;
+                let out: String = if si < ei { chars[si..ei].iter().collect() } else { String::new() };
+                return Value::String(Arc::from(out.as_str()));
+            }
             if let Some(arr) = array_of(args, 0) {
                 let o = arr.lock().unwrap();
                 if let ObjectKind::Array(ref v) = o.kind {

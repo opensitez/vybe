@@ -312,6 +312,21 @@ impl Compiler {
                     }
                 }
 
+                // Proxy get-trap dispatch (JS profile, only when the
+                // module references `Proxy` somewhere). Routes member
+                // reads through the inline dispatcher in
+                // `emitter/js/proxy_adapter.rs`. Non-proxy code keeps
+                // the direct STRUCT_GET path.
+                if self.is_js_profile() && self.uses_proxy && !*null_safe {
+                    self.compile_expr(object)?;
+                    self.emit_const(Value::String(Arc::from(field.as_str())));
+                    let line = self.line;
+                    crate::emitter::js::proxy_adapter::emit_proxy_get_dispatch(
+                        &mut self.chunks, self.current, line,
+                    );
+                    return Ok(());
+                }
+
                 if self.is_js_profile() {
                     if *null_safe {
                         self.compile_expr(object)?;
@@ -351,6 +366,18 @@ impl Compiler {
                         let obj_slot = self.define_local("__js_member_obj");
                         self.emit_u16(Op::LOCAL_SET, obj_slot);
                         self.emit(Op::DROP);
+
+                        // Bind `__js_this = obj` so a getter installed
+                        // by `Object.defineProperty` (which runs via
+                        // STRUCT_GET's `__get_<name>` accessor dispatch)
+                        // sees the receiver. The VM's accessor-call
+                        // path doesn't set `__js_this` itself; doing it
+                        // here keeps the semantics consistent with the
+                        // explicit method-call path.
+                        let saved_this = self.save_js_this("__js_prev_this_member");
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.set_js_this_from_stack();
+
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
                         self.emit(Op::REF_IS_NULL);
                         let non_null = self.emit_jump(Op::BR_IF_FALSE);
@@ -385,6 +412,12 @@ impl Compiler {
                         self.patch_jump(have_direct);
                         self.emit_u16(Op::LOCAL_GET, val_slot);
                         self.patch_jump(end);
+                        // Restore the caller's __js_this — value already
+                        // on stack as the access result.
+                        let result_slot = self.define_local("__js_member_result");
+                        self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
+                        self.restore_js_this(saved_this);
+                        self.emit_u16(Op::LOCAL_GET, result_slot);
                     }
                     return Ok(());
                 }
@@ -431,6 +464,14 @@ impl Compiler {
                     self.compile_expr(start)?;
                     self.compile_expr(end)?;
                     common::collections::emit_slice_invoke(self.chunk(), line);
+                } else if self.is_js_profile() && self.uses_proxy && !*null_safe {
+                    // Proxy get-trap dispatch on bracket-notation reads.
+                    self.compile_expr(object)?;
+                    self.compile_expr(index)?;
+                    let line = self.line;
+                    crate::emitter::js::proxy_adapter::emit_proxy_get_dispatch(
+                        &mut self.chunks, self.current, line,
+                    );
                 } else if self.is_js_profile() && *null_safe {
                     self.compile_expr(object)?;
                     self.emit(Op::DUP);
@@ -463,6 +504,28 @@ impl Compiler {
 
             // ── New ─────────────────────────────────────────────────────
             ExprKind::New { class, args } => {
+                // ECMA-262 §10.5.2: `new Proxy(target, handler)` creates an
+                // exotic object whose property accesses are intercepted by
+                // handler traps. We lower to an inline emitter that
+                // produces a wrapper Ordinary object stamped with
+                // `__vybe_proxy_target` + `__vybe_proxy_handler`. The
+                // module-level `uses_proxy` flag (set by the AST scan)
+                // tells subsequent Member/Index emits to route through
+                // the dispatcher.
+                if self.is_js_profile() {
+                    if let ExprKind::Ident(name) = &class.kind {
+                        if name == "Proxy" && args.len() == 2 {
+                            self.uses_proxy = true;
+                            self.compile_expr(&args[0].value)?;
+                            self.compile_expr(&args[1].value)?;
+                            let line = self.line;
+                            crate::emitter::js::proxy_adapter::emit_proxy_create(
+                                &mut self.chunks, self.current, line,
+                            );
+                            return Ok(());
+                        }
+                    }
+                }
                 let class_parts = self.flatten_member_chain(class);
                 let dotted_type_name = match &class.kind {
                     ExprKind::Ident(name) => Some(name.clone()),
@@ -489,6 +552,21 @@ impl Compiler {
                         for a in args { self.compile_expr(&a.value)?; }
                         self.emit_u8(Op::CALL_REF, args.len() as u8);
                         return Ok(());
+                    }
+                    // Nested class: `new Outer.Inner()` — the inner type
+                    // is registered as a sibling global per ECMA-334 §15.3.
+                    // Try the last segment as a type name when the full
+                    // dotted form misses.
+                    if class_parts.len() > 1 {
+                        let last = class_parts.last().unwrap();
+                        let canon_last = self.canon(last);
+                        if self.defined_classes.contains(&canon_last) {
+                            let idx = self.str_const(&canon_last);
+                            self.emit_u16(Op::GLOBAL_GET, idx);
+                            for a in args { self.compile_expr(&a.value)?; }
+                            self.emit_u8(Op::CALL_REF, args.len() as u8);
+                            return Ok(());
+                        }
                     }
 
                     let bare = type_name.to_lowercase();
@@ -776,7 +854,17 @@ impl Compiler {
                                 self.emit_u8(Op::CALL_REF, 1);
                                 let done = self.emit_jump(Op::BR);
                                 self.patch_jump(not_gen);
+                                // Non-generator branch: route through
+                                // `__vybe_iter_drain` JS polyfill which
+                                // calls `v.iterator()` and drains the
+                                // protocol with `__js_this` correctly
+                                // bound. For Array / built-ins it
+                                // returns the value unchanged so concat
+                                // sees the natural shape.
+                                let iter_drain_key = self.str_const("__vybe_iter_drain");
+                                self.emit_u16(Op::GLOBAL_GET, iter_drain_key);
                                 self.emit_u16(Op::LOCAL_GET, v_slot);
+                                self.emit_u8(Op::CALL_REF, 1);
                                 self.patch_jump(done);
                             }
                             common::collections::emit_concat(&mut self.chunks, self.current, line);

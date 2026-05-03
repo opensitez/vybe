@@ -132,7 +132,9 @@ fn register_type_adds_entry() {
         Some(2),
     );
     assert_eq!(chunks[0].types.len(), 1);
-    assert_eq!(chunks[0].types[0].name, "dog");
+    // register_type preserves the source-language name verbatim;
+    // case-insensitive lookup is the type registry's responsibility.
+    assert_eq!(chunks[0].types[0].name, "Dog");
     assert_eq!(chunks[0].types[0].parent, "Animal");
     assert_eq!(chunks[0].types[0].fields, vec!["name"]);
 }

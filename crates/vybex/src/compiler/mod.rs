@@ -50,6 +50,11 @@ struct LoopCtx {
 struct PendingClass {
     parent: Option<String>,
     fields: Vec<String>,
+    /// Static field names (declared `static T name`). Looked up from
+    /// inside instance methods so a bare `Name` resolves to
+    /// `<ClassName>.Name` (struct_get on the class global) rather than
+    /// falling through to a non-existent module global.
+    static_fields: Vec<String>,
     /// Static methods: (name, chunk_idx) — tracked for inheritance
     statics: Vec<(String, usize)>,
 }
@@ -132,6 +137,11 @@ pub struct Compiler {
     /// Phase 3 will wire `calls.rs`'s qualified-chain path to consume
     /// this map instead of `profile.namespaces.host_packages`.
     host_package_roots: HashMap<String, String>,
+    /// JS-only: set when the module references `new Proxy(...)`. Member /
+    /// Index reads + writes route through `emitter::js::proxy_adapter`
+    /// for runtime trap dispatch. Off → direct `STRUCT_GET` / `ARRAY_GET`
+    /// (zero overhead for non-Proxy code paths).
+    pub(crate) uses_proxy: bool,
     /// Read-only snapshot of `vm.modules` keyed by specifier. Lets the
     /// Linker resolve `import { X } from "node:http"` against Adapter
     /// modules (Phase 6) — walking the `Indirect` re-export chain to
@@ -163,6 +173,103 @@ pub struct HostImportNamed {
     pub local: String,
     pub module: String,
     pub func: String,
+}
+
+/// AST scan: returns true if the statement (or anything nested within
+/// it) constructs a `Proxy` (i.e. contains `new Proxy(...)`). Used to
+/// gate the Member / Index proxy dispatcher emit so non-Proxy code
+/// keeps the zero-overhead direct-opcode path.
+fn stmt_uses_proxy(stmt: &Statement) -> bool {
+    match &stmt.kind {
+        StmtKind::Expr(e) => expr_uses_proxy(e),
+        StmtKind::Return(opt) => opt.as_ref().map_or(false, expr_uses_proxy),
+        StmtKind::Throw { expr, cause } => {
+            expr.as_ref().map_or(false, expr_uses_proxy)
+                || cause.as_ref().map_or(false, expr_uses_proxy)
+        }
+        StmtKind::VarDecl { declarations, .. } => declarations.iter().any(|d| {
+            d.init.as_ref().map_or(false, expr_uses_proxy)
+        }),
+        StmtKind::Assign { value, .. } | StmtKind::CompoundAssign { value, .. } => {
+            expr_uses_proxy(value)
+        }
+        StmtKind::Block(stmts) => stmts.iter().any(stmt_uses_proxy),
+        StmtKind::If { cond, then_body, elifs, else_body } => {
+            expr_uses_proxy(cond)
+                || then_body.iter().any(stmt_uses_proxy)
+                || elifs.iter().any(|(c, b)| expr_uses_proxy(c) || b.iter().any(stmt_uses_proxy))
+                || else_body.as_ref().map_or(false, |b| b.iter().any(stmt_uses_proxy))
+        }
+        StmtKind::While { cond, body, .. } => {
+            expr_uses_proxy(cond) || body.iter().any(stmt_uses_proxy)
+        }
+        StmtKind::DoWhile { cond, body, .. } => {
+            expr_uses_proxy(cond) || body.iter().any(stmt_uses_proxy)
+        }
+        StmtKind::For { init, cond, update, body, .. } => {
+            init.as_ref().map_or(false, |i| stmt_uses_proxy(i))
+                || cond.as_ref().map_or(false, expr_uses_proxy)
+                || update.as_ref().map_or(false, expr_uses_proxy)
+                || body.iter().any(stmt_uses_proxy)
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            expr_uses_proxy(iter) || body.iter().any(stmt_uses_proxy)
+        }
+        StmtKind::FunctionDecl { body, .. } => body.iter().any(stmt_uses_proxy),
+        StmtKind::ClassDecl { members, .. } => members.iter().any(|m| match m {
+            ClassMember::Method(s) => stmt_uses_proxy(s),
+            ClassMember::Constructor { body, .. } => body.iter().any(stmt_uses_proxy),
+            ClassMember::Field { init, .. } => init.as_ref().map_or(false, expr_uses_proxy),
+            ClassMember::Property { getter, setter, .. } => {
+                getter.as_ref().map_or(false, |b| b.iter().any(stmt_uses_proxy))
+                    || setter.as_ref().map_or(false, |s| s.body.iter().any(stmt_uses_proxy))
+            }
+            _ => false,
+        }),
+        StmtKind::Try { body, catches, finally, .. } => {
+            body.iter().any(stmt_uses_proxy)
+                || catches.iter().any(|c| c.body.iter().any(stmt_uses_proxy))
+                || finally.as_ref().map_or(false, |b| b.iter().any(stmt_uses_proxy))
+        }
+        _ => false,
+    }
+}
+
+fn expr_uses_proxy(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::New { class, args } => {
+            if let ExprKind::Ident(name) = &class.kind {
+                if name == "Proxy" { return true; }
+            }
+            args.iter().any(|a| expr_uses_proxy(&a.value))
+        }
+        ExprKind::Call { callee, args, .. } => {
+            expr_uses_proxy(callee) || args.iter().any(|a| expr_uses_proxy(&a.value))
+        }
+        ExprKind::Binary { left, right, .. } => {
+            expr_uses_proxy(left) || expr_uses_proxy(right)
+        }
+        ExprKind::Unary { expr, .. } => expr_uses_proxy(expr),
+        ExprKind::Member { object, .. } => expr_uses_proxy(object),
+        ExprKind::Index { object, index, .. } => {
+            expr_uses_proxy(object) || expr_uses_proxy(index)
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            expr_uses_proxy(cond) || expr_uses_proxy(then) || expr_uses_proxy(else_)
+        }
+        ExprKind::Array(elems) => elems.iter().any(|e| expr_uses_proxy(&e.value)),
+        ExprKind::Object(props) => props.iter().any(|p| match p {
+            ObjectProperty::KeyValue { value, .. } => expr_uses_proxy(value),
+            ObjectProperty::Computed { key, value } => expr_uses_proxy(key) || expr_uses_proxy(value),
+            _ => false,
+        }),
+        ExprKind::Assign { value, .. } => expr_uses_proxy(value),
+        ExprKind::Lambda { body, .. } => match body {
+            crate::ast::LambdaBody::Expr(e) => expr_uses_proxy(e),
+            crate::ast::LambdaBody::Block(b) => b.iter().any(stmt_uses_proxy),
+        },
+        _ => false,
+    }
 }
 
 /// Named + wildcard ESM imports a compiled module binds against host
@@ -214,6 +321,7 @@ impl Compiler {
             host_package_roots: HashMap::new(),
             module_exports: HashMap::new(),
             active_finally_blocks: Vec::new(),
+            uses_proxy: false,
         }
     }
 
@@ -242,6 +350,19 @@ impl Compiler {
     /// Namespace Objects for `import * as ns` reflective access.
     pub fn compile_with_imports(mut self, module: &Module) -> Result<CompileResult, String> {
         self.case_sensitive = self.profile.case_sensitive;
+
+        // Pre-scan: detect `new Proxy(...)` anywhere in the module so the
+        // Member / Index emit sites can route through the proxy dispatcher
+        // even when the access appears before the construction in source
+        // order. JS profile only — `Proxy` is a JS construct.
+        if self.profile.name == "js" {
+            for stmt in &module.body {
+                if stmt_uses_proxy(stmt) {
+                    self.uses_proxy = true;
+                    break;
+                }
+            }
+        }
 
         // ── Phase A: Link ──────────────────────────────────────────────
         //
@@ -942,6 +1063,7 @@ impl Compiler {
         self.pending_classes.insert(name.to_string(), PendingClass {
             parent,
             fields: Vec::new(),
+            static_fields: Vec::new(),
             statics: Vec::new(),
         });
     }
@@ -1078,6 +1200,18 @@ impl Compiler {
                 return;
             }
         }
+        // Static field of the current class — `Count++` inside `Counter`
+        // ctor reads `Counter.Count` (struct_get on the class global).
+        // Without this, the bare name falls through to global_get and
+        // returns null because the static field lives on the class
+        // struct, not the module's global namespace.
+        if let Some(class_name) = self.is_class_static_field(name) {
+            let class_idx = self.str_const(&class_name);
+            self.emit_u16(Op::GLOBAL_GET, class_idx);
+            let field_idx = self.str_const(&self.canon(name));
+            self.emit_u16(Op::STRUCT_GET, field_idx);
+            return;
+        }
         // Known type used as a value (e.g. `e instanceof RangeError`) — emit
         // the type name as a string so vybe:object:instanceOf can look it up
         // via its String fallback. Without this, `RangeError` would become
@@ -1130,6 +1264,20 @@ impl Compiler {
             }
             self.emit_u16(Op::LOCAL_GET, value_slot);
         }
+        // Static field of the current class — write through to
+        // `<ClassName>.<name>` instead of falling to global_set.
+        if let Some(class_name) = self.is_class_static_field(name) {
+            // Stack: [value]. Need [class_obj, value] for STRUCT_SET.
+            let value_slot = self.define_local("__static_set_value");
+            self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+            let class_idx = self.str_const(&class_name);
+            self.emit_u16(Op::GLOBAL_GET, class_idx);
+            self.emit_u16(Op::LOCAL_GET, value_slot);
+            let field_idx = self.str_const(&self.canon(name));
+            self.emit_u16(Op::STRUCT_SET, field_idx);
+            self.emit(Op::DROP);
+            return;
+        }
         // Global — canonicalize name for case-insensitive languages
         let cname = self.canon(name);
         let idx = self.str_const(&cname); self.emit_u16(Op::GLOBAL_SET, idx); self.emit(Op::DROP);
@@ -1153,6 +1301,29 @@ impl Compiler {
         // Recurse up
         if let Some(uv) = self.resolve_upvalue(parent, name) {
             return Some(self.scopes[scope_idx].add_upvalue(uv, false));
+        }
+        None
+    }
+
+    /// Returns the owning class name when `name` is a static field of
+    /// the currently-compiling class (or one of its ancestors). Used by
+    /// `emit_var_get` / `emit_var_set` to rewrite bare references to
+    /// `ClassName.name` so static state lives on the class struct.
+    fn is_class_static_field(&self, name: &str) -> Option<String> {
+        if let Some(ref class_name) = self.current_class {
+            let mut current = Some(class_name.as_str());
+            while let Some(cn) = current {
+                if let Some(pc) = self.pending_classes.get(cn) {
+                    if pc.static_fields.iter().any(|f| {
+                        if self.case_sensitive { f == name } else { f.eq_ignore_ascii_case(name) }
+                    }) {
+                        return Some(cn.to_string());
+                    }
+                    current = pc.parent.as_deref();
+                } else {
+                    break;
+                }
+            }
         }
         None
     }
@@ -1512,7 +1683,7 @@ impl Compiler {
             }
 
             // ── ForIn / ForOf ───────────────────────────────────────────
-            StmtKind::ForIn { var, key, iter, body, else_body, of, .. } => {
+            StmtKind::ForIn { var, key, iter, body, else_body, of, is_async, .. } => {
                 // Specialisation: if `iter` is a direct call to a
                 // function the pre-pass tagged as a true generator,
                 // emit a `GEN_NEXT`-driven loop rather than the
@@ -1540,6 +1711,24 @@ impl Compiler {
 
                     if let Some((not_gen, _)) = runtime_generator_done {
                         self.patch_jump(not_gen);
+                    }
+
+                    // JS profile: route the iter through __vybe_iter_drain
+                    // first. If the value has a user-defined `iterator()`
+                    // (canonical name for `[Symbol.iterator]`), the
+                    // polyfill calls it with `__js_this` correctly bound
+                    // and returns the drained array. For built-ins
+                    // (Array / Map / Set / String) it returns the input
+                    // unchanged so iterForOf still produces the right
+                    // shape. Only kicks in for `for ... of` (values
+                    // path) — for-in over keys keeps standard semantics.
+                    if self.is_js_profile() && *of && key.is_none() {
+                        let drain_key = self.str_const("__vybe_iter_drain");
+                        self.emit_u16(Op::GLOBAL_GET, drain_key);
+                        self.emit_u16(Op::LOCAL_GET, iter_slot);
+                        self.emit_u8(Op::CALL_REF, 1);
+                        self.emit_u16(Op::LOCAL_SET, iter_slot);
+                        self.emit(Op::DROP);
                     }
 
                     self.emit_u16(Op::LOCAL_GET, iter_slot);
@@ -1607,6 +1796,14 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
                     } else {
                         // Values path: TOS is the value, bind directly.
+                        // `for await (let v of …)` per ECMA-262 §13.7.5
+                        // performs `Await(value)` between iterator-step
+                        // and binding. Emit the WASM JSPI suspend op so
+                        // promise values unwrap before the body runs;
+                        // non-promises pass through unchanged.
+                        if *is_async {
+                            self.emit(Op::PROMISE_SUSPEND);
+                        }
                         let var_slot = self.define_local(var);
                         self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
                     }
@@ -1814,9 +2011,25 @@ impl Compiler {
                         if !is_catch_all {
                             let mut to_body: Vec<usize> = Vec::new();
                             for ty in &types {
+                                // Match if __exception_type === ty
                                 self.emit(Op::DUP);
                                 let line = self.line;
                                 let key = self.str_const("__exception_type");
+                                self.chunks[self.current]
+                                    .emit_op_u16(Op::STRUCT_GET, key, line);
+                                let v = self.str_const(ty);
+                                self.chunks[self.current]
+                                    .emit_op_u16(Op::CONST, v, line);
+                                self.emit(Op::DYN_EQ);
+                                to_body.push(self.emit_jump(Op::BR_IF_TRUE));
+                                // Or match if __type === ty (user class extends
+                                // Exception — its ctor stamps __type via the
+                                // class infrastructure but inherits
+                                // __exception_type from the base ctor; checking
+                                // both lets `catch (AppException)` find
+                                // `throw new AppException(...)`).
+                                self.emit(Op::DUP);
+                                let key = self.str_const("__type");
                                 self.chunks[self.current]
                                     .emit_op_u16(Op::STRUCT_GET, key, line);
                                 let v = self.str_const(ty);
@@ -2203,12 +2416,46 @@ impl Compiler {
             }
 
             // ── Using ───────────────────────────────────────────────────
+            // ECMA-334 §13.14: `using (var r = expr) { body; }` is
+            // equivalent to:
+            //
+            //     var r = expr;
+            //     try { body; } finally { r?.Dispose(); }
+            //
+            // Wrapping in real try/finally bytecode means an exception
+            // escaping the body still triggers Dispose — matching the
+            // C# semantic exercised by `using_disposes_on_exception`.
+            // Cross-language: Python `with`, Java try-with-resources,
+            // JS Stage 3 `using` share the same lowering.
             StmtKind::Using { var, resource, body } => {
                 self.compile_expr(resource)?;
                 let slot = self.define_local(var);
                 self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+
+                let line = self.line;
+                let catch_jump = common::errors::emit_try_start(&mut self.chunks[self.current], line);
                 for s in body { self.compile_stmt(s)?; }
-                // Dispose is a no-op in our VM
+                common::errors::emit_try_end(&mut self.chunks[self.current], line);
+                let skip_to_finally = self.emit_jump(Op::BR);
+                common::errors::patch_catch(&mut self.chunks[self.current], catch_jump);
+                // Catch arm: dispose, then rethrow the exception
+                // (which is on TOS after `patch_catch`).
+                let exc_slot = self.define_local("__using_exc");
+                self.emit_u16(Op::LOCAL_SET, exc_slot); self.emit(Op::DROP);
+                self.label_depth += 1;
+                common::errors::emit_resource_dispose(
+                    self.chunk(), slot, "Dispose", line,
+                );
+                self.label_depth -= 1;
+                self.emit_u16(Op::LOCAL_GET, exc_slot);
+                common::errors::emit_throw(&mut self.chunks[self.current], line);
+                // Normal-completion path: dispose, fall through.
+                self.patch_jump(skip_to_finally);
+                self.label_depth += 1;
+                common::errors::emit_resource_dispose(
+                    self.chunk(), slot, "Dispose", line,
+                );
+                self.label_depth -= 1;
             }
 
             // ── Lock ────────────────────────────────────────────────────
@@ -2783,6 +3030,24 @@ impl Compiler {
                 self.emit_var_set(name);
             }
             ExprKind::Member { object, field, .. } => {
+                // Proxy set-trap dispatch (JS profile, only when the
+                // module references `Proxy`). Stack on entry is [value]
+                // (caller pushed it); the dispatcher needs [obj, key,
+                // value] so we re-stash, push obj + key string, reload
+                // value, then call.
+                if self.is_js_profile() && self.uses_proxy {
+                    let tmp = self.define_local("__proxy_set_v");
+                    self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
+                    self.compile_expr(object)?;
+                    self.emit_const(Value::String(Arc::from(field.as_str())));
+                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    let line = self.line;
+                    crate::emitter::js::proxy_adapter::emit_proxy_set_dispatch(
+                        &mut self.chunks, self.current, line,
+                    );
+                    self.emit(Op::DROP); // adapter leaves [value] on stack
+                    return Ok(());
+                }
                 let tmp = self.define_local("__tmp");
                 self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
                 self.compile_expr(object)?;
@@ -2802,12 +3067,55 @@ impl Compiler {
                     self.chunk().emit(2, line);
                     self.emit(Op::DROP);
                 }
-                self.emit_u16(Op::LOCAL_GET, tmp);
-                let idx = self.str_const(&field_name);
-                self.emit_u16(Op::STRUCT_SET, idx);
-                self.emit(Op::DROP);
+                // JS profile member writes route through `ecma:object.set`
+                // for ECMA-262 §10.1.5 OrdinarySet enforcement: frozen /
+                // sealed / preventExtensions gates + `__set_<key>`
+                // accessor dispatch in one place. Internal `__*` keys
+                // bypass — VM bookkeeping (proxy, prototype, type stamps)
+                // that the gates would block.
+                if self.is_js_profile() && !field_name.starts_with("__") {
+                    // Bind `__js_this = obj` so a setter installed by
+                    // `Object.defineProperty` (arity-1 `set(val)`) sees
+                    // the receiver via the JS method-call protocol.
+                    // Stack on entry: [obj]. Stash, set __js_this,
+                    // re-push, call, restore.
+                    let line = self.line;
+                    let obj_slot = self.define_local("__js_set_obj");
+                    self.emit_u16(Op::LOCAL_SET, obj_slot); self.emit(Op::DROP);
+                    let saved_this = self.save_js_this("__js_prev_this_set");
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.set_js_this_from_stack();
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.emit_const(Value::String(Arc::from(field_name.as_str())));
+                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    let set_idx = self.import("ecma:object", "set");
+                    self.chunk().emit_op_u16(Op::CALL_IMPORT, set_idx, line);
+                    self.chunk().emit(3, line);
+                    self.emit(Op::DROP);
+                    self.restore_js_this(saved_this);
+                } else {
+                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    let idx = self.str_const(&field_name);
+                    self.emit_u16(Op::STRUCT_SET, idx);
+                    self.emit(Op::DROP);
+                }
             }
             ExprKind::Index { object, index, .. } => {
+                // Proxy set-trap dispatch — same shape as Member assign
+                // but the key is a runtime expression.
+                if self.is_js_profile() && self.uses_proxy {
+                    let tmp = self.define_local("__proxy_idx_set_v");
+                    self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
+                    self.compile_expr(object)?;
+                    self.compile_expr(index)?;
+                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    let line = self.line;
+                    crate::emitter::js::proxy_adapter::emit_proxy_set_dispatch(
+                        &mut self.chunks, self.current, line,
+                    );
+                    self.emit(Op::DROP);
+                    return Ok(());
+                }
                 // PHP `$arr[] = v` — empty bracket with null index is the
                 // auto-append form; route through collections::emit_push.
                 // Every emit here goes via common::collections so the
@@ -3212,6 +3520,18 @@ impl Compiler {
                 let t_x = self.define_local("__in_x");
                 self.emit_u16(Op::LOCAL_SET, t_y); self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_SET, t_x); self.emit(Op::DROP);
+
+                // Proxy has-trap dispatch on the JS profile when the
+                // module references `Proxy`. Stack: [obj, key].
+                if self.is_js_profile() && self.uses_proxy {
+                    self.emit_u16(Op::LOCAL_GET, t_y);
+                    self.emit_u16(Op::LOCAL_GET, t_x);
+                    crate::emitter::js::proxy_adapter::emit_proxy_has_dispatch(
+                        &mut self.chunks, self.current, l,
+                    );
+                    return;
+                }
+
                 self.emit_u16(Op::LOCAL_GET, t_y);
                 self.emit_u16(Op::LOCAL_GET, t_x);
                 // JS uses prototype-walking `hasIn`; other languages
@@ -3242,10 +3562,40 @@ impl Compiler {
                     let lhs_slot = self.define_local("__js_instanceof_lhs");
                     self.emit_u16(Op::LOCAL_SET, rhs_slot); self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_SET, lhs_slot); self.emit(Op::DROP);
+                    // ECMA-262 §13.10.2: `a instanceof B` first checks for
+                    // `B[Symbol.hasInstance]` (canonical name `hasinstance`)
+                    // and calls it as `B[hasinstance](a)` if present.
+                    // Compiler-side dispatch keeps the JS method-call
+                    // protocol intact (`__js_this` bound to B) — host
+                    // `ctx.invoke` can't do that, so we emit the
+                    // method-call inline instead of going through the
+                    // host fn for this case.
+                    let has_inst_key = self.str_const("hasinstance");
+                    self.emit_u16(Op::LOCAL_GET, rhs_slot);
+                    self.emit_u16(Op::STRUCT_GET, has_inst_key);
+                    let method_slot = self.define_local("__has_inst_method");
+                    self.emit_u16(Op::LOCAL_SET, method_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, method_slot);
+                    self.emit(Op::REF_IS_NULL);
+                    let no_custom = self.emit_jump(Op::BR_IF_TRUE);
+                    let saved_this = self.save_js_this("__js_prev_this_hasinst");
+                    self.emit_u16(Op::LOCAL_GET, rhs_slot);
+                    self.set_js_this_from_stack();
+                    self.emit_u16(Op::LOCAL_GET, method_slot);
+                    self.emit_u16(Op::LOCAL_GET, lhs_slot);
+                    self.emit_u8(Op::CALL_REF, 1);
+                    self.emit(Op::DYN_TO_BOOL);
+                    let result_slot = self.define_local("__has_inst_result");
+                    self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
+                    self.restore_js_this(saved_this);
+                    self.emit_u16(Op::LOCAL_GET, result_slot);
+                    let done = self.emit_jump(Op::BR);
+                    self.patch_jump(no_custom);
                     let helper = self.import("ecma:value", "instanceOf");
                     self.emit_u16(Op::LOCAL_GET, lhs_slot);
                     self.emit_u16(Op::LOCAL_GET, rhs_slot);
                     self.emit_host_call(helper, 2);
+                    self.patch_jump(done);
                 } else {
                     // Dynamic-RHS fallback: the static `a instanceof TypeName`
                     // form is intercepted upstream in `expressions.rs` and
@@ -4204,11 +4554,20 @@ impl Compiler {
                 self.emit(Op::STR_SPLIT);
             }
             "join" => {
-                self.compile_expr(args[0])?;
+                // Two callers:
+                //   - Intrinsic (`Join(arr, sep)`): args = [arr, sep],
+                //     no receiver pre-pushed.
+                //   - Value-method (`arr.join(sep)`): receiver `arr`
+                //     already on stack, args = [sep].
+                // Disambiguate by argc: 2 args → intrinsic shape; 1 arg
+                // → value-method shape (only sep to push).
                 if args.len() >= 2 {
+                    self.compile_expr(args[0])?;
                     self.compile_expr(args[1])?;
+                } else if args.len() == 1 {
+                    self.compile_expr(args[0])?;
                 } else {
-                    self.emit_const(Value::String(Arc::from("")));
+                    self.emit_const(Value::String(Arc::from(",")));
                 }
                 { let l = self.line; common::collections::emit_join(&mut self.chunks, self.current, l); }
             }

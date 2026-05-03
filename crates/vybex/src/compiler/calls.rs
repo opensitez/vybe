@@ -169,18 +169,43 @@ impl Compiler {
             return Ok(());
         }
 
-        // ── super.method(args) → this.__base_method(args) ────────────
+        // ── super.method(args) — static class dispatch ───────────────
+        //
+        // Resolve the parent class statically at compile time. Inside
+        // `class C extends B`, `super.method()` always means B's
+        // method (regardless of the runtime instance type) — the spec
+        // says super uses [[HomeObject]].[[Prototype]], NOT the
+        // instance's prototype chain. Multi-level inheritance (C → B
+        // → A) needs B.method when called from C and A.method when
+        // called from B; the previous `this.__base_method` lookup
+        // collided across levels (C overwriting B's slot) and caused
+        // an infinite loop on C's super chain.
         if let ExprKind::Member { object, field, .. } = &callee.kind {
             if matches!(&object.kind, ExprKind::Super) {
-                let base_name = format!("__base_{}", self.canon(field));
+                let canon_field = self.canon(field);
+                let class_name = self.current_class.clone();
+                let parent_name = class_name.as_ref()
+                    .and_then(|cn| self.pending_classes.get(cn.as_str()))
+                    .and_then(|pc| pc.parent.clone());
                 let self_kw = self.profile.self_keyword.clone();
-                if let Some(self_slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
-                    let prop = self.str_const(&base_name);
-                    self.emit_u16(Op::LOCAL_GET, self_slot);
-                    self.emit_u16(Op::STRUCT_GET, prop);
+                let self_slot = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw));
+
+                if let Some(parent) = parent_name {
+                    // Look up parent class via emit_var_get so closure-
+                    // captured parents (mixin pattern: `(Base) => class
+                    // extends Base`) resolve through the upvalue scope.
+                    self.emit_var_get(&parent);
+                    let method_idx = self.str_const(&canon_field);
+                    self.emit_u16(Op::STRUCT_GET, method_idx);
+
                     if self.is_js_profile() {
                         let saved_js_this = self.save_js_this("__js_prev_this_super_method");
-                        self.emit_u16(Op::LOCAL_GET, self_slot);
+                        if let Some(slot) = self_slot {
+                            self.emit_u16(Op::LOCAL_GET, slot);
+                        } else {
+                            let js_this = self.str_const("__js_this");
+                            self.emit_u16(Op::GLOBAL_GET, js_this);
+                        }
                         self.set_js_this_from_stack();
                         for a in &arg_exprs { self.compile_expr(a)?; }
                         self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
@@ -190,27 +215,15 @@ impl Compiler {
                         self.restore_js_this(saved_js_this);
                         self.emit_u16(Op::LOCAL_GET, result_slot);
                     } else {
-                        // Typed-language method ABI passes the receiver as arg0.
-                        self.emit_u16(Op::LOCAL_GET, self_slot);
+                        // Typed-language method ABI passes receiver as arg0.
+                        if let Some(slot) = self_slot {
+                            self.emit_u16(Op::LOCAL_GET, slot);
+                        } else {
+                            self.emit(Op::NULL);
+                        }
                         for a in &arg_exprs { self.compile_expr(a)?; }
                         self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
                     }
-                    return Ok(());
-                } else if self.is_js_profile() {
-                    let js_this = self.str_const("__js_this");
-                    let prop = self.str_const(&base_name);
-                    self.emit_u16(Op::GLOBAL_GET, js_this);
-                    self.emit_u16(Op::STRUCT_GET, prop);
-                    let saved_js_this = self.save_js_this("__js_prev_this_super_method");
-                    self.emit_u16(Op::GLOBAL_GET, js_this);
-                    self.set_js_this_from_stack();
-                    for a in &arg_exprs { self.compile_expr(a)?; }
-                    self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
-                    let result_slot = self.define_local("__js_super_method_result");
-                    self.emit_u16(Op::LOCAL_SET, result_slot);
-                    self.emit(Op::DROP);
-                    self.restore_js_this(saved_js_this);
-                    self.emit_u16(Op::LOCAL_GET, result_slot);
                     return Ok(());
                 }
             }
@@ -516,15 +529,16 @@ impl Compiler {
                                 common::gui::emit_add_child(self.chunk(), add_idx, line);
                                 return Ok(());
                             }
-                            // Intercept Thread/Task methods → WASM stack switching opcodes
-                            if members.len() == 1 {
+                            // Intercept Thread/Task methods → WASM stack switching opcodes.
+                            // Disambiguation by arity: `Thread.Join()` is zero-arg; an
+                            // array's `.join(sep)` takes one. Without the arity gate
+                            // this branch greedy-matched both and routed string-join
+                            // through `thread.join` (which returns the exit code, not
+                            // a string).
+                            if members.len() == 1 && arg_exprs.is_empty() {
                                 let method = members[0].as_str();
                                 match method {
                                     "join" => {
-                                        // th.Join() → thread_join opcode (blocks until thread
-                                        // completes, pushes exit code). Leave the exit code on
-                                        // stack — the statement wrapper at StmtKind::Expr adds
-                                        // its own DROP.
                                         self.emit_var_get(&local);
                                         let line = self.line;
                                         common::threading::emit_thread_join(self.chunk(), line);
@@ -781,6 +795,22 @@ impl Compiler {
                 matched_value_method.as_ref().map(|d| &d.emit),
                 Some(BuiltinEmit::Stdlib(_))
             ) && self.expr_is_known_string_receiver(object);
+            // The runtime collection registry maps .NET collection method
+            // names (Add, Remove, Count, …) to per-type implementations.
+            // It's the right home for type-aware dispatch (List.Add → push,
+            // Dict.Add → set, HashSet.Add → set-add). But the registry
+            // doesn't know about arity, so it intercepts every `Count`
+            // including LINQ's `Count(predicate)` overload.
+            //
+            // Discriminator: when the profile's matched overload routes
+            // through a shared dotnet adapter (`common:dotnet.<name>`),
+            // prefer the overload over the registry — adapters are
+            // type-blind and assume the receiver is already a JS array,
+            // which is exactly what LINQ surface methods need.
+            let prefer_dotnet_adapter = match matched_value_method.as_ref().map(|d| &d.emit) {
+                Some(BuiltinEmit::Common(name)) => name.starts_with("dotnet."),
+                _ => false,
+            };
             // Also skip value_methods if the field is an array HOF method —
             // the array_methods dispatch handles it with proper HOF semantics.
             // Without this, `[1,2,3].includes(2)` routes through the string
@@ -792,6 +822,7 @@ impl Compiler {
             } else if self.profile.namespaces.use_dotnet
                 && common::dotnet::uses_runtime_collection_dispatch(field)
                 && !prefer_string_stdlib_value_method
+                && !prefer_dotnet_adapter
             {
                 // Let the generic member-call path consult the runtime type
                 // registry for shared .NET collection methods instead of
@@ -826,6 +857,23 @@ impl Compiler {
                             }
                             self.emit(Op::I32_CONST_0); // start
                             self.emit_const(Value::I32(i32::MAX)); // end (clamped by VM)
+                        }
+                        // C# `s.Substring(start)` — 1-arg form means
+                        // "from start to end of string". STR_SUBSTRING
+                        // wants `[s, start, end]`; default end to a
+                        // sentinel large value (VM clamps to s.len()).
+                        // Same shape applies to ECMA-262 §22.1.3.16
+                        // `String.prototype.slice(start)`.
+                        "strings.substring" | "strings.slice"
+                            if arg_exprs.len() < 2 => {
+                            self.emit_const(Value::I32(i32::MAX));
+                        }
+                        // C#'s `string.ToCharArray()` lowers to STR_SPLIT
+                        // which needs a delimiter on the stack. The .NET
+                        // semantics ("each char one element") match
+                        // splitting on the empty string.
+                        "str_split" if arg_exprs.is_empty() => {
+                            self.emit_const(Value::String(Arc::from("")));
                         }
                         _ => {}
                     }
@@ -867,8 +915,24 @@ impl Compiler {
 
             // Array higher-order methods: arr.map(fn), arr.filter(fn), etc.
             // Use compiler_common::loops which emits proper loop bytecode.
+            // BUT: skip when the same name is a user-defined class method
+            // (e.g. `QueryBuilder.Where(string)` shouldn't be intercepted
+            // by the LINQ HOF dispatch). The compiler can't see receiver
+            // types at compile time, but it knows what method names user
+            // classes have declared.
             let field_lower = if self.case_sensitive { field.clone() } else { field.to_lowercase() };
-            if let Some(stdlib_name) = self.profile.lookup_array_method(&field_lower).map(|s| s.to_string()) {
+            let canon_field_for_user_check = self.canon(field);
+            let user_class_method = self.defined_class_methods.contains(&canon_field_for_user_check);
+            if !user_class_method
+                && self.profile.lookup_array_method(&field_lower).is_some()
+            {
+                // (re-fetch only when we're committed to the HOF path so
+                // the method name lookup matches the previous behaviour)
+            }
+            if let Some(stdlib_name) = self.profile.lookup_array_method(&field_lower)
+                .filter(|_| !user_class_method)
+                .map(|s| s.to_string())
+            {
                 // Normalize to the JS-style method name used in match below
                 let field_lower = match stdlib_name.as_str() {
                     "__array_map" => "map".to_string(),
@@ -1327,25 +1391,106 @@ impl Compiler {
                 let prop = self.str_const(&method_name);
                 let receiver_marker = self.str_const("__vybe_method_receiver");
 
-                // Generator `.next()`: if receiver is a Continuation,
-                // drive via Op::GEN_NEXT (WASM stack switching) and
-                // wrap into spec `{value, done}`. Non-Continuations
-                // (Array iterators, custom iterables) fall through to
-                // the regular method dispatch below — `iter.next()`
-                // on an Array iterator hits the host-fn-with-receiver
-                // path that already works.
-                let gen_next_skip_patch = if !*null_safe && method_name == "next" && arg_exprs.is_empty() {
+                // Generator `.return(v)`: ECMA-262 §27.5.1.4 — terminate
+                // the generator and yield `{value: v, done: true}`. We
+                // stamp `__vybe_gen_returned = true` on the cont so
+                // subsequent `next()` calls short-circuit to
+                // `{value: undefined, done: true}`. Pure compiler
+                // bookkeeping — no VM-side state mutation needed.
+                let gen_return_skip_patch = if !*null_safe && method_name == "return" && arg_exprs.len() <= 1 {
                     let line = self.line;
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     let is_gen_idx = self.import("ecma:value", "isGenerator");
                     self.emit_host_call(is_gen_idx, 1);
                     let not_gen = self.emit_jump(Op::BR_IF_FALSE);
+                    // Stamp __vybe_gen_returned = true on the cont.
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.emit(Op::GEN_NEXT);
-                    let has_more_slot = self.define_local("__gen_has_more");
-                    self.emit_u16(Op::LOCAL_SET, has_more_slot); self.emit(Op::DROP);
+                    self.emit(Op::TRUE);
+                    let returned_key = self.str_const("__vybe_gen_returned");
+                    self.emit_u16(Op::STRUCT_SET, returned_key);
+                    self.emit(Op::DROP);
+                    // Build { value: v, done: true }.
+                    common::dict::emit_new(&mut self.chunks, self.current, line);
+                    self.emit(Op::DUP);
+                    if arg_exprs.is_empty() {
+                        self.emit(Op::UNDEFINED);
+                    } else {
+                        self.compile_expr(&arg_exprs[0])?;
+                    }
+                    let value_key = self.str_const("value");
+                    self.emit_u16(Op::STRUCT_SET, value_key);
+                    self.emit(Op::DROP);
+                    self.emit(Op::DUP);
+                    self.emit(Op::TRUE);
+                    let done_key = self.str_const("done");
+                    self.emit_u16(Op::STRUCT_SET, done_key);
+                    self.emit(Op::DROP);
+                    let skip = self.emit_jump(Op::BR);
+                    self.patch_jump(not_gen);
+                    Some(skip)
+                } else { None };
+
+                // Generator `.next()` / `.next(v)`: if receiver is a
+                // Continuation, drive via WASM stack-switching opcodes
+                // and wrap into spec `{value, done}`.
+                //   - `g.next()`     → Op::GEN_NEXT (pushes value+has_more)
+                //   - `g.next(v)`    → Op::RESUME with v as resume_val
+                //                       (pushes yielded value), then
+                //                       check `isGeneratorDone` for the
+                //                       done flag.
+                // Non-Continuations (Array iterators, custom iterables)
+                // fall through to regular method dispatch below.
+                let gen_next_skip_patch = if !*null_safe && method_name == "next" && arg_exprs.len() <= 1 {
+                    let line = self.line;
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    let is_gen_idx = self.import("ecma:value", "isGenerator");
+                    self.emit_host_call(is_gen_idx, 1);
+                    let not_gen = self.emit_jump(Op::BR_IF_FALSE);
                     let value_slot = self.define_local("__gen_value");
+                    let done_slot = self.define_local("__gen_done");
+                    // If a previous `.return()` stamped the cont as
+                    // returned, short-circuit to `{value: undefined,
+                    // done: true}` per ECMA-262 §27.5.1.2 step 2.
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    let returned_key2 = self.str_const("__vybe_gen_returned");
+                    self.emit_u16(Op::STRUCT_GET, returned_key2);
+                    self.emit(Op::DYN_TO_BOOL);
+                    let not_returned = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit(Op::UNDEFINED);
                     self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+                    self.emit(Op::TRUE);
+                    self.emit_u16(Op::LOCAL_SET, done_slot); self.emit(Op::DROP);
+                    let after_returned_branch = self.emit_jump(Op::BR);
+                    self.patch_jump(not_returned);
+                    if arg_exprs.is_empty() {
+                        // `g.next()` — GEN_NEXT path: pushes value+has_more.
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit(Op::GEN_NEXT);
+                        let has_more_slot = self.define_local("__gen_has_more");
+                        self.emit_u16(Op::LOCAL_SET, has_more_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, has_more_slot);
+                        self.emit(Op::DYN_TO_BOOL);
+                        self.emit(Op::DYN_NOT);
+                        self.emit_u16(Op::LOCAL_SET, done_slot); self.emit(Op::DROP);
+                    } else {
+                        // `g.next(v)` — RESUME with the resume value;
+                        // the suspended yield expression evaluates to
+                        // `v`. Pushes only the yielded value back; we
+                        // query `isGeneratorDone` for the spec `done`.
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.compile_expr(&arg_exprs[0])?;
+                        self.emit_u16(Op::RESUME, 0);
+                        self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        let is_done_idx = self.import("ecma:value", "isGeneratorDone");
+                        self.emit_host_call(is_done_idx, 1);
+                        self.emit_u16(Op::LOCAL_SET, done_slot); self.emit(Op::DROP);
+                    }
+                    // Both the early-`returned` short-circuit and the
+                    // GEN_NEXT/RESUME paths converge here to build the
+                    // `{value, done}` wrapper.
+                    self.patch_jump(after_returned_branch);
                     common::dict::emit_new(&mut self.chunks, self.current, line);
                     self.emit(Op::DUP);
                     self.emit_u16(Op::LOCAL_GET, value_slot);
@@ -1353,9 +1498,7 @@ impl Compiler {
                     self.emit_u16(Op::STRUCT_SET, value_key);
                     self.emit(Op::DROP);
                     self.emit(Op::DUP);
-                    self.emit_u16(Op::LOCAL_GET, has_more_slot);
-                    self.emit(Op::DYN_TO_BOOL);
-                    self.emit(Op::DYN_NOT);
+                    self.emit_u16(Op::LOCAL_GET, done_slot);
                     let done_key = self.str_const("done");
                     self.emit_u16(Op::STRUCT_SET, done_key);
                     self.emit(Op::DROP);
@@ -1364,9 +1507,10 @@ impl Compiler {
                     Some(skip)
                 } else { None };
                 let _ = gen_next_skip_patch;
-                // gen_next_skip_patch is patched at the end of the JS
-                // method dispatch (when result is on stack and we'd
-                // otherwise `return Ok(())`).
+                let _ = gen_return_skip_patch;
+                // gen_next_skip_patch / gen_return_skip_patch are
+                // patched at the end of the JS method dispatch (when
+                // result is on stack and we'd otherwise `return Ok(())`).
 
                 if *null_safe {
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -1507,6 +1651,9 @@ impl Compiler {
                 self.patch_jump(js_done);
                 self.patch_jump(typed_done);
                 if let Some(skip) = gen_next_skip_patch {
+                    self.patch_jump(skip);
+                }
+                if let Some(skip) = gen_return_skip_patch {
                     self.patch_jump(skip);
                 }
                 return Ok(());

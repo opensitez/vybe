@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 use super::helpers::{run_js, run_js_vm};
-use vybe_bytecode::Value;
+use vybe_bytecode::{Value, VM};
 
 fn run_js_one(code: &str) -> String {
     run_js(code).into_iter().next().unwrap_or_default()
@@ -273,9 +273,18 @@ fn invoke_js_class_method() {
         obj.lock().unwrap().properties.get("report").cloned()
     } else { None }.unwrap();
 
-    vm.invoke(&inc, &[instance.clone()]).unwrap();
-    vm.invoke(&inc, &[instance.clone()]).unwrap();
-    vm.invoke(&report, &[instance.clone()]).unwrap();
+    // Host-driven JS method invocation needs `__js_this` bound to the
+    // receiver before each call — the VM's `invoke` helper isn't
+    // method-aware (mirrors `Function.prototype.call(receiver, …)`'s
+    // explicit-receiver convention, which the test mimics by passing
+    // `instance` as the first arg). Without the bind, the method
+    // body's `this` reads stale `__js_this` and `this.n` traps.
+    let bind_this = |vm: &mut VM, recv: &Value| {
+        vm.globals.insert("__js_this".to_string(), recv.clone());
+    };
+    bind_this(&mut vm, &instance); vm.invoke(&inc, &[instance.clone()]).unwrap();
+    bind_this(&mut vm, &instance); vm.invoke(&inc, &[instance.clone()]).unwrap();
+    bind_this(&mut vm, &instance); vm.invoke(&report, &[instance.clone()]).unwrap();
     assert_eq!(output.lock().unwrap().last().map(|s| s.as_str()), Some("2"));
 }
 

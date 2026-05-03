@@ -38,7 +38,20 @@ pub fn parse(source: &str) -> Result<Module, String> {
         }
     }
     hoisted.append(&mut rest);
-    let body = hoisted;
+    let mut body = hoisted;
+
+    // Const-folding pass for computed method/property names that
+    // reference a top-level string constant: `const X = "greet"` makes
+    // `class C { [X]() {…} }` resolvable to method name "greet" at
+    // compile time. Without this fold the method ends up bound under
+    // the literal text "X" and `obj.greet()` misses.
+    //
+    // Pure walker work — no compiler state, no AST extension. The fold
+    // only fires when the computed key is a single identifier whose
+    // value is a string literal in scope; anything more complex falls
+    // through to the existing literal-text path (still incorrect for
+    // those cases, but those tests already need runtime install).
+    fold_const_computed_names(&mut body);
 
     Ok(Module {
         name: "main".into(),
@@ -46,6 +59,87 @@ pub fn parse(source: &str) -> Result<Module, String> {
         body,
         imports,
     })
+}
+
+fn fold_const_computed_names(body: &mut [Statement]) {
+    use std::collections::HashMap;
+    let mut consts: HashMap<String, String> = HashMap::new();
+    for stmt in body.iter() {
+        if let StmtKind::VarDecl { declarations, kind } = &stmt.kind {
+            if matches!(kind, VarDeclKind::Const | VarDeclKind::Let | VarDeclKind::Var) {
+                for d in declarations {
+                    if let (BindingPattern::Ident(name), Some(init)) = (&d.pattern, &d.init) {
+                        if let ExprKind::Lit(Literal::Str(s)) = &init.kind {
+                            consts.insert(name.clone(), s.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if consts.is_empty() { return; }
+    for stmt in body.iter_mut() {
+        rewrite_class_method_names(stmt, &consts);
+    }
+}
+
+fn rewrite_class_method_names(
+    stmt: &mut Statement,
+    consts: &std::collections::HashMap<String, String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::ClassDecl { members, .. } => {
+            for m in members.iter_mut() {
+                if let ClassMember::Method(box_stmt) = m {
+                    if let StmtKind::FunctionDecl { name, .. } = &mut box_stmt.kind {
+                        if let Some(resolved) = consts.get(name.as_str()) {
+                            *name = resolved.clone();
+                        }
+                    }
+                }
+                if let ClassMember::Property { name, .. } = m {
+                    if let Some(resolved) = consts.get(name.as_str()) {
+                        *name = resolved.clone();
+                    }
+                }
+            }
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for d in declarations.iter_mut() {
+                rewrite_pattern_keys(&mut d.pattern, consts);
+            }
+        }
+        StmtKind::Block(stmts) => {
+            for s in stmts.iter_mut() {
+                rewrite_class_method_names(s, consts);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pattern_keys(
+    pat: &mut BindingPattern,
+    consts: &std::collections::HashMap<String, String>,
+) {
+    if let BindingPattern::Object(props) = pat {
+        for p in props.iter_mut() {
+            // `[ident]: val` lands either as the bare ident text
+            // (walker dropped the brackets) or as `[ident]`. Probe
+            // both forms and resolve via the const map.
+            let trimmed = p.key
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .trim()
+                .to_string();
+            if let Some(resolved) = consts.get(trimmed.as_str()) {
+                p.key = resolved.clone();
+            }
+            if let Some(ref mut nested) = p.value {
+                rewrite_pattern_keys(nested, consts);
+            }
+        }
+    }
 }
 
 // ── Statements ──────────────────────────────────────────────────────────────
@@ -432,14 +526,43 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut parents = Vec::new();
     let mut members = Vec::new();
+    // Pre-class statements emitted to bind synthetic names for non-trivial
+    // `extends <expression>` heads (e.g. `class X extends getBase()`).
+    let mut pre_class_stmts: Vec<Statement> = Vec::new();
 
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::ident_name => name = p.as_str().to_string(),
             Rule::assignment_expression | Rule::conditional_expression |
             Rule::logical_expr | Rule::comparison => {
-                // extends expression — extract name
-                parents.push(extract_ident_name(&p));
+                // `extends Expr` — if Expr is a bare identifier we use
+                // it as the parent name directly (back-compat). Otherwise
+                // we lower to `var __extends_<class>_<n> = Expr;` before
+                // the class and use that synthetic name as the parent.
+                // Lets `class X extends getBase()` /
+                // `class X extends Mixin(Base)` work without changing
+                // the AST shape (parent stays a single ident name).
+                let raw = extract_ident_name(&p);
+                let is_simple = !raw.contains('(') && !raw.contains('.')
+                    && !raw.contains(' ') && !raw.contains('[')
+                    && !raw.is_empty();
+                if is_simple {
+                    parents.push(raw);
+                } else {
+                    let synth = format!("__extends_{}_{}", name, parents.len());
+                    let init = walk_expression(p)?;
+                    pre_class_stmts.push(Statement::new(StmtKind::VarDecl {
+                        declarations: vec![VarDeclarator {
+                            pattern: BindingPattern::Ident(synth.clone()),
+                            type_hint: None,
+                            init: Some(init),
+                            array_bounds: None,
+                            with_events: false,
+                        }],
+                        kind: VarDeclKind::Var,
+                    }));
+                    parents.push(synth);
+                }
             }
             Rule::class_body => {
                 for m in p.into_inner() {
@@ -475,11 +598,13 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         modifiers: ClassModifiers::default(),
     };
 
-    if static_init_stmts.is_empty() {
+    if static_init_stmts.is_empty() && pre_class_stmts.is_empty() {
         Ok(class_stmt)
     } else {
-        // Wrap: class declaration + static init statements in a Block
-        let mut block = vec![Statement::new(class_stmt)];
+        // Wrap: pre-class extends bindings, then class declaration,
+        // then static init statements, all in a Block.
+        let mut block = pre_class_stmts;
+        block.push(Statement::new(class_stmt));
         block.extend(static_init_stmts);
         Ok(StmtKind::Block(block))
     }
@@ -524,7 +649,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
             let mut body = Vec::new();
             for p in member_pair.into_inner() {
                 match p.as_rule() {
-                    Rule::property_name | Rule::ident_name | Rule::ident_or_keyword => name = p.as_str().to_string(),
+                    Rule::property_name | Rule::ident_name | Rule::ident_or_keyword => name = extract_property_name(&p),
                     Rule::function_body => body = walk_body(p)?,
                     _ => {}
                 }
@@ -545,7 +670,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
             let mut param_prologue = Vec::new();
             for p in member_pair.into_inner() {
                 match p.as_rule() {
-                    Rule::property_name | Rule::ident_name | Rule::ident_or_keyword => name = p.as_str().to_string(),
+                    Rule::property_name | Rule::ident_name | Rule::ident_or_keyword => name = extract_property_name(&p),
                     Rule::param => {
                         let (parsed_param, init_stmt) = walk_param_with_prologue(p, 0)?;
                         param = parsed_param;
@@ -580,7 +705,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
             for p in member_pair.into_inner() {
                 match p.as_rule() {
                     Rule::async_kw => is_async = true,
-                    Rule::property_name | Rule::ident_name | Rule::ident_or_keyword => name = p.as_str().to_string(),
+                    Rule::property_name | Rule::ident_name | Rule::ident_or_keyword => name = extract_property_name(&p),
                     Rule::param_list => {
                         let (parsed_params, prologue) = walk_params_with_prologue(p)?;
                         params = parsed_params;
@@ -622,7 +747,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
             let mut init = None;
             for p in member_pair.into_inner() {
                 match p.as_rule() {
-                    Rule::property_name | Rule::ident_name | Rule::ident_or_keyword => name = p.as_str().to_string(),
+                    Rule::property_name | Rule::ident_name | Rule::ident_or_keyword => name = extract_property_name(&p),
                     _ => init = Some(walk_expression(p)?),
                 }
             }
@@ -662,6 +787,18 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
+    // `for await (...)` — optional async marker between `for` and the
+    // header. Captured by the grammar as a distinct `for_await_marker`
+    // pair so we can route through `is_async = true` and emit `await`
+    // before each body iteration.
+    let mut is_for_await = false;
+    let mut peek = inner.peek();
+    if peek.as_ref().map_or(false, |p| p.as_rule() == Rule::for_await_marker) {
+        is_for_await = true;
+        inner.next();
+        peek = inner.peek();
+        let _ = peek;
+    }
     let header = next_rule(&mut inner, Rule::for_header)
         .or_else(|_| next_meaningful(&mut inner))?;
     let header_inner = header.into_inner().next().ok_or("Empty for header")?;
@@ -679,7 +816,7 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
             full_body.extend(body);
             Ok(StmtKind::ForIn {
                 var, key: None, iter, body: full_body, of: false,
-                else_body: None, is_async: false,
+                else_body: None, is_async: is_for_await,
             })
         }
         Rule::for_of_header => {
@@ -692,7 +829,7 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
             full_body.extend(body);
             Ok(StmtKind::ForIn {
                 var, key: None, iter, body: full_body, of: true,
-                else_body: None, is_async: false,
+                else_body: None, is_async: is_for_await,
             })
         }
         Rule::for_c_header => {
@@ -1930,6 +2067,34 @@ fn extract_ident_name(pair: &Pair<Rule>) -> String {
     pair.as_str().trim().to_string()
 }
 
+/// Resolve a `property_name` pair into a method/property name string.
+/// Computed names like `[Symbol.iterator]` are recognised when the
+/// expression is a known well-known-symbol member access — the
+/// canonical resolver picks up `Symbol.iterator` / `Symbol.hasInstance`
+/// / etc. and remaps to the cross-language method names. Other
+/// computed names fall through as the raw bracketed text (caller can
+/// detect and either lower to runtime install or error).
+fn extract_property_name(pair: &Pair<Rule>) -> String {
+    if pair.as_rule() == Rule::property_name {
+        if let Some(inner) = pair.clone().into_inner().next() {
+            if inner.as_rule() == Rule::computed_property_name {
+                let inner_text = inner.as_str()
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .trim();
+                if let Some(rest) = inner_text.strip_prefix("Symbol.") {
+                    let name = rest.trim();
+                    if matches!(name, "iterator" | "asyncIterator" | "toPrimitive" | "hasInstance") {
+                        return format!("Symbol.{}", name);
+                    }
+                }
+                return inner_text.to_string();
+            }
+        }
+    }
+    pair.as_str().trim().to_string()
+}
+
 /// Extract the loop variable and any destructuring prefix statements.
 /// For `for (let x of arr)` returns ("x", []).
 /// For `for (let [a, b] of arr)` returns ("__forof_tmp", [VarDecl let [a,b] = __forof_tmp])
@@ -2022,7 +2187,23 @@ fn walk_object_accessor(mut inner: Vec<Pair<Rule>>, is_getter: bool) -> Result<O
 /// FunctionDecl-wrapped lambda. Out-of-line for the same stack-frame
 /// reason as walk_object_accessor.
 fn walk_object_method(mut inner: Vec<Pair<Rule>>) -> Result<ObjectProperty, String> {
-    let key = inner.remove(0).as_str().to_string();
+    let key_pair = inner.remove(0);
+    // `[Symbol.iterator]() {…}` — rewrite to the canonical
+    // cross-language method name (`iterator` / `toprimitive` / etc.)
+    // so the iter-drain polyfill and to_primitive polyfill find the
+    // method via the same key class declarations use.
+    let raw_key = if key_pair.as_rule() == Rule::property_name {
+        extract_property_name(&key_pair)
+    } else {
+        key_pair.as_str().to_string()
+    };
+    let key = match raw_key.as_str() {
+        "Symbol.iterator"      => "iterator".to_string(),
+        "Symbol.asyncIterator" => "asyncIterator".to_string(),
+        "Symbol.toPrimitive"   => "toprimitive".to_string(),
+        "Symbol.hasInstance"   => "hasinstance".to_string(),
+        _                      => raw_key,
+    };
     let mut params = Vec::new();
     let mut body = Vec::new();
     for p in inner {

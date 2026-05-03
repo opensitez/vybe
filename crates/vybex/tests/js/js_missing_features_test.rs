@@ -592,7 +592,9 @@ fn template_literal_expression() {
 
 #[test]
 fn optional_chain_null() {
-    assert_eq!(run_js_one("let x = null; console.log(x?.name)"), "null");
+    // ECMA-262 §13.3.9.2: optional chain on `null`/`undefined` short-circuits
+    // to `undefined`, not `null`.
+    assert_eq!(run_js_one("let x = null; console.log(x?.name)"), "undefined");
 }
 
 #[test]

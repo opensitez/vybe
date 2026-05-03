@@ -273,7 +273,6 @@ console.log(result.join(","));
     assert_eq!(out, vec!["1,9,25"]);
 }
 
-#[ignore]
 #[test]
 fn reduce_to_object() {
     let out = run_js(r#"

@@ -224,7 +224,8 @@ fn test_optional_chaining_non_null() {
 
 #[test]
 fn test_optional_chaining_null() {
-    assert_eq!(run_js_one(r#"let o = null; console.log(o?.x)"#), "null");
+    // ECMA-262 §13.3.9.2: optional chain on null short-circuits to undefined.
+    assert_eq!(run_js_one(r#"let o = null; console.log(o?.x)"#), "undefined");
 }
 
 #[test]
@@ -234,7 +235,8 @@ fn test_optional_chaining_nested() {
 
 #[test]
 fn test_optional_chaining_null_nested() {
-    assert_eq!(run_js_one(r#"let o = { a: null }; console.log(o?.a?.b)"#), "null");
+    // ECMA-262 §13.3.9.2: optional chain on null short-circuits to undefined.
+    assert_eq!(run_js_one(r#"let o = { a: null }; console.log(o?.a?.b)"#), "undefined");
 }
 
 // ============================================================
@@ -243,9 +245,12 @@ fn test_optional_chaining_null_nested() {
 
 #[test]
 fn test_default_params() {
+    // ECMA-262 §10.2.1.1: missing positional args are `undefined`,
+    // not `null`. The default-fallback check has to use === undefined
+    // (or just plain `=` default-param syntax) to match spec.
     let code = r#"
         function greet(name, greeting) {
-            if (greeting === null) { greeting = "Hello"; }
+            if (greeting === undefined) { greeting = "Hello"; }
             return greeting + ", " + name + "!";
         }
         console.log(greet("World"));

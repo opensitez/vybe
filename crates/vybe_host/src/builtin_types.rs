@@ -188,26 +188,25 @@ pub fn register_all(vm: &mut VM) {
     let dict_id = {
         let mut t = TypeDef::new("Dictionary");
         for (method, fname) in &[
-            ("add",          "set"),     // Dictionary.Add(k, v)
-            ("item",         "get"),     // Dictionary.Item(k)
-            ("containskey",  "has"),     // Dictionary.ContainsKey(k)
-            ("remove",       "delete"),  // Dictionary.Remove(k)
-            ("keys",         "keys"),
-            ("values",       "values"),
-            ("clear",        "clear"),
-            ("count",        "size"),    // .NET .Count maps to ECMA size
-            ("trygetvalue",  "get"),     // 1-arg form (no `out` param)
+            ("add",            "set"),     // Dictionary.Add(k, v)
+            ("item",           "get"),     // Dictionary.Item(k)
+            ("containskey",    "has"),     // Dictionary.ContainsKey(k)
+            ("containsvalue",  "containsValue"), // .NET-only linear scan
+            ("remove",         "delete"),  // Dictionary.Remove(k)
+            ("keys",           "keys"),
+            ("values",         "values"),
+            ("clear",          "clear"),
+            ("count",          "size"),    // .NET .Count maps to ECMA size
+            ("trygetvalue",    "get"),     // 1-arg form (no `out` param)
             // ConcurrentDictionary aliases — same shape, same primitives.
-            ("tryadd",       "set"),
-            ("addorupdate",  "set"),
-            ("getoradd",     "get"),
+            ("tryadd",         "set"),
+            ("addorupdate",    "set"),
+            ("getoradd",       "get"),
         ] {
             if let Some(idx) = h(vm, "ecma:map", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }
-        // ContainsValue has no ECMA-262 Map equivalent; .NET-only. TODO:
-        // stdlib bytecode adapter that walks values + uses array.includes.
         t.parent = Some(0);
         vm.type_registry.register(t)
     };
@@ -272,6 +271,10 @@ pub fn register_all(vm: &mut VM) {
     // --- HashSet ---
     //
     // Phase 7b: `.NET HashSet<T>` is a JS Set per ECMA-262 §24.2.
+    // The mutating set-algebra methods (`UnionWith`, etc.) are .NET-shape
+    // wrappers around the same `ObjectKind::Set` storage — distinct from
+    // the immutable ES2025 `union`/`intersection`/etc. accessed via
+    // `getMethodForCall` on JS Sets.
     {
         let mut t = TypeDef::new("HashSet");
         for (method, module, fname) in &[
@@ -280,6 +283,13 @@ pub fn register_all(vm: &mut VM) {
             ("remove", "ecma:set", "delete"),
             ("count", "ecma:set", "size"),
             ("clear", "ecma:set", "clear"),
+            ("unionwith", "ecma:set", "unionWith"),
+            ("intersectwith", "ecma:set", "intersectWith"),
+            ("exceptwith", "ecma:set", "exceptWith"),
+            ("symmetricexceptwith", "ecma:set", "symmetricExceptWith"),
+            ("issubsetof", "ecma:set", "isSubsetOf"),
+            ("issupersetof", "ecma:set", "isSupersetOf"),
+            ("overlaps", "ecma:set", "overlaps"),
         ] {
             if let Some(idx) = h(vm, module, fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));

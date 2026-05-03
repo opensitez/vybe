@@ -190,19 +190,28 @@ impl VM {
         // The caller must remove the callee from the stack before this call.
         let base = self.stack.len() - argc;
 
-        // Arity validation: pad missing args, truncate extras (dynamic language semantics)
+        // Arity validation: pad missing args, truncate extras (dynamic language semantics).
+        //
+        // Missing positional args land as `Undefined` per ECMA-262 §10.2.1.1
+        // (matches V8 / QuickJS internals). Distinct from `Null` so callers
+        // can tell `f()` from `f(null)` — required for spec-compliant default
+        // parameters. WASM core dispatch is fixed-arity; padding with
+        // Undefined is the standard JS-engine convention used by every
+        // browser-grade JS-on-WASM implementation.
         if argc > arity && arity > 0 {
             for _ in 0..(argc - arity) {
                 self.pop();
             }
         }
         for _ in argc..arity {
-            self.push(Value::Null)?;
+            self.push(Value::Undefined)?;
         }
 
         let local_count = self.chunks[chunk_index].local_count as usize;
         let total = local_count.max(arity);
         let have = self.stack.len() - base;
+        // Local slots beyond the arity range are uninitialized variables,
+        // not missing args — Null is the right default here.
         for _ in have..total {
             self.push(Value::Null)?;
         }

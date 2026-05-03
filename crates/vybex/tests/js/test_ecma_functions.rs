@@ -278,7 +278,10 @@ update(1);
 }
 
 #[test]
-fn missing_arguments_currently_produce_null() {
+fn missing_arguments_produce_undefined() {
+    // ECMA-262 §10.2.1.1: missing positional args land as `undefined`,
+    // distinct from explicit `null`. (Vybe's VM padded with `null`
+    // pre-2026-05-02; the rename reflects the spec-compliant model.)
     let out = run_js(r#"
 function show(a, b) {
     console.log(a);
@@ -286,7 +289,7 @@ function show(a, b) {
 }
 show(1);
 "#);
-    assert_eq!(out, vec!["1", "null"]);
+    assert_eq!(out, vec!["1", "undefined"]);
 }
 
 #[test]

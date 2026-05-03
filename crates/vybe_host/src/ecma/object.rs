@@ -350,16 +350,61 @@ fn register_access(vm: &mut VM) {
 
     // set(obj, key, value) -> ()
     vm.register_host_fn("ecma:object", "set",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let key = args.get(1).map(key_string).unwrap_or_default();
                 let val = args.get(2).cloned().unwrap_or(Value::Undefined);
-                let mut o = obj.lock().unwrap();
-                // Per spec: writes fail silently on frozen / non-extensible
-                if o.properties.get(FROZEN_MARK).is_some() {
-                    return Value::Null;
+                // ECMA-262 §10.1.5 OrdinarySet — three gates:
+                //   1. Frozen → all writes fail silently (loose mode).
+                //   2. Sealed / preventExtensions → new keys fail; existing
+                //      keys writable unless also frozen.
+                //   3. `__set_<key>` accessor → call setter instead of
+                //      writing to the property bag.
+                {
+                    let o = obj.lock().unwrap();
+                    if o.properties.get(FROZEN_MARK).is_some() {
+                        return Value::Null;
+                    }
+                    let not_extensible = matches!(
+                        o.properties.get(EXTENSIBLE_MARK),
+                        Some(Value::I32(0))
+                    );
+                    if not_extensible && !o.properties.contains_key(&key) {
+                        return Value::Null;
+                    }
                 }
-                o.properties.insert(key, val);
+                let setter_key = format!("__set_{}", key);
+                let setter = {
+                    let o = obj.lock().unwrap();
+                    o.properties.get(&setter_key).cloned()
+                };
+                if let Some(setter_val) = setter {
+                    if let Value::Object(setter_obj) = &setter_val {
+                        // ECMA-262 §10.1.5 step 6.b: the setter is
+                        // called with `this = receiver`. We can't
+                        // bind `__js_this` from a host fn (no VM
+                        // mutation), but we can match the arg count
+                        // to the setter's declared arity:
+                        //   - arity 1 (defineProperty `set(val)`):
+                        //     pass `[val]`.
+                        //   - arity 2 (class `set name(val)` compiled
+                        //     as `(self, val)`): pass `[obj, val]`
+                        //     so the explicit-self slot binds.
+                        let setter_arity = {
+                            let so = setter_obj.lock().unwrap();
+                            match &so.kind {
+                                vybe_bytecode::value::ObjectKind::Function(f) => Some(f.arity),
+                                _ => None,
+                            }
+                        };
+                        match setter_arity {
+                            Some(1) => { ctx.invoke(&setter_val, &[val]); }
+                            _ => { ctx.invoke(&setter_val, &[Value::Object(obj.clone()), val]); }
+                        }
+                        return Value::Null;
+                    }
+                }
+                obj.lock().unwrap().properties.insert(key, val);
             }
             Value::Null
         }));
@@ -919,7 +964,7 @@ fn register_descriptors(vm: &mut VM) {
                 // as accessors (see dispatch.rs STRUCT_GET / STRUCT_SET),
                 // so install them here when the descriptor specifies
                 // get/set callables.
-                let (val_or_none, getter, setter, enumerable) = match args.get(2) {
+                let (val_or_none, getter, setter, enumerable, writable) = match args.get(2) {
                     Some(Value::Object(desc)) => {
                         let d = desc.lock().unwrap();
                         let val = d.properties.get("value").cloned();
@@ -934,9 +979,18 @@ fn register_descriptors(vm: &mut VM) {
                         let e = d.properties.get("enumerable")
                             .map(|x| x.as_bool())
                             .unwrap_or(false);
-                        (val, get, set, e)
+                        // ECMA-262 §6.2.5.1: data descriptors default
+                        // writable=false when omitted but value is
+                        // present. We treat absence as "true" only when
+                        // the descriptor is purely accessor-shaped, to
+                        // match observable test behaviour (`writable`
+                        // explicitly true → writable; explicitly false
+                        // or absent on data descriptor → non-writable).
+                        let w = d.properties.get("writable")
+                            .map(|x| x.as_bool());
+                        (val, get, set, e, w)
                     }
-                    _ => (None, None, None, false),
+                    _ => (None, None, None, false, None),
                 };
                 track_key(&obj, &key);
                 if !enumerable {
@@ -951,7 +1005,24 @@ fn register_descriptors(vm: &mut VM) {
                         o.properties.insert(format!("__set_{}", key), s);
                     }
                     if let Some(v) = val_or_none {
-                        o.properties.insert(key, v);
+                        o.properties.insert(key.clone(), v);
+                        // Non-writable data descriptor → install a
+                        // no-op setter so subsequent writes via
+                        // STRUCT_SET / `ecma:object.set` are silently
+                        // discarded (loose mode per ECMA-262 §10.1.5).
+                        if matches!(writable, Some(false) | None) {
+                            let noop_idx = NOOP_SETTER_IDX
+                                .load(std::sync::atomic::Ordering::Relaxed);
+                            if noop_idx > 0 {
+                                let mut noop_obj = Object::new();
+                                noop_obj.kind = ObjectKind::HostFunction(noop_idx);
+                                let noop_val = Value::Object(Arc::new(Mutex::new(noop_obj)));
+                                let setter_key = format!("__set_{}", key);
+                                if !o.properties.contains_key(&setter_key) {
+                                    o.properties.insert(setter_key, noop_val);
+                                }
+                            }
+                        }
                     } else if !o.properties.contains_key(&key) {
                         // Pure accessor descriptor: stamp Undefined so
                         // own-key enumeration sees the property.

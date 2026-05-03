@@ -74,6 +74,7 @@ object_pattern = {
 
 object_pattern_prop = {
     "..." ~ ident_name                                             // rest: { ...rest }
+    | "[" ~ assignment_expression ~ "]" ~ ":" ~ binding_pattern ~ ("=" ~ assignment_expression)?  // computed: { [key]: val }
     | ident_name ~ ":" ~ binding_pattern ~ ("=" ~ assignment_expression)?  // rename: { a: b }
     | ident_name ~ ("=" ~ assignment_expression)?                  // shorthand: { a } or { a = default }
 }
@@ -155,8 +156,10 @@ if_statement = {
 // ── For / For-in / For-of ───────────────────────────────────────────────────
 
 for_statement = {
-    "for" ~ "(" ~ for_header ~ ")" ~ statement
+    "for" ~ for_await_marker? ~ "(" ~ for_header ~ ")" ~ statement
 }
+
+for_await_marker = @{ "await" ~ !(ASCII_ALPHANUMERIC | "_") }
 
 // Ordered choice: try for-in/of first (they're more specific), then fall back to C-style
 for_header = {
