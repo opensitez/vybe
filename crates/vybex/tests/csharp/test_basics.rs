@@ -13,7 +13,7 @@ fn console_writeline_number() {
 
 #[test]
 fn console_writeline_bool() {
-    assert_eq!(run_csharp_one("Console.WriteLine(true);"), "true");
+    assert_eq!(run_csharp_one("Console.WriteLine(true);"), "True");
 }
 
 #[test]
@@ -49,8 +49,8 @@ fn arithmetic() {
 
 #[test]
 fn comparison() {
-    assert_eq!(run_csharp_one("Console.WriteLine(5 > 3);"), "true");
-    assert_eq!(run_csharp_one("Console.WriteLine(5 < 3);"), "false");
+    assert_eq!(run_csharp_one("Console.WriteLine(5 > 3);"), "True");
+    assert_eq!(run_csharp_one("Console.WriteLine(5 < 3);"), "False");
 }
 
 #[test]
@@ -72,7 +72,7 @@ fn boolean_and_or() {
         Console.WriteLine(true || false);
         Console.WriteLine(!true);
     "#);
-    assert_eq!(out, vec!["false", "true", "false"]);
+    assert_eq!(out, vec!["False", "True", "False"]);
 }
 
 #[test]
@@ -127,7 +127,9 @@ fn null_coalescing() {
 
 #[test]
 fn typeof_expression() {
-    assert_eq!(run_csharp_one(r#"Console.WriteLine(typeof(int));"#), "int");
+    // .NET: `Console.WriteLine(typeof(int))` calls Type.ToString() →
+    // returns FullName ("System.Int32"), not the C# alias.
+    assert_eq!(run_csharp_one(r#"Console.WriteLine(typeof(int));"#), "System.Int32");
 }
 
 #[test]
@@ -146,7 +148,7 @@ fn default_int() {
 
 #[test]
 fn default_bool() {
-    assert_eq!(run_csharp_one("Console.WriteLine(default(bool));"), "false");
+    assert_eq!(run_csharp_one("Console.WriteLine(default(bool));"), "False");
 }
 
 #[test]

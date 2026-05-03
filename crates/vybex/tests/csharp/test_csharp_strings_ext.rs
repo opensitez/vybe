@@ -39,7 +39,7 @@ Console.WriteLine(string.IsNullOrEmpty(null));
 Console.WriteLine(string.IsNullOrEmpty(""));
 Console.WriteLine(string.IsNullOrEmpty("hello"));
 "#);
-    assert_eq!(out, vec!["true", "true", "false"]);
+    assert_eq!(out, vec!["True", "True", "False"]);
 }
 
 #[test]
@@ -78,7 +78,7 @@ string s = "";
 Console.WriteLine(s.Length);
 Console.WriteLine(s == "");
 "#);
-    assert_eq!(out, vec!["0", "true"]);
+    assert_eq!(out, vec!["0", "True"]);
 }
 
 #[test]

@@ -44,7 +44,20 @@ attribute_list = _{ "[" ~ (!"]" ~ ANY)* ~ "]" }
 // ── Class ───────────────────────────────────────────────────────────────────
 
 class_declaration = {
-    class_modifiers ~ "class" ~ ident_name ~ generic_params? ~ base_list? ~ class_body
+    class_modifiers ~ "class" ~ ident_name ~ generic_params? ~ base_list? ~ where_clauses? ~ class_body
+}
+
+// `where T : new()`, `where T : class`, `where T : IComparable<T>`, etc.
+// Captured by the grammar but ignored by the walker — generic
+// constraints are runtime-erased in the dynamic VM. Multiple
+// constraints can chain.
+where_clauses = _{ where_clause+ }
+where_clause = { "where" ~ ident_name ~ ":" ~ where_constraint ~ ("," ~ where_constraint)* }
+where_constraint = {
+    "new" ~ "(" ~ ")"
+    | "class" ~ !(ASCII_ALPHANUMERIC | "_")
+    | "struct" ~ !(ASCII_ALPHANUMERIC | "_")
+    | type_name
 }
 
 class_modifiers = { modifier* }
@@ -76,7 +89,15 @@ class_body = { "{" ~ class_member* ~ "}" }
 
 class_member = {
     attribute_list? ~ class_modifiers ~ (
-        constructor_declaration
+        // Nested type declarations — class / struct / interface / enum
+        // can all appear as inner members per ECMA-334 §15.3.
+        class_declaration
+        | struct_declaration
+        | interface_declaration
+        | enum_declaration
+        | operator_declaration
+        | indexer_declaration
+        | constructor_declaration
         | property_declaration
         | event_declaration
         | method_declaration
@@ -84,18 +105,43 @@ class_member = {
     )
 }
 
+// `public static T operator +(T a, T b) { ... }` — operator overloads.
+// Walker lowers to a static method named `op_Addition` / `op_Equality`
+// per ECMA-335 — the call-site dispatch (compiler/calls.rs) maps the
+// binary `a + b` form back via the same canonical name when both
+// operands are class instances.
+operator_declaration = {
+    type_name ~ "operator" ~ operator_symbol ~ "(" ~ param_list? ~ ")" ~
+        (block_statement | expression_body)
+}
+operator_symbol = @{
+    "==" | "!=" | "<=" | ">=" | "<<" | ">>"
+    | "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^"
+    | "~" | "!" | "<" | ">"
+}
+
+// `public T this[Type idx] { get; set; }` — indexer property.
+// Walker lowers to a Property named `__index__` with one parameter,
+// so `obj[i]` lookups go through the same getter / setter machinery as
+// regular properties.
+indexer_declaration = {
+    type_name ~ "this" ~ "[" ~ param_list ~ "]" ~ property_body
+}
+
 // Constructor: ClassName(params) : base/this(args) { body }
+// Also: `ClassName(params) => single_expr;` (C# 7+ expression-bodied ctor)
 constructor_declaration = {
-    ident_name ~ "(" ~ param_list? ~ ")" ~ constructor_initializer? ~ block_statement
+    ident_name ~ "(" ~ param_list? ~ ")" ~ constructor_initializer? ~ (block_statement | expression_body)
 }
 
 constructor_initializer = {
     ":" ~ (base_kw | this_kw) ~ "(" ~ argument_list? ~ ")"
 }
 
-// Property: Type Name { get; set; } or { get { } set { } }
+// Property: Type Name { get; set; } | { get { } set { } } | => expr;
+// (C# 6+ expression-bodied read-only property is `Type Name => expr;`)
 property_declaration = {
-    type_name ~ ident_name ~ property_body ~ ("=" ~ expression ~ ";")?
+    type_name ~ ident_name ~ (expression_body | property_body ~ ("=" ~ expression ~ ";")?)
 }
 
 property_body = {
@@ -112,9 +158,16 @@ event_declaration = {
 }
 
 // Method: ReturnType Name(params) { body }
+// Generic methods may declare per-method `where` constraints which we
+// capture-and-discard, same as on the class.
 method_declaration = {
-    type_name ~ ident_name ~ generic_params? ~ "(" ~ param_list? ~ ")" ~ (block_statement | ";")
+    type_name ~ ident_name ~ generic_params? ~ "(" ~ param_list? ~ ")" ~
+        where_clauses? ~ (block_statement | expression_body | ";")
 }
+
+// Expression-bodied member (C# 6+): `=> expr;`. Lowers to `{ return expr; }`
+// in the walker. Same rule serves methods, properties, indexers, operators.
+expression_body = { "=>" ~ expression ~ ";" }
 
 // Field: Type name = value; or Type name;
 field_declaration = {
@@ -123,18 +176,22 @@ field_declaration = {
 
 var_declarator_list = { var_declarator ~ ("," ~ var_declarator)* }
 
-var_declarator = { ident_name ~ ("=" ~ expression)? }
+// C# array initializer literal — `int[] arr = { 1, 2, 3 };` desugars to
+// `new int[] { 1, 2, 3 }` per ECMA-334 §17.7. The bare-brace form is
+// only allowed in variable / field declarators; the walker materialises
+// the missing `new T[]` prefix from the declared type.
+var_declarator = { ident_name ~ ("=" ~ (array_initializer | expression))? }
 
 // ── Struct ──────────────────────────────────────────────────────────────────
 
 struct_declaration = {
-    class_modifiers ~ "struct" ~ ident_name ~ generic_params? ~ base_list? ~ class_body
+    class_modifiers ~ "struct" ~ ident_name ~ generic_params? ~ base_list? ~ where_clauses? ~ class_body
 }
 
 // ── Interface ───────────────────────────────────────────────────────────────
 
 interface_declaration = {
-    class_modifiers ~ "interface" ~ ident_name ~ generic_params? ~ base_list? ~ interface_body
+    class_modifiers ~ "interface" ~ ident_name ~ generic_params? ~ base_list? ~ where_clauses? ~ interface_body
 }
 
 interface_body = { "{" ~ interface_member* ~ "}" }
@@ -178,6 +235,11 @@ statement = _{
     // the deconstruction parse before the general `var name = expr;`
     // path consumes `var`.
     | tuple_deconstruction_decl
+    // C# 7+ local functions / C# 9+ top-level functions:
+    // `ReturnType Name(params) { body }`. Listed before
+    // `local_var_declaration` so the `(` after the name commits to
+    // the local-function parse rather than failing the var parse.
+    | local_function_decl
     | local_var_declaration
     | if_statement
     | for_statement
@@ -194,6 +256,13 @@ statement = _{
     | using_statement
     | lock_statement
     | expression_statement
+}
+
+// Local / top-level function. Same shape as a class method but lives
+// in a statement context. Walker emits `StmtKind::FunctionDecl`.
+local_function_decl = {
+    type_name ~ ident_name ~ generic_params? ~ "(" ~ param_list? ~ ")" ~
+        where_clauses? ~ (block_statement | expression_body)
 }
 
 empty_statement = { ";" }
@@ -296,8 +365,14 @@ try_statement = {
     "try" ~ block_statement ~ catch_clause* ~ finally_clause?
 }
 
+// `catch (T e) when (cond) { ... }` — the optional `when` filter
+// guards the catch arm. Walker lowers it to `if (!cond) throw e;`
+// at the top of the catch body so the compiler stays unaware.
 catch_clause = {
-    "catch" ~ ("(" ~ type_name ~ ident_name? ~ ")")? ~ block_statement
+    "catch" ~ ("(" ~ type_name ~ ident_name? ~ ")")? ~ catch_when_filter? ~ block_statement
+}
+catch_when_filter = {
+    "when" ~ "(" ~ expression ~ ")"
 }
 
 finally_clause = { "finally" ~ block_statement }
@@ -375,9 +450,51 @@ equality = { relational ~ (equality_op ~ relational)* }
 equality_op = { "==" | "!=" }
 
 // Relational + type testing + shift
-// is/as are postfix-style (no right operand in the binary chain)
-relational = { additive ~ (type_test | binary_relational)* }
-type_test = { (is_kw | as_kw) ~ type_name }
+// is/as are postfix-style (no right operand in the binary chain).
+// `switch` (C# 8 expression) and `with` (C# 9 record clone) are also
+// postfix here.
+relational = { additive ~ (type_test | switch_expr_postfix | with_expr_postfix | binary_relational)* }
+
+// `record_value with { Prop = val, ... }` — clone-and-modify (C# 9
+// records). Walker lowers to `(rec, props) → cloneObject(rec, props)`.
+with_expr_postfix = {
+    "with" ~ object_initializer
+}
+type_test = {
+    is_kw ~ pattern_clause
+    | as_kw ~ type_name
+}
+
+// C# 8 switch expression: `expr switch { pattern => result, ... }`.
+// Walker lowers each arm into a nested ternary so we don't need a
+// dedicated SwitchExpr AST node.
+switch_expr_postfix = {
+    "switch" ~ "{" ~ switch_arm ~ ("," ~ switch_arm)* ~ ","? ~ "}"
+}
+switch_arm = {
+    switch_pattern ~ ("when" ~ expression)? ~ "=>" ~ expression
+}
+switch_pattern = {
+    "_" ~ !(ASCII_ALPHANUMERIC | "_")
+    | (">=" | "<=" | ">" | "<") ~ expression
+    | type_name ~ ident_name
+    | expression
+}
+
+// C# pattern matching surfaces under `is` (and switch expressions).
+// We cover the spec's core forms — null / not-null / constant / type
+// (with optional ident binding). More exotic forms (relational, list,
+// property) fall through to the type-name path.
+pattern_clause = {
+    "not" ~ pattern_atom
+    | pattern_atom
+}
+pattern_atom = {
+    null_kw                        // `is null`
+    | numeric_literal              // `is 0`
+    | string_literal               // `is "x"`
+    | type_name ~ ident_name?      // `is string s` / `is int`
+}
 binary_relational = { relational_op ~ additive }
 relational_op = {
     shift_op | "<=" | ">=" | "<" ~ !"<" | ">" ~ !">"
@@ -394,8 +511,34 @@ multiplicative_op = { "*" ~ !("*" | "=") | "/" ~ !"=" | "%" ~ !"=" }
 
 // Unary
 unary = {
-    unary_op ~ unary
+    cast_expression
+    | unary_op ~ unary
     | postfix
+}
+
+// C# explicit cast: `(TypeName)expr`. Restricted to recognised type
+// names to avoid ambiguity with parenthesised expressions
+// (`(x)+y` should still parse as add of `(x)` and `+y`). Primitive
+// type keywords always indicate a cast; user-defined type names
+// are heuristic — pest backtracks to the postfix path if the
+// alternative doesn't fit.
+cast_expression = { "(" ~ cast_type ~ ")" ~ unary }
+cast_type = {
+    "int" ~ !(ASCII_ALPHANUMERIC | "_")
+    | "long" ~ !(ASCII_ALPHANUMERIC | "_")
+    | "short" ~ !(ASCII_ALPHANUMERIC | "_")
+    | "byte" ~ !(ASCII_ALPHANUMERIC | "_")
+    | "float" ~ !(ASCII_ALPHANUMERIC | "_")
+    | "double" ~ !(ASCII_ALPHANUMERIC | "_")
+    | "decimal" ~ !(ASCII_ALPHANUMERIC | "_")
+    | "char" ~ !(ASCII_ALPHANUMERIC | "_")
+    | "string" ~ !(ASCII_ALPHANUMERIC | "_")
+    | "bool" ~ !(ASCII_ALPHANUMERIC | "_")
+    | "uint" ~ !(ASCII_ALPHANUMERIC | "_")
+    | "ulong" ~ !(ASCII_ALPHANUMERIC | "_")
+    | "ushort" ~ !(ASCII_ALPHANUMERIC | "_")
+    | "sbyte" ~ !(ASCII_ALPHANUMERIC | "_")
+    | "object" ~ !(ASCII_ALPHANUMERIC | "_")
 }
 
 // Keyword operators — atomic for word boundaries
@@ -433,11 +576,21 @@ call_expression = {
 }
 
 new_expression = {
-    new_kw ~ type_name_for_new ~ (
-        "[" ~ expression? ~ "]" ~ array_initializer?       // new int[5] or new[] { }
+    // C# 3+ implicit-typed array creation: `new[] { 1, 2 }`. The
+    // element type is inferred from the initializer.
+    new_kw ~ "[" ~ "]" ~ array_initializer
+    | new_kw ~ type_name_for_new ~ (
+        // Multi-bracket forms `new int[3][]`, `new int[3,4]`, `new int[5]`,
+        // `new int[]` — a sequence of bracketed dimensions, optionally
+        // followed by an array initializer for the leading dimensions.
+        ("[" ~ (expression ~ ("," ~ expression)*)? ~ "]")+ ~ array_initializer?
         | "(" ~ argument_list? ~ ")" ~ object_initializer? // new Foo(args) { }
-        | array_initializer                                 // new[] { 1, 2 }
+        // `object_initializer` BEFORE `array_initializer` — both start with
+        // `{` but `Prop = value` shapes only match the object form, while
+        // `array_initializer` would greedily consume them as ASSIGN
+        // expressions and lose the property names.
         | object_initializer                                // new Foo { prop = val }
+        | array_initializer                                 // new int[] { 1, 2 }
     )?
 }
 
@@ -445,7 +598,18 @@ type_name_for_new = { base_type ~ generic_type_args? }
 
 generic_type_args = _{ "<" ~ type_name ~ ("," ~ type_name)* ~ ">" }
 
-array_initializer = { "{" ~ (expression ~ ("," ~ expression)*)? ~ ","? ~ "}" }
+// Collection initializer literal — accepts either flat expressions
+// (`new int[] { 1, 2, 3 }`, `new List<int> { 1, 2 }`,
+// `new HashSet<int> { 1, 2 }`) or nested-brace pairs/tuples
+// (`new Dictionary<K,V> { { "a", 1 } }`, `int[,] m = { { 1, 2 } }`).
+// The walker dispatches on the receiver type to decide whether nested
+// braces become Object properties (Dictionary) or nested Array
+// literals (multi-dim).
+array_initializer = { "{" ~ (collection_element ~ ("," ~ collection_element)*)? ~ ","? ~ "}" }
+collection_element = {
+    "{" ~ (expression ~ ("," ~ expression)*)? ~ ","? ~ "}"
+    | expression
+}
 
 object_initializer = { "{" ~ (initializer_member ~ ("," ~ initializer_member)*)? ~ ","? ~ "}" }
 
@@ -455,13 +619,40 @@ call_chain = {
     "?." ~ ident_or_keyword                              // null-conditional member
     | "(" ~ argument_list? ~ ")"                          // call
     | "." ~ ident_or_keyword ~ generic_type_args?         // member access
-    | "[" ~ expression ~ (".." ~ expression?)? ~ "]"      // index or range
+    | "[" ~ index_expression ~ "]"                        // index / range / from-end
 }
+
+// C# 8 index-from-end: `arr[^1]` is `arr[arr.Length - 1]`. C# 8 ranges:
+// `arr[1..3]`, `arr[..^1]`, `arr[^3..]`, `arr[..]`. Multi-dimensional
+// arrays use comma-separated indices (`m[0, 0]`) which lower to a
+// flattened single-arg index since our backing array is a 1-D shape
+// (the walker concatenates the args via repeated index lookups in
+// nested arrays). The walker maps each shape onto Index / Range AST
+// nodes.
+index_expression = {
+    from_end_index ~ ".." ~ from_end_index?               // `arr[^3..]` / `arr[^3..^1]`
+    | from_end_index ~ ".." ~ expression                  // `arr[^3..5]`
+    | from_end_index                                       // `arr[^1]`
+    | expression ~ ".." ~ from_end_index                  // `arr[1..^1]`
+    | expression ~ ("..") ~ expression?                   // `arr[1..3]` / `arr[1..]`
+    | (".." ~ from_end_index)                             // `arr[..^1]`
+    | (".." ~ expression?)                                // `arr[..5]` / `arr[..]`
+    | expression ~ ("," ~ expression)+                    // `m[i, j]` multi-dim
+    | expression                                           // `arr[i]`
+}
+
+from_end_index = { "^" ~ expression }
 
 argument_list = { argument ~ ("," ~ argument)* ~ ","? }
 
 argument = {
-    ("ref" | "out") ~ expression
+    // C# `out var x` — declares a fresh local from the call site.
+    "out" ~ (var_kw | type_name) ~ ident_name
+    | ("ref" | "out") ~ expression
+    // Named argument: `name: expr`. The leading ident is reified as
+    // `ident_name` so the walker can extract it; the colon disambiguates
+    // from the bare-expression alternative below.
+    | ident_name ~ ":" ~ !":" ~ expression
     | expression
 }
 
@@ -488,8 +679,12 @@ primary = {
     | ident_name
 }
 
-// C# tuple literal: (1, "x", true) — at least 2 elements (1-element is just paren_expr).
-tuple_literal = { "(" ~ expression ~ ("," ~ expression)+ ~ ","? ~ ")" }
+// C# tuple literal: (1, "x", true) or named (Name: "Alice", Age: 30).
+// At least 2 elements (1-element is just paren_expr). The named form
+// per ECMA-334 §11.7.4 — each element optionally prefixed with `Name:`
+// which becomes an Item-aliased property on the tuple.
+tuple_literal = { "(" ~ tuple_element ~ ("," ~ tuple_element)+ ~ ","? ~ ")" }
+tuple_element = { (ident_name ~ ":" ~ !":")? ~ expression }
 
 // C# allows primitive type names as identifier prefixes for static method calls:
 // `string.Join(",", arr)`, `int.Parse("42")`, `bool.Parse("true")`, etc.
@@ -532,7 +727,7 @@ numeric_literal = @{
     // Decimal: a `.` followed by another `.` is NOT a decimal point — it's a
     // range operator (`1..3`). Negative lookahead prevents the literal from
     // greedily eating the first `.` of a range.
-    | ASCII_DIGIT+ ~ "." ~ !"." ~ ASCII_DIGIT* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ numeric_suffix?
+    | ASCII_DIGIT+ ~ "." ~ !"." ~ ASCII_DIGIT+ ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ numeric_suffix?
     | "." ~ ASCII_DIGIT+ ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ numeric_suffix?
     | ASCII_DIGIT+ ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ numeric_suffix?
 }

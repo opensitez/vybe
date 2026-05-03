@@ -134,7 +134,6 @@ Console.WriteLine(c.Area());
 }
 
 #[test]
-#[ignore]
 fn enum_basic() {
     let out = run_csharp(r#"
 enum Color { Red, Green, Blue }
@@ -145,7 +144,6 @@ Console.WriteLine((int)c);
 }
 
 #[test]
-#[ignore]
 fn class_method_chaining() {
     let out = run_csharp(r#"
 class Builder {
@@ -178,7 +176,6 @@ Console.WriteLine(p.ToString());
 }
 
 #[test]
-#[ignore]
 fn class_pass_by_reference() {
     let out = run_csharp(r#"
 class Box {
@@ -196,7 +193,6 @@ Console.WriteLine(b.Value);
 }
 
 #[test]
-#[ignore]
 fn recursive_factorial() {
     let out = run_csharp(r#"
 int Factorial(int n) {
@@ -209,7 +205,6 @@ Console.WriteLine(Factorial(6));
 }
 
 #[test]
-#[ignore]
 fn multi_level_inheritance() {
     let out = run_csharp(r#"
 class A {

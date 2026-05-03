@@ -35,7 +35,7 @@ fn string_contains() {
 Console.WriteLine("hello world".Contains("world"));
 Console.WriteLine("hello world".Contains("xyz"));
 "#);
-    assert_eq!(out, vec!["true", "false"]);
+    assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
@@ -63,7 +63,7 @@ Console.WriteLine("hello".StartsWith("hel"));
 Console.WriteLine("hello".EndsWith("llo"));
 Console.WriteLine("hello".StartsWith("xyz"));
 "#);
-    assert_eq!(out, vec!["true", "true", "false"]);
+    assert_eq!(out, vec!["True", "True", "False"]);
 }
 
 #[test]
@@ -76,7 +76,6 @@ Console.WriteLine("hello world".IndexOf("xyz"));
 }
 
 #[test]
-#[ignore]
 fn string_substring() {
     let out = run_csharp(r#"
 Console.WriteLine("hello world".Substring(6));
@@ -118,7 +117,7 @@ fn string_comparison() {
 Console.WriteLine("abc" == "abc");
 Console.WriteLine("abc" != "xyz");
 "#);
-    assert_eq!(out, vec!["true", "true"]);
+    assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]

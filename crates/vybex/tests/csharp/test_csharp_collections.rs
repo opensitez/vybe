@@ -19,7 +19,6 @@ Console.WriteLine(list[1]);
 }
 
 #[test]
-#[ignore]
 fn list_contains_remove() {
     let out = run_csharp(r#"
 using System.Collections.Generic;
@@ -32,7 +31,7 @@ list.Remove("banana");
 Console.WriteLine(list.Count);
 Console.WriteLine(list.Contains("banana"));
 "#);
-    assert_eq!(out, vec!["true", "2", "false"]);
+    assert_eq!(out, vec!["True", "2", "False"]);
 }
 
 #[test]
@@ -53,7 +52,6 @@ Console.WriteLine(sum);
 }
 
 #[test]
-#[ignore]
 fn dictionary_basic() {
     let out = run_csharp(r#"
 using System.Collections.Generic;
@@ -65,11 +63,10 @@ Console.WriteLine(dict.ContainsKey("y"));
 Console.WriteLine(dict.ContainsKey("z"));
 Console.WriteLine(dict.Count);
 "#);
-    assert_eq!(out, vec!["10", "true", "false", "2"]);
+    assert_eq!(out, vec!["10", "True", "False", "2"]);
 }
 
 #[test]
-#[ignore]
 fn dictionary_remove() {
     let out = run_csharp(r#"
 using System.Collections.Generic;
@@ -83,7 +80,6 @@ Console.WriteLine(dict.Count);
 }
 
 #[test]
-#[ignore]
 fn queue_operations() {
     let out = run_csharp(r#"
 using System.Collections.Generic;
@@ -99,7 +95,6 @@ Console.WriteLine(q.Peek());
 }
 
 #[test]
-#[ignore]
 fn stack_operations() {
     let out = run_csharp(r#"
 using System.Collections.Generic;
@@ -115,7 +110,6 @@ Console.WriteLine(s.Peek());
 }
 
 #[test]
-#[ignore]
 fn array_creation() {
     let out = run_csharp(r#"
 int[] arr = {5, 10, 15, 20, 25};
@@ -126,7 +120,6 @@ Console.WriteLine(arr[2]);
 }
 
 #[test]
-#[ignore]
 fn array_foreach() {
     let out = run_csharp(r#"
 string[] names = {"Alice", "Bob", "Carol"};
@@ -157,7 +150,6 @@ Console.WriteLine(list[0]);
 }
 
 #[test]
-#[ignore]
 fn list_indexof() {
     let out = run_csharp(r#"
 using System.Collections.Generic;
@@ -172,7 +164,6 @@ Console.WriteLine(list.IndexOf("z"));
 }
 
 #[test]
-#[ignore]
 fn list_clear() {
     let out = run_csharp(r#"
 using System.Collections.Generic;

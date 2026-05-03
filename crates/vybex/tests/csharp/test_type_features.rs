@@ -8,7 +8,7 @@ fn tuple_basic() {
         Console.WriteLine(t[1]);
         Console.WriteLine(t[2]);
     "#);
-    assert_eq!(out, vec!["1", "hello", "true"]);
+    assert_eq!(out, vec!["1", "hello", "True"]);
 }
 
 #[test]
@@ -64,7 +64,7 @@ fn double_parse() {
 #[test]
 fn int_maxvalue() {
     let out = run_csharp_one("Console.WriteLine(int.MaxValue > 0);");
-    assert_eq!(out, "true");
+    assert_eq!(out, "True");
 }
 
 #[test]

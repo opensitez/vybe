@@ -28,7 +28,6 @@ Console.WriteLine(p.Y);
 }
 
 #[test]
-#[ignore]
 fn multiple_return_paths() {
     let out = run_csharp(r#"
 string Classify(int x) {
@@ -44,7 +43,6 @@ Console.WriteLine(Classify(0));
 }
 
 #[test]
-#[ignore]
 fn default_parameters() {
     let out = run_csharp(r#"
 string Greet(string name = "World") {
@@ -57,7 +55,6 @@ Console.WriteLine(Greet("Alice"));
 }
 
 #[test]
-#[ignore]
 fn params_array() {
     let out = run_csharp(r#"
 int Sum(params int[] nums) {
@@ -93,7 +90,7 @@ Console.WriteLine(t && f);
 Console.WriteLine(t || f);
 Console.WriteLine(!t);
 "#);
-    assert_eq!(out, vec!["true", "false", "false", "true", "false"]);
+    assert_eq!(out, vec!["True", "False", "False", "True", "False"]);
 }
 
 #[test]
@@ -110,7 +107,6 @@ Console.WriteLine(Math.Ceiling(3.2));
 }
 
 #[test]
-#[ignore]
 fn object_initializer() {
     let out = run_csharp(r#"
 class Point {

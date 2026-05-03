@@ -5,7 +5,6 @@ use super::helpers::run_csharp;
 // ═══════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn try_catch_basic() {
     let out = run_csharp(r#"
 try {
@@ -42,7 +41,6 @@ try {
 }
 
 #[test]
-#[ignore]
 fn try_catch_finally() {
     let out = run_csharp(r#"
 try {
@@ -57,7 +55,6 @@ try {
 }
 
 #[test]
-#[ignore]
 fn nested_try_catch() {
     let out = run_csharp(r#"
 try {
@@ -75,7 +72,6 @@ try {
 }
 
 #[test]
-#[ignore]
 fn throw_from_method() {
     let out = run_csharp(r#"
 int Divide(int a, int b) {
@@ -108,7 +104,6 @@ try {
 }
 
 #[test]
-#[ignore]
 fn exception_message_access() {
     let out = run_csharp(r#"
 try {

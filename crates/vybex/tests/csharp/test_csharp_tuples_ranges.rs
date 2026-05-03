@@ -79,7 +79,7 @@ Console.WriteLine(false);
 Console.WriteLine(true && false);
 Console.WriteLine(true || false);
 "#);
-    assert_eq!(out, vec!["true", "false", "false", "true"]);
+    assert_eq!(out, vec!["True", "False", "False", "True"]);
 }
 
 #[test]

@@ -103,7 +103,6 @@ Console.WriteLine(i);
 }
 
 #[test]
-#[ignore]
 fn foreach_array() {
     let out = run_csharp(r#"
 int[] arr = {10, 20, 30};

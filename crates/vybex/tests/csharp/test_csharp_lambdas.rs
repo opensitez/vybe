@@ -38,7 +38,6 @@ Console.WriteLine(counter);
 }
 
 #[test]
-#[ignore]
 fn lambda_as_callback() {
     let out = run_csharp(r#"
 int Apply(Func<int, int> fn, int x) {
@@ -63,7 +62,6 @@ items.ForEach(x => Console.WriteLine(x));
 }
 
 #[test]
-#[ignore]
 fn function_returning_function() {
     let out = run_csharp(r#"
 Func<int, int> Multiplier(int factor) {

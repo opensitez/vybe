@@ -28,7 +28,7 @@ fn string_trim() {
 
 #[test]
 fn string_contains() {
-    assert_eq!(run_csharp_one(r#"Console.WriteLine("hello world".Contains("world"));"#), "true");
+    assert_eq!(run_csharp_one(r#"Console.WriteLine("hello world".Contains("world"));"#), "True");
 }
 
 #[test]
@@ -54,7 +54,7 @@ fn string_startswith() {
         Console.WriteLine("hello".StartsWith("hel"));
         Console.WriteLine("hello".StartsWith("xyz"));
     "#);
-    assert_eq!(out, vec!["true", "false"]);
+    assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]

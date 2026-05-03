@@ -36,8 +36,8 @@ multi_value_tuple_returns = true
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
-"Console.WriteLine"       = { emit = "print",                     min_args = 0, max_args = 255 }
-"Console.Write"           = { emit = "print",                     min_args = 0, max_args = 255 }
+"Console.WriteLine"       = { emit = "common:dotnet.console_writeline", min_args = 1, max_args = 1 }
+"Console.Write"           = { emit = "common:dotnet.console_writeline", min_args = 1, max_args = 1 }
 "Console.ReadLine"        = { emit = "host:wasi:cli:readLine",    min_args = 0, max_args = 0 }
 "Console.Error"           = { emit = "host:wasi:cli:error",       min_args = 0, max_args = 255 }
 
@@ -84,30 +84,46 @@ multi_value_tuple_returns = true
 "Convert.ToInt64"    = { emit = "intrinsic:clng",         min_args = 1, max_args = 1 }
 "Convert.ToSingle"   = { emit = "host:ecma:number:Number",         min_args = 1, max_args = 1 }
 "Convert.ToDecimal"  = { emit = "host:ecma:number:Number",         min_args = 1, max_args = 1 }
-"int.Parse"          = { emit = "intrinsic:cint",         min_args = 1, max_args = 1 }
-"double.Parse"       = { emit = "host:ecma:number:Number",         min_args = 1, max_args = 1 }
-"bool.Parse"         = { emit = "opcode:dyn_to_bool",             min_args = 1, max_args = 1 }
-"Int32.Parse"        = { emit = "intrinsic:cint",         min_args = 1, max_args = 1 }
-"Double.Parse"       = { emit = "host:ecma:number:Number",         min_args = 1, max_args = 1 }
+# `<T>.Parse(s)` — throw FormatException on invalid input per
+# ECMA-335. Adapters live in `emitter/dotnet/core/parse_adapter.rs`
+# so VB picks them up by listing the same `common:dotnet.parse_*`
+# emit targets (lower-cased keys for case-insensitive dispatch).
+"int.Parse"          = { emit = "common:dotnet.parse_int",      min_args = 1, max_args = 1 }
+"double.Parse"       = { emit = "common:dotnet.parse_double",   min_args = 1, max_args = 1 }
+"bool.Parse"         = { emit = "common:dotnet.parse_bool",     min_args = 1, max_args = 1 }
+"Int32.Parse"        = { emit = "common:dotnet.parse_int",      min_args = 1, max_args = 1 }
+"Double.Parse"       = { emit = "common:dotnet.parse_double",   min_args = 1, max_args = 1 }
+# TryParse: `int.TryParse(s, out result)` returns bool. Stays on the
+# silent intrinsic since failure shouldn't throw (returns false).
 "Int32.TryParse"     = { emit = "intrinsic:cint",         min_args = 1, max_args = 2 }
 
 # ── String static methods ────────────────────────────────────────────────────
 
-"String.Join"         = { emit = "common:collections.join",      min_args = 2, max_args = 2 }
+"String.Join"         = { emit = "common:collections.join_sep_first", min_args = 2, max_args = 2 }
 "String.IsNullOrEmpty" = { emit = "stdlib:string_is_null_or_empty", min_args = 1, max_args = 1 }
 "String.IsNullOrWhiteSpace" = { emit = "stdlib:string_is_null_or_whitespace", min_args = 1, max_args = 1 }
 "String.Format"       = { emit = "common:dotnet.string_format",   min_args = 1, max_args = 255 }
 "String.Concat"       = { emit = "opcode:str_concat",             min_args = 2, max_args = 255 }
 "string.IsNullOrEmpty" = { emit = "stdlib:string_is_null_or_empty", min_args = 1, max_args = 1 }
 "string.IsNullOrWhiteSpace" = { emit = "stdlib:string_is_null_or_whitespace", min_args = 1, max_args = 1 }
-"string.Join"         = { emit = "common:collections.join",      min_args = 2, max_args = 2 }
+"string.Join"         = { emit = "common:collections.join_sep_first", min_args = 2, max_args = 2 }
 
 # ── Array static methods ────────────────────────────────────────────────────
+# All shared with VB via `common:dotnet.array_*` adapters in
+# `crates/vybex/src/emitter/dotnet/core/array_adapter.rs`.
 
-"Array.Sort"          = { emit = "common:collections.sort",             min_args = 1, max_args = 1 }
-"Array.Reverse"       = { emit = "common:collections.reverse",          min_args = 1, max_args = 1 }
-"Array.IndexOf"       = { emit = "opcode:str_index_of",           min_args = 2, max_args = 2 }
-"Array.Copy"          = { emit = "stdlib:array_copy",             min_args = 3, max_args = 3 }
+"Array.Sort"          = { emit = "common:dotnet.array_sort",          min_args = 1, max_args = 1 }
+"Array.Reverse"       = { emit = "common:dotnet.array_reverse",       min_args = 1, max_args = 1 }
+"Array.IndexOf"       = { emit = "common:dotnet.array_index_of",      min_args = 2, max_args = 2 }
+"Array.Copy"          = { emit = "common:dotnet.array_copy",          min_args = 3, max_args = 3 }
+"Array.Clear"         = { emit = "common:dotnet.array_clear",         min_args = 3, max_args = 3 }
+"Array.Resize"        = { emit = "common:dotnet.array_resize",        min_args = 2, max_args = 2 }
+"Array.Exists"        = { emit = "common:dotnet.array_exists",        min_args = 2, max_args = 2 }
+"Array.Find"          = { emit = "common:dotnet.array_find",          min_args = 2, max_args = 2 }
+"Array.FindAll"       = { emit = "common:dotnet.array_find_all",      min_args = 2, max_args = 2 }
+"Array.TrueForAll"    = { emit = "common:dotnet.array_true_for_all",  min_args = 2, max_args = 2 }
+"Array.ConvertAll"    = { emit = "common:dotnet.array_convert_all",   min_args = 2, max_args = 2 }
+"Array.ForEach"       = { emit = "common:dotnet.array_for_each",      min_args = 2, max_args = 2 }
 
 # ── Object static methods ───────────────────────────────────────────────────
 
@@ -183,13 +199,39 @@ Clear         = { emit = "host:ecma:array:clear",      min_args = 0, max_args = 
 Reverse       = { emit = "common:collections.reverse",       min_args = 0, max_args = 0 }
 Sort          = { emit = "stdlib:sort_in_place",       min_args = 0, max_args = 0 }
 join          = { emit = "common:collections.join",    min_args = 1, max_args = 1 }
-Count         = { emit = "common:collections.length", min_args = 0, max_args = 0 }
-ToArray       = { emit = "noop",                       min_args = 0, max_args = 0 }
-ToList        = { emit = "noop",                       min_args = 0, max_args = 0 }
+# `Count` 0-arg defers to the runtime collection registry (List<T>.Count,
+# Dict.Count, HashSet.Count are all component-model methods on the
+# respective collection types — registry knows the per-type semantics).
+# 1-arg `Count(pred)` is the LINQ overload, which the registry does NOT
+# know about — the `dotnet.linq_count_pred` overload below routes
+# through the shared LINQ adapter. The dispatch in `compiler/calls.rs`
+# treats `common:dotnet.*` value-method overloads as preempting the
+# runtime collection registry (`prefer_dotnet_adapter` discriminator).
+Count         = [
+    { emit = "common:collections.length",     min_args = 0, max_args = 0 },
+    { emit = "common:dotnet.linq_count_pred", min_args = 1, max_args = 1 },
+]
+ToArray       = { emit = "common:dotnet.linq_identity",   min_args = 0, max_args = 0 }
+ToList        = { emit = "common:dotnet.linq_identity",   min_args = 0, max_args = 0 }
 GetType       = { emit = "opcode:ref_typeof",          min_args = 0, max_args = 0 }
 Equals        = { emit = "opcode:dyn_eq",              min_args = 1, max_args = 1 }
 
-# LINQ methods — removed (use [array_methods] below for HOFs)
+# LINQ surface — composed bytecode lives in `emitter/dotnet/core/linq_adapter.rs`
+# so VB and C# share one implementation. New entries: add an emit_linq_* fn,
+# wire it in dispatch.rs, then list it here / in vb/profile.
+Sum                = { emit = "common:collections.sum",                   min_args = 0, max_args = 0 }
+Min                = { emit = "common:collections.min",                   min_args = 0, max_args = 0 }
+Max                = { emit = "common:collections.max",                   min_args = 0, max_args = 0 }
+First              = { emit = "common:dotnet.linq_first",                 min_args = 0, max_args = 0 }
+Last               = { emit = "common:dotnet.linq_last",                  min_args = 0, max_args = 0 }
+Skip               = { emit = "common:dotnet.linq_skip",                  min_args = 1, max_args = 1 }
+Take               = { emit = "common:dotnet.linq_take",                  min_args = 1, max_args = 1 }
+Average            = { emit = "common:dotnet.linq_average",               min_args = 0, max_args = 0 }
+FirstOrDefault     = { emit = "common:dotnet.linq_first_or_default",      min_args = 0, max_args = 0 }
+Distinct           = { emit = "common:dotnet.linq_distinct",              min_args = 0, max_args = 0 }
+Aggregate          = { emit = "common:dotnet.linq_aggregate",             min_args = 2, max_args = 2 }
+OrderByDescending  = { emit = "common:dotnet.linq_order_by_descending",   min_args = 1, max_args = 1 }
+AddRange           = { emit = "common:dotnet.list_add_range",             min_args = 1, max_args = 1 }
 
 # Dictionary methods
 ContainsKey   = { emit = "common:dict.has",            min_args = 1, max_args = 1 }
@@ -303,8 +345,17 @@ Select    = "__array_map"
 ForEach   = "__array_forEach"
 Any       = "__array_some"
 All       = "__array_every"
-Aggregate = "__array_reduce"
 OrderBy   = "__array_sort_by_key"
+# `Aggregate` lives in [value_methods] → `dotnet.linq_aggregate` because
+# the C# argument order (`(seed, fn)`) is the inverse of JS `reduce(fn, init)`,
+# and the array_methods HOF dispatch can't swap args.
+# List<T> instance-method aliases — same HOF semantics, different names per
+# .NET BCL. Routes through the same compiler_common loop emitters.
+Find       = "__array_find"
+FindAll    = "__array_filter"
+Exists     = "__array_some"
+TrueForAll = "__array_every"
+ConvertAll = "__array_map"
 
 [namespace_constants]
 "Math.PI"               = 3.141592653589793

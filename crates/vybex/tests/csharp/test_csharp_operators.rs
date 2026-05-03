@@ -26,7 +26,7 @@ Console.WriteLine(1 >= 1);
 Console.WriteLine(1 == 1);
 Console.WriteLine(1 != 2);
 "#);
-    assert_eq!(out, vec!["true", "true", "true", "true", "true", "true"]);
+    assert_eq!(out, vec!["True", "True", "True", "True", "True", "True"]);
 }
 
 #[test]
@@ -38,7 +38,7 @@ Console.WriteLine(false || true);
 Console.WriteLine(false || false);
 Console.WriteLine(!true);
 "#);
-    assert_eq!(out, vec!["true", "false", "true", "false", "false"]);
+    assert_eq!(out, vec!["True", "False", "True", "False", "False"]);
 }
 
 #[test]
@@ -97,13 +97,12 @@ Console.WriteLine(typeof(string));
 }
 
 #[test]
-#[ignore]
 fn is_type_check() {
     let out = run_csharp(r#"
 object x = "hello";
 Console.WriteLine(x is string);
 "#);
-    assert_eq!(out, vec!["true"]);
+    assert_eq!(out, vec!["True"]);
 }
 
 #[test]

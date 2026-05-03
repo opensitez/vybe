@@ -12,7 +12,7 @@ fn return_object() {
         Console.WriteLine(r.value);
         Console.WriteLine(r.ok);
     "#);
-    assert_eq!(out, vec!["42", "true"]);
+    assert_eq!(out, vec!["42", "True"]);
 }
 
 #[test]
@@ -191,7 +191,7 @@ fn null_conditional_on_null() {
     assert_eq!(run_csharp_one(r#"
         string s = null;
         Console.WriteLine(s?.Length);
-    "#), "null");
+    "#), "");
 }
 
 #[test]

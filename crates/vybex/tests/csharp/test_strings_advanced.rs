@@ -151,7 +151,7 @@ Console.WriteLine(System.String.Format("{0}-{1}", "A", "B"));
 Console.WriteLine(string.IsNullOrEmpty(""));
 Console.WriteLine(string.IsNullOrEmpty(null));
 Console.WriteLine(string.IsNullOrEmpty("hello"));
-"#), &["true", "true", "false"]);
+"#), &["True", "True", "False"]);
 }
 
 #[test] fn string_isnullorwhitespace() {
@@ -159,7 +159,7 @@ Console.WriteLine(string.IsNullOrEmpty("hello"));
 Console.WriteLine(string.IsNullOrWhiteSpace("   "));
 Console.WriteLine(string.IsNullOrWhiteSpace(""));
 Console.WriteLine(string.IsNullOrWhiteSpace("x"));
-"#), &["true", "true", "false"]);
+"#), &["True", "True", "False"]);
 }
 
 #[test] fn string_methods_use_stdlib_not_vybe_string_hosts() {

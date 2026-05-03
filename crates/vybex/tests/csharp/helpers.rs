@@ -17,7 +17,19 @@ pub fn run_csharp(src: &str) -> Vec<String> {
     vybe_host::register_all(&mut vm);
     vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
         let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
-        out.lock().unwrap().push(parts.join(" "));
+        let joined = parts.join(" ");
+        let mut sink = out.lock().unwrap();
+        if joined.contains('\n') {
+            let mut lines: Vec<&str> = joined.split('\n').collect();
+            if lines.last().map(|s| s.is_empty()).unwrap_or(false) {
+                lines.pop();
+            }
+            for line in lines {
+                sink.push(line.to_string());
+            }
+        } else {
+            sink.push(joined);
+        }
         Value::Null
     }));
     vybe_host::setup_namespaces(&mut vm);

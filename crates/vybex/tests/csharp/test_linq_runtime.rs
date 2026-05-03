@@ -49,7 +49,7 @@ list.Add(1); list.Add(2); list.Add(3);
 Console.WriteLine(list.Any(x => x > 10));
 Console.WriteLine(list.Any(x => x == 2));
 "#);
-    assert_eq!(out, ["false", "true"]);
+    assert_eq!(out, ["False", "True"]);
 }
 
 #[test]
@@ -60,7 +60,7 @@ list.Add(1); list.Add(2); list.Add(3);
 Console.WriteLine(list.All(x => x > 0));
 Console.WriteLine(list.All(x => x > 2));
 "#);
-    assert_eq!(out, ["true", "false"]);
+    assert_eq!(out, ["True", "False"]);
 }
 
 #[test]
@@ -113,4 +113,44 @@ var result = numbers.Where(n => n % 2 == 0).Select(n => n * n);
 result.ForEach(x => Console.WriteLine(x));
 "#);
     assert_eq!(out, ["4", "16", "36", "64"]);
+}
+
+
+#[test] fn linq_isolate_select() {
+    let r = run_csharp(r#"
+var numbers = new List<int>();
+numbers.Add(1); numbers.Add(2); numbers.Add(3); numbers.Add(4);
+numbers.Add(5); numbers.Add(6); numbers.Add(7); numbers.Add(8);
+var result = numbers.Where(n => n > 0).Select(n => n * n);
+Console.WriteLine("len:" + result.Length);
+"#);
+    eprintln!("RES: {:?}", r);
+}
+
+#[test] fn linq_isolate_select_no_arr_var() {
+    let r = run_csharp(r#"
+var result = (new int[] {10, 20, 30}).Select(x => x * 2);
+Console.WriteLine("len:" + result.Length);
+"#);
+    eprintln!("RES: {:?}", r);
+}
+
+#[test] fn linq_select_var_decl() {
+    let r = run_csharp(r#"
+var arr = new int[] {10, 20, 30};
+var result = arr.Select(x => x * 2);
+Console.WriteLine("len:" + result.Length);
+"#);
+    eprintln!("RES: {:?}", r);
+}
+
+#[test] fn linq_select_via_intermediate() {
+    let r = run_csharp(r#"
+int[] arr = {10, 20, 30};
+var step1 = arr.Where(x => true);
+Console.WriteLine("step1.len:" + step1.Length);
+var result = step1.Select(x => x * 2);
+Console.WriteLine("result.len:" + result.Length);
+"#);
+    eprintln!("RES: {:?}", r);
 }

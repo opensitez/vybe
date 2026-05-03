@@ -84,5 +84,5 @@ b = new Box(42);
 Console.WriteLine(b == null);
 Console.WriteLine(b.Value);
 "#);
-    assert_eq!(out, vec!["true", "false", "42"]);
+    assert_eq!(out, vec!["True", "False", "42"]);
 }
