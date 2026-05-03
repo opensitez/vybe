@@ -396,10 +396,14 @@ mod tests {
             .imports
             .iter()
             .any(|imp| imp.interface == "vybe:gui" && imp.name == "new_Form"));
+        // StringBuilder no longer imports `vybe:types/stringBuilderNew`;
+        // the constructor is a Common emit (`dotnet.string_builder_new`)
+        // composing existing primitives. Verify the descriptor lists the
+        // class export instead.
         assert!(descriptor
-            .imports
+            .classes
             .iter()
-            .any(|imp| imp.interface == "vybe:types" && imp.name == "stringBuilderNew"));
+            .any(|class| class.name == "StringBuilder"));
         let console = descriptor
             .classes
             .iter()
@@ -454,8 +458,12 @@ mod tests {
 
     #[test]
     fn test_lookup_component_constructor_uses_descriptor_surface() {
+        // `StringBuilder` materializes via the shared `dotnet.string_builder_new`
+        // adapter (plain Object + `__buffer` string), not a `vybe:types`
+        // host fn. The Common-emit path keeps the construction logic in
+        // one Rust file (`emitter/dotnet/core/stringbuilder_adapter.rs`).
         let binding = lookup_component_constructor("StringBuilder").expect("StringBuilder constructor");
-        assert_eq!(binding, ConstructorTarget::Host(vybe_bytecode::component_model::HostTarget::new("vybe:types", "stringBuilderNew")));
+        assert_eq!(binding, ConstructorTarget::Common("dotnet.string_builder_new".to_string()));
     }
 
     #[test]
@@ -466,11 +474,14 @@ mod tests {
 
     #[test]
     fn test_lookup_component_static_method_uses_descriptor_surface() {
+        // `Console.WriteLine` routes through the shared `dotnet.console_writeline`
+        // adapter (capitalises bools, maps null→"") rather than calling
+        // `wasi:cli.log` directly. C# / VB / any future .NET-shape language
+        // gets the same behaviour by listing the same `Common` emit target.
         let binding = lookup_component_static_method("system.console", &["writeline"])
             .expect("Console.WriteLine static method");
-        assert_eq!(binding, StaticMethodTarget::Host {
-            module: "wasi:cli".to_string(),
-            func: "log".to_string(),
+        assert_eq!(binding, StaticMethodTarget::Common {
+            emit: "dotnet.console_writeline".to_string(),
         });
     }
 

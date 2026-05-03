@@ -356,14 +356,17 @@ mod tests {
 
     #[test]
     fn resolves_imported_static_string_format() {
+        // `String.Format` routes through the shared dotnet adapter
+        // (`emitter/dotnet/core/string_format_adapter.rs`) — the
+        // `vybe:string/format` host fn was retired when the format
+        // picture parsing moved into the bytecode emitter.
         let imports = vec!["system".to_string()];
         let ctx = test_ctx(&imports);
         let res = resolve_dotted_name(&["String", "Format"], &ctx);
         assert_eq!(
             res,
-            DottedResolution::HostCall {
-                module: "vybe:string".to_string(),
-                func: "format".to_string(),
+            DottedResolution::CommonCall {
+                emit: "dotnet.string_format".to_string(),
             }
         );
     }
@@ -402,14 +405,16 @@ mod tests {
 
     #[test]
     fn resolves_imported_process_start_to_host_call() {
+        // Process.Start lowers via `emitter/dotnet/core/process_adapter.rs`
+        // — the `vybe:types/processStart` host fn was retired in favour
+        // of a Common emit composing existing primitives.
         let imports = vec!["system.diagnostics".to_string()];
         let ctx = test_ctx(&imports);
         let res = resolve_dotted_name(&["Process", "Start"], &ctx);
         assert_eq!(
             res,
-            DottedResolution::HostCall {
-                module: "vybe:types".to_string(),
-                func: "processStart".to_string(),
+            DottedResolution::CommonCall {
+                emit: "dotnet.process_start".to_string(),
             }
         );
     }

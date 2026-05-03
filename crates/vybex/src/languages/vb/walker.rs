@@ -1745,13 +1745,25 @@ fn parse_for_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         kind: VarDeclKind::Dim,
     });
 
+    let step_val = step.unwrap_or_else(|| Expression::int(1));
+    // VB ranges count up by default but `Step -N` reverses the
+    // direction; the loop condition flips accordingly. Detect a
+    // negative literal step and emit `i >= end` instead of
+    // `i <= end`. Non-literal step expressions (rare) keep the
+    // up-counting semantics — runtime evaluation can't pick a
+    // direction at compile time without a helper.
+    let step_is_negative = match &step_val.kind {
+        ExprKind::Lit(Literal::Int(n)) => *n < 0,
+        ExprKind::Lit(Literal::Float(f)) => *f < 0.0,
+        ExprKind::Unary { op: UnaryOp::Neg, .. } => true,
+        _ => false,
+    };
+    let cond_op = if step_is_negative { BinOp::GtEq } else { BinOp::LtEq };
     let cond = Expression::new(ExprKind::Binary {
-        op: BinOp::LtEq,
+        op: cond_op,
         left: Box::new(Expression::ident(&variable)),
         right: Box::new(end),
     });
-
-    let step_val = step.unwrap_or_else(|| Expression::int(1));
     let update = Expression::new(ExprKind::Assign {
         target: Box::new(Expression::ident(&variable)),
         value: Box::new(Expression::new(ExprKind::Binary {

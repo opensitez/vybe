@@ -5,7 +5,6 @@ use super::helpers::run_vb;
 // ═══════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn event_raiseevent() {
     let out = run_vb(r#"
 Class Timer
@@ -31,7 +30,6 @@ End Module
 }
 
 #[test]
-#[ignore]
 fn addhandler_removehandler() {
     let out = run_vb(r#"
 Class Button
@@ -59,7 +57,6 @@ End Module
 }
 
 #[test]
-#[ignore]
 fn multiple_handlers() {
     let out = run_vb(r#"
 Class Notifier

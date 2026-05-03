@@ -132,7 +132,6 @@ End Module
 }
 
 #[test]
-#[ignore]
 fn for_loop_negative_step() {
     let out = run_vb(r#"
 Module M
@@ -279,7 +278,6 @@ End Module
 }
 
 #[test]
-#[ignore]
 fn with_block() {
     let out = run_vb(r#"
 Class Person
@@ -321,7 +319,6 @@ End Module
 }
 
 #[test]
-#[ignore]
 fn exit_function() {
     let out = run_vb(r#"
 Module M

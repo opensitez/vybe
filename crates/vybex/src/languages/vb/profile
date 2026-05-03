@@ -408,6 +408,24 @@ doevents     = { emit = "noop",                            min_args = 0, max_arg
 # dotnet wrapper Component Model adapter (`stringbuilder_adapter`).
 switch        = { emit = "common:dotnet.choose",             min_args = 2, max_args = 255 }
 
+# ── Array static methods ─────────────────────────────────────────────────────
+# Shared with C# via `common:dotnet.array_*` adapters in
+# `crates/vybex/src/emitter/dotnet/core/array_adapter.rs`. VB lowercases
+# section keys for case-insensitive dispatch.
+
+"array.sort"        = { emit = "common:dotnet.array_sort",          min_args = 1, max_args = 1 }
+"array.reverse"     = { emit = "common:dotnet.array_reverse",       min_args = 1, max_args = 1 }
+"array.indexof"     = { emit = "common:dotnet.array_index_of",      min_args = 2, max_args = 2 }
+"array.copy"        = { emit = "common:dotnet.array_copy",          min_args = 3, max_args = 3 }
+"array.clear"       = { emit = "common:dotnet.array_clear",         min_args = 3, max_args = 3 }
+"array.resize"      = { emit = "common:dotnet.array_resize",        min_args = 2, max_args = 2 }
+"array.exists"      = { emit = "common:dotnet.array_exists",        min_args = 2, max_args = 2 }
+"array.find"        = { emit = "common:dotnet.array_find",          min_args = 2, max_args = 2 }
+"array.findall"     = { emit = "common:dotnet.array_find_all",      min_args = 2, max_args = 2 }
+"array.trueforall"  = { emit = "common:dotnet.array_true_for_all",  min_args = 2, max_args = 2 }
+"array.convertall"  = { emit = "common:dotnet.array_convert_all",   min_args = 2, max_args = 2 }
+"array.foreach"     = { emit = "common:dotnet.array_for_each",      min_args = 2, max_args = 2 }
+
 # ── Legacy VB6 ───────────────────────────────────────────────────────────────
 
 loadpicture  = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
@@ -512,7 +530,11 @@ remove        = { emit = "stdlib:array_remove_value",  min_args = 1, max_args = 
 removeat      = { emit = "stdlib:array_remove_at",     min_args = 1, max_args = 1 }
 insert        = { emit = "stdlib:array_insert",        min_args = 2, max_args = 2 }
 clear         = { emit = "host:ecma:array:clear",      min_args = 0, max_args = 0 }
-count         = { emit = "common:collections.length", min_args = 0, max_args = 0 }
+# 0-arg: defer to runtime collection registry. 1-arg: LINQ Count(pred).
+count         = [
+    { emit = "common:collections.length",     min_args = 0, max_args = 0 },
+    { emit = "common:dotnet.linq_count_pred", min_args = 1, max_args = 1 },
+]
 sort          = { emit = "stdlib:sort_in_place",       min_args = 0, max_args = 0 }
 reverse       = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
 toarray       = { emit = "host:ecma:array:slice",      min_args = 0, max_args = 0 }
@@ -560,10 +582,29 @@ restart             = { emit = "host:wasi:clocks:stopwatchReset",    min_args = 
 elapsedmilliseconds = { emit = "host:wasi:clocks:stopwatchElapsed",  min_args = 0, max_args = 0 }
 isrunning           = { emit = "noop",                               min_args = 0, max_args = 0 }
 
-# List/collection extra
-addrange       = { emit = "common:collections.concat",     min_args = 1, max_args = 1 }
+# List/collection extra — `addrange` shares the .NET BCL semantics
+# with C# `List<T>.AddRange`; both route through the dotnet adapter.
+addrange       = { emit = "common:dotnet.list_add_range",  min_args = 1, max_args = 1 }
 trygetvalue    = { emit = "common:dict.get_dynamic",       min_args = 1, max_args = 2 }
 containsvalue  = { emit = "host:ecma:array:includes",      min_args = 1, max_args = 1 }
+
+# LINQ surface — bytecode lives in `emitter/dotnet/core/linq_adapter.rs`,
+# shared with the C# profile. VB inherits the implementation by listing
+# the `common:dotnet.linq_*` emit targets here under lower-cased keys
+# (the parser lowercases section keys for case-insensitive languages).
+sum                = { emit = "common:collections.sum",                   min_args = 0, max_args = 0 }
+min                = { emit = "common:collections.min",                   min_args = 0, max_args = 0 }
+max                = { emit = "common:collections.max",                   min_args = 0, max_args = 0 }
+first              = { emit = "common:dotnet.linq_first",                 min_args = 0, max_args = 0 }
+last               = { emit = "common:dotnet.linq_last",                  min_args = 0, max_args = 0 }
+skip               = { emit = "common:dotnet.linq_skip",                  min_args = 1, max_args = 1 }
+take               = { emit = "common:dotnet.linq_take",                  min_args = 1, max_args = 1 }
+average            = { emit = "common:dotnet.linq_average",               min_args = 0, max_args = 0 }
+firstordefault     = { emit = "common:dotnet.linq_first_or_default",      min_args = 0, max_args = 0 }
+distinct           = { emit = "common:dotnet.linq_distinct",              min_args = 0, max_args = 0 }
+aggregate          = { emit = "common:dotnet.linq_aggregate",             min_args = 2, max_args = 2 }
+orderbydescending  = { emit = "common:dotnet.linq_order_by_descending",   min_args = 1, max_args = 1 }
+tolist             = { emit = "common:dotnet.linq_identity",              min_args = 0, max_args = 0 }
 
 # Queue methods
 enqueue        = { emit = "host:ecma:array:push",  min_args = 1, max_args = 1 }

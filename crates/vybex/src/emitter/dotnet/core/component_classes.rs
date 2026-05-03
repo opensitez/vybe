@@ -40,46 +40,45 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
                 "dotnet.System.Collections.Generic",
                 ClassType::new("Dictionary")
                     .with_constructor(ConstructorDef::new(0).with_backing(HostTarget::new("ecma:map", "new")))
-                    .with_method(MethodDef::new("Add",         2, MethodBody::HostCall(HostTarget::new("ecma:map", "set"))))
-                    .with_method(MethodDef::new("Item",        1, MethodBody::HostCall(HostTarget::new("ecma:map", "get"))))
-                    .with_method(MethodDef::new("ContainsKey", 1, MethodBody::HostCall(HostTarget::new("ecma:map", "has"))))
-                    .with_method(MethodDef::new("Remove",      1, MethodBody::HostCall(HostTarget::new("ecma:map", "delete"))))
-                    .with_method(MethodDef::new("Keys",        0, MethodBody::HostCall(HostTarget::new("ecma:map", "keys"))))
-                    .with_method(MethodDef::new("Values",      0, MethodBody::HostCall(HostTarget::new("ecma:map", "values"))))
-                    .with_method(MethodDef::new("Clear",       0, MethodBody::HostCall(HostTarget::new("ecma:map", "clear"))))
-                    .with_method(MethodDef::new("Count",       0, MethodBody::HostCall(HostTarget::new("ecma:map", "size")))),
+                    .with_method(MethodDef::new("Add",           2, MethodBody::HostCall(HostTarget::new("ecma:map", "set"))))
+                    .with_method(MethodDef::new("Item",          1, MethodBody::HostCall(HostTarget::new("ecma:map", "get"))))
+                    .with_method(MethodDef::new("ContainsKey",   1, MethodBody::HostCall(HostTarget::new("ecma:map", "has"))))
+                    .with_method(MethodDef::new("ContainsValue", 1, MethodBody::HostCall(HostTarget::new("ecma:map", "containsValue"))))
+                    .with_method(MethodDef::new("Remove",        1, MethodBody::HostCall(HostTarget::new("ecma:map", "delete"))))
+                    .with_method(MethodDef::new("Keys",          0, MethodBody::HostCall(HostTarget::new("ecma:map", "keys"))))
+                    .with_method(MethodDef::new("Values",        0, MethodBody::HostCall(HostTarget::new("ecma:map", "values"))))
+                    .with_method(MethodDef::new("Clear",         0, MethodBody::HostCall(HostTarget::new("ecma:map", "clear"))))
+                    .with_method(MethodDef::new("Count",         0, MethodBody::HostCall(HostTarget::new("ecma:map", "size")))),
             ),
             // .NET `Queue<T>` is a JS Array used FIFO — `Enqueue` appends
             // (push), `Dequeue` removes from the front (shift), `Peek`
             // looks at the front (`ecma:array.first`).
-            collection_class_common(
+            DotnetClassExport::new(
                 "dotnet.System.Collections.Generic",
-                "Queue",
-                "collections.new",
-                &[
-                    ("Enqueue",  1, "collections.push"),
-                    ("Dequeue",  0, "collections.shift"),
-                    ("Count",    0, "collections.length"),
-                    ("Clear",    0, "collections.clear"),
-                    ("Contains", 1, "collections.contains"),
-                    ("ToArray",  0, "collections.clone"),
-                ],
+                ClassType::new("Queue")
+                    .with_constructor(ConstructorDef::new(0).with_common_backing("collections.new"))
+                    .with_method(MethodDef::new("Enqueue",  1, MethodBody::Common("collections.push".into())))
+                    .with_method(MethodDef::new("Dequeue",  0, MethodBody::Common("collections.shift".into())))
+                    .with_method(MethodDef::new("Peek",     0, MethodBody::HostCall(HostTarget::new("ecma:array", "first"))))
+                    .with_method(MethodDef::new("Count",    0, MethodBody::Common("collections.length".into())))
+                    .with_method(MethodDef::new("Clear",    0, MethodBody::Common("collections.clear".into())))
+                    .with_method(MethodDef::new("Contains", 1, MethodBody::Common("collections.contains".into())))
+                    .with_method(MethodDef::new("ToArray",  0, MethodBody::Common("collections.clone".into()))),
             ),
             // .NET `Stack<T>` is a JS Array used LIFO — `Push` appends
             // (push), `Pop` removes from the end (pop), `Peek` looks at
             // the end (`ecma:array.last`).
-            collection_class_common(
+            DotnetClassExport::new(
                 "dotnet.System.Collections.Generic",
-                "Stack",
-                "collections.new",
-                &[
-                    ("Push",     1, "collections.push"),
-                    ("Pop",      0, "collections.pop"),
-                    ("Count",    0, "collections.length"),
-                    ("Clear",    0, "collections.clear"),
-                    ("Contains", 1, "collections.contains"),
-                    ("ToArray",  0, "collections.clone"),
-                ],
+                ClassType::new("Stack")
+                    .with_constructor(ConstructorDef::new(0).with_common_backing("collections.new"))
+                    .with_method(MethodDef::new("Push",     1, MethodBody::Common("collections.push".into())))
+                    .with_method(MethodDef::new("Pop",      0, MethodBody::Common("collections.pop".into())))
+                    .with_method(MethodDef::new("Peek",     0, MethodBody::HostCall(HostTarget::new("ecma:array", "last"))))
+                    .with_method(MethodDef::new("Count",    0, MethodBody::Common("collections.length".into())))
+                    .with_method(MethodDef::new("Clear",    0, MethodBody::Common("collections.clear".into())))
+                    .with_method(MethodDef::new("Contains", 1, MethodBody::Common("collections.contains".into())))
+                    .with_method(MethodDef::new("ToArray",  0, MethodBody::Common("collections.clone".into()))),
             ),
             // .NET `HashSet<T>` is a real ECMA-262 §24.2 `Set`. Constructor
             // creates an `ObjectKind::Set`; methods route through the
@@ -92,7 +91,14 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
                     .with_method(MethodDef::new("Remove",   1, MethodBody::HostCall(HostTarget::new("ecma:set", "delete"))))
                     .with_method(MethodDef::new("Contains", 1, MethodBody::HostCall(HostTarget::new("ecma:set", "has"))))
                     .with_method(MethodDef::new("Count",    0, MethodBody::HostCall(HostTarget::new("ecma:set", "size"))))
-                    .with_method(MethodDef::new("Clear",    0, MethodBody::HostCall(HostTarget::new("ecma:set", "clear")))),
+                    .with_method(MethodDef::new("Clear",    0, MethodBody::HostCall(HostTarget::new("ecma:set", "clear"))))
+                    .with_method(MethodDef::new("UnionWith",     1, MethodBody::HostCall(HostTarget::new("ecma:set", "unionWith"))))
+                    .with_method(MethodDef::new("IntersectWith", 1, MethodBody::HostCall(HostTarget::new("ecma:set", "intersectWith"))))
+                    .with_method(MethodDef::new("ExceptWith",    1, MethodBody::HostCall(HostTarget::new("ecma:set", "exceptWith"))))
+                    .with_method(MethodDef::new("SymmetricExceptWith", 1, MethodBody::HostCall(HostTarget::new("ecma:set", "symmetricExceptWith"))))
+                    .with_method(MethodDef::new("IsSubsetOf",   1, MethodBody::HostCall(HostTarget::new("ecma:set", "isSubsetOf"))))
+                    .with_method(MethodDef::new("IsSupersetOf", 1, MethodBody::HostCall(HostTarget::new("ecma:set", "isSupersetOf"))))
+                    .with_method(MethodDef::new("Overlaps",     1, MethodBody::HostCall(HostTarget::new("ecma:set", "overlaps")))),
             ),
             // `ConcurrentDictionary` is a thread-safe `Dictionary` — same
             // shape (ECMA Map). Atomicity isn't modeled; methods route the
@@ -212,17 +218,38 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
                     .with_method(MethodDef::static_method("Reverse", 1, MethodBody::HostCall(HostTarget::new("ecma:array", "reverse"))))
                     .with_method(MethodDef::static_method("IndexOf", 2, MethodBody::HostCall(HostTarget::new("ecma:array", "indexOf")))),
             ),
-            static_only_class(
+            // System.Console — `WriteLine` / `Write` route through the
+            // .NET-aware stringifier (`dotnet.console_writeline`) which
+            // capitalises booleans (`True`/`False` per .NET) and maps
+            // null to `""`. ReadLine / Error / Print stay as direct
+            // host-call passthroughs.
+            DotnetClassExport::new(
                 "dotnet.System",
-                "Console",
-                &[
-                    ("WriteLine", 1, "wasi:cli", "log"),
-                    ("Write", 1, "wasi:cli", "log"),
-                    ("ReadLine", 0, "wasi:cli", "readLine"),
-                    ("Error", 1, "wasi:cli", "error"),
-                    ("Print", 1, "wasi:cli", "log"),
-                    ("Assert", 1, "wasi:cli", "log"),
-                ],
+                ClassType::new("Console")
+                    .with_method(MethodDef::static_method(
+                        "WriteLine", 1,
+                        MethodBody::Common("dotnet.console_writeline".into()),
+                    ))
+                    .with_method(MethodDef::static_method(
+                        "Write", 1,
+                        MethodBody::Common("dotnet.console_writeline".into()),
+                    ))
+                    .with_method(MethodDef::static_method(
+                        "ReadLine", 0,
+                        MethodBody::HostCall(HostTarget::new("wasi:cli", "readLine")),
+                    ))
+                    .with_method(MethodDef::static_method(
+                        "Error", 1,
+                        MethodBody::HostCall(HostTarget::new("wasi:cli", "error")),
+                    ))
+                    .with_method(MethodDef::static_method(
+                        "Print", 1,
+                        MethodBody::Common("dotnet.console_writeline".into()),
+                    ))
+                    .with_method(MethodDef::static_method(
+                        "Assert", 1,
+                        MethodBody::HostCall(HostTarget::new("wasi:cli", "log")),
+                    )),
             ),
             static_only_class(
                 "dotnet.System",

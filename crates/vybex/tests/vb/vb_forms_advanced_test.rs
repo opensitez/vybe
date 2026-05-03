@@ -722,7 +722,7 @@ Dim f As New Form1()
 
 /// G29. ComboBox.Items.Add -- adds items.
 #[test]
-#[ignore = "known bug: items collection not created in namespace stub"]
+
 fn g29_combobox_items_add() {
     let (_vm, gui, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -744,7 +744,7 @@ Dim f As New Form1()
 
 /// G30. ListBox.Items.Add -- adds items.
 #[test]
-#[ignore = "known bug: items collection not created in namespace stub"]
+
 fn g30_listbox_items_add() {
     let (_vm, gui, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -787,7 +787,7 @@ Dim f As New Form1()
 
 /// G32. ListBox with multiple items added.
 #[test]
-#[ignore = "known bug: items collection not created in namespace stub"]
+
 fn g32_listbox_multiple_items() {
     let (_vm, gui, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -1088,7 +1088,7 @@ Dim f As New Form1()
 
 /// K45. TabControl with TabPages.
 #[test]
-#[ignore = "known bug: items collection not created in namespace stub"]
+
 fn k45_tabcontrol_with_tabpages() {
     let (_vm, gui, _) = run_vb_gui(r#"
 Imports System.Windows.Forms

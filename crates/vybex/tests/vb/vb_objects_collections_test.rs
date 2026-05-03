@@ -637,7 +637,7 @@ Console.WriteLine(arr(0))
 }
 
 #[test]
-#[ignore = "known bug"]
+
 fn e43_array_returned_from_function() {
     let out = run_vb(r#"
 Function MakeArr() As Integer()
@@ -656,7 +656,7 @@ Console.WriteLine(result(2))
 }
 
 #[test]
-#[ignore = "known bug"]
+
 fn e44_array_of_arrays() {
     let out = run_vb(r#"
 Dim outer(2) As Object
@@ -814,7 +814,7 @@ Console.WriteLine(d.Value)
 }
 
 #[test]
-#[ignore = "known bug"]
+
 fn f52_object_in_collection_method_called() {
     let out = run_vb(r#"
 Class Calc

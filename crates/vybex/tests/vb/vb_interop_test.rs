@@ -1357,7 +1357,7 @@ Console.WriteLine(100 \ 7)
 /// with "null is not callable" because the field's method table isn't properly
 /// resolved when calling a.GetVal() inside B's method.
 #[test]
-#[ignore = "known bug: class field storing another class instance — method call on field returns null"]
+
 fn b67_cross_class_method_chain() {
     let out = run_vb(r#"
 Public Class A

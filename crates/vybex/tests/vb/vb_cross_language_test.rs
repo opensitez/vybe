@@ -21,7 +21,7 @@ fn setup_vm() -> (VM, Arc<Mutex<Vec<String>>>) {
 }
 
 #[test]
-#[ignore = "cross-language requires shared VM multi-profile support"]
+
 fn js_class_used_from_vb() {
     let (mut vm, output) = setup_vm();
 
@@ -67,7 +67,7 @@ Console.WriteLine(c.get())
 }
 
 #[test]
-#[ignore = "cross-language requires shared VM multi-profile support"]
+
 fn vb_class_used_from_js() {
     let (mut vm, output) = setup_vm();
 
@@ -108,7 +108,7 @@ End Class
 }
 
 #[test]
-#[ignore = "cross-language requires shared VM multi-profile support"]
+
 fn shared_global_between_languages() {
     let (mut vm, output) = setup_vm();
 
@@ -132,7 +132,7 @@ fn shared_global_between_languages() {
 }
 
 #[test]
-#[ignore = "cross-language requires shared VM multi-profile support"]
+
 fn js_function_called_from_vb() {
     let (mut vm, output) = setup_vm();
 

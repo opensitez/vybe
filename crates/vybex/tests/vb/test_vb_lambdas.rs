@@ -5,7 +5,6 @@ use super::helpers::run_vb;
 // ═══════════════════════════════════════════════════════════
 
 #[test]
-#[ignore]
 fn function_lambda_single_line() {
     let out = run_vb(r#"
 Module M
@@ -51,7 +50,6 @@ End Module
 }
 
 #[test]
-#[ignore]
 fn lambda_as_argument() {
     let out = run_vb(r#"
 Module M
@@ -67,7 +65,6 @@ End Module
 }
 
 #[test]
-#[ignore]
 fn addressof_basic() {
     let out = run_vb(r#"
 Module M
@@ -86,7 +83,6 @@ End Module
 }
 
 #[test]
-#[ignore]
 fn multiline_function_lambda() {
     let out = run_vb(r#"
 Module M

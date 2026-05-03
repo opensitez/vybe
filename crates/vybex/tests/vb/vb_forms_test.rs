@@ -20,7 +20,7 @@ use vybe_host::gui_state::GuiState;
 
 /// A01. Creating a Form class emits a Text property change.
 #[test]
-#[ignore = "known bug: plain Form class without WinForms base does not emit Text property via side effects"]
+
 fn a01_form_class_creation_emits_text() {
     let (_vm, gui, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -53,7 +53,7 @@ Application.Run(f)
 
 /// A03. Form.Show emits FormShow side effect.
 #[test]
-#[ignore = "known bug: VB class instances dont have show/close methods from host"]
+
 fn a03_form_show_emits_form_show() {
     let (_vm, gui, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -70,7 +70,7 @@ Dim f As New Form1()
 
 /// A04. Form.Close emits FormClose side effect.
 #[test]
-#[ignore = "known bug: VB class instances dont have show/close methods from host"]
+
 fn a04_form_close_emits_form_close() {
     let (_vm, gui, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -110,7 +110,7 @@ Dim f As New Form1()
 
 /// A06. Multiple forms can be created independently.
 #[test]
-#[ignore = "known bug: plain Form classes without WinForms base do not emit Text property side effects"]
+
 fn a06_multiple_forms_created() {
     let (_vm, gui, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
@@ -1499,7 +1499,7 @@ Dim f As New Form1()
 
 /// H04. Form.Close called from method.
 #[test]
-#[ignore = "known bug: Me.Close() inside a method resolves to undefined rather than host closeForm"]
+
 fn h04_close_from_method() {
     let (_vm, gui, _) = run_vb_gui(r#"
 Imports System.Windows.Forms
