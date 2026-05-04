@@ -20,7 +20,60 @@ use crate::common::classes::{
     from_method_stmt,
     types::*,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+fn property_field_name(body: &[Statement], field_names: &HashSet<String>) -> Option<String> {
+    let [stmt] = body else { return None; };
+    match &stmt.kind {
+        StmtKind::Return(Some(expr)) => match &expr.kind {
+            ExprKind::Call { callee, args, .. } if args.is_empty() => match &callee.kind {
+                ExprKind::Member { object, field, .. } if matches!(object.kind, ExprKind::This) => {
+                    field_names.contains(&field.to_ascii_lowercase()).then(|| field.clone())
+                }
+                _ => None,
+            },
+            _ => None,
+        },
+        StmtKind::Expr(expr) => match &expr.kind {
+            ExprKind::Call { callee, args, .. } if args.len() == 1 => match &callee.kind {
+                ExprKind::Member { object, field, .. }
+                    if matches!(object.kind, ExprKind::This)
+                        && matches!(args[0].value.kind, ExprKind::Ident(ref name) if name.eq_ignore_ascii_case("value")) =>
+                {
+                    field_names.contains(&field.to_ascii_lowercase()).then(|| field.clone())
+                }
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn rewrite_property_getter_body(body: &[Statement], field_names: &HashSet<String>) -> Vec<Statement> {
+    let Some(field_name) = property_field_name(body, field_names) else {
+        return body.to_vec();
+    };
+    vec![Statement::new(StmtKind::Return(Some(Expression::new(ExprKind::Member {
+        object: Box::new(Expression::new(ExprKind::This)),
+        field: field_name,
+        null_safe: false,
+    }))))]
+}
+
+fn rewrite_property_setter_body(body: &[Statement], field_names: &HashSet<String>) -> Vec<Statement> {
+    let Some(field_name) = property_field_name(body, field_names) else {
+        return body.to_vec();
+    };
+    vec![Statement::new(StmtKind::Assign {
+        targets: vec![Expression::new(ExprKind::Member {
+            object: Box::new(Expression::new(ExprKind::This)),
+            field: field_name,
+            null_safe: false,
+        })],
+        value: Expression::ident("value"),
+    })]
+}
 
 pub fn normalize_class(
     span: Span,
@@ -39,6 +92,10 @@ pub fn normalize_class(
     let mut constructors: Vec<NormalConstructor> = Vec::new();
     let mut destructor: Option<NormalMethod> = None;
     let mut special_methods: Vec<SpecialMethod> = Vec::new();
+    let field_names: HashSet<String> = members.iter().filter_map(|member| match member {
+        ClassMember::Field { name, .. } => Some(name.to_ascii_lowercase()),
+        _ => None,
+    }).collect();
 
     for member in members {
         match member {
@@ -108,12 +165,12 @@ pub fn normalize_class(
                 let (canonical, _) = canonicalize_method(ClassLang::Pascal, pname);
                 let getter_method = getter.as_ref().map(|body| build_normal_method(
                     span.clone(), &canonical, pname, Vec::new(),
-                    vec![], None, body.clone(),
+                    vec![], None, rewrite_property_getter_body(body, &field_names),
                     Access::Public, false, false, false, Modifiers::default(),
                 ));
                 let setter_method = setter.as_ref().map(|s: &PropertySetter| build_normal_method(
                     span.clone(), &canonical, pname, Vec::new(),
-                    vec![s.param.clone()], None, s.body.clone(),
+                    vec![s.param.clone()], None, rewrite_property_setter_body(&s.body, &field_names),
                     Access::Public, false, false, false, Modifiers::default(),
                 ));
                 properties.push(NormalProperty {

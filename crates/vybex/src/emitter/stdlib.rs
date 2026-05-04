@@ -304,6 +304,16 @@ pub fn build_stdlib(imports: &mut Chunk) -> StdLib {
     chunks.push(build_str_insert(imports));        exports.push("__stdlib_str_insert");
     chunks.push(build_str_remove_start(imports));  exports.push("__stdlib_str_remove_start");
     chunks.push(build_str_remove_range(imports));  exports.push("__stdlib_str_remove_range");
+    chunks.push(build_pascal_set_include(imports)); exports.push("__stdlib_pascal_set_include");
+    chunks.push(build_pascal_set_exclude(imports)); exports.push("__stdlib_pascal_set_exclude");
+    chunks.push(build_pascal_set_union(imports)); exports.push("__stdlib_pascal_set_union");
+    chunks.push(build_pascal_set_intersection(imports)); exports.push("__stdlib_pascal_set_intersection");
+    chunks.push(build_pascal_set_difference(imports)); exports.push("__stdlib_pascal_set_difference");
+    chunks.push(build_pascal_set_contains(imports)); exports.push("__stdlib_pascal_set_contains");
+    chunks.push(build_pascal_write(imports)); exports.push("__stdlib_pascal_write");
+    chunks.push(build_pascal_writeln(imports)); exports.push("__stdlib_pascal_writeln");
+    chunks.push(build_pascal_str_insert(imports)); exports.push("__stdlib_pascal_str_insert");
+    chunks.push(build_pascal_str_remove_range(imports)); exports.push("__stdlib_pascal_str_remove_range");
     chunks.push(build_str_count(imports));         exports.push("__stdlib_count");
     chunks.push(build_is_numeric(imports));        exports.push("__stdlib_isnumeric");
     chunks.push(build_val(imports));               exports.push("__stdlib_val");
@@ -2314,6 +2324,211 @@ fn build_str_remove_range(_imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
     c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op_u16(Op::CONST, max, 0);
+    c.emit_op(Op::STR_SUBSTRING, 0);
+    c.emit_op(Op::STR_CONCAT, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+fn build_pascal_set_include(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_pascal_set_include");
+    c.arity = 2;
+    c.local_count = 2;
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    let idx = imports.add_import("ecma:set", "add");
+    c.emit_op_u16(Op::CALL_IMPORT, idx, 0);
+    c.emit(2u8, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+fn build_pascal_set_exclude(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_pascal_set_exclude");
+    c.arity = 2;
+    c.local_count = 2;
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    let idx = imports.add_import("ecma:set", "delete");
+    c.emit_op_u16(Op::CALL_IMPORT, idx, 0);
+    c.emit(2u8, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+fn build_pascal_set_union(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_pascal_set_union");
+    c.arity = 2;
+    c.local_count = 2;
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    let idx = imports.add_import("ecma:set", "union");
+    c.emit_op_u16(Op::CALL_IMPORT, idx, 0);
+    c.emit(2u8, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+fn build_pascal_set_intersection(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_pascal_set_intersection");
+    c.arity = 2;
+    c.local_count = 2;
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    let idx = imports.add_import("ecma:set", "intersection");
+    c.emit_op_u16(Op::CALL_IMPORT, idx, 0);
+    c.emit(2u8, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+fn build_pascal_set_difference(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_pascal_set_difference");
+    c.arity = 2;
+    c.local_count = 2;
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    let idx = imports.add_import("ecma:set", "difference");
+    c.emit_op_u16(Op::CALL_IMPORT, idx, 0);
+    c.emit(2u8, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+fn build_pascal_set_contains(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_pascal_set_contains");
+    c.arity = 2;
+    c.local_count = 2;
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    let idx = imports.add_import("ecma:set", "has");
+    c.emit_op_u16(Op::CALL_IMPORT, idx, 0);
+    c.emit(2u8, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+fn emit_pascal_write_buffer(c: &mut Chunk, buffer_key: u16, line: u32) {
+    let undefined_key = c.add_constant(Value::String(Arc::from("undefined")));
+    let empty_key = c.add_constant(Value::String(Arc::from("")));
+
+    c.emit_op_u16(Op::GLOBAL_GET, buffer_key, line);
+    c.emit_op(Op::DUP, line);
+    c.emit_op(Op::REF_IS_NULL, line);
+    let has_value = c.emit_jump(Op::BR_IF_FALSE, line);
+    c.emit_op(Op::DROP, line);
+    c.emit_op_u16(Op::CONST, empty_key, line);
+    let done = c.emit_jump(Op::BR, line);
+    c.patch_jump(has_value);
+
+    c.emit_op(Op::DUP, line);
+    c.emit_op(Op::REF_TYPEOF, line);
+    c.emit_op_u16(Op::CONST, undefined_key, line);
+    c.emit_op(Op::DYN_EQ, line);
+    let keep_existing = c.emit_jump(Op::BR_IF_FALSE, line);
+    c.emit_op(Op::DROP, line);
+    c.emit_op_u16(Op::CONST, empty_key, line);
+    c.patch_jump(keep_existing);
+    c.patch_jump(done);
+}
+
+fn build_pascal_write(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_pascal_write");
+    c.arity = 1;
+    c.local_count = 1;
+    let line = 0;
+    let buffer_key = c.add_constant(Value::String(Arc::from("__pascal_write_buffer")));
+
+    emit_pascal_write_buffer(&mut c, buffer_key, line);
+    c.emit_op_u16(Op::LOCAL_GET, 0, line);
+    c.emit_op(Op::DYN_ADD, line);
+    c.emit_op_u16(Op::GLOBAL_SET, buffer_key, line);
+    c.emit_op(Op::DROP, line);
+    c.emit_op(Op::NULL, line);
+    c.emit_op(Op::RETURN, line);
+    c
+}
+
+fn build_pascal_writeln(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_pascal_writeln");
+    c.arity = 1;
+    c.local_count = 1;
+    let line = 0;
+    let buffer_key = c.add_constant(Value::String(Arc::from("__pascal_write_buffer")));
+    let empty_key = c.add_constant(Value::String(Arc::from("")));
+
+    emit_pascal_write_buffer(&mut c, buffer_key, line);
+    c.emit_op_u16(Op::LOCAL_GET, 0, line);
+    c.emit_op(Op::DYN_ADD, line);
+
+    let log_idx = imports.add_import("wasi:cli", "log");
+    c.emit_op_u16(Op::CALL_IMPORT, log_idx, line);
+    c.emit(1u8, line);
+    c.emit_op(Op::DROP, line);
+
+    c.emit_op_u16(Op::CONST, empty_key, line);
+    c.emit_op_u16(Op::GLOBAL_SET, buffer_key, line);
+    c.emit_op(Op::DROP, line);
+    c.emit_op(Op::NULL, line);
+    c.emit_op(Op::RETURN, line);
+    c
+}
+
+fn build_pascal_str_insert(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_pascal_str_insert");
+    c.arity = 3;
+    c.local_count = 3;
+    let value = 0u16;
+    let target = 1u16;
+    let index = 2u16;
+    let max = c.add_constant(Value::I32(i32::MAX));
+
+    c.emit_op_u16(Op::LOCAL_GET, target, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, index, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op(Op::STR_SUBSTRING, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, target, 0);
+    c.emit_op_u16(Op::LOCAL_GET, index, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::CONST, max, 0);
+    c.emit_op(Op::STR_SUBSTRING, 0);
+    c.emit_op(Op::STR_CONCAT, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+fn build_pascal_str_remove_range(_imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_pascal_str_remove_range");
+    c.arity = 3;
+    c.local_count = 3;
+    let target = 0u16;
+    let start = 1u16;
+    let count = 2u16;
+    let max = c.add_constant(Value::I32(i32::MAX));
+
+    c.emit_op_u16(Op::LOCAL_GET, target, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, start, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op(Op::STR_SUBSTRING, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, target, 0);
+    c.emit_op_u16(Op::LOCAL_GET, start, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_GET, count, 0);
     c.emit_op(Op::DYN_ADD, 0);
     c.emit_op_u16(Op::CONST, max, 0);
     c.emit_op(Op::STR_SUBSTRING, 0);

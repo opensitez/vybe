@@ -77,9 +77,12 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // constructor invocation syntax) into the canonical `New { class: TFoo, args }`
     // AST so every language ends up with the same instantiation node.
     let class_names: std::collections::HashSet<String> = body.iter().filter_map(|s| {
-        if let StmtKind::ClassDecl { name, .. } = &s.kind {
-            Some(name.to_lowercase())
-        } else { None }
+        match &s.kind {
+            StmtKind::ClassDecl { name, .. } | StmtKind::StructDecl { name, .. } => {
+                Some(name.to_lowercase())
+            }
+            _ => None,
+        }
     }).collect();
     for stmt in body.iter_mut() {
         rewrite_constructor_calls_stmt(stmt, &class_names);
@@ -313,6 +316,13 @@ fn rewrite_shadowed_builtin_casts_expr(
                 let arg = (**inner).clone();
                 expr.kind = ExprKind::Call {
                     callee: Box::new(Expression::ident(type_name)),
+                    args: vec![Argument::positional(arg)],
+                    optional: false,
+                };
+            } else if matches!(type_name.to_lowercase().as_str(), "integer" | "int" | "longint") {
+                let arg = (**inner).clone();
+                expr.kind = ExprKind::Call {
+                    callee: Box::new(Expression::ident("Trunc")),
                     args: vec![Argument::positional(arg)],
                     optional: false,
                 };
@@ -3054,6 +3064,20 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
             .transpose()?
             .unwrap_or_default();
 
+        if let ExprKind::Ident(name) = &expr.kind {
+            if name.eq_ignore_ascii_case("Format") && args.len() == 2 {
+                if let ExprKind::Array(elements) = &args[1].value.kind {
+                    let mut expanded_args = vec![args[0].clone()];
+                    expanded_args.extend(elements.iter().map(|element| Argument::positional(element.value.clone())));
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: Box::new(expr),
+                        args: expanded_args,
+                        optional: false,
+                    }));
+                }
+            }
+        }
+
         // Canonicalize Pascal's function-style builtins to canonical names so the
         // compiler can dispatch them via compiler_common::canonical regardless of
         // source language. Pascal is case-insensitive.
@@ -3097,7 +3121,7 @@ fn canonicalize_pascal_builtin(name: &str, argc: usize) -> Option<&'static str> 
 /// Pascal property-style member access canonicalization (case-insensitive).
 fn canonicalize_pascal_member(name: &str) -> Option<&'static str> {
     match name.to_lowercase().as_str() {
-        "length" | "count" => Some("__len__"),
+        "length" => Some("__len__"),
         _ => None,
     }
 }

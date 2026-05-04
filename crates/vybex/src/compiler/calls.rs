@@ -1403,6 +1403,23 @@ impl Compiler {
                         self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
                         return Ok(());
                     }
+
+                    let canon_type = self.canon(&type_name);
+                    let canon_field = self.canon(field);
+                    let is_callable_field = self.pending_classes.get(canon_type.as_str())
+                        .map(|pc| pc.fields.iter().any(|name| name == &canon_field))
+                        .unwrap_or(false);
+                    if is_callable_field {
+                        self.compile_expr(object)?;
+                        let obj_tmp = self.define_local("__pascal_callable_field_obj");
+                        self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+                        let prop = self.str_const(&canon_field);
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit_u16(Op::STRUCT_GET, prop);
+                        for a in &arg_exprs { self.compile_expr(a)?; }
+                        self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -2035,7 +2052,10 @@ impl Compiler {
                     || (!self.case_sensitive && self.scope().resolve_ci(name).is_some());
                 if !is_local && !is_known_func {
                     if self.emit_self_ref() {
-                        // Me.name(args) → load Me, dup, struct_get(name), call with this
+                        // Me.name(args) → load Me, dup, struct_get(name).
+                        // Real methods receive `this`/Self as arg0, but callable
+                        // fields (Pascal procedure/function members) should be
+                        // invoked as plain function values.
                         let field_name = self.canon(name);
                         let prop = self.str_const(&field_name);
                         self.emit(Op::DUP);
@@ -2044,6 +2064,14 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
                         let obj_tmp = self.define_local("__bare_obj");
                         self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+
+                        if self.profile.name == "pascal" && self.is_class_field(name) {
+                            self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                            for a in &arg_exprs { self.compile_expr(a)?; }
+                            self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                            return Ok(());
+                        }
+
                         self.emit_u16(Op::LOCAL_GET, fn_tmp);
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         for a in &arg_exprs { self.compile_expr(a)?; }
@@ -2120,6 +2148,40 @@ impl Compiler {
                 return Ok(());
             }
             self.emit_var_get(name);
+            if let Some(param_modes) = self.function_param_modes.get(&self.canon(name)).cloned() {
+                if param_modes.iter().any(|mode| matches!(mode, PassBy::Ref | PassBy::Out)) {
+                    for (index, arg) in args.iter().enumerate() {
+                        match param_modes.get(index).copied().unwrap_or(PassBy::Value) {
+                            PassBy::Out => self.emit(Op::NULL),
+                            PassBy::Ref | PassBy::Const | PassBy::Value => {
+                                if !matches!(param_modes.get(index), Some(PassBy::Out)) {
+                                    self.compile_expr(&arg.value)?;
+                                }
+                            }
+                        }
+                    }
+                    self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+
+                    let pack_slot = self.define_local("__ref_call_pack");
+                    self.emit_u16(Op::LOCAL_SET, pack_slot);
+                    self.emit(Op::DROP);
+                    let mut ref_out_index = 1usize;
+                    for (index, arg) in args.iter().enumerate() {
+                        if !matches!(param_modes.get(index), Some(PassBy::Ref | PassBy::Out)) {
+                            continue;
+                        }
+                        self.emit_u16(Op::LOCAL_GET, pack_slot);
+                        self.emit_const(Value::F64(ref_out_index as f64));
+                        common::collections::emit_get(&mut self.chunks, self.current, self.line);
+                        self.compile_assign_target(&arg.value)?;
+                        ref_out_index += 1;
+                    }
+                    self.emit_u16(Op::LOCAL_GET, pack_slot);
+                    self.emit_const(Value::F64(0.0));
+                    common::collections::emit_get(&mut self.chunks, self.current, self.line);
+                    return Ok(());
+                }
+            }
             for a in &arg_exprs { self.compile_expr(a)?; }
             self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
             return Ok(());

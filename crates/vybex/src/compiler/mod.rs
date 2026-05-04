@@ -81,6 +81,8 @@ pub struct Compiler {
     line: u32,
     defined_globals: HashSet<String>,
     defined_functions: HashSet<String>,
+    function_param_modes: HashMap<String, Vec<PassBy>>,
+    function_min_arity: HashMap<String, usize>,
     defined_classes: HashSet<String>,
     /// Names of methods defined on any user class — used to avoid value method
     /// hijacking (e.g. user class `Calc.Add()` shouldn't match array `add`).
@@ -96,6 +98,7 @@ pub struct Compiler {
     pub(crate) profile: LanguageProfile,
     current_func_name: Option<String>,
     current_result_slot: Option<u16>,
+    current_ref_out_params: Option<Vec<u16>>,
     pending_classes: HashMap<String, PendingClass>,
     current_class: Option<String>,
     /// Mirrors `NormalClass.implicit_self_fields` for the class the
@@ -107,6 +110,9 @@ pub struct Compiler {
     pub(crate) current_class_implicit_self: bool,
     /// Label for the next loop to be pushed (set by StmtKind::Labeled).
     pending_label: Option<String>,
+    with_targets: Vec<u16>,
+
+
     /// Functions whose every explicit `Return` carries an `ExprKind::Tuple`
     /// of the same arity. Populated by a pre-pass before any function is
     /// compiled so both callee (set `chunk.result_arity`, push N values
@@ -302,6 +308,8 @@ impl Compiler {
             line: 1,
             defined_globals: HashSet::new(),
             defined_functions: HashSet::new(),
+            function_param_modes: HashMap::new(),
+            function_min_arity: HashMap::new(),
             defined_classes: HashSet::new(),
             defined_class_methods: HashSet::new(),
             global_type_hints: HashMap::new(),
@@ -310,10 +318,14 @@ impl Compiler {
             profile,
             current_func_name: None,
             current_result_slot: None,
+            current_ref_out_params: None,
             pending_classes: HashMap::new(),
             current_class: None,
             current_class_implicit_self: false,
             pending_label: None,
+            with_targets: Vec::new(),
+
+
             multi_return_functions: HashMap::new(),
             generator_functions: HashSet::new(),
             host_import_bindings: HashMap::new(),
@@ -585,6 +597,32 @@ impl Compiler {
         }
         false
     }
+
+    fn emit_with_target_get(&mut self, name: &str) -> bool {
+        let Some(slot) = self.with_targets.last().copied() else {
+            return false;
+        };
+        self.emit_u16(Op::LOCAL_GET, slot);
+        let idx = self.str_const(&self.canon(name));
+        self.emit_u16(Op::STRUCT_GET, idx);
+        true
+    }
+
+    fn emit_with_target_set(&mut self, name: &str) -> bool {
+        let Some(slot) = self.with_targets.last().copied() else {
+            return false;
+        };
+        let value_slot = self.define_local("__with_value");
+        self.emit_u16(Op::LOCAL_SET, value_slot);
+        self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_GET, slot);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        let idx = self.str_const(&self.canon(name));
+        self.emit_u16(Op::STRUCT_SET, idx);
+        self.emit(Op::DROP);
+        true
+    }
+
 
     /// Emit a `for v in gen():` loop that drives the generator via
     /// `GEN_NEXT`. Layout:
@@ -916,11 +954,6 @@ impl Compiler {
     }
 
     fn emit_return_through_finally(&mut self, result_count: usize) -> Result<(), String> {
-        if self.active_finally_blocks.is_empty() {
-            self.emit_return();
-            return Ok(());
-        }
-
         let slots: Vec<u16> = (0..result_count)
             .map(|idx| self.define_local(&format!("__return_val_{}", idx)))
             .collect();
@@ -929,10 +962,34 @@ impl Compiler {
             self.emit(Op::DROP);
         }
 
-        self.emit_active_finally_blocks()?;
+        if !self.active_finally_blocks.is_empty() {
+            self.emit_active_finally_blocks()?;
+        }
 
         for slot in &slots {
             self.emit_u16(Op::LOCAL_GET, *slot);
+        }
+
+        let ref_out_slots = self.current_ref_out_params.clone().unwrap_or_default();
+        if !ref_out_slots.is_empty() && self.current_multi_return_arity().is_none() {
+            for slot in &ref_out_slots {
+                self.emit_u16(Op::LOCAL_GET, *slot);
+            }
+            let pack_count = result_count + ref_out_slots.len();
+            let mut first = 0u16;
+            for index in 0..pack_count {
+                let slot = self.define_local(&format!("__return_pack_{}", index));
+                if index == 0 {
+                    first = slot;
+                }
+            }
+            common::collections::emit_pack_n(
+                &mut self.chunks,
+                self.current,
+                pack_count as u16,
+                first,
+                self.line,
+            );
         }
         self.emit_return();
         Ok(())
@@ -1145,6 +1202,10 @@ impl Compiler {
             || normalized.ends_with(".string")
     }
 
+    pub(super) fn is_pascal_set_type_hint(type_hint: &str) -> bool {
+        Self::normalize_type_hint(type_hint).starts_with("set of ")
+    }
+
     fn lookup_var_type_hint(&self, name: &str) -> Option<&str> {
         if let Some(type_hint) = self.scope().resolve_type(name) {
             return Some(type_hint);
@@ -1164,6 +1225,43 @@ impl Compiler {
             ExprKind::Ident(name) => self
                 .lookup_var_type_hint(name)
                 .is_some_and(Self::is_string_type_hint),
+            _ => false,
+        }
+    }
+
+    fn maybe_promote_pascal_array_literal_to_set(
+        &mut self,
+        type_hint: Option<&str>,
+        value: &Expression,
+    ) {
+        if self.profile.name != "pascal" {
+            return;
+        }
+        if !type_hint.is_some_and(Self::is_pascal_set_type_hint) {
+            return;
+        }
+        if !matches!(value.kind, ExprKind::Array(_)) {
+            return;
+        }
+        let idx = self.import("ecma:set", "fromIterable");
+        self.emit_host_call(idx, 1);
+    }
+
+    pub(super) fn expr_is_pascal_set(&self, expr: &Expression) -> bool {
+        if self.profile.name != "pascal" {
+            return false;
+        }
+
+        match &expr.kind {
+            ExprKind::Set(_) => true,
+            ExprKind::Ident(name) => self
+                .lookup_var_type_hint(name)
+                .is_some_and(Self::is_pascal_set_type_hint),
+            ExprKind::Binary { op, left, right }
+                if matches!(op, BinOp::Add | BinOp::Mul | BinOp::Sub) =>
+            {
+                self.expr_is_pascal_set(left) && self.expr_is_pascal_set(right)
+            }
             _ => false,
         }
     }
@@ -1212,6 +1310,13 @@ impl Compiler {
             self.emit_u16(Op::STRUCT_GET, field_idx);
             return;
         }
+        let cname = self.canon(name);
+        let shadows_named_global = self.defined_globals.contains(&cname)
+            || self.defined_functions.contains(&cname)
+            || self.defined_classes.contains(&cname);
+        if !shadows_named_global && self.emit_with_target_get(name) {
+            return;
+        }
         // Known type used as a value (e.g. `e instanceof RangeError`) — emit
         // the type name as a string so vybe:object:instanceOf can look it up
         // via its String fallback. Without this, `RangeError` would become
@@ -1220,13 +1325,12 @@ impl Compiler {
         // (e.g. `Dim list As New List(Of String)` shadows the `list` type name).
         if self.profile.known_types.contains_key(name)
             && !self.defined_globals.contains(name)
-            && !self.defined_globals.contains(&self.canon(name))
+            && !self.defined_globals.contains(&cname)
         {
             self.emit_const(Value::String(Arc::from(name)));
             return;
         }
         // Global — canonicalize name for case-insensitive languages
-        let cname = self.canon(name);
         let idx = self.str_const(&cname);
         self.emit_u16(Op::GLOBAL_GET, idx);
     }
@@ -1278,8 +1382,14 @@ impl Compiler {
             self.emit(Op::DROP);
             return;
         }
-        // Global — canonicalize name for case-insensitive languages
         let cname = self.canon(name);
+        let shadows_named_global = self.defined_globals.contains(&cname)
+            || self.defined_functions.contains(&cname)
+            || self.defined_classes.contains(&cname);
+        if !shadows_named_global && self.emit_with_target_set(name) {
+            return;
+        }
+        // Global — canonicalize name for case-insensitive languages
         let idx = self.str_const(&cname); self.emit_u16(Op::GLOBAL_SET, idx); self.emit(Op::DROP);
     }
 
@@ -1533,6 +1643,12 @@ impl Compiler {
                     }
                 } else {
                     self.compile_expr(value)?;
+                    if let [target] = targets.as_slice() {
+                        if let ExprKind::Ident(name) = &target.kind {
+                            let type_hint = self.lookup_var_type_hint(name).map(str::to_string);
+                            self.maybe_promote_pascal_array_literal_to_set(type_hint.as_deref(), value);
+                        }
+                    }
                     for (i, target) in targets.iter().enumerate() {
                         if i < targets.len() - 1 { self.emit(Op::DUP); }
                         self.compile_assign_target(target)?;
@@ -1977,6 +2093,15 @@ impl Compiler {
             // ── Try / Catch / Finally ───────────────────────────────────
             StmtKind::Try { body, catches, else_body, finally } => {
                 let line = self.line;
+                let finally_exc_slot = if catches.is_empty() && finally.is_some() {
+                    let slot = self.define_local("__try_finally_exc");
+                    self.emit(Op::NULL);
+                    self.emit_u16(Op::LOCAL_SET, slot);
+                    self.emit(Op::DROP);
+                    Some(slot)
+                } else {
+                    None
+                };
                 let catch_jump = common::errors::emit_try_start(&mut self.chunks[self.current], line);
                 if let Some(fin) = finally.clone() {
                     self.active_finally_blocks.push(fin);
@@ -1990,7 +2115,12 @@ impl Compiler {
                 let skip_to_finally = self.emit_jump(Op::BR);
                 common::errors::patch_catch(&mut self.chunks[self.current], catch_jump);
                 if catches.is_empty() {
-                    self.emit(Op::DROP);
+                    if let Some(exc_slot) = finally_exc_slot {
+                        self.emit_u16(Op::LOCAL_SET, exc_slot);
+                        self.emit(Op::DROP);
+                    } else {
+                        self.emit(Op::DROP);
+                    }
                 } else {
                     // Multi-catch dispatch: each arm tests the exception's
                     // canonical __exception_type field. If it matches one of
@@ -2011,32 +2141,45 @@ impl Compiler {
                         if !is_catch_all {
                             let mut to_body: Vec<usize> = Vec::new();
                             for ty in &types {
+                                let mut expected_names = vec![(*ty).to_string()];
+                                if !self.case_sensitive {
+                                    let canon_ty = self.canon(ty);
+                                    if canon_ty != *ty {
+                                        expected_names.push(canon_ty);
+                                    }
+                                }
+
                                 // Match if __exception_type === ty
-                                self.emit(Op::DUP);
-                                let line = self.line;
-                                let key = self.str_const("__exception_type");
-                                self.chunks[self.current]
-                                    .emit_op_u16(Op::STRUCT_GET, key, line);
-                                let v = self.str_const(ty);
-                                self.chunks[self.current]
-                                    .emit_op_u16(Op::CONST, v, line);
-                                self.emit(Op::DYN_EQ);
-                                to_body.push(self.emit_jump(Op::BR_IF_TRUE));
+                                for expected in &expected_names {
+                                    self.emit(Op::DUP);
+                                    let line = self.line;
+                                    let key = self.str_const("__exception_type");
+                                    self.chunks[self.current]
+                                        .emit_op_u16(Op::STRUCT_GET, key, line);
+                                    let v = self.str_const(expected);
+                                    self.chunks[self.current]
+                                        .emit_op_u16(Op::CONST, v, line);
+                                    self.emit(Op::DYN_EQ);
+                                    to_body.push(self.emit_jump(Op::BR_IF_TRUE));
+                                }
                                 // Or match if __type === ty (user class extends
                                 // Exception — its ctor stamps __type via the
                                 // class infrastructure but inherits
                                 // __exception_type from the base ctor; checking
                                 // both lets `catch (AppException)` find
                                 // `throw new AppException(...)`).
-                                self.emit(Op::DUP);
-                                let key = self.str_const("__type");
-                                self.chunks[self.current]
-                                    .emit_op_u16(Op::STRUCT_GET, key, line);
-                                let v = self.str_const(ty);
-                                self.chunks[self.current]
-                                    .emit_op_u16(Op::CONST, v, line);
-                                self.emit(Op::DYN_EQ);
-                                to_body.push(self.emit_jump(Op::BR_IF_TRUE));
+                                for expected in &expected_names {
+                                    self.emit(Op::DUP);
+                                    let line = self.line;
+                                    let key = self.str_const("__type");
+                                    self.chunks[self.current]
+                                        .emit_op_u16(Op::STRUCT_GET, key, line);
+                                    let v = self.str_const(expected);
+                                    self.chunks[self.current]
+                                        .emit_op_u16(Op::CONST, v, line);
+                                    self.emit(Op::DYN_EQ);
+                                    to_body.push(self.emit_jump(Op::BR_IF_TRUE));
+                                }
                             }
                             skip_arm = Some(self.emit_jump(Op::BR));
                             for p in to_body { self.patch_jump(p); }
@@ -2068,6 +2211,15 @@ impl Compiler {
                 }
                 if let Some(fin) = finally {
                     for s in fin { self.compile_stmt(s)?; }
+                }
+                if let Some(exc_slot) = finally_exc_slot {
+                    self.emit_u16(Op::LOCAL_GET, exc_slot);
+                    self.emit(Op::REF_IS_NULL);
+                    let done = self.emit_jump(Op::BR_IF_TRUE);
+                    self.emit_u16(Op::LOCAL_GET, exc_slot);
+                    let line = self.line;
+                    common::errors::emit_throw(self.chunk(), line);
+                    self.patch_jump(done);
                 }
             }
 
@@ -2402,17 +2554,22 @@ impl Compiler {
 
             // ── With ────────────────────────────────────────────────────
             StmtKind::With { items, body, .. } => {
-                // Simplified: compile the first item (if any) and just run the body
+                self.scope_mut().begin_scope();
                 if let Some(first) = items.first() {
                     self.compile_expr(&first.expr)?;
-                    if let Some(ref var) = first.var {
-                        let slot = self.define_local(var);
-                        self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+                    let slot = if let Some(ref var) = first.var {
+                        self.define_local(var)
                     } else {
-                        self.emit(Op::DROP);
-                    }
+                        self.define_local("__with_target")
+                    };
+                    self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+                    self.with_targets.push(slot);
                 }
                 for s in body { self.compile_stmt(s)?; }
+                if !items.is_empty() {
+                    self.with_targets.pop();
+                }
+                self.scope_mut().end_scope();
             }
 
             // ── Using ───────────────────────────────────────────────────
@@ -2809,6 +2966,7 @@ impl Compiler {
             BindingPattern::Ident(name) => {
                 if let Some(ref init_expr) = decl.init {
                     self.compile_expr(init_expr)?;
+                    self.maybe_promote_pascal_array_literal_to_set(decl.type_hint.as_deref(), init_expr);
                     // ECMA-262 §10.2.9 SetFunctionName — anonymous
                     // function expressions assigned to a binding take
                     // the binding name as their `name` property.
@@ -3546,6 +3704,19 @@ impl Compiler {
             },
             BinOp::Concat => { let l = self.line; common::strings::emit_str_concat(self.chunk(), l); }
             BinOp::In => {
+                if self.profile.name == "pascal" {
+                    let t_set = self.define_local("__pascal_in_set");
+                    let t_value = self.define_local("__pascal_in_value");
+                    self.emit_u16(Op::LOCAL_SET, t_set); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, t_value); self.emit(Op::DROP);
+                    let helper = self.str_const("__vybe_pascal_set_contains");
+                    self.emit_u16(Op::GLOBAL_GET, helper);
+                    self.emit_u16(Op::LOCAL_GET, t_value);
+                    self.emit_u16(Op::LOCAL_GET, t_set);
+                    self.emit_u8(Op::CALL_REF, 2);
+                    return;
+                }
+
                 // `x in y` — JS: is `x` a property KEY of `y` (not a value).
                 // ECMA-262 §13.10.1 walks the prototype chain. PHP
                 // `in_array` / Python `key in dict` are own-only and
@@ -3580,6 +3751,20 @@ impl Compiler {
                 self.chunk().emit(2, l);
             }
             BinOp::NotIn => {
+                if self.profile.name == "pascal" {
+                    let t_set = self.define_local("__pascal_nin_set");
+                    let t_value = self.define_local("__pascal_nin_value");
+                    self.emit_u16(Op::LOCAL_SET, t_set); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, t_value); self.emit(Op::DROP);
+                    let helper = self.str_const("__vybe_pascal_set_contains");
+                    self.emit_u16(Op::GLOBAL_GET, helper);
+                    self.emit_u16(Op::LOCAL_GET, t_value);
+                    self.emit_u16(Op::LOCAL_GET, t_set);
+                    self.emit_u8(Op::CALL_REF, 2);
+                    self.emit(Op::DYN_NOT);
+                    return;
+                }
+
                 let l = self.line;
                 let t_y = self.define_local("__nin_y");
                 let t_x = self.define_local("__nin_x");
@@ -3710,6 +3895,115 @@ impl Compiler {
 
     fn try_compile_builtin(&mut self, name: &str, args: &[&Expression]) -> Result<bool, String> {
         let line = self.line;
+
+        if self.profile.name == "pascal" {
+            let builtin_name = self.canon(name);
+            if builtin_name == "write" || builtin_name == "writeln" {
+                let helper = if builtin_name == "write" {
+                    "__vybe_pascal_write"
+                } else {
+                    "__vybe_pascal_writeln"
+                };
+                let helper_idx = self.str_const(helper);
+                self.emit_u16(Op::GLOBAL_GET, helper_idx);
+
+                if args.is_empty() {
+                    self.emit_const(Value::String(Arc::from("")));
+                } else {
+                    let tostring_global = self.str_const("__vybe_tostring");
+                    self.emit_u16(Op::GLOBAL_GET, tostring_global);
+                    self.compile_expr(args[0])?;
+                    self.emit_u8(Op::CALL_REF, 1);
+                    for arg in args.iter().skip(1) {
+                        self.emit_const(Value::String(Arc::from(" ")));
+                        self.emit(Op::DYN_ADD);
+                        self.emit_u16(Op::GLOBAL_GET, tostring_global);
+                        self.compile_expr(arg)?;
+                        self.emit_u8(Op::CALL_REF, 1);
+                        self.emit(Op::DYN_ADD);
+                    }
+                }
+
+                self.emit_u8(Op::CALL_REF, 1);
+                return Ok(true);
+            }
+
+            if (builtin_name == "integer" || builtin_name == "int" || builtin_name == "longint")
+                && args.len() == 1
+            {
+                self.compile_expr(args[0])?;
+                common::math::emit_trunc(self.chunk(), line);
+                return Ok(true);
+            }
+
+            if builtin_name == "delete"
+                && args.len() == 3
+                && matches!(&args[0].kind, ExprKind::Ident(_))
+            {
+                let ExprKind::Ident(var_name) = &args[0].kind else {
+                    unreachable!();
+                };
+                let helper_idx = self.str_const("__vybe_pascal_str_remove_range");
+                self.emit_u16(Op::GLOBAL_GET, helper_idx);
+                self.emit_var_get(var_name);
+                self.compile_expr(args[1])?;
+                self.compile_expr(args[2])?;
+                self.emit_u8(Op::CALL_REF, 3);
+                self.emit_var_set(var_name);
+                self.emit(Op::NULL);
+                return Ok(true);
+            }
+
+            if builtin_name == "insert"
+                && args.len() == 3
+                && matches!(&args[1].kind, ExprKind::Ident(_))
+            {
+                let ExprKind::Ident(var_name) = &args[1].kind else {
+                    unreachable!();
+                };
+                let helper_idx = self.str_const("__vybe_pascal_str_insert");
+                self.emit_u16(Op::GLOBAL_GET, helper_idx);
+                self.compile_expr(args[0])?;
+                self.emit_var_get(var_name);
+                self.compile_expr(args[2])?;
+                self.emit_u8(Op::CALL_REF, 3);
+                self.emit_var_set(var_name);
+                self.emit(Op::NULL);
+                return Ok(true);
+            }
+        }
+
+        if self.profile.name == "pascal"
+            && args.len() == 2
+            && matches!(&args[0].kind, ExprKind::Ident(_))
+        {
+            let builtin_name = self.canon(name);
+            let Some(var_name) = (match &args[0].kind {
+                ExprKind::Ident(var_name) => Some(var_name.as_str()),
+                _ => None,
+            }) else {
+                unreachable!();
+            };
+
+            let is_set_var = self
+                .lookup_var_type_hint(var_name)
+                .is_some_and(Self::is_pascal_set_type_hint);
+            if is_set_var && (builtin_name == "include" || builtin_name == "exclude") {
+                let helper = if builtin_name == "include" {
+                    "__vybe_pascal_set_include"
+                } else {
+                    "__vybe_pascal_set_exclude"
+                };
+                let helper_idx = self.str_const(helper);
+                self.emit_u16(Op::GLOBAL_GET, helper_idx);
+                self.emit_var_get(var_name);
+                self.compile_expr(args[1])?;
+                self.emit_u8(Op::CALL_REF, 2);
+                self.emit(Op::DROP);
+                self.emit(Op::NULL);
+                return Ok(true);
+            }
+        }
 
         // ── Component Model host-call resolution (qualified name → host fn) ──
         //

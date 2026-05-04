@@ -83,15 +83,15 @@ use super::helpers::run_pascal;
 }
 
 // ===================================================================
-// STRING INDEXING (runtime uses 0-based despite profile one_based)
+// STRING INDEXING (Pascal strings are 1-based)
 // ===================================================================
 
 #[test] fn str_index_first_char() {
-    assert_eq!(run_pascal("program T; var s: String; begin s := 'hello'; WriteLn(s[0]); end."), &["h"]);
+    assert_eq!(run_pascal("program T; var s: String; begin s := 'hello'; WriteLn(s[1]); end."), &["h"]);
 }
 
 #[test] fn str_index_last_char() {
-    assert_eq!(run_pascal("program T; var s: String; begin s := 'hello'; WriteLn(s[4]); end."), &["o"]);
+    assert_eq!(run_pascal("program T; var s: String; begin s := 'hello'; WriteLn(s[5]); end."), &["o"]);
 }
 
 // ===================================================================
@@ -111,7 +111,7 @@ use super::helpers::run_pascal;
 var s: String; i: Integer;
 begin
   s := 'abc';
-  for i := 0 to Length(s) - 1 do WriteLn(s[i]);
+    for i := 1 to Length(s) do WriteLn(s[i]);
 end."#), &["a", "b", "c"]);
 }
 
@@ -121,7 +121,7 @@ var s, r: String; i: Integer;
 begin
   s := 'abcd';
   r := '';
-  for i := Length(s) - 1 downto 0 do r := r + s[i];
+    for i := Length(s) downto 1 do r := r + s[i];
   WriteLn(r);
 end."#), &["dcba"]);
 }

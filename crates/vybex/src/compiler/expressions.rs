@@ -74,6 +74,15 @@ impl Compiler {
                     }
                 }
 
+                if self.profile.name == "pascal" && !is_local {
+                    let canon_name = self.canon(name);
+                    if self.function_min_arity.get(&canon_name).copied() == Some(0) {
+                        self.emit_var_get(name);
+                        self.emit_u8(Op::CALL_REF, 0);
+                        return Ok(());
+                    }
+                }
+
                 self.emit_var_get(name);
             }
 
@@ -184,6 +193,18 @@ impl Compiler {
                             vybe_bytecode::Value::String(std::sync::Arc::from(name_canon.as_str())),
                         );
                         self.chunk().emit_op_u16(vybe_bytecode::Op::REF_TEST, idx, line);
+                        return Ok(());
+                    }
+                }
+                if self.profile.name == "pascal" && (*op == BinOp::In || *op == BinOp::NotIn) {
+                    if !self.expr_is_pascal_set(right) {
+                        let line = self.line;
+                        self.compile_expr(right)?;
+                        self.compile_expr(left)?;
+                        common::collections::emit_contains(&mut self.chunks, self.current, line);
+                        if *op == BinOp::NotIn {
+                            self.emit(Op::DYN_NOT);
+                        }
                         return Ok(());
                     }
                 }
@@ -504,6 +525,12 @@ impl Compiler {
                     self.compile_expr(start)?;
                     self.compile_expr(end)?;
                     common::collections::emit_slice_invoke(self.chunk(), line);
+                } else if self.profile.name == "pascal" && self.expr_is_known_string_receiver(object) {
+                    self.compile_expr(object)?;
+                    self.compile_expr(index)?;
+                    self.emit_const(Value::F64(1.0));
+                    self.emit(Op::F64_SUB);
+                    self.emit(Op::STR_CHAR_AT);
                 } else if self.is_js_profile() && self.uses_proxy && !*null_safe {
                     // Proxy get-trap dispatch on bracket-notation reads.
                     self.compile_expr(object)?;
@@ -1210,6 +1237,18 @@ impl Compiler {
                 // builtin-style cast node for such a name, honour the user
                 // function instead of treating the cast as a no-op.
                 if let ExprKind::Cast { type_name, .. } = &expr.kind {
+                    if self.profile.name == "pascal" {
+                        match self.canon(type_name).as_str() {
+                            "integer" | "int" | "longint" => {
+                                self.compile_expr(inner)?;
+                                let line = self.line;
+                                common::math::emit_trunc(self.chunk(), line);
+                                return Ok(());
+                            }
+                            _ => {}
+                        }
+                    }
+
                     let canon_type = self.canon(type_name);
                     let shadows_cast = self.defined_functions.contains(&canon_type)
                         || (!self.case_sensitive
@@ -1692,6 +1731,24 @@ impl Compiler {
     ) -> Result<bool, String> {
         if self.profile.name != "pascal" {
             return Ok(false);
+        }
+
+        if self.expr_is_pascal_set(left) && self.expr_is_pascal_set(right) {
+            let helper = match op {
+                BinOp::Add => Some("__vybe_pascal_set_union"),
+                BinOp::Mul => Some("__vybe_pascal_set_intersection"),
+                BinOp::Sub => Some("__vybe_pascal_set_difference"),
+                _ => None,
+            };
+
+            if let Some(helper) = helper {
+                let helper_idx = self.str_const(helper);
+                self.emit_u16(Op::GLOBAL_GET, helper_idx);
+                self.compile_expr(left)?;
+                self.compile_expr(right)?;
+                self.emit_u8(Op::CALL_REF, 2);
+                return Ok(true);
+            }
         }
 
         let method_name = match op {

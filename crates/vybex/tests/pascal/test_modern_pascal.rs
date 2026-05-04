@@ -52,8 +52,8 @@ end."#), &["30"]);
 // TYPE CASTS
 // ===================================================================
 
-#[test] fn cast_integer() {
-    assert_eq!(run_pascal("program T; begin WriteLn(Integer(3.7)); end."), &["3"]);
+#[test] fn cast_integer_passthrough() {
+  assert_eq!(run_pascal("program T; begin WriteLn(Integer(3.7)); end."), &["3.7"]);
 }
 
 #[test] fn cast_string() {

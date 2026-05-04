@@ -21,6 +21,14 @@ impl Compiler {
         let cname = self.canon(name);
         self.defined_globals.insert(cname.clone());
         self.defined_functions.insert(cname.clone());
+        self.function_param_modes.insert(
+            cname.clone(),
+            params.iter().map(|param| param.pass_by).collect(),
+        );
+        self.function_min_arity.insert(
+            cname.clone(),
+            params.iter().take_while(|param| param.default.is_none() && !param.is_rest).count(),
+        );
         let name = &cname;
 
         let has_rest = params.last().map_or(false, |p| p.is_rest);
@@ -139,11 +147,17 @@ impl Compiler {
         } else {
             None
         };
+        let ref_out_slots: Vec<u16> = params.iter()
+            .filter(|param| matches!(param.pass_by, PassBy::Ref | PassBy::Out))
+            .filter_map(|param| self.scope().resolve(&param.name))
+            .collect();
 
         let saved_fn = self.current_func_name.take();
         let saved_rs = self.current_result_slot.take();
+        let saved_ref_out = self.current_ref_out_params.take();
         self.current_func_name = Some(name.to_string());
         self.current_result_slot = result_slot;
+        self.current_ref_out_params = (!ref_out_slots.is_empty()).then_some(ref_out_slots);
 
         // ECMA-262 async function semantics: throws inside the body
         // become rejected Promises, normal returns become fulfilled
@@ -159,9 +173,6 @@ impl Compiler {
         };
 
         for s in body { self.compile_stmt(s)?; }
-
-        self.current_func_name = saved_fn;
-        self.current_result_slot = saved_rs;
 
         if let Some(catch_jump) = async_try {
             let line = self.line;
@@ -185,11 +196,18 @@ impl Compiler {
             self.emit_return();
         } else if let Some(rs) = result_slot {
             self.emit_u16(Op::LOCAL_GET, rs);
-            self.emit_return();
+            self.emit_return_through_finally(1)?;
+        } else if self.current_ref_out_params.is_some() {
+            self.emit(Op::NULL);
+            self.emit_return_through_finally(1)?;
         } else {
             let line = self.line;
             common::functions::emit_function_epilogue(&mut self.chunks[func_idx], line);
         }
+
+        self.current_func_name = saved_fn;
+        self.current_result_slot = saved_rs;
+        self.current_ref_out_params = saved_ref_out;
 
         let locals = self.scope().next_slot.max(self.chunks[func_idx].local_count);
         self.chunks[func_idx].local_count = locals;
