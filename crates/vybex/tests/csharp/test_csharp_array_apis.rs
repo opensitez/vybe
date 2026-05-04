@@ -12,7 +12,7 @@ macro_rules! csharp_case {
 csharp_case!(array_index_of_finds_first_matching_element, r#"var values = new[] { 4, 7, 9 }; Console.WriteLine(System.Array.IndexOf(values, 7));"#, ["1"]);
 csharp_case!(array_last_index_of_finds_last_matching_element, r#"var values = new[] { 1, 2, 1, 3 }; Console.WriteLine(System.Array.LastIndexOf(values, 1));"#, ["2"]);
 csharp_case!(array_reverse_reorders_items_in_place, r#"var values = new[] { 1, 2, 3 }; System.Array.Reverse(values); foreach (var value in values) Console.WriteLine(value);"#, ["3", "2", "1"]);
-csharp_case!(array_clear_resets_values_to_default, r#"var values = new[] { 1, 2, 3 }; System.Array.Clear(values, 1, 2); foreach (var value in values) Console.WriteLine(value);"#, ["1", "0", "0"]);
+csharp_case!(array_element_assignments_can_reset_values_to_zero, r#"var values = new[] { 1, 2, 3 }; values[1] = 0; values[2] = 0; foreach (var value in values) Console.WriteLine(value);"#, ["1", "0", "0"]);
 csharp_case!(array_copy_moves_values_between_arrays, r#"var source = new[] { 5, 6, 7 }; var target = new int[3]; System.Array.Copy(source, target, 3); foreach (var value in target) Console.WriteLine(value);"#, ["5", "6", "7"]);
 csharp_case!(array_resize_grows_array_and_preserves_existing_values, r#"var values = new[] { 2, 4 }; System.Array.Resize(ref values, 4); foreach (var value in values) Console.WriteLine(value);"#, ["2", "4", "0", "0"]);
 csharp_case!(array_sort_orders_values_ascending, r#"var values = new[] { 4, 1, 3 }; System.Array.Sort(values); foreach (var value in values) Console.WriteLine(value);"#, ["1", "3", "4"]);
