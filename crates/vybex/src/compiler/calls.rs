@@ -6,6 +6,19 @@
 
 use super::*;
 
+fn python_is_identifier_literal(value: &str) -> bool {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(ch) if ch == '_' || ch.is_alphabetic() => {}
+        _ => return false,
+    }
+    chars.all(|ch| ch == '_' || ch.is_alphanumeric())
+}
+
+fn python_is_printable_literal(value: &str) -> bool {
+    value.chars().all(|ch| !ch.is_control())
+}
+
 impl Compiler {
     pub(super) fn js_error_instanceof_chain(type_name: &str) -> &'static [&'static str] {
         match type_name.trim() {
@@ -93,6 +106,65 @@ impl Compiler {
 
     pub(super) fn compile_call(&mut self, callee: &Expression, args: &[Argument]) -> Result<(), String> {
         let arg_exprs: Vec<&Expression> = args.iter().map(|a| &a.value).collect();
+
+        if self.is_python_profile() {
+            if let ExprKind::Ident(name) = &callee.kind {
+                if name == "dict" {
+                    let line = self.line;
+                    common::dict::emit_new(&mut self.chunks, self.current, line);
+
+                    if args.iter().all(|arg| arg.name.is_some()) {
+                        for arg in args {
+                            let key = arg.name.as_ref().unwrap();
+                            self.emit(Op::DUP);
+                            self.compile_expr(&arg.value)?;
+                            let key_idx = self.str_const(key);
+                            self.emit_u16(Op::STRUCT_SET, key_idx);
+                            self.emit(Op::DROP);
+
+                            self.emit(Op::DUP);
+                            let keys_key = self.str_const("__keys");
+                            self.emit_u16(Op::STRUCT_GET, keys_key);
+                            self.emit_const(Value::String(Arc::from(key.as_str())));
+                            common::collections::emit_push(&mut self.chunks, self.current, line);
+                            self.emit(Op::DROP);
+                        }
+                        return Ok(());
+                    }
+
+                    if args.len() == 1 && args[0].name.is_none() && !args[0].spread {
+                        if let ExprKind::Array(elements) = &args[0].value.kind {
+                            for element in elements {
+                                let ExprKind::Tuple(items) = &element.value.kind else { continue; };
+                                if items.len() != 2 { continue; }
+
+                                self.emit(Op::DUP);
+                                self.compile_expr(&items[0])?;
+                                let key_tmp = self.define_local("__py_dict_ctor_key");
+                                self.emit(Op::DUP);
+                                self.emit_u16(Op::LOCAL_SET, key_tmp);
+                                self.emit(Op::DROP);
+                                self.compile_expr(&items[1])?;
+                                common::collections::emit_set(&mut self.chunks, self.current, line);
+                                self.emit(Op::DROP);
+
+                                self.emit(Op::DUP);
+                                let keys_key = self.str_const("__keys");
+                                self.emit_u16(Op::STRUCT_GET, keys_key);
+                                self.emit_u16(Op::LOCAL_GET, key_tmp);
+                                common::collections::emit_push(&mut self.chunks, self.current, line);
+                                self.emit(Op::DROP);
+                            }
+                            return Ok(());
+                        }
+                    }
+
+                    if args.is_empty() {
+                        return Ok(());
+                    }
+                }
+            }
+        }
 
         if self.is_php_profile() {
             if let ExprKind::Ident(name) = &callee.kind {
@@ -243,6 +315,20 @@ impl Compiler {
                 for a in &arg_exprs { self.compile_expr(a)?; }
                 let idx = self.import("vybe:debug", "dump");
                 self.emit_host_call(idx, arg_exprs.len() as u8);
+                return Ok(());
+            }
+
+            let canon = self.canon(name);
+            let shadows_builtin_exception = self.defined_functions.contains(&canon)
+                || self.defined_classes.contains(&canon)
+                || self.defined_globals.contains(&canon)
+                || (!self.case_sensitive && (
+                    self.defined_functions.iter().any(|g| g.eq_ignore_ascii_case(name))
+                    || self.defined_classes.iter().any(|g| g.eq_ignore_ascii_case(name))
+                    || self.defined_globals.iter().any(|g| g.eq_ignore_ascii_case(name))
+                ));
+            if !shadows_builtin_exception && common::errors::is_exception_type(name) {
+                self.emit_js_exception_ctor_value(name, &arg_exprs)?;
                 return Ok(());
             }
         }
@@ -786,6 +872,21 @@ impl Compiler {
                 object.kind,
                 ExprKind::This | ExprKind::Super | ExprKind::Ident(_)
             );
+            if self.is_python_profile() && arg_exprs.is_empty() {
+                if let ExprKind::Lit(Literal::Str(value)) = &object.kind {
+                    match field.as_str() {
+                        "isidentifier" => {
+                            self.emit_const(Value::Bool(python_is_identifier_literal(value.as_ref())));
+                            return Ok(());
+                        }
+                        "isprintable" => {
+                            self.emit_const(Value::Bool(python_is_printable_literal(value.as_ref())));
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                }
+            }
             let user_method_shadow = receiver_is_direct
                 && self.defined_class_methods.contains(&canon_field);
             // Skip value-method dispatch on null-safe member calls — the
@@ -2147,6 +2248,64 @@ impl Compiler {
                 }
                 return Ok(());
             }
+            if self.is_python_profile() && !is_known_func {
+                let callee_slot = self.define_local("__py_call_target");
+                self.emit_var_get(name);
+                self.emit_u16(Op::LOCAL_SET, callee_slot);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, callee_slot);
+                let typeof_idx = self.import("ecma:value", "typeof");
+                self.emit_host_call(typeof_idx, 1);
+                self.emit_const(Value::String(Arc::from("function")));
+                self.emit(Op::DYN_EQ);
+                let invoke_dunder = self.emit_jump(Op::BR_IF_FALSE);
+
+                self.emit_u16(Op::LOCAL_GET, callee_slot);
+                for a in &arg_exprs { self.compile_expr(a)?; }
+                self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                let end = self.emit_jump(Op::BR);
+
+                self.patch_jump(invoke_dunder);
+                self.emit_u16(Op::LOCAL_GET, callee_slot);
+                let call_prop = self.str_const("call");
+                self.emit_u16(Op::STRUCT_GET, call_prop);
+                let call_slot = self.define_local("__py_call_method");
+                self.emit_u16(Op::LOCAL_SET, call_slot);
+                self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, call_slot);
+                self.emit(Op::REF_IS_NULL);
+                let try_dunder_name = self.emit_jump(Op::BR_IF_TRUE);
+                self.emit_u16(Op::LOCAL_GET, call_slot);
+                self.emit_u16(Op::LOCAL_GET, callee_slot);
+                for a in &arg_exprs { self.compile_expr(a)?; }
+                self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                let found_end = self.emit_jump(Op::BR);
+
+                self.patch_jump(try_dunder_name);
+                self.emit_u16(Op::LOCAL_GET, callee_slot);
+                let dunder_prop = self.str_const("__call__");
+                self.emit_u16(Op::STRUCT_GET, dunder_prop);
+                let dunder_slot = self.define_local("__py_dunder_call_method");
+                self.emit_u16(Op::LOCAL_SET, dunder_slot);
+                self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, dunder_slot);
+                self.emit(Op::REF_IS_NULL);
+                let no_dunder = self.emit_jump(Op::BR_IF_TRUE);
+                self.emit_u16(Op::LOCAL_GET, dunder_slot);
+                self.emit_u16(Op::LOCAL_GET, callee_slot);
+                for a in &arg_exprs { self.compile_expr(a)?; }
+                self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                let dunder_end = self.emit_jump(Op::BR);
+
+                self.patch_jump(no_dunder);
+                self.emit(Op::UNDEFINED);
+                self.patch_jump(found_end);
+                self.patch_jump(dunder_end);
+                self.patch_jump(end);
+                return Ok(());
+            }
+
             self.emit_var_get(name);
             if let Some(param_modes) = self.function_param_modes.get(&self.canon(name)).cloned() {
                 if param_modes.iter().any(|mode| matches!(mode, PassBy::Ref | PassBy::Out)) {

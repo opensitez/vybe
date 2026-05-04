@@ -35,6 +35,7 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_isempty",    "__vybe_isempty"),
     ("__stdlib_pymap",      "__vybe_pymap"),
     ("__stdlib_pyfilter",   "__vybe_pyfilter"),
+    ("__stdlib_pyiter",     "__vybe_pyiter"),
     ("__stdlib_pynext",     "__vybe_pynext"),
     ("__stdlib_rand_choice","__vybe_rand_choice"),
     ("__stdlib_rand_shuffle","__vybe_rand_shuffle"),

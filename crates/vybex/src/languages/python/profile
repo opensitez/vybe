@@ -56,13 +56,13 @@ bytes           = { emit = "stdlib:to_bytes",     min_args = 0, max_args = 3 }
 
 # ── Collections ──────────────────────────────────────────────────────────────
 
-len             = { emit = "str_length",                    min_args = 1, max_args = 1 }
+len             = { emit = "common:python.length",         min_args = 1, max_args = 1 }
 range           = { emit = "stdlib:range",         min_args = 1, max_args = 3 }
 list            = { emit = "host:ecma:array:from",          min_args = 0, max_args = 1 }
 tuple           = { emit = "host:ecma:array:from",          min_args = 0, max_args = 1 }
 dict            = { emit = "host:ecma:object:create",       min_args = 0, max_args = 1 }
-set             = { emit = "host:ecma:array:from",          min_args = 0, max_args = 1 }
-frozenset       = { emit = "host:ecma:array:from",          min_args = 0, max_args = 1 }
+set             = { emit = "host:ecma:set:fromIterable",    min_args = 0, max_args = 1 }
+frozenset       = { emit = "host:ecma:set:fromIterable",    min_args = 0, max_args = 1 }
 sorted          = { emit = "host:ecma:array:toSorted",        min_args = 1, max_args = 3 }
 reversed        = { emit = "host:ecma:array:reversed",      min_args = 1, max_args = 1 }
 enumerate       = { emit = "stdlib:enumerate",              min_args = 1, max_args = 2 }
@@ -74,7 +74,7 @@ min             = { emit = "host:ecma:math:minOf",           min_args = 1, max_a
 max             = { emit = "host:ecma:math:maxOf",           min_args = 1, max_args = 255 }
 any             = { emit = "stdlib:pyany",                  min_args = 1, max_args = 1 }
 all             = { emit = "stdlib:pyall",                  min_args = 1, max_args = 1 }
-iter            = { emit = "noop",                          min_args = 1, max_args = 1 }
+iter            = { emit = "stdlib:pyiter",                min_args = 1, max_args = 1 }
 next            = { emit = "stdlib:pynext",                 min_args = 1, max_args = 2 }
 
 # ── Math ─────────────────────────────────────────────────────────────────────
@@ -219,7 +219,7 @@ join            = { emit = "common:collections.join",          min_args = 1, max
 replace         = { emit = "common:strings.replace",          min_args = 2, max_args = 3 }
 find            = { emit = "common:strings.index_of",         min_args = 1, max_args = 3 }
 rfind           = { emit = "opcode:str_last_index_of",        min_args = 1, max_args = 3 }
-index           = { emit = "common:strings.index_of",         min_args = 1, max_args = 3 }
+index           = { emit = "common:python.index",             min_args = 1, max_args = 3 }
 rindex          = { emit = "opcode:str_last_index_of",        min_args = 1, max_args = 3 }
 count           = { emit = "intrinsic:count",          min_args = 1, max_args = 3 }
 startswith      = { emit = "opcode:str_starts_with",          min_args = 1, max_args = 3 }
@@ -242,34 +242,38 @@ format_map      = { emit = "stdlib:format_map",              min_args = 1, max_a
 
 # List instance methods
 append          = { emit = "common:collections.push",         min_args = 1, max_args = 1 }
-extend          = { emit = "common:collections.concat",             min_args = 1, max_args = 1 }
+extend          = { emit = "common:python.extend",            min_args = 1, max_args = 1 }
 insert          = { emit = "host:ecma:array:insertAt",        min_args = 2, max_args = 2 }
-remove          = { emit = "host:ecma:array:removeValue",     min_args = 1, max_args = 1 }
-pop             = { emit = "common:collections.pop",          min_args = 0, max_args = 1 }
-clear           = { emit = "host:ecma:array:clear",           min_args = 0, max_args = 0 }
+remove          = { emit = "common:python.remove",          min_args = 1, max_args = 1 }
+pop             = { emit = "common:python.pop",               min_args = 0, max_args = 2 }
+clear           = { emit = "common:python.clear",             min_args = 0, max_args = 0 }
 sort            = { emit = "host:ecma:array:sort",            min_args = 0, max_args = 2 }
 reverse         = { emit = "common:collections.reverse",      min_args = 0, max_args = 0 }
-copy            = { emit = "host:ecma:array:slice",            min_args = 0, max_args = 0 }
+copy            = { emit = "common:python.copy",            min_args = 0, max_args = 0 }
 
 # Dict instance methods. Polymorphic iteration shares ecma:object.*
 # with PHP array_keys/values and JS Object.keys/values/entries —
 # portable Component Model imports, one handler.
-keys            = { emit = "host:ecma:object:keys",        min_args = 0, max_args = 0 }
-values          = { emit = "host:ecma:object:values",      min_args = 0, max_args = 0 }
-items           = { emit = "host:ecma:object:entries",     min_args = 0, max_args = 0 }
-get             = { emit = "host:ecma:object:get",            min_args = 1, max_args = 2 }
-update          = { emit = "host:ecma:object:assign",         min_args = 1, max_args = 1 }
+keys            = { emit = "common:dict.keys",               min_args = 0, max_args = 0 }
+values          = { emit = "common:dict.values",             min_args = 0, max_args = 0 }
+items           = { emit = "common:dict.items",              min_args = 0, max_args = 0 }
+get             = { emit = "common:python.get",              min_args = 1, max_args = 2 }
+update          = { emit = "common:python.update",         min_args = 1, max_args = 1 }
 setdefault      = { emit = "stdlib:setdefault",              min_args = 1, max_args = 2 }
 
 # Set instance methods
-add             = { emit = "common:collections.push",         min_args = 1, max_args = 1 }
-discard         = { emit = "host:ecma:array:removeValue",     min_args = 1, max_args = 1 }
+add             = { emit = "common:python.add",            min_args = 1, max_args = 1 }
+discard         = { emit = "common:python.discard",        min_args = 1, max_args = 1 }
 union           = { emit = "host:ecma:set:union",             min_args = 1, max_args = 255 }
 intersection    = { emit = "host:ecma:set:intersection",      min_args = 1, max_args = 255 }
 difference      = { emit = "host:ecma:set:difference",        min_args = 1, max_args = 255 }
 symmetric_difference = { emit = "host:ecma:set:symmetricDifference", min_args = 1, max_args = 1 }
+intersection_update = { emit = "common:python.intersection_update", min_args = 1, max_args = 1 }
+difference_update = { emit = "common:python.difference_update", min_args = 1, max_args = 1 }
+symmetric_difference_update = { emit = "common:python.symmetric_difference_update", min_args = 1, max_args = 1 }
 issubset        = { emit = "host:ecma:set:isSubsetOf",        min_args = 1, max_args = 1 }
 issuperset      = { emit = "host:ecma:set:isSupersetOf",      min_args = 1, max_args = 1 }
+isdisjoint      = { emit = "host:ecma:set:isDisjointFrom",    min_args = 1, max_args = 1 }
 
 # File object methods
 read            = { emit = "host:wasi:filesystem:readFile",   min_args = 0, max_args = 1 }

@@ -29,6 +29,7 @@ pub mod imports;
 pub mod gui;
 pub mod dotnet;
 pub mod php;
+pub mod python;
 pub mod fortran;
 pub mod dart;
 pub mod js;

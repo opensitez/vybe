@@ -276,6 +276,7 @@ pub fn build_stdlib(imports: &mut Chunk) -> StdLib {
     chunks.push(build_isempty(imports));           exports.push("__stdlib_isempty");
     chunks.push(build_pymap(imports));             exports.push("__stdlib_pymap");
     chunks.push(build_pyfilter(imports));          exports.push("__stdlib_pyfilter");
+    chunks.push(build_pyiter(imports));            exports.push("__stdlib_pyiter");
     chunks.push(build_pynext(imports));            exports.push("__stdlib_pynext");
     chunks.push(build_rand_choice(imports));       exports.push("__stdlib_rand_choice");
     chunks.push(build_rand_shuffle(imports));      exports.push("__stdlib_rand_shuffle");
@@ -1692,6 +1693,100 @@ fn build_pyfilter(imports: &mut Chunk) -> Chunk {
 
 // ── pynext(iter, default?) — Python `next(iter, default)` ──
 // Returns and removes the first element. Default returned when empty.
+fn build_pyiter(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_pyiter");
+    c.arity = 1;
+    c.local_count = 5; // v(0), len(1), out(2), i(3), drained(4)
+    let v = 0u16;
+    let len = 1u16;
+    let out = 2u16;
+    let i = 3u16;
+    let drained = 4u16;
+
+    let array_path = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    c.emit_op(Op::REF_IS_ARRAY, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
+    crate::emitter::collections::emit_slice_into(imports, &mut c, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0); c.patch_block(array_path);
+
+    let string_path = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    c.emit_op(Op::REF_IS_STRING, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, len, 0);
+    c.emit_op(Op::DROP, 0);
+    crate::emitter::collections::emit_array_new_into(imports, &mut c, 0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, out, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
+
+    let block_p = c.emit_block(0);
+    let (loop_p, _) = c.emit_loop_s(0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op_u16(Op::LOCAL_GET, len, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(1, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, out, 0);
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::F64_FROM_I32, 0);
+    c.emit_op(Op::STR_CHAR_AT, 0);
+    crate::emitter::collections::emit_push_into(imports, &mut c, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_SET, i, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_br(0, 0);
+    c.emit_end(0); c.patch_loop(loop_p);
+    c.emit_end(0); c.patch_block(block_p);
+    c.emit_op_u16(Op::LOCAL_GET, out, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0); c.patch_block(string_path);
+
+    let iter_drain = c.add_constant(Value::String(Arc::from("__vybe_iter_drain")));
+    c.emit_op_u16(Op::GLOBAL_GET, iter_drain, 0);
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    c.emit_op_u8(Op::CALL_REF, 1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, drained, 0);
+    c.emit_op(Op::DROP, 0);
+
+    let drained_array = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, drained, 0);
+    c.emit_op(Op::REF_IS_ARRAY, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, drained, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, drained, 0);
+    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
+    crate::emitter::collections::emit_slice_into(imports, &mut c, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0); c.patch_block(drained_array);
+
+    c.emit_op_u16(Op::LOCAL_GET, drained, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
 fn build_pynext(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_pynext");
     c.arity = 2;
@@ -4212,15 +4307,96 @@ fn build_redim(imports: &mut Chunk) -> Chunk {
 fn build_slice_step(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_slicestep");
     c.arity = 4;
-    c.local_count = 7; // arr(0) start(1) end(2) step(3) result(4) i(5) cond(6)
+    c.local_count = 11; // arr(0) start(1) end(2) step(3) result(4) i(5) cond(6) step(7) start(8) end(9) len(10)
     let zero = c.add_constant(Value::I32(0));
+    let neg_one = c.add_constant(Value::I32(-1));
 
     // result = new array
     crate::emitter::collections::emit_array_new_into(imports, &mut c, 0, 0);
     c.emit_op_u16(Op::LOCAL_SET, 4, 0);
     c.emit_op(Op::DROP, 0);
-    // i = start
+
+    // len = arr.length
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 10, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // step = step ?? 1
+    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    let have_step = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 7, 0);
+    c.emit_op(Op::DROP, 0);
+    let step_done = c.emit_jump(Op::BR, 0);
+    c.patch_jump(have_step);
+    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 7, 0);
+    c.emit_op(Op::DROP, 0);
+    c.patch_jump(step_done);
+
+    // start = start ?? (step > 0 ? 0 : len - 1)
     c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    let have_start = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 7, 0);
+    c.emit_op_u16(Op::CONST, zero, 0);
+    c.emit_op(Op::DYN_GT, 0);
+    let neg_start = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op_u16(Op::CONST, zero, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 8, 0);
+    c.emit_op(Op::DROP, 0);
+    let start_done = c.emit_jump(Op::BR, 0);
+    c.patch_jump(neg_start);
+    c.emit_op_u16(Op::LOCAL_GET, 10, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 8, 0);
+    c.emit_op(Op::DROP, 0);
+    let start_neg_done = c.emit_jump(Op::BR, 0);
+    c.patch_jump(have_start);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 8, 0);
+    c.emit_op(Op::DROP, 0);
+    c.patch_jump(start_done);
+    c.patch_jump(start_neg_done);
+
+    // end = end ?? (step > 0 ? len : -1)
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    let have_end = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 7, 0);
+    c.emit_op_u16(Op::CONST, zero, 0);
+    c.emit_op(Op::DYN_GT, 0);
+    let neg_end = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 10, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 9, 0);
+    c.emit_op(Op::DROP, 0);
+    let end_done = c.emit_jump(Op::BR, 0);
+    c.patch_jump(neg_end);
+    c.emit_op_u16(Op::CONST, neg_one, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 9, 0);
+    c.emit_op(Op::DROP, 0);
+    let end_neg_done = c.emit_jump(Op::BR, 0);
+    c.patch_jump(have_end);
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 9, 0);
+    c.emit_op(Op::DROP, 0);
+    c.patch_jump(end_done);
+    c.patch_jump(end_neg_done);
+
+    // step=0 would otherwise spin forever; return empty slice.
+    c.emit_op_u16(Op::LOCAL_GET, 7, 0);
+    c.emit_op_u16(Op::CONST, zero, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    let non_zero_step = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 4, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.patch_jump(non_zero_step);
+
+    // i = normalized start
+    c.emit_op_u16(Op::LOCAL_GET, 8, 0);
     c.emit_op_u16(Op::LOCAL_SET, 5, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -4228,30 +4404,28 @@ fn build_slice_step(imports: &mut Chunk) -> Chunk {
     let (loop_p, _) = c.emit_loop_s(0);
 
     // Compute condition: if step > 0 then i < end else i > end
-    // Store in local 6 (cond) to avoid value-on-stack across branches
-    let pos_block_p = c.emit_block(0);
-    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    // Store in local 6 (cond) to avoid value-on-stack across branches.
+    c.emit_op_u16(Op::LOCAL_GET, 7, 0);
     c.emit_op_u16(Op::CONST, zero, 0);
     c.emit_op(Op::DYN_GT, 0);
-    c.emit_op(Op::DYN_NOT, 0);
-    c.emit_br_if(0, 0); // skip positive branch if step <= 0
+    let neg_branch = c.emit_jump(Op::BR_IF_FALSE, 0);
+
     // positive step: cond = i < end
     c.emit_op_u16(Op::LOCAL_GET, 5, 0);
-    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 9, 0);
     c.emit_op(Op::DYN_LT, 0);
     c.emit_op_u16(Op::LOCAL_SET, 6, 0);
     c.emit_op(Op::DROP, 0);
-    let skip_neg_p = c.emit_block(0);
-    c.emit_br(1, 0); // skip negative branch (jump past skip_neg block end + neg block)
-    c.emit_end(0); c.patch_block(skip_neg_p);
-    c.emit_end(0); c.patch_block(pos_block_p);
+    let cond_done = c.emit_jump(Op::BR, 0);
 
     // negative step: cond = i > end
+    c.patch_jump(neg_branch);
     c.emit_op_u16(Op::LOCAL_GET, 5, 0);
-    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 9, 0);
     c.emit_op(Op::DYN_GT, 0);
     c.emit_op_u16(Op::LOCAL_SET, 6, 0);
     c.emit_op(Op::DROP, 0);
+    c.patch_jump(cond_done);
 
     // Check condition — exit if false
     c.emit_op_u16(Op::LOCAL_GET, 6, 0);
@@ -4266,27 +4440,53 @@ fn build_slice_step(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::DYN_LT, 0);
     c.emit_br_if(0, 0); // skip push if i < 0
     c.emit_op_u16(Op::LOCAL_GET, 5, 0);
-    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    crate::emitter::collections::emit_len_into(imports, &mut c, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 10, 0);
     c.emit_op(Op::DYN_GE, 0);
     c.emit_br_if(0, 0); // skip push if i >= length
+    let string_item = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op(Op::REF_IS_STRING, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 4, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 5, 0);
+    c.emit_op(Op::STR_CHAR_AT, 0);
+    crate::emitter::collections::emit_push_into(imports, &mut c, 0);
+    c.emit_op(Op::DROP, 0);
+    let pushed = c.emit_jump(Op::BR, 0);
+    c.emit_end(0); c.patch_block(string_item);
     c.emit_op_u16(Op::LOCAL_GET, 4, 0);
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 5, 0);
     crate::emitter::collections::emit_get_into(imports, &mut c, 0);
     crate::emitter::collections::emit_push_into(imports, &mut c, 0);
     c.emit_op(Op::DROP, 0);
+    c.patch_jump(pushed);
     c.emit_end(0); c.patch_block(skip_block_p);
 
     // i = i + step
     c.emit_op_u16(Op::LOCAL_GET, 5, 0);
-    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 7, 0);
     c.emit_op(Op::DYN_ADD, 0);
     c.emit_op_u16(Op::LOCAL_SET, 5, 0);
     c.emit_op(Op::DROP, 0);
     c.emit_br(0, 0); // continue loop
     c.emit_end(0); c.patch_loop(loop_p);
     c.emit_end(0); c.patch_block(block_p);
+
+    let string_branch = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op(Op::REF_IS_STRING, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, 4, 0);
+    let empty = c.add_constant(Value::String(std::sync::Arc::from("")));
+    c.emit_op_u16(Op::CONST, empty, 0);
+    crate::emitter::collections::emit_join_into(imports, &mut c, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0); c.patch_block(string_branch);
+
     c.emit_op_u16(Op::LOCAL_GET, 4, 0);
     c.emit_op(Op::RETURN, 0);
     c
@@ -4766,7 +4966,7 @@ fn build_array_insert_range(imports: &mut Chunk) -> Chunk {
     // if i >= src_len break
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, src_len, 0);
-    c.emit_op(Op::DYN_GE, 0); c.emit_op(Op::DYN_NOT, 0);
+    c.emit_op(Op::DYN_GE, 0);
     c.emit_br_if(1, 0);
     // splice(arr, index+i, 0, src[i])
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
@@ -4813,7 +5013,7 @@ fn build_array_set_range(imports: &mut Chunk) -> Chunk {
     let (lp, _) = c.emit_loop_s(0);
     c.emit_op_u16(Op::LOCAL_GET, i, 0);
     c.emit_op_u16(Op::LOCAL_GET, src_len, 0);
-    c.emit_op(Op::DYN_GE, 0); c.emit_op(Op::DYN_NOT, 0);
+    c.emit_op(Op::DYN_GE, 0);
     c.emit_br_if(1, 0);
     // set(arr, index+i, get(src, i))
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);

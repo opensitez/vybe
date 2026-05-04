@@ -477,7 +477,7 @@ fn walk_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                             is_nullable: false,
                         });
                     }
-                    Rule::bare_star => {} // separator, not a param
+                    Rule::bare_star | Rule::slash_param => {} // separator, not a param
                     _ => {}
                 }
             }
@@ -913,6 +913,10 @@ fn walk_pattern(pair: Pair<Rule>) -> Result<Pattern, String> {
             let inner = pair.into_inner().next().ok_or("Empty single_pattern")?;
             walk_pattern(inner)
         }
+        Rule::group_pattern => {
+            let inner = pair.into_inner().next().ok_or("Empty group_pattern")?;
+            walk_pattern(inner)
+        }
         Rule::as_pattern => {
             // pattern as name
             let mut inner = pair.into_inner();
@@ -954,6 +958,10 @@ fn walk_pattern(pair: Pair<Rule>) -> Result<Pattern, String> {
             Ok(Pattern::Star(name))
         }
         Rule::sequence_pattern => {
+            let pats = pair.into_inner().map(walk_pattern).collect::<Result<Vec<_>, _>>()?;
+            Ok(Pattern::Sequence(pats))
+        }
+        Rule::tuple_pattern => {
             let pats = pair.into_inner().map(walk_pattern).collect::<Result<Vec<_>, _>>()?;
             Ok(Pattern::Sequence(pats))
         }
@@ -1694,6 +1702,28 @@ fn walk_call_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
 // ── Subscript ───────────────────────────────────────────────────────────────
 
 fn walk_subscript_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
+    let text = pair.as_str().trim();
+    if pair.as_rule() == Rule::subscript_item && text.contains(':') {
+        let mut exprs = pair.into_inner()
+            .map(walk_expression)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter();
+        let mut parts = text.split(':').map(str::trim);
+        let lower = match parts.next() {
+            Some("") | None => None,
+            Some(_) => Some(Box::new(exprs.next().ok_or("Missing slice lower bound")?)),
+        };
+        let upper = match parts.next() {
+            Some("") | None => None,
+            Some(_) => Some(Box::new(exprs.next().ok_or("Missing slice upper bound")?)),
+        };
+        let step = match parts.next() {
+            Some("") | None => None,
+            Some(_) => Some(Box::new(exprs.next().ok_or("Missing slice step")?)),
+        };
+        return Ok(ExprKind::Slice { lower, upper, step });
+    }
+
     let items: Vec<Pair<Rule>> = pair.into_inner().collect();
     if items.len() == 1 {
         return walk_expr_kind(items.into_iter().next().unwrap());
@@ -1786,7 +1816,7 @@ fn walk_dict_or_set(pair: Pair<Rule>) -> Result<ExprKind, String> {
         }
     }
 
-    if is_dict || inner.len() >= 2 {
+    if is_dict {
         // Dict or dict comprehension
         // Collect key-value pairs
         let mut props = Vec::new();
@@ -1804,8 +1834,13 @@ fn walk_dict_or_set(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     } else {
                         for de in comp_inner {
                             if de.as_rule() == Rule::dict_entry {
+                                let is_spread = de.as_str().trim_start().starts_with("**");
                                 let entry_inner: Vec<Pair<Rule>> = de.into_inner().collect();
-                                if entry_inner.len() >= 2 {
+                                if is_spread {
+                                    if let Some(expr) = entry_inner.first() {
+                                        props.push(ObjectProperty::Spread(walk_expression(expr.clone())?));
+                                    }
+                                } else if entry_inner.len() >= 2 {
                                     let key = walk_expression(entry_inner[0].clone())?;
                                     let val = walk_expression(entry_inner[1].clone())?;
                                     props.push(ObjectProperty::KeyValue { key, value: val });
@@ -1817,8 +1852,13 @@ fn walk_dict_or_set(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 Rule::dict_rest => {
                     for de in items[i].clone().into_inner() {
                         if de.as_rule() == Rule::dict_entry {
+                            let is_spread = de.as_str().trim_start().starts_with("**");
                             let entry_inner: Vec<Pair<Rule>> = de.into_inner().collect();
-                            if entry_inner.len() >= 2 {
+                            if is_spread {
+                                if let Some(expr) = entry_inner.first() {
+                                    props.push(ObjectProperty::Spread(walk_expression(expr.clone())?));
+                                }
+                            } else if entry_inner.len() >= 2 {
                                 let key = walk_expression(entry_inner[0].clone())?;
                                 let val = walk_expression(entry_inner[1].clone())?;
                                 props.push(ObjectProperty::KeyValue { key, value: val });
@@ -1828,6 +1868,11 @@ fn walk_dict_or_set(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 }
                 _ if is_expression_rule(items[i].as_rule()) => {
                     let key = walk_expression(items[i].clone())?;
+                    if i == 0 && text.starts_with("**") {
+                        props.push(ObjectProperty::Spread(key));
+                        i += 1;
+                        continue;
+                    }
                     i += 1;
                     if i < items.len() && is_expression_rule(items[i].as_rule()) {
                         let val = walk_expression(items[i].clone())?;
@@ -1843,10 +1888,20 @@ fn walk_dict_or_set(pair: Pair<Rule>) -> Result<ExprKind, String> {
     }
 
     // Set
-    let elements: Vec<Expression> = inner.into_iter()
-        .filter(|p| is_expression_rule(p.as_rule()))
-        .map(walk_expression)
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut elements = Vec::new();
+    for item in inner {
+        match item.as_rule() {
+            rule if is_expression_rule(rule) => elements.push(walk_expression(item)?),
+            Rule::set_comp_or_rest => {
+                for part in item.into_inner() {
+                    if is_expression_rule(part.as_rule()) {
+                        elements.push(walk_expression(part)?);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
     Ok(ExprKind::Set(elements))
 }
 

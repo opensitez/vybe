@@ -1390,6 +1390,9 @@ impl Compiler {
             return;
         }
         // Global — canonicalize name for case-insensitive languages
+        if self.scopes.len() == 1 {
+            self.defined_globals.insert(cname.clone());
+        }
         let idx = self.str_const(&cname); self.emit_u16(Op::GLOBAL_SET, idx); self.emit(Op::DROP);
     }
 
@@ -1482,6 +1485,61 @@ impl Compiler {
 
     fn is_php_profile(&self) -> bool {
         self.profile.name == "php"
+    }
+
+    fn is_python_profile(&self) -> bool {
+        self.profile.name == "python"
+    }
+
+    fn emit_python_truthiness_from_stack(&mut self) {
+        if !self.is_python_profile() {
+            self.emit(Op::DYN_TO_BOOL);
+            return;
+        }
+
+        let value_slot = self.define_local("__py_truth_value");
+        self.emit_u16(Op::LOCAL_SET, value_slot);
+        self.emit(Op::DROP);
+
+        let typeof_idx = self.import("ecma:value", "typeof");
+        let array_len_idx = self.import("ecma:array", "length");
+        let has_own_idx = self.import("ecma:object", "hasOwn");
+
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.emit_host_call(typeof_idx, 1);
+        self.emit_const(Value::String(Arc::from("object")));
+        self.emit(Op::STR_EQUALS);
+        let object_case = self.emit_jump(Op::BR_IF_TRUE);
+
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.emit(Op::DYN_TO_BOOL);
+        let end = self.emit_jump(Op::BR);
+
+        self.patch_jump(object_case);
+
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.emit_host_call(array_len_idx, 1);
+        self.emit(Op::DYN_TO_BOOL);
+        let non_empty_collection = self.emit_jump(Op::BR_IF_TRUE);
+
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.emit_const(Value::String(Arc::from("__proto__")));
+        self.emit_host_call(has_own_idx, 2);
+        let has_proto = self.emit_jump(Op::BR_IF_TRUE);
+
+        self.emit_const(Value::Bool(false));
+        let object_end = self.emit_jump(Op::BR);
+
+        self.patch_jump(non_empty_collection);
+        self.emit_const(Value::Bool(true));
+        let collection_end = self.emit_jump(Op::BR);
+
+        self.patch_jump(has_proto);
+        self.emit_const(Value::Bool(true));
+
+        self.patch_jump(collection_end);
+        self.patch_jump(object_end);
+        self.patch_jump(end);
     }
 
     fn save_js_this(&mut self, local_name: &str) -> Option<u16> {
@@ -1674,7 +1732,7 @@ impl Compiler {
                 let then_block = self.chunk().emit_block(line);
                 self.label_depth += 1;
                 self.compile_expr(cond)?;
-                self.emit(Op::DYN_TO_BOOL);
+                self.emit_python_truthiness_from_stack();
                 self.emit(Op::DYN_NOT);
                 let line = self.line;
                 self.chunk().emit_br_if(0, line); // skip then if false
@@ -1696,7 +1754,7 @@ impl Compiler {
                     let elif_block = self.chunk().emit_block(line);
                     self.label_depth += 1;
                     self.compile_expr(elif_cond)?;
-                    self.emit(Op::DYN_TO_BOOL);
+                    self.emit_python_truthiness_from_stack();
                     self.emit(Op::DYN_NOT);
                     let line = self.line;
                     self.chunk().emit_br_if(0, line);
@@ -2883,6 +2941,74 @@ impl Compiler {
                             self.emit_u16(Op::STRUCT_SET, idx);
                             self.emit(Op::DROP);
                         }
+                        ExprKind::Index { object, index, .. } => {
+                            let line = self.line;
+                            if self.is_python_profile() {
+                                if let ExprKind::Slice { lower, upper, step } = &index.kind {
+                                    if step.is_none() {
+                                        self.compile_expr(object)?;
+                                        let obj_tmp = self.define_local("__delete_slice_obj");
+                                        self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+
+                                        if let Some(lower) = lower {
+                                            self.compile_expr(lower)?;
+                                        } else {
+                                            self.emit(Op::I32_CONST_0);
+                                        }
+                                        let start_tmp = self.define_local("__delete_slice_start");
+                                        self.emit_u16(Op::LOCAL_SET, start_tmp); self.emit(Op::DROP);
+
+                                        if let Some(upper) = upper {
+                                            self.compile_expr(upper)?;
+                                        } else {
+                                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                                            common::collections::emit_len(&mut self.chunks, self.current, line);
+                                        }
+                                        let end_tmp = self.define_local("__delete_slice_end");
+                                        self.emit_u16(Op::LOCAL_SET, end_tmp); self.emit(Op::DROP);
+
+                                        self.emit_u16(Op::LOCAL_GET, end_tmp);
+                                        self.emit_u16(Op::LOCAL_GET, start_tmp);
+                                        self.emit(Op::I32_SUB);
+                                        let count_tmp = self.define_local("__delete_slice_count");
+                                        self.emit_u16(Op::LOCAL_SET, count_tmp); self.emit(Op::DROP);
+
+                                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                                        self.emit_u16(Op::LOCAL_GET, start_tmp);
+                                        self.emit_u16(Op::LOCAL_GET, count_tmp);
+                                        common::collections::emit_remove_range(&mut self.chunks, self.current, line);
+                                        self.emit(Op::DROP);
+                                        continue;
+                                    }
+                                }
+                            }
+
+                            self.compile_expr(object)?;
+                            let obj_tmp = self.define_local("__delete_obj");
+                            self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+                            self.compile_expr(index)?;
+                            let key_tmp = self.define_local("__delete_key");
+                            self.emit_u16(Op::LOCAL_SET, key_tmp); self.emit(Op::DROP);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            let is_array_idx = self.import("ecma:array", "isArray");
+                            self.chunk().emit_op_u16(Op::CALL_IMPORT, is_array_idx, line);
+                            self.chunk().emit(1, line);
+                            let array_path = self.emit_jump(Op::BR_IF_TRUE);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::LOCAL_GET, key_tmp);
+                            common::dict::emit_method_delete(&mut self.chunks, self.current, line);
+                            self.emit(Op::DROP);
+                            let end = self.emit_jump(Op::BR);
+
+                            self.patch_jump(array_path);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::LOCAL_GET, key_tmp);
+                            common::collections::emit_remove_at(&mut self.chunks, self.current, line);
+                            self.emit(Op::DROP);
+                            self.patch_jump(end);
+                        }
                         _ => {
                             // Delete on non-member is a no-op
                         }
@@ -2917,24 +3043,8 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, subject_slot); self.emit(Op::DROP);
                 let mut end_patches = Vec::new();
                 for case in cases {
-                    // Simplified: match on value patterns only, wildcard always matches
-                    let skip = match &case.pattern {
-                        Pattern::Value(val) => {
-                            self.emit_u16(Op::LOCAL_GET, subject_slot);
-                            self.compile_expr(val)?;
-                            self.emit(Op::DYN_EQ);
-                            Some(self.emit_jump(Op::BR_IF_FALSE))
-                        }
-                        Pattern::Wildcard => None,
-                        Pattern::As { name: Some(name), .. } => {
-                            // Bind subject to name
-                            self.emit_u16(Op::LOCAL_GET, subject_slot);
-                            let slot = self.define_local(name);
-                            self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
-                            None
-                        }
-                        _ => None, // Other patterns: always match (simplified)
-                    };
+                    let skip = self.emit_match_pattern_checks(&case.pattern, subject_slot)?;
+                    self.emit_match_pattern_bindings(&case.pattern, subject_slot)?;
                     if let Some(guard) = &case.guard {
                         self.compile_expr(guard)?;
                         self.emit(Op::DYN_TO_BOOL);
@@ -2946,13 +3056,116 @@ impl Compiler {
                         for s in &case.body { self.compile_stmt(s)?; }
                         end_patches.push(self.emit_jump(Op::BR));
                     }
-                    if let Some(s) = skip { self.patch_jump(s); }
+                    for s in skip { self.patch_jump(s); }
                 }
                 for p in end_patches { self.patch_jump(p); }
             }
 
             // ── Empty ───────────────────────────────────────────────────
             StmtKind::Empty => {}
+        }
+        Ok(())
+    }
+
+    fn emit_match_pattern_checks(&mut self, pattern: &Pattern, value_slot: u16) -> Result<Vec<usize>, String> {
+        let mut fail_patches = Vec::new();
+        match pattern {
+            Pattern::Value(expr) | Pattern::Singleton(expr) => {
+                self.emit_u16(Op::LOCAL_GET, value_slot);
+                self.compile_expr(expr)?;
+                self.emit(Op::DYN_EQ);
+                fail_patches.push(self.emit_jump(Op::BR_IF_FALSE));
+            }
+            Pattern::Sequence(items) => {
+                let star_index = items.iter().position(|item| matches!(item, Pattern::Star(_)));
+                let suffix_count = star_index.map(|index| items.len() - index - 1).unwrap_or(0);
+                let required_len = if star_index.is_some() { items.len().saturating_sub(1) } else { items.len() };
+                let len_slot = self.define_local("__match_seq_len");
+                self.emit_u16(Op::LOCAL_GET, value_slot);
+                common::collections::emit_len(&mut self.chunks, self.current, self.line);
+                self.emit_u16(Op::LOCAL_SET, len_slot);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, len_slot);
+                self.emit_const(Value::F64(required_len as f64));
+                self.emit(if star_index.is_some() { Op::DYN_GE } else { Op::DYN_EQ });
+                fail_patches.push(self.emit_jump(Op::BR_IF_FALSE));
+
+                if suffix_count == 0 {
+                    let prefix_len = star_index.unwrap_or(items.len());
+                    for (index, item) in items.iter().take(prefix_len).enumerate() {
+                        let elem_slot = self.define_local("__match_seq_item");
+                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                        self.emit_const(Value::F64(index as f64));
+                        common::collections::emit_get(&mut self.chunks, self.current, self.line);
+                        self.emit_u16(Op::LOCAL_SET, elem_slot);
+                        self.emit(Op::DROP);
+                        fail_patches.extend(self.emit_match_pattern_checks(item, elem_slot)?);
+                    }
+                }
+            }
+            Pattern::As { pattern: Some(sub_pattern), .. } => {
+                fail_patches.extend(self.emit_match_pattern_checks(sub_pattern, value_slot)?);
+            }
+            Pattern::Or(patterns) => {
+                if let Some(first) = patterns.first() {
+                    fail_patches.extend(self.emit_match_pattern_checks(first, value_slot)?);
+                }
+            }
+            Pattern::Wildcard | Pattern::Star(_) | Pattern::As { pattern: None, .. } | Pattern::Mapping(_) | Pattern::Class { .. } => {}
+        }
+        Ok(fail_patches)
+    }
+
+    fn emit_match_pattern_bindings(&mut self, pattern: &Pattern, value_slot: u16) -> Result<(), String> {
+        match pattern {
+            Pattern::As { pattern, name } => {
+                if let Some(sub_pattern) = pattern {
+                    self.emit_match_pattern_bindings(sub_pattern, value_slot)?;
+                }
+                if let Some(name) = name {
+                    self.emit_u16(Op::LOCAL_GET, value_slot);
+                    let slot = self.scope().resolve(name).unwrap_or_else(|| self.define_local(name));
+                    self.emit_u16(Op::LOCAL_SET, slot);
+                    self.emit(Op::DROP);
+                }
+            }
+            Pattern::Sequence(items) => {
+                let star_index = items.iter().position(|item| matches!(item, Pattern::Star(_)));
+                let suffix_count = star_index.map(|index| items.len() - index - 1).unwrap_or(0);
+
+                if suffix_count == 0 {
+                    let prefix_len = star_index.unwrap_or(items.len());
+                    for (index, item) in items.iter().take(prefix_len).enumerate() {
+                        let elem_slot = self.define_local("__match_bind_item");
+                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                        self.emit_const(Value::F64(index as f64));
+                        common::collections::emit_get(&mut self.chunks, self.current, self.line);
+                        self.emit_u16(Op::LOCAL_SET, elem_slot);
+                        self.emit(Op::DROP);
+                        self.emit_match_pattern_bindings(item, elem_slot)?;
+                    }
+
+                    if let Some(star_pos) = star_index {
+                        if let Pattern::Star(Some(name)) = &items[star_pos] {
+                            self.emit_u16(Op::LOCAL_GET, value_slot);
+                            self.emit_const(Value::F64(star_pos as f64));
+                            self.emit_u16(Op::LOCAL_GET, value_slot);
+                            common::collections::emit_len(&mut self.chunks, self.current, self.line);
+                            common::collections::emit_slice(&mut self.chunks, self.current, self.line);
+                            let slot = self.scope().resolve(name).unwrap_or_else(|| self.define_local(name));
+                            self.emit_u16(Op::LOCAL_SET, slot);
+                            self.emit(Op::DROP);
+                        }
+                    }
+                }
+            }
+            Pattern::Or(patterns) => {
+                if let Some(first) = patterns.first() {
+                    self.emit_match_pattern_bindings(first, value_slot)?;
+                }
+            }
+            Pattern::Value(_) | Pattern::Singleton(_) | Pattern::Wildcard | Pattern::Star(_) | Pattern::Mapping(_) | Pattern::Class { .. } => {}
         }
         Ok(())
     }
@@ -3259,6 +3472,57 @@ impl Compiler {
                 }
             }
             ExprKind::Index { object, index, .. } => {
+                if self.is_python_profile() {
+                    if let ExprKind::Slice { lower, upper, step } = &index.kind {
+                        if step.is_none() {
+                            let line = self.line;
+                            let value_tmp = self.define_local("__py_slice_value");
+                            let obj_tmp = self.define_local("__py_slice_obj");
+                            let start_tmp = self.define_local("__py_slice_start");
+                            let end_tmp = self.define_local("__py_slice_end");
+                            let count_tmp = self.define_local("__py_slice_count");
+
+                            self.emit_u16(Op::LOCAL_SET, value_tmp); self.emit(Op::DROP);
+
+                            self.compile_expr(object)?;
+                            self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+
+                            if let Some(lower) = lower {
+                                self.compile_expr(lower)?;
+                            } else {
+                                self.emit(Op::I32_CONST_0);
+                            }
+                            self.emit_u16(Op::LOCAL_SET, start_tmp); self.emit(Op::DROP);
+
+                            if let Some(upper) = upper {
+                                self.compile_expr(upper)?;
+                            } else {
+                                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                                common::collections::emit_len(&mut self.chunks, self.current, line);
+                            }
+                            self.emit_u16(Op::LOCAL_SET, end_tmp); self.emit(Op::DROP);
+
+                            self.emit_u16(Op::LOCAL_GET, end_tmp);
+                            self.emit_u16(Op::LOCAL_GET, start_tmp);
+                            self.emit(Op::I32_SUB);
+                            self.emit_u16(Op::LOCAL_SET, count_tmp); self.emit(Op::DROP);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::LOCAL_GET, start_tmp);
+                            self.emit_u16(Op::LOCAL_GET, count_tmp);
+                            common::collections::emit_remove_range(&mut self.chunks, self.current, line);
+                            self.emit(Op::DROP);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::LOCAL_GET, start_tmp);
+                            self.emit_u16(Op::LOCAL_GET, value_tmp);
+                            common::collections::emit_insert_range(&mut self.chunks, self.current, line);
+                            self.emit(Op::DROP);
+                            return Ok(());
+                        }
+                    }
+                }
+
                 // Proxy set-trap dispatch — same shape as Member assign
                 // but the key is a runtime expression.
                 if self.is_js_profile() && self.uses_proxy {
@@ -3295,6 +3559,56 @@ impl Compiler {
                 } else {
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
+                    if self.is_python_profile() {
+                        let key_tmp = self.define_local("__py_idx_key");
+                        let obj_tmp = self.define_local("__py_idx_obj");
+                        self.emit_u16(Op::LOCAL_SET, key_tmp); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        let is_array_idx = self.import("ecma:array", "isArray");
+                        self.chunk().emit_op_u16(Op::CALL_IMPORT, is_array_idx, line);
+                        self.chunk().emit(1, line);
+                        let array_path = self.emit_jump(Op::BR_IF_TRUE);
+
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        let keys_key = self.str_const("__keys");
+                        self.emit_u16(Op::STRUCT_GET, keys_key);
+                        self.emit(Op::DUP);
+                        self.emit(Op::REF_IS_NULL);
+                        let no_keys = self.emit_jump(Op::BR_IF_TRUE);
+                        self.emit_u16(Op::LOCAL_GET, key_tmp);
+                        common::collections::emit_index_of(&mut self.chunks, self.current, line);
+                        self.emit(Op::I32_CONST_0);
+                        self.emit(Op::DYN_LT);
+                        let key_exists = self.emit_jump(Op::BR_IF_FALSE);
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit_u16(Op::STRUCT_GET, keys_key);
+                        self.emit_u16(Op::LOCAL_GET, key_tmp);
+                        common::collections::emit_push(&mut self.chunks, self.current, line);
+                        self.emit(Op::DROP);
+                        self.patch_jump(key_exists);
+                        let after_track = self.emit_jump(Op::BR);
+                        self.patch_jump(no_keys);
+                        self.emit(Op::DROP);
+                        self.patch_jump(after_track);
+
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit_u16(Op::LOCAL_GET, key_tmp);
+                        self.emit_u16(Op::LOCAL_GET, tmp);
+                        common::collections::emit_set(&mut self.chunks, self.current, line);
+                        self.emit(Op::DROP);
+                        let end = self.emit_jump(Op::BR);
+
+                        self.patch_jump(array_path);
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit_u16(Op::LOCAL_GET, key_tmp);
+                        self.emit_u16(Op::LOCAL_GET, tmp);
+                        common::collections::emit_set(&mut self.chunks, self.current, line);
+                        self.emit(Op::DROP);
+                        self.patch_jump(end);
+                        return Ok(());
+                    } else 
                     // JS profile: track insertion order via the
                     // `__keys` side channel so `Object.keys` /
                     // `Object.entries` / `Object.values` see the
@@ -3704,6 +4018,46 @@ impl Compiler {
             },
             BinOp::Concat => { let l = self.line; common::strings::emit_str_concat(self.chunk(), l); }
             BinOp::In => {
+                if self.is_python_profile() {
+                    let l = self.line;
+                    let t_y = self.define_local("__py_in_y");
+                    let t_x = self.define_local("__py_in_x");
+                    self.emit_u16(Op::LOCAL_SET, t_y); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, t_x); self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, t_y);
+                    self.emit(Op::REF_IS_STRING);
+                    let string_path = self.emit_jump(Op::BR_IF_TRUE);
+
+                    self.emit_u16(Op::LOCAL_GET, t_y);
+                    let is_array = self.import("ecma:array", "isArray");
+                    self.chunk().emit_op_u16(Op::CALL_IMPORT, is_array, l);
+                    self.chunk().emit(1, l);
+                    let array_path = self.emit_jump(Op::BR_IF_TRUE);
+
+                    self.emit_u16(Op::LOCAL_GET, t_y);
+                    self.emit_u16(Op::LOCAL_GET, t_x);
+                    let has_in = self.import("ecma:object", "hasIn");
+                    self.chunk().emit_op_u16(Op::CALL_IMPORT, has_in, l);
+                    self.chunk().emit(2, l);
+                    let end = self.emit_jump(Op::BR);
+
+                    self.patch_jump(array_path);
+                    self.emit_u16(Op::LOCAL_GET, t_y);
+                    self.emit_u16(Op::LOCAL_GET, t_x);
+                    common::collections::emit_contains(&mut self.chunks, self.current, l);
+                    let array_end = self.emit_jump(Op::BR);
+
+                    self.patch_jump(string_path);
+                    self.emit_u16(Op::LOCAL_GET, t_y);
+                    self.emit_u16(Op::LOCAL_GET, t_x);
+                    self.emit(Op::STR_CONTAINS);
+
+                    self.patch_jump(array_end);
+                    self.patch_jump(end);
+                    return;
+                }
+
                 if self.profile.name == "pascal" {
                     let t_set = self.define_local("__pascal_in_set");
                     let t_value = self.define_local("__pascal_in_value");
@@ -3751,6 +4105,47 @@ impl Compiler {
                 self.chunk().emit(2, l);
             }
             BinOp::NotIn => {
+                if self.is_python_profile() {
+                    let l = self.line;
+                    let t_y = self.define_local("__py_nin_y");
+                    let t_x = self.define_local("__py_nin_x");
+                    self.emit_u16(Op::LOCAL_SET, t_y); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, t_x); self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, t_y);
+                    self.emit(Op::REF_IS_STRING);
+                    let string_path = self.emit_jump(Op::BR_IF_TRUE);
+
+                    self.emit_u16(Op::LOCAL_GET, t_y);
+                    let is_array = self.import("ecma:array", "isArray");
+                    self.chunk().emit_op_u16(Op::CALL_IMPORT, is_array, l);
+                    self.chunk().emit(1, l);
+                    let array_path = self.emit_jump(Op::BR_IF_TRUE);
+
+                    self.emit_u16(Op::LOCAL_GET, t_y);
+                    self.emit_u16(Op::LOCAL_GET, t_x);
+                    let has_in = self.import("ecma:object", "hasIn");
+                    self.chunk().emit_op_u16(Op::CALL_IMPORT, has_in, l);
+                    self.chunk().emit(2, l);
+                    let end = self.emit_jump(Op::BR);
+
+                    self.patch_jump(array_path);
+                    self.emit_u16(Op::LOCAL_GET, t_y);
+                    self.emit_u16(Op::LOCAL_GET, t_x);
+                    common::collections::emit_contains(&mut self.chunks, self.current, l);
+                    let array_end = self.emit_jump(Op::BR);
+
+                    self.patch_jump(string_path);
+                    self.emit_u16(Op::LOCAL_GET, t_y);
+                    self.emit_u16(Op::LOCAL_GET, t_x);
+                    self.emit(Op::STR_CONTAINS);
+
+                    self.patch_jump(array_end);
+                    self.patch_jump(end);
+                    self.emit(Op::DYN_NOT);
+                    return;
+                }
+
                 if self.profile.name == "pascal" {
                     let t_set = self.define_local("__pascal_nin_set");
                     let t_value = self.define_local("__pascal_nin_value");
@@ -3895,6 +4290,55 @@ impl Compiler {
 
     fn try_compile_builtin(&mut self, name: &str, args: &[&Expression]) -> Result<bool, String> {
         let line = self.line;
+
+        if self.is_python_profile() && name == "globals" && args.is_empty() {
+            common::dict::emit_new(&mut self.chunks, self.current, line);
+
+            self.emit(Op::DUP);
+            self.emit_const(Value::String(Arc::from("__main__")));
+            let name_key = self.str_const("__name__");
+            self.emit_u16(Op::STRUCT_SET, name_key);
+            self.emit(Op::DROP);
+            self.emit(Op::DUP);
+            let keys_key = self.str_const("__keys");
+            self.emit_u16(Op::STRUCT_GET, keys_key);
+            self.emit_const(Value::String(Arc::from("__name__")));
+            common::collections::emit_push(&mut self.chunks, self.current, line);
+            self.emit(Op::DROP);
+
+            let mut globals: Vec<String> = self.defined_globals.iter().cloned().collect();
+            globals.sort();
+            globals.dedup();
+            for global in globals {
+                if global == "__name__" { continue; }
+                self.emit(Op::DUP);
+                self.emit_var_get(&global);
+                let key = self.str_const(&global);
+                self.emit_u16(Op::STRUCT_SET, key);
+                self.emit(Op::DROP);
+
+                self.emit(Op::DUP);
+                let keys_key = self.str_const("__keys");
+                self.emit_u16(Op::STRUCT_GET, keys_key);
+                self.emit_const(Value::String(Arc::from(global.as_str())));
+                common::collections::emit_push(&mut self.chunks, self.current, line);
+                self.emit(Op::DROP);
+            }
+            return Ok(true);
+        }
+
+        if self.is_python_profile() && name == "frozenset" && args.len() <= 1 {
+            if let Some(arg) = args.first() {
+                self.compile_expr(arg)?;
+                let idx = self.import("ecma:array", "from");
+                self.emit_host_call(idx, 1);
+                self.emit_const(Value::String(Arc::from("\u{1f}")));
+                common::collections::emit_join(&mut self.chunks, self.current, line);
+            } else {
+                self.emit_const(Value::String(Arc::from("")));
+            }
+            return Ok(true);
+        }
 
         if self.profile.name == "pascal" {
             let builtin_name = self.canon(name);

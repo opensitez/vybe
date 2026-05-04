@@ -158,15 +158,46 @@ pub fn emit_method_has(chunks: &mut [Chunk], current: usize, line: u32) {
 /// map.delete(key) / del dict[key] — remove a key.
 /// Stack before: [dict, key]  Stack after: [bool] (true if existed)
 pub fn emit_method_delete(chunks: &mut [Chunk], current: usize, line: u32) {
-    // Check if key exists first
-    chunks[current].emit_op(Op::DUP, line); // dup key
-    // Stack: [dict, key, key]
-    // We need to get the value first to check existence, but we also need
-    // dict+key for the delete. Save dict.
-    // Simplest: just set to null (WASM has no "delete property" opcode)
+    let dict_slot = chunks[current].local_count;
+    let key_slot = dict_slot + 1;
+    let idx_slot = dict_slot + 2;
+    chunks[current].local_count += 3;
+    let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, dict_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
+    chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    crate::emitter::collections::emit_index_of(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunks[current].emit_op(Op::I32_CONST_0, line);
+    chunks[current].emit_op(Op::DYN_GE, line);
+    let missing = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
+    chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    crate::emitter::collections::emit_remove_at(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     chunks[current].emit_op(Op::NULL, line);
-    crate::emitter::collections::emit_set(chunks, current, line); chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::TRUE, line); // assume deleted
+    crate::emitter::collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op(Op::TRUE, line);
+    let end = chunks[current].emit_jump(Op::BR, line);
+
+    chunks[current].patch_jump(missing);
+    chunks[current].emit_op(Op::FALSE, line);
+    chunks[current].patch_jump(end);
 }
 
 /// map.clear() — remove all entries.

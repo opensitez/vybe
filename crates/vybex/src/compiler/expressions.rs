@@ -35,6 +35,13 @@ impl Compiler {
                     "undefined" if self.case_sensitive => { let l = self.line; common::expressions::emit_undefined(self.chunk(), l); return Ok(()); }
                     _ => {}
                 }
+                if self.is_python_profile() {
+                    match name.as_str() {
+                        "__debug__" => { self.emit(Op::TRUE); return Ok(()); }
+                        "__name__" => { self.emit_const(Value::String(Arc::from("__main__"))); return Ok(()); }
+                        _ => {}
+                    }
+                }
                 // Local variable / parameter takes priority over implicit self field
                 let is_local = self.scope().resolve(name).is_some()
                     || (!self.case_sensitive && self.scope().resolve_ci(name).is_some());
@@ -211,6 +218,9 @@ impl Compiler {
                 if self.try_compile_pascal_binary_operator(op, left, right)? {
                     return Ok(());
                 }
+                if self.try_compile_python_set_binary_operator(op, left, right)? {
+                    return Ok(());
+                }
                 self.compile_expr(left)?;
                 self.compile_expr(right)?;
                 self.compile_binop(op);
@@ -270,7 +280,7 @@ impl Compiler {
             // ── Ternary ─────────────────────────────────────────────────
             ExprKind::Ternary { cond, then, else_ } => {
                 self.compile_expr(cond)?;
-                self.emit(Op::DYN_TO_BOOL);
+                self.emit_python_truthiness_from_stack();
                 let else_j = self.emit_jump(Op::BR_IF_FALSE);
                 self.compile_expr(then)?;
                 let end_j = self.emit_jump(Op::BR);
@@ -525,6 +535,129 @@ impl Compiler {
                     self.compile_expr(start)?;
                     self.compile_expr(end)?;
                     common::collections::emit_slice_invoke(self.chunk(), line);
+                } else if let ExprKind::Slice { lower, upper, step } = &index.kind {
+                    self.compile_expr(object)?;
+                    let line = self.line;
+                    if step.is_none() {
+                        let obj_slot = self.define_local("__py_index_slice_obj");
+                        self.emit_u16(Op::LOCAL_SET, obj_slot);
+                        self.emit(Op::DROP);
+
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        if let Some(l) = lower {
+                            self.compile_expr(l)?;
+                        } else {
+                            self.emit(Op::I32_CONST_0);
+                        }
+                        if let Some(u) = upper {
+                            self.compile_expr(u)?;
+                        } else {
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            common::collections::emit_len(&mut self.chunks, self.current, line);
+                        }
+                        common::collections::emit_stdlib_call(
+                            &mut self.chunks, self.current, "__vybe_slice", 3, line,
+                        );
+                    } else {
+                        let step_const = step.as_ref().and_then(|expr| match &expr.kind {
+                            ExprKind::Lit(Literal::Int(n)) => Some(*n),
+                            ExprKind::Unary { op: UnaryOp::Neg, expr } => match &expr.kind {
+                                ExprKind::Lit(Literal::Int(n)) => Some(-*n),
+                                _ => None,
+                            },
+                            _ => None,
+                        });
+
+                        if lower.is_none() && upper.is_none() {
+                            if step_const == Some(-1) {
+                                self.emit(Op::DUP);
+                                self.emit(Op::REF_IS_STRING);
+                                let non_string = self.emit_jump(Op::BR_IF_FALSE);
+                                self.emit(Op::STR_REVERSE);
+                                let end = self.emit_jump(Op::BR);
+                                self.patch_jump(non_string);
+                                self.emit(Op::NULL);
+                                self.emit(Op::NULL);
+                                if let Some(s) = step { self.compile_expr(s)?; } else { self.emit(Op::NULL); }
+                                common::collections::emit_stdlib_call(
+                                    &mut self.chunks, self.current, "__vybe_slicestep", 4, line,
+                                );
+                                self.patch_jump(end);
+                                return Ok(());
+                            }
+
+                            if let Some(step_value) = step_const.filter(|n| *n > 1) {
+                                self.emit(Op::DUP);
+                                self.emit(Op::REF_IS_STRING);
+                                let non_string = self.emit_jump(Op::BR_IF_FALSE);
+
+                                let str_slot = self.define_local("__py_stride_string");
+                                let result_slot = self.define_local("__py_stride_result");
+                                let index_slot = self.define_local("__py_stride_index");
+                                let len_slot = self.define_local("__py_stride_len");
+
+                                self.emit_u16(Op::LOCAL_SET, str_slot);
+                                self.emit(Op::DROP);
+                                self.emit_const(Value::String(Arc::from("")));
+                                self.emit_u16(Op::LOCAL_SET, result_slot);
+                                self.emit(Op::DROP);
+                                self.emit(Op::I32_CONST_0);
+                                self.emit_u16(Op::LOCAL_SET, index_slot);
+                                self.emit(Op::DROP);
+                                self.emit_u16(Op::LOCAL_GET, str_slot);
+                                self.emit(Op::STR_LENGTH);
+                                self.emit_u16(Op::LOCAL_SET, len_slot);
+                                self.emit(Op::DROP);
+
+                                let stride_block = self.chunk().emit_block(line);
+                                let (stride_loop, _) = self.chunk().emit_loop_s(line);
+                                self.emit_u16(Op::LOCAL_GET, index_slot);
+                                self.emit_u16(Op::LOCAL_GET, len_slot);
+                                self.emit(Op::DYN_LT);
+                                self.emit(Op::DYN_NOT);
+                                self.chunk().emit_br_if(1, line);
+
+                                self.emit_u16(Op::LOCAL_GET, result_slot);
+                                self.emit_u16(Op::LOCAL_GET, str_slot);
+                                self.emit_u16(Op::LOCAL_GET, index_slot);
+                                self.emit(Op::F64_FROM_I32);
+                                self.emit(Op::STR_CHAR_AT);
+                                common::strings::emit_str_concat(self.chunk(), line);
+                                self.emit_u16(Op::LOCAL_SET, result_slot);
+                                self.emit(Op::DROP);
+
+                                self.emit_u16(Op::LOCAL_GET, index_slot);
+                                self.emit_const(Value::I32(step_value as i32));
+                                self.emit(Op::I32_ADD);
+                                self.emit_u16(Op::LOCAL_SET, index_slot);
+                                self.emit(Op::DROP);
+                                self.chunk().emit_br(0, line);
+                                self.chunk().emit_end(line);
+                                self.chunk().patch_loop(stride_loop);
+                                self.chunk().emit_end(line);
+                                self.chunk().patch_block(stride_block);
+                                self.emit_u16(Op::LOCAL_GET, result_slot);
+                                let end = self.emit_jump(Op::BR);
+
+                                self.patch_jump(non_string);
+                                self.emit(Op::NULL);
+                                self.emit(Op::NULL);
+                                if let Some(s) = step { self.compile_expr(s)?; } else { self.emit(Op::NULL); }
+                                common::collections::emit_stdlib_call(
+                                    &mut self.chunks, self.current, "__vybe_slicestep", 4, line,
+                                );
+                                self.patch_jump(end);
+                                return Ok(());
+                            }
+                        }
+
+                        if let Some(l) = lower { self.compile_expr(l)?; } else { self.emit(Op::NULL); }
+                        if let Some(u) = upper { self.compile_expr(u)?; } else { self.emit(Op::NULL); }
+                        if let Some(s) = step { self.compile_expr(s)?; } else { self.emit(Op::NULL); }
+                        common::collections::emit_stdlib_call(
+                            &mut self.chunks, self.current, "__vybe_slicestep", 4, line,
+                        );
+                    }
                 } else if self.profile.name == "pascal" && self.expr_is_known_string_receiver(object) {
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
@@ -1057,10 +1190,17 @@ impl Compiler {
                             self.emit(Op::DROP);
                         }
                         ObjectProperty::Spread(expr) => {
-                            // Object spread: merge properties from expr into current object
+                            // Object spread mutates the in-progress object and must
+                            // leave that object on the stack for the remaining literal.
+                            let target_tmp = self.define_local("__obj_spread_target");
+                            self.emit_u16(Op::LOCAL_SET, target_tmp);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, target_tmp);
                             self.compile_expr(expr)?;
                             let idx = self.import("ecma:object", "assign");
                             self.emit_host_call(idx, 2);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, target_tmp);
                         }
                         ObjectProperty::Method { key, value } => {
                             self.emit(Op::DUP);
@@ -1571,16 +1711,38 @@ impl Compiler {
             // ── Slice (Python) ──────────────────────────────────────────
             ExprKind::Slice { lower, upper, step } => {
                 // Stack on entry (from Index parent): [obj]
-                // Emit slice parts → [obj, lower, upper, step] then call the
-                // bundled `__vybe_slicestep` polyfill directly (skips the
-                // legacy `vybe:array` host-import indirection).
-                if let Some(l) = lower { self.compile_expr(l)?; } else { self.emit(Op::NULL); }
-                if let Some(u) = upper { self.compile_expr(u)?; } else { self.emit(Op::NULL); }
-                if let Some(s) = step { self.compile_expr(s)?; } else { self.emit(Op::NULL); }
                 let line = self.line;
-                common::collections::emit_stdlib_call(
-                    &mut self.chunks, self.current, "__vybe_slicestep", 4, line,
-                );
+                if step.is_none() {
+                    let obj_slot = self.define_local("__py_slice_obj");
+                    self.emit_u16(Op::LOCAL_SET, obj_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    if let Some(l) = lower {
+                        self.compile_expr(l)?;
+                    } else {
+                        self.emit(Op::I32_CONST_0);
+                    }
+                    if let Some(u) = upper {
+                        self.compile_expr(u)?;
+                    } else {
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        common::collections::emit_len(&mut self.chunks, self.current, line);
+                    }
+                    common::collections::emit_stdlib_call(
+                        &mut self.chunks, self.current, "__vybe_slice", 3, line,
+                    );
+                } else {
+                    // Emit slice parts → [obj, lower, upper, step] then call the
+                    // bundled `__vybe_slicestep` polyfill directly (skips the
+                    // legacy `vybe:array` host-import indirection).
+                    if let Some(l) = lower { self.compile_expr(l)?; } else { self.emit(Op::NULL); }
+                    if let Some(u) = upper { self.compile_expr(u)?; } else { self.emit(Op::NULL); }
+                    if let Some(s) = step { self.compile_expr(s)?; } else { self.emit(Op::NULL); }
+                    common::collections::emit_stdlib_call(
+                        &mut self.chunks, self.current, "__vybe_slicestep", 4, line,
+                    );
+                }
             }
 
             // ── Walrus (Python :=) ──────────────────────────────────────
@@ -1774,6 +1936,61 @@ impl Compiler {
         if *op == BinOp::NotEq {
             self.emit(Op::DYN_NOT);
         }
+        Ok(true)
+    }
+
+    fn try_compile_python_set_binary_operator(
+        &mut self,
+        op: &BinOp,
+        left: &Expression,
+        right: &Expression,
+    ) -> Result<bool, String> {
+        if !self.is_python_profile() {
+            return Ok(false);
+        }
+
+        let helper = match op {
+            BinOp::BitOr => Some("union"),
+            BinOp::BitAnd => Some("intersection"),
+            BinOp::Sub => Some("difference"),
+            BinOp::BitXor => Some("symmetricDifference"),
+            _ => None,
+        };
+
+        let Some(helper) = helper else {
+            return Ok(false);
+        };
+
+        self.compile_expr(left)?;
+        self.compile_expr(right)?;
+        let rhs_slot = self.define_local("__py_set_rhs");
+        let lhs_slot = self.define_local("__py_set_lhs");
+        self.emit_u16(Op::LOCAL_SET, rhs_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, lhs_slot); self.emit(Op::DROP);
+
+        let size_key = self.str_const("size");
+        self.emit_u16(Op::LOCAL_GET, lhs_slot);
+        self.emit_u16(Op::STRUCT_GET, size_key);
+        self.emit(Op::REF_IS_NULL);
+        let fallback = self.emit_jump(Op::BR_IF_TRUE);
+
+        self.emit_u16(Op::LOCAL_GET, rhs_slot);
+        self.emit_u16(Op::STRUCT_GET, size_key);
+        self.emit(Op::REF_IS_NULL);
+        let rhs_fallback = self.emit_jump(Op::BR_IF_TRUE);
+
+        self.emit_u16(Op::LOCAL_GET, lhs_slot);
+        self.emit_u16(Op::LOCAL_GET, rhs_slot);
+        let idx = self.import("ecma:set", helper);
+        self.emit_host_call(idx, 2);
+        let end = self.emit_jump(Op::BR);
+
+        self.patch_jump(fallback);
+        self.patch_jump(rhs_fallback);
+        self.emit_u16(Op::LOCAL_GET, lhs_slot);
+        self.emit_u16(Op::LOCAL_GET, rhs_slot);
+        self.compile_binop(op);
+        self.patch_jump(end);
         Ok(true)
     }
 

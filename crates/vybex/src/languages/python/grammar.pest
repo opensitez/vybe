@@ -65,12 +65,14 @@ param_item = {
     double_star_param
     | star_param
     | bare_star
+    | slash_param
     | normal_param
 }
 
 double_star_param = { "**" ~ identifier ~ (":" ~ expression)? }
 star_param = { "*" ~ identifier ~ (":" ~ expression)? }
 bare_star = { "*" ~ &"," }
+slash_param = { "/" }
 normal_param = { identifier ~ (":" ~ expression)? ~ ("=" ~ expression)? }
 
 // ── Class Definition ───────────────────────────────────────────────────────────
@@ -117,7 +119,7 @@ finally_clause = { "finally" ~ block }
 
 // ── With ───────────────────────────────────────────────────────────────────────
 with_stmt = {
-    "with" ~ with_item ~ ("," ~ with_item)* ~ block
+    "with" ~ (("(" ~ with_item ~ ("," ~ with_item)* ~ ","? ~ ")") | (with_item ~ ("," ~ with_item)*)) ~ block
 }
 
 with_item = { expression ~ (as_kw ~ target)? }
@@ -135,17 +137,19 @@ or_pattern = { single_pattern ~ ("|" ~ single_pattern)* }
 single_pattern = {
     as_pattern
     | star_pattern
+    | group_pattern
+    | tuple_pattern
     | sequence_pattern
     | mapping_pattern
     | class_pattern
     | value_pattern
     | singleton_pattern
+    | literal_pattern
     | capture_pattern
     | wildcard_pattern
-    | literal_pattern
 }
 
-as_pattern = { (sequence_pattern | mapping_pattern | class_pattern | value_pattern | singleton_pattern | capture_pattern | wildcard_pattern | literal_pattern) ~ as_kw ~ identifier }
+as_pattern = { (group_pattern | tuple_pattern | sequence_pattern | mapping_pattern | class_pattern | value_pattern | singleton_pattern | capture_pattern | wildcard_pattern | literal_pattern) ~ as_kw ~ identifier }
 
 star_pattern = { "*" ~ identifier? }
 wildcard_pattern = { "_" ~ !(ASCII_ALPHANUMERIC | "_") }
@@ -153,12 +157,15 @@ capture_pattern = { identifier }
 singleton_pattern = { none_kw | true_kw | false_kw }
 literal_pattern = { numeric_literal | string_literal | "-" ~ numeric_literal }
 
+group_pattern = { "(" ~ or_pattern ~ ")" }
 value_pattern = { identifier ~ ("." ~ identifier)+ }
 class_pattern = { identifier ~ "(" ~ (class_pattern_arg ~ ("," ~ class_pattern_arg)*)? ~ ","? ~ ")" }
 class_pattern_arg = { identifier ~ "=" ~ pattern | pattern }
+tuple_pattern = { "(" ~ pattern ~ ("," ~ pattern)+ ~ ","? ~ ")" }
 sequence_pattern = { "[" ~ (pattern ~ ("," ~ pattern)*)? ~ ","? ~ "]" }
-mapping_pattern = { "{" ~ (mapping_pair ~ ("," ~ mapping_pair)*)? ~ ","? ~ "}" }
+mapping_pattern = { "{" ~ ((mapping_pair | mapping_rest) ~ ("," ~ (mapping_pair | mapping_rest))*)? ~ ","? ~ "}" }
 mapping_pair = { expression ~ ":" ~ pattern }
+mapping_rest = { "**" ~ identifier }
 
 // ── Return ─────────────────────────────────────────────────────────────────────
 return_stmt = { "return" ~ (!NEWLINE ~ expression_list)? ~ terminator }

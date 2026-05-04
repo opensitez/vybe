@@ -23,7 +23,7 @@
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
-use crate::emitter::{collections, dict, strings, threading};
+use crate::emitter::{collections, dict, python, strings, threading};
 
 /// Handle common ops that need only a chunk and line.
 /// Returns `true` if `name` was recognized and emitted, `false` otherwise.
@@ -53,6 +53,7 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         "dict.size" => dict::emit_method_size(chunks, current, line),
         "dict.keys" => dict::emit_keys(chunks, current, line),
         "dict.values" => dict::emit_values(chunks, current, line),
+        "dict.items" => dict::emit_items(chunks, current, line),
         "dict.new" => dict::emit_new(chunks, current, line),
 
         // ── Object ops ── ecma:object/new creates a plain JS Object.
@@ -104,6 +105,22 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         "collections.sum" => collections::emit_sum(chunks, current, line),
         "collections.min" => collections::emit_pymin(chunks, current, line),
         "collections.max" => collections::emit_pymax(chunks, current, line),
+
+        // ── Python adapters ──
+        "python.extend" => python::collections_adapter::emit_extend(chunks, current, line),
+        "python.get" => python::collections_adapter::emit_get(chunks, current, argc, line),
+        "python.pop" => python::collections_adapter::emit_pop(chunks, current, argc, line),
+        "python.index" => python::collections_adapter::emit_index(chunks, current, argc, line),
+        "python.add" => python::collections_adapter::emit_add(chunks, current, line),
+        "python.remove" => python::collections_adapter::emit_remove(chunks, current, line),
+        "python.discard" => python::collections_adapter::emit_discard(chunks, current, line),
+        "python.copy" => python::collections_adapter::emit_copy(chunks, current, line),
+        "python.update" => python::collections_adapter::emit_update(chunks, current, line),
+        "python.intersection_update" => python::collections_adapter::emit_intersection_update(chunks, current, line),
+        "python.difference_update" => python::collections_adapter::emit_difference_update(chunks, current, line),
+        "python.symmetric_difference_update" => python::collections_adapter::emit_symmetric_difference_update(chunks, current, line),
+        "python.clear" => python::collections_adapter::emit_clear(chunks, current, line),
+        "python.length" => python::collections_adapter::emit_length(chunks, current, line),
 
         // ── String ops ──
         "strings.length" => strings::emit_length(&mut chunks[current], line),
