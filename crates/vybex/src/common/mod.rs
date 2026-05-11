@@ -7,3 +7,4 @@
 //! - `classes` — class normalisation (see `classnormalization.md`).
 
 pub mod classes;
+pub mod events;

@@ -490,7 +490,7 @@ pub fn register(
                     false
                 } else {
                     let g = gui.lock().unwrap();
-                    g.control_names.iter().any(|name| name == &control_name.to_lowercase())
+                    g.control_names.iter().any(|name| name.eq_ignore_ascii_case(&control_name))
                 };
                 if !live_widget || prop_lower == "name" {
                     obj.lock().unwrap().properties.insert(prop_lower.clone(), val.clone());
@@ -628,6 +628,21 @@ pub fn register(
             let mut guard = gui.lock().unwrap();
             guard.close_requested = true;
             if let (Some(form_obj), Value::Object(open_forms_obj)) = (guard.form_object.clone(), &open_forms) {
+                remove_collection_value(open_forms_obj, &form_obj);
+            }
+            Value::Null
+        })
+    });
+
+    vm.register_host_fn("vybe:gui", "appExit", {
+        let gui = gui.clone();
+        let open_forms = open_forms.clone();
+        Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
+            let mut guard = gui.lock().unwrap();
+            guard.close_requested = true;
+            if let (Some(form_obj), Value::Object(open_forms_obj)) =
+                (guard.form_object.clone(), &open_forms)
+            {
                 remove_collection_value(open_forms_obj, &form_obj);
             }
             Value::Null
@@ -1084,7 +1099,7 @@ pub fn register(
     use vybe_bytecode::Value;
     let stubs = [
         "createForm", "addControl", "setProperty", "getProperty",
-        "onEvent", "showForm", "runApplication", "msgBox", "closeForm",
+        "onEvent", "showForm", "runApplication", "msgBox", "closeForm", "appExit",
         "newControl", "controlSetProperty", "controlsAdd", "newForm",
         "newControlsCollection", "newComponentsCollection",
         "__collection_add", "__collection_clear", "__collection_contains",

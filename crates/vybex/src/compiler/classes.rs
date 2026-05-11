@@ -268,8 +268,18 @@ impl Compiler {
             if parts.len() == 2 {
                 let line = self.line;
                 let bind_idx = self.import("vybe:gui", common::gui::HOST_FN_BIND_EVENT);
-                self.emit_var_get(parts[0]);
-                common::gui::emit_get_control_name(self.chunk(), line);
+                let ctrl_raw = parts[0].trim();
+                let ctrl_canon = self.canon(ctrl_raw);
+                let ctrl_key = if ctrl_canon == self.profile.self_keyword
+                    || ctrl_canon == "me"
+                    || ctrl_canon == "this"
+                    || ctrl_canon == "mybase"
+                {
+                    self.current_class.clone().map(|c| self.canon(&c)).unwrap_or(ctrl_canon)
+                } else {
+                    ctrl_canon
+                };
+                self.emit_const(Value::String(Arc::from(ctrl_key.as_str())));
                 let ev = parts[1].to_lowercase();
                 self.emit_const(Value::String(Arc::from(ev.as_str())));
                 self.emit_var_get(name);

@@ -56,3 +56,13 @@ fn winforms_button_with_event() {
     "#);
     assert_eq!(out, vec!["btn1", "Click", "Button"]);
 }
+
+#[test]
+fn winforms_application_bootstrap_methods_are_supported() {
+    let out = run_csharp(r#"
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        Console.WriteLine("boot-ok");
+    "#);
+    assert_eq!(out, vec!["boot-ok"]);
+}

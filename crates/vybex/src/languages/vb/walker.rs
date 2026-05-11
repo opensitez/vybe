@@ -1076,11 +1076,11 @@ fn inject_handles_into_constructor(members: &mut Vec<ClassMember>) {
                 field: method_name.clone(),
                 null_safe: false,
             });
-            new_stmts.push(Statement::new(StmtKind::AddHandler {
+            new_stmts.push(Statement::new(crate::common::events::add_handler_stmt(
                 control,
                 event,
                 handler,
-            }));
+            )));
         }
     }
 
@@ -1546,11 +1546,11 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             let addressof = inner.next().unwrap(); // addressof_expr
             let handler_str = addressof.into_inner().next().unwrap().as_str().to_string();
             let (control, event) = split_event_target(&event_target_str);
-            StmtKind::AddHandler {
+            crate::common::events::add_handler_stmt(
                 control,
                 event,
-                handler: build_dotted_expr(&handler_str),
-            }
+                build_dotted_expr(&handler_str),
+            )
         }
         Rule::removehandler_statement => {
             let mut inner = pair.into_inner();
@@ -1558,11 +1558,11 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             let addressof = inner.next().unwrap(); // addressof_expr
             let handler_str = addressof.into_inner().next().unwrap().as_str().to_string();
             let (control, event) = split_event_target(&event_target_str);
-            StmtKind::RemoveHandler {
+            crate::common::events::remove_handler_stmt(
                 control,
                 event,
-                handler: build_dotted_expr(&handler_str),
-            }
+                build_dotted_expr(&handler_str),
+            )
         }
         Rule::static_statement => {
             let mut name = String::new();

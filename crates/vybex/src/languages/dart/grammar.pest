@@ -267,6 +267,7 @@ param_default = { ("=" | ":") ~ assignment_expression }
 statement = _{
     empty_statement
     | block_statement
+    | function_declaration
     | variable_declaration_statement
     | if_statement
     | for_statement

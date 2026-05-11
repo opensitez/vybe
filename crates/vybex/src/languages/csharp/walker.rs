@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use pest::Parser;
 use pest::iterators::Pair;
 use super::{CSharpParser, Rule};
@@ -59,12 +61,486 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // resolves T to the synthesized class and reads `e.Message`.
     body.splice(0..0, synthesize_exception_classes());
 
-    Ok(Module {
+    let mut module = Module {
         name: "main".into(),
         language: Lang::CSharp,
         body,
         imports,
-    })
+    };
+    rewrite_extension_calls(&mut module);
+    Ok(module)
+}
+
+fn rewrite_extension_calls(module: &mut Module) {
+    let mut extension_methods: HashMap<String, String> = HashMap::new();
+    let mut extension_containers: HashSet<String> = HashSet::new();
+    collect_extension_methods(&module.body, None, &mut extension_methods, &mut extension_containers);
+    if extension_methods.is_empty() {
+        return;
+    }
+    // Also collect all user-defined type names (class/struct/interface/enum) so we never
+    // rewrite calls whose receiver is a known type identifier (e.g. Array.Reverse, Math.Abs).
+    collect_all_type_names(&module.body, &mut extension_containers);
+    // Add well-known BCL static class names that may appear as call receivers.
+    for name in &[
+        "Array", "Console", "String", "Math", "Environment", "Convert",
+        "File", "Path", "Directory", "Enumerable", "Regex", "Char",
+        "Int32", "Int64", "Double", "Boolean", "Object", "Type",
+        "Encoding", "BitConverter", "GC", "Monitor", "Thread",
+        "StringBuilder", "StringComparer",
+    ] {
+        extension_containers.insert(name.to_string());
+    }
+    rewrite_extension_calls_in_statements(&mut module.body, &extension_methods, &extension_containers);
+}
+
+fn collect_all_type_names(body: &[Statement], type_names: &mut HashSet<String>) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::NamespaceDecl { body, .. } => {
+                collect_all_type_names(body, type_names);
+            }
+            StmtKind::ClassDecl { name, members, .. }
+            | StmtKind::StructDecl { name, members, .. } => {
+                type_names.insert(name.clone());
+                for member in members {
+                    if let ClassMember::NestedType(nested) = member {
+                        collect_all_type_names(std::slice::from_ref(nested.as_ref()), type_names);
+                    }
+                }
+            }
+            StmtKind::InterfaceDecl { name, .. } | StmtKind::EnumDecl { name, .. } => {
+                type_names.insert(name.clone());
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_extension_methods(
+    body: &[Statement],
+    namespace: Option<&str>,
+    extension_methods: &mut HashMap<String, String>,
+    extension_containers: &mut HashSet<String>,
+) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::NamespaceDecl { name, body } => {
+                collect_extension_methods(body, Some(name.as_str()), extension_methods, extension_containers);
+            }
+            StmtKind::ClassDecl { name, members, .. }
+            | StmtKind::StructDecl { name, members, .. } => {
+                let container = if let Some(ns) = namespace {
+                    format!("{ns}.{name}")
+                } else {
+                    name.clone()
+                };
+                extension_containers.insert(name.clone());
+                extension_containers.insert(container.clone());
+                for member in members {
+                    match member {
+                        ClassMember::Method(method) => {
+                            if let StmtKind::FunctionDecl { name: method_name, params, modifiers, .. } = &method.kind {
+                                if modifiers.is_static && params.first().map(|param| param.pass_by == PassBy::Const).unwrap_or(false) {
+                                    extension_methods.entry(method_name.clone())
+                                        .or_insert_with(|| format!("{name}.{method_name}"));
+                                }
+                            }
+                        }
+                        ClassMember::NestedType(nested) => {
+                            collect_extension_methods(std::slice::from_ref(nested.as_ref()), namespace, extension_methods, extension_containers);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_extension_calls_in_statements(
+    body: &mut [Statement],
+    extension_methods: &HashMap<String, String>,
+    extension_containers: &HashSet<String>,
+) {
+    for stmt in body {
+        rewrite_extension_calls_in_statement(stmt, extension_methods, extension_containers);
+    }
+}
+
+fn rewrite_extension_calls_in_statement(
+    stmt: &mut Statement,
+    extension_methods: &HashMap<String, String>,
+    extension_containers: &HashSet<String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr)
+        | StmtKind::Return(Some(expr))
+        | StmtKind::Throw { expr: Some(expr), cause: None }
+        | StmtKind::Using { resource: expr, .. }
+        | StmtKind::Lock { expr, .. }
+        | StmtKind::CompoundAssign { value: expr, .. } => {
+            rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers);
+        }
+        StmtKind::Throw { expr: Some(expr), cause: Some(cause) } => {
+            rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers);
+            rewrite_extension_calls_in_expr(cause, extension_methods, extension_containers);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_extension_calls_in_expr(init, extension_methods, extension_containers);
+                }
+                if let Some(bounds) = &mut decl.array_bounds {
+                    for bound in bounds {
+                        rewrite_extension_calls_in_expr(bound, extension_methods, extension_containers);
+                    }
+                }
+            }
+        }
+        StmtKind::FunctionDecl { body, .. }
+        | StmtKind::Block(body)
+        | StmtKind::NamespaceDecl { body, .. } => {
+            rewrite_extension_calls_in_statements(body, extension_methods, extension_containers);
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_extension_calls_in_member(member, extension_methods, extension_containers);
+            }
+        }
+        StmtKind::If { cond, then_body, elifs, else_body } => {
+            rewrite_extension_calls_in_expr(cond, extension_methods, extension_containers);
+            rewrite_extension_calls_in_statements(then_body, extension_methods, extension_containers);
+            for (elif_cond, elif_body) in elifs {
+                rewrite_extension_calls_in_expr(elif_cond, extension_methods, extension_containers);
+                rewrite_extension_calls_in_statements(elif_body, extension_methods, extension_containers);
+            }
+            if let Some(else_body) = else_body {
+                rewrite_extension_calls_in_statements(else_body, extension_methods, extension_containers);
+            }
+        }
+        StmtKind::For { init, cond, update, body } => {
+            if let Some(init) = init {
+                rewrite_extension_calls_in_statement(init, extension_methods, extension_containers);
+            }
+            if let Some(cond) = cond {
+                rewrite_extension_calls_in_expr(cond, extension_methods, extension_containers);
+            }
+            if let Some(update) = update {
+                rewrite_extension_calls_in_expr(update, extension_methods, extension_containers);
+            }
+            rewrite_extension_calls_in_statements(body, extension_methods, extension_containers);
+        }
+        StmtKind::ForIn { iter, body, else_body, .. } => {
+            rewrite_extension_calls_in_expr(iter, extension_methods, extension_containers);
+            rewrite_extension_calls_in_statements(body, extension_methods, extension_containers);
+            if let Some(else_body) = else_body {
+                rewrite_extension_calls_in_statements(else_body, extension_methods, extension_containers);
+            }
+        }
+        StmtKind::While { cond, body, else_body } => {
+            rewrite_extension_calls_in_expr(cond, extension_methods, extension_containers);
+            rewrite_extension_calls_in_statements(body, extension_methods, extension_containers);
+            if let Some(else_body) = else_body {
+                rewrite_extension_calls_in_statements(else_body, extension_methods, extension_containers);
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            rewrite_extension_calls_in_statements(body, extension_methods, extension_containers);
+            rewrite_extension_calls_in_expr(cond, extension_methods, extension_containers);
+        }
+        StmtKind::Switch { expr, cases, default } => {
+            rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers);
+            for case in cases {
+                for condition in &mut case.conditions {
+                    match condition {
+                        CaseCondition::Value(expr) => rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers),
+                        CaseCondition::Range { from, to } => {
+                            rewrite_extension_calls_in_expr(from, extension_methods, extension_containers);
+                            rewrite_extension_calls_in_expr(to, extension_methods, extension_containers);
+                        }
+                        CaseCondition::Comparison { expr, .. } => {
+                            rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers);
+                        }
+                    }
+                }
+                rewrite_extension_calls_in_statements(&mut case.body, extension_methods, extension_containers);
+            }
+            if let Some(default) = default {
+                rewrite_extension_calls_in_statements(default, extension_methods, extension_containers);
+            }
+        }
+        StmtKind::Try { body, catches, else_body, finally } => {
+            rewrite_extension_calls_in_statements(body, extension_methods, extension_containers);
+            for catch in catches {
+                if let Some(when_clause) = &mut catch.when_clause {
+                    rewrite_extension_calls_in_expr(when_clause, extension_methods, extension_containers);
+                }
+                rewrite_extension_calls_in_statements(&mut catch.body, extension_methods, extension_containers);
+            }
+            if let Some(else_body) = else_body {
+                rewrite_extension_calls_in_statements(else_body, extension_methods, extension_containers);
+            }
+            if let Some(finally) = finally {
+                rewrite_extension_calls_in_statements(finally, extension_methods, extension_containers);
+            }
+        }
+        StmtKind::With { items, body, .. } => {
+            for item in items {
+                rewrite_extension_calls_in_expr(&mut item.expr, extension_methods, extension_containers);
+            }
+            rewrite_extension_calls_in_statements(body, extension_methods, extension_containers);
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_extension_calls_in_expr(target, extension_methods, extension_containers);
+            }
+            rewrite_extension_calls_in_expr(value, extension_methods, extension_containers);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_extension_calls_in_member(
+    member: &mut ClassMember,
+    extension_methods: &HashMap<String, String>,
+    extension_containers: &HashSet<String>,
+) {
+    match member {
+        ClassMember::Field { init: Some(expr), array_bounds, .. } => {
+            rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers);
+            if let Some(bounds) = array_bounds {
+                for bound in bounds {
+                    rewrite_extension_calls_in_expr(bound, extension_methods, extension_containers);
+                }
+            }
+        }
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_extension_calls_in_statement(stmt, extension_methods, extension_containers);
+        }
+        ClassMember::Constructor { body, base_args, .. } => {
+            rewrite_extension_calls_in_statements(body, extension_methods, extension_containers);
+            if let Some(base_args) = base_args {
+                for arg in base_args {
+                    rewrite_extension_calls_in_expr(arg, extension_methods, extension_containers);
+                }
+            }
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                rewrite_extension_calls_in_statements(getter, extension_methods, extension_containers);
+            }
+            if let Some(setter) = setter {
+                rewrite_extension_calls_in_statements(&mut setter.body, extension_methods, extension_containers);
+            }
+        }
+        ClassMember::Const { value, .. } => {
+            rewrite_extension_calls_in_expr(value, extension_methods, extension_containers);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_extension_calls_in_expr(
+    expr: &mut Expression,
+    extension_methods: &HashMap<String, String>,
+    extension_containers: &HashSet<String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::NullCoalesce { left, right } => {
+            rewrite_extension_calls_in_expr(left, extension_methods, extension_containers);
+            rewrite_extension_calls_in_expr(right, extension_methods, extension_containers);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::TypeOf(expr) => {
+            rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_extension_calls_in_expr(cond, extension_methods, extension_containers);
+            rewrite_extension_calls_in_expr(then, extension_methods, extension_containers);
+            rewrite_extension_calls_in_expr(else_, extension_methods, extension_containers);
+        }
+        ExprKind::Member { object, .. } => {
+            rewrite_extension_calls_in_expr(object, extension_methods, extension_containers);
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_extension_calls_in_expr(object, extension_methods, extension_containers);
+            rewrite_extension_calls_in_expr(index, extension_methods, extension_containers);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_extension_calls_in_expr(callee, extension_methods, extension_containers);
+            for arg in args.iter_mut() {
+                rewrite_extension_calls_in_expr(&mut arg.value, extension_methods, extension_containers);
+            }
+
+            let replacement = if let ExprKind::Member { object, field, null_safe } = &callee.kind {
+                if *null_safe {
+                    None
+                } else if expr_dotted_name(object).map(|name| extension_containers.contains(&name)).unwrap_or(false) {
+                    None
+                } else {
+                    extension_methods.get(field).map(|static_path| {
+                        let mut rewritten_args = Vec::with_capacity(args.len() + 1);
+                        rewritten_args.push(Argument::positional((**object).clone()));
+                        rewritten_args.extend(args.clone());
+                        ExprKind::Call {
+                            callee: Box::new(build_dotted_expr(static_path)),
+                            args: rewritten_args,
+                            optional: false,
+                        }
+                    })
+                }
+            } else {
+                None
+            };
+
+            if let Some(new_kind) = replacement {
+                expr.kind = new_kind;
+            }
+        }
+        ExprKind::New { class, args } => {
+            rewrite_extension_calls_in_expr(class, extension_methods, extension_containers);
+            for arg in args {
+                rewrite_extension_calls_in_expr(&mut arg.value, extension_methods, extension_containers);
+            }
+        }
+        ExprKind::Assign { target, value }
+        | ExprKind::Walrus { target, value } => {
+            rewrite_extension_calls_in_expr(target, extension_methods, extension_containers);
+            rewrite_extension_calls_in_expr(value, extension_methods, extension_containers);
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(expr) => rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers),
+            LambdaBody::Block(body) => rewrite_extension_calls_in_statements(body, extension_methods, extension_containers),
+        },
+        ExprKind::Array(items) => {
+            for item in items {
+                rewrite_extension_calls_in_expr(&mut item.value, extension_methods, extension_containers);
+                if let Some(key) = &mut item.key {
+                    rewrite_extension_calls_in_expr(key, extension_methods, extension_containers);
+                }
+            }
+        }
+        ExprKind::Tuple(items)
+        | ExprKind::Set(items)
+        | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_extension_calls_in_expr(item, extension_methods, extension_containers);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        rewrite_extension_calls_in_expr(key, extension_methods, extension_containers);
+                        rewrite_extension_calls_in_expr(value, extension_methods, extension_containers);
+                    }
+                    ObjectProperty::Spread(expr) => {
+                        rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers);
+                    }
+                    ObjectProperty::Method { value, .. }
+                    | ObjectProperty::Accessor { value, .. } => {
+                        rewrite_extension_calls_in_statement(value, extension_methods, extension_containers);
+                    }
+                    ObjectProperty::Shorthand(_) => {}
+                }
+            }
+        }
+        ExprKind::Interpolation(parts) => {
+            for part in parts {
+                match part {
+                    InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
+                        rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers);
+                    }
+                    InterpolPart::Text(_) => {}
+                }
+            }
+        }
+        ExprKind::IsType { expr, .. } | ExprKind::Cast { expr, .. } | ExprKind::Spread(expr) => {
+            rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers);
+        }
+        ExprKind::Yield(Some(expr)) => {
+            rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers);
+        }
+        ExprKind::Comprehension { element, generators, .. } => {
+            rewrite_extension_calls_in_expr(element, extension_methods, extension_containers);
+            for generator in generators {
+                rewrite_extension_calls_in_expr(&mut generator.target, extension_methods, extension_containers);
+                rewrite_extension_calls_in_expr(&mut generator.iter, extension_methods, extension_containers);
+                for condition in &mut generator.conditions {
+                    rewrite_extension_calls_in_expr(condition, extension_methods, extension_containers);
+                }
+            }
+        }
+        ExprKind::Slice { lower, upper, step } => {
+            if let Some(lower) = lower {
+                rewrite_extension_calls_in_expr(lower, extension_methods, extension_containers);
+            }
+            if let Some(upper) = upper {
+                rewrite_extension_calls_in_expr(upper, extension_methods, extension_containers);
+            }
+            if let Some(step) = step {
+                rewrite_extension_calls_in_expr(step, extension_methods, extension_containers);
+            }
+        }
+        ExprKind::ClassExpr { parent, members, .. } => {
+            if let Some(parent) = parent {
+                rewrite_extension_calls_in_expr(parent, extension_methods, extension_containers);
+            }
+            for member in members {
+                rewrite_extension_calls_in_member(member, extension_methods, extension_containers);
+            }
+        }
+        ExprKind::FunctionExpr(stmt) => {
+            rewrite_extension_calls_in_statement(stmt, extension_methods, extension_containers);
+        }
+        ExprKind::Range { start, end, .. } => {
+            rewrite_extension_calls_in_expr(start, extension_methods, extension_containers);
+            rewrite_extension_calls_in_expr(end, extension_methods, extension_containers);
+        }
+        ExprKind::StaticAccess { class, member } => {
+            rewrite_extension_calls_in_expr(class, extension_methods, extension_containers);
+            rewrite_extension_calls_in_expr(member, extension_methods, extension_containers);
+        }
+        ExprKind::Match { subject, arms } => {
+            rewrite_extension_calls_in_expr(subject, extension_methods, extension_containers);
+            for arm in arms {
+                if let Some(conditions) = &mut arm.conditions {
+                    for condition in conditions {
+                        rewrite_extension_calls_in_expr(condition, extension_methods, extension_containers);
+                    }
+                }
+                rewrite_extension_calls_in_expr(&mut arm.body, extension_methods, extension_containers);
+            }
+        }
+        ExprKind::Lit(_)
+        | ExprKind::Ident(_)
+        | ExprKind::This
+        | ExprKind::Super
+        | ExprKind::AddressOf(_)
+        | ExprKind::SuperCall { .. }
+        | ExprKind::Yield(None)
+        | ExprKind::Destructure(_) => {}
+    }
+}
+
+fn expr_dotted_name(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some(name.clone()),
+        ExprKind::Member { object, field, null_safe } if !null_safe => {
+            expr_dotted_name(object).map(|prefix| format!("{prefix}.{field}"))
+        }
+        _ => None,
+    }
 }
 
 fn synthesize_exception_classes() -> Vec<Statement> {
@@ -277,35 +753,8 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
 /// `compiler_common::gui::emit_bind_event` (the same path VB `Handles`,
 /// JS `addEventListener`, Python `bind`, etc. resolve to).
 fn classify_expr_stmt(expr: Expression) -> StmtKind {
-    // Detect `obj.Event += handler` (compound add on a member access). The
-    // walker rewrote `+=` as `target = target + value`, so the shape is:
-    //   Assign { target: Member { obj, "Event" },
-    //            value: Binary { Add, Member { obj, "Event" }, handler } }
-    //
-    // We only treat this as event subscription when the right-hand side is
-    // function-shaped (an identifier, member access, or lambda). A literal,
-    // arithmetic expression, etc. means the user is doing genuine numeric
-    // compound assignment on a property and we leave it alone.
-    if let ExprKind::Assign { target, value } = &expr.kind {
-        if let ExprKind::Member { object: ev_obj, field: ev_field, .. } = &target.kind {
-            if let ExprKind::Binary { op, left, right } = &value.kind {
-                let same_target = matches!(&left.kind, ExprKind::Member { object, field, .. }
-                    if member_eq(object, field, ev_obj, ev_field));
-                let handler_shape = matches!(&right.kind,
-                    ExprKind::Ident(_) | ExprKind::Member { .. } | ExprKind::Lambda { .. }
-                );
-                if same_target && handler_shape && (matches!(op, BinOp::Add) || matches!(op, BinOp::Sub)) {
-                    let event_name = ev_field.to_lowercase();
-                    let control = (**ev_obj).clone();
-                    let handler = (**right).clone();
-                    return if matches!(op, BinOp::Add) {
-                        StmtKind::AddHandler { control, event: event_name, handler }
-                    } else {
-                        StmtKind::RemoveHandler { control, event: event_name, handler }
-                    };
-                }
-            }
-        }
+    if let Some(kind) = crate::common::events::lower_event_compound_assignment(&expr) {
+        return kind;
     }
 
     match expr.kind {
@@ -314,19 +763,6 @@ fn classify_expr_stmt(expr: Expression) -> StmtKind {
             StmtKind::Assign { targets: vec![*target], value: *value }
         }
         _ => StmtKind::Expr(expr),
-    }
-}
-
-/// Compare two member access targets for structural equality. Used to detect
-/// the `+=`/`-=` shape where the LHS and the LHS-of-the-compound-binary are
-/// the same control event (e.g. `btn.Click += h` desugared to
-/// `btn.Click = btn.Click + h`).
-fn member_eq(obj_a: &Expression, field_a: &str, obj_b: &Expression, field_b: &str) -> bool {
-    if !field_a.eq_ignore_ascii_case(field_b) { return false; }
-    match (&obj_a.kind, &obj_b.kind) {
-        (ExprKind::Ident(a), ExprKind::Ident(b)) => a == b,
-        (ExprKind::This, ExprKind::This) => true,
-        _ => false,
     }
 }
 
@@ -1837,6 +2273,11 @@ fn walk_param(pair: Pair<Rule>) -> Result<Param, String> {
                 match p.as_str() {
                     "ref" => pass_by = PassBy::Ref,
                     "out" => pass_by = PassBy::Out,
+                    // C# extension methods mark the first parameter with
+                    // `this`. Reuse `Const` as an internal marker so the
+                    // post-parse rewrite can lower `x.Ext(...)` to the
+                    // corresponding static method call.
+                    "this" => pass_by = PassBy::Const,
                     "params" => is_rest = true,
                     _ => {}
                 }

@@ -11,7 +11,8 @@
 //!   --chunk <name>    Limit --dump/--trace output to a specific chunk
 //!
 //! Supports single source files (detected by extension), project files
-//! (.vybe, .vbproj), and .wasm binaries. Language is determined automatically.
+//! (.vybe, .vbproj, .csproj, .pyproj/.ipyproj), and .wasm binaries.
+//! Language is determined automatically.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};

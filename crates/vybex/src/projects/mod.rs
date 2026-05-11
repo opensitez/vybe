@@ -10,6 +10,7 @@
 mod single_file;
 mod vybe;
 mod vbproj;
+mod managed_msbuild;
 pub mod encoding;
 pub mod vbforms;
 
@@ -29,6 +30,7 @@ pub fn load(path: &Path) -> Result<Bundle, String> {
     match ext.as_str() {
         "vybe"   => vybe::load(path),
         "vbproj" => vbproj::load(path),
+        "csproj" | "pyproj" | "ipyproj" => managed_msbuild::load(path),
         _        => single_file::load(path, &ext),
     }
 }
@@ -36,6 +38,12 @@ pub fn load(path: &Path) -> Result<Bundle, String> {
 /// List all supported extensions (languages + project formats).
 pub fn supported_extensions() -> Vec<String> {
     let mut exts = crate::languages::supported_extensions();
-    exts.extend_from_slice(&["vybe".into(), "vbproj".into()]);
+    exts.extend_from_slice(&[
+        "vybe".into(),
+        "vbproj".into(),
+        "csproj".into(),
+        "pyproj".into(),
+        "ipyproj".into(),
+    ]);
     exts
 }

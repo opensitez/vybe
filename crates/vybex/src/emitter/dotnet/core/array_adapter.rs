@@ -14,18 +14,24 @@
 use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
 
-/// `Array.Clear(arr, idx, count)` — set `count` elements starting at
-/// `idx` to `Null`. Inline loop using `LOCAL_GET` / `ARRAY_SET`.
+/// `Array.Clear(arr, idx, count)` — reset `count` elements starting at
+/// `idx` to a .NET-style default. Until the runtime carries per-array
+/// element metadata, infer the default from the current element's
+/// runtime category: numbers clear to `0`, booleans to `false`, and
+/// reference-like values to `null`.
 ///
 /// Stack on entry: `[arr, idx, count]` ; Stack on exit: `[null]`
 pub fn emit_array_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    // Allocate scratch slots: arr, idx, count, i (counter)
+    // Allocate scratch slots: arr, idx, count, i (counter), target index,
+    // current element.
     let arr_slot = chunk.local_count;
     let idx_slot = arr_slot + 1;
     let count_slot = arr_slot + 2;
     let i_slot = arr_slot + 3;
-    chunk.local_count = arr_slot + 4;
+    let target_slot = arr_slot + 4;
+    let elem_slot = arr_slot + 5;
+    chunk.local_count = arr_slot + 6;
 
     // Stash args (top of stack first → reverse order)
     chunk.emit_op_u16(Op::LOCAL_SET, count_slot, line); chunk.emit_op(Op::DROP, line);
@@ -37,9 +43,9 @@ pub fn emit_array_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
     chunk.emit_op(Op::DROP, line);
 
-    // Loop: while i < count { arr[idx + i] = Null; i++ }
-    let _block_p = chunk.emit_block(line);
-    let (_loop_p, _) = chunk.emit_loop_s(line);
+    // Loop: while i < count { arr[idx + i] = default(existing_value); i++ }
+    let block_p = chunk.emit_block(line);
+    let (loop_p, _) = chunk.emit_loop_s(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
@@ -47,12 +53,40 @@ pub fn emit_array_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::DYN_NOT, line);
     chunk.emit_br_if(1, line);
 
-    // arr[idx + i] = Null
-    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_op(Op::DYN_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, target_slot, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, target_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, target_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    chunk.emit_op(Op::REF_IS_BOOL, line);
+    let bool_default = chunk.emit_jump(Op::BR_IF_TRUE, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    chunk.emit_op(Op::REF_IS_NUMBER, line);
+    let number_default = chunk.emit_jump(Op::BR_IF_TRUE, line);
+
     chunk.emit_op(Op::NULL, line);
+    let done_default = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(bool_default);
+    chunk.emit_op(Op::FALSE, line);
+    let done_bool = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(number_default);
+    chunk.emit_op(Op::I32_CONST_0, line);
+
+    chunk.patch_jump(done_bool);
+    chunk.patch_jump(done_default);
     chunk.emit_op(Op::ARRAY_SET, line);
     chunk.emit_op(Op::DROP, line); // ARRAY_SET pushes the value; drop it
 
@@ -66,7 +100,9 @@ pub fn emit_array_clear(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_br(0, line);
     chunk.emit_end(line); // end loop
+    chunk.patch_loop(loop_p);
     chunk.emit_end(line); // end block
+    chunk.patch_block(block_p);
 
     chunk.emit_op(Op::NULL, line);
 }

@@ -593,10 +593,8 @@ kind = "namespace"
 alias = "xml2js"
 module = "web:dom-parser"
 
-[[esm_default]]
-kind = "namespace"
-alias = "gui"
-module = "vybe:gui"
+# GUI namespace is now shared globally (added by add_shared_gui_namespace)
+# instead of per-language duplication.
 
 [[esm_default]]
 kind = "namespace"

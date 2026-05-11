@@ -71,7 +71,8 @@ struct DataStore {
 #[cfg(feature = "gui_forms")]
 fn make_widget(ctrl: &crate::projects::vbforms::Control) -> Box<dyn PanelWidget> {
     let text = ctrl.properties.get_string("Text").unwrap_or_default().to_string();
-    let name = ctrl.name.to_lowercase();
+    // Preserve original case — VB compiler will lowercase identifiers as needed
+    let name = &ctrl.name;
 
     match ctrl.control_type {
         crate::projects::vbforms::ControlType::Button => {
@@ -322,7 +323,7 @@ impl FormApp {
                     g.event_keys()
                 );
             }
-            g.get_event_handler(&control_name.to_lowercase(), "Click").cloned()
+            g.get_event_handler(control_name, "Click").cloned()
         };
         if Self::gui_trace_enabled() {
             eprintln!("[gui] fire_click found={}", callback.is_some());
@@ -340,7 +341,8 @@ impl FormApp {
         let sender = vybe_bytecode::Value::String(Arc::from(control_name));
         if Self::gui_trace_enabled() {
             eprintln!(
-                "[gui] invoke_callback control={} arity={} me_type={}",
+                "[gui] invoke_callback control={} sender={} arity={} me_type={}",
+                control_name,
                 control_name,
                 arity,
                 me.type_tag()
@@ -437,8 +439,8 @@ impl FormApp {
                 WidgetEvent::ListBoxSelected(name, _) => {
                     let callback = {
                         let g = self.gui.lock().unwrap();
-                        g.get_event_handler(&name.to_lowercase(), "SelectedIndexChanged").cloned()
-                            .or_else(|| g.get_event_handler(&name.to_lowercase(), "Click").cloned())
+                        g.get_event_handler(&name, "SelectedIndexChanged").cloned()
+                            .or_else(|| g.get_event_handler(&name, "Click").cloned())
                     };
                     if let Some(cb) = callback {
                         self.invoke_callback(&cb, name);
@@ -772,7 +774,7 @@ pub fn launch_vybewidget_form(
             }
 
             g.form.add_boxed_control(widget, abs_x as f32, abs_y as f32, ctrl.bounds.width as f32, ctrl.bounds.height as f32);
-            g.control_names.push(ctrl.name.to_lowercase());
+            g.control_names.push(ctrl.name.clone());
         }
     }
 

@@ -184,6 +184,170 @@ pub const HOST_FN_RAISE_EVENT: &str = "raiseEvent";
 
 pub const GUI_MODULE: &str = "vybe:gui";
 
+// ─── Component Model Registration ────────────────────────────────────────────
+
+/// Register all `vybe:gui` host functions as component module exports.
+/// This is called by the compiler/Linker to populate the component descriptor
+/// so all languages automatically get GUI functions without per-language
+/// profile duplication (similar to WASI registration).
+pub fn gui_component_exports() -> Vec<vybe_bytecode::component_model::ComponentExport> {
+    use vybe_bytecode::component_model::{ComponentExport, ComponentItemKind};
+    use vybe_bytecode::component::{FuncSig, ValType};
+    
+    vec![
+        // Control creation
+        ComponentExport {
+            interface: GUI_MODULE.to_string(),
+            name: "createForm".to_string(),
+            kind: ComponentItemKind::Function(FuncSig {
+                name: "createForm".to_string(),
+                params: vec![ValType::String],
+                results: vec![ValType::Any],
+            }),
+        },
+        ComponentExport {
+            interface: GUI_MODULE.to_string(),
+            name: "addControl".to_string(),
+            kind: ComponentItemKind::Function(FuncSig {
+                name: "addControl".to_string(),
+                params: vec![],
+                results: vec![],
+            }),
+        },
+        ComponentExport {
+            interface: GUI_MODULE.to_string(),
+            name: "setProperty".to_string(),
+            kind: ComponentItemKind::Function(FuncSig {
+                name: "setProperty".to_string(),
+                params: vec![],
+                results: vec![],
+            }),
+        },
+        ComponentExport {
+            interface: GUI_MODULE.to_string(),
+            name: "getProperty".to_string(),
+            kind: ComponentItemKind::Function(FuncSig {
+                name: "getProperty".to_string(),
+                params: vec![],
+                results: vec![ValType::Any],
+            }),
+        },
+        // Event handling
+        ComponentExport {
+            interface: GUI_MODULE.to_string(),
+            name: "onEvent".to_string(),
+            kind: ComponentItemKind::Function(FuncSig {
+                name: "onEvent".to_string(),
+                params: vec![],
+                results: vec![],
+            }),
+        },
+        ComponentExport {
+            interface: GUI_MODULE.to_string(),
+            name: "removeEvent".to_string(),
+            kind: ComponentItemKind::Function(FuncSig {
+                name: "removeEvent".to_string(),
+                params: vec![],
+                results: vec![],
+            }),
+        },
+        ComponentExport {
+            interface: GUI_MODULE.to_string(),
+            name: "raiseEvent".to_string(),
+            kind: ComponentItemKind::Function(FuncSig {
+                name: "raiseEvent".to_string(),
+                params: vec![],
+                results: vec![],
+            }),
+        },
+        // Collections
+        ComponentExport {
+            interface: GUI_MODULE.to_string(),
+            name: "newControlsCollection".to_string(),
+            kind: ComponentItemKind::Function(FuncSig {
+                name: "newControlsCollection".to_string(),
+                params: vec![],
+                results: vec![ValType::Any],
+            }),
+        },
+        ComponentExport {
+            interface: GUI_MODULE.to_string(),
+            name: "newComponentsCollection".to_string(),
+            kind: ComponentItemKind::Function(FuncSig {
+                name: "newComponentsCollection".to_string(),
+                params: vec![],
+                results: vec![ValType::Any],
+            }),
+        },
+        ComponentExport {
+            interface: GUI_MODULE.to_string(),
+            name: "controlsAdd".to_string(),
+            kind: ComponentItemKind::Function(FuncSig {
+                name: "controlsAdd".to_string(),
+                params: vec![],
+                results: vec![],
+            }),
+        },
+        // Application
+        ComponentExport {
+            interface: GUI_MODULE.to_string(),
+            name: "runApplication".to_string(),
+            kind: ComponentItemKind::Function(FuncSig {
+                name: "runApplication".to_string(),
+                params: vec![],
+                results: vec![],
+            }),
+        },
+        ComponentExport {
+            interface: GUI_MODULE.to_string(),
+            name: "appExit".to_string(),
+            kind: ComponentItemKind::Function(FuncSig {
+                name: "appExit".to_string(),
+                params: vec![],
+                results: vec![],
+            }),
+        },
+        // Form lifecycle
+        ComponentExport {
+            interface: GUI_MODULE.to_string(),
+            name: "showForm".to_string(),
+            kind: ComponentItemKind::Function(FuncSig {
+                name: "showForm".to_string(),
+                params: vec![],
+                results: vec![],
+            }),
+        },
+        ComponentExport {
+            interface: GUI_MODULE.to_string(),
+            name: "closeForm".to_string(),
+            kind: ComponentItemKind::Function(FuncSig {
+                name: "closeForm".to_string(),
+                params: vec![],
+                results: vec![],
+            }),
+        },
+        ComponentExport {
+            interface: GUI_MODULE.to_string(),
+            name: "showFormDialog".to_string(),
+            kind: ComponentItemKind::Function(FuncSig {
+                name: "showFormDialog".to_string(),
+                params: vec![],
+                results: vec![],
+            }),
+        },
+        // Dialog
+        ComponentExport {
+            interface: GUI_MODULE.to_string(),
+            name: "msgBox".to_string(),
+            kind: ComponentItemKind::Function(FuncSig {
+                name: "msgBox".to_string(),
+                params: vec![],
+                results: vec![ValType::I32],
+            }),
+        },
+    ]
+}
+
 // ─── Emit helpers ────────────────────────────────────────────────────────────
 //
 // Canonical patterns. Every language frontend uses these directly or via a

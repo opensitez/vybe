@@ -13,4 +13,5 @@ pub fn register(vm: &mut VM) {
     // Application.Run
     let app = ensure_namespace(vm, &["Application"]);
     set_prop(&app, "run", host_fn_ref(vm, "vybe:gui", "runApplication"));
+    set_prop(&app, "exit", host_fn_ref(vm, "vybe:gui", "appExit"));
 }

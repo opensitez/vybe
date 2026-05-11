@@ -61,6 +61,12 @@ uses_normalize_class = true
 "msgbox"              = { emit = "host:vybe:gui:msgBox",     min_args = 1, max_args = 3 }
 "inputbox"            = { emit = "host:vybe:gui:msgBox",     min_args = 1, max_args = 3 }
 "messagebox.show"     = { emit = "host:vybe:gui:msgBox",     min_args = 1, max_args = 3 }
+"application.run"     = { emit = "host:vybe:gui:runApplication", min_args = 1, max_args = 1 }
+"application.exit"    = { emit = "host:vybe:gui:appExit",         min_args = 0, max_args = 0 }
+"application.enablevisualstyles" = { emit = "host:vybe:gui:noop", min_args = 0, max_args = 0 }
+"application.setcompatibletextrenderingdefault" = { emit = "host:vybe:gui:noop", min_args = 1, max_args = 1 }
+"system.windows.forms.application.enablevisualstyles" = { emit = "host:vybe:gui:noop", min_args = 0, max_args = 0 }
+"system.windows.forms.application.setcompatibletextrenderingdefault" = { emit = "host:vybe:gui:noop", min_args = 1, max_args = 1 }
 "debug.print"         = { emit = "host:wasi:cli:log",        min_args = 0, max_args = 255 }
 
 # ── Type Conversions ─────────────────────────────────────────────────────────

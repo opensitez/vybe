@@ -135,3 +135,17 @@ End Module
         "Expected 3 controls, got {}. Control names: {:?}",
         g.form.control_count(), g.control_names);
 }
+
+#[test]
+fn application_bootstrap_methods_are_supported() {
+    let out = run_vb(r#"
+Module Program
+    Sub Main()
+        Application.EnableVisualStyles()
+        Application.SetCompatibleTextRenderingDefault(False)
+        Console.WriteLine("boot-ok")
+    End Sub
+End Module
+"#);
+    assert_eq!(out, vec!["boot-ok"]);
+}

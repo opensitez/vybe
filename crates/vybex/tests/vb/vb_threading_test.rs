@@ -159,3 +159,46 @@ End Module
     assert!(out.contains(&"t2 start".to_string()), "t2 should start: {:?}", out);
     assert!(out.contains(&"both done".to_string()), "both should complete: {:?}", out);
 }
+
+#[test]
+fn process_start_with_string_has_exited_true() {
+    let out = run_vb(r#"
+Module Program
+    Sub Main()
+        Dim p = Process.Start("/bin/echo")
+        Console.WriteLine(p.HasExited)
+    End Sub
+End Module
+"#);
+    assert_eq!(out, vec!["true"], "Process.Start should return a completed process: {:?}", out);
+}
+
+#[test]
+fn process_start_exitcode_is_zero_on_success() {
+    let out = run_vb(r#"
+Module Program
+    Sub Main()
+        Dim p = Process.Start("/bin/echo")
+        Console.WriteLine(p.ExitCode)
+    End Sub
+End Module
+"#);
+    assert_eq!(out, vec!["0"], "echo should exit with code 0: {:?}", out);
+}
+
+#[test]
+fn process_start_with_processstarinfo_and_wait_for_exit() {
+    let out = run_vb(r#"
+Module Program
+    Sub Main()
+        Dim si = New ProcessStartInfo("/bin/echo", "hello")
+        Dim p = Process.Start(si)
+        p.WaitForExit()
+        Console.WriteLine(p.HasExited)
+        Console.WriteLine(p.ExitCode)
+    End Sub
+End Module
+"#);
+    assert!(out.contains(&"true".to_string()), "HasExited should be true after WaitForExit: {:?}", out);
+    assert!(out.contains(&"0".to_string()), "ExitCode should be 0: {:?}", out);
+}

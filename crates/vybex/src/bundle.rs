@@ -15,6 +15,8 @@ pub enum EntryPoint {
     Auto,
     /// Launch a named form as the startup window.
     Form(String),
+    /// Call a static method on a class as the program entry point, e.g. Program.Main().
+    Method(String, String),
 }
 
 /// A source file within a bundle.
@@ -93,6 +95,22 @@ impl Bundle {
             resolve_imports(&mut module, &self.language, base_dir);
         }
 
+        // If the project starts with a static method (e.g. C# Program.Main()),
+        // inject a call:  ClassName.MethodName()
+        if let EntryPoint::Method(ref class_name, ref method_name) = self.entry_point {
+            module.body.push(Statement::new(StmtKind::Expr(
+                Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::ident(class_name)),
+                        field: method_name.clone(),
+                        null_safe: false,
+                    })),
+                    args: vec![],
+                    optional: false,
+                })
+            )));
+        }
+
         // If the project starts with a form, inject startup AST:
         //   Dim __f = New FormName()
         //   Application.Run(__f)
@@ -136,7 +154,12 @@ impl Bundle {
         // compiler Linker can bind `import { X } from "node:http"` in
         // one lookup. Walks the `Indirect` chain from Adapter modules
         // through to a Synthetic `Function` export.
-        let profile = crate::profile::parse_profile((self.language.profile_source)())?;
+        let mut profile = crate::profile::parse_profile((self.language.profile_source)())?;
+        
+        // Add shared GUI namespace automatically to all languages
+        // (replaces per-language profile duplication)
+        add_shared_gui_namespace(&mut profile);
+        
         let module_exports = flatten_module_exports(modules);
         let compile_result = crate::compiler::Compiler::with_profile(profile)
             .with_module_exports(module_exports)
@@ -360,3 +383,24 @@ fn resolve_export(
         | ExportEntry::Class { .. } => None,
     }
 }
+
+/// Add shared vybe namespace to all language profiles.
+/// This eliminates per-language profile duplication by registering `vybe` as a 
+/// package-root that gives access to vybe:* modules (gui, types, collections, etc.)
+/// Users write: vybe.gui.createForm(), vybe.types.convert(), etc.
+fn add_shared_gui_namespace(profile: &mut crate::profile::LanguageProfile) {
+    use crate::profile::EsmDefault;
+    
+    // Check if `vybe` is already defined as a package-root (shouldn't happen, but be safe)
+    let already_has_vybe = profile.esm_defaults.iter().any(|d| {
+        matches!(d, EsmDefault::PackageRoot { prefix, .. } if prefix == "vybe")
+    });
+    
+    if !already_has_vybe {
+        profile.esm_defaults.push(EsmDefault::PackageRoot {
+            prefix: "vybe".to_string(),
+            module_root: "vybe".to_string(),
+        });
+    }
+}
+

@@ -38,7 +38,7 @@ pub struct GuiState {
     /// Pending close request.
     pub close_requested: bool,
     /// Property store: every `set_property` write is mirrored here keyed by
-    /// `(lowercased control name, lowercased property)`. Used both as the
+    /// `(control name, lowercased property)`. Used both as the
     /// authoritative source for `get_property` (so callers see what was
     /// written even when the control isn't a child widget on the form, e.g.
     /// the form itself) and to handle form-level properties without needing
@@ -54,7 +54,7 @@ pub struct GuiState {
     /// Set by `Form.Activate()`. The CLI window driver checks this on
     /// each frame and brings the OS window to the foreground.
     pub front_requested: bool,
-    /// Per-control overlay recordings — keyed by lowercased control
+    /// Per-control overlay recordings — keyed by control
     /// name. Populated by the `vybe:gui::canvas*` host fns when user
     /// code calls `Graphics.DrawLine` etc. against a `Graphics` handle
     /// created from a non-Canvas-widget control (e.g.
@@ -88,6 +88,20 @@ impl GuiState {
         }
     }
 
+    /// Resolve a control name to the canonical spelling stored by the live form.
+    ///
+    /// Exact match wins. If not found, we do a case-insensitive match so VB-style
+    /// callers can still reach controls regardless of source casing.
+    fn resolve_control_name(&self, control: &str) -> String {
+        if self.control_names.iter().any(|n| n == control) {
+            return control.to_string();
+        }
+        if let Some(found) = self.control_names.iter().find(|n| n.eq_ignore_ascii_case(control)) {
+            return found.clone();
+        }
+        control.to_string()
+    }
+
     /// Find a `RecordingCanvas` for `control`. Resolution order:
     ///
     /// 1. **Canvas widget on the form** — if a `vybe_widgets::Canvas`
@@ -105,7 +119,7 @@ impl GuiState {
     /// sources. Always succeeds — for an unknown control name, the
     /// overlay map gains a new entry.
     pub fn find_canvas_mut(&mut self, control: &str) -> &mut RecordingCanvas {
-        let name = control.to_lowercase();
+        let name = self.resolve_control_name(control);
         // Step 1: search child widgets for a Canvas widget with this name.
         // We use a raw-pointer trick to avoid the borrow-checker complaining
         // about returning a borrow that depends on a temporary closure
@@ -141,18 +155,38 @@ impl GuiState {
         self.overlay_canvases.entry(name).or_default()
     }
 
-    /// Register an event handler: key = "controlname.eventname" (both lowercased).
-    /// Lowercasing both ensures VB (case-insensitive) and JS (case-sensitive)
-    /// both match — events are always "Click", "TextChanged" etc.
+    /// Register an event handler: key = "controlname.eventname".
+    /// Control name is stored as-is — the language compiler is responsible for
+    /// case normalisation (VB lowercases before calling, C# passes original case).
+    /// Event name is lowercased since it is always a fixed word ("click", etc.).
     pub fn register_event(&mut self, control: &str, event: &str, callback: Value) {
-        let key = format!("{}.{}", control.to_lowercase(), event.to_lowercase());
+        let key = format!("{}.{}", control, event.to_lowercase());
+        if std::env::var("VYBE_GUI_TRACE")
+            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(false)
+        {
+            eprintln!("[gui-host] register_event key={}", key);
+        }
         self.event_handlers.insert(key, callback);
     }
 
-    /// Look up an event handler. Both control and event are lowercased.
+    /// Look up an event handler. Exact control match wins; then case-insensitive
+    /// fallback is used for VB-style callers.
     pub fn get_event_handler(&self, control: &str, event: &str) -> Option<&Value> {
-        let key = format!("{}.{}", control.to_lowercase(), event.to_lowercase());
-        self.event_handlers.get(&key)
+        let event_lower = event.to_lowercase();
+        let exact = format!("{}.{}", control, event_lower);
+        if let Some(cb) = self.event_handlers.get(&exact) {
+            return Some(cb);
+        }
+
+        self.event_handlers.iter().find_map(|(k, v)| {
+            let (ctrl, ev) = k.rsplit_once('.')?;
+            if ev == event_lower && ctrl.eq_ignore_ascii_case(control) {
+                Some(v)
+            } else {
+                None
+            }
+        })
     }
 
     /// List all registered event keys (for debugging).
@@ -162,10 +196,11 @@ impl GuiState {
 
     /// Create a widget from a control type name and add it to the form.
     pub fn add_widget(&mut self, type_name: &str, name: &str, text: &str, x: i32, y: i32, w: i32, h: i32) {
-        let name_lower = name.to_lowercase();
-        let widget = make_widget(type_name, &name_lower, text, w as f32, h as f32);
+        // Pass original-case name to the widget so ButtonClicked events carry the original spelling.
+        // Lookup keys (event handlers, control_names membership check) already lowercase at call time.
+        let widget = make_widget(type_name, name, text, w as f32, h as f32);
         self.form.add_boxed_control(widget, x as f32, y as f32, w as f32, h as f32);
-        self.control_names.push(name_lower);
+        self.control_names.push(name.to_string());
     }
 
     /// Set a property on a control by name — directly updates the widget
@@ -173,7 +208,7 @@ impl GuiState {
     /// `get_property` for any control (including the form itself, which
     /// isn't represented as a child widget).
     pub fn set_property(&mut self, control: &str, property: &str, value: &str) {
-        let name = control.to_lowercase();
+        let name = self.resolve_control_name(control);
         let prop_lower = property.to_lowercase();
         // Always mirror to the property store first.
         self.properties.insert((name.clone(), prop_lower.clone()), value.to_string());
@@ -207,7 +242,7 @@ impl GuiState {
     /// falling back to a widget query for properties that are managed by
     /// the live widget rather than the store.
     pub fn get_property(&mut self, control: &str, property: &str) -> String {
-        let name = control.to_lowercase();
+        let name = self.resolve_control_name(control);
         let prop_lower = property.to_lowercase();
         if let Some(v) = self.properties.get(&(name.clone(), prop_lower.clone())) {
             return v.clone();

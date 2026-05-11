@@ -210,6 +210,8 @@ kind = "namespace"
 alias = "RegExp"
 module = "ecma:regexp"
 
+# GUI namespace is now shared globally (added by add_shared_gui_namespace)
+# instead of per-language duplication.
 # Future / Stream / Process namespace aliases retired:
 #   Future → JSPI promise (Op::PROMISE_*); no namespace object needed.
 #   Stream → `wasi:io/streams` proposal; constructed via stream adapters.

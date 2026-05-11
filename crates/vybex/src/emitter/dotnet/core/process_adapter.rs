@@ -94,26 +94,24 @@ pub fn emit_process_new(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
 /// `Process.Start(cmd)` static method. The arg may be a string
 /// filename or a `ProcessStartInfo` object; we read the `filename`
 /// field if it exists, else use the arg directly. Lowers to
-/// `node:child_process.spawnSync(filename, [])`.
+/// `node:child_process.spawnSync(filename, [])`, then wraps the
+/// raw host result in a .NET-shaped Process struct.
 ///
 /// Stack on entry: `[arg]` (string or ProcessStartInfo)
-/// Stack on exit:  `[process_info]` from spawnSync
+/// Stack on exit:  `[Process { HasExited, ExitCode, __type }]`
 pub fn emit_process_start(chunks: &mut [Chunk], current: usize, line: u32) {
     let spawn_idx = chunks[0].add_import("node:child_process", "spawnSync");
     let chunk = &mut chunks[current];
     let filename_key = chunk.add_constant(Value::String(Arc::from(FILENAME_KEY)));
     let arg_slot = reserve_slot(chunk);
+    let result_slot = reserve_slot(chunk);
 
     // Stash the arg
     chunk.emit_op_u16(Op::LOCAL_SET, arg_slot, line); chunk.emit_op(Op::DROP, line);
 
-    // Push filename (arg.filename if Object; else arg as-is). The VM's
-    // `STRUCT_GET` returns null when the field is missing on a String
-    // value (per its dispatch contract), so we DUP the arg, attempt
-    // STRUCT_GET, and fall back to the arg itself if null.
+    // Resolve filename: arg.filename if Object; else arg itself.
     chunk.emit_op_u16(Op::LOCAL_GET, arg_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, filename_key, line);
-    // If null, replace with the arg itself.
     chunk.emit_op(Op::DUP, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     let skip_fallback = chunk.emit_jump(Op::BR_IF_FALSE, line);
@@ -126,9 +124,49 @@ pub fn emit_process_start(chunks: &mut [Chunk], current: usize, line: u32) {
     crate::emitter::collections::emit_array_new(chunks, current, 0, line);
     // Stack: [filename_str, []]
 
-    // Call spawnSync(filename, [])
+    // Call spawnSync(filename, []) → raw host result on stack
     chunks[current].emit_op_u16(Op::CALL_IMPORT, spawn_idx, line);
     chunks[current].emit(2, line);
+    // Stack: [raw_result]
+
+    // Stash the raw result
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line); chunk.emit_op(Op::DROP, line);
+
+    // Build a .NET-shaped Process struct.
+    // Fields: __type="Process", HasExited=true, ExitCode=raw.status (or 0).
+    let type_key   = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
+    let he_key     = chunk.add_constant(Value::String(Arc::from("hasexited")));
+    let ec_key     = chunk.add_constant(Value::String(Arc::from("exitcode")));
+    let status_key = chunk.add_constant(Value::String(Arc::from("status")));
+
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+
+    // __type = "Process"
+    chunk.emit_op(Op::DUP, line);
+    push_const(chunk, Value::String(Arc::from("Process")), line);
+    chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
+    chunk.emit_op(Op::DROP, line);
+
+    // HasExited = true (spawnSync is synchronous; process is always done)
+    chunk.emit_op(Op::DUP, line);
+    push_const(chunk, Value::Bool(true), line);
+    chunk.emit_op_u16(Op::STRUCT_SET, he_key, line);
+    chunk.emit_op(Op::DROP, line);
+
+    // ExitCode = raw_result.status ?? 0
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, status_key, line);
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    let skip_status = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::DROP, line);
+    push_const(chunk, Value::I32(0), line);
+    chunk.patch_jump(skip_status);
+    chunk.emit_op_u16(Op::STRUCT_SET, ec_key, line);
+    chunk.emit_op(Op::DROP, line);
+    // Stack: [Process struct]
 }
 
 /// `Process.GetCurrentProcess()` — return a Process-shaped object
@@ -155,10 +193,11 @@ pub fn emit_process_get_current(chunks: &mut [Chunk], current: usize, line: u32)
 }
 
 /// `process.WaitForExit()` — `node:child_process.spawnSync` is already
-/// blocking, so this is effectively a no-op for our model. Returns
-/// the process untouched.
+/// blocking, so the process is done by the time Start() returns.
+/// Drop the receiver and return null.
 ///
-/// Stack on entry: `[process]` ; Stack on exit: `[process]`
-pub fn emit_process_wait_for_exit(_chunks: &mut [Chunk], _current: usize, _line: u32) {
-    // No-op: process already on stack from caller.
+/// Stack on entry: `[process]` ; Stack on exit: `[null]`
+pub fn emit_process_wait_for_exit(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op(Op::NULL, line);
 }

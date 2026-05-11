@@ -48,6 +48,8 @@ mod test_csharp_reflection_activation;
 mod test_csharp_type_conversions;
 mod test_csharp_using_disposal;
 mod test_csharp_nested_partial_types;
+mod test_dotnet_namespace_profile;
+mod test_csharp_designer_forms;
 mod test_linq_compile;
 mod test_linq_runtime;
 mod test_math;

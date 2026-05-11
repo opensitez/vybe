@@ -637,6 +637,12 @@ impl Compiler {
                                         common::threading::emit_thread_join(self.chunk(), line);
                                         return Ok(());
                                     }
+                                    "waitforexit" => {
+                                        self.emit_var_get(&local);
+                                        let line = self.line;
+                                        common::dotnet::core::process_adapter::emit_process_wait_for_exit(&mut self.chunks, self.current, line);
+                                        return Ok(());
+                                    }
                                     _ => {}
                                 }
                             }

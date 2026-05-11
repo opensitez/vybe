@@ -150,6 +150,10 @@ multi_value_tuple_returns = true
 
 "Application.Run"              = { emit = "host:vybe:gui:runApplication",   min_args = 1, max_args = 1 }
 "Application.Exit"             = { emit = "host:vybe:gui:appExit",          min_args = 0, max_args = 0 }
+"Application.EnableVisualStyles" = { emit = "host:vybe:gui:noop",          min_args = 0, max_args = 0 }
+"Application.SetCompatibleTextRenderingDefault" = { emit = "host:vybe:gui:noop", min_args = 1, max_args = 1 }
+"System.Windows.Forms.Application.EnableVisualStyles" = { emit = "host:vybe:gui:noop", min_args = 0, max_args = 0 }
+"System.Windows.Forms.Application.SetCompatibleTextRenderingDefault" = { emit = "host:vybe:gui:noop", min_args = 1, max_args = 1 }
 "MessageBox.Show"              = { emit = "host:vybe:gui:msgBox",           min_args = 1, max_args = 3 }
 
 # ── Layout no-ops ────────────────────────────────────────────────────────────
@@ -157,7 +161,6 @@ multi_value_tuple_returns = true
 "SuspendLayout"   = { emit = "noop", min_args = 0, max_args = 0 }
 "ResumeLayout"    = { emit = "noop", min_args = 0, max_args = 1 }
 "PerformLayout"   = { emit = "noop", min_args = 0, max_args = 0 }
-"InitializeComponent" = { emit = "noop", min_args = 0, max_args = 0 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # VALUE METHODS — instance methods called on values

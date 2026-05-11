@@ -251,7 +251,7 @@ pub fn register(vm: &mut VM) {
     // Application.Exit
     let app = ensure_namespace(vm, &["Window", "Forms", "Application"]);
     set_prop(&app, "run", host_fn_ref(vm, "vybe:gui", "runApplication"));
-    set_prop(&app, "exit", host_fn_ref(vm, "wasi:cli", "exit"));
+    set_prop(&app, "exit", host_fn_ref(vm, "vybe:gui", "appExit"));
     if let Some(openforms) = vm.globals.get("__openforms").cloned() {
         set_prop(&app, "openforms", openforms);
     }
@@ -356,7 +356,7 @@ pub fn register(vm: &mut VM) {
     // Application
     let sys_app = ensure_namespace(vm, &["System", "Windows", "Forms", "Application"]);
     set_prop(&sys_app, "run", host_fn_ref(vm, "vybe:gui", "runApplication"));
-    set_prop(&sys_app, "exit", host_fn_ref(vm, "wasi:cli", "exit"));
+    set_prop(&sys_app, "exit", host_fn_ref(vm, "vybe:gui", "appExit"));
     if let Some(openforms) = vm.globals.get("__openforms").cloned() {
         set_prop(&sys_app, "openforms", openforms);
     }
