@@ -19,6 +19,32 @@ fn python_is_printable_literal(value: &str) -> bool {
     value.chars().all(|ch| !ch.is_control())
 }
 
+fn terminal_type_name(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some(name.rsplit('.').next().unwrap_or(name).to_string()),
+        ExprKind::Member { field, .. } => Some(field.clone()),
+        _ => None,
+    }
+}
+
+fn dotnet_factory_return_type(callee: &Expression) -> Option<String> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let class_name = terminal_type_name(object)?;
+    if class_name.eq_ignore_ascii_case("TimeSpan")
+        && matches!(field.as_str(), "FromDays" | "FromHours" | "FromMinutes" | "FromSeconds" | "FromMilliseconds" | "Zero")
+    {
+        return Some("TimeSpan".into());
+    }
+    if class_name.eq_ignore_ascii_case("DateTime")
+        && matches!(field.as_str(), "Now" | "UtcNow" | "Today" | "Parse")
+    {
+        return Some("DateTime".into());
+    }
+    None
+}
+
 fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression) -> Option<String> {
     match &recv.kind {
         ExprKind::Ident(local_name) => compiler.scope().resolve_type_ci(local_name).map(|s| s.to_string())
@@ -71,6 +97,16 @@ fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression) -> Option<
                 None
             }
         }
+        ExprKind::New { class, .. } => terminal_type_name(class),
+        ExprKind::Call { callee, .. } => dotnet_factory_return_type(callee).or_else(|| match &callee.kind {
+            ExprKind::Ident(name) => common::dotnet::surface()
+                .lookup_constructor(name)
+                .map(|_| name.rsplit('.').next().unwrap_or(name).to_string()),
+            ExprKind::Member { field, .. } => common::dotnet::surface()
+                .lookup_constructor(field)
+                .map(|_| field.to_string()),
+            _ => None,
+        }),
         _ => None,
     }
 }

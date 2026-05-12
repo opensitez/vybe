@@ -221,6 +221,9 @@ impl Compiler {
                 if self.try_compile_python_set_binary_operator(op, left, right)? {
                     return Ok(());
                 }
+                if self.try_compile_dotnet_datetime_timespan_binary_operator(op, left, right)? {
+                    return Ok(());
+                }
                 self.compile_expr(left)?;
                 self.compile_expr(right)?;
                 self.compile_binop(op);
@@ -2118,6 +2121,62 @@ impl Compiler {
             ExprKind::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
             _ => None,
         }
+    }
+
+    fn dotnet_expr_static_type(&self, expr: &Expression) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
+            _ => None,
+        }
+    }
+
+    fn is_dotnet_type_name(type_name: &str, expected: &str) -> bool {
+        type_name.eq_ignore_ascii_case(expected)
+            || type_name.rsplit('.').next().is_some_and(|short| short.eq_ignore_ascii_case(expected))
+    }
+
+    fn try_compile_dotnet_datetime_timespan_binary_operator(
+        &mut self,
+        op: &BinOp,
+        left: &Expression,
+        right: &Expression,
+    ) -> Result<bool, String> {
+        if !self.profile.namespaces.use_dotnet {
+            return Ok(false);
+        }
+
+        let Some(left_type) = self.dotnet_expr_static_type(left) else {
+            return Ok(false);
+        };
+        let Some(right_type) = self.dotnet_expr_static_type(right) else {
+            return Ok(false);
+        };
+
+        let emit = match op {
+            BinOp::Add
+                if Self::is_dotnet_type_name(&left_type, "TimeSpan")
+                    && Self::is_dotnet_type_name(&right_type, "TimeSpan") => Some("dotnet.timespan_add"),
+            BinOp::Sub
+                if Self::is_dotnet_type_name(&left_type, "TimeSpan")
+                    && Self::is_dotnet_type_name(&right_type, "TimeSpan") => Some("dotnet.timespan_sub"),
+            BinOp::Add
+                if Self::is_dotnet_type_name(&left_type, "DateTime")
+                    && Self::is_dotnet_type_name(&right_type, "TimeSpan") => Some("dotnet.datetime_add_timespan"),
+            BinOp::Sub
+                if Self::is_dotnet_type_name(&left_type, "DateTime")
+                    && Self::is_dotnet_type_name(&right_type, "DateTime") => Some("dotnet.datetime_subtract_datetime"),
+            _ => None,
+        };
+
+        let Some(emit) = emit else {
+            return Ok(false);
+        };
+
+        self.compile_expr(left)?;
+        self.compile_expr(right)?;
+        let line = self.line;
+        self.emit_common(emit, 2, line);
+        Ok(true)
     }
 
     pub(super) fn pascal_helper_function_name(&self, type_name: &str, method_name: &str) -> String {

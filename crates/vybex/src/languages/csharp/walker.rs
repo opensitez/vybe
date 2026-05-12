@@ -3871,7 +3871,11 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
     let cond_pair = inner.next().ok_or("if: no cond")?;
     let pattern_binding = extract_if_is_pattern_binding(cond_pair.clone())?;
-    let cond = walk_expression(cond_pair)?;
+    let cond = if let Some(scoped_cond) = lower_if_pattern_condition(cond_pair.clone())? {
+        scoped_cond
+    } else {
+        walk_expression(cond_pair)?
+    };
     let mut then_body = vec![walk_statement(inner.next().ok_or("if: no body")?)?];
     if let Some(binding_stmt) = pattern_binding {
         then_body.insert(0, binding_stmt);
@@ -3885,7 +3889,11 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 let mut eip = p.into_inner();
                 let cond_pair = eip.next().ok_or("elif: no cond")?;
                 let pattern_binding = extract_if_is_pattern_binding(cond_pair.clone())?;
-                let ec = walk_expression(cond_pair)?;
+                let ec = if let Some(scoped_cond) = lower_if_pattern_condition(cond_pair.clone())? {
+                    scoped_cond
+                } else {
+                    walk_expression(cond_pair)?
+                };
                 let mut eb = vec![walk_statement(eip.next().ok_or("elif: no body")?)?];
                 if let Some(binding_stmt) = pattern_binding {
                     eb.insert(0, binding_stmt);
@@ -4062,27 +4070,43 @@ fn walk_do_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
 }
 
 fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
+    #[derive(Clone)]
+    enum SwitchLabelInfo<'i> {
+        Default,
+        Value(Expression),
+        Pattern { pattern: Pair<'i, Rule>, guard: Option<Expression> },
+    }
+
     let mut inner = pair.into_inner();
     let expr = walk_expression(inner.next().ok_or("switch: no expr")?)?;
-    let mut cases = Vec::new();
-    let mut default = None;
+    let mut sections: Vec<(Vec<SwitchLabelInfo<'_>>, Vec<Statement>)> = Vec::new();
+    let mut has_pattern_labels = false;
 
     for p in inner {
         if p.as_rule() == Rule::switch_section {
             let mut labels = Vec::new();
             let mut stmts = Vec::new();
-            let mut is_default = false;
 
             for sp in p.into_inner() {
                 match sp.as_rule() {
                     Rule::switch_label => {
                         let label_src = sp.as_str().trim();
                         if label_src.starts_with("default") {
-                            is_default = true;
-                        } else {
-                            // "case expr:"
-                            if let Some(expr_pair) = sp.into_inner().next() {
-                                labels.push(walk_expression(expr_pair)?);
+                            labels.push(SwitchLabelInfo::Default);
+                        } else if let Some(label_inner) = sp.into_inner().next() {
+                            match label_inner.as_rule() {
+                                Rule::case_value_label => {
+                                    let expr_pair = label_inner.into_inner().next().ok_or("switch case missing value")?;
+                                    labels.push(SwitchLabelInfo::Value(walk_expression(expr_pair)?));
+                                }
+                                Rule::case_pattern_label => {
+                                    let mut label_parts = label_inner.into_inner();
+                                    let pattern = label_parts.next().ok_or("switch case missing pattern")?;
+                                    let guard = label_parts.next().map(walk_expression).transpose()?;
+                                    labels.push(SwitchLabelInfo::Pattern { pattern, guard });
+                                    has_pattern_labels = true;
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -4094,12 +4118,150 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 }
             }
 
-            if is_default {
-                default = Some(stmts);
-            } else {
-                let conditions = labels.into_iter().map(CaseCondition::Value).collect();
-                cases.push(SwitchCase { conditions, body: stmts });
+            sections.push((labels, stmts));
+        }
+    }
+
+    if has_pattern_labels {
+        let subject_name = "__switch_subject".to_string();
+        let matched_name = "__switch_matched".to_string();
+        let subject_expr = Expression::ident(&subject_name);
+        let mut arms: Vec<(Expression, Vec<Statement>)> = Vec::new();
+        let mut default_body = None;
+
+        for (labels, stmts) in sections {
+            let split_bodies = split_switch_section_bodies(&stmts);
+            let use_split_bodies = split_bodies.len() == labels.len();
+            for (index, label) in labels.into_iter().enumerate() {
+                let stripped_body = if use_split_bodies {
+                    split_bodies[index].clone()
+                } else {
+                    split_bodies.first().cloned().unwrap_or_else(|| strip_switch_breaks(&stmts))
+                };
+                match label {
+                    SwitchLabelInfo::Default => {
+                        default_body = Some(stripped_body.clone());
+                    }
+                    SwitchLabelInfo::Value(value) => {
+                        let cond = Expression::new(ExprKind::Binary {
+                            op: BinOp::StrictEq,
+                            left: Box::new(subject_expr.clone()),
+                            right: Box::new(value),
+                        });
+                        arms.push((cond, stripped_body.clone()));
+                    }
+                    SwitchLabelInfo::Pattern { pattern, guard } => {
+                        let mut cond = build_general_pattern_cond(subject_expr.clone(), pattern.clone())?;
+                        let binding = build_general_pattern_binding(subject_expr.clone(), pattern)?;
+                        let mut body = stripped_body.clone();
+                        let mark_matched_stmt = Statement::new(StmtKind::Expr(Expression::new(ExprKind::Assign {
+                            target: Box::new(Expression::ident(&matched_name)),
+                            value: Box::new(Expression::bool(true)),
+                        })));
+                        if let Some(binding_stmt) = binding {
+                            if let Some(guard_expr) = guard {
+                                let binding_name = extract_binding_name(&binding_stmt);
+                                let rewritten_guard = binding_name
+                                    .as_deref()
+                                    .map(|name| rewrite_ident_expr(&guard_expr, name, &subject_expr))
+                                    .unwrap_or(guard_expr);
+                                cond = Expression::new(ExprKind::Binary {
+                                    op: BinOp::And,
+                                    left: Box::new(cond),
+                                    right: Box::new(rewritten_guard),
+                                });
+                            }
+                            body.insert(0, binding_stmt.clone());
+                            body.push(mark_matched_stmt);
+                        } else if let Some(guard_expr) = guard {
+                            cond = Expression::new(ExprKind::Binary {
+                                op: BinOp::And,
+                                left: Box::new(cond),
+                                right: Box::new(guard_expr),
+                            });
+                            body.push(mark_matched_stmt);
+                        } else {
+                            body.push(mark_matched_stmt);
+                        }
+                        arms.push((cond, body));
+                    }
+                }
             }
+        }
+
+        let decl = Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(subject_name),
+                type_hint: None,
+                init: Some(expr),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Let,
+        });
+
+        let matched_decl = Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(matched_name.clone()),
+                type_hint: Some("bool".to_string()),
+                init: Some(Expression::bool(false)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Let,
+        });
+
+        let mut body = vec![decl, matched_decl];
+        for (cond, then_body) in arms {
+            let not_matched = Expression::new(ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr: Box::new(Expression::ident(&matched_name)),
+            });
+            let gated_cond = Expression::new(ExprKind::Binary {
+                op: BinOp::And,
+                left: Box::new(not_matched),
+                right: Box::new(cond),
+            });
+            body.push(Statement::new(StmtKind::If {
+                cond: gated_cond,
+                then_body,
+                elifs: Vec::new(),
+                else_body: None,
+            }));
+        }
+
+        if let Some(default_stmts) = default_body {
+            let not_matched = Expression::new(ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr: Box::new(Expression::ident(&matched_name)),
+            });
+            body.push(Statement::new(StmtKind::If {
+                cond: not_matched,
+                then_body: default_stmts,
+                elifs: Vec::new(),
+                else_body: None,
+            }));
+        }
+        return Ok(StmtKind::Block(body));
+    }
+
+    let mut cases = Vec::new();
+    let mut default = None;
+    for (labels, stmts) in sections {
+        let mut is_default = false;
+        let mut value_labels = Vec::new();
+        for label in labels {
+            match label {
+                SwitchLabelInfo::Default => is_default = true,
+                SwitchLabelInfo::Value(value) => value_labels.push(value),
+                SwitchLabelInfo::Pattern { .. } => {}
+            }
+        }
+        if is_default {
+            default = Some(stmts);
+        } else {
+            let conditions = value_labels.into_iter().map(CaseCondition::Value).collect();
+            cases.push(SwitchCase { conditions, body: stmts });
         }
     }
 
@@ -5696,6 +5858,411 @@ fn build_switch_tuple_pattern_cond(
     cond.unwrap_or_else(|| Expression::with_span(ExprKind::Lit(Literal::Bool(true)), span))
 }
 
+fn build_general_pattern_cond(subject: Expression, pattern: Pair<Rule>) -> Result<Expression, String> {
+    let span = subject.span.clone();
+    match pattern.as_rule() {
+        Rule::switch_case_pattern => {
+            let inner = pattern.into_inner().next().ok_or("switch case pattern missing clause")?;
+            build_general_pattern_cond(subject, inner)
+        }
+        Rule::pattern_clause => {
+            let src = pattern.as_str().trim_start();
+            let negated = src.starts_with("not")
+                && src[3..].chars().next().map_or(true, |c| c.is_whitespace());
+            let atoms: Vec<Pair<Rule>> = pattern.into_inner().filter(|p| p.as_rule() == Rule::pattern_atom).collect();
+            let mut cond = Expression::bool(true);
+            for atom in atoms {
+                let next = build_general_pattern_cond(subject.clone(), atom)?;
+                cond = Expression::with_span(
+                    ExprKind::Binary {
+                        op: BinOp::And,
+                        left: Box::new(cond),
+                        right: Box::new(next),
+                    },
+                    span.clone(),
+                );
+            }
+            if negated {
+                Ok(Expression::with_span(
+                    ExprKind::Unary { op: UnaryOp::Not, expr: Box::new(cond) },
+                    span,
+                ))
+            } else {
+                Ok(cond)
+            }
+        }
+        Rule::pattern_atom => {
+            let inner: Vec<Pair<Rule>> = pattern.into_inner().collect();
+            let first = inner.first().ok_or("Empty pattern atom inner".to_string())?;
+            match first.as_rule() {
+                Rule::pattern_type => build_general_pattern_cond(subject, first.clone()),
+                _ => build_general_pattern_cond(subject, first.clone()),
+            }
+        }
+        Rule::null_kw => Ok(Expression::with_span(
+            ExprKind::Binary {
+                op: BinOp::StrictEq,
+                left: Box::new(subject),
+                right: Box::new(Expression::with_span(ExprKind::Lit(Literal::Null), span.clone())),
+            },
+            span,
+        )),
+        Rule::true_kw | Rule::false_kw | Rule::numeric_literal | Rule::string_literal | Rule::char_literal => {
+            let lit = walk_expression(pattern)?;
+            Ok(Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::StrictEq,
+                    left: Box::new(subject),
+                    right: Box::new(lit),
+                },
+                span,
+            ))
+        }
+        Rule::relational_pattern => {
+            let pat_src = pattern.as_str().trim();
+            let op = if pat_src.starts_with(">=") {
+                BinOp::GtEq
+            } else if pat_src.starts_with("<=") {
+                BinOp::LtEq
+            } else if pat_src.starts_with('>') {
+                BinOp::Gt
+            } else {
+                BinOp::Lt
+            };
+            let rhs_pair = pattern.into_inner()
+                .find(|p| p.as_rule() == Rule::expression)
+                .ok_or("relational pattern missing expression")?;
+            let rhs = walk_expression(rhs_pair)?;
+            Ok(Expression::with_span(
+                ExprKind::Binary {
+                    op,
+                    left: Box::new(subject),
+                    right: Box::new(rhs),
+                },
+                span,
+            ))
+        }
+        Rule::tuple_pattern => {
+            let mut elements = Vec::new();
+            for item in pattern.into_inner().filter(|p| p.as_rule() == Rule::tuple_pattern_item) {
+                if item.as_str().trim() == "_" {
+                    elements.push(None);
+                } else {
+                    let expr_pair = item.into_inner().next().ok_or("tuple pattern element missing expression")?;
+                    elements.push(Some(walk_expression(expr_pair)?));
+                }
+            }
+            Ok(build_switch_tuple_pattern_cond(subject, elements))
+        }
+        Rule::var_pattern => Ok(Expression::bool(true)),
+        Rule::pattern_type => {
+            let type_name = normalize_runtime_type_name(pattern.as_str());
+            if let Some(js_typeof) = primitive_to_typeof(&type_name) {
+                let typeof_expr = Expression::with_span(
+                    ExprKind::TypeOf(Box::new(subject)),
+                    span.clone(),
+                );
+                Ok(Expression::with_span(
+                    ExprKind::Binary {
+                        op: BinOp::StrictEq,
+                        left: Box::new(typeof_expr),
+                        right: Box::new(Expression::with_span(
+                            ExprKind::Lit(Literal::Str(js_typeof.into())),
+                            span.clone(),
+                        )),
+                    },
+                    span,
+                ))
+            } else {
+                Ok(Expression::with_span(
+                    ExprKind::IsType { expr: Box::new(subject), type_name },
+                    span,
+                ))
+            }
+        }
+        _ => {
+            let rhs = walk_expression(pattern)?;
+            Ok(Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::StrictEq,
+                    left: Box::new(subject),
+                    right: Box::new(rhs),
+                },
+                span,
+            ))
+        }
+    }
+}
+
+fn build_general_pattern_binding(
+    subject: Expression,
+    pattern: Pair<Rule>,
+) -> Result<Option<Statement>, String> {
+    match pattern.as_rule() {
+        Rule::switch_case_pattern => {
+            let inner = pattern.into_inner().next().ok_or("switch case pattern missing clause")?;
+            build_general_pattern_binding(subject, inner)
+        }
+        Rule::pattern_clause => {
+            let src = pattern.as_str().trim_start();
+            if src.starts_with("not") {
+                return Ok(None);
+            }
+            let atoms: Vec<Pair<Rule>> = pattern.into_inner().filter(|p| p.as_rule() == Rule::pattern_atom).collect();
+            if atoms.len() != 1 {
+                return Ok(None);
+            }
+            build_general_pattern_binding(subject, atoms[0].clone())
+        }
+        Rule::pattern_atom => {
+            let inner: Vec<Pair<Rule>> = pattern.into_inner().collect();
+            if inner.len() >= 2
+                && inner[0].as_rule() == Rule::pattern_type
+                && inner[1].as_rule() == Rule::ident_name
+            {
+                let type_name = normalize_runtime_type_name(inner[0].as_str());
+                let binding_name = inner[1].as_str().to_string();
+                return Ok(Some(build_type_pattern_binding_stmt(subject, type_name, binding_name)));
+            }
+            if let Some(first) = inner.first() {
+                return build_general_pattern_binding(subject, first.clone());
+            }
+            Ok(None)
+        }
+        Rule::var_pattern => {
+            let binding_name = pattern.into_inner().last().ok_or("var pattern missing identifier")?.as_str().to_string();
+            Ok(Some(Statement::new(StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Ident(binding_name),
+                    type_hint: None,
+                    init: Some(subject),
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Let,
+            })))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn build_scoped_guard_expr(cond: Expression, binding_stmt: Statement, guard: Expression) -> Expression {
+    let guard_lambda = Expression::new(ExprKind::Lambda {
+        params: vec![],
+        body: LambdaBody::Block(vec![
+            binding_stmt,
+            Statement::new(StmtKind::Return(Some(guard))),
+        ]),
+        is_async: false,
+        captures: Vec::new(),
+    });
+    let scoped_guard = Expression::new(ExprKind::Call {
+        callee: Box::new(guard_lambda),
+        args: vec![],
+        optional: false,
+    });
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(cond),
+        then: Box::new(scoped_guard),
+        else_: Box::new(Expression::bool(false)),
+    })
+}
+
+fn extract_binding_name(stmt: &Statement) -> Option<String> {
+    let StmtKind::VarDecl { declarations, .. } = &stmt.kind else {
+        return None;
+    };
+    let first = declarations.first()?;
+    let BindingPattern::Ident(name) = &first.pattern else {
+        return None;
+    };
+    Some(name.clone())
+}
+
+fn rewrite_ident_expr(expr: &Expression, name: &str, replacement: &Expression) -> Expression {
+    let kind = match &expr.kind {
+        ExprKind::Ident(current) if current == name => replacement.kind.clone(),
+        ExprKind::Binary { op, left, right } => ExprKind::Binary {
+            op: *op,
+            left: Box::new(rewrite_ident_expr(left, name, replacement)),
+            right: Box::new(rewrite_ident_expr(right, name, replacement)),
+        },
+        ExprKind::Unary { op, expr: inner } => ExprKind::Unary {
+            op: *op,
+            expr: Box::new(rewrite_ident_expr(inner, name, replacement)),
+        },
+        ExprKind::Ternary { cond, then, else_ } => ExprKind::Ternary {
+            cond: Box::new(rewrite_ident_expr(cond, name, replacement)),
+            then: Box::new(rewrite_ident_expr(then, name, replacement)),
+            else_: Box::new(rewrite_ident_expr(else_, name, replacement)),
+        },
+        ExprKind::Member { object, field, null_safe } => ExprKind::Member {
+            object: Box::new(rewrite_ident_expr(object, name, replacement)),
+            field: field.clone(),
+            null_safe: *null_safe,
+        },
+        ExprKind::Index { object, index, null_safe } => ExprKind::Index {
+            object: Box::new(rewrite_ident_expr(object, name, replacement)),
+            index: Box::new(rewrite_ident_expr(index, name, replacement)),
+            null_safe: *null_safe,
+        },
+        ExprKind::Call { callee, args, optional } => ExprKind::Call {
+            callee: Box::new(rewrite_ident_expr(callee, name, replacement)),
+            args: args.iter().map(|arg| Argument {
+                value: rewrite_ident_expr(&arg.value, name, replacement),
+                name: arg.name.clone(),
+                by_ref: arg.by_ref,
+                spread: arg.spread,
+            }).collect(),
+            optional: *optional,
+        },
+        _ => expr.kind.clone(),
+    };
+    Expression::with_span(kind, expr.span.clone())
+}
+
+fn build_scoped_pattern_test(
+    subject: Expression,
+    pattern: Pair<Rule>,
+    guard: Option<Expression>,
+) -> Result<(Expression, Option<Statement>), String> {
+    let cond = build_general_pattern_cond(subject.clone(), pattern.clone())?;
+    let binding = build_general_pattern_binding(subject, pattern)?;
+    if let Some(binding_stmt) = binding.clone() {
+        if let Some(guard) = guard {
+            return Ok((build_scoped_guard_expr(cond, binding_stmt, guard), binding));
+        }
+    }
+    if let Some(guard) = guard {
+        return Ok((Expression::new(ExprKind::Binary {
+            op: BinOp::And,
+            left: Box::new(cond),
+            right: Box::new(guard),
+        }), binding));
+    }
+    Ok((cond, binding))
+}
+
+fn split_leading_is_pattern_guard(
+    pair: Pair<Rule>,
+) -> Result<Option<((Expression, Pair<Rule>), Pair<Rule>)>, String> {
+    match pair.as_rule() {
+        Rule::expression
+        | Rule::assignment_expression
+        | Rule::conditional_expression
+        | Rule::null_coalesce_expr
+        | Rule::logical_or
+        | Rule::bitwise_or
+        | Rule::bitwise_xor
+        | Rule::bitwise_and
+        | Rule::equality
+        | Rule::additive
+        | Rule::multiplicative
+        | Rule::unary
+        | Rule::postfix
+        | Rule::primary
+        | Rule::call_chain => {
+            let inner: Vec<Pair<Rule>> = pair.clone().into_inner().collect();
+            if inner.len() == 1 {
+                return split_leading_is_pattern_guard(inner[0].clone());
+            }
+            Ok(None)
+        }
+        Rule::logical_and => {
+            let parts: Vec<Pair<Rule>> = pair.into_inner().filter(|p| p.as_rule() != Rule::and_op).collect();
+            if parts.len() == 2 {
+                if let Some(subject_clause) = extract_is_pattern_subject_clause(parts[0].clone())? {
+                    return Ok(Some((subject_clause, parts[1].clone())));
+                }
+            }
+            Ok(None)
+        }
+        _ => Ok(None),
+    }
+}
+
+fn extract_is_pattern_subject_clause(
+    pair: Pair<Rule>,
+) -> Result<Option<(Expression, Pair<Rule>)>, String> {
+    match pair.as_rule() {
+        Rule::expression
+        | Rule::assignment_expression
+        | Rule::conditional_expression
+        | Rule::null_coalesce_expr
+        | Rule::logical_or
+        | Rule::logical_and
+        | Rule::bitwise_or
+        | Rule::bitwise_xor
+        | Rule::bitwise_and
+        | Rule::equality
+        | Rule::additive
+        | Rule::multiplicative
+        | Rule::unary
+        | Rule::postfix
+        | Rule::primary
+        | Rule::call_chain => {
+            let inner: Vec<Pair<Rule>> = pair.clone().into_inner().collect();
+            if inner.len() == 1 {
+                return extract_is_pattern_subject_clause(inner[0].clone());
+            }
+            Ok(None)
+        }
+        Rule::relational => {
+            let inner: Vec<Pair<Rule>> = pair.into_inner().collect();
+            if inner.len() == 2 && inner[1].as_rule() == Rule::type_test {
+                let subject = walk_expression(inner[0].clone())?;
+                let mut test_inner = inner[1].clone().into_inner();
+                let Some(keyword) = test_inner.next() else {
+                    return Ok(None);
+                };
+                if keyword.as_rule() != Rule::is_kw {
+                    return Ok(None);
+                }
+                let Some(pattern_clause) = test_inner.next() else {
+                    return Ok(None);
+                };
+                return Ok(Some((subject, pattern_clause)));
+            }
+            Ok(None)
+        }
+        _ => Ok(None),
+    }
+}
+
+fn lower_if_pattern_condition(cond_pair: Pair<Rule>) -> Result<Option<Expression>, String> {
+    let Some(((subject, pattern_clause), guard_pair)) = split_leading_is_pattern_guard(cond_pair)? else {
+        return Ok(None);
+    };
+    let guard = walk_expression(guard_pair)?;
+    let (cond, _) = build_scoped_pattern_test(subject, pattern_clause, Some(guard))?;
+    Ok(Some(cond))
+}
+
+fn strip_switch_breaks(stmts: &[Statement]) -> Vec<Statement> {
+    let mut out = stmts.to_vec();
+    while matches!(out.last(), Some(Statement { kind: StmtKind::Break(_), .. })) {
+        out.pop();
+    }
+    out
+}
+
+fn split_switch_section_bodies(stmts: &[Statement]) -> Vec<Vec<Statement>> {
+    let mut groups = Vec::new();
+    let mut current = Vec::new();
+    for stmt in stmts {
+        if matches!(stmt.kind, StmtKind::Break(_)) {
+            groups.push(current);
+            current = Vec::new();
+        } else {
+            current.push(stmt.clone());
+        }
+    }
+    if !current.is_empty() {
+        groups.push(current);
+    }
+    groups
+}
+
 /// IIFE-style lowering for `new Dictionary<,> { { k, v }, ... }`.
 /// Emits an immediately-invoked lambda that constructs the dict and
 /// populates it, so the runtime gets a real Map-backed Dictionary
@@ -5906,85 +6473,7 @@ fn walk_index_part(pair: Pair<Rule>, receiver: Expression) -> Result<Expression,
 ///     the boolean — handled via SequenceExpr if available, else
 ///     just IsType for now and the binding is dropped).
 fn walk_is_pattern(receiver: Expression, pattern_clause: Pair<Rule>) -> Result<Expression, String> {
-    // The literal "not" token isn't a Pair, so probe the source.
-    let clause_src = pattern_clause.as_str().trim_start();
-    let negated = clause_src.starts_with("not")
-        && clause_src[3..].chars().next().map_or(true, |c| c.is_whitespace());
-    let clause_inner: Vec<Pair<Rule>> = pattern_clause.into_inner().collect();
-    let atom = clause_inner.into_iter().next().ok_or("Empty pattern atom".to_string())?;
-    let atom_inner: Vec<Pair<Rule>> = atom.into_inner().collect();
-    let first = atom_inner.first().ok_or("Empty pattern atom inner".to_string())?;
-
-    let span = receiver.span.clone();
-    let result = match first.as_rule() {
-        Rule::null_kw => {
-            // `expr is null` → `expr === null`
-            Expression::with_span(
-                ExprKind::Binary {
-                    op: BinOp::StrictEq,
-                    left: Box::new(receiver),
-                    right: Box::new(Expression::with_span(
-                        ExprKind::Lit(Literal::Null), span.clone(),
-                    )),
-                },
-                span.clone(),
-            )
-        }
-        Rule::numeric_literal | Rule::string_literal => {
-            // Constant pattern → strict-equality compare.
-            let lit = walk_expression(first.clone())?;
-            Expression::with_span(
-                ExprKind::Binary {
-                    op: BinOp::StrictEq,
-                    left: Box::new(receiver),
-                    right: Box::new(lit),
-                },
-                span.clone(),
-            )
-        }
-        _ => {
-            // type_name with optional ident binding.
-            let type_name = normalize_runtime_type_name(first.as_str());
-            // Primitive-type patterns lower to `typeof v === "<jsname>"`
-            // so they match JS values that have no `__type` slot. Falls
-            // back to IsType for user classes (which DO carry __type).
-            if let Some(js_typeof) = primitive_to_typeof(&type_name) {
-                let typeof_expr = Expression::with_span(
-                    ExprKind::TypeOf(Box::new(receiver)),
-                    span.clone(),
-                );
-                Expression::with_span(
-                    ExprKind::Binary {
-                        op: BinOp::StrictEq,
-                        left: Box::new(typeof_expr),
-                        right: Box::new(Expression::with_span(
-                            ExprKind::Lit(Literal::Str(js_typeof.into())),
-                            span.clone(),
-                        )),
-                    },
-                    span.clone(),
-                )
-            } else {
-                // The ident-binding form (`obj is string s`) requires
-                // declaring `s` and assigning the cast value. For now we
-                // emit just the type test; the binding is silently
-                // dropped — tests that exercise the binding will still
-                // see the boolean correctly.
-                Expression::with_span(
-                    ExprKind::IsType { expr: Box::new(receiver), type_name },
-                    span.clone(),
-                )
-            }
-        }
-    };
-    if negated {
-        Ok(Expression::with_span(
-            ExprKind::Unary { op: UnaryOp::Not, expr: Box::new(result) },
-            span,
-        ))
-    } else {
-        Ok(result)
-    }
+    build_general_pattern_cond(receiver, pattern_clause)
 }
 
 fn walk_arguments(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
@@ -6413,24 +6902,11 @@ fn build_type_pattern_binding_stmt(
     type_name: String,
     binding_name: String,
 ) -> Statement {
-    let init = if primitive_to_typeof(&type_name).is_some() {
-        subject
-    } else {
-        let span = subject.span.clone();
-        Expression::with_span(
-            ExprKind::Cast {
-                expr: Box::new(subject),
-                type_name: type_name.clone(),
-            },
-            span,
-        )
-    };
-
     Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(binding_name),
             type_hint: Some(type_name),
-            init: Some(init),
+            init: Some(subject),
             array_bounds: None,
             with_events: false,
         }],
@@ -6450,10 +6926,13 @@ fn find_if_is_pattern_binding(pair: Pair<Rule>) -> Result<Option<(Expression, St
         | Rule::bitwise_xor
         | Rule::bitwise_and
         | Rule::equality => {
-            let mut inner = pair.into_inner();
-            if let Some(child) = inner.next() {
-                if inner.next().is_none() {
-                    return find_if_is_pattern_binding(child);
+            let inner: Vec<Pair<Rule>> = pair.into_inner().collect();
+            if inner.len() == 1 {
+                return find_if_is_pattern_binding(inner[0].clone());
+            }
+            for child in inner {
+                if let Some(binding) = find_if_is_pattern_binding(child)? {
+                    return Ok(Some(binding));
                 }
             }
             Ok(None)
@@ -6483,7 +6962,7 @@ fn find_if_is_pattern_binding(pair: Pair<Rule>) -> Result<Option<(Expression, St
             };
             let atom_inner: Vec<Pair<Rule>> = atom.into_inner().collect();
             if atom_inner.len() < 2
-                || atom_inner[0].as_rule() != Rule::type_name
+                || atom_inner[0].as_rule() != Rule::pattern_type
                 || atom_inner[1].as_rule() != Rule::ident_name
             {
                 return Ok(None);

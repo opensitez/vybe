@@ -255,6 +255,18 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::dotnet::core::timespan_adapter::emit_timespan_from_milliseconds(chunks, current, line),
         "dotnet.timespan_zero"
             => crate::emitter::dotnet::core::timespan_adapter::emit_timespan_zero(chunks, current, line),
+        "dotnet.timespan_new"
+            => crate::emitter::dotnet::core::timespan_adapter::emit_timespan_new(chunks, current, argc, line),
+        "dotnet.timespan_compare"
+            => crate::emitter::dotnet::core::timespan_adapter::emit_timespan_compare(chunks, current, line),
+        "dotnet.timespan_negate"
+            => crate::emitter::dotnet::core::timespan_adapter::emit_timespan_negate(chunks, current, line),
+        "dotnet.timespan_duration"
+            => crate::emitter::dotnet::core::timespan_adapter::emit_timespan_duration(chunks, current, line),
+        "dotnet.timespan_add"
+            => crate::emitter::dotnet::core::timespan_adapter::emit_timespan_add(chunks, current, line),
+        "dotnet.timespan_sub"
+            => crate::emitter::dotnet::core::timespan_adapter::emit_timespan_sub(chunks, current, line),
 
         // ── .NET DateTime static adapters ───────────────────────────
         // `Now` / `UtcNow` / `Today` lower to `ecma:date.now` (which
@@ -268,6 +280,26 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::dotnet::core::datetime_adapter::emit_datetime_parse(chunks, current, line),
         "dotnet.datetime_today"
             => crate::emitter::dotnet::core::datetime_adapter::emit_datetime_today(chunks, current, line),
+        "dotnet.datetime_new"
+            => crate::emitter::dotnet::core::datetime_adapter::emit_datetime_new(chunks, current, argc, line),
+        "dotnet.datetime_add_days"
+            => crate::emitter::dotnet::core::datetime_adapter::emit_datetime_add_days(chunks, current, line),
+        "dotnet.datetime_add_hours"
+            => crate::emitter::dotnet::core::datetime_adapter::emit_datetime_add_hours(chunks, current, line),
+        "dotnet.datetime_add_months"
+            => crate::emitter::dotnet::core::datetime_adapter::emit_datetime_add_months(chunks, current, line),
+        "dotnet.datetime_days_in_month"
+            => crate::emitter::dotnet::core::datetime_adapter::emit_datetime_days_in_month(chunks, current, line),
+        "dotnet.datetime_is_leap_year"
+            => crate::emitter::dotnet::core::datetime_adapter::emit_datetime_is_leap_year(chunks, current, line),
+        "dotnet.datetime_compare"
+            => crate::emitter::dotnet::core::datetime_adapter::emit_datetime_compare(chunks, current, line),
+        "dotnet.datetime_to_short_date_string"
+            => crate::emitter::dotnet::core::datetime_adapter::emit_datetime_to_short_date_string(chunks, current, line),
+        "dotnet.datetime_add_timespan"
+            => crate::emitter::dotnet::core::datetime_adapter::emit_datetime_add_timespan(chunks, current, line),
+        "dotnet.datetime_subtract_datetime"
+            => crate::emitter::dotnet::core::datetime_adapter::emit_datetime_subtract_datetime(chunks, current, line),
 
         // ── PHP DateTime / DateTimeImmutable / DateInterval adapters ──
         // Bytecode-only — composes existing `ecma:date.*` host fns into

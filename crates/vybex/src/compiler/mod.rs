@@ -1266,6 +1266,43 @@ impl Compiler {
         self.global_type_hints.get(&cname).map(|s| s.as_str())
     }
 
+    fn expr_terminal_type_name(expr: &Expression) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Ident(name) => Some(name.rsplit('.').next().unwrap_or(name).to_string()),
+            ExprKind::Member { field, .. } => Some(field.clone()),
+            _ => None,
+        }
+    }
+
+    fn infer_dotnet_factory_return_type(&self, callee: &Expression) -> Option<String> {
+        if !self.profile.namespaces.use_dotnet {
+            return None;
+        }
+        let ExprKind::Member { object, field, .. } = &callee.kind else {
+            return None;
+        };
+        let class_name = Self::expr_terminal_type_name(object)?;
+        if class_name.eq_ignore_ascii_case("TimeSpan")
+            && matches!(field.as_str(), "FromDays" | "FromHours" | "FromMinutes" | "FromSeconds" | "FromMilliseconds" | "Zero")
+        {
+            return Some("TimeSpan".into());
+        }
+        if class_name.eq_ignore_ascii_case("DateTime")
+            && matches!(field.as_str(), "Now" | "UtcNow" | "Today" | "Parse")
+        {
+            return Some("DateTime".into());
+        }
+        None
+    }
+
+    fn infer_expr_type_hint(&self, expr: &Expression) -> Option<String> {
+        match &expr.kind {
+            ExprKind::New { class, .. } => Self::expr_terminal_type_name(class),
+            ExprKind::Call { callee, .. } => self.infer_dotnet_factory_return_type(callee),
+            _ => None,
+        }
+    }
+
     fn expr_is_known_string_receiver(&self, expr: &Expression) -> bool {
         match &expr.kind {
             ExprKind::Lit(Literal::Str(_)) | ExprKind::Interpolation(_) => true,
@@ -3404,6 +3441,9 @@ impl Compiler {
     fn compile_var_declarator(&mut self, decl: &VarDeclarator, kind: &VarDeclKind) -> Result<(), String> {
         match &decl.pattern {
             BindingPattern::Ident(name) => {
+                let inferred_type_hint = decl.type_hint.clone().or_else(|| {
+                    decl.init.as_ref().and_then(|expr| self.infer_expr_type_hint(expr))
+                });
                 // Top-level vars → globals.
                 // `let`/`const` inside a block scope (depth > 0) are locals
                 // even at the top level — they respect block scoping.
@@ -3424,9 +3464,9 @@ impl Compiler {
                             ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_));
                         if recursive_lambda_init {
                             let slot = if *kind == VarDeclKind::Var && self.profile.hoist_var {
-                                self.scope_mut().define_at_function_scope(name, decl.type_hint.clone())
+                                self.scope_mut().define_at_function_scope(name, inferred_type_hint.clone())
                             } else {
-                                self.define_local_typed(name, decl.type_hint.clone())
+                                self.define_local_typed(name, inferred_type_hint.clone())
                             };
                             self.emit(Op::NULL);
                             self.emit_u16(Op::LOCAL_SET, slot);
@@ -3491,7 +3531,7 @@ impl Compiler {
                     let idx = self.str_const(&cn);
                     self.emit_u16(Op::GLOBAL_SET, idx);
                     self.emit(Op::DROP);
-                    if let Some(type_hint) = decl.type_hint.as_deref() {
+                    if let Some(type_hint) = inferred_type_hint.as_deref() {
                         self.global_type_hints.insert(cn.clone(), Self::normalize_type_hint(type_hint));
                     }
                     self.defined_globals.insert(cn);
@@ -3503,9 +3543,9 @@ impl Compiler {
                     let slot = if let Some(slot) = predeclared_local_slot {
                         slot
                     } else if *kind == VarDeclKind::Var && self.profile.hoist_var {
-                        self.scope_mut().define_at_function_scope(name, decl.type_hint.clone())
+                        self.scope_mut().define_at_function_scope(name, inferred_type_hint.clone())
                     } else {
-                        self.define_local_typed(name, decl.type_hint.clone())
+                        self.define_local_typed(name, inferred_type_hint.clone())
                     };
                     self.emit_u16(Op::LOCAL_SET, slot);
                     self.emit(Op::DROP);

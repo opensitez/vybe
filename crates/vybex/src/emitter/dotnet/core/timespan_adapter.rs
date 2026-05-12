@@ -17,6 +17,8 @@ use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
 use std::sync::Arc;
 
+use crate::emitter::math;
+
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     let idx = chunk.add_constant(val);
     chunk.emit_op_u16(Op::CONST, idx, line);
@@ -27,15 +29,30 @@ fn struct_set_field(chunk: &mut Chunk, key_idx: u16, line: u32) {
     chunk.emit_op(Op::DROP, line);
 }
 
+fn struct_set_named_field(chunk: &mut Chunk, key: &str, line: u32) {
+    let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
+    struct_set_field(chunk, key_idx, line);
+}
+
+fn emit_total_ms_from_obj(chunk: &mut Chunk, obj_slot: u16, line: u32) {
+    let key_idx = chunk.add_constant(Value::String(Arc::from("TotalMilliseconds")));
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, key_idx, line);
+}
+
 /// Build the TimeSpan object given the total milliseconds on the stack.
 /// Stack on entry: `[total_ms]` ; Stack on exit: `[ts_obj]`
-fn emit_build_timespan(chunk: &mut Chunk, line: u32) {
+pub(crate) fn emit_build_timespan_from_total_ms(chunk: &mut Chunk, line: u32) {
     let ms_slot = chunk.local_count;
-    chunk.local_count = ms_slot + 1;
+    let days_slot = ms_slot + 1;
+    let rem_slot = ms_slot + 2;
+    let hours_slot = ms_slot + 3;
+    let minutes_slot = ms_slot + 4;
+    let seconds_slot = ms_slot + 5;
+    chunk.local_count = ms_slot + 6;
     chunk.emit_op_u16(Op::LOCAL_SET, ms_slot, line);
     chunk.emit_op(Op::DROP, line);
 
-    // Pre-compute constants for the various unit conversions.
     let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
     let total_ms_key = chunk.add_constant(Value::String(Arc::from("totalmilliseconds")));
     let total_sec_key = chunk.add_constant(Value::String(Arc::from("totalseconds")));
@@ -43,47 +60,135 @@ fn emit_build_timespan(chunk: &mut Chunk, line: u32) {
     let total_hr_key = chunk.add_constant(Value::String(Arc::from("totalhours")));
     let total_day_key = chunk.add_constant(Value::String(Arc::from("totaldays")));
 
-    // STRUCT_NEW
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-    // [obj]
+    chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
+    push_const(chunk, Value::F64(86_400_000.0), line);
+    chunk.emit_op(Op::F64_DIV, line);
+    math::emit_trunc(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, days_slot, line);
+    chunk.emit_op(Op::DROP, line);
 
-    // __type = "TimeSpan"
+    chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, days_slot, line);
+    push_const(chunk, Value::F64(86_400_000.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op(Op::F64_SUB, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, rem_slot, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, rem_slot, line);
+    push_const(chunk, Value::F64(3_600_000.0), line);
+    chunk.emit_op(Op::F64_DIV, line);
+    math::emit_trunc(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, hours_slot, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, rem_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, hours_slot, line);
+    push_const(chunk, Value::F64(3_600_000.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op(Op::F64_SUB, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, rem_slot, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, rem_slot, line);
+    push_const(chunk, Value::F64(60_000.0), line);
+    chunk.emit_op(Op::F64_DIV, line);
+    math::emit_trunc(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, minutes_slot, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, rem_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, minutes_slot, line);
+    push_const(chunk, Value::F64(60_000.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op(Op::F64_SUB, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, rem_slot, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, rem_slot, line);
+    push_const(chunk, Value::F64(1000.0), line);
+    chunk.emit_op(Op::F64_DIV, line);
+    math::emit_trunc(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, seconds_slot, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+
     chunk.emit_op(Op::DUP, line);
     push_const(chunk, Value::String(Arc::from("TimeSpan")), line);
     struct_set_field(chunk, type_key, line);
 
-    // totalmilliseconds = ms
     chunk.emit_op(Op::DUP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     struct_set_field(chunk, total_ms_key, line);
 
-    // totalseconds = ms / 1000
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
+    struct_set_named_field(chunk, "TotalMilliseconds", line);
+
     chunk.emit_op(Op::DUP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     push_const(chunk, Value::F64(1000.0), line);
     chunk.emit_op(Op::F64_DIV, line);
     struct_set_field(chunk, total_sec_key, line);
 
-    // totalminutes = ms / 60_000
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
+    push_const(chunk, Value::F64(1000.0), line);
+    chunk.emit_op(Op::F64_DIV, line);
+    struct_set_named_field(chunk, "TotalSeconds", line);
+
     chunk.emit_op(Op::DUP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     push_const(chunk, Value::F64(60_000.0), line);
     chunk.emit_op(Op::F64_DIV, line);
     struct_set_field(chunk, total_min_key, line);
 
-    // totalhours = ms / 3_600_000
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
+    push_const(chunk, Value::F64(60_000.0), line);
+    chunk.emit_op(Op::F64_DIV, line);
+    struct_set_named_field(chunk, "TotalMinutes", line);
+
     chunk.emit_op(Op::DUP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     push_const(chunk, Value::F64(3_600_000.0), line);
     chunk.emit_op(Op::F64_DIV, line);
     struct_set_field(chunk, total_hr_key, line);
 
-    // totaldays = ms / 86_400_000
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
+    push_const(chunk, Value::F64(3_600_000.0), line);
+    chunk.emit_op(Op::F64_DIV, line);
+    struct_set_named_field(chunk, "TotalHours", line);
+
     chunk.emit_op(Op::DUP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     push_const(chunk, Value::F64(86_400_000.0), line);
     chunk.emit_op(Op::F64_DIV, line);
     struct_set_field(chunk, total_day_key, line);
+
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
+    push_const(chunk, Value::F64(86_400_000.0), line);
+    chunk.emit_op(Op::F64_DIV, line);
+    struct_set_named_field(chunk, "TotalDays", line);
+
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, days_slot, line);
+    struct_set_named_field(chunk, "Days", line);
+
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, hours_slot, line);
+    struct_set_named_field(chunk, "Hours", line);
+
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, minutes_slot, line);
+    struct_set_named_field(chunk, "Minutes", line);
+
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, seconds_slot, line);
+    struct_set_named_field(chunk, "Seconds", line);
 }
 
 /// Build a TimeSpan from a count of `unit_ms` units. Stack: `[n]` →
@@ -93,7 +198,7 @@ fn emit_timespan_from_unit(chunks: &mut [Chunk], current: usize, unit_ms: f64, l
     let chunk = &mut chunks[current];
     push_const(chunk, Value::F64(unit_ms), line);
     chunk.emit_op(Op::F64_MUL, line);
-    emit_build_timespan(chunk, line);
+    emit_build_timespan_from_total_ms(chunk, line);
 }
 
 /// `TimeSpan.FromDays(n)` — `n * 86_400_000` ms.
@@ -125,5 +230,134 @@ pub fn emit_timespan_from_milliseconds(chunks: &mut [Chunk], current: usize, lin
 pub fn emit_timespan_zero(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     push_const(chunk, Value::F64(0.0), line);
-    emit_build_timespan(chunk, line);
+    emit_build_timespan_from_total_ms(chunk, line);
+}
+
+fn emit_compare_numeric_slots(chunk: &mut Chunk, left_slot: u16, right_slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    chunk.emit_op(Op::DYN_LT, line);
+    let not_lt = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    push_const(chunk, Value::I32(-1), line);
+    let done = chunk.emit_jump(Op::BR, line);
+    chunk.patch_jump(not_lt);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    chunk.emit_op(Op::DYN_GT, line);
+    let not_gt = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    push_const(chunk, Value::I32(1), line);
+    let done_gt = chunk.emit_jump(Op::BR, line);
+    chunk.patch_jump(not_gt);
+    push_const(chunk, Value::I32(0), line);
+    chunk.patch_jump(done);
+    chunk.patch_jump(done_gt);
+}
+
+pub fn emit_timespan_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    match argc {
+        3 => {
+            let seconds_slot = chunk.local_count;
+            let minutes_slot = seconds_slot + 1;
+            let hours_slot = seconds_slot + 2;
+            chunk.local_count = seconds_slot + 3;
+
+            chunk.emit_op_u16(Op::LOCAL_SET, seconds_slot, line);
+            chunk.emit_op(Op::DROP, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, minutes_slot, line);
+            chunk.emit_op(Op::DROP, line);
+            chunk.emit_op_u16(Op::LOCAL_SET, hours_slot, line);
+            chunk.emit_op(Op::DROP, line);
+
+            chunk.emit_op_u16(Op::LOCAL_GET, hours_slot, line);
+            push_const(chunk, Value::F64(3600.0), line);
+            chunk.emit_op(Op::F64_MUL, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, minutes_slot, line);
+            push_const(chunk, Value::F64(60.0), line);
+            chunk.emit_op(Op::F64_MUL, line);
+            chunk.emit_op(Op::F64_ADD, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, seconds_slot, line);
+            chunk.emit_op(Op::F64_ADD, line);
+            push_const(chunk, Value::F64(1000.0), line);
+            chunk.emit_op(Op::F64_MUL, line);
+            emit_build_timespan_from_total_ms(chunk, line);
+        }
+        _ => emit_timespan_zero(chunks, current, line),
+    }
+}
+
+pub fn emit_timespan_compare(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let right_slot = chunk.local_count;
+    let left_slot = right_slot + 1;
+    let right_ms_slot = right_slot + 2;
+    let left_ms_slot = right_slot + 3;
+    chunk.local_count = right_slot + 4;
+
+    chunk.emit_op_u16(Op::LOCAL_SET, right_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, left_slot, line);
+    chunk.emit_op(Op::DROP, line);
+
+    emit_total_ms_from_obj(chunk, left_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, left_ms_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    emit_total_ms_from_obj(chunk, right_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, right_ms_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    emit_compare_numeric_slots(chunk, left_ms_slot, right_ms_slot, line);
+}
+
+pub fn emit_timespan_negate(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let obj_slot = chunk.local_count;
+    chunk.local_count = obj_slot + 1;
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    emit_total_ms_from_obj(chunk, obj_slot, line);
+    push_const(chunk, Value::F64(-1.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    emit_build_timespan_from_total_ms(chunk, line);
+}
+
+pub fn emit_timespan_duration(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let obj_slot = chunk.local_count;
+    chunk.local_count = obj_slot + 1;
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    emit_total_ms_from_obj(chunk, obj_slot, line);
+    math::emit_abs(chunk, line);
+    emit_build_timespan_from_total_ms(chunk, line);
+}
+
+pub fn emit_timespan_add(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let right_slot = chunk.local_count;
+    let left_slot = right_slot + 1;
+    chunk.local_count = right_slot + 2;
+    chunk.emit_op_u16(Op::LOCAL_SET, right_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, left_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    emit_total_ms_from_obj(chunk, left_slot, line);
+    emit_total_ms_from_obj(chunk, right_slot, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    emit_build_timespan_from_total_ms(chunk, line);
+}
+
+pub fn emit_timespan_sub(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let right_slot = chunk.local_count;
+    let left_slot = right_slot + 1;
+    chunk.local_count = right_slot + 2;
+    chunk.emit_op_u16(Op::LOCAL_SET, right_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, left_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    emit_total_ms_from_obj(chunk, left_slot, line);
+    emit_total_ms_from_obj(chunk, right_slot, line);
+    chunk.emit_op(Op::F64_SUB, line);
+    emit_build_timespan_from_total_ms(chunk, line);
 }

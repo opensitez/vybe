@@ -7,22 +7,33 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System",
             ClassType::new("DateTime")
-                .with_constructor(ConstructorDef::new(0).with_backing(HostTarget::new("ecma:date", "new")))
+                .with_constructor(ConstructorDef::new(0).with_common_backing("dotnet.datetime_new"))
                 .with_method(MethodDef::static_method("Now", 0, MethodBody::Common("dotnet.datetime_now".into())))
                 .with_method(MethodDef::static_method("UtcNow", 0, MethodBody::Common("dotnet.datetime_now".into())))
                 .with_method(MethodDef::static_method("Today", 0, MethodBody::Common("dotnet.datetime_today".into())))
-                .with_method(MethodDef::static_method("Parse", 1, MethodBody::Common("dotnet.datetime_parse".into()))),
+                .with_method(MethodDef::static_method("Parse", 1, MethodBody::Common("dotnet.datetime_parse".into())))
+                .with_method(MethodDef::static_method("DaysInMonth", 2, MethodBody::Common("dotnet.datetime_days_in_month".into())))
+                .with_method(MethodDef::static_method("IsLeapYear", 1, MethodBody::Common("dotnet.datetime_is_leap_year".into())))
+                .with_method(MethodDef::static_method("Compare", 2, MethodBody::Common("dotnet.datetime_compare".into())))
+                .with_method(MethodDef::new("AddDays", 1, MethodBody::Common("dotnet.datetime_add_days".into())))
+                .with_method(MethodDef::new("AddHours", 1, MethodBody::Common("dotnet.datetime_add_hours".into())))
+                .with_method(MethodDef::new("AddMonths", 1, MethodBody::Common("dotnet.datetime_add_months".into())))
+                .with_method(MethodDef::new("ToShortDateString", 0, MethodBody::Common("dotnet.datetime_to_short_date_string".into()))),
         ),
         constructor_class("dotnet.System", "Random", "wasi:random/insecure", "get-insecure-random-u64"),
         DotnetClassExport::new(
             "dotnet.System",
             ClassType::new("TimeSpan")
+                .with_constructor(ConstructorDef::new(0).with_common_backing("dotnet.timespan_new"))
                 .with_method(MethodDef::static_method("FromDays", 1, MethodBody::Common("dotnet.timespan_from_days".into())))
                 .with_method(MethodDef::static_method("FromHours", 1, MethodBody::Common("dotnet.timespan_from_hours".into())))
                 .with_method(MethodDef::static_method("FromMinutes", 1, MethodBody::Common("dotnet.timespan_from_minutes".into())))
                 .with_method(MethodDef::static_method("FromSeconds", 1, MethodBody::Common("dotnet.timespan_from_seconds".into())))
                 .with_method(MethodDef::static_method("FromMilliseconds", 1, MethodBody::Common("dotnet.timespan_from_milliseconds".into())))
-                .with_method(MethodDef::static_method("Zero", 0, MethodBody::Common("dotnet.timespan_zero".into()))),
+                .with_method(MethodDef::static_method("Zero", 0, MethodBody::Common("dotnet.timespan_zero".into())))
+                .with_method(MethodDef::static_method("Compare", 2, MethodBody::Common("dotnet.timespan_compare".into())))
+                .with_method(MethodDef::new("Negate", 0, MethodBody::Common("dotnet.timespan_negate".into())))
+                .with_method(MethodDef::new("Duration", 0, MethodBody::Common("dotnet.timespan_duration".into()))),
         ),
         DotnetClassExport::new(
             "dotnet.System",

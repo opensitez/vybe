@@ -372,9 +372,14 @@ switch_section = {
 }
 
 switch_label = {
-    "case" ~ expression ~ ":"
+    case_value_label
+    | case_pattern_label
     | "default" ~ ":"
 }
+
+case_value_label = { "case" ~ expression ~ ":" }
+case_pattern_label = { "case" ~ switch_case_pattern ~ ("when" ~ expression)? ~ ":" }
+switch_case_pattern = { pattern_clause }
 
 // ── Jump statements ─────────────────────────────────────────────────────────
 
@@ -525,14 +530,26 @@ switch_pattern = {
 // property) fall through to the type-name path.
 pattern_clause = {
     "not" ~ pattern_atom
-    | pattern_atom
+    | pattern_atom ~ (pattern_and_kw ~ pattern_atom)*
 }
+pattern_and_kw = { "and" }
 pattern_atom = {
     null_kw                        // `is null`
+    | true_kw                      // `is true`
+    | false_kw                     // `is false`
+    | char_literal                 // `is 'x'`
     | numeric_literal              // `is 0`
     | string_literal               // `is "x"`
-    | type_name ~ ident_name?      // `is string s` / `is int`
+    | relational_pattern           // `is >= 0`
+    | tuple_pattern                // `is (1, _)`
+    | var_pattern                  // `is var x`
+    | pattern_type ~ ident_name?   // `is string s` / `is int`
 }
+pattern_type = { base_type ~ generic_type_args? ~ array_rank* }
+relational_pattern = { (">=" | "<=" | ">" | "<") ~ expression }
+tuple_pattern = { "(" ~ tuple_pattern_item ~ ("," ~ tuple_pattern_item)+ ~ ","? ~ ")" }
+tuple_pattern_item = { "_" ~ !(ASCII_ALPHANUMERIC | "_") | expression }
+var_pattern = { var_kw ~ ident_name }
 binary_relational = { relational_op ~ additive }
 relational_op = {
     shift_op | "<=" | ">=" | "<" ~ !"<" | ">" ~ !">"
