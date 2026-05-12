@@ -2382,7 +2382,7 @@ impl Compiler {
                         let is_catch_all = types.is_empty()
                             || types.iter().any(|t| *t == "Exception");
 
-                        let mut skip_arm: Option<usize> = None;
+                        let mut skip_arm_patches: Vec<usize> = Vec::new();
                         if !is_catch_all {
                             let mut to_body: Vec<usize> = Vec::new();
                             for ty in &types {
@@ -2425,25 +2425,56 @@ impl Compiler {
                                     self.emit(Op::DYN_EQ);
                                     to_body.push(self.emit_jump(Op::BR_IF_TRUE));
                                 }
+                                // Or match any name in the cross-language
+                                // inheritance chain stamped by shared class
+                                // emission. This lets `catch (BaseError)`
+                                // match `throw new NotFoundError(...)`.
+                                for expected in &expected_names {
+                                    self.emit(Op::DUP);
+                                    let line = self.line;
+                                    let types_key = self.str_const("__types");
+                                    self.chunks[self.current]
+                                        .emit_op_u16(Op::STRUCT_GET, types_key, line);
+                                    self.emit(Op::DUP);
+                                    self.emit(Op::REF_IS_NULL);
+                                    let has_types = self.emit_jump(Op::BR_IF_FALSE);
+                                    self.emit(Op::DROP);
+                                    self.emit(Op::FALSE);
+                                    let done = self.emit_jump(Op::BR);
+                                    self.patch_jump(has_types);
+                                    let expected_const = Value::String(Arc::from(expected.as_str()));
+                                    self.emit_const(expected_const);
+                                    common::collections::emit_contains(&mut self.chunks, self.current, line);
+                                    self.patch_jump(done);
+                                    to_body.push(self.emit_jump(Op::BR_IF_TRUE));
+                                }
                             }
-                            skip_arm = Some(self.emit_jump(Op::BR));
+                            skip_arm_patches.push(self.emit_jump(Op::BR));
                             for p in to_body { self.patch_jump(p); }
                         }
 
                         if let Some(ref var) = c.var_name {
                             self.scope_mut().begin_scope();
                             let slot = self.define_local(var);
+                            self.emit(Op::DUP);
                             self.emit_u16(Op::LOCAL_SET, slot);
                             self.emit(Op::DROP);
                         } else {
                             self.scope_mut().begin_scope();
-                            self.emit(Op::DROP);
                         }
+
+                        if let Some(cond) = &c.when_clause {
+                            self.compile_expr(cond)?;
+                            self.emit(Op::DYN_TO_BOOL);
+                            skip_arm_patches.push(self.emit_jump(Op::BR_IF_FALSE));
+                        }
+
+                        self.emit(Op::DROP);
                         for s in &c.body { self.compile_stmt(s)?; }
                         self.scope_mut().end_scope();
                         end_patches.push(self.emit_jump(Op::BR));
 
-                        if let Some(p) = skip_arm { self.patch_jump(p); }
+                        for p in skip_arm_patches { self.patch_jump(p); }
                     }
                     // Fallthrough = no arm matched. Re-throw the exception.
                     let line = self.line;
@@ -4549,12 +4580,25 @@ impl Compiler {
     }
 
     fn is_csharp_delegate_handler_expr(&self, expr: &Expression) -> bool {
-        if matches!(expr.kind, ExprKind::Ident(_) | ExprKind::Member { .. } | ExprKind::Lambda { .. }) {
-            return true;
-        }
         match &expr.kind {
+            ExprKind::Lambda { .. } | ExprKind::AddressOf(_) => true,
+            ExprKind::Ident(name) => {
+                if self.scope().resolve(name).is_some()
+                    || (!self.case_sensitive && self.scope().resolve_ci(name).is_some())
+                {
+                    return false;
+                }
+                let cname = self.canon(name);
+                self.defined_functions.contains(&cname)
+                    || self.defined_class_methods.contains(&cname)
+            }
+            ExprKind::Member { field, .. } => {
+                let cname = self.canon(field);
+                self.defined_functions.contains(&cname)
+                    || self.defined_class_methods.contains(&cname)
+            }
             ExprKind::New { args, .. } if args.len() == 1 => {
-                matches!(args[0].value.kind, ExprKind::Ident(_) | ExprKind::Member { .. } | ExprKind::Lambda { .. })
+                self.is_csharp_delegate_handler_expr(&args[0].value)
             }
             _ => false,
         }

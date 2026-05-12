@@ -1292,7 +1292,7 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             }
             let last = members.pop().unwrap();
             // Build target: WithTarget.member1.member2...lastMember
-            let mut obj = Expression::new(ExprKind::Ident("__with_target__".to_string()));
+            let mut obj = Expression::new(ExprKind::Ident("__with_target".to_string()));
             for m in members {
                 obj = Expression::new(ExprKind::Member {
                     object: Box::new(obj),
@@ -1704,8 +1704,10 @@ fn parse_for_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     let variable = inner.next().unwrap().as_str().to_string();
 
     // Skip optional 'As type_name'
+    let mut variable_type = None;
     let mut next = inner.next().unwrap();
     if next.as_rule() == Rule::type_name {
+        variable_type = Some(next.as_str().to_string());
         next = inner.next().unwrap();
     }
     let start = parse_expression(next)?;
@@ -1737,7 +1739,7 @@ fn parse_for_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     let init = Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(variable.clone()),
-            type_hint: None,
+            type_hint: variable_type,
             init: Some(start),
             array_bounds: None,
             with_events: false,
@@ -2241,7 +2243,7 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                 return Err("dot_call needs at least one identifier".to_string());
             }
             let method_name = identifiers.last().unwrap().clone();
-            let mut expr = Expression::new(ExprKind::Ident("__with_target__".to_string()));
+            let mut expr = Expression::new(ExprKind::Ident("__with_target".to_string()));
             for i in 0..identifiers.len() - 1 {
                 expr = Expression::new(ExprKind::Member {
                     object: Box::new(expr),
@@ -2264,7 +2266,7 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
         Rule::dot_member_access => {
             // .prop or .obj.prop inside With block
             let inner = pair.into_inner();
-            let mut expr = Expression::new(ExprKind::Ident("__with_target__".to_string()));
+            let mut expr = Expression::new(ExprKind::Ident("__with_target".to_string()));
             for p in inner {
                 if p.as_rule() == Rule::identifier || p.as_rule() == Rule::member_identifier {
                     expr = Expression::new(ExprKind::Member {
@@ -2704,14 +2706,16 @@ fn parse_block_body(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
 
 fn parse_for_each_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
+    let hidden_suffix = pair.as_span().start();
     let mut inner = pair.into_inner();
     let variable = inner.next().unwrap().as_str().to_string();
+    let mut variable_type = None;
     let mut collection = None;
     let mut body = Vec::new();
 
     for p in inner {
         match p.as_rule() {
-            Rule::type_name => {} // Skip "As Type" — we don't store it in ForIn AST
+            Rule::type_name => variable_type = Some(p.as_str().to_string()),
             Rule::expression => {
                 if collection.is_none() {
                     collection = Some(parse_expression(p)?);
@@ -2729,8 +2733,24 @@ fn parse_for_each_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         }
     }
 
+    let mut loop_var = variable.clone();
+    if let Some(type_hint) = variable_type {
+        let source_var = format!("__vb_foreach_item_{}", hidden_suffix);
+        body.insert(0, Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(variable),
+                type_hint: Some(type_hint),
+                init: Some(Expression::ident(&source_var)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Dim,
+        }));
+        loop_var = source_var;
+    }
+
     Ok(Statement::with_span(StmtKind::ForIn {
-        var: variable,
+        var: loop_var,
         key: None,
         iter: collection.ok_or_else(|| "For Each missing collection".to_string())?,
         body,

@@ -2422,6 +2422,62 @@ fn tuple_binding_pattern_elems(idents: Vec<String>) -> Vec<ArrayPatternElem> {
         .collect()
 }
 
+fn infer_csharp_new_type_name(class: &Expression) -> Option<String> {
+    match &class.kind {
+        ExprKind::Ident(name) => Some(name.clone()),
+        ExprKind::Member { field, .. } => Some(field.clone()),
+        _ => None,
+    }
+}
+
+fn infer_csharp_type_from_expr(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(_)) => Some("int".into()),
+        ExprKind::Lit(Literal::Float(_)) => Some("double".into()),
+        ExprKind::Lit(Literal::Str(_)) => Some("string".into()),
+        ExprKind::Lit(Literal::Bool(_)) => Some("bool".into()),
+        ExprKind::Lit(Literal::Char(_)) => Some("char".into()),
+        ExprKind::New { class, .. } => infer_csharp_new_type_name(class),
+        ExprKind::Array(elements) => {
+            let mut element_type: Option<String> = None;
+            for element in elements {
+                if element.key.is_some() || element.spread {
+                    return None;
+                }
+                let inferred = infer_csharp_type_from_expr(&element.value)?;
+                match &element_type {
+                    Some(existing) if existing != &inferred => return None,
+                    None => element_type = Some(inferred),
+                    _ => {}
+                }
+            }
+            element_type.map(|inner| format!("{}[]", inner))
+        }
+        _ => None,
+    }
+}
+
+fn infer_csharp_foreach_element_type(iter: &Expression) -> Option<String> {
+    match &iter.kind {
+        ExprKind::Array(elements) => {
+            let mut element_type: Option<String> = None;
+            for element in elements {
+                if element.key.is_some() || element.spread {
+                    return None;
+                }
+                let inferred = infer_csharp_type_from_expr(&element.value)?;
+                match &element_type {
+                    Some(existing) if existing != &inferred => return None,
+                    None => element_type = Some(inferred),
+                    _ => {}
+                }
+            }
+            element_type
+        }
+        _ => None,
+    }
+}
+
 fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
     let first = inner.next().ok_or("Empty local var")?;
@@ -2468,26 +2524,13 @@ fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
             }
         }
     } else {
-        // `var` type inference: `var x = new ClassName(...)` infers
-        // type=ClassName so Component Model instance-method dispatch
-        // (`x.Method(...)`) can resolve at compile time. Without this,
-        // typed-receiver dispatch falls through to runtime hint lookup
-        // via `__type` stamping — slower and weaker. Handles both
-        // bare names (`new Dictionary()`) and namespace-qualified
-        // names (`new System.Text.StringBuilder()`) — the last segment
-        // of the dotted class is the unqualified class name.
+        // `var` type inference keeps loop/local bindings normalized to a
+        // typed common AST when the source makes the type obvious.
         for decl in &mut declarations {
             if decl.type_hint.is_none() {
                 if let Some(ref init) = decl.init {
-                    if let crate::ast::ExprKind::New { class, .. } = &init.kind {
-                        let inferred = match &class.kind {
-                            crate::ast::ExprKind::Ident(n) => Some(n.clone()),
-                            crate::ast::ExprKind::Member { field, .. } => Some(field.clone()),
-                            _ => None,
-                        };
-                        if let Some(name) = inferred {
-                            decl.type_hint = Some(name);
-                        }
+                    if let Some(name) = infer_csharp_type_from_expr(init) {
+                        decl.type_hint = Some(name);
                     }
                 }
             }
@@ -3872,22 +3915,7 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 let inner = p.into_inner().next().ok_or("Empty for init")?;
                 match inner.as_rule() {
                     Rule::local_var_declaration_no_semi => {
-                        let mut vi = inner.into_inner();
-                        let _type = vi.next(); // skip type/var
-                        let mut decls = Vec::new();
-                        for d in vi {
-                            if d.as_rule() == Rule::var_declarator_list {
-                                for vd in d.into_inner() {
-                                    if vd.as_rule() == Rule::var_declarator {
-                                        decls.push(walk_var_declarator(vd)?);
-                                    }
-                                }
-                            }
-                        }
-                        init = Some(Box::new(Statement::new(StmtKind::VarDecl {
-                            declarations: decls,
-                            kind: VarDeclKind::Let,
-                        })));
+                        init = Some(Box::new(Statement::new(walk_local_var(inner)?)));
                     }
                     Rule::expression_list => {
                         let first_expr = inner.into_inner().next()
@@ -3936,14 +3964,17 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
 }
 
 fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
+    let hidden_suffix = pair.as_span().start();
     let mut var = String::new();
+    let mut explicit_type_hint = None;
     let mut tuple_target: Option<Vec<String>> = None;
     let mut iter = Expression::null();
     let mut body = Vec::new();
 
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::var_kw | Rule::type_name => {} // skip type
+            Rule::var_kw => {}
+            Rule::type_name => explicit_type_hint = Some(p.as_str().to_string()),
             Rule::foreach_target => {
                 if let Some(inner) = p.into_inner().next() {
                     match inner.as_rule() {
@@ -3954,7 +3985,7 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
                                 .map(|part| part.as_str().to_string())
                                 .collect();
                             tuple_target = Some(names);
-                            var = "__csharp_foreach_item".into();
+                            var = format!("__csharp_foreach_item_{}", hidden_suffix);
                         }
                         _ => {}
                     }
@@ -3986,6 +4017,23 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
             }],
             kind: VarDeclKind::Let,
         }));
+    } else {
+        let binding_type = explicit_type_hint.or_else(|| infer_csharp_foreach_element_type(&iter));
+        if let Some(type_hint) = binding_type {
+            let user_var = var.clone();
+            let source_var = format!("__csharp_foreach_item_{}", hidden_suffix);
+            body.insert(0, Statement::new(StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Ident(user_var),
+                    type_hint: Some(type_hint),
+                    init: Some(Expression::ident(&source_var)),
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Let,
+            }));
+            var = source_var;
+        }
     }
 
     Ok(StmtKind::ForIn {
@@ -4164,43 +4212,12 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     rewrite_bare_throws(&mut catch_body, vn);
                 }
                 let _ = synthetic_var;
-                // `catch (...) when (cond) { body }` lowers to:
-                //
-                //     catch (...) {
-                //         if (!cond) { throw <var_name>; }
-                //         body
-                //     }
-                //
-                // The walker stays language-agnostic — the compiler's
-                // existing throw / re-throw path picks it up.
-                if let Some(cond) = when_filter {
-                    let throw_var = var_name.as_deref()
-                        .map(Expression::ident);
-                    let throw_stmt = Statement::with_span(
-                        StmtKind::Throw { expr: throw_var, cause: None },
-                        Span::default(),
-                    );
-                    let neg = Expression::new(ExprKind::Unary {
-                        op: UnaryOp::Not,
-                        expr: Box::new(cond),
-                    });
-                    let if_stmt = Statement::with_span(
-                        StmtKind::If {
-                            cond: neg,
-                            then_body: vec![throw_stmt],
-                            elifs: Vec::new(),
-                            else_body: None,
-                        },
-                        Span::default(),
-                    );
-                    catch_body.insert(0, if_stmt);
-                }
                 catches.push(CatchClause {
                     types,
                     var_name,
                     stack_var: None,
                     body: catch_body,
-                    when_clause: None,
+                    when_clause: when_filter,
                 });
             }
             Rule::finally_clause => {
@@ -5436,16 +5453,68 @@ fn walk_switch_expr(subject: Expression, postfix: Pair<Rule>) -> Result<Expressi
             else_set = true;
             continue;
         }
-        let cond = build_switch_pattern_cond(subject.clone(), pattern, when_guard)?;
+        let cond = build_switch_pattern_cond(subject.clone(), pattern.clone())?;
+        let binding = build_switch_pattern_binding(subject.clone(), pattern)?;
         if !else_set {
             else_branch = result.clone();
             else_set = true;
             // Still emit the test so the arm runs even if `_` is missing.
         }
+        let then_branch = if let Some(binding_stmt) = binding {
+            let scoped_result = if let Some(guard) = when_guard {
+                Expression::with_span(
+                    ExprKind::Ternary {
+                        cond: Box::new(guard),
+                        then: Box::new(result),
+                        else_: Box::new(else_branch.clone()),
+                    },
+                    span.clone(),
+                )
+            } else {
+                result
+            };
+            let lambda = Expression::new(ExprKind::Lambda {
+                params: vec![],
+                body: LambdaBody::Block(vec![
+                    binding_stmt,
+                    Statement::with_span(StmtKind::Return(Some(scoped_result)), Span::default()),
+                ]),
+                is_async: false,
+                captures: Vec::new(),
+            });
+            Expression::new(ExprKind::Call {
+                callee: Box::new(lambda),
+                args: vec![],
+                optional: false,
+            })
+        } else {
+            let then_cond = if let Some(guard) = when_guard {
+                Expression::with_span(
+                    ExprKind::Binary {
+                        op: BinOp::And,
+                        left: Box::new(cond.clone()),
+                        right: Box::new(guard),
+                    },
+                    span.clone(),
+                )
+            } else {
+                cond.clone()
+            };
+            let next = Expression::with_span(
+                ExprKind::Ternary {
+                    cond: Box::new(then_cond),
+                    then: Box::new(result),
+                    else_: Box::new(else_branch),
+                },
+                span.clone(),
+            );
+            else_branch = next;
+            continue;
+        };
         let next = Expression::with_span(
             ExprKind::Ternary {
                 cond: Box::new(cond),
-                then: Box::new(result),
+                then: Box::new(then_branch),
                 else_: Box::new(else_branch),
             },
             span.clone(),
@@ -5464,7 +5533,6 @@ fn walk_switch_expr(subject: Expression, postfix: Pair<Rule>) -> Result<Expressi
 fn build_switch_pattern_cond(
     subject: Expression,
     pattern: Pair<Rule>,
-    when_guard: Option<Expression>,
 ) -> Result<Expression, String> {
     let pat_src = pattern.as_str().trim();
     let span = subject.span.clone();
@@ -5480,7 +5548,7 @@ fn build_switch_pattern_cond(
     } else {
         None
     };
-    let mut cond: Expression;
+    let cond: Expression;
     if let Some(op) = rel_op {
         // Find the inner expression child.
         let inner = pattern.into_inner()
@@ -5492,6 +5560,9 @@ fn build_switch_pattern_cond(
             span.clone(),
         );
     } else {
+        if let Some(elements) = extract_switch_tuple_pattern_elements(pattern.clone())? {
+            return Ok(build_switch_tuple_pattern_cond(subject, elements));
+        }
         // Type pattern: `int i`, `string s` (with binding) or constant.
         let mut inner_pairs: Vec<Pair<Rule>> = pattern.into_inner().collect();
         // `type_name ~ ident_name` — type pattern with binding.
@@ -5538,17 +5609,91 @@ fn build_switch_pattern_cond(
             cond = Expression::with_span(ExprKind::Lit(Literal::Bool(false)), span.clone());
         }
     }
-    if let Some(guard) = when_guard {
-        cond = Expression::with_span(
-            ExprKind::Binary {
-                op: BinOp::And,
-                left: Box::new(cond),
-                right: Box::new(guard),
-            },
-            span,
-        );
-    }
     Ok(cond)
+}
+
+fn build_switch_pattern_binding(
+    subject: Expression,
+    pattern: Pair<Rule>,
+) -> Result<Option<Statement>, String> {
+    let inner_pairs: Vec<Pair<Rule>> = pattern.into_inner().collect();
+    if inner_pairs.len() >= 2
+        && inner_pairs[0].as_rule() == Rule::type_name
+        && inner_pairs[1].as_rule() == Rule::ident_name
+    {
+        let type_name = inner_pairs[0].as_str().trim().to_string();
+        let binding_name = inner_pairs[1].as_str().trim().to_string();
+        return Ok(Some(build_type_pattern_binding_stmt(subject, type_name, binding_name)));
+    }
+    Ok(None)
+}
+
+fn extract_switch_tuple_pattern_elements(
+    pair: Pair<Rule>,
+) -> Result<Option<Vec<Option<Expression>>>, String> {
+    if pair.as_rule() == Rule::tuple_literal {
+        let mut elements = Vec::new();
+        for element in pair.into_inner().filter(|p| p.as_rule() == Rule::tuple_element) {
+            let expr_pair = element
+                .into_inner()
+                .rev()
+                .find(|p| p.as_rule() == Rule::expression)
+                .ok_or("tuple pattern element missing expression")?;
+            if expr_pair.as_str().trim() == "_" {
+                elements.push(None);
+            } else {
+                elements.push(Some(walk_expression(expr_pair)?));
+            }
+        }
+        return Ok(Some(elements));
+    }
+    for child in pair.into_inner() {
+        if let Some(elements) = extract_switch_tuple_pattern_elements(child)? {
+            return Ok(Some(elements));
+        }
+    }
+    Ok(None)
+}
+
+fn build_switch_tuple_pattern_cond(
+    subject: Expression,
+    elements: Vec<Option<Expression>>,
+) -> Expression {
+    let span = subject.span.clone();
+    let mut cond: Option<Expression> = None;
+    for (index, expected) in elements.into_iter().enumerate() {
+        let Some(expected) = expected else {
+            continue;
+        };
+        let item = Expression::with_span(
+            ExprKind::Index {
+                object: Box::new(subject.clone()),
+                index: Box::new(Expression::int(index as i64)),
+                null_safe: false,
+            },
+            span.clone(),
+        );
+        let eq = Expression::with_span(
+            ExprKind::Binary {
+                op: BinOp::StrictEq,
+                left: Box::new(item),
+                right: Box::new(expected),
+            },
+            span.clone(),
+        );
+        cond = Some(match cond {
+            Some(prev) => Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::And,
+                    left: Box::new(prev),
+                    right: Box::new(eq),
+                },
+                span.clone(),
+            ),
+            None => eq,
+        });
+    }
+    cond.unwrap_or_else(|| Expression::with_span(ExprKind::Lit(Literal::Bool(true)), span))
 }
 
 /// IIFE-style lowering for `new Dictionary<,> { { k, v }, ... }`.
@@ -6260,6 +6405,14 @@ fn extract_if_is_pattern_binding(pair: Pair<Rule>) -> Result<Option<Statement>, 
         return Ok(None);
     };
 
+    Ok(Some(build_type_pattern_binding_stmt(subject, type_name, binding_name)))
+}
+
+fn build_type_pattern_binding_stmt(
+    subject: Expression,
+    type_name: String,
+    binding_name: String,
+) -> Statement {
     let init = if primitive_to_typeof(&type_name).is_some() {
         subject
     } else {
@@ -6273,7 +6426,7 @@ fn extract_if_is_pattern_binding(pair: Pair<Rule>) -> Result<Option<Statement>, 
         )
     };
 
-    Ok(Some(Statement::new(StmtKind::VarDecl {
+    Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(binding_name),
             type_hint: Some(type_name),
@@ -6282,7 +6435,7 @@ fn extract_if_is_pattern_binding(pair: Pair<Rule>) -> Result<Option<Statement>, 
             with_events: false,
         }],
         kind: VarDeclKind::Let,
-    })))
+    })
 }
 
 fn find_if_is_pattern_binding(pair: Pair<Rule>) -> Result<Option<(Expression, String, String)>, String> {

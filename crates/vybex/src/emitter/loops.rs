@@ -123,6 +123,9 @@ pub fn emit_for_in_start(chunks: &mut [Chunk], current: usize, arr_slot: u16, id
     // i = 0
     chunks[current].emit_op(Op::I32_CONST_0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
+    // LOCAL_SET leaves the assigned value on the stack in Vybe bytecode;
+    // drop it here so every iteration starts with a clean stack.
+    chunks[current].emit_op(Op::DROP, line);
 
     // block $exit { loop $loop {
     let block_patch = chunks[current].emit_block(line);
