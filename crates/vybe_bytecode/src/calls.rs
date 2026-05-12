@@ -96,6 +96,31 @@ impl VM {
                         };
                         self.push(result)?;
                     }
+                    ObjectKind::Array(elems) => {
+                        let handlers = elems.clone();
+                        drop(o);
+
+                        let args: Vec<Value> = self.stack[self.stack.len() - argc..].to_vec();
+                        for _ in 0..argc { self.stack.pop(); }
+                        self.stack.pop();
+
+                        let mut last = Value::Null;
+                        for handler in handlers {
+                            self.push(handler)?;
+                            for arg in &args { self.push(arg.clone())?; }
+                            let depth = self.frames.len();
+                            self.call_value(args.len())?;
+                            // Some handlers (host/callable shims) complete without
+                            // pushing a new frame, while bytecode functions do push one.
+                            // Only run execute_until when a nested frame exists.
+                            if self.frames.len() > depth {
+                                last = self.execute_until(depth)?;
+                            } else {
+                                last = self.pop();
+                            }
+                        }
+                        self.push(last)?;
+                    }
                     _other => {
                         // Check for __call__ dunder (Python callable objects)
                         let call_fn = o.properties.get("__call__").cloned();

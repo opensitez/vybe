@@ -55,6 +55,14 @@ struct PendingClass {
     /// `<ClassName>.Name` (struct_get on the class global) rather than
     /// falling through to a non-existent module global.
     static_fields: Vec<String>,
+    /// Type hints for static fields, keyed by canonical field name.
+    static_field_types: HashMap<String, String>,
+    /// Declared static method names on this class. Used for bare
+    /// in-class resolution (`Double(x)` inside `Converter`) so the
+    /// call resolves through the class object.
+    static_method_names: Vec<String>,
+    /// Nested type names attached to this class constructor object.
+    nested_types: Vec<String>,
     /// Static methods: (name, chunk_idx) — tracked for inheritance
     statics: Vec<(String, usize)>,
 }
@@ -94,6 +102,8 @@ pub struct Compiler {
     /// `Green` inside `enum TColor` resolves to `TColor.Green`.
     /// Models the WASM Component Model's namespace-scoped imports.
     enum_members: HashMap<String, String>,
+    /// Reverse enum lookup: enum type -> underlying integer -> member name.
+    enum_value_names: HashMap<String, HashMap<i64, String>>,
     case_sensitive: bool,
     pub(crate) profile: LanguageProfile,
     current_func_name: Option<String>,
@@ -314,6 +324,7 @@ impl Compiler {
             defined_class_methods: HashSet::new(),
             global_type_hints: HashMap::new(),
             enum_members: HashMap::new(),
+            enum_value_names: HashMap::new(),
             case_sensitive: profile.case_sensitive,
             profile,
             current_func_name: None,
@@ -1121,6 +1132,9 @@ impl Compiler {
             parent,
             fields: Vec::new(),
             static_fields: Vec::new(),
+            static_field_types: HashMap::new(),
+            static_method_names: Vec::new(),
+            nested_types: Vec::new(),
             statics: Vec::new(),
         });
     }
@@ -1200,6 +1214,15 @@ impl Compiler {
         normalized == "string"
             || normalized == "system.string"
             || normalized.ends_with(".string")
+    }
+
+    pub(super) fn is_callable_type_hint(type_hint: &str) -> bool {
+        let normalized = Self::normalize_type_hint(type_hint);
+        normalized.starts_with("func")
+            || normalized.starts_with("action")
+            || normalized.contains(".func")
+            || normalized.contains(".action")
+            || normalized.contains(" delegate")
     }
 
     pub(super) fn is_pascal_set_type_hint(type_hint: &str) -> bool {
@@ -1308,6 +1331,15 @@ impl Compiler {
             self.emit_u16(Op::GLOBAL_GET, class_idx);
             let field_idx = self.str_const(&self.canon(name));
             self.emit_u16(Op::STRUCT_GET, field_idx);
+            return;
+        }
+        // Bare static method in class scope — `Double(x)` inside
+        // `class Converter` resolves to `Converter.Double`.
+        if let Some(class_name) = self.is_class_static_method(name) {
+            let class_idx = self.str_const(&class_name);
+            self.emit_u16(Op::GLOBAL_GET, class_idx);
+            let method_idx = self.str_const(&self.canon(name));
+            self.emit_u16(Op::STRUCT_GET, method_idx);
             return;
         }
         let cname = self.canon(name);
@@ -1429,6 +1461,90 @@ impl Compiler {
                 if let Some(pc) = self.pending_classes.get(cn) {
                     if pc.static_fields.iter().any(|f| {
                         if self.case_sensitive { f == name } else { f.eq_ignore_ascii_case(name) }
+                    }) {
+                        return Some(cn.to_string());
+                    }
+                    current = pc.parent.as_deref();
+                } else {
+                    break;
+                }
+            }
+        }
+        None
+    }
+
+    fn is_class_static_field_type_hint(&self, name: &str) -> Option<String> {
+        if let Some(ref class_name) = self.current_class {
+            let mut current = Some(class_name.as_str());
+            while let Some(cn) = current {
+                if let Some(pc) = self.pending_classes.get(cn) {
+                    let canon = self.canon(name);
+                    if let Some(type_hint) = pc.static_field_types.get(&canon) {
+                        return Some(type_hint.clone());
+                    }
+                    current = pc.parent.as_deref();
+                } else {
+                    break;
+                }
+            }
+        }
+        None
+    }
+
+    fn is_class_nested_type(&self, name: &str) -> Option<String> {
+        if let Some(ref class_name) = self.current_class {
+            let mut current = Some(class_name.as_str());
+            while let Some(cn) = current {
+                if let Some(pc) = self.pending_classes.get(cn) {
+                    if pc.nested_types.iter().any(|n| {
+                        if self.case_sensitive { n == name } else { n.eq_ignore_ascii_case(name) }
+                    }) {
+                        return Some(cn.to_string());
+                    }
+                    current = pc.parent.as_deref();
+                } else {
+                    break;
+                }
+            }
+        }
+        None
+    }
+
+    pub(super) fn generic_static_member_key(&self, type_expr: &str, field: &str) -> Option<String> {
+        let expr = type_expr.trim();
+        if !expr.contains('<') || !expr.contains('>') {
+            return None;
+        }
+
+        let base = expr.split('<').next().map(str::trim).unwrap_or(expr);
+        let base_canon = self.canon(base);
+        if !self.defined_classes.contains(&base_canon) {
+            return None;
+        }
+
+        let field_canon = self.canon(field);
+        let has_static = self.pending_classes.get(base)
+            .or_else(|| self.pending_classes.get(base_canon.as_str()))
+            .map(|pc| pc.static_fields.iter().any(|f| f == &field_canon))
+            .unwrap_or(false);
+        if !has_static {
+            return None;
+        }
+
+        let compact_type: String = expr.chars().filter(|c| !c.is_whitespace()).collect();
+        let type_canon = self.canon(&compact_type);
+        Some(format!("__gstatic_{}_{}", type_canon, field_canon))
+    }
+
+    /// Returns the owning class when `name` is a static method of the
+    /// currently compiling class (or one of its ancestors).
+    fn is_class_static_method(&self, name: &str) -> Option<String> {
+        if let Some(ref class_name) = self.current_class {
+            let mut current = Some(class_name.as_str());
+            while let Some(cn) = current {
+                if let Some(pc) = self.pending_classes.get(cn) {
+                    if pc.static_method_names.iter().any(|m| {
+                        if self.case_sensitive { m == name } else { m.eq_ignore_ascii_case(name) }
                     }) {
                         return Some(cn.to_string());
                     }
@@ -1671,6 +1787,31 @@ impl Compiler {
 
             // ── Assignment ──────────────────────────────────────────────
             StmtKind::Assign { targets, value } => {
+                if (self.profile.name == "csharp" || self.profile.name == "vb") && targets.len() == 1 {
+                    if let ExprKind::Binary { op, left, right } = &value.kind {
+                        if self.assign_target_matches_expr(&targets[0], left)
+                            && self.is_csharp_delegate_handler_expr(right)
+                        {
+                            match op {
+                                BinOp::Add => {
+                                    self.compile_expr(left)?;
+                                    self.compile_expr(right)?;
+                                    common::delegates::emit_combine(&mut self.chunks, self.current, self.line);
+                                    self.compile_assign_target(&targets[0])?;
+                                    return Ok(());
+                                }
+                                BinOp::Sub => {
+                                    self.compile_expr(left)?;
+                                    self.compile_expr(right)?;
+                                    common::delegates::emit_remove(&mut self.chunks, self.current, self.line);
+                                    self.compile_assign_target(&targets[0])?;
+                                    return Ok(());
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
                 // Multi-value receive: `a, b, c = callee(...)` where the
                 // callee is a direct identifier call to a function the
                 // pre-scan marked multi-return with matching arity. We
@@ -1715,6 +1856,28 @@ impl Compiler {
             }
 
             StmtKind::CompoundAssign { target, op, value } => {
+                if (self.profile.name == "csharp" || self.profile.name == "vb")
+                    && matches!(op, CompoundOp::Add | CompoundOp::Sub)
+                    && self.is_csharp_delegate_handler_expr(value)
+                {
+                    match op {
+                        CompoundOp::Add => {
+                            self.compile_expr(target)?;
+                            self.compile_expr(value)?;
+                            common::delegates::emit_combine(&mut self.chunks, self.current, self.line);
+                            self.compile_assign_target(target)?;
+                            return Ok(());
+                        }
+                        CompoundOp::Sub => {
+                            self.compile_expr(target)?;
+                            self.compile_expr(value)?;
+                            common::delegates::emit_remove(&mut self.chunks, self.current, self.line);
+                            self.compile_assign_target(target)?;
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                }
                 // Load current value
                 self.compile_expr(target)?;
                 self.compile_expr(value)?;
@@ -2415,6 +2578,7 @@ impl Compiler {
                 let cname = self.canon(name);
                 self.emit_u16(Op::STRUCT_NEW, 0);
                 let mut next_val = 0i64;
+                let mut value_names = HashMap::new();
                 for m in members {
                     self.emit(Op::DUP);
                     if let Some(ref v) = m.value {
@@ -2432,7 +2596,9 @@ impl Compiler {
                     self.emit(Op::DROP);
                     // Register member → enum type for bare-name resolution
                     self.enum_members.insert(mname, cname.clone());
+                    value_names.insert(next_val - 1, m.name.clone());
                 }
+                self.enum_value_names.insert(cname.clone(), value_names);
                 let gidx = self.str_const(&cname);
                 self.emit_u16(Op::GLOBAL_SET, gidx);
                 self.emit(Op::DROP);
@@ -3177,6 +3343,38 @@ impl Compiler {
     fn compile_var_declarator(&mut self, decl: &VarDeclarator, kind: &VarDeclKind) -> Result<(), String> {
         match &decl.pattern {
             BindingPattern::Ident(name) => {
+                // Top-level vars → globals.
+                // `let`/`const` inside a block scope (depth > 0) are locals
+                // even at the top level — they respect block scoping.
+                // ECMA-262 §10.2.11: `var` inside a function is function-
+                // scoped (a local), only script-level `var` is global.
+                let is_toplevel = self.scopes.len() == 1 && self.scope().depth == 0;
+                let is_hoisted = *kind == VarDeclKind::Var
+                    && self.profile.hoist_var
+                    && self.scopes.len() == 1;
+
+                // Recursive local lambdas need their binding slot defined
+                // before compiling the initializer so captures resolve to the
+                // enclosing local rather than an unresolved global.
+                let mut predeclared_local_slot: Option<u16> = None;
+                if !is_toplevel && !is_hoisted {
+                    if let Some(init_expr) = decl.init.as_ref() {
+                        let recursive_lambda_init = matches!(init_expr.kind,
+                            ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_));
+                        if recursive_lambda_init {
+                            let slot = if *kind == VarDeclKind::Var && self.profile.hoist_var {
+                                self.scope_mut().define_at_function_scope(name, decl.type_hint.clone())
+                            } else {
+                                self.define_local_typed(name, decl.type_hint.clone())
+                            };
+                            self.emit(Op::NULL);
+                            self.emit_u16(Op::LOCAL_SET, slot);
+                            self.emit(Op::DROP);
+                            predeclared_local_slot = Some(slot);
+                        }
+                    }
+                }
+
                 if let Some(ref init_expr) = decl.init {
                     self.compile_expr(init_expr)?;
                     self.maybe_promote_pascal_array_literal_to_set(decl.type_hint.as_deref(), init_expr);
@@ -3226,15 +3424,7 @@ impl Compiler {
                         _ => self.emit(Op::NULL),
                     }
                 }
-                // Top-level vars → globals.
-                // `let`/`const` inside a block scope (depth > 0) are locals
-                // even at the top level — they respect block scoping.
-                // ECMA-262 §10.2.11: `var` inside a function is function-
-                // scoped (a local), only script-level `var` is global.
-                let is_toplevel = self.scopes.len() == 1 && self.scope().depth == 0;
-                let is_hoisted = *kind == VarDeclKind::Var
-                    && self.profile.hoist_var
-                    && self.scopes.len() == 1;
+
                 if is_toplevel || is_hoisted {
                     let cn = self.canon(name);
                     let idx = self.str_const(&cn);
@@ -3249,7 +3439,9 @@ impl Compiler {
                     // survive enclosing-block exits). `let` / `const`
                     // are block-scoped. The scope helper picks the right
                     // depth based on the kind.
-                    let slot = if *kind == VarDeclKind::Var && self.profile.hoist_var {
+                    let slot = if let Some(slot) = predeclared_local_slot {
+                        slot
+                    } else if *kind == VarDeclKind::Var && self.profile.hoist_var {
                         self.scope_mut().define_at_function_scope(name, decl.type_hint.clone())
                     } else {
                         self.define_local_typed(name, decl.type_hint.clone())
@@ -3401,6 +3593,18 @@ impl Compiler {
                 self.emit_var_set(name);
             }
             ExprKind::Member { object, field, .. } => {
+                if let ExprKind::Ident(obj_name) = &object.kind {
+                    if let Some(key) = self.generic_static_member_key(obj_name, field) {
+                        let tmp = self.define_local("__tmp");
+                        self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, tmp);
+                        let idx = self.str_const(&key);
+                        self.emit_u16(Op::GLOBAL_SET, idx);
+                        self.emit(Op::DROP);
+                        return Ok(());
+                    }
+                }
+
                 // Proxy set-trap dispatch (JS profile, only when the
                 // module references `Proxy`). Stack on entry is [value]
                 // (caller pushed it); the dispatcher needs [obj, key,
@@ -3556,6 +3760,36 @@ impl Compiler {
                     common::collections::emit_push(&mut self.chunks, self.current, line);
                     // ecma:array.push leaves [new_length]; drop it.
                     self.emit(Op::DROP);
+                } else if matches!(self.profile.name.as_str(), "csharp" | "vb") {
+                    self.compile_expr(object)?;
+                    let obj_tmp = self.define_local("__index_set_obj");
+                    self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    let setter_key = self.str_const("__set___index__");
+                    self.emit_u16(Op::STRUCT_GET, setter_key);
+                    let setter_tmp = self.define_local("__index_setter");
+                    self.emit_u16(Op::LOCAL_SET, setter_tmp); self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, setter_tmp);
+                    self.emit(Op::REF_IS_NULL);
+                    let fallback = self.emit_jump(Op::BR_IF_TRUE);
+
+                    self.emit_u16(Op::LOCAL_GET, setter_tmp);
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.compile_expr(index)?;
+                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    self.emit_u8(Op::CALL_REF, 3);
+                    self.emit(Op::DROP);
+                    let done = self.emit_jump(Op::BR);
+
+                    self.patch_jump(fallback);
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.compile_expr(index)?;
+                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    common::collections::emit_set(&mut self.chunks, self.current, line);
+                    self.emit(Op::DROP);
+                    self.patch_jump(done);
                 } else {
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
@@ -4284,6 +4518,35 @@ impl Compiler {
         }
     }
 
+    fn is_csharp_delegate_handler_expr(&self, expr: &Expression) -> bool {
+        if matches!(expr.kind, ExprKind::Ident(_) | ExprKind::Member { .. } | ExprKind::Lambda { .. }) {
+            return true;
+        }
+        match &expr.kind {
+            ExprKind::New { args, .. } if args.len() == 1 => {
+                matches!(args[0].value.kind, ExprKind::Ident(_) | ExprKind::Member { .. } | ExprKind::Lambda { .. })
+            }
+            _ => false,
+        }
+    }
+
+    fn assign_target_matches_expr(&self, target: &Expression, expr: &Expression) -> bool {
+        match (&target.kind, &expr.kind) {
+            (ExprKind::Ident(a), ExprKind::Ident(b)) => a == b,
+            (
+                ExprKind::Member { object: to, field: tf, .. },
+                ExprKind::Member { object: eo, field: ef, .. },
+            ) => {
+                if !tf.eq_ignore_ascii_case(ef) {
+                    return false;
+                }
+                self.assign_target_matches_expr(to, eo)
+            }
+            (ExprKind::This, ExprKind::This) => true,
+            _ => false,
+        }
+    }
+
     // ════════════════════════════════════════════════════════════════════════
     // Builtins (profile-driven)
     // ════════════════════════════════════════════════════════════════════════
@@ -4854,9 +5117,11 @@ impl Compiler {
             "str_from_char_code" => {
                 // String.fromCharCode(72, 105) → "Hi"
                 self.compile_expr(args[0])?;
+                common::convert::emit_to_int(self.chunk(), line);
                 self.emit(Op::STR_FROM_CHAR_CODE);
                 for a in &args[1..] {
                     self.compile_expr(a)?;
+                    common::convert::emit_to_int(self.chunk(), line);
                     self.emit(Op::STR_FROM_CHAR_CODE);
                     self.emit(Op::STR_CONCAT);
                 }
@@ -5680,9 +5945,34 @@ impl Compiler {
             "cint" | "clng" => {
                 if let Some(arg) = args.first() {
                     self.compile_expr(arg)?;
+                    let value_slot = self.define_local("__cint_value");
+                    self.emit_u16(Op::LOCAL_SET, value_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, value_slot);
+                    self.emit(Op::REF_TYPEOF);
+                    self.emit_const(Value::String(Arc::from("string")));
+                    self.emit(Op::DYN_EQ);
+                    let generic_numeric = self.emit_jump(Op::BR_IF_FALSE);
+
+                    self.emit_u16(Op::LOCAL_GET, value_slot);
+                    common::strings::emit_length(self.chunk(), line);
+                    self.emit_const(Value::I32(1));
+                    self.emit(Op::DYN_EQ);
+                    let not_single_char = self.emit_jump(Op::BR_IF_FALSE);
+
+                    self.emit_u16(Op::LOCAL_GET, value_slot);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit(Op::STR_CHAR_CODE_AT);
+                    let done = self.emit_jump(Op::BR);
+
+                    self.patch_jump(not_single_char);
+                    self.patch_jump(generic_numeric);
+                    self.emit_u16(Op::LOCAL_GET, value_slot);
                     let num = self.import("ecma:number", "Number");
                     self.emit_host_call(num, 1);
                     self.emit(Op::F64_FLOOR);
+                    self.patch_jump(done);
                 } else {
                     self.emit_const(Value::F64(0.0));
                 }

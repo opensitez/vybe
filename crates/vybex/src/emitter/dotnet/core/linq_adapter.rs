@@ -30,6 +30,12 @@ fn alloc_locals(chunk: &mut Chunk, count: u16) -> u16 {
     base
 }
 
+fn emit_import_call(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
+    let idx = chunks[0].add_import(module, name);
+    chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
+    chunks[current].emit(argc, line);
+}
+
 // ── Pure reductions (no fn arg) ──────────────────────────────────────────
 
 /// `arr.First()` — returns `arr[0]`. Stack: [arr] → [first].
@@ -198,6 +204,7 @@ pub fn emit_linq_count_pred(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);  chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line); chunk.emit_op(Op::DROP, line);
+
     chunk.emit_op(Op::I32_CONST_0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, count_slot, line); chunk.emit_op(Op::DROP, line);
 
@@ -290,5 +297,279 @@ pub fn emit_linq_order_by_descending(chunks: &mut [Chunk], current: usize, line:
     chunk.emit_op_u8(Op::CALL_REF, 2, line);
     // Reverse in place — emit_reverse is the array reverse opcode.
     collections::emit_reverse(chunks, current, line);
+}
+
+/// `arr.Select(fn)` — invoke `map` on the receiver.
+/// Stack: [arr, fn] → [array].
+pub fn emit_linq_select(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_locals(&mut chunks[current], 5);
+    let fn_slot = arr_slot + 1;
+    let result_slot = arr_slot + 2;
+    let idx_slot = arr_slot + 3;
+    let elem_slot = arr_slot + 4;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, fn_slot, line);  chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line); chunks[current].emit_op(Op::DROP, line);
+
+    // Normalize receiver to an indexable values array.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    collections::emit_iter_values(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    // result = []
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    // result.push(fn(elem))
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
+/// `arr.SelectMany(fn)` — invoke `flatMap` on the receiver.
+/// Stack: [arr, fn] → [array].
+pub fn emit_linq_select_many(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_locals(&mut chunks[current], 6);
+    let fn_slot = arr_slot + 1;
+    let result_slot = arr_slot + 2;
+    let idx_slot = arr_slot + 3;
+    let elem_slot = arr_slot + 4;
+    let mapped_slot = arr_slot + 5;
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, fn_slot, line);  chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line); chunks[current].emit_op(Op::DROP, line);
+
+    // Normalize receiver to an indexable values array.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    collections::emit_iter_values(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    // result = []
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    // mapped = fn(elem)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, mapped_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    // result = result.concat(mapped)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, mapped_slot, line);
+    collections::emit_concat(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
+/// `arr.GroupBy(keyFn)` — returns an array of group arrays.
+/// Each group is an array with an extra property `Key`.
+/// Stack: [arr, keyFn] → [groups].
+pub fn emit_linq_group_by(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_locals(&mut chunks[current], 8);
+    let fn_slot = arr_slot + 1;
+    let map_slot = arr_slot + 2;
+    let out_slot = arr_slot + 3;
+    let idx_slot = arr_slot + 4;
+    let elem_slot = arr_slot + 5;
+    let key_slot = arr_slot + 6;
+    let group_slot = arr_slot + 7;
+
+    // Stack: [arr, keyFn]
+    chunks[current].emit_op_u16(Op::LOCAL_SET, fn_slot, line);  chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line); chunks[current].emit_op(Op::DROP, line);
+
+    // groupMap = new Map()
+    collections::emit_map_new(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, map_slot, line); chunks[current].emit_op(Op::DROP, line);
+
+    // out = []
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line); chunks[current].emit_op(Op::DROP, line);
+
+    let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    // key = keyFn(elem)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    // if !groupMap.has(key) { create group, set Key, save map, out.push(group) }
+    chunks[current].emit_op_u16(Op::LOCAL_GET, map_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    emit_import_call(chunks, current, "ecma:map", "has", 2, line);
+    chunks[current].emit_op(Op::DYN_TO_BOOL, line);
+    let maybe_new = chunks[current].emit_block(line);
+    chunks[current].emit_br_if(0, line); // already exists
+
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, group_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    // group["Key"] = key
+    chunks[current].emit_op_u16(Op::LOCAL_GET, group_slot, line);
+    let key_name = chunks[current].add_constant(Value::String(Arc::from("Key")));
+    chunks[current].emit_op_u16(Op::CONST, key_name, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    // groupMap[key] = group
+    chunks[current].emit_op_u16(Op::LOCAL_GET, map_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, group_slot, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    // out.push(group)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, group_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(maybe_new);
+
+    // group = groupMap[key]
+    chunks[current].emit_op_u16(Op::LOCAL_GET, map_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, group_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    // group.push(elem)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, group_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
+}
+
+/// `arr.ToDictionary(keyFn, valueFn)`.
+/// Stack: [arr, keyFn, valueFn] → [map].
+pub fn emit_linq_to_dictionary(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_locals(&mut chunks[current], 8);
+    let key_fn_slot = arr_slot + 1;
+    let val_fn_slot = arr_slot + 2;
+    let map_slot = arr_slot + 3;
+    let idx_slot = arr_slot + 4;
+    let elem_slot = arr_slot + 5;
+    let key_slot = arr_slot + 6;
+    let val_slot = arr_slot + 7;
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, val_fn_slot, line); chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key_fn_slot, line); chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);    chunks[current].emit_op(Op::DROP, line);
+
+    collections::emit_map_new(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, map_slot, line); chunks[current].emit_op(Op::DROP, line);
+
+    let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, val_fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, val_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, map_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, val_slot, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, map_slot, line);
+}
+
+/// `arr.Zip(other, zipperFn)`.
+/// Stack: [arr, other, fn] → [array].
+pub fn emit_linq_zip(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_locals(&mut chunks[current], 8);
+    let other_slot = arr_slot + 1;
+    let fn_slot = arr_slot + 2;
+    let out_slot = arr_slot + 3;
+    let idx_slot = arr_slot + 4;
+    let left_slot = arr_slot + 5;
+    let right_slot = arr_slot + 6;
+    let zipped_slot = arr_slot + 7;
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, fn_slot, line);    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, other_slot, line); chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);   chunks[current].emit_op(Op::DROP, line);
+
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line); chunks[current].emit_op(Op::DROP, line);
+
+    let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, left_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    // Skip iteration body if idx >= other.length
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, other_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op(Op::DYN_GE, line);
+    let too_short = chunks[current].emit_block(line);
+    chunks[current].emit_br_if(0, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, other_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, right_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, zipped_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, zipped_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(too_short);
+
+    loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
 }
 

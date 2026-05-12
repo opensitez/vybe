@@ -67,8 +67,1359 @@ pub fn parse(source: &str) -> Result<Module, String> {
         body,
         imports,
     };
+    rewrite_using_imports(&mut module);
+    rewrite_explicit_interface_accesses(&mut module);
+    rewrite_record_uses(&mut module);
     rewrite_extension_calls(&mut module);
     Ok(module)
+}
+
+fn explicit_interface_runtime_name(interface_name: &str, member_name: &str) -> String {
+    format!(
+        "__iface__{}__{}",
+        sanitize_explicit_interface_name(interface_name),
+        member_name
+    )
+}
+
+fn sanitize_explicit_interface_name(interface_name: &str) -> String {
+    normalize_runtime_type_name(interface_name)
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '_' })
+        .collect()
+}
+
+fn parse_explicit_interface_runtime_name(name: &str) -> Option<(String, String)> {
+    let remainder = name.strip_prefix("__iface__")?;
+    let (iface, member) = remainder.split_once("__")?;
+    Some((iface.to_string(), member.to_string()))
+}
+
+fn extract_explicit_interface_name(pair: Pair<Rule>) -> String {
+    pair.as_str().trim_end_matches('.').trim().to_string()
+}
+
+fn rewrite_explicit_interface_accesses(module: &mut Module) {
+    let conflicted = collect_conflicted_explicit_interface_members(&module.body);
+    if conflicted.is_empty() {
+        return;
+    }
+    rewrite_explicit_interface_accesses_in_statements(&mut module.body, &conflicted);
+}
+
+fn collect_conflicted_explicit_interface_members(body: &[Statement]) -> HashSet<String> {
+    let mut conflicted = HashSet::new();
+    for stmt in body {
+        collect_conflicted_explicit_interface_members_in_statement(stmt, &mut conflicted);
+    }
+    conflicted
+}
+
+fn collect_conflicted_explicit_interface_members_in_statement(
+    stmt: &Statement,
+    conflicted: &mut HashSet<String>,
+) {
+    match &stmt.kind {
+        StmtKind::NamespaceDecl { body, .. } | StmtKind::Block(body) => {
+            for stmt in body {
+                collect_conflicted_explicit_interface_members_in_statement(stmt, conflicted);
+            }
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            collect_conflicted_explicit_interface_members_in_class_members(members, conflicted);
+            for member in members {
+                if let ClassMember::NestedType(stmt) = member {
+                    collect_conflicted_explicit_interface_members_in_statement(stmt, conflicted);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_conflicted_explicit_interface_members_in_class_members(
+    members: &[ClassMember],
+    conflicted: &mut HashSet<String>,
+) {
+    let mut plain_methods: HashSet<String> = HashSet::new();
+    let mut explicit_methods: HashMap<String, Vec<String>> = HashMap::new();
+    let mut plain_properties: HashSet<String> = HashSet::new();
+    let mut explicit_properties: HashMap<String, Vec<String>> = HashMap::new();
+
+    for member in members {
+        match member {
+            ClassMember::Method(stmt) => {
+                if let StmtKind::FunctionDecl { name, .. } = &stmt.kind {
+                    if parse_explicit_interface_runtime_name(name).is_none() {
+                        plain_methods.insert(name.clone());
+                    }
+                }
+            }
+            ClassMember::Property { name, .. } => {
+                if parse_explicit_interface_runtime_name(name).is_none() {
+                    plain_properties.insert(name.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for member in members {
+        match member {
+            ClassMember::Method(stmt) => {
+                if let StmtKind::FunctionDecl { name, .. } = &stmt.kind {
+                    if let Some((iface, base)) = parse_explicit_interface_runtime_name(name) {
+                        explicit_methods.entry(base).or_default().push(iface);
+                    }
+                }
+            }
+            ClassMember::Property { name, .. } => {
+                if let Some((iface, base)) = parse_explicit_interface_runtime_name(name) {
+                    explicit_properties.entry(base).or_default().push(iface);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for (base, ifaces) in explicit_methods {
+        if ifaces.len() > 1 || plain_methods.contains(&base) {
+            for iface in ifaces {
+                conflicted.insert(explicit_interface_runtime_name(&iface, &base));
+            }
+        }
+    }
+    for (base, ifaces) in explicit_properties {
+        if ifaces.len() > 1 || plain_properties.contains(&base) {
+            for iface in ifaces {
+                conflicted.insert(explicit_interface_runtime_name(&iface, &base));
+            }
+        }
+    }
+}
+
+fn rewrite_explicit_interface_accesses_in_statements(
+    body: &mut [Statement],
+    conflicted: &HashSet<String>,
+) {
+    for stmt in body {
+        rewrite_explicit_interface_accesses_in_statement(stmt, conflicted);
+    }
+}
+
+fn rewrite_explicit_interface_accesses_in_statement(
+    stmt: &mut Statement,
+    conflicted: &HashSet<String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr)
+        | StmtKind::Return(Some(expr))
+        | StmtKind::Throw { expr: Some(expr), cause: None }
+        | StmtKind::Using { resource: expr, .. }
+        | StmtKind::Lock { expr, .. }
+        | StmtKind::CompoundAssign { value: expr, .. } => {
+            rewrite_explicit_interface_accesses_in_expr(expr, conflicted);
+        }
+        StmtKind::Throw { expr: Some(expr), cause: Some(cause) } => {
+            rewrite_explicit_interface_accesses_in_expr(expr, conflicted);
+            rewrite_explicit_interface_accesses_in_expr(cause, conflicted);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_explicit_interface_accesses_in_expr(init, conflicted);
+                }
+                if let Some(bounds) = &mut decl.array_bounds {
+                    for bound in bounds {
+                        rewrite_explicit_interface_accesses_in_expr(bound, conflicted);
+                    }
+                }
+            }
+        }
+        StmtKind::FunctionDecl { body, .. }
+        | StmtKind::Block(body)
+        | StmtKind::NamespaceDecl { body, .. } => {
+            rewrite_explicit_interface_accesses_in_statements(body, conflicted);
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_explicit_interface_accesses_in_member(member, conflicted);
+            }
+        }
+        StmtKind::If { cond, then_body, elifs, else_body } => {
+            rewrite_explicit_interface_accesses_in_expr(cond, conflicted);
+            rewrite_explicit_interface_accesses_in_statements(then_body, conflicted);
+            for (elif_cond, elif_body) in elifs {
+                rewrite_explicit_interface_accesses_in_expr(elif_cond, conflicted);
+                rewrite_explicit_interface_accesses_in_statements(elif_body, conflicted);
+            }
+            if let Some(else_body) = else_body {
+                rewrite_explicit_interface_accesses_in_statements(else_body, conflicted);
+            }
+        }
+        StmtKind::For { init, cond, update, body } => {
+            if let Some(init) = init {
+                rewrite_explicit_interface_accesses_in_statement(init, conflicted);
+            }
+            if let Some(cond) = cond {
+                rewrite_explicit_interface_accesses_in_expr(cond, conflicted);
+            }
+            if let Some(update) = update {
+                rewrite_explicit_interface_accesses_in_expr(update, conflicted);
+            }
+            rewrite_explicit_interface_accesses_in_statements(body, conflicted);
+        }
+        StmtKind::ForIn { iter, body, else_body, .. } => {
+            rewrite_explicit_interface_accesses_in_expr(iter, conflicted);
+            rewrite_explicit_interface_accesses_in_statements(body, conflicted);
+            if let Some(else_body) = else_body {
+                rewrite_explicit_interface_accesses_in_statements(else_body, conflicted);
+            }
+        }
+        StmtKind::While { cond, body, else_body } => {
+            rewrite_explicit_interface_accesses_in_expr(cond, conflicted);
+            rewrite_explicit_interface_accesses_in_statements(body, conflicted);
+            if let Some(else_body) = else_body {
+                rewrite_explicit_interface_accesses_in_statements(else_body, conflicted);
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            rewrite_explicit_interface_accesses_in_statements(body, conflicted);
+            rewrite_explicit_interface_accesses_in_expr(cond, conflicted);
+        }
+        StmtKind::Switch { expr, cases, default } => {
+            rewrite_explicit_interface_accesses_in_expr(expr, conflicted);
+            for case in cases {
+                for condition in &mut case.conditions {
+                    match condition {
+                        CaseCondition::Value(expr) => rewrite_explicit_interface_accesses_in_expr(expr, conflicted),
+                        CaseCondition::Range { from, to } => {
+                            rewrite_explicit_interface_accesses_in_expr(from, conflicted);
+                            rewrite_explicit_interface_accesses_in_expr(to, conflicted);
+                        }
+                        CaseCondition::Comparison { expr, .. } => {
+                            rewrite_explicit_interface_accesses_in_expr(expr, conflicted);
+                        }
+                    }
+                }
+                rewrite_explicit_interface_accesses_in_statements(&mut case.body, conflicted);
+            }
+            if let Some(default) = default {
+                rewrite_explicit_interface_accesses_in_statements(default, conflicted);
+            }
+        }
+        StmtKind::Try { body, catches, else_body, finally } => {
+            rewrite_explicit_interface_accesses_in_statements(body, conflicted);
+            for catch in catches {
+                if let Some(when_clause) = &mut catch.when_clause {
+                    rewrite_explicit_interface_accesses_in_expr(when_clause, conflicted);
+                }
+                rewrite_explicit_interface_accesses_in_statements(&mut catch.body, conflicted);
+            }
+            if let Some(else_body) = else_body {
+                rewrite_explicit_interface_accesses_in_statements(else_body, conflicted);
+            }
+            if let Some(finally) = finally {
+                rewrite_explicit_interface_accesses_in_statements(finally, conflicted);
+            }
+        }
+        StmtKind::With { items, body, .. } => {
+            for item in items {
+                rewrite_explicit_interface_accesses_in_expr(&mut item.expr, conflicted);
+            }
+            rewrite_explicit_interface_accesses_in_statements(body, conflicted);
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_explicit_interface_accesses_in_expr(target, conflicted);
+            }
+            rewrite_explicit_interface_accesses_in_expr(value, conflicted);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_explicit_interface_accesses_in_member(
+    member: &mut ClassMember,
+    conflicted: &HashSet<String>,
+) {
+    match member {
+        ClassMember::Field { init: Some(expr), array_bounds, .. } => {
+            rewrite_explicit_interface_accesses_in_expr(expr, conflicted);
+            if let Some(bounds) = array_bounds {
+                for bound in bounds {
+                    rewrite_explicit_interface_accesses_in_expr(bound, conflicted);
+                }
+            }
+        }
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_explicit_interface_accesses_in_statement(stmt, conflicted);
+        }
+        ClassMember::Constructor { body, base_args, .. } => {
+            rewrite_explicit_interface_accesses_in_statements(body, conflicted);
+            if let Some(base_args) = base_args {
+                for arg in base_args {
+                    rewrite_explicit_interface_accesses_in_expr(arg, conflicted);
+                }
+            }
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                rewrite_explicit_interface_accesses_in_statements(getter, conflicted);
+            }
+            if let Some(setter) = setter {
+                rewrite_explicit_interface_accesses_in_statements(&mut setter.body, conflicted);
+            }
+        }
+        ClassMember::Const { value, .. } => {
+            rewrite_explicit_interface_accesses_in_expr(value, conflicted);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_explicit_interface_accesses_in_expr(
+    expr: &mut Expression,
+    conflicted: &HashSet<String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::NullCoalesce { left, right } => {
+            rewrite_explicit_interface_accesses_in_expr(left, conflicted);
+            rewrite_explicit_interface_accesses_in_expr(right, conflicted);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::IsType { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::Spread(expr) => {
+            rewrite_explicit_interface_accesses_in_expr(expr, conflicted);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_explicit_interface_accesses_in_expr(cond, conflicted);
+            rewrite_explicit_interface_accesses_in_expr(then, conflicted);
+            rewrite_explicit_interface_accesses_in_expr(else_, conflicted);
+        }
+        ExprKind::Member { object, field, .. } => {
+            rewrite_explicit_interface_accesses_in_expr(object, conflicted);
+            if let ExprKind::Cast { type_name, .. } = &object.kind {
+                let hidden = explicit_interface_runtime_name(type_name, field);
+                if conflicted.contains(&hidden) {
+                    *field = hidden;
+                }
+            }
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_explicit_interface_accesses_in_expr(object, conflicted);
+            rewrite_explicit_interface_accesses_in_expr(index, conflicted);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_explicit_interface_accesses_in_expr(callee, conflicted);
+            for arg in args.iter_mut() {
+                rewrite_explicit_interface_accesses_in_expr(&mut arg.value, conflicted);
+            }
+        }
+        ExprKind::New { class, args } => {
+            rewrite_explicit_interface_accesses_in_expr(class, conflicted);
+            for arg in args {
+                rewrite_explicit_interface_accesses_in_expr(&mut arg.value, conflicted);
+            }
+        }
+        ExprKind::Assign { target, value }
+        | ExprKind::Walrus { target, value } => {
+            rewrite_explicit_interface_accesses_in_expr(target, conflicted);
+            rewrite_explicit_interface_accesses_in_expr(value, conflicted);
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(expr) => rewrite_explicit_interface_accesses_in_expr(expr, conflicted),
+            LambdaBody::Block(body) => rewrite_explicit_interface_accesses_in_statements(body, conflicted),
+        },
+        ExprKind::Array(items) => {
+            for item in items {
+                rewrite_explicit_interface_accesses_in_expr(&mut item.value, conflicted);
+                if let Some(key) = &mut item.key {
+                    rewrite_explicit_interface_accesses_in_expr(key, conflicted);
+                }
+            }
+        }
+        ExprKind::Tuple(items)
+        | ExprKind::Set(items)
+        | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_explicit_interface_accesses_in_expr(item, conflicted);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        rewrite_explicit_interface_accesses_in_expr(key, conflicted);
+                        rewrite_explicit_interface_accesses_in_expr(value, conflicted);
+                    }
+                    ObjectProperty::Spread(expr) => {
+                        rewrite_explicit_interface_accesses_in_expr(expr, conflicted);
+                    }
+                    ObjectProperty::Method { value, .. }
+                    | ObjectProperty::Accessor { value, .. } => {
+                        rewrite_explicit_interface_accesses_in_statement(value, conflicted);
+                    }
+                    ObjectProperty::Shorthand(_) => {}
+                }
+            }
+        }
+        ExprKind::Interpolation(parts) => {
+            for part in parts {
+                match part {
+                    InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
+                        rewrite_explicit_interface_accesses_in_expr(expr, conflicted);
+                    }
+                    InterpolPart::Text(_) => {}
+                }
+            }
+        }
+        ExprKind::Yield(Some(expr)) => {
+            rewrite_explicit_interface_accesses_in_expr(expr, conflicted);
+        }
+        ExprKind::Comprehension { element, generators, .. } => {
+            rewrite_explicit_interface_accesses_in_expr(element, conflicted);
+            for generator in generators {
+                rewrite_explicit_interface_accesses_in_expr(&mut generator.target, conflicted);
+                rewrite_explicit_interface_accesses_in_expr(&mut generator.iter, conflicted);
+                for condition in &mut generator.conditions {
+                    rewrite_explicit_interface_accesses_in_expr(condition, conflicted);
+                }
+            }
+        }
+        ExprKind::Slice { lower, upper, step } => {
+            if let Some(lower) = lower {
+                rewrite_explicit_interface_accesses_in_expr(lower, conflicted);
+            }
+            if let Some(upper) = upper {
+                rewrite_explicit_interface_accesses_in_expr(upper, conflicted);
+            }
+            if let Some(step) = step {
+                rewrite_explicit_interface_accesses_in_expr(step, conflicted);
+            }
+        }
+        ExprKind::ClassExpr { parent, members, .. } => {
+            if let Some(parent) = parent {
+                rewrite_explicit_interface_accesses_in_expr(parent, conflicted);
+            }
+            for member in members {
+                rewrite_explicit_interface_accesses_in_member(member, conflicted);
+            }
+        }
+        ExprKind::FunctionExpr(stmt) => {
+            rewrite_explicit_interface_accesses_in_statement(stmt, conflicted);
+        }
+        ExprKind::Range { start, end, .. } => {
+            rewrite_explicit_interface_accesses_in_expr(start, conflicted);
+            rewrite_explicit_interface_accesses_in_expr(end, conflicted);
+        }
+        ExprKind::StaticAccess { class, member } => {
+            rewrite_explicit_interface_accesses_in_expr(class, conflicted);
+            rewrite_explicit_interface_accesses_in_expr(member, conflicted);
+        }
+        ExprKind::Match { subject, arms } => {
+            rewrite_explicit_interface_accesses_in_expr(subject, conflicted);
+            for arm in arms {
+                if let Some(conditions) = &mut arm.conditions {
+                    for condition in conditions {
+                        rewrite_explicit_interface_accesses_in_expr(condition, conflicted);
+                    }
+                }
+                rewrite_explicit_interface_accesses_in_expr(&mut arm.body, conflicted);
+            }
+        }
+        ExprKind::Lit(_)
+        | ExprKind::Ident(_)
+        | ExprKind::This
+        | ExprKind::Super
+        | ExprKind::AddressOf(_)
+        | ExprKind::SuperCall { .. }
+        | ExprKind::Yield(None)
+        | ExprKind::Destructure(_) => {}
+    }
+}
+
+#[derive(Clone)]
+struct RecordShape {
+    positional_fields: Vec<String>,
+}
+
+fn rewrite_record_uses(module: &mut Module) {
+    let record_shapes = collect_record_shapes(&module.body);
+    if record_shapes.is_empty() {
+        return;
+    }
+    let mut scopes = vec![HashMap::new()];
+    rewrite_record_uses_in_statements(&mut module.body, &record_shapes, &mut scopes);
+}
+
+fn collect_record_shapes(body: &[Statement]) -> HashMap<String, RecordShape> {
+    let mut shapes = HashMap::new();
+    for stmt in body {
+        collect_record_shapes_in_statement(stmt, &mut shapes);
+    }
+    shapes
+}
+
+fn collect_record_shapes_in_statement(stmt: &Statement, shapes: &mut HashMap<String, RecordShape>) {
+    match &stmt.kind {
+        StmtKind::NamespaceDecl { body, .. } | StmtKind::Block(body) => {
+            for stmt in body {
+                collect_record_shapes_in_statement(stmt, shapes);
+            }
+        }
+        StmtKind::ClassDecl { name, members, .. } => {
+            if let Some(shape) = members.iter().find_map(|member| {
+                let ClassMember::Method(stmt) = member else {
+                    return None;
+                };
+                let StmtKind::FunctionDecl { name, params, .. } = &stmt.kind else {
+                    return None;
+                };
+                if name != "Deconstruct" || params.is_empty() {
+                    return None;
+                }
+                Some(RecordShape {
+                    positional_fields: params.iter().map(|p| p.name.clone()).collect(),
+                })
+            }) {
+                shapes.insert(name.clone(), shape);
+            }
+            for member in members {
+                if let ClassMember::NestedType(stmt) = member {
+                    collect_record_shapes_in_statement(stmt, shapes);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_record_uses_in_statements(
+    body: &mut [Statement],
+    record_shapes: &HashMap<String, RecordShape>,
+    scopes: &mut Vec<HashMap<String, String>>,
+) {
+    for stmt in body {
+        rewrite_record_uses_in_statement(stmt, record_shapes, scopes);
+    }
+}
+
+fn rewrite_record_uses_in_statement(
+    stmt: &mut Statement,
+    record_shapes: &HashMap<String, RecordShape>,
+    scopes: &mut Vec<HashMap<String, String>>,
+) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_record_uses_in_expr(expr, record_shapes, scopes);
+        }
+        StmtKind::Throw { expr, cause } => {
+            if let Some(expr) = expr {
+                rewrite_record_uses_in_expr(expr, record_shapes, scopes);
+            }
+            if let Some(cause) = cause {
+                rewrite_record_uses_in_expr(cause, record_shapes, scopes);
+            }
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_record_uses_in_expr(init, record_shapes, scopes);
+                    if let BindingPattern::Ident(name) = &decl.pattern {
+                        if let Some(type_name) = infer_record_type(init, record_shapes, scopes) {
+                            scopes.last_mut().unwrap().insert(name.clone(), type_name);
+                        }
+                    }
+                }
+            }
+        }
+        StmtKind::Block(body) => {
+            if let Some(rewritten) = rewrite_record_deconstruction_stmt(body, record_shapes, scopes) {
+                stmt.kind = rewritten;
+            } else {
+                scopes.push(HashMap::new());
+                rewrite_record_uses_in_statements(body, record_shapes, scopes);
+                scopes.pop();
+            }
+        }
+        StmtKind::NamespaceDecl { body, .. } => {
+            scopes.push(HashMap::new());
+            rewrite_record_uses_in_statements(body, record_shapes, scopes);
+            scopes.pop();
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            scopes.push(HashMap::new());
+            for param in params {
+                if let Some(type_name) = param.type_hint.clone().filter(|name| record_shapes.contains_key(name)) {
+                    scopes.last_mut().unwrap().insert(param.name.clone(), type_name);
+                }
+            }
+            rewrite_record_uses_in_statements(body, record_shapes, scopes);
+            scopes.pop();
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                match member {
+                    ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+                        rewrite_record_uses_in_statement(stmt, record_shapes, scopes);
+                    }
+                    ClassMember::Constructor { params, body, .. } => {
+                        scopes.push(HashMap::new());
+                        for param in params {
+                            if let Some(type_name) = param.type_hint.clone().filter(|name| record_shapes.contains_key(name)) {
+                                scopes.last_mut().unwrap().insert(param.name.clone(), type_name);
+                            }
+                        }
+                        rewrite_record_uses_in_statements(body, record_shapes, scopes);
+                        scopes.pop();
+                    }
+                    ClassMember::Property { getter, setter, .. } => {
+                        if let Some(getter) = getter {
+                            scopes.push(HashMap::new());
+                            rewrite_record_uses_in_statements(getter, record_shapes, scopes);
+                            scopes.pop();
+                        }
+                        if let Some(setter) = setter {
+                            scopes.push(HashMap::new());
+                            rewrite_record_uses_in_statements(&mut setter.body, record_shapes, scopes);
+                            scopes.pop();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        StmtKind::If { cond, then_body, elifs, else_body } => {
+            rewrite_record_uses_in_expr(cond, record_shapes, scopes);
+            scopes.push(HashMap::new());
+            rewrite_record_uses_in_statements(then_body, record_shapes, scopes);
+            scopes.pop();
+            for (elif_cond, elif_body) in elifs {
+                rewrite_record_uses_in_expr(elif_cond, record_shapes, scopes);
+                scopes.push(HashMap::new());
+                rewrite_record_uses_in_statements(elif_body, record_shapes, scopes);
+                scopes.pop();
+            }
+            if let Some(else_body) = else_body {
+                scopes.push(HashMap::new());
+                rewrite_record_uses_in_statements(else_body, record_shapes, scopes);
+                scopes.pop();
+            }
+        }
+        StmtKind::For { init, cond, update, body } => {
+            scopes.push(HashMap::new());
+            if let Some(init) = init {
+                rewrite_record_uses_in_statement(init, record_shapes, scopes);
+            }
+            if let Some(cond) = cond {
+                rewrite_record_uses_in_expr(cond, record_shapes, scopes);
+            }
+            if let Some(update) = update {
+                rewrite_record_uses_in_expr(update, record_shapes, scopes);
+            }
+            rewrite_record_uses_in_statements(body, record_shapes, scopes);
+            scopes.pop();
+        }
+        StmtKind::ForIn { iter, body, else_body, .. } => {
+            rewrite_record_uses_in_expr(iter, record_shapes, scopes);
+            scopes.push(HashMap::new());
+            rewrite_record_uses_in_statements(body, record_shapes, scopes);
+            if let Some(else_body) = else_body {
+                rewrite_record_uses_in_statements(else_body, record_shapes, scopes);
+            }
+            scopes.pop();
+        }
+        StmtKind::While { cond, body, else_body } => {
+            rewrite_record_uses_in_expr(cond, record_shapes, scopes);
+            scopes.push(HashMap::new());
+            rewrite_record_uses_in_statements(body, record_shapes, scopes);
+            if let Some(else_body) = else_body {
+                rewrite_record_uses_in_statements(else_body, record_shapes, scopes);
+            }
+            scopes.pop();
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            scopes.push(HashMap::new());
+            rewrite_record_uses_in_statements(body, record_shapes, scopes);
+            scopes.pop();
+            rewrite_record_uses_in_expr(cond, record_shapes, scopes);
+        }
+        StmtKind::Switch { expr, cases, default } => {
+            rewrite_record_uses_in_expr(expr, record_shapes, scopes);
+            for case in cases {
+                for condition in &mut case.conditions {
+                    match condition {
+                        CaseCondition::Value(expr) => rewrite_record_uses_in_expr(expr, record_shapes, scopes),
+                        CaseCondition::Range { from, to } => {
+                            rewrite_record_uses_in_expr(from, record_shapes, scopes);
+                            rewrite_record_uses_in_expr(to, record_shapes, scopes);
+                        }
+                        CaseCondition::Comparison { expr, .. } => {
+                            rewrite_record_uses_in_expr(expr, record_shapes, scopes);
+                        }
+                    }
+                }
+                scopes.push(HashMap::new());
+                rewrite_record_uses_in_statements(&mut case.body, record_shapes, scopes);
+                scopes.pop();
+            }
+            if let Some(default) = default {
+                scopes.push(HashMap::new());
+                rewrite_record_uses_in_statements(default, record_shapes, scopes);
+                scopes.pop();
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_record_uses_in_expr(
+    expr: &mut Expression,
+    record_shapes: &HashMap<String, RecordShape>,
+    scopes: &mut Vec<HashMap<String, String>>,
+) {
+    match &mut expr.kind {
+        ExprKind::Binary { op, left, right } => {
+            rewrite_record_uses_in_expr(left, record_shapes, scopes);
+            rewrite_record_uses_in_expr(right, record_shapes, scopes);
+            if matches!(op, BinOp::Eq | BinOp::NotEq) {
+                let left_type = infer_record_type(left, record_shapes, scopes);
+                let right_type = infer_record_type(right, record_shapes, scopes);
+                if let Some(type_name) = left_type.filter(|type_name| Some(type_name.clone()) == right_type) {
+                    if let Some(shape) = record_shapes.get(&type_name) {
+                        let equals_expr = build_record_field_equality(left, right, &shape.positional_fields);
+                        *expr = if matches!(op, BinOp::NotEq) {
+                            Expression::new(ExprKind::Unary {
+                                op: UnaryOp::Not,
+                                expr: Box::new(equals_expr),
+                            })
+                        } else {
+                            equals_expr
+                        };
+                    }
+                }
+            }
+        }
+        ExprKind::NullCoalesce { left, right }
+        | ExprKind::Assign { target: left, value: right }
+        | ExprKind::Walrus { target: left, value: right } => {
+            rewrite_record_uses_in_expr(left, record_shapes, scopes);
+            rewrite_record_uses_in_expr(right, record_shapes, scopes);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::IsType { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::Spread(expr)
+        | ExprKind::Yield(Some(expr)) => rewrite_record_uses_in_expr(expr, record_shapes, scopes),
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_record_uses_in_expr(cond, record_shapes, scopes);
+            rewrite_record_uses_in_expr(then, record_shapes, scopes);
+            rewrite_record_uses_in_expr(else_, record_shapes, scopes);
+        }
+        ExprKind::Member { object, .. } => rewrite_record_uses_in_expr(object, record_shapes, scopes),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_record_uses_in_expr(object, record_shapes, scopes);
+            rewrite_record_uses_in_expr(index, record_shapes, scopes);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_record_uses_in_expr(callee, record_shapes, scopes);
+            for arg in args {
+                rewrite_record_uses_in_expr(&mut arg.value, record_shapes, scopes);
+            }
+        }
+        ExprKind::New { class, args } => {
+            rewrite_record_uses_in_expr(class, record_shapes, scopes);
+            for arg in args {
+                rewrite_record_uses_in_expr(&mut arg.value, record_shapes, scopes);
+            }
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(expr) => rewrite_record_uses_in_expr(expr, record_shapes, scopes),
+            LambdaBody::Block(body) => {
+                scopes.push(HashMap::new());
+                rewrite_record_uses_in_statements(body, record_shapes, scopes);
+                scopes.pop();
+            }
+        },
+        ExprKind::Array(items) => {
+            for item in items {
+                rewrite_record_uses_in_expr(&mut item.value, record_shapes, scopes);
+                if let Some(key) = &mut item.key {
+                    rewrite_record_uses_in_expr(key, record_shapes, scopes);
+                }
+            }
+        }
+        ExprKind::Tuple(items)
+        | ExprKind::Set(items)
+        | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_record_uses_in_expr(item, record_shapes, scopes);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        rewrite_record_uses_in_expr(key, record_shapes, scopes);
+                        rewrite_record_uses_in_expr(value, record_shapes, scopes);
+                    }
+                    ObjectProperty::Spread(expr) => rewrite_record_uses_in_expr(expr, record_shapes, scopes),
+                    ObjectProperty::Method { value, .. }
+                    | ObjectProperty::Accessor { value, .. } => {
+                        rewrite_record_uses_in_statement(value, record_shapes, scopes);
+                    }
+                    ObjectProperty::Shorthand(_) => {}
+                }
+            }
+        }
+        ExprKind::Interpolation(parts) => {
+            for part in parts {
+                match part {
+                    InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
+                        rewrite_record_uses_in_expr(expr, record_shapes, scopes);
+                    }
+                    InterpolPart::Text(_) => {}
+                }
+            }
+        }
+        ExprKind::Comprehension { element, generators, .. } => {
+            rewrite_record_uses_in_expr(element, record_shapes, scopes);
+            for generator in generators {
+                rewrite_record_uses_in_expr(&mut generator.target, record_shapes, scopes);
+                rewrite_record_uses_in_expr(&mut generator.iter, record_shapes, scopes);
+                for condition in &mut generator.conditions {
+                    rewrite_record_uses_in_expr(condition, record_shapes, scopes);
+                }
+            }
+        }
+        ExprKind::Slice { lower, upper, step } => {
+            if let Some(lower) = lower {
+                rewrite_record_uses_in_expr(lower, record_shapes, scopes);
+            }
+            if let Some(upper) = upper {
+                rewrite_record_uses_in_expr(upper, record_shapes, scopes);
+            }
+            if let Some(step) = step {
+                rewrite_record_uses_in_expr(step, record_shapes, scopes);
+            }
+        }
+        ExprKind::ClassExpr { parent, members, .. } => {
+            if let Some(parent) = parent {
+                rewrite_record_uses_in_expr(parent, record_shapes, scopes);
+            }
+            for member in members {
+                match member {
+                    ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+                        rewrite_record_uses_in_statement(stmt, record_shapes, scopes);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::FunctionExpr(stmt) => rewrite_record_uses_in_statement(stmt, record_shapes, scopes),
+        _ => {}
+    }
+}
+
+fn build_record_field_equality(left: &Expression, right: &Expression, fields: &[String]) -> Expression {
+    let mut combined = Expression::bool(true);
+    for field in fields {
+        let cmp = Expression::new(ExprKind::Binary {
+            op: BinOp::Eq,
+            left: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(left.clone()),
+                field: field.clone(),
+                null_safe: false,
+            })),
+            right: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(right.clone()),
+                field: field.clone(),
+                null_safe: false,
+            })),
+        });
+        combined = Expression::new(ExprKind::Binary {
+            op: BinOp::And,
+            left: Box::new(combined),
+            right: Box::new(cmp),
+        });
+    }
+    combined
+}
+
+fn rewrite_record_deconstruction_stmt(
+    body: &mut Vec<Statement>,
+    record_shapes: &HashMap<String, RecordShape>,
+    scopes: &mut Vec<HashMap<String, String>>,
+) -> Option<StmtKind> {
+    let Some(call_stmt) = body.last() else {
+        return None;
+    };
+    let StmtKind::Expr(expr) = &call_stmt.kind else {
+        return None;
+    };
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if field != "Deconstruct" {
+        return None;
+    }
+    let Some(record_type) = infer_record_type(object, record_shapes, scopes) else {
+        return None;
+    };
+    let Some(shape) = record_shapes.get(&record_type) else {
+        return None;
+    };
+    if shape.positional_fields.len() != args.len() {
+        return None;
+    }
+
+    let patterns: Vec<ArrayPatternElem> = args.iter().map(|arg| {
+        match &arg.value.kind {
+            ExprKind::Ident(name) if !name.starts_with("__discard_") => {
+                ArrayPatternElem::Pattern(BindingPattern::Ident(name.clone()), None)
+            }
+            _ => ArrayPatternElem::Hole,
+        }
+    }).collect();
+
+    let values = shape.positional_fields.iter().map(|field| ArrayElement {
+        key: None,
+        value: Expression::new(ExprKind::Member {
+            object: Box::new((**object).clone()),
+            field: field.clone(),
+            null_safe: false,
+        }),
+        spread: false,
+        by_ref: false,
+    }).collect();
+
+    Some(StmtKind::Assign {
+        targets: vec![Expression::new(ExprKind::Destructure(DestructurePattern::Array(patterns)))],
+        value: Expression::new(ExprKind::Array(values)),
+    })
+}
+
+fn infer_record_type(
+    expr: &Expression,
+    record_shapes: &HashMap<String, RecordShape>,
+    scopes: &[HashMap<String, String>],
+) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => scopes.iter().rev().find_map(|scope| scope.get(name).cloned()),
+        ExprKind::New { class, .. } => match &class.kind {
+            ExprKind::Ident(name) if record_shapes.contains_key(name) => Some(name.clone()),
+            _ => None,
+        },
+        ExprKind::Cast { type_name, .. } if record_shapes.contains_key(type_name) => Some(type_name.clone()),
+        _ => None,
+    }
+}
+
+fn rewrite_using_imports(module: &mut Module) {
+    let mut aliases: HashMap<String, String> = HashMap::new();
+    let mut static_paths: Vec<String> = Vec::new();
+    for import in &module.imports {
+        match &import.kind {
+            ImportKind::Simple { path, alias: Some(alias) } => {
+                aliases.insert(alias.clone(), normalize_import_path(path));
+            }
+            ImportKind::Wildcard { path, alias: None } => {
+                static_paths.push(normalize_import_path(path));
+            }
+            _ => {}
+        }
+    }
+    if aliases.is_empty() && static_paths.is_empty() {
+        return;
+    }
+    rewrite_using_imports_in_statements(&mut module.body, &aliases, &static_paths);
+}
+
+fn normalize_import_path(path: &str) -> String {
+    path.split('<').next().unwrap_or(path).trim().to_string()
+}
+
+fn rewrite_using_imports_in_statements(
+    body: &mut [Statement],
+    aliases: &HashMap<String, String>,
+    static_paths: &[String],
+) {
+    for stmt in body {
+        rewrite_using_imports_in_statement(stmt, aliases, static_paths);
+    }
+}
+
+fn rewrite_using_imports_in_statement(
+    stmt: &mut Statement,
+    aliases: &HashMap<String, String>,
+    static_paths: &[String],
+) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr)
+        | StmtKind::Return(Some(expr))
+        | StmtKind::Throw { expr: Some(expr), cause: None }
+        | StmtKind::Using { resource: expr, .. }
+        | StmtKind::Lock { expr, .. }
+        | StmtKind::CompoundAssign { value: expr, .. } => {
+            rewrite_using_imports_in_expr(expr, aliases, static_paths);
+        }
+        StmtKind::Throw { expr: Some(expr), cause: Some(cause) } => {
+            rewrite_using_imports_in_expr(expr, aliases, static_paths);
+            rewrite_using_imports_in_expr(cause, aliases, static_paths);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_using_imports_in_expr(init, aliases, static_paths);
+                }
+                if let Some(bounds) = &mut decl.array_bounds {
+                    for bound in bounds {
+                        rewrite_using_imports_in_expr(bound, aliases, static_paths);
+                    }
+                }
+            }
+        }
+        StmtKind::FunctionDecl { body, .. }
+        | StmtKind::Block(body)
+        | StmtKind::NamespaceDecl { body, .. } => {
+            rewrite_using_imports_in_statements(body, aliases, static_paths);
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_using_imports_in_member(member, aliases, static_paths);
+            }
+        }
+        StmtKind::If { cond, then_body, elifs, else_body } => {
+            rewrite_using_imports_in_expr(cond, aliases, static_paths);
+            rewrite_using_imports_in_statements(then_body, aliases, static_paths);
+            for (elif_cond, elif_body) in elifs {
+                rewrite_using_imports_in_expr(elif_cond, aliases, static_paths);
+                rewrite_using_imports_in_statements(elif_body, aliases, static_paths);
+            }
+            if let Some(else_body) = else_body {
+                rewrite_using_imports_in_statements(else_body, aliases, static_paths);
+            }
+        }
+        StmtKind::For { init, cond, update, body } => {
+            if let Some(init) = init {
+                rewrite_using_imports_in_statement(init, aliases, static_paths);
+            }
+            if let Some(cond) = cond {
+                rewrite_using_imports_in_expr(cond, aliases, static_paths);
+            }
+            if let Some(update) = update {
+                rewrite_using_imports_in_expr(update, aliases, static_paths);
+            }
+            rewrite_using_imports_in_statements(body, aliases, static_paths);
+        }
+        StmtKind::ForIn { iter, body, else_body, .. } => {
+            rewrite_using_imports_in_expr(iter, aliases, static_paths);
+            rewrite_using_imports_in_statements(body, aliases, static_paths);
+            if let Some(else_body) = else_body {
+                rewrite_using_imports_in_statements(else_body, aliases, static_paths);
+            }
+        }
+        StmtKind::While { cond, body, else_body } => {
+            rewrite_using_imports_in_expr(cond, aliases, static_paths);
+            rewrite_using_imports_in_statements(body, aliases, static_paths);
+            if let Some(else_body) = else_body {
+                rewrite_using_imports_in_statements(else_body, aliases, static_paths);
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            rewrite_using_imports_in_statements(body, aliases, static_paths);
+            rewrite_using_imports_in_expr(cond, aliases, static_paths);
+        }
+        StmtKind::Switch { expr, cases, default } => {
+            rewrite_using_imports_in_expr(expr, aliases, static_paths);
+            for case in cases {
+                for condition in &mut case.conditions {
+                    match condition {
+                        CaseCondition::Value(expr) => rewrite_using_imports_in_expr(expr, aliases, static_paths),
+                        CaseCondition::Range { from, to } => {
+                            rewrite_using_imports_in_expr(from, aliases, static_paths);
+                            rewrite_using_imports_in_expr(to, aliases, static_paths);
+                        }
+                        CaseCondition::Comparison { expr, .. } => {
+                            rewrite_using_imports_in_expr(expr, aliases, static_paths);
+                        }
+                    }
+                }
+                rewrite_using_imports_in_statements(&mut case.body, aliases, static_paths);
+            }
+            if let Some(default) = default {
+                rewrite_using_imports_in_statements(default, aliases, static_paths);
+            }
+        }
+        StmtKind::Try { body, catches, else_body, finally } => {
+            rewrite_using_imports_in_statements(body, aliases, static_paths);
+            for catch in catches {
+                if let Some(when_clause) = &mut catch.when_clause {
+                    rewrite_using_imports_in_expr(when_clause, aliases, static_paths);
+                }
+                rewrite_using_imports_in_statements(&mut catch.body, aliases, static_paths);
+            }
+            if let Some(else_body) = else_body {
+                rewrite_using_imports_in_statements(else_body, aliases, static_paths);
+            }
+            if let Some(finally) = finally {
+                rewrite_using_imports_in_statements(finally, aliases, static_paths);
+            }
+        }
+        StmtKind::With { items, body, .. } => {
+            for item in items {
+                rewrite_using_imports_in_expr(&mut item.expr, aliases, static_paths);
+            }
+            rewrite_using_imports_in_statements(body, aliases, static_paths);
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_using_imports_in_expr(target, aliases, static_paths);
+            }
+            rewrite_using_imports_in_expr(value, aliases, static_paths);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_using_imports_in_member(
+    member: &mut ClassMember,
+    aliases: &HashMap<String, String>,
+    static_paths: &[String],
+) {
+    match member {
+        ClassMember::Field { init: Some(expr), array_bounds, .. } => {
+            rewrite_using_imports_in_expr(expr, aliases, static_paths);
+            if let Some(bounds) = array_bounds {
+                for bound in bounds {
+                    rewrite_using_imports_in_expr(bound, aliases, static_paths);
+                }
+            }
+        }
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_using_imports_in_statement(stmt, aliases, static_paths);
+        }
+        ClassMember::Constructor { body, base_args, .. } => {
+            rewrite_using_imports_in_statements(body, aliases, static_paths);
+            if let Some(base_args) = base_args {
+                for arg in base_args {
+                    rewrite_using_imports_in_expr(arg, aliases, static_paths);
+                }
+            }
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                rewrite_using_imports_in_statements(getter, aliases, static_paths);
+            }
+            if let Some(setter) = setter {
+                rewrite_using_imports_in_statements(&mut setter.body, aliases, static_paths);
+            }
+        }
+        ClassMember::Const { value, .. } => {
+            rewrite_using_imports_in_expr(value, aliases, static_paths);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_using_imports_in_expr(
+    expr: &mut Expression,
+    aliases: &HashMap<String, String>,
+    static_paths: &[String],
+) {
+    match &mut expr.kind {
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::NullCoalesce { left, right } => {
+            rewrite_using_imports_in_expr(left, aliases, static_paths);
+            rewrite_using_imports_in_expr(right, aliases, static_paths);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::TypeOf(expr) => {
+            rewrite_using_imports_in_expr(expr, aliases, static_paths);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_using_imports_in_expr(cond, aliases, static_paths);
+            rewrite_using_imports_in_expr(then, aliases, static_paths);
+            rewrite_using_imports_in_expr(else_, aliases, static_paths);
+        }
+        ExprKind::Member { object, .. } => {
+            rewrite_using_imports_in_expr(object, aliases, static_paths);
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_using_imports_in_expr(object, aliases, static_paths);
+            rewrite_using_imports_in_expr(index, aliases, static_paths);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_using_imports_in_expr(callee, aliases, static_paths);
+            for arg in args.iter_mut() {
+                rewrite_using_imports_in_expr(&mut arg.value, aliases, static_paths);
+            }
+            if let ExprKind::Ident(name) = &callee.kind {
+                if let Some(path) = static_paths.first() {
+                    let qualified = format!("{path}.{name}");
+                    *callee = Box::new(build_dotted_expr(&qualified));
+                }
+            }
+        }
+        ExprKind::New { class, args } => {
+            rewrite_using_imports_in_expr(class, aliases, static_paths);
+            for arg in args {
+                rewrite_using_imports_in_expr(&mut arg.value, aliases, static_paths);
+            }
+        }
+        ExprKind::Assign { target, value }
+        | ExprKind::Walrus { target, value } => {
+            rewrite_using_imports_in_expr(target, aliases, static_paths);
+            rewrite_using_imports_in_expr(value, aliases, static_paths);
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(expr) => rewrite_using_imports_in_expr(expr, aliases, static_paths),
+            LambdaBody::Block(body) => rewrite_using_imports_in_statements(body, aliases, static_paths),
+        },
+        ExprKind::Array(items) => {
+            for item in items {
+                rewrite_using_imports_in_expr(&mut item.value, aliases, static_paths);
+                if let Some(key) = &mut item.key {
+                    rewrite_using_imports_in_expr(key, aliases, static_paths);
+                }
+            }
+        }
+        ExprKind::Tuple(items)
+        | ExprKind::Set(items)
+        | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_using_imports_in_expr(item, aliases, static_paths);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        rewrite_using_imports_in_expr(key, aliases, static_paths);
+                        rewrite_using_imports_in_expr(value, aliases, static_paths);
+                    }
+                    ObjectProperty::Spread(expr) => {
+                        rewrite_using_imports_in_expr(expr, aliases, static_paths);
+                    }
+                    ObjectProperty::Method { value, .. }
+                    | ObjectProperty::Accessor { value, .. } => {
+                        rewrite_using_imports_in_statement(value, aliases, static_paths);
+                    }
+                    ObjectProperty::Shorthand(_) => {}
+                }
+            }
+        }
+        ExprKind::Interpolation(parts) => {
+            for part in parts {
+                match part {
+                    InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
+                        rewrite_using_imports_in_expr(expr, aliases, static_paths);
+                    }
+                    InterpolPart::Text(_) => {}
+                }
+            }
+        }
+        ExprKind::IsType { expr, .. } | ExprKind::Cast { expr, .. } | ExprKind::Spread(expr) => {
+            rewrite_using_imports_in_expr(expr, aliases, static_paths);
+        }
+        ExprKind::Yield(Some(expr)) => {
+            rewrite_using_imports_in_expr(expr, aliases, static_paths);
+        }
+        ExprKind::Comprehension { element, generators, .. } => {
+            rewrite_using_imports_in_expr(element, aliases, static_paths);
+            for generator in generators {
+                rewrite_using_imports_in_expr(&mut generator.target, aliases, static_paths);
+                rewrite_using_imports_in_expr(&mut generator.iter, aliases, static_paths);
+                for condition in &mut generator.conditions {
+                    rewrite_using_imports_in_expr(condition, aliases, static_paths);
+                }
+            }
+        }
+        ExprKind::Slice { lower, upper, step } => {
+            if let Some(lower) = lower {
+                rewrite_using_imports_in_expr(lower, aliases, static_paths);
+            }
+            if let Some(upper) = upper {
+                rewrite_using_imports_in_expr(upper, aliases, static_paths);
+            }
+            if let Some(step) = step {
+                rewrite_using_imports_in_expr(step, aliases, static_paths);
+            }
+        }
+        ExprKind::ClassExpr { parent, members, .. } => {
+            if let Some(parent) = parent {
+                rewrite_using_imports_in_expr(parent, aliases, static_paths);
+            }
+            for member in members {
+                rewrite_using_imports_in_member(member, aliases, static_paths);
+            }
+        }
+        ExprKind::FunctionExpr(stmt) => {
+            rewrite_using_imports_in_statement(stmt, aliases, static_paths);
+        }
+        ExprKind::Range { start, end, .. } => {
+            rewrite_using_imports_in_expr(start, aliases, static_paths);
+            rewrite_using_imports_in_expr(end, aliases, static_paths);
+        }
+        ExprKind::StaticAccess { class, member } => {
+            rewrite_using_imports_in_expr(class, aliases, static_paths);
+            rewrite_using_imports_in_expr(member, aliases, static_paths);
+        }
+        ExprKind::Match { subject, arms } => {
+            rewrite_using_imports_in_expr(subject, aliases, static_paths);
+            for arm in arms {
+                if let Some(conditions) = &mut arm.conditions {
+                    for condition in conditions {
+                        rewrite_using_imports_in_expr(condition, aliases, static_paths);
+                    }
+                }
+                rewrite_using_imports_in_expr(&mut arm.body, aliases, static_paths);
+            }
+        }
+        ExprKind::Ident(name) => {
+            if let Some(path) = aliases.get(name) {
+                expr.kind = build_dotted_expr(path).kind;
+            }
+        }
+        ExprKind::Lit(_)
+        | ExprKind::This
+        | ExprKind::Super
+        | ExprKind::AddressOf(_)
+        | ExprKind::SuperCall { .. }
+        | ExprKind::Yield(None)
+        | ExprKind::Destructure(_) => {}
+    }
 }
 
 fn rewrite_extension_calls(module: &mut Module) {
@@ -690,6 +2041,7 @@ fn synthesize_exception_class(name: &str) -> Statement {
 fn walk_top_level(pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
     let kind = match pair.as_rule() {
+        Rule::record_struct_declaration => walk_record_decl(pair)?,
         Rule::class_declaration => walk_class_decl(pair)?,
         Rule::struct_declaration => walk_struct_decl(pair)?,
         Rule::interface_declaration => walk_interface_decl(pair)?,
@@ -736,6 +2088,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             classify_expr_stmt(expr)
         }
         // Type declarations can appear inside methods
+        Rule::record_struct_declaration => walk_record_decl(pair)?,
         Rule::class_declaration => walk_class_decl(pair)?,
         Rule::struct_declaration => walk_struct_decl(pair)?,
         Rule::interface_declaration => walk_interface_decl(pair)?,
@@ -753,16 +2106,84 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
 /// `compiler_common::gui::emit_bind_event` (the same path VB `Handles`,
 /// JS `addEventListener`, Python `bind`, etc. resolve to).
 fn classify_expr_stmt(expr: Expression) -> StmtKind {
-    if let Some(kind) = crate::common::events::lower_event_compound_assignment(&expr) {
-        return kind;
+    if should_lower_gui_event_assignment(&expr) {
+        if let Some(kind) = crate::common::events::lower_event_compound_assignment(&expr) {
+            return kind;
+        }
     }
 
     match expr.kind {
         ExprKind::Assign { target, value } => {
-            // Check for compound assignment patterns
+            if let ExprKind::Binary { op, left, right } = &value.kind {
+                let is_same_target = match (&left.kind, &target.kind) {
+                    (ExprKind::Ident(a), ExprKind::Ident(b)) => a == b,
+                    (
+                        ExprKind::Member { object: lo, field: lf, .. },
+                        ExprKind::Member { object: to, field: tf, .. },
+                    ) => member_target_eq(lo, lf, to, tf),
+                    _ => false,
+                };
+                let compound_op = match op {
+                    BinOp::Add => Some(CompoundOp::Add),
+                    BinOp::Sub => Some(CompoundOp::Sub),
+                    BinOp::Mul => Some(CompoundOp::Mul),
+                    BinOp::Div => Some(CompoundOp::Div),
+                    BinOp::Mod => Some(CompoundOp::Mod),
+                    BinOp::BitAnd => Some(CompoundOp::BitAnd),
+                    BinOp::BitOr => Some(CompoundOp::BitOr),
+                    BinOp::BitXor => Some(CompoundOp::BitXor),
+                    BinOp::Shl => Some(CompoundOp::Shl),
+                    BinOp::Shr => Some(CompoundOp::Shr),
+                    BinOp::UShr => Some(CompoundOp::UShr),
+                    BinOp::NullCoalesce => Some(CompoundOp::NullCoalesce),
+                    _ => None,
+                };
+                if is_same_target {
+                    if let Some(compound_op) = compound_op {
+                        return StmtKind::CompoundAssign {
+                            target: *target,
+                            op: compound_op,
+                            value: *right.clone(),
+                        };
+                    }
+                }
+            }
             StmtKind::Assign { targets: vec![*target], value: *value }
         }
         _ => StmtKind::Expr(expr),
+    }
+}
+
+fn should_lower_gui_event_assignment(expr: &Expression) -> bool {
+    let ExprKind::Assign { target, .. } = &expr.kind else {
+        return false;
+    };
+    let ExprKind::Member { object, .. } = &target.kind else {
+        return false;
+    };
+    is_this_rooted_member(object)
+}
+
+fn is_this_rooted_member(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::This => true,
+        ExprKind::Member { object, .. } => is_this_rooted_member(object),
+        _ => false,
+    }
+}
+
+fn member_target_eq(obj_a: &Expression, field_a: &str, obj_b: &Expression, field_b: &str) -> bool {
+    if !field_a.eq_ignore_ascii_case(field_b) {
+        return false;
+    }
+    match (&obj_a.kind, &obj_b.kind) {
+        (ExprKind::Ident(a), ExprKind::Ident(b)) => a == b,
+        (ExprKind::This, ExprKind::This) => true,
+        (
+            ExprKind::Member { object: inner_a, field: inner_field_a, .. },
+            ExprKind::Member { object: inner_b, field: inner_field_b, .. },
+        ) => member_target_eq(inner_a, inner_field_a, inner_b, inner_field_b),
+        _ => false,
     }
 }
 
@@ -770,14 +2191,42 @@ fn classify_expr_stmt(expr: Expression) -> StmtKind {
 
 fn walk_using(pair: Pair<Rule>) -> Result<Import, String> {
     let span = to_span(&pair);
-    let path = pair.into_inner()
-        .find(|p| p.as_rule() == Rule::dotted_name)
-        .map(|p| p.as_str().to_string())
-        .unwrap_or_default();
-    Ok(Import {
-        kind: ImportKind::Simple { path, alias: None },
-        span,
-    })
+    let mut alias: Option<String> = None;
+    let mut path = String::new();
+    let mut is_static = false;
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::using_directive_body => {
+                for inner in child.into_inner() {
+                    match inner.as_rule() {
+                        Rule::using_static_directive => {
+                            is_static = true;
+                            if let Some(name) = inner.into_inner().find(|p| p.as_rule() == Rule::dotted_name) {
+                                path = name.as_str().to_string();
+                            }
+                        }
+                        Rule::using_alias_directive => {
+                            let mut parts = inner.into_inner();
+                            alias = parts.next().map(|p| p.as_str().to_string());
+                            if let Some(target) = parts.next() {
+                                path = target.as_str().to_string();
+                            }
+                        }
+                        Rule::dotted_name => path = inner.as_str().to_string(),
+                        _ => {}
+                    }
+                }
+            }
+            Rule::dotted_name => path = child.as_str().to_string(),
+            _ => {}
+        }
+    }
+    let kind = if is_static {
+        ImportKind::Wildcard { path, alias: None }
+    } else {
+        ImportKind::Simple { path, alias }
+    };
+    Ok(Import { kind, span })
 }
 
 // ── Variable declaration ────────────────────────────────────────────────────
@@ -800,11 +2249,64 @@ fn walk_tuple_deconstruction(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
     let value = value.ok_or("tuple deconstruction missing RHS")?;
-    let patterns: Vec<ArrayPatternElem> = idents.into_iter()
-        .map(|n| ArrayPatternElem::Pattern(BindingPattern::Ident(n), None))
-        .collect();
-    let target = Expression::new(ExprKind::Destructure(DestructurePattern::Array(patterns)));
+    if !matches!(value.kind, ExprKind::Tuple(_) | ExprKind::Array(_)) {
+        let mut declarations = Vec::new();
+        let mut args = Vec::new();
+        for (index, name) in idents.into_iter().enumerate() {
+            let target_name = if name == "_" {
+                format!("__discard_{}", index)
+            } else {
+                declarations.push(VarDeclarator {
+                    pattern: BindingPattern::Ident(name.clone()),
+                    type_hint: None,
+                    init: None,
+                    array_bounds: None,
+                    with_events: false,
+                });
+                name
+            };
+            args.push(Argument {
+                value: Expression::ident(&target_name),
+                name: None,
+                by_ref: true,
+                spread: false,
+            });
+        }
+
+        let mut body = Vec::new();
+        if !declarations.is_empty() {
+            body.push(Statement::new(StmtKind::VarDecl {
+                declarations,
+                kind: VarDeclKind::Let,
+            }));
+        }
+        body.push(Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(value),
+                field: "Deconstruct".into(),
+                null_safe: false,
+            })),
+            args,
+            optional: false,
+        }))));
+        return Ok(StmtKind::Block(body));
+    }
+    let target = Expression::new(ExprKind::Destructure(DestructurePattern::Array(
+        tuple_binding_pattern_elems(idents),
+    )));
     Ok(StmtKind::Assign { targets: vec![target], value })
+}
+
+fn tuple_binding_pattern_elems(idents: Vec<String>) -> Vec<ArrayPatternElem> {
+    idents.into_iter()
+        .map(|name| {
+            if name == "_" {
+                ArrayPatternElem::Hole
+            } else {
+                ArrayPatternElem::Pattern(BindingPattern::Ident(name), None)
+            }
+        })
+        .collect()
 }
 
 fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -834,8 +2336,23 @@ fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 
     if let Some(type_hint) = type_hint {
+        let normalized_hint = normalize_runtime_type_name(&type_hint).to_lowercase();
         for decl in &mut declarations {
             decl.type_hint = Some(type_hint.clone());
+            if matches!(normalized_hint.as_str(), "object" | "system.object") {
+                if let Some(ref init) = decl.init {
+                    if let crate::ast::ExprKind::New { class, .. } = &init.kind {
+                        let inferred = match &class.kind {
+                            crate::ast::ExprKind::Ident(n) => Some(n.clone()),
+                            crate::ast::ExprKind::Member { field, .. } => Some(field.clone()),
+                            _ => None,
+                        };
+                        if let Some(name) = inferred {
+                            decl.type_hint = Some(name);
+                        }
+                    }
+                }
+            }
         }
     } else {
         // `var` type inference: `var x = new ClassName(...)` infers
@@ -965,7 +2482,74 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
+    expand_explicit_interface_members(&mut members);
+
     Ok(StmtKind::ClassDecl { name, parents, interfaces, members, modifiers: class_mods })
+}
+
+fn expand_explicit_interface_members(members: &mut Vec<ClassMember>) {
+    let mut plain_methods: HashSet<String> = HashSet::new();
+    let mut explicit_methods: HashMap<String, usize> = HashMap::new();
+    let mut plain_properties: HashSet<String> = HashSet::new();
+    let mut explicit_properties: HashMap<String, usize> = HashMap::new();
+
+    for member in members.iter() {
+        match member {
+            ClassMember::Method(stmt) => {
+                if let StmtKind::FunctionDecl { name, .. } = &stmt.kind {
+                    if let Some((_, base)) = parse_explicit_interface_runtime_name(name) {
+                        *explicit_methods.entry(base).or_insert(0) += 1;
+                    } else {
+                        plain_methods.insert(name.clone());
+                    }
+                }
+            }
+            ClassMember::Property { name, .. } => {
+                if let Some((_, base)) = parse_explicit_interface_runtime_name(name) {
+                    *explicit_properties.entry(base).or_insert(0) += 1;
+                } else {
+                    plain_properties.insert(name.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut extras = Vec::new();
+    for member in members.iter() {
+        match member {
+            ClassMember::Method(stmt) => {
+                let StmtKind::FunctionDecl { name, .. } = &stmt.kind else {
+                    continue;
+                };
+                let Some((_, base)) = parse_explicit_interface_runtime_name(name) else {
+                    continue;
+                };
+                if explicit_methods.get(&base).copied().unwrap_or(0) == 1 && !plain_methods.contains(&base) {
+                    let mut alias_stmt = (**stmt).clone();
+                    if let StmtKind::FunctionDecl { name, .. } = &mut alias_stmt.kind {
+                        *name = base;
+                    }
+                    extras.push(ClassMember::Method(Box::new(alias_stmt)));
+                }
+            }
+            ClassMember::Property { name, .. } => {
+                let Some((_, base)) = parse_explicit_interface_runtime_name(name) else {
+                    continue;
+                };
+                if explicit_properties.get(&base).copied().unwrap_or(0) == 1 && !plain_properties.contains(&base) {
+                    let mut alias_member = member.clone();
+                    if let ClassMember::Property { name, .. } = &mut alias_member {
+                        *name = base;
+                    }
+                    extras.push(alias_member);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    members.extend(extras);
 }
 
 fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
@@ -1001,12 +2585,12 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
     let mp = member_pair.ok_or("Empty class member")?;
     match mp.as_rule() {
         Rule::constructor_declaration => walk_constructor(mp, mods).map(|m| vec![m]),
-        Rule::property_declaration => walk_property(mp, mods),
+        Rule::explicit_interface_property_declaration | Rule::property_declaration => walk_property(mp, mods),
         Rule::event_declaration => walk_event(mp).map(|m| vec![m]),
-        Rule::method_declaration => walk_method(mp, mods).map(|m| vec![m]),
+        Rule::explicit_interface_method_declaration | Rule::method_declaration => walk_method(mp, mods).map(|m| vec![m]),
         Rule::field_declaration => walk_field(mp, mods).map(|m| vec![m]),
         Rule::operator_declaration => walk_operator(mp, mods).map(|m| vec![m]),
-        Rule::indexer_declaration => walk_indexer(mp, mods),
+        Rule::explicit_interface_indexer_declaration | Rule::indexer_declaration => walk_indexer(mp, mods),
         // Nested type — wrap as `ClassMember::NestedType(stmt)` so the
         // class-emit pipeline registers the inner type as a sibling
         // global. Per ECMA-334 §15.3 nested types are accessible via
@@ -1032,7 +2616,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
     }
 }
 
-fn walk_constructor(pair: Pair<Rule>, _mods: Modifiers) -> Result<ClassMember, String> {
+fn walk_constructor(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String> {
     let mut params = Vec::new();
     let mut body = Vec::new();
     let mut base_args = None;
@@ -1066,6 +2650,20 @@ fn walk_constructor(pair: Pair<Rule>, _mods: Modifiers) -> Result<ClassMember, S
         }
     }
 
+    if mods.is_static {
+        return Ok(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
+            name: "__static_init__".into(),
+            params: Vec::new(),
+            body,
+            return_type: None,
+            is_async: false,
+            is_generator: false,
+            is_sub: true,
+            handles: Vec::new(),
+            modifiers: mods,
+        }))));
+    }
+
     Ok(ClassMember::Constructor {
         params,
         body,
@@ -1076,6 +2674,7 @@ fn walk_constructor(pair: Pair<Rule>, _mods: Modifiers) -> Result<ClassMember, S
 
 fn walk_property(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, String> {
     let mut name = String::new();
+    let mut explicit_interface = None;
     let mut getter = None;
     let mut setter = None;
     let mut is_auto = true;
@@ -1084,7 +2683,21 @@ fn walk_property(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, 
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::type_name => {} // skip type
-            Rule::ident_name => name = p.as_str().to_string(),
+            Rule::explicit_interface_name => {
+                explicit_interface = Some(p.as_str().to_string());
+            }
+            Rule::ident_name if name.is_empty() => name = p.as_str().to_string(),
+            Rule::property_name => {
+                for np in p.into_inner() {
+                    match np.as_rule() {
+                        Rule::explicit_interface_specifier => {
+                            explicit_interface = Some(extract_explicit_interface_name(np));
+                        }
+                        Rule::ident_name => name = np.as_str().to_string(),
+                        _ => {}
+                    }
+                }
+            }
             Rule::expression_body => {
                 // `Type Name => expr;` — read-only expression-bodied
                 // property. Lower to a getter that returns the expr.
@@ -1164,6 +2777,10 @@ fn walk_property(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, 
             }
             _ => {}
         }
+    }
+
+    if let Some(interface_name) = explicit_interface {
+        name = explicit_interface_runtime_name(&interface_name, &name);
     }
 
     let mut out = vec![ClassMember::Property {
@@ -1398,17 +3015,36 @@ fn walk_operator(pair: Pair<Rule>, mut mods: Modifiers) -> Result<ClassMember, S
 /// with the indexer's parameter list captured separately so the runtime
 /// can route `obj[i]` through the getter / setter.
 fn walk_indexer(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, String> {
+    let mut getter_name = "__get___index__".to_string();
+    let mut setter_name = "__set___index__".to_string();
+    let mut explicit_interface = None;
     let mut getter: Option<Vec<Statement>> = None;
-    let mut setter: Option<PropertySetter> = None;
+    let mut setter: Option<Vec<Statement>> = None;
     let mut params: Vec<Param> = Vec::new();
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::type_name => {} // skip return type
+            Rule::explicit_interface_name => {
+                explicit_interface = Some(p.as_str().to_string());
+            }
+            Rule::indexer_name => {
+                for np in p.into_inner() {
+                    if np.as_rule() == Rule::explicit_interface_specifier {
+                        explicit_interface = Some(extract_explicit_interface_name(np));
+                    }
+                }
+            }
             Rule::param_list => params = walk_params(p)?,
             Rule::property_body => {
                 for acc in p.into_inner() {
                     if acc.as_rule() == Rule::accessor {
-                        let mut is_get = false;
+                        let acc_src = acc.as_str().trim_start();
+                        let is_get = acc_src.starts_with("get")
+                            || acc_src.contains(" get")
+                            || acc_src.starts_with("public get")
+                            || acc_src.starts_with("private get")
+                            || acc_src.starts_with("protected get")
+                            || acc_src.starts_with("internal get");
                         let mut acc_body = None;
                         for ap in acc.into_inner() {
                             match ap.as_rule() {
@@ -1416,37 +3052,13 @@ fn walk_indexer(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, S
                                     acc_body = Some(walk_body(ap)?);
                                 }
                                 Rule::class_modifiers => {}
-                                _ => {
-                                    match ap.as_str() {
-                                        "get" => is_get = true,
-                                        "set" => is_get = false,
-                                        _ => {}
-                                    }
-                                }
+                                _ => {}
                             }
                         }
                         if is_get {
                             getter = acc_body;
                         } else if let Some(body) = acc_body {
-                            // Setter takes (idx..., value). Append `value`.
-                            let mut set_params = params.clone();
-                            set_params.push(Param {
-                                name: "value".into(),
-                                type_hint: None, default: None,
-                                pass_by: PassBy::Value, is_rest: false,
-                                is_kwargs: false, is_optional: false,
-                                is_nullable: false,
-                            });
-                            setter = Some(PropertySetter {
-                                param: set_params.first().cloned().unwrap_or_else(|| Param {
-                                    name: "value".into(),
-                                    type_hint: None, default: None,
-                                    pass_by: PassBy::Value, is_rest: false,
-                                    is_kwargs: false, is_optional: false,
-                                    is_nullable: false,
-                                }),
-                                body,
-                            });
+                            setter = Some(body);
                         }
                     }
                 }
@@ -1454,18 +3066,56 @@ fn walk_indexer(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, S
             _ => {}
         }
     }
-    Ok(vec![ClassMember::Property {
-        name: "__index__".to_string(),
-        type_hint: None,
-        getter,
-        setter,
-        is_auto: false,
-        modifiers: mods,
-    }])
+    if let Some(interface_name) = explicit_interface {
+        getter_name = explicit_interface_runtime_name(&interface_name, &getter_name);
+        setter_name = explicit_interface_runtime_name(&interface_name, &setter_name);
+    }
+
+    let mut members = Vec::new();
+    if let Some(body) = getter {
+        members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
+            name: getter_name,
+            params: params.clone(),
+            return_type: None,
+            body,
+            modifiers: mods.clone(),
+            handles: Vec::new(),
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
+        }))));
+    }
+    if let Some(body) = setter {
+        let mut setter_params = params;
+        setter_params.push(Param {
+            name: "value".into(),
+            type_hint: None,
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        });
+        members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
+            name: setter_name,
+            params: setter_params,
+            return_type: Some("void".into()),
+            body,
+            modifiers: mods,
+            handles: Vec::new(),
+            is_async: false,
+            is_generator: false,
+            is_sub: true,
+        }))));
+    }
+
+    Ok(members)
 }
 
 fn walk_method(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String> {
     let mut name = String::new();
+    let mut explicit_interface = None;
     let mut return_type = None;
     let mut params = Vec::new();
     let mut body = Vec::new();
@@ -1474,30 +3124,21 @@ fn walk_method(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String>
     // Check modifiers for async
     if mods.is_abstract { /* abstract methods have no body */ }
 
-    let parts: Vec<Pair<Rule>> = pair.into_inner().collect();
-    let mut iter = parts.into_iter();
-
-    // First is return type
-    if let Some(p) = iter.next() {
-        if p.as_rule() == Rule::type_name {
-            let rt = p.as_str().to_string();
-            if rt.starts_with("async") {
-                is_async = true;
-            }
-            return_type = Some(rt);
-        }
-    }
-
-    // Second is name
-    if let Some(p) = iter.next() {
-        if p.as_rule() == Rule::ident_name {
-            name = p.as_str().to_string();
-        }
-    }
-
-    // Rest: params and body
-    for p in iter {
+    for p in pair.into_inner() {
         match p.as_rule() {
+            Rule::type_name if return_type.is_none() => {
+                let rt = p.as_str().to_string();
+                if rt.starts_with("async") {
+                    is_async = true;
+                }
+                return_type = Some(rt);
+            }
+            Rule::explicit_interface_name => {
+                explicit_interface = Some(p.as_str().to_string());
+            }
+            Rule::ident_name if name.is_empty() => {
+                name = p.as_str().to_string();
+            }
             Rule::param_list => params = walk_params(p)?,
             Rule::block_statement => body = walk_body(p)?,
             Rule::expression_body => {
@@ -1513,8 +3154,23 @@ fn walk_method(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String>
                     )];
                 }
             }
+            Rule::method_name => {
+                for np in p.into_inner() {
+                    match np.as_rule() {
+                        Rule::explicit_interface_specifier => {
+                            explicit_interface = Some(extract_explicit_interface_name(np));
+                        }
+                        Rule::ident_name if name.is_empty() => name = np.as_str().to_string(),
+                        _ => {}
+                    }
+                }
+            }
             _ => {}
         }
+    }
+
+    if let Some(interface_name) = explicit_interface {
+        name = explicit_interface_runtime_name(&interface_name, &name);
     }
 
     let is_sub = return_type.as_deref() == Some("void");
@@ -1645,6 +3301,7 @@ fn walk_interface_member(pair: Pair<Rule>) -> Result<InterfaceMember, String> {
     let mut has_getter = false;
     let mut has_setter = false;
     let src = pair.as_str().to_string();
+    let is_indexer = src.contains("this[");
 
     for p in pair.into_inner() {
         match p.as_rule() {
@@ -1659,7 +3316,11 @@ fn walk_interface_member(pair: Pair<Rule>) -> Result<InterfaceMember, String> {
         }
     }
 
-    if has_params || src.contains('(') {
+    if is_indexer {
+        name = "__index__".into();
+    }
+
+    if !is_indexer && (has_params || src.contains('(')) {
         let is_sub = type_hint.as_deref() == Some("void");
         Ok(InterfaceMember::Method {
             name,
@@ -1716,16 +3377,41 @@ fn walk_record_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut params = Vec::new();
     let mut parents = Vec::new();
     let mut members = Vec::new();
+    let mut base_args = None;
+    let mut record_mods = ClassModifiers::default();
 
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::class_modifiers => {}
+            Rule::class_modifiers => {
+                for m in p.into_inner() {
+                    match m.as_str() {
+                        "public" => record_mods.visibility = Visibility::Public,
+                        "private" => record_mods.visibility = Visibility::Private,
+                        "protected" => record_mods.visibility = Visibility::Protected,
+                        "internal" => record_mods.visibility = Visibility::Internal,
+                        s if s.starts_with("static") => record_mods.is_static = true,
+                        s if s.starts_with("abstract") => record_mods.is_abstract = true,
+                        s if s.starts_with("sealed") => record_mods.is_sealed = true,
+                        s if s.starts_with("partial") => record_mods.is_partial = true,
+                        _ => {}
+                    }
+                }
+            }
             Rule::ident_name => name = p.as_str().to_string(),
             Rule::param_list => params = walk_params(p)?,
-            Rule::base_list => {
+            Rule::record_base_clause => {
                 for bp in p.into_inner() {
-                    if bp.as_rule() == Rule::type_name {
-                        parents.push(bp.as_str().to_string());
+                    match bp.as_rule() {
+                        Rule::type_name => parents.push(bp.as_str().to_string()),
+                        Rule::argument_list => {
+                            base_args = Some(
+                                walk_arguments(bp)?
+                                    .into_iter()
+                                    .map(|a| a.value)
+                                    .collect(),
+                            );
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -1769,9 +3455,170 @@ fn walk_record_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         members.push(ClassMember::Constructor {
             params: params.clone(),
             body: ctor_body,
-            base_args: None,
+            base_args,
             visibility: Visibility::Public,
         });
+    }
+
+    let has_user_deconstruct = members.iter().any(|m| matches!(
+        m,
+        ClassMember::Method(stmt) if matches!(
+            &stmt.kind,
+            StmtKind::FunctionDecl { name, .. } if name == "Deconstruct"
+        )
+    ));
+    if !has_user_deconstruct && !params.is_empty() {
+        let body: Vec<Statement> = params.iter().map(|p| {
+            Statement::new(StmtKind::Assign {
+                targets: vec![Expression::ident(&p.name)],
+                value: Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::new(ExprKind::This)),
+                    field: p.name.clone(),
+                    null_safe: false,
+                }),
+            })
+        }).collect();
+        let out_params: Vec<Param> = params.iter().map(|p| Param {
+            name: p.name.clone(),
+            type_hint: p.type_hint.clone(),
+            default: None,
+            pass_by: PassBy::Ref,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        }).collect();
+        members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
+            name: "Deconstruct".into(),
+            params: out_params,
+            body,
+            return_type: Some("void".into()),
+            is_async: false,
+            is_generator: false,
+            is_sub: true,
+            handles: Vec::new(),
+            modifiers: Modifiers::default(),
+        }))));
+    }
+
+    let has_user_equals = members.iter().any(|m| matches!(
+        m,
+        ClassMember::Method(stmt) if matches!(
+            &stmt.kind,
+            StmtKind::FunctionDecl { name, .. } if name == "Equals"
+        )
+    ));
+    if !has_user_equals && !params.is_empty() {
+        let other_param = Param {
+            name: "other".into(),
+            type_hint: Some(name.clone()),
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        };
+        let mut eq_expr = Expression::bool(true);
+        for p in &params {
+            let left = Expression::new(ExprKind::Member {
+                object: Box::new(Expression::new(ExprKind::This)),
+                field: p.name.clone(),
+                null_safe: false,
+            });
+            let right = Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident("other")),
+                field: p.name.clone(),
+                null_safe: false,
+            });
+            let cmp = Expression::new(ExprKind::Binary {
+                op: BinOp::Eq,
+                left: Box::new(left),
+                right: Box::new(right),
+            });
+            eq_expr = Expression::new(ExprKind::Binary {
+                op: BinOp::And,
+                left: Box::new(eq_expr),
+                right: Box::new(cmp),
+            });
+        }
+        let body = vec![Statement::new(StmtKind::Return(Some(eq_expr)))];
+        members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
+            name: "Equals".into(),
+            params: vec![other_param],
+            body,
+            return_type: Some("bool".into()),
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
+            handles: Vec::new(),
+            modifiers: Modifiers { is_override: true, ..Default::default() },
+        }))));
+    }
+
+    let has_user_op_eq = members.iter().any(|m| matches!(
+        m,
+        ClassMember::Method(stmt) if matches!(
+            &stmt.kind,
+            StmtKind::FunctionDecl { name, .. } if name == "op_Equality"
+        )
+    ));
+    if !has_user_op_eq && !params.is_empty() {
+        let left_param = Param {
+            name: "left".into(),
+            type_hint: Some(name.clone()),
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        };
+        let right_param = Param {
+            name: "right".into(),
+            type_hint: Some(name.clone()),
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        };
+        let mut eq_expr = Expression::bool(true);
+        for p in &params {
+            let left = Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident("left")),
+                field: p.name.clone(),
+                null_safe: false,
+            });
+            let right = Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident("right")),
+                field: p.name.clone(),
+                null_safe: false,
+            });
+            let cmp = Expression::new(ExprKind::Binary {
+                op: BinOp::Eq,
+                left: Box::new(left),
+                right: Box::new(right),
+            });
+            eq_expr = Expression::new(ExprKind::Binary {
+                op: BinOp::And,
+                left: Box::new(eq_expr),
+                right: Box::new(cmp),
+            });
+        }
+        let body = vec![Statement::new(StmtKind::Return(Some(eq_expr)))];
+        members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
+            name: "op_Equality".into(),
+            params: vec![left_param, right_param],
+            body,
+            return_type: Some("bool".into()),
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
+            handles: Vec::new(),
+            modifiers: Modifiers { is_static: true, ..Default::default() },
+        }))));
     }
 
     // Synthetic ToString — `Point { X = 3, Y = 4 }` (ECMA-334 §15.6.6,
@@ -1832,7 +3679,7 @@ fn walk_record_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         parents,
         interfaces: Vec::new(),
         members,
-        modifiers: ClassModifiers::default(),
+        modifiers: record_mods,
     })
 }
 
@@ -1866,8 +3713,13 @@ fn walk_delegate_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = pair.into_inner();
-    let cond = walk_expression(inner.next().ok_or("if: no cond")?)?;
-    let then_body = vec![walk_statement(inner.next().ok_or("if: no body")?)?];
+    let cond_pair = inner.next().ok_or("if: no cond")?;
+    let pattern_binding = extract_if_is_pattern_binding(cond_pair.clone())?;
+    let cond = walk_expression(cond_pair)?;
+    let mut then_body = vec![walk_statement(inner.next().ok_or("if: no body")?)?];
+    if let Some(binding_stmt) = pattern_binding {
+        then_body.insert(0, binding_stmt);
+    }
     let mut elifs = Vec::new();
     let mut else_body = None;
 
@@ -1875,8 +3727,13 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
         match p.as_rule() {
             Rule::else_if_clause => {
                 let mut eip = p.into_inner();
-                let ec = walk_expression(eip.next().ok_or("elif: no cond")?)?;
-                let eb = vec![walk_statement(eip.next().ok_or("elif: no body")?)?];
+                let cond_pair = eip.next().ok_or("elif: no cond")?;
+                let pattern_binding = extract_if_is_pattern_binding(cond_pair.clone())?;
+                let ec = walk_expression(cond_pair)?;
+                let mut eb = vec![walk_statement(eip.next().ok_or("elif: no body")?)?];
+                if let Some(binding_stmt) = pattern_binding {
+                    eb.insert(0, binding_stmt);
+                }
                 elifs.push((ec, eb));
             }
             Rule::else_clause => {
@@ -1967,13 +3824,29 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut var = String::new();
+    let mut tuple_target: Option<Vec<String>> = None;
     let mut iter = Expression::null();
     let mut body = Vec::new();
 
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::var_kw | Rule::type_name => {} // skip type
-            Rule::ident_name => var = p.as_str().to_string(),
+            Rule::foreach_target => {
+                if let Some(inner) = p.into_inner().next() {
+                    match inner.as_rule() {
+                        Rule::ident_name => var = inner.as_str().to_string(),
+                        Rule::foreach_tuple_target => {
+                            let names: Vec<String> = inner.into_inner()
+                                .filter(|part| part.as_rule() == Rule::ident_name)
+                                .map(|part| part.as_str().to_string())
+                                .collect();
+                            tuple_target = Some(names);
+                            var = "__csharp_foreach_item".into();
+                        }
+                        _ => {}
+                    }
+                }
+            }
             Rule::in_kw => {} // skip keyword
             _ => {
                 if body.is_empty() {
@@ -1987,6 +3860,19 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 }
             }
         }
+    }
+
+    if let Some(names) = tuple_target {
+        body.insert(0, Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Array(tuple_binding_pattern_elems(names)),
+                type_hint: None,
+                init: Some(Expression::ident(&var)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Let,
+        }));
     }
 
     Ok(StmtKind::ForIn {
@@ -2381,7 +4267,12 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 "null" => Ok(ExprKind::Lit(Literal::Null)),
                 "this" => Ok(ExprKind::This),
                 "base" => Ok(ExprKind::Super),
-                _ => Ok(ExprKind::Ident(name.to_string())),
+                _ => {
+                    // Canonicalize all named function references for delegate handler identity
+                    // This ensures that every reference to a named function is always represented as ExprKind::Ident with the canonical name
+                    // (In a full implementation, you could check a symbol table here)
+                    Ok(ExprKind::Ident(name.to_string()))
+                }
             }
         }
 
@@ -2509,34 +4400,32 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Rule::cast_expression => {
             let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
             let cast_type_pair = inner.remove(0);
-            let type_name = cast_type_pair.as_str().trim().to_string();
+            let type_name = normalize_runtime_type_name(cast_type_pair.as_str());
             let operand = walk_expression(inner.remove(0))?;
             let convert_method = match type_name.as_str() {
-                "int" | "uint" | "short" | "ushort" | "sbyte" | "byte" => "ToInt32",
-                "long" | "ulong" => "ToInt64",
-                "float" => "ToSingle",
-                "double" | "decimal" => "ToDouble",
-                "string" => "ToString",
-                "bool" => "ToBoolean",
-                "char" => "ToChar",
-                _ => return Ok(operand.kind),
+                "int" | "uint" | "short" | "ushort" | "sbyte" | "byte" => Some("cint"),
+                "long" | "ulong" => Some("clng"),
+                "float" | "double" | "decimal" => Some("float"),
+                "string" => Some("tostring"),
+                "char" => None,
+                _ => None,
             };
-            // Convert.ToInt32(operand) etc.
             let span = operand.span.clone();
-            Ok(ExprKind::Call {
-                callee: Box::new(Expression::with_span(
-                    ExprKind::Member {
-                        object: Box::new(Expression::with_span(
-                            ExprKind::Ident("Convert".into()), span.clone(),
-                        )),
-                        field: convert_method.into(),
-                        null_safe: false,
-                    },
-                    span.clone(),
-                )),
-                args: vec![Argument::positional(operand)],
-                optional: false,
-            })
+            if let Some(convert_name) = convert_method {
+                Ok(ExprKind::Call {
+                    callee: Box::new(Expression::with_span(
+                        ExprKind::Ident(convert_name.into()),
+                        span.clone(),
+                    )),
+                    args: vec![Argument::positional(operand)],
+                    optional: false,
+                })
+            } else {
+                Ok(ExprKind::Cast {
+                    expr: Box::new(operand),
+                    type_name,
+                })
+            }
         }
 
         // Postfix
@@ -2627,7 +4516,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         }
 
         // Type name used as expression (cast, etc.)
-        Rule::type_name | Rule::base_type | Rule::dotted_name => {
+        Rule::type_name | Rule::generic_type_expr | Rule::base_type | Rule::dotted_name => {
             Ok(ExprKind::Ident(pair.as_str().to_string()))
         }
 
@@ -2711,7 +4600,7 @@ fn walk_relational(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     // null sentinel matches .NET semantics. Strip a
                     // trailing `?` (nullable marker) for the type test.
                     let type_name_raw = next.as_str().trim();
-                    let type_name = type_name_raw.trim_end_matches('?').to_string();
+                    let type_name = normalize_runtime_type_name(type_name_raw);
                     let test = if let Some(js_typeof) = primitive_to_typeof(&type_name) {
                         let typeof_expr = Expression::new(ExprKind::TypeOf(Box::new(left.clone())));
                         Expression::new(ExprKind::Binary {
@@ -2782,7 +4671,7 @@ fn walk_binary_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
         if op_str.starts_with("is ") || op_str.starts_with("is\t") || op_str == "is" {
             // is Type → IsType
             let right = &inner[i + 1];
-            let type_name = right.as_str().trim().to_string();
+            let type_name = normalize_runtime_type_name(right.as_str());
             left = Expression::new(ExprKind::IsType {
                 expr: Box::new(left),
                 type_name,
@@ -2792,7 +4681,7 @@ fn walk_binary_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
         }
         if op_str.starts_with("as ") || op_str.starts_with("as\t") || op_str == "as" {
             let right = &inner[i + 1];
-            let type_name = right.as_str().trim().to_string();
+            let type_name = normalize_runtime_type_name(right.as_str());
             left = Expression::new(ExprKind::Cast {
                 expr: Box::new(left),
                 type_name,
@@ -2816,13 +4705,13 @@ fn walk_binary_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
             _ => {
                 // relational_op may contain "is Type" or "as Type" as combined text
                 if op_str.starts_with("is") {
-                    let type_name = op_str.trim_start_matches("is").trim().to_string();
+                    let type_name = normalize_runtime_type_name(op_str.trim_start_matches("is"));
                     left = Expression::new(ExprKind::IsType { expr: Box::new(left), type_name });
                     i += 2;
                     continue;
                 }
                 if op_str.starts_with("as") {
-                    let type_name = op_str.trim_start_matches("as").trim().to_string();
+                    let type_name = normalize_runtime_type_name(op_str.trim_start_matches("as"));
                     left = Expression::new(ExprKind::Cast { expr: Box::new(left), type_name });
                     i += 2;
                     continue;
@@ -3126,7 +5015,7 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
             }
         }
         if !pairs.is_empty() {
-            return Ok(emit_dict_iife(pairs));
+            return Ok(emit_dict_iife(type_name.clone(), args.clone(), pairs));
         }
     }
     // `new HashSet<T> { v1, v2, ... }` — IIFE-lower to construct + Add
@@ -3534,10 +5423,14 @@ fn build_switch_pattern_cond(
 /// populates it, so the runtime gets a real Map-backed Dictionary
 /// rather than a plain Object literal that the runtime collection
 /// registry can't dispatch through.
-fn emit_dict_iife(pairs: Vec<(Expression, Expression)>) -> ExprKind {
+fn emit_dict_iife(
+    type_name: String,
+    args: Vec<Argument>,
+    pairs: Vec<(Expression, Expression)>,
+) -> ExprKind {
     let new_dict = Expression::new(ExprKind::New {
-        class: Box::new(Expression::ident("Dictionary")),
-        args: vec![],
+        class: Box::new(Expression::ident(&type_name)),
+        args,
     });
     let mut body: Vec<Statement> = Vec::new();
     body.push(Statement::with_span(
@@ -3646,6 +5539,23 @@ fn emit_set_iife(type_name: String, elements: Vec<Expression>) -> ExprKind {
 fn walk_collection_element(pair: Pair<Rule>) -> Result<Expression, String> {
     if pair.as_rule() == Rule::collection_element {
         let src = pair.as_str().trim_start();
+        if let Some(inner) = pair.clone().into_inner().next() {
+            if inner.as_rule() == Rule::indexer_initializer {
+                let mut parts = inner.into_inner();
+                let key = parts
+                    .next()
+                    .ok_or_else(|| "indexer initializer missing key".to_string())
+                    .and_then(walk_expression)?;
+                let value = parts
+                    .next()
+                    .ok_or_else(|| "indexer initializer missing value".to_string())
+                    .and_then(walk_expression)?;
+                return Ok(Expression::new(ExprKind::Array(vec![
+                    ArrayElement { key: None, value: key, spread: false, by_ref: false },
+                    ArrayElement { key: None, value, spread: false, by_ref: false },
+                ])));
+            }
+        }
         // Nested-brace form: emit Array(elements).
         if src.starts_with('{') {
             let mut elements = Vec::new();
@@ -3673,6 +5583,7 @@ fn walk_collection_element(pair: Pair<Rule>) -> Result<Expression, String> {
 fn primitive_to_typeof(type_name: &str) -> Option<&'static str> {
     match type_name {
         "string" | "String" => Some("string"),
+        "char" | "Char" => Some("string"),
         "int" | "long" | "double" | "float" | "decimal"
         | "byte" | "sbyte" | "short" | "ushort"
         | "uint" | "ulong" | "nint" | "nuint" => Some("number"),
@@ -3755,7 +5666,7 @@ fn walk_is_pattern(receiver: Expression, pattern_clause: Pair<Rule>) -> Result<E
         }
         _ => {
             // type_name with optional ident binding.
-            let type_name = first.as_str().trim().to_string();
+            let type_name = normalize_runtime_type_name(first.as_str());
             // Primitive-type patterns lower to `typeof v === "<jsname>"`
             // so they match JS values that have no `__type` slot. Falls
             // back to IsType for user classes (which DO carry __type).
@@ -3935,6 +5846,12 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
         &object.kind,
         ExprKind::Ident(n) if n.chars().next().map_or(false, |c| c.is_ascii_uppercase())
     );
+    
+    // Dictionary/collection properties that are defined as 0-arity methods
+    // but accessed as properties in C# without parentheses should become method calls.
+    // For example: dict.Keys → dict.Keys(), dict.Values → dict.Values()
+    let is_zero_arity_method = matches!(name, "Keys" | "Values");
+    
     let canonical = if is_class_static {
         None
     } else {
@@ -3947,6 +5864,17 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident(canonical_name)),
             args: vec![Argument::positional(object)],
+            optional: false,
+        })
+    } else if is_zero_arity_method && !is_class_static {
+        // Convert property-like zero-arity methods to method calls
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(object),
+                field: name.to_string(),
+                null_safe: false,
+            })),
+            args: vec![],
             optional: false,
         })
     } else {
@@ -4176,6 +6104,112 @@ fn dotnet_type_name(t: &str) -> String {
         "object" | "Object" => "Object",
         other => other,
     }.to_string()
+}
+
+fn normalize_runtime_type_name(t: &str) -> String {
+    let trimmed = t.trim().trim_end_matches('?').trim();
+    let mut out = String::with_capacity(trimmed.len());
+    let mut depth = 0usize;
+    for ch in trimmed.chars() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(ch),
+            _ => {}
+        }
+    }
+    let without_generics = out.trim();
+    without_generics.rsplit('.').next().unwrap_or(without_generics).trim().to_string()
+}
+
+fn extract_if_is_pattern_binding(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
+    let Some((subject, type_name, binding_name)) = find_if_is_pattern_binding(pair)? else {
+        return Ok(None);
+    };
+
+    let init = if primitive_to_typeof(&type_name).is_some() {
+        subject
+    } else {
+        let span = subject.span.clone();
+        Expression::with_span(
+            ExprKind::Cast {
+                expr: Box::new(subject),
+                type_name: type_name.clone(),
+            },
+            span,
+        )
+    };
+
+    Ok(Some(Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(binding_name),
+            type_hint: Some(type_name),
+            init: Some(init),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    })))
+}
+
+fn find_if_is_pattern_binding(pair: Pair<Rule>) -> Result<Option<(Expression, String, String)>, String> {
+    match pair.as_rule() {
+        Rule::expression
+        | Rule::assignment_expression
+        | Rule::conditional_expression
+        | Rule::null_coalesce_expr
+        | Rule::logical_or
+        | Rule::logical_and
+        | Rule::bitwise_or
+        | Rule::bitwise_xor
+        | Rule::bitwise_and
+        | Rule::equality => {
+            let mut inner = pair.into_inner();
+            if let Some(child) = inner.next() {
+                if inner.next().is_none() {
+                    return find_if_is_pattern_binding(child);
+                }
+            }
+            Ok(None)
+        }
+        Rule::relational => {
+            let inner: Vec<Pair<Rule>> = pair.into_inner().collect();
+            if inner.len() != 2 || inner[1].as_rule() != Rule::type_test {
+                return Ok(None);
+            }
+            let subject = walk_expression(inner[0].clone())?;
+            let mut tt_inner = inner[1].clone().into_inner();
+            let Some(keyword) = tt_inner.next() else {
+                return Ok(None);
+            };
+            if keyword.as_rule() != Rule::is_kw {
+                return Ok(None);
+            }
+            let Some(pattern_clause) = tt_inner.next() else {
+                return Ok(None);
+            };
+            let clause_src = pattern_clause.as_str().trim_start();
+            if clause_src.starts_with("not") {
+                return Ok(None);
+            }
+            let Some(atom) = pattern_clause.into_inner().next() else {
+                return Ok(None);
+            };
+            let atom_inner: Vec<Pair<Rule>> = atom.into_inner().collect();
+            if atom_inner.len() < 2
+                || atom_inner[0].as_rule() != Rule::type_name
+                || atom_inner[1].as_rule() != Rule::ident_name
+            {
+                return Ok(None);
+            }
+            Ok(Some((
+                subject,
+                normalize_runtime_type_name(atom_inner[0].as_str()),
+                atom_inner[1].as_str().to_string(),
+            )))
+        }
+        _ => Ok(None),
+    }
 }
 
 /// Build a runtime expression that yields the .NET type name of `expr`.

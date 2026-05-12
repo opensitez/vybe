@@ -63,10 +63,11 @@ pub fn normalize_class(
 
     for member in members {
         match member {
-            ClassMember::Field { name: fname, init, modifiers, .. } => {
+            ClassMember::Field { name: fname, type_hint, init, modifiers, .. } => {
                 let field = NormalField {
                     span: span.clone(),
                     name: fname.clone(),
+                    type_hint: type_hint.clone(),
                     init: init.clone(),
                     access: access_for_js(fname),
                     readonly: false, // JS doesn't have readonly at class field level
@@ -131,6 +132,7 @@ pub fn normalize_class(
                     span: span.clone(),
                     canonical_name: canon,
                     source_name: pname.clone(),
+                    is_static: modifiers.is_static,
                     getter: getter_method,
                     setter: setter_method,
                     auto_field: if *is_auto { Some(pname.clone()) } else { None },

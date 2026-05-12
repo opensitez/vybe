@@ -24,10 +24,11 @@ pub fn normalize_class(
 
     for member in members {
         match member {
-            ClassMember::Field { name: field_name, init, modifiers: field_modifiers, .. } => {
+            ClassMember::Field { name: field_name, type_hint, init, modifiers: field_modifiers, .. } => {
                 let field = NormalField {
                     span: span.clone(),
                     name: field_name.clone(),
+                    type_hint: type_hint.clone(),
                     init: init.clone(),
                     access: Access::Public,
                     readonly: field_modifiers.is_readonly,

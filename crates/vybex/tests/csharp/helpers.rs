@@ -11,6 +11,16 @@ pub fn run_csharp(src: &str) -> Vec<String> {
     let chunks = vybex::compiler::Compiler::with_profile(profile)
         .compile(&module).expect("C# compile failed");
 
+    if std::env::var("VYBEX_DUMP_CHUNK").ok().as_deref() == Some("<script>") {
+        if let Some(chunk) = chunks.first() {
+            eprintln!("\n-- chunk 0: {} --\n{}", chunk.name, vybe_bytecode::debug::disassemble(chunk));
+            eprintln!("-- constants --");
+            for (ci, cv) in chunk.constants.iter().enumerate() {
+                eprintln!("  [{ci}] {cv}");
+            }
+        }
+    }
+
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();

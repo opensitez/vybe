@@ -634,7 +634,8 @@ mod tests {
         let mut table = ResourceTable::new();
 
         // Create a resource
-        let handle = table.create(1, crate::Value::String(std::rc::Arc::from("file_data")));
+        use std::sync::Arc;
+        let handle = table.create(1, crate::Value::String(Arc::from("file_data")));
         assert!(table.is_valid(handle));
         assert_eq!(table.type_id(handle), Some(1));
 

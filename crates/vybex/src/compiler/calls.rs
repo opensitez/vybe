@@ -19,6 +19,62 @@ fn python_is_printable_literal(value: &str) -> bool {
     value.chars().all(|ch| !ch.is_control())
 }
 
+fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression) -> Option<String> {
+    match &recv.kind {
+        ExprKind::Ident(local_name) => compiler.scope().resolve_type_ci(local_name).map(|s| s.to_string())
+            .or_else(|| {
+                let cn = compiler.canon(local_name);
+                compiler.global_type_hints.get(&cn).cloned()
+            })
+            .or_else(|| compiler.is_class_static_field_type_hint(local_name)),
+        ExprKind::Member { object, field, .. } => {
+            let owner_is_self = matches!(&object.kind, ExprKind::This | ExprKind::Super)
+                || matches!(&object.kind, ExprKind::Ident(n)
+                    if {
+                        let cn = compiler.canon(n);
+                        cn == compiler.profile.self_keyword
+                            || cn == "me"
+                            || cn == "this"
+                            || cn == "mybase"
+                    });
+            if owner_is_self {
+                compiler.is_class_static_field_type_hint(field)
+            } else if let ExprKind::Ident(owner) = &object.kind {
+                let owner_name = owner
+                    .split('<')
+                    .next()
+                    .map(str::trim)
+                    .unwrap_or(owner);
+                let canon_field = compiler.canon(field);
+
+                let mut owner_candidates = vec![owner_name.to_string()];
+                let owner_canon = compiler.canon(owner_name);
+                if owner_canon != owner_name {
+                    owner_candidates.push(owner_canon);
+                }
+
+                for owner_key in owner_candidates {
+                    let mut current = Some(owner_key.as_str());
+                    while let Some(cn) = current {
+                        if let Some(pc) = compiler.pending_classes.get(cn) {
+                            if let Some(type_hint) = pc.static_field_types.get(&canon_field) {
+                                return Some(type_hint.clone());
+                            }
+                            current = pc.parent.as_deref();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                None
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 impl Compiler {
     pub(super) fn js_error_instanceof_chain(type_name: &str) -> &'static [&'static str] {
         match type_name.trim() {
@@ -333,6 +389,39 @@ impl Compiler {
             }
         }
 
+        // ── Typed static-field receiver: counts.ContainsKey(...) ─────
+        // Static fields can carry type hints too. Resolve them here so
+        // class-level typed state uses the same shared .NET surface as
+        // locals with type annotations.
+        if let ExprKind::Member { object, field, .. } = &callee.kind {
+            let class_name = resolve_receiver_type_hint(self, object);
+            if let Some(class_name) = class_name {
+                let class_name = class_name
+                    .split('<')
+                    .next()
+                    .map(str::trim)
+                    .unwrap_or(&class_name)
+                    .to_string();
+                let surface = common::dotnet::surface();
+                if let Some(target) = surface.lookup_instance_method(&class_name, field, arg_exprs.len() as u8) {
+                    self.compile_expr(object)?;
+                    for a in &arg_exprs { self.compile_expr(a)?; }
+                    let total_argc = (arg_exprs.len() + 1) as u8;
+                    match target {
+                        common::dotnet::InstanceMethodTarget::Host { module, func, .. } => {
+                            let idx = self.import(&module, &func);
+                            self.emit_host_call(idx, total_argc);
+                        }
+                        common::dotnet::InstanceMethodTarget::Common { emit, .. } => {
+                            let line = self.line;
+                            self.emit_common(&emit, total_argc, line);
+                        }
+                    }
+                    return Ok(());
+                }
+            }
+        }
+
         // ── ESM host-module import binding ──────────────────────────
         //
         // `import { createServer } from "wasi:http"` binds
@@ -437,6 +526,22 @@ impl Compiler {
 
                 // Use dotnet resolver when enabled
                 if self.profile.namespaces.use_dotnet_resolver {
+                    let skip_simple_instance_chain = if lower_parts.len() == 2 {
+                        let head = &parts[0];
+                        self.scope().resolve(head).is_some()
+                            || self.scope().resolve_ci(head).is_some()
+                            || self.defined_globals.contains(head)
+                            || self.defined_globals.iter().any(|g| g.eq_ignore_ascii_case(head))
+                            || self.is_class_field(head)
+                            || self.is_class_static_field(head).is_some()
+                    } else {
+                        false
+                    };
+                    if skip_simple_instance_chain {
+                        // Keep 2-part local/global member calls (`x.Method(...)`) on the
+                        // normal instance pipeline; the dotted resolver is for namespace/
+                        // static chains and can otherwise short-circuit LINQ-style calls.
+                    } else {
                     let dotnet_surface = common::dotnet::surface();
                     let imports = {
                         let mut imp = dotnet_surface.default_imports().to_vec();
@@ -491,6 +596,24 @@ impl Compiler {
                             return Ok(());
                         }
                         common::dotnet::DottedResolution::HostCall { module, func } => {
+                            if self.profile.name == "csharp"
+                                && module.eq_ignore_ascii_case("ecma:number")
+                                && func.eq_ignore_ascii_case("parseInt")
+                                && arg_exprs.len() == 1
+                            {
+                                let is_char_like = match &arg_exprs[0].kind {
+                                    ExprKind::Lit(Literal::Char(_)) => true,
+                                    ExprKind::Ident(name) => self.lookup_var_type_hint(name)
+                                        .is_some_and(|hint| Self::normalize_type_hint(hint) == "char"),
+                                    _ => false,
+                                };
+                                if is_char_like {
+                                    self.compile_expr(arg_exprs[0])?;
+                                    self.emit(Op::I32_CONST_0);
+                                    self.emit(Op::STR_CHAR_CODE_AT);
+                                    return Ok(());
+                                }
+                            }
                             for a in &arg_exprs { self.compile_expr(a)?; }
                             let idx = self.import(&module, &func);
                             self.emit_host_call(idx, arg_exprs.len() as u8);
@@ -661,6 +784,7 @@ impl Compiler {
                             // Fall through to value methods and other resolution
                         }
                     }
+                    }
                 }
 
                 // Non-dotnet: namespace aliases (JS: console → wasi:cli).
@@ -753,6 +877,44 @@ impl Compiler {
             }
         }
 
+        // ── Nested static type call: Outer.Inner.Method(args) ───────
+        if let ExprKind::Member { object, field, .. } = &callee.kind {
+            if let ExprKind::Member { object: outer_obj, field: nested_name, .. } = &object.kind {
+                if let ExprKind::Ident(outer_name) = &outer_obj.kind {
+                    let outer_canon = self.canon(outer_name);
+                    let is_outer_class = self.defined_classes.contains(&outer_canon)
+                        && self.scope().resolve(outer_name).is_none();
+                    if is_outer_class {
+                        let nested_ok = self.pending_classes.get(outer_canon.as_str())
+                            .map(|pc| pc.nested_types.iter().any(|n| {
+                                if self.case_sensitive { n == nested_name } else { n.eq_ignore_ascii_case(nested_name) }
+                            }))
+                            .unwrap_or(false);
+                        if nested_ok {
+                            let outer_idx = self.str_const(&outer_canon);
+                            self.emit_u16(Op::GLOBAL_GET, outer_idx);
+                            let nested_idx = self.str_const(&self.canon(nested_name));
+                            self.emit_u16(Op::STRUCT_GET, nested_idx);
+                            let cls_tmp = self.scope().resolve("__nested_static_cls")
+                                .unwrap_or_else(|| self.define_local("__nested_static_cls"));
+                            self.emit_u16(Op::LOCAL_SET, cls_tmp); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, cls_tmp);
+                            let method_idx = self.str_const(&self.canon(field));
+                            self.emit_u16(Op::STRUCT_GET, method_idx);
+                            let fn_tmp = self.scope().resolve("__nested_static_fn")
+                                .unwrap_or_else(|| self.define_local("__nested_static_fn"));
+                            self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                            self.emit_u16(Op::LOCAL_GET, cls_tmp);
+                            for a in &arg_exprs { self.compile_expr(a)?; }
+                            self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+
         // ── Function.prototype.call / .apply ────────────────────────
         // `fn.call(thisArg, a, b, ...)` → call `fn` with `[a, b, ...]`
         // `fn.apply(thisArg, [a, b, ...])` → same; the array form is
@@ -823,34 +985,31 @@ impl Compiler {
         // dispatch (compilation-hints proposal style) is the
         // fallback for dynamically-typed receivers.
         if let ExprKind::Member { object, field, .. } = &callee.kind {
-            if let ExprKind::Ident(local_name) = &object.kind {
-                let class_name = self.scope().resolve_type_ci(local_name).map(|s| s.to_string())
-                    .or_else(|| {
-                        // Top-level `var x = new Y(...)` lands `x` as a
-                        // global; the walker stamps `Y` into
-                        // `global_type_hints` (keyed by canonical name).
-                        let cn = self.canon(local_name);
-                        self.global_type_hints.get(&cn).cloned()
-                    });
-                if let Some(class_name) = class_name {
-                    let surface = common::dotnet::surface();
-                    if let Some(target) = surface.lookup_instance_method(&class_name, field) {
-                        // Compile receiver, then args.
-                        self.compile_expr(object)?;
-                        for a in &arg_exprs { self.compile_expr(a)?; }
-                        let total_argc = (arg_exprs.len() + 1) as u8;
-                        match target {
-                            common::dotnet::InstanceMethodTarget::Host { module, func, .. } => {
-                                let idx = self.import(&module, &func);
-                                self.emit_host_call(idx, total_argc);
-                            }
-                            common::dotnet::InstanceMethodTarget::Common { emit, .. } => {
-                                let line = self.line;
-                                self.emit_common(&emit, total_argc, line);
-                            }
+            let class_name = resolve_receiver_type_hint(self, object);
+            if let Some(class_name) = class_name {
+                let class_name = class_name
+                    .split('<')
+                    .next()
+                    .map(str::trim)
+                    .unwrap_or(&class_name)
+                    .to_string();
+                let surface = common::dotnet::surface();
+                if let Some(target) = surface.lookup_instance_method(&class_name, field, arg_exprs.len() as u8) {
+                    // Compile receiver, then args.
+                    self.compile_expr(object)?;
+                    for a in &arg_exprs { self.compile_expr(a)?; }
+                    let total_argc = (arg_exprs.len() + 1) as u8;
+                    match target {
+                        common::dotnet::InstanceMethodTarget::Host { module, func, .. } => {
+                            let idx = self.import(&module, &func);
+                            self.emit_host_call(idx, total_argc);
                         }
-                        return Ok(());
+                        common::dotnet::InstanceMethodTarget::Common { emit, .. } => {
+                            let line = self.line;
+                            self.emit_common(&emit, total_argc, line);
+                        }
                     }
+                    return Ok(());
                 }
             }
         }
@@ -893,8 +1052,6 @@ impl Compiler {
                     }
                 }
             }
-            let user_method_shadow = receiver_is_direct
-                && self.defined_class_methods.contains(&canon_field);
             // Skip value-method dispatch on null-safe member calls — the
             // null short-circuit must run BEFORE we apply any built-in
             // operator (e.g. `null?.toUpperCase()` returns null, not "").
@@ -909,22 +1066,15 @@ impl Compiler {
                 matched_value_method.as_ref().map(|d| &d.emit),
                 Some(BuiltinEmit::Stdlib(_))
             ) && self.expr_is_known_string_receiver(object);
-            // The runtime collection registry maps .NET collection method
-            // names (Add, Remove, Count, …) to per-type implementations.
-            // It's the right home for type-aware dispatch (List.Add → push,
-            // Dict.Add → set, HashSet.Add → set-add). But the registry
-            // doesn't know about arity, so it intercepts every `Count`
-            // including LINQ's `Count(predicate)` overload.
-            //
-            // Discriminator: when the profile's matched overload routes
-            // through a shared dotnet adapter (`common:dotnet.<name>`),
-            // prefer the overload over the registry — adapters are
-            // type-blind and assume the receiver is already a JS array,
-            // which is exactly what LINQ surface methods need.
+            // Keep dotnet adapter value-methods ahead of runtime collection
+            // dispatch for untyped receivers (notably plain arrays using
+            // LINQ-style extension methods like Select/SelectMany).
             let prefer_dotnet_adapter = match matched_value_method.as_ref().map(|d| &d.emit) {
                 Some(BuiltinEmit::Common(name)) => name.starts_with("dotnet."),
                 _ => false,
             };
+            let user_method_shadow = receiver_is_direct
+                && self.defined_class_methods.contains(&canon_field);
             // Also skip value_methods if the field is an array HOF method —
             // the array_methods dispatch handles it with proper HOF semantics.
             // Without this, `[1,2,3].includes(2)` routes through the string
@@ -934,7 +1084,7 @@ impl Compiler {
             if user_method_shadow || is_array_method {
                 // Fall through — let the HOF dispatch or generic call path handle it
             } else if self.profile.namespaces.use_dotnet
-                && common::dotnet::uses_runtime_collection_dispatch(field)
+                && common::dotnet::uses_runtime_collection_dispatch_arity(field, arg_exprs.len() as u8)
                 && !prefer_string_stdlib_value_method
                 && !prefer_dotnet_adapter
             {
@@ -1826,6 +1976,15 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 let end = self.emit_jump(Op::BR);
                 self.patch_jump(obj_not_null);
+                if field.eq_ignore_ascii_case("Invoke") {
+                    // C# delegate null-conditional invocation: `d?.Invoke(args)`
+                    // should call the delegate value directly when non-null.
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    for a in &arg_exprs { self.compile_expr(a)?; }
+                    self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                    self.patch_jump(end);
+                    return Ok(());
+                }
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_u16(Op::STRUCT_GET, prop);
                 let fn_tmp = self.define_local("__fn");
@@ -2122,6 +2281,32 @@ impl Compiler {
 
         // ── Simple call: name(args) / expr(args) ────────────────────
         if let ExprKind::Ident(name) = &callee.kind {
+            // Inside a class: bare call to a static method should bind to
+            // the class object before any generic function lookup. Static
+            // methods are also registered as ordinary functions, so this
+            // must run ahead of `is_known_func`.
+            if self.current_class.is_some() && self.current_class_implicit_self {
+                let is_local = self.scope().resolve(name).is_some()
+                    || (!self.case_sensitive && self.scope().resolve_ci(name).is_some());
+                if !is_local {
+                    if let Some(class_name) = self.is_class_static_method(name) {
+                        let cls_idx = self.str_const(&class_name);
+                        self.emit_u16(Op::GLOBAL_GET, cls_idx);
+                        let method_idx = self.str_const(&self.canon(name));
+                        self.emit_u16(Op::STRUCT_GET, method_idx);
+                        let fn_tmp = self.define_local("__bare_static_fn");
+                        self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
+                        let cls_tmp = self.define_local("__bare_static_cls");
+                        self.emit_u16(Op::LOCAL_SET, cls_tmp); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                        self.emit_u16(Op::LOCAL_GET, cls_tmp);
+                        for a in &arg_exprs { self.compile_expr(a)?; }
+                        self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                        return Ok(());
+                    }
+                }
+            }
+
             let is_known_func = self.defined_functions.contains(name)
                 || (!self.case_sensitive && self.defined_functions.iter().any(|g| g.eq_ignore_ascii_case(name)));
             if !is_known_func && self.try_compile_builtin(name, &arg_exprs)? {
@@ -2143,7 +2328,10 @@ impl Compiler {
                 let is_global_var = self.defined_globals.contains(&canon_name)
                     && !self.defined_classes.contains(&canon_name)
                     && !self.defined_functions.contains(&canon_name);
-                if is_local || is_global_var {
+                let is_callable_typed = self
+                    .lookup_var_type_hint(name)
+                    .is_some_and(Self::is_callable_type_hint);
+                if (is_local || is_global_var) && !is_callable_typed {
                     self.emit_var_get(name);
                     self.compile_expr(arg_exprs[0])?;
                     { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
@@ -2400,7 +2588,7 @@ impl Compiler {
         let saved = self.current;
         self.current = ci;
         for p in params {
-            self.define_local(&p.name);
+            self.define_local_typed(&p.name, p.type_hint.clone());
             if let Some(ref default) = p.default {
                 let slot = self.scope().resolve(&p.name).unwrap();
                 self.emit_u16(Op::LOCAL_GET, slot);

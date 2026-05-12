@@ -44,10 +44,11 @@ pub fn normalize_class(
 
     for member in members {
         match member {
-            ClassMember::Field { name: fname, init, modifiers: m, .. } => {
+            ClassMember::Field { name: fname, type_hint, init, modifiers: m, .. } => {
                 let field = NormalField {
                     span: span.clone(),
                     name: fname.clone(),
+                    type_hint: type_hint.clone(),
                     init: init.clone(),
                     access: access_from_visibility(m.visibility),
                     readonly: m.is_readonly,
@@ -125,12 +126,13 @@ pub fn normalize_class(
                     span: span.clone(),
                     canonical_name: canonical,
                     source_name: pname.clone(),
+                    is_static: m.is_static,
                     getter: getter_method,
                     setter: setter_method,
                     auto_field: if *is_auto { Some(pname.clone()) } else { None },
                 });
             }
-            ClassMember::Const { name: cname, value, .. } => {
+            ClassMember::Const { name: cname, type_hint, value, .. } => {
                 // Class constants are stamped on the class object as
                 // static fields so PHP `Class::CONST` static access
                 // (struct_get on the constructor object) resolves to
@@ -139,6 +141,7 @@ pub fn normalize_class(
                 static_fields.push(NormalField {
                     span: span.clone(),
                     name: cname.clone(),
+                    type_hint: type_hint.clone(),
                     init: Some(value.clone()),
                     access: Access::Public,
                     readonly: true,

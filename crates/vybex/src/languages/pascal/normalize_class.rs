@@ -99,10 +99,11 @@ pub fn normalize_class(
 
     for member in members {
         match member {
-            ClassMember::Field { name: fname, init, modifiers: m, .. } => {
+            ClassMember::Field { name: fname, type_hint, init, modifiers: m, .. } => {
                 let field = NormalField {
                     span: span.clone(),
                     name: fname.clone(),
+                    type_hint: type_hint.clone(),
                     init: init.clone(),
                     access: Access::Public,
                     readonly: m.is_readonly,
@@ -161,7 +162,7 @@ pub fn normalize_class(
                     named_name: None,
                 });
             }
-            ClassMember::Property { name: pname, getter, setter, is_auto, .. } => {
+            ClassMember::Property { name: pname, getter, setter, is_auto, modifiers: m, .. } => {
                 let (canonical, _) = canonicalize_method(ClassLang::Pascal, pname);
                 let getter_method = getter.as_ref().map(|body| build_normal_method(
                     span.clone(), &canonical, pname, Vec::new(),
@@ -177,6 +178,7 @@ pub fn normalize_class(
                     span: span.clone(),
                     canonical_name: canonical,
                     source_name: pname.clone(),
+                    is_static: m.is_static,
                     getter: getter_method,
                     setter: setter_method,
                     auto_field: if *is_auto { Some(pname.clone()) } else { None },

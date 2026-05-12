@@ -1311,6 +1311,44 @@ impl VM {
                     let result = match (&a, &b) {
                         (Value::F64(x), Value::F64(y)) => Value::F64(x + y),
                         (Value::I32(x), Value::I32(y)) => Value::I32(x.wrapping_add(*y)),
+                        // Delegate combine: callable + callable -> multicast array.
+                        // C# `Action a = f + g` and `a += h` lower here.
+                        (Value::Null, _) | (Value::Undefined, _) => b.clone(),
+                        (_, Value::Null) | (_, Value::Undefined) => a.clone(),
+                        (Value::Object(_), Value::Object(_)) => {
+                            let is_callable_like = |v: &Value| -> bool {
+                                match v {
+                                    Value::Object(obj) => {
+                                        let o = obj.lock().unwrap();
+                                        match &o.kind {
+                                            ObjectKind::Function(_) | ObjectKind::HostFunction(_) => true,
+                                            ObjectKind::Array(_) => true,
+                                            _ => o.properties.get("__call__").is_some(),
+                                        }
+                                    }
+                                    _ => false,
+                                }
+                            };
+
+                            if is_callable_like(&a) && is_callable_like(&b) {
+                                let mut handlers: Vec<Value> = Vec::new();
+                                let mut append_value = |v: &Value| {
+                                    if let Value::Object(obj) = v {
+                                        let o = obj.lock().unwrap();
+                                        if let ObjectKind::Array(elems) = &o.kind {
+                                            handlers.extend(elems.iter().cloned());
+                                            return;
+                                        }
+                                    }
+                                    handlers.push(v.clone());
+                                };
+                                append_value(&a);
+                                append_value(&b);
+                                Value::Object(Arc::new(Mutex::new(Object::new_array(handlers))))
+                            } else {
+                                Value::F64(a.as_f64() + b.as_f64())
+                            }
+                        }
                         (Value::String(_), _) | (_, Value::String(_)) => {
                             Value::String(Arc::from(format!("{}{}", a, b).as_str()))
                         }
@@ -1327,6 +1365,20 @@ impl VM {
                     let b = self.pop();
                     let a = self.pop();
                     // JS abstract equality (==) coercion rules
+                    fn callable_object_eq(x: &Arc<Mutex<Object>>, y: &Arc<Mutex<Object>>) -> bool {
+                        if Arc::ptr_eq(x, y) {
+                            return true;
+                        }
+                        let ox = x.lock().unwrap();
+                        let oy = y.lock().unwrap();
+                        match (&ox.kind, &oy.kind) {
+                            (ObjectKind::Function(fx), ObjectKind::Function(fy)) => {
+                                fx.chunk_index == fy.chunk_index
+                            }
+                            (ObjectKind::HostFunction(ix), ObjectKind::HostFunction(iy)) => ix == iy,
+                            _ => false,
+                        }
+                    }
                     fn loose_eq(a: &Value, b: &Value) -> bool {
                         match (a, b) {
                             // null/undefined: equal to each other, nothing else
@@ -1359,7 +1411,7 @@ impl VM {
                                 else if let Ok(sv) = trimmed.parse::<f64>() { sv == *n as f64 } else { false }
                             }
                             // Object: same-reference, OR compare via toPrimitive (Array → string)
-                            (Value::Object(x), Value::Object(y)) => Arc::ptr_eq(x, y),
+                            (Value::Object(x), Value::Object(y)) => callable_object_eq(x, y),
                             // Object with primitive: coerce object to primitive (Array → joined string)
                             (Value::Object(o), other) | (other, Value::Object(o)) => {
                                 let obj = o.lock().unwrap();
@@ -1380,6 +1432,20 @@ impl VM {
                 _ if op == Op::DYN_NE => {
                     let b = self.pop();
                     let a = self.pop();
+                    fn callable_object_eq(x: &Arc<Mutex<Object>>, y: &Arc<Mutex<Object>>) -> bool {
+                        if Arc::ptr_eq(x, y) {
+                            return true;
+                        }
+                        let ox = x.lock().unwrap();
+                        let oy = y.lock().unwrap();
+                        match (&ox.kind, &oy.kind) {
+                            (ObjectKind::Function(fx), ObjectKind::Function(fy)) => {
+                                fx.chunk_index == fy.chunk_index
+                            }
+                            (ObjectKind::HostFunction(ix), ObjectKind::HostFunction(iy)) => ix == iy,
+                            _ => false,
+                        }
+                    }
                     let result = match (&a, &b) {
                         (Value::Null, Value::Null) | (Value::Undefined, Value::Undefined) => false,
                         (Value::Null, Value::Undefined) | (Value::Undefined, Value::Null) => false,
@@ -1396,7 +1462,7 @@ impl VM {
                         }
                         (Value::String(x), Value::String(y)) => x != y,
                         (Value::Symbol(x), Value::Symbol(y)) => !Arc::ptr_eq(x, y),
-                        (Value::Object(x), Value::Object(y)) => !Arc::ptr_eq(x, y),
+                        (Value::Object(x), Value::Object(y)) => !callable_object_eq(x, y),
                         _ => true,
                     };
                     self.push(Value::Bool(result))?;

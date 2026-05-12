@@ -23,7 +23,10 @@ program_item = _{
 
 // ── Using directives ────────────────────────────────────────────────────────
 
-using_directive = { "using" ~ dotted_name ~ ";" }
+using_directive = { "using" ~ using_directive_body ~ ";" }
+using_directive_body = { using_static_directive | using_alias_directive | dotted_name }
+using_static_directive = { "static" ~ dotted_name }
+using_alias_directive = { ident_name ~ "=" ~ type_name }
 
 dotted_name = @{ ident_name ~ ("." ~ ident_name)* }
 
@@ -36,7 +39,7 @@ namespace_declaration = {
 // ── Type declarations ───────────────────────────────────────────────────────
 
 type_declaration = _{
-    attribute_list? ~ (class_declaration | struct_declaration | interface_declaration | enum_declaration | record_declaration | delegate_declaration)
+    attribute_list? ~ (record_struct_declaration | record_declaration | class_declaration | struct_declaration | interface_declaration | enum_declaration | delegate_declaration)
 }
 
 attribute_list = _{ "[" ~ (!"]" ~ ANY)* ~ "]" }
@@ -91,16 +94,21 @@ class_member = {
     attribute_list? ~ class_modifiers ~ (
         // Nested type declarations — class / struct / interface / enum
         // can all appear as inner members per ECMA-334 §15.3.
-        class_declaration
+        record_struct_declaration
+        | record_declaration
+        | class_declaration
         | struct_declaration
         | interface_declaration
         | enum_declaration
         | operator_declaration
+        | explicit_interface_indexer_declaration
         | indexer_declaration
         | constructor_declaration
+        | explicit_interface_method_declaration
+        | explicit_interface_property_declaration
+        | method_declaration
         | property_declaration
         | event_declaration
-        | method_declaration
         | field_declaration
     )
 }
@@ -124,8 +132,14 @@ operator_symbol = @{
 // Walker lowers to a Property named `__index__` with one parameter,
 // so `obj[i]` lookups go through the same getter / setter machinery as
 // regular properties.
+explicit_interface_name = @{ ident_name ~ generic_type_args? }
+explicit_interface_specifier = { explicit_interface_name ~ "." }
+indexer_name = { explicit_interface_specifier? ~ "this" }
+explicit_interface_indexer_declaration = {
+    type_name ~ explicit_interface_name ~ "." ~ "this" ~ "[" ~ param_list ~ "]" ~ property_body
+}
 indexer_declaration = {
-    type_name ~ "this" ~ "[" ~ param_list ~ "]" ~ property_body
+    type_name ~ indexer_name ~ "[" ~ param_list ~ "]" ~ property_body
 }
 
 // Constructor: ClassName(params) : base/this(args) { body }
@@ -140,8 +154,12 @@ constructor_initializer = {
 
 // Property: Type Name { get; set; } | { get { } set { } } | => expr;
 // (C# 6+ expression-bodied read-only property is `Type Name => expr;`)
+property_name = { explicit_interface_specifier? ~ ident_name }
+explicit_interface_property_declaration = {
+    type_name ~ explicit_interface_name ~ "." ~ ident_name ~ (expression_body | property_body ~ ("=" ~ expression ~ ";")?)
+}
 property_declaration = {
-    type_name ~ ident_name ~ (expression_body | property_body ~ ("=" ~ expression ~ ";")?)
+    type_name ~ property_name ~ (expression_body | property_body ~ ("=" ~ expression ~ ";")?)
 }
 
 property_body = {
@@ -149,7 +167,7 @@ property_body = {
 }
 
 accessor = {
-    class_modifiers ~ ("get" | "set") ~ (block_statement | ";")
+    class_modifiers ~ ("get" | "set" | "init") ~ (block_statement | ";")
 }
 
 // Event: event EventHandler Click;
@@ -160,8 +178,13 @@ event_declaration = {
 // Method: ReturnType Name(params) { body }
 // Generic methods may declare per-method `where` constraints which we
 // capture-and-discard, same as on the class.
+method_name = { explicit_interface_specifier? ~ ident_name }
+explicit_interface_method_declaration = {
+    type_name ~ explicit_interface_name ~ "." ~ ident_name ~ generic_params? ~ "(" ~ param_list? ~ ")" ~
+        where_clauses? ~ (block_statement | expression_body | ";")
+}
 method_declaration = {
-    type_name ~ ident_name ~ generic_params? ~ "(" ~ param_list? ~ ")" ~
+    type_name ~ method_name ~ generic_params? ~ "(" ~ param_list? ~ ")" ~
         where_clauses? ~ (block_statement | expression_body | ";")
 }
 
@@ -197,9 +220,12 @@ interface_declaration = {
 interface_body = { "{" ~ interface_member* ~ "}" }
 
 interface_member = {
-    type_name ~ ident_name ~ (
-        "(" ~ param_list? ~ ")" ~ ";"                         // method
-        | "{" ~ ("get" ~ ";")? ~ ("set" ~ ";")? ~ "}"         // property
+    type_name ~ (
+        ident_name ~ (
+            "(" ~ param_list? ~ ")" ~ ";"                         // method
+            | "{" ~ ("get" ~ ";")? ~ ("set" ~ ";")? ~ "}"       // property
+        )
+        | "this" ~ "[" ~ param_list ~ "]" ~ "{" ~ ("get" ~ ";")? ~ ("set" ~ ";")? ~ "}"
     )
 }
 
@@ -215,8 +241,12 @@ enum_member = { ident_name ~ ("=" ~ expression)? }
 
 // ── Record ──────────────────────────────────────────────────────────────────
 
+record_base_clause = { ":" ~ type_name ~ ("(" ~ argument_list? ~ ")")? }
+record_struct_declaration = {
+    class_modifiers ~ "record" ~ "struct" ~ ident_name ~ ("(" ~ param_list? ~ ")")? ~ record_base_clause? ~ (class_body | ";")
+}
 record_declaration = {
-    class_modifiers ~ "record" ~ ident_name ~ ("(" ~ param_list? ~ ")")? ~ base_list? ~ (class_body | ";")
+    class_modifiers ~ "record" ~ ident_name ~ ("(" ~ param_list? ~ ")")? ~ record_base_clause? ~ (class_body | ";")
 }
 
 // ── Delegate ────────────────────────────────────────────────────────────────
@@ -318,8 +348,11 @@ expression_list = { expression ~ ("," ~ expression)* }
 // ── Foreach ─────────────────────────────────────────────────────────────────
 
 foreach_statement = {
-    "foreach" ~ "(" ~ (var_kw | type_name) ~ ident_name ~ in_kw ~ expression ~ ")" ~ statement
+    "foreach" ~ "(" ~ (var_kw | type_name) ~ foreach_target ~ in_kw ~ expression ~ ")" ~ statement
 }
+
+foreach_target = { foreach_tuple_target | ident_name }
+foreach_tuple_target = { "(" ~ ident_name ~ ("," ~ ident_name)+ ~ ","? ~ ")" }
 
 // ── While / Do-while ────────────────────────────────────────────────────────
 
@@ -539,6 +572,7 @@ cast_type = {
     | "ushort" ~ !(ASCII_ALPHANUMERIC | "_")
     | "sbyte" ~ !(ASCII_ALPHANUMERIC | "_")
     | "object" ~ !(ASCII_ALPHANUMERIC | "_")
+    | type_name
 }
 
 // Keyword operators — atomic for word boundaries
@@ -584,7 +618,7 @@ new_expression = {
         // `new int[]` — a sequence of bracketed dimensions, optionally
         // followed by an array initializer for the leading dimensions.
         ("[" ~ (expression ~ ("," ~ expression)*)? ~ "]")+ ~ array_initializer?
-        | "(" ~ argument_list? ~ ")" ~ object_initializer? // new Foo(args) { }
+        | "(" ~ argument_list? ~ ")" ~ (object_initializer | array_initializer)? // new Foo(args) { }
         // `object_initializer` BEFORE `array_initializer` — both start with
         // `{` but `Prop = value` shapes only match the object form, while
         // `array_initializer` would greedily consume them as ASSIGN
@@ -606,8 +640,10 @@ generic_type_args = _{ "<" ~ type_name ~ ("," ~ type_name)* ~ ">" }
 // braces become Object properties (Dictionary) or nested Array
 // literals (multi-dim).
 array_initializer = { "{" ~ (collection_element ~ ("," ~ collection_element)*)? ~ ","? ~ "}" }
+indexer_initializer = { "[" ~ expression ~ "]" ~ "=" ~ expression }
 collection_element = {
-    "{" ~ (expression ~ ("," ~ expression)*)? ~ ","? ~ "}"
+    indexer_initializer
+    | "{" ~ (expression ~ ("," ~ expression)*)? ~ ","? ~ "}"
     | expression
 }
 
@@ -676,8 +712,11 @@ primary = {
     | numeric_literal
     | string_literal
     | primitive_type_ident
+    | generic_type_expr
     | ident_name
 }
+
+generic_type_expr = { base_type ~ generic_type_args }
 
 // C# tuple literal: (1, "x", true) or named (Name: "Alice", Age: 30).
 // At least 2 elements (1-element is just paren_expr). The named form

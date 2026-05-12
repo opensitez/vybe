@@ -199,7 +199,41 @@ impl Value {
                 if a.is_nan() || b.is_nan() { false } else { a == b }
             }
             (Value::String(a), Value::String(b)) => a == b,
-            (Value::Object(a), Value::Object(b)) => Arc::ptr_eq(a, b),
+            (Value::Object(a), Value::Object(b)) => {
+                if Arc::ptr_eq(a, b) {
+                    true
+                } else {
+                    let oa = a.lock().unwrap();
+                    let ob = b.lock().unwrap();
+                    let wrapper_call_a = oa
+                        .properties
+                        .get("__call__")
+                        .cloned()
+                        .or_else(|| oa.properties.get("call").cloned());
+                    let wrapper_call_b = ob
+                        .properties
+                        .get("__call__")
+                        .cloned()
+                        .or_else(|| ob.properties.get("call").cloned());
+                    let kind_eq = match (&oa.kind, &ob.kind) {
+                        (ObjectKind::Function(fa), ObjectKind::Function(fb)) => {
+                            fa.chunk_index == fb.chunk_index
+                        }
+                        (ObjectKind::HostFunction(ia), ObjectKind::HostFunction(ib)) => ia == ib,
+                        _ => false,
+                    };
+                    drop(oa);
+                    drop(ob);
+
+                    if kind_eq {
+                        true
+                    } else if let (Some(ca), Some(cb)) = (wrapper_call_a, wrapper_call_b) {
+                        ca.eq(&cb)
+                    } else {
+                        false
+                    }
+                }
+            }
             // Symbols have IDENTITY equality — same Arc instance only.
             (Value::Symbol(a), Value::Symbol(b)) => Arc::ptr_eq(a, b),
             (Value::BigInt(a), Value::BigInt(b)) => a == b,

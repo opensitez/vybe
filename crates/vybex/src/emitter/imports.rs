@@ -45,6 +45,12 @@ pub fn resolve_common_import(name: &str) -> Option<CommonImport> {
         "parseint" | "cint" | "int" | "to_i" | "intval"
             => Some(CommonImport::Intrinsic("cint")),
 
+        // Character/ordinal helpers used across frontend lowerings.
+        "asc" | "ord"
+            => Some(CommonImport::Intrinsic("asc")),
+        "chr" | "chr$" | "chrw" | "str_from_char_code"
+            => Some(CommonImport::Intrinsic("str_from_char_code")),
+
         // Float conversion is `Number(x)` exactly — no truncation.
         "parsefloat" | "cdbl" | "float" | "to_f" | "floatval"
             => Some(CommonImport::Host("ecma:number", "Number")),

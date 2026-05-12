@@ -227,13 +227,18 @@ Min                = { emit = "common:collections.min",                   min_ar
 Max                = { emit = "common:collections.max",                   min_args = 0, max_args = 0 }
 First              = { emit = "common:dotnet.linq_first",                 min_args = 0, max_args = 0 }
 Last               = { emit = "common:dotnet.linq_last",                  min_args = 0, max_args = 0 }
-Skip               = { emit = "common:dotnet.linq_skip",                  min_args = 1, max_args = 1 }
-Take               = { emit = "common:dotnet.linq_take",                  min_args = 1, max_args = 1 }
+Select             = { emit = "common:dotnet.linq_select",                min_args = 1, max_args = 1 }
 Average            = { emit = "common:dotnet.linq_average",               min_args = 0, max_args = 0 }
 FirstOrDefault     = { emit = "common:dotnet.linq_first_or_default",      min_args = 0, max_args = 0 }
 Distinct           = { emit = "common:dotnet.linq_distinct",              min_args = 0, max_args = 0 }
+Skip               = { emit = "common:dotnet.linq_skip",                  min_args = 1, max_args = 1 }
+Take               = { emit = "common:dotnet.linq_take",                  min_args = 1, max_args = 1 }
 Aggregate          = { emit = "common:dotnet.linq_aggregate",             min_args = 2, max_args = 2 }
 OrderByDescending  = { emit = "common:dotnet.linq_order_by_descending",   min_args = 1, max_args = 1 }
+GroupBy            = { emit = "common:dotnet.linq_group_by",              min_args = 1, max_args = 1 }
+SelectMany         = { emit = "common:dotnet.linq_select_many",           min_args = 1, max_args = 1 }
+ToDictionary       = { emit = "common:dotnet.linq_to_dictionary",         min_args = 2, max_args = 2 }
+Zip                = { emit = "common:dotnet.linq_zip",                   min_args = 2, max_args = 2 }
 AddRange           = { emit = "common:dotnet.list_add_range",             min_args = 1, max_args = 1 }
 
 # Dictionary methods
@@ -344,7 +349,6 @@ module = "wasi:filesystem"
 
 [array_methods]
 Where     = "__array_filter"
-Select    = "__array_map"
 ForEach   = "__array_forEach"
 Any       = "__array_some"
 All       = "__array_every"

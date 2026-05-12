@@ -67,7 +67,7 @@ impl Compiler {
 
         // Define params
         for p in params {
-            self.define_local(&p.name);
+            self.define_local_typed(&p.name, p.type_hint.clone());
             // Default parameters: ECMA-262 §15.2.3 — only `undefined`
             // triggers the default (not `null`). The VM now pads
             // missing positional args with `Undefined`, distinct from
@@ -332,13 +332,26 @@ impl Compiler {
             // chunks bound later.
             if let Some(auto_field_name) = &p.auto_field {
                 let pname_canon = self.canon(auto_field_name);
-                // Walker doesn't currently distinguish static auto-props;
-                // `is_auto` maps to instance-side by default. If a
-                // language walker populates a static auto-property in
-                // future, it should go on `class.static_fields` instead.
-                if !fields.contains(&pname_canon) {
+                if p.is_static {
+                    if !static_field_inits.iter().any(|(n, _)| n == &pname_canon) {
+                        static_field_inits.push((pname_canon, None));
+                    }
+                } else if !fields.contains(&pname_canon) {
                     fields.push(pname_canon.clone());
                     field_inits.push((pname_canon, None));
+                }
+            }
+        }
+
+        // Events need backing storage on instances so method bodies can
+        // read/invoke them via implicit-self resolution (`if (Click != null)
+        // Click();`) and subscriptions (`obj.Click += handler`) persist.
+        for m in &class.raw_extra_members {
+            if let ClassMember::Event { name: ename, .. } = m {
+                let fname = self.canon(ename);
+                if !fields.contains(&fname) {
+                    fields.push(fname.clone());
+                    field_inits.push((fname, None));
                 }
             }
         }
@@ -352,6 +365,27 @@ impl Compiler {
             parent: parent.clone(),
             fields: fields.clone(),
             static_fields: static_field_names,
+            static_field_types: class.static_fields.iter().filter_map(|f| {
+                f.type_hint.as_ref().map(|t| (self.canon(&f.name), Self::normalize_type_hint(t)))
+            }).collect(),
+            static_method_names: class
+                .static_methods
+                .iter()
+                .map(|m| m.source_name.clone())
+                .collect(),
+            nested_types: class.raw_extra_members.iter().filter_map(|m| {
+                if let ClassMember::NestedType(stmt) = m {
+                    match &stmt.kind {
+                        StmtKind::ClassDecl { name, .. }
+                        | StmtKind::StructDecl { name, .. }
+                        | StmtKind::InterfaceDecl { name, .. }
+                        | StmtKind::EnumDecl { name, .. } => Some(name.clone()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            }).collect(),
             statics: Vec::new(), // filled after methods are compiled
         });
 
@@ -394,6 +428,7 @@ impl Compiler {
         // the old Method arm needed.
         let mut compile_normal_method = |cc: &mut Compiler, m: &NormalMethod, is_static: bool| -> Result<(), String> {
             let mname = &m.source_name;
+            let is_static_init = is_static && mname == "__static_init__";
             let is_ctor = if cc.case_sensitive {
                 mname == &ctor_name || (is_static && mname == "new")
             } else {
@@ -410,6 +445,8 @@ impl Compiler {
             let has_rest = user_params.last().map_or(false, |p| p.is_rest);
             let arity = if has_rest {
                 255u8
+            } else if is_static_init {
+                user_params.len() as u8
             } else if uses_js_this {
                 user_params.len() as u8
             } else {
@@ -428,7 +465,7 @@ impl Compiler {
             let saved = cc.current;
             cc.current = ci;
 
-            if !uses_js_this {
+            if !uses_js_this && !is_static_init {
                 cc.define_local(&self_kw);
             }
             for p in &user_params { cc.define_local(&p.name); }
@@ -568,16 +605,22 @@ impl Compiler {
             // Auto-properties are handled as plain fields in pass-1.
             if p.auto_field.is_some() { continue; }
             let pname_canon = self.canon(&p.source_name);
+            let prop_is_static = p.is_static;
 
             if let Some(getter) = &p.getter {
                 let get_name = format!("__get_{}", pname_canon);
                 let ci = self.chunks.len();
-                let chunk = common::functions::create_function_chunk(&get_name, 1); // self
+                let chunk = common::functions::create_function_chunk(
+                    &get_name,
+                    if prop_is_static { 0 } else { 1 },
+                );
                 self.chunks.push(chunk);
                 self.scopes.push(Scope::new_function());
                 let saved = self.current;
                 self.current = ci;
-                self.define_local(&self_kw);
+                if !prop_is_static {
+                    self.define_local(&self_kw);
+                }
 
                 if getter.body.is_empty() {
                     // Auto-property getter: return backing field
@@ -606,18 +649,23 @@ impl Compiler {
                 self.chunks[ci].local_count = locals;
                 self.scopes.pop();
                 self.current = saved;
-                method_chunks.push((get_name, ci, false, false));
+                method_chunks.push((get_name, ci, false, prop_is_static));
             }
 
             if let Some(setter) = &p.setter {
                 let set_name = format!("__set_{}", pname_canon);
                 let ci = self.chunks.len();
-                let chunk = common::functions::create_function_chunk(&set_name, 2); // self, value
+                let chunk = common::functions::create_function_chunk(
+                    &set_name,
+                    if prop_is_static { 1 } else { 2 },
+                );
                 self.chunks.push(chunk);
                 self.scopes.push(Scope::new_function());
                 let saved = self.current;
                 self.current = ci;
-                self.define_local(&self_kw);
+                if !prop_is_static {
+                    self.define_local(&self_kw);
+                }
                 let value_param_name = setter.params.first()
                     .map(|p| p.name.clone())
                     .unwrap_or_else(|| "value".to_string());
@@ -644,7 +692,7 @@ impl Compiler {
                 self.chunks[ci].local_count = locals;
                 self.scopes.pop();
                 self.current = saved;
-                method_chunks.push((set_name, ci, false, false));
+                method_chunks.push((set_name, ci, false, prop_is_static));
             }
         }
 
@@ -1264,11 +1312,39 @@ impl Compiler {
             self.emit(Op::DROP);
         }
 
+        // Attach nested types onto the constructor object so `Outer.Inner`
+        // resolves to the nested class constructor through the same shared
+        // class-object path as static methods.
+        let nested_types = self.pending_classes.get(name)
+            .map(|pc| pc.nested_types.clone())
+            .unwrap_or_default();
+        for nested in nested_types {
+            self.emit_u16(Op::LOCAL_GET, ctor_local);
+            let nested_canon = self.canon(&nested);
+            let nested_idx = self.str_const(&nested_canon);
+            self.emit_u16(Op::GLOBAL_GET, nested_idx);
+            let key = self.str_const(&nested_canon);
+            self.emit_u16(Op::STRUCT_SET, key);
+            self.emit(Op::DROP);
+        }
+
         // Attach static methods to the constructor object
         let mut all_statics: Vec<(String, usize)> = Vec::new();
         for (mname, mci, _, _) in &static_methods {
             common::classes::emit_attach_static_method(self.chunk(), ctor_local, mname, *mci, line);
             all_statics.push((mname.clone(), *mci));
+        }
+
+        // Synthetic static constructor hook from language walkers.
+        if let Some((_, static_init_ci, _, _)) = static_methods
+            .iter()
+            .find(|(mname, _, _, _)| mname.eq_ignore_ascii_case("__static_init__"))
+        {
+            let line = self.line;
+            self.emit_u16(Op::REF_FUNC, *static_init_ci as u16);
+            self.chunk().emit(0, line);
+            self.emit_u8(Op::CALL_REF, 0);
+            self.emit(Op::DROP);
         }
 
         // Inherit parent's static methods — walk up the chain via PendingClass

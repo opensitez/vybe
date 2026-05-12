@@ -48,10 +48,11 @@ pub fn normalize_class(
 
     for member in members {
         match member {
-            ClassMember::Field { name: fname, init, modifiers: m, .. } => {
+            ClassMember::Field { name: fname, type_hint, init, modifiers: m, .. } => {
                 let field = NormalField {
                     span: span.clone(),
                     name: fname.clone(),
+                    type_hint: type_hint.clone(),
                     init: init.clone(),
                     access: access_from_visibility(m.visibility),
                     readonly: false,
@@ -126,6 +127,7 @@ pub fn normalize_class(
                     span: span.clone(),
                     canonical_name: canonical,
                     source_name: pname.clone(),
+                    is_static: m.is_static,
                     getter: getter_method,
                     setter: setter_method,
                     auto_field: if *is_auto { Some(pname.clone()) } else { None },

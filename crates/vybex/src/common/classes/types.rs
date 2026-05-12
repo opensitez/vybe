@@ -97,6 +97,7 @@ pub enum Access {
 pub struct NormalField {
     pub span: Span,
     pub name: String,
+    pub type_hint: Option<String>,
     pub init: Option<Expression>,
     pub access: Access,
     pub readonly: bool,
@@ -171,6 +172,7 @@ pub struct NormalProperty {
     pub span: Span,
     pub canonical_name: String,
     pub source_name: String,
+    pub is_static: bool,
     pub getter: Option<NormalMethod>,
     pub setter: Option<NormalMethod>,
     /// For C# `{ get; set; }` auto-properties: the backing field name.

@@ -77,7 +77,7 @@ pub use winforms::dotnet_winforms_component_descriptor;
 pub use winforms::classes;
 
 use std::sync::LazyLock;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use vybe_bytecode::component_model::{ComponentDescriptor, ComponentItemKind, ConstructorTarget, MethodBody};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +105,7 @@ pub struct DotnetSurface {
     noop_methods: HashSet<String>,
     known_constants: HashSet<String>,
     runtime_collection_methods: HashSet<String>,
+    runtime_collection_method_arities: HashMap<String, HashSet<u8>>,
     component_descriptor: ComponentDescriptor,
 }
 
@@ -124,6 +125,7 @@ fn build_dotnet_surface() -> DotnetSurface {
             .map(|name| (*name).to_string())
             .collect(),
         runtime_collection_methods: collection_runtime_method_names(&component_descriptor),
+        runtime_collection_method_arities: collection_runtime_method_arities(&component_descriptor),
         component_descriptor,
     }
 }
@@ -157,6 +159,13 @@ impl DotnetSurface {
         self.runtime_collection_methods.contains(&name.to_lowercase())
     }
 
+    pub fn uses_runtime_collection_dispatch_arity(&self, name: &str, arg_count: u8) -> bool {
+        self.runtime_collection_method_arities
+            .get(&name.to_lowercase())
+            .map(|arities| arities.contains(&arg_count))
+            .unwrap_or(false)
+    }
+
     pub fn component_descriptor(&self) -> &ComponentDescriptor {
         &self.component_descriptor
     }
@@ -185,13 +194,29 @@ impl DotnetSurface {
     /// Returns `None` for unknown classes or non-instance methods —
     /// the caller falls through to runtime dispatch (TypeRegistry hint
     /// + `__type` fallback per the compilation-hints proposal).
-    pub fn lookup_instance_method(&self, class_name: &str, method_name: &str) -> Option<InstanceMethodTarget> {
+    pub fn lookup_instance_method(&self, class_name: &str, method_name: &str, arg_count: u8) -> Option<InstanceMethodTarget> {
+        let requested = class_name.trim();
+        let requested_short = requested.rsplit('.').next().unwrap_or(requested);
         self.component_descriptor
             .classes
             .iter()
-            .find(|class| class.name.eq_ignore_ascii_case(class_name))
+            .find(|class| {
+                class.name.eq_ignore_ascii_case(requested)
+                    || class.name.eq_ignore_ascii_case(requested_short)
+            })
             .and_then(|class| {
-                class.methods.iter().find_map(|method| {
+                class.methods
+                    .iter()
+                    .filter(|method| !method.is_static && method.name.eq_ignore_ascii_case(method_name))
+                    .find(|method| method.arity == arg_count)
+                    .or_else(|| {
+                        // Backward-compatible fallback for classes that only
+                        // define one method with this name.
+                        class.methods
+                            .iter()
+                            .find(|method| !method.is_static && method.name.eq_ignore_ascii_case(method_name))
+                    })
+                    .and_then(|method| {
                     if method.is_static || !method.name.eq_ignore_ascii_case(method_name) {
                         return None;
                     }
@@ -283,6 +308,10 @@ pub fn uses_runtime_collection_dispatch(name: &str) -> bool {
     surface().uses_runtime_collection_dispatch(name)
 }
 
+pub fn uses_runtime_collection_dispatch_arity(name: &str, arg_count: u8) -> bool {
+    surface().uses_runtime_collection_dispatch_arity(name, arg_count)
+}
+
 pub fn namespace_to_host_module(prefix: &str) -> &str {
     host_map::namespace_to_host_module(prefix)
 }
@@ -355,6 +384,27 @@ fn collection_runtime_method_names(descriptor: &ComponentDescriptor) -> HashSet<
         .filter(|method| !method.is_static)
         .map(|method| method.name.to_lowercase())
         .collect()
+}
+
+fn collection_runtime_method_arities(descriptor: &ComponentDescriptor) -> HashMap<String, HashSet<u8>> {
+    let mut out: HashMap<String, HashSet<u8>> = HashMap::new();
+    for export in &descriptor.exports {
+        if !export.interface.starts_with("dotnet.System.Collections") {
+            continue;
+        }
+        let ComponentItemKind::Class(class) = &export.kind else {
+            continue;
+        };
+        for method in &class.methods {
+            if method.is_static {
+                continue;
+            }
+            out.entry(method.name.to_lowercase())
+                .or_default()
+                .insert(method.arity);
+        }
+    }
+    out
 }
 
 #[cfg(test)]

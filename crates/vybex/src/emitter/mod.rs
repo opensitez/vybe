@@ -19,6 +19,7 @@ pub mod loops;
 pub mod errors;
 pub mod strings;
 pub mod functions;
+pub mod delegates;
 pub mod expressions;
 pub mod threading;
 pub mod components;

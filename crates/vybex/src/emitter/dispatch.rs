@@ -139,6 +139,10 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         "expressions.f64_mod" => crate::emitter::expressions::emit_f64_mod(&mut chunks[current], line),
         "expressions.bool_not" => crate::emitter::expressions::emit_bool_not(&mut chunks[current], line),
 
+        // ── Delegate ops ──
+        "delegates.combine" => crate::emitter::delegates::emit_combine(chunks, current, line),
+        "delegates.remove" => crate::emitter::delegates::emit_remove(chunks, current, line),
+
         // ── Threading ops ──
         // Real WASM threading opcodes (wasi-threads proposal):
         // thread_spawn, thread_join, memory atomic_*. NOT host calls — these
@@ -598,6 +602,16 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::dotnet::core::linq_adapter::emit_linq_aggregate(chunks, current, line),
         "dotnet.linq_order_by_descending"
             => crate::emitter::dotnet::core::linq_adapter::emit_linq_order_by_descending(chunks, current, line),
+        "dotnet.linq_select"
+            => crate::emitter::dotnet::core::linq_adapter::emit_linq_select(chunks, current, line),
+        "dotnet.linq_select_many"
+            => crate::emitter::dotnet::core::linq_adapter::emit_linq_select_many(chunks, current, line),
+        "dotnet.linq_group_by"
+            => crate::emitter::dotnet::core::linq_adapter::emit_linq_group_by(chunks, current, line),
+        "dotnet.linq_to_dictionary"
+            => crate::emitter::dotnet::core::linq_adapter::emit_linq_to_dictionary(chunks, current, line),
+        "dotnet.linq_zip"
+            => crate::emitter::dotnet::core::linq_adapter::emit_linq_zip(chunks, current, line),
 
         // ── Static Array.* helpers — same dotnet/core home as LINQ ──
         "dotnet.array_reverse"

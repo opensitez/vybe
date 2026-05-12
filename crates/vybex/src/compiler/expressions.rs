@@ -328,6 +328,12 @@ impl Compiler {
             ExprKind::Member { object, field, null_safe } => {
                 // Namespace constant check (Math.PI, etc.)
                 if let ExprKind::Ident(obj_name) = &object.kind {
+                    if let Some(key) = self.generic_static_member_key(obj_name, field) {
+                        let idx = self.str_const(&key);
+                        self.emit_u16(Op::GLOBAL_GET, idx);
+                        return Ok(());
+                    }
+
                     let compound = format!("{}.{}", obj_name, field);
                     if let Some(cv) = self.profile.lookup_constant(&compound) {
                         match cv {
@@ -424,6 +430,7 @@ impl Compiler {
                         let have_direct = self.emit_jump(Op::BR_IF_FALSE);
                         let lookup = self.str_const("__vybe_js_get_method");
                         self.emit_u16(Op::GLOBAL_GET, lookup);
+
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
                         self.emit_const(Value::String(Arc::from(field_name.as_str())));
                         self.emit_u8(Op::CALL_REF, 2);
@@ -692,6 +699,37 @@ impl Compiler {
                     }
                     { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
                     self.patch_jump(end);
+                } else if matches!(self.profile.name.as_str(), "csharp" | "vb") {
+                    self.compile_expr(object)?;
+                    let obj_slot = self.define_local("__index_obj");
+                    self.emit_u16(Op::LOCAL_SET, obj_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    let getter_key = self.str_const("__get___index__");
+                    self.emit_u16(Op::STRUCT_GET, getter_key);
+                    let getter_slot = self.define_local("__index_getter");
+                    self.emit_u16(Op::LOCAL_SET, getter_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, getter_slot);
+                    self.emit(Op::REF_IS_NULL);
+                    let fallback = self.emit_jump(Op::BR_IF_TRUE);
+
+                    self.emit_u16(Op::LOCAL_GET, getter_slot);
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.compile_expr(index)?;
+                    self.emit_u8(Op::CALL_REF, 2);
+                    let done = self.emit_jump(Op::BR);
+
+                    self.patch_jump(fallback);
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.compile_expr(index)?;
+                    if self.profile.negative_index_wraps {
+                        self.emit_negative_index_wrap();
+                    }
+                    { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+                    self.patch_jump(done);
                 } else {
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
@@ -1324,6 +1362,17 @@ impl Compiler {
             // ── Type operations ─────────────────────────────────────────
             ExprKind::IsType { expr: inner, type_name } => {
                 let canon_type = self.canon(type_name);
+                if matches!(canon_type.as_str(), "IEnumerable" | "ICollection" | "IList" | "IReadOnlyCollection" | "IReadOnlyList") {
+                    if let ExprKind::Ident(name) = &inner.kind {
+                        if self.lookup_var_type_hint(name).is_some_and(|hint| {
+                            let bare = hint.split('<').next().unwrap_or(hint).trim();
+                            matches!(Self::normalize_type_hint(bare).as_str(), "list" | "arraylist" | "queue" | "stack" | "hashset" | "dictionary")
+                        }) {
+                            self.emit(Op::TRUE);
+                            return Ok(());
+                        }
+                    }
+                }
                 self.compile_expr(inner)?;
                 let obj_slot = self.define_local("__is_type_obj");
                 self.emit_u16(Op::LOCAL_SET, obj_slot);
@@ -1345,6 +1394,33 @@ impl Compiler {
                 self.emit_const(Value::String(Arc::from(canon_type.as_str())));
                 self.emit(Op::DYN_EQ);
                 match_patches.push(self.emit_jump(Op::BR_IF_TRUE));
+
+                if matches!(canon_type.as_str(), "IEnumerable" | "ICollection" | "IList" | "IReadOnlyCollection" | "IReadOnlyList") {
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.emit(Op::REF_IS_ARRAY);
+                    match_patches.push(self.emit_jump(Op::BR_IF_TRUE));
+
+                    let list_idx = self.chunk().add_constant(
+                        vybe_bytecode::Value::String(std::sync::Arc::from("list")),
+                    );
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.chunk().emit_op_u16(vybe_bytecode::Op::REF_TEST, list_idx, line);
+                    match_patches.push(self.emit_jump(Op::BR_IF_TRUE));
+
+                    for key_name in ["length", "count"] {
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        let key = self.str_const(key_name);
+                        self.emit_u16(Op::STRUCT_GET, key);
+                        self.emit(Op::REF_IS_NULL);
+                        match_patches.push(self.emit_jump(Op::BR_IF_FALSE));
+                    }
+
+                    if canon_type == "IEnumerable" {
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit(Op::REF_IS_OBJECT);
+                        match_patches.push(self.emit_jump(Op::BR_IF_TRUE));
+                    }
+                }
 
                 self.emit_u16(Op::LOCAL_GET, obj_slot);
                 let types_key = self.str_const("__types");
@@ -1377,6 +1453,27 @@ impl Compiler {
                 // builtin-style cast node for such a name, honour the user
                 // function instead of treating the cast as a no-op.
                 if let ExprKind::Cast { type_name, .. } = &expr.kind {
+                    let canon_type = self.canon(type_name);
+                    if self.profile.name == "csharp" {
+                        if let Some(names) = self.enum_value_names.get(&canon_type) {
+                            if let ExprKind::Lit(Literal::Int(n)) = &inner.kind {
+                                if let Some(member_name) = names.get(n) {
+                                    self.emit_const(Value::String(Arc::from(member_name.as_str())));
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+
+                    if self.profile.name == "csharp" && canon_type == "char" {
+                        self.compile_expr(inner)?;
+                        let num = self.import("ecma:number", "Number");
+                        self.emit_host_call(num, 1);
+                        self.emit(Op::F64_FLOOR);
+                        self.emit(Op::STR_FROM_CHAR_CODE);
+                        return Ok(());
+                    }
+
                     if self.profile.name == "pascal" {
                         match self.canon(type_name).as_str() {
                             "integer" | "int" | "longint" => {
@@ -1389,7 +1486,6 @@ impl Compiler {
                         }
                     }
 
-                    let canon_type = self.canon(type_name);
                     let shadows_cast = self.defined_functions.contains(&canon_type)
                         || (!self.case_sensitive
                             && self.defined_functions.iter().any(|name| name.eq_ignore_ascii_case(type_name)));
