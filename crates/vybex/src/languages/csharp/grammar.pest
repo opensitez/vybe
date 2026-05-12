@@ -270,6 +270,7 @@ statement = _{
     // `local_var_declaration` so the `(` after the name commits to
     // the local-function parse rather than failing the var parse.
     | local_function_decl
+    | using_declaration
     | local_var_declaration
     | if_statement
     | for_statement
@@ -411,6 +412,10 @@ catch_when_filter = {
 finally_clause = { "finally" ~ block_statement }
 
 // ── Using statement ─────────────────────────────────────────────────────────
+
+using_declaration = {
+    "using" ~ (var_kw | type_name) ~ ident_name ~ "=" ~ expression ~ ";"
+}
 
 using_statement = {
     "using" ~ "(" ~ (var_kw | type_name) ~ ident_name ~ "=" ~ expression ~ ")" ~ statement

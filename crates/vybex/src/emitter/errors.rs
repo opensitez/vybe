@@ -58,7 +58,8 @@ pub fn canonical_exception_name(name: &str) -> &str {
     // `STRUCT_GET __exception_type` compare doesn't miss on a trailing
     // space mismatch.
     let trimmed = name.trim();
-    match trimmed.to_lowercase().as_str() {
+    let short_name = trimmed.rsplit('.').next().unwrap_or(trimmed).trim();
+    match short_name.to_lowercase().as_str() {
         // Python → canonical
         "valueerror" | "formaterror" | "formatexception" => "ValueError",
         "typeerror" => "TypeError",

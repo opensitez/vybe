@@ -68,6 +68,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         imports,
     };
     rewrite_using_imports(&mut module);
+    rewrite_using_declarations(&mut module);
     rewrite_explicit_interface_accesses(&mut module);
     rewrite_record_uses(&mut module);
     rewrite_extension_calls(&mut module);
@@ -1057,6 +1058,117 @@ fn rewrite_using_imports(module: &mut Module) {
         return;
     }
     rewrite_using_imports_in_statements(&mut module.body, &aliases, &static_paths);
+}
+
+fn rewrite_using_declarations(module: &mut Module) {
+    rewrite_using_declarations_in_statements(&mut module.body);
+}
+
+fn rewrite_using_declarations_in_statements(body: &mut Vec<Statement>) {
+    for stmt in body.iter_mut() {
+        rewrite_using_declarations_in_statement(stmt);
+    }
+
+    let mut rewritten = Vec::with_capacity(body.len());
+    let mut remaining = std::mem::take(body).into_iter();
+    while let Some(mut stmt) = remaining.next() {
+        let is_using_decl = matches!(&stmt.kind, StmtKind::Using { body, .. } if body.is_empty());
+        if is_using_decl {
+            let mut tail: Vec<Statement> = remaining.collect();
+            rewrite_using_declarations_in_statements(&mut tail);
+            if let StmtKind::Using { body, .. } = &mut stmt.kind {
+                *body = tail;
+            }
+            rewritten.push(stmt);
+            *body = rewritten;
+            return;
+        }
+        rewritten.push(stmt);
+    }
+    *body = rewritten;
+}
+
+fn rewrite_using_declarations_in_statement(stmt: &mut Statement) {
+    match &mut stmt.kind {
+        StmtKind::Block(body)
+        | StmtKind::NamespaceDecl { body, .. }
+        | StmtKind::FunctionDecl { body, .. } => {
+            rewrite_using_declarations_in_statements(body);
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                match member {
+                    ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+                        rewrite_using_declarations_in_statement(stmt);
+                    }
+                    ClassMember::Constructor { body, .. } => {
+                        rewrite_using_declarations_in_statements(body);
+                    }
+                    ClassMember::Property { getter, setter, .. } => {
+                        if let Some(getter) = getter {
+                            rewrite_using_declarations_in_statements(getter);
+                        }
+                        if let Some(setter) = setter {
+                            rewrite_using_declarations_in_statements(&mut setter.body);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        StmtKind::If { then_body, elifs, else_body, .. } => {
+            rewrite_using_declarations_in_statements(then_body);
+            for (_, elif_body) in elifs {
+                rewrite_using_declarations_in_statements(elif_body);
+            }
+            if let Some(else_body) = else_body {
+                rewrite_using_declarations_in_statements(else_body);
+            }
+        }
+        StmtKind::For { init, body, .. } => {
+            if let Some(init) = init {
+                rewrite_using_declarations_in_statement(init);
+            }
+            rewrite_using_declarations_in_statements(body);
+        }
+        StmtKind::ForIn { body, else_body, .. } => {
+            rewrite_using_declarations_in_statements(body);
+            if let Some(else_body) = else_body {
+                rewrite_using_declarations_in_statements(else_body);
+            }
+        }
+        StmtKind::While { body, else_body, .. } => {
+            rewrite_using_declarations_in_statements(body);
+            if let Some(else_body) = else_body {
+                rewrite_using_declarations_in_statements(else_body);
+            }
+        }
+        StmtKind::DoWhile { body, .. }
+        | StmtKind::Using { body, .. }
+        | StmtKind::Lock { body, .. } => {
+            rewrite_using_declarations_in_statements(body);
+        }
+        StmtKind::Try { body, catches, finally, .. } => {
+            rewrite_using_declarations_in_statements(body);
+            for catch in catches {
+                rewrite_using_declarations_in_statements(&mut catch.body);
+            }
+            if let Some(finally) = finally {
+                rewrite_using_declarations_in_statements(finally);
+            }
+        }
+        StmtKind::Switch { cases, default, .. } => {
+            for case in cases {
+                rewrite_using_declarations_in_statements(&mut case.body);
+            }
+            if let Some(default) = default {
+                rewrite_using_declarations_in_statements(default);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn normalize_import_path(path: &str) -> String {
@@ -2067,6 +2179,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         }
         Rule::local_var_declaration => walk_local_var(pair)?,
         Rule::local_function_decl => walk_local_function(pair)?,
+        Rule::using_declaration => walk_using_declaration(pair)?,
         Rule::tuple_deconstruction_decl => walk_tuple_deconstruction(pair)?,
         Rule::if_statement => walk_if(pair)?,
         Rule::for_statement => walk_for(pair)?,
@@ -4128,6 +4241,26 @@ fn walk_using_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 
     Ok(StmtKind::Using { var, resource, body })
+}
+
+fn walk_using_declaration(pair: Pair<Rule>) -> Result<StmtKind, String> {
+    let mut var = String::new();
+    let mut resource = Expression::null();
+
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::var_kw | Rule::type_name => {}
+            Rule::ident_name => var = p.as_str().to_string(),
+            Rule::expression => resource = walk_expression(p)?,
+            _ => {}
+        }
+    }
+
+    Ok(StmtKind::Using {
+        var,
+        resource,
+        body: Vec::new(),
+    })
 }
 
 fn walk_lock(pair: Pair<Rule>) -> Result<StmtKind, String> {

@@ -173,7 +173,7 @@ pub struct Compiler {
     /// Used to make early returns execute structured `finally` bodies
     /// even though the VM's TRY_START handler currently ignores the
     /// reserved finally offset operand.
-    active_finally_blocks: Vec<Vec<Statement>>,
+    active_finally_blocks: Vec<FinallyAction>,
 }
 
 /// §16.2.1.3 wildcard — `import * as alias from "module"`.
@@ -181,6 +181,16 @@ pub struct Compiler {
 pub struct HostWildcardImport {
     pub alias: String,
     pub module: String,
+}
+
+#[derive(Debug, Clone)]
+enum FinallyAction {
+    Statements(Vec<Statement>),
+    ResourceDispose {
+        slot: u16,
+        method: String,
+        line: u32,
+    },
 }
 
 /// §16.2.1 named — `import { name as local } from "module"`.
@@ -956,11 +966,25 @@ impl Compiler {
         let original = self.active_finally_blocks.clone();
         for idx in (0..original.len()).rev() {
             self.active_finally_blocks = original[..idx].to_vec();
-            for stmt in &original[idx] {
-                self.compile_stmt(stmt)?;
-            }
+            self.emit_finally_action(&original[idx])?;
         }
         self.active_finally_blocks = original;
+        Ok(())
+    }
+
+    fn emit_finally_action(&mut self, action: &FinallyAction) -> Result<(), String> {
+        match action {
+            FinallyAction::Statements(stmts) => {
+                for stmt in stmts {
+                    self.compile_stmt(stmt)?;
+                }
+            }
+            FinallyAction::ResourceDispose { slot, method, line } => {
+                self.label_depth += 1;
+                common::errors::emit_resource_dispose(self.chunk(), *slot, method, *line);
+                self.label_depth -= 1;
+            }
+        }
         Ok(())
     }
 
@@ -2325,7 +2349,7 @@ impl Compiler {
                 };
                 let catch_jump = common::errors::emit_try_start(&mut self.chunks[self.current], line);
                 if let Some(fin) = finally.clone() {
-                    self.active_finally_blocks.push(fin);
+                    self.active_finally_blocks.push(FinallyAction::Statements(fin));
                 }
                 for s in body { self.compile_stmt(s)?; }
                 common::errors::emit_try_end(&mut self.chunks[self.current], line);
@@ -2815,7 +2839,13 @@ impl Compiler {
 
                 let line = self.line;
                 let catch_jump = common::errors::emit_try_start(&mut self.chunks[self.current], line);
+                self.active_finally_blocks.push(FinallyAction::ResourceDispose {
+                    slot,
+                    method: "Dispose".to_string(),
+                    line,
+                });
                 for s in body { self.compile_stmt(s)?; }
+                self.active_finally_blocks.pop();
                 common::errors::emit_try_end(&mut self.chunks[self.current], line);
                 let skip_to_finally = self.emit_jump(Op::BR);
                 common::errors::patch_catch(&mut self.chunks[self.current], catch_jump);
@@ -3842,12 +3872,11 @@ impl Compiler {
                         self.emit(Op::DROP);
                         self.patch_jump(end);
                         return Ok(());
-                    } else 
+                    } else {
                     // JS profile: track insertion order via the
                     // `__keys` side channel so `Object.keys` /
                     // `Object.entries` / `Object.values` see the
                     // correct order. The HashMap backing Ordinary
-                    // objects loses order otherwise, which breaks
                     // PHP polyfills that build assoc results
                     // (`array_flip`, `array_diff_assoc`, etc.) and
                     // any JS code that relies on §7.3.22 ordering.
@@ -3866,6 +3895,7 @@ impl Compiler {
                     common::collections::emit_set(&mut self.chunks, self.current, line);
                     // ecma:array.set leaves [null]; drop it.
                     self.emit(Op::DROP);
+                    }
                 }
             }
             // VB: arr(idx) = val — Call used as index because () is both call and index
