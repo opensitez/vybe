@@ -545,6 +545,7 @@ pub enum ExprKind {
     IsType { expr: Box<Expression>, type_name: String },
     Cast { expr: Box<Expression>, type_name: String },
     TypeOf(Box<Expression>),
+    DefaultOf(String),
 
     // ── Null handling (compiler_common::expressions) ─────────────────────
 

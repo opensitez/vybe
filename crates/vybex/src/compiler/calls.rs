@@ -2543,6 +2543,26 @@ impl Compiler {
                     self.emit_u16(Op::STRUCT_GET, prop);
                     let fn_tmp = self.define_local("__fn");
                     self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
+                    if self.profile.namespaces.use_dotnet
+                        && arg_exprs.is_empty()
+                        && field.eq_ignore_ascii_case("Count")
+                    {
+                        self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                        self.emit(Op::REF_TYPEOF);
+                        self.emit_const(Value::String(Arc::from("function")));
+                        self.emit(Op::DYN_EQ);
+                        let return_value = self.emit_jump(Op::BR_IF_FALSE);
+
+                        self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit_u8(Op::CALL_REF, 1);
+                        let generic_done = self.emit_jump(Op::BR);
+
+                        self.patch_jump(return_value);
+                        self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                        self.patch_jump(generic_done);
+                        return Ok(());
+                    }
                     self.emit_u16(Op::LOCAL_GET, fn_tmp);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     for a in &arg_exprs { self.compile_expr(a)?; }
@@ -2570,6 +2590,26 @@ impl Compiler {
             self.emit_u16(Op::STRUCT_GET, prop);
             let fn_tmp = self.define_local("__fn");
             self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
+            if self.profile.namespaces.use_dotnet
+                && arg_exprs.is_empty()
+                && field.eq_ignore_ascii_case("Count")
+            {
+                self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                self.emit(Op::REF_TYPEOF);
+                self.emit_const(Value::String(Arc::from("function")));
+                self.emit(Op::DYN_EQ);
+                let return_value = self.emit_jump(Op::BR_IF_FALSE);
+
+                self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                self.emit_u8(Op::CALL_REF, 1);
+                let done = self.emit_jump(Op::BR);
+
+                self.patch_jump(return_value);
+                self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                self.patch_jump(done);
+                return Ok(());
+            }
             self.emit_u16(Op::LOCAL_GET, fn_tmp);
             self.emit_u16(Op::LOCAL_GET, obj_tmp);
             for a in &arg_exprs { self.compile_expr(a)?; }

@@ -725,6 +725,7 @@ fn rewrite_explicit_interface_accesses_in_expr(
         }
         ExprKind::Lit(_)
         | ExprKind::Ident(_)
+        | ExprKind::DefaultOf(_)
         | ExprKind::This
         | ExprKind::Super
         | ExprKind::AddressOf(_)
@@ -737,6 +738,37 @@ fn rewrite_explicit_interface_accesses_in_expr(
 #[derive(Clone)]
 struct RecordShape {
     positional_fields: Vec<String>,
+}
+
+fn extract_deconstruct_shape(params: &[Param], body: &[Statement]) -> Option<RecordShape> {
+    if params.is_empty() || body.len() != params.len() {
+        return None;
+    }
+
+    let mut positional_fields = Vec::with_capacity(params.len());
+    for (param, stmt) in params.iter().zip(body.iter()) {
+        let StmtKind::Assign { targets, value } = &stmt.kind else {
+            return None;
+        };
+        if targets.len() != 1 {
+            return None;
+        }
+        let ExprKind::Ident(target_name) = &targets[0].kind else {
+            return None;
+        };
+        if target_name != &param.name {
+            return None;
+        }
+
+        let field_name = match &value.kind {
+            ExprKind::Ident(name) => name.clone(),
+            ExprKind::Member { object, field, null_safe: false } if matches!(object.kind, ExprKind::This) => field.clone(),
+            _ => return None,
+        };
+        positional_fields.push(field_name);
+    }
+
+    Some(RecordShape { positional_fields })
 }
 
 fn rewrite_record_uses(module: &mut Module) {
@@ -768,15 +800,13 @@ fn collect_record_shapes_in_statement(stmt: &Statement, shapes: &mut HashMap<Str
                 let ClassMember::Method(stmt) = member else {
                     return None;
                 };
-                let StmtKind::FunctionDecl { name, params, .. } = &stmt.kind else {
+                let StmtKind::FunctionDecl { name, params, body, .. } = &stmt.kind else {
                     return None;
                 };
                 if name != "Deconstruct" || params.is_empty() {
                     return None;
                 }
-                Some(RecordShape {
-                    positional_fields: params.iter().map(|p| p.name.clone()).collect(),
-                })
+                extract_deconstruct_shape(params, body)
             }) {
                 shapes.insert(name.clone(), shape);
             }
@@ -1707,6 +1737,7 @@ fn rewrite_using_imports_in_expr(
             }
         }
         ExprKind::Lit(_)
+        | ExprKind::DefaultOf(_)
         | ExprKind::This
         | ExprKind::Super
         | ExprKind::AddressOf(_)
@@ -2169,6 +2200,7 @@ fn rewrite_extension_calls_in_expr(
         }
         ExprKind::Lit(_)
         | ExprKind::Ident(_)
+        | ExprKind::DefaultOf(_)
         | ExprKind::This
         | ExprKind::Super
         | ExprKind::AddressOf(_)
@@ -2558,23 +2590,26 @@ fn walk_using(pair: Pair<Rule>) -> Result<Import, String> {
 /// idents as new locals inside a function, so a single `Assign` statement
 /// is enough — no separate `VarDecl` is needed.
 fn walk_tuple_deconstruction(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let mut idents: Vec<String> = Vec::new();
+    let mut pattern: Option<Vec<ArrayPatternElem>> = None;
     let mut value: Option<Expression> = None;
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::var_kw => {}
-            Rule::ident_name => idents.push(p.as_str().to_string()),
+            Rule::tuple_binding_list => pattern = Some(walk_tuple_binding_list(p)?),
             Rule::expression => {
                 value = Some(walk_expression(p)?);
             }
             _ => {}
         }
     }
+    let pattern = pattern.ok_or("tuple deconstruction missing binding pattern")?;
     let value = value.ok_or("tuple deconstruction missing RHS")?;
     if !matches!(value.kind, ExprKind::Tuple(_) | ExprKind::Array(_)) {
+        let mut leaf_names = Vec::new();
+        collect_tuple_binding_leaf_names(&pattern, &mut leaf_names);
         let mut declarations = Vec::new();
         let mut args = Vec::new();
-        for (index, name) in idents.into_iter().enumerate() {
+        for (index, name) in leaf_names.into_iter().enumerate() {
             let target_name = if name == "_" {
                 format!("__discard_{}", index)
             } else {
@@ -2613,10 +2648,51 @@ fn walk_tuple_deconstruction(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }))));
         return Ok(StmtKind::Block(body));
     }
-    let target = Expression::new(ExprKind::Destructure(DestructurePattern::Array(
-        tuple_binding_pattern_elems(idents),
-    )));
+    let target = Expression::new(ExprKind::Destructure(DestructurePattern::Array(pattern)));
     Ok(StmtKind::Assign { targets: vec![target], value })
+}
+
+fn walk_tuple_binding_list(pair: Pair<Rule>) -> Result<Vec<ArrayPatternElem>, String> {
+    let mut elems = Vec::new();
+    for child in pair.into_inner() {
+        if child.as_rule() == Rule::tuple_binding_pattern {
+            elems.push(walk_tuple_binding_pattern(child)?);
+        }
+    }
+    Ok(elems)
+}
+
+fn walk_tuple_binding_pattern(pair: Pair<Rule>) -> Result<ArrayPatternElem, String> {
+    let inner = pair.into_inner().next().ok_or("empty tuple binding pattern")?;
+    match inner.as_rule() {
+        Rule::ident_name => {
+            let name = inner.as_str().to_string();
+            if name == "_" {
+                Ok(ArrayPatternElem::Hole)
+            } else {
+                Ok(ArrayPatternElem::Pattern(BindingPattern::Ident(name), None))
+            }
+        }
+        Rule::tuple_binding_list => Ok(ArrayPatternElem::Pattern(
+            BindingPattern::Array(walk_tuple_binding_list(inner)?),
+            None,
+        )),
+        other => Err(format!("unexpected tuple binding pattern rule: {:?}", other)),
+    }
+}
+
+fn collect_tuple_binding_leaf_names(pattern: &[ArrayPatternElem], out: &mut Vec<String>) {
+    for elem in pattern {
+        match elem {
+            ArrayPatternElem::Pattern(BindingPattern::Ident(name), _) => out.push(name.clone()),
+            ArrayPatternElem::Pattern(BindingPattern::Array(items), _) => {
+                collect_tuple_binding_leaf_names(items, out);
+            }
+            ArrayPatternElem::Hole => out.push("_".into()),
+            ArrayPatternElem::Rest(name) => out.push(name.clone()),
+            ArrayPatternElem::Pattern(BindingPattern::Object(_), _) => {}
+        }
+    }
 }
 
 fn tuple_binding_pattern_elems(idents: Vec<String>) -> Vec<ArrayPatternElem> {
@@ -2853,6 +2929,7 @@ fn looks_like_csharp_interface_type(type_name: &str) -> bool {
 
 fn walk_class_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKind, String> {
     let mut name = String::new();
+    let mut generic_params = Vec::new();
     let mut parents = Vec::new();
     let mut interfaces = Vec::new();
     let mut members = Vec::new();
@@ -2879,9 +2956,13 @@ fn walk_class_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKi
                 // Generic param idents (`class Box<T> { ... }`) leak
                 // through the silent `generic_params` wrapper rule —
                 // they appear as additional `ident_name` pairs after
-                // the class name. Keep only the first.
+                // the class name. Keep the first as the runtime class
+                // name and retain the rest so `new T()` can bind to
+                // the concrete constructor passed into `new Box<Foo>()`.
                 if name.is_empty() {
                     name = p.as_str().to_string();
+                } else {
+                    generic_params.push(p.as_str().to_string());
                 }
             }
             Rule::base_list => {
@@ -2919,6 +3000,10 @@ fn walk_class_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKi
     }
 
     expand_explicit_interface_members(&mut members);
+    if !generic_params.is_empty() {
+        inject_csharp_generic_ctor_fields(&mut members, generic_params.len());
+        rewrite_generic_ctor_news_in_members(&mut members, &generic_params);
+    }
 
     Ok(StmtKind::ClassDecl {
         name,
@@ -2993,6 +3078,656 @@ fn expand_explicit_interface_members(members: &mut Vec<ClassMember>) {
     }
 
     members.extend(extras);
+}
+
+fn csharp_generic_ctor_field_name(index: usize) -> String {
+    format!("__vybe_generic_{index}")
+}
+
+fn csharp_generic_ctor_param_name(index: usize) -> String {
+    format!("__vybe_generic_ctor_{index}")
+}
+
+fn csharp_generic_default_param_name(index: usize) -> String {
+    format!("__vybe_generic_default_{index}")
+}
+
+fn inject_csharp_generic_binding_params(params: &mut Vec<Param>, generic_count: usize) {
+    for index in 0..generic_count {
+        params.push(Param {
+            name: csharp_generic_ctor_param_name(index),
+            type_hint: None,
+            default: Some(Expression::null()),
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: true,
+            is_nullable: false,
+        });
+        params.push(Param {
+            name: csharp_generic_default_param_name(index),
+            type_hint: None,
+            default: Some(Expression::null()),
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: true,
+            is_nullable: false,
+        });
+    }
+}
+
+fn inject_csharp_generic_ctor_fields(members: &mut Vec<ClassMember>, generic_count: usize) {
+    for index in (0..generic_count).rev() {
+        members.insert(
+            0,
+            ClassMember::Field {
+                name: csharp_generic_ctor_field_name(index),
+                type_hint: None,
+                init: None,
+                modifiers: Modifiers::default(),
+                with_events: false,
+                array_bounds: None,
+            },
+        );
+    }
+}
+
+fn rewrite_generic_ctor_news_in_members(members: &mut [ClassMember], generic_params: &[String]) {
+    for member in members {
+        rewrite_generic_ctor_news_in_member(member, generic_params);
+    }
+}
+
+fn rewrite_generic_ctor_news_in_member(member: &mut ClassMember, generic_params: &[String]) {
+    match member {
+        ClassMember::Field {
+            init,
+            array_bounds,
+            modifiers,
+            ..
+        } if !modifiers.is_static => {
+            if let Some(expr) = init {
+                rewrite_generic_ctor_news_in_expr(expr, generic_params);
+            }
+            if let Some(bounds) = array_bounds {
+                for bound in bounds {
+                    rewrite_generic_ctor_news_in_expr(bound, generic_params);
+                }
+            }
+        }
+        ClassMember::Method(stmt) => {
+            if let StmtKind::FunctionDecl { body, modifiers, .. } = &mut stmt.kind {
+                if !modifiers.is_static {
+                    rewrite_generic_ctor_news_in_statements(body, generic_params);
+                }
+            }
+        }
+        ClassMember::Constructor { body, base_args, .. } => {
+            rewrite_generic_ctor_news_in_statements(body, generic_params);
+            if let Some(base_args) = base_args {
+                for arg in base_args {
+                    rewrite_generic_ctor_news_in_expr(arg, generic_params);
+                }
+            }
+        }
+        ClassMember::Property { getter, setter, modifiers, .. } if !modifiers.is_static => {
+            if let Some(getter) = getter {
+                rewrite_generic_ctor_news_in_statements(getter, generic_params);
+            }
+            if let Some(setter) = setter {
+                rewrite_generic_ctor_news_in_statements(&mut setter.body, generic_params);
+            }
+        }
+        ClassMember::Const { value, .. } => {
+            rewrite_generic_ctor_news_in_expr(value, generic_params);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_generic_ctor_news_in_statements(body: &mut [Statement], generic_params: &[String]) {
+    for stmt in body {
+        rewrite_generic_ctor_news_in_statement(stmt, generic_params);
+    }
+}
+
+fn rewrite_generic_ctor_news_in_statement(stmt: &mut Statement, generic_params: &[String]) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr)
+        | StmtKind::Return(Some(expr))
+        | StmtKind::Throw { expr: Some(expr), cause: None }
+        | StmtKind::Using { resource: expr, .. }
+        | StmtKind::Lock { expr, .. }
+        | StmtKind::CompoundAssign { value: expr, .. } => {
+            rewrite_generic_ctor_news_in_expr(expr, generic_params);
+        }
+        StmtKind::Throw { expr: Some(expr), cause: Some(cause) } => {
+            rewrite_generic_ctor_news_in_expr(expr, generic_params);
+            rewrite_generic_ctor_news_in_expr(cause, generic_params);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_generic_ctor_news_in_expr(init, generic_params);
+                }
+                if let Some(bounds) = &mut decl.array_bounds {
+                    for bound in bounds {
+                        rewrite_generic_ctor_news_in_expr(bound, generic_params);
+                    }
+                }
+            }
+        }
+        StmtKind::FunctionDecl { .. } => {}
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            rewrite_generic_ctor_news_in_statements(body, generic_params);
+        }
+        StmtKind::ClassDecl { .. }
+        | StmtKind::StructDecl { .. }
+        | StmtKind::ModuleDecl { .. } => {}
+        StmtKind::If { cond, then_body, elifs, else_body } => {
+            rewrite_generic_ctor_news_in_expr(cond, generic_params);
+            rewrite_generic_ctor_news_in_statements(then_body, generic_params);
+            for (elif_cond, elif_body) in elifs {
+                rewrite_generic_ctor_news_in_expr(elif_cond, generic_params);
+                rewrite_generic_ctor_news_in_statements(elif_body, generic_params);
+            }
+            if let Some(else_body) = else_body {
+                rewrite_generic_ctor_news_in_statements(else_body, generic_params);
+            }
+        }
+        StmtKind::For { init, cond, update, body } => {
+            if let Some(init) = init {
+                rewrite_generic_ctor_news_in_statement(init, generic_params);
+            }
+            if let Some(cond) = cond {
+                rewrite_generic_ctor_news_in_expr(cond, generic_params);
+            }
+            if let Some(update) = update {
+                rewrite_generic_ctor_news_in_expr(update, generic_params);
+            }
+            rewrite_generic_ctor_news_in_statements(body, generic_params);
+        }
+        StmtKind::ForIn { iter, body, else_body, .. } => {
+            rewrite_generic_ctor_news_in_expr(iter, generic_params);
+            rewrite_generic_ctor_news_in_statements(body, generic_params);
+            if let Some(else_body) = else_body {
+                rewrite_generic_ctor_news_in_statements(else_body, generic_params);
+            }
+        }
+        StmtKind::While { cond, body, else_body } => {
+            rewrite_generic_ctor_news_in_expr(cond, generic_params);
+            rewrite_generic_ctor_news_in_statements(body, generic_params);
+            if let Some(else_body) = else_body {
+                rewrite_generic_ctor_news_in_statements(else_body, generic_params);
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            rewrite_generic_ctor_news_in_statements(body, generic_params);
+            rewrite_generic_ctor_news_in_expr(cond, generic_params);
+        }
+        StmtKind::Switch { expr, cases, default } => {
+            rewrite_generic_ctor_news_in_expr(expr, generic_params);
+            for case in cases {
+                for condition in &mut case.conditions {
+                    match condition {
+                        CaseCondition::Value(expr) => rewrite_generic_ctor_news_in_expr(expr, generic_params),
+                        CaseCondition::Range { from, to } => {
+                            rewrite_generic_ctor_news_in_expr(from, generic_params);
+                            rewrite_generic_ctor_news_in_expr(to, generic_params);
+                        }
+                        CaseCondition::Comparison { expr, .. } => {
+                            rewrite_generic_ctor_news_in_expr(expr, generic_params);
+                        }
+                    }
+                }
+                rewrite_generic_ctor_news_in_statements(&mut case.body, generic_params);
+            }
+            if let Some(default) = default {
+                rewrite_generic_ctor_news_in_statements(default, generic_params);
+            }
+        }
+        StmtKind::Try { body, catches, else_body, finally } => {
+            rewrite_generic_ctor_news_in_statements(body, generic_params);
+            for catch in catches {
+                if let Some(when_clause) = &mut catch.when_clause {
+                    rewrite_generic_ctor_news_in_expr(when_clause, generic_params);
+                }
+                rewrite_generic_ctor_news_in_statements(&mut catch.body, generic_params);
+            }
+            if let Some(else_body) = else_body {
+                rewrite_generic_ctor_news_in_statements(else_body, generic_params);
+            }
+            if let Some(finally) = finally {
+                rewrite_generic_ctor_news_in_statements(finally, generic_params);
+            }
+        }
+        StmtKind::With { items, body, .. } => {
+            for item in items {
+                rewrite_generic_ctor_news_in_expr(&mut item.expr, generic_params);
+            }
+            rewrite_generic_ctor_news_in_statements(body, generic_params);
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_generic_ctor_news_in_expr(target, generic_params);
+            }
+            rewrite_generic_ctor_news_in_expr(value, generic_params);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_generic_ctor_news_in_expr(expr: &mut Expression, generic_params: &[String]) {
+    match &mut expr.kind {
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::NullCoalesce { left, right } => {
+            rewrite_generic_ctor_news_in_expr(left, generic_params);
+            rewrite_generic_ctor_news_in_expr(right, generic_params);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::TypeOf(expr) => {
+            rewrite_generic_ctor_news_in_expr(expr, generic_params);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_generic_ctor_news_in_expr(cond, generic_params);
+            rewrite_generic_ctor_news_in_expr(then, generic_params);
+            rewrite_generic_ctor_news_in_expr(else_, generic_params);
+        }
+        ExprKind::Member { object, .. } => {
+            rewrite_generic_ctor_news_in_expr(object, generic_params);
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_generic_ctor_news_in_expr(object, generic_params);
+            rewrite_generic_ctor_news_in_expr(index, generic_params);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_generic_ctor_news_in_expr(callee, generic_params);
+            for arg in args {
+                rewrite_generic_ctor_news_in_expr(&mut arg.value, generic_params);
+            }
+        }
+        ExprKind::New { class, args } => {
+            rewrite_generic_ctor_news_in_expr(class, generic_params);
+            for arg in args {
+                rewrite_generic_ctor_news_in_expr(&mut arg.value, generic_params);
+            }
+            if let ExprKind::Ident(name) = &class.kind {
+                if let Some(index) = generic_params.iter().position(|param| param == name) {
+                    *class = Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::new(ExprKind::This)),
+                        field: csharp_generic_ctor_field_name(index),
+                        null_safe: false,
+                    }));
+                }
+            }
+        }
+        ExprKind::Assign { target, value }
+        | ExprKind::Walrus { target, value } => {
+            rewrite_generic_ctor_news_in_expr(target, generic_params);
+            rewrite_generic_ctor_news_in_expr(value, generic_params);
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(expr) => rewrite_generic_ctor_news_in_expr(expr, generic_params),
+            LambdaBody::Block(body) => rewrite_generic_ctor_news_in_statements(body, generic_params),
+        },
+        ExprKind::Array(items) => {
+            for item in items {
+                rewrite_generic_ctor_news_in_expr(&mut item.value, generic_params);
+                if let Some(key) = &mut item.key {
+                    rewrite_generic_ctor_news_in_expr(key, generic_params);
+                }
+            }
+        }
+        ExprKind::Tuple(items)
+        | ExprKind::Set(items)
+        | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_generic_ctor_news_in_expr(item, generic_params);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        rewrite_generic_ctor_news_in_expr(key, generic_params);
+                        rewrite_generic_ctor_news_in_expr(value, generic_params);
+                    }
+                    ObjectProperty::Spread(expr) => {
+                        rewrite_generic_ctor_news_in_expr(expr, generic_params);
+                    }
+                    ObjectProperty::Method { value, .. } => {
+                        rewrite_generic_ctor_news_in_statement(value, generic_params);
+                    }
+                    ObjectProperty::Accessor { value, .. } => {
+                        rewrite_generic_ctor_news_in_statement(value, generic_params);
+                    }
+                    ObjectProperty::Shorthand(_) => {}
+                }
+            }
+        }
+        ExprKind::Interpolation(parts) => {
+            for part in parts {
+                match part {
+                    InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
+                        rewrite_generic_ctor_news_in_expr(expr, generic_params);
+                    }
+                    InterpolPart::Text(_) => {}
+                }
+            }
+        }
+        ExprKind::Spread(expr)
+        | ExprKind::Cast { expr, .. } => {
+            rewrite_generic_ctor_news_in_expr(expr, generic_params);
+        }
+        ExprKind::Comprehension { element, generators, .. } => {
+            rewrite_generic_ctor_news_in_expr(element, generic_params);
+            for generator in generators {
+                rewrite_generic_ctor_news_in_expr(&mut generator.iter, generic_params);
+                for if_expr in &mut generator.conditions {
+                    rewrite_generic_ctor_news_in_expr(if_expr, generic_params);
+                }
+            }
+        }
+        ExprKind::Slice { lower, upper, step } => {
+            if let Some(lower) = lower {
+                rewrite_generic_ctor_news_in_expr(lower, generic_params);
+            }
+            if let Some(upper) = upper {
+                rewrite_generic_ctor_news_in_expr(upper, generic_params);
+            }
+            if let Some(step) = step {
+                rewrite_generic_ctor_news_in_expr(step, generic_params);
+            }
+        }
+        ExprKind::Range { start, end, .. } => {
+            rewrite_generic_ctor_news_in_expr(start, generic_params);
+            rewrite_generic_ctor_news_in_expr(end, generic_params);
+        }
+        ExprKind::Match { subject, arms } => {
+            rewrite_generic_ctor_news_in_expr(subject, generic_params);
+            for arm in arms {
+                if let Some(conditions) = &mut arm.conditions {
+                    for expr in conditions {
+                        rewrite_generic_ctor_news_in_expr(expr, generic_params);
+                    }
+                }
+                rewrite_generic_ctor_news_in_expr(&mut arm.body, generic_params);
+            }
+        }
+        ExprKind::StaticAccess { class, member } => {
+            rewrite_generic_ctor_news_in_expr(class, generic_params);
+            rewrite_generic_ctor_news_in_expr(member, generic_params);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_generic_bindings_in_statements(body: &mut [Statement], generic_params: &[String]) {
+    for stmt in body {
+        rewrite_generic_bindings_in_statement(stmt, generic_params);
+    }
+}
+
+fn rewrite_generic_bindings_in_statement(stmt: &mut Statement, generic_params: &[String]) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr)
+        | StmtKind::Return(Some(expr))
+        | StmtKind::Throw { expr: Some(expr), cause: None }
+        | StmtKind::Using { resource: expr, .. }
+        | StmtKind::Lock { expr, .. }
+        | StmtKind::CompoundAssign { value: expr, .. } => {
+            rewrite_generic_bindings_in_expr(expr, generic_params);
+        }
+        StmtKind::Throw { expr: Some(expr), cause: Some(cause) } => {
+            rewrite_generic_bindings_in_expr(expr, generic_params);
+            rewrite_generic_bindings_in_expr(cause, generic_params);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_generic_bindings_in_expr(init, generic_params);
+                }
+                if let Some(bounds) = &mut decl.array_bounds {
+                    for bound in bounds {
+                        rewrite_generic_bindings_in_expr(bound, generic_params);
+                    }
+                }
+            }
+        }
+        StmtKind::FunctionDecl { .. } => {}
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            rewrite_generic_bindings_in_statements(body, generic_params);
+        }
+        StmtKind::ClassDecl { .. } | StmtKind::StructDecl { .. } | StmtKind::ModuleDecl { .. } => {}
+        StmtKind::If { cond, then_body, elifs, else_body } => {
+            rewrite_generic_bindings_in_expr(cond, generic_params);
+            rewrite_generic_bindings_in_statements(then_body, generic_params);
+            for (elif_cond, elif_body) in elifs {
+                rewrite_generic_bindings_in_expr(elif_cond, generic_params);
+                rewrite_generic_bindings_in_statements(elif_body, generic_params);
+            }
+            if let Some(else_body) = else_body {
+                rewrite_generic_bindings_in_statements(else_body, generic_params);
+            }
+        }
+        StmtKind::For { init, cond, update, body } => {
+            if let Some(init) = init {
+                rewrite_generic_bindings_in_statement(init, generic_params);
+            }
+            if let Some(cond) = cond {
+                rewrite_generic_bindings_in_expr(cond, generic_params);
+            }
+            if let Some(update) = update {
+                rewrite_generic_bindings_in_expr(update, generic_params);
+            }
+            rewrite_generic_bindings_in_statements(body, generic_params);
+        }
+        StmtKind::ForIn { iter, body, else_body, .. } => {
+            rewrite_generic_bindings_in_expr(iter, generic_params);
+            rewrite_generic_bindings_in_statements(body, generic_params);
+            if let Some(else_body) = else_body {
+                rewrite_generic_bindings_in_statements(else_body, generic_params);
+            }
+        }
+        StmtKind::While { cond, body, else_body } => {
+            rewrite_generic_bindings_in_expr(cond, generic_params);
+            rewrite_generic_bindings_in_statements(body, generic_params);
+            if let Some(else_body) = else_body {
+                rewrite_generic_bindings_in_statements(else_body, generic_params);
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            rewrite_generic_bindings_in_statements(body, generic_params);
+            rewrite_generic_bindings_in_expr(cond, generic_params);
+        }
+        StmtKind::Switch { expr, cases, default } => {
+            rewrite_generic_bindings_in_expr(expr, generic_params);
+            for case in cases {
+                for condition in &mut case.conditions {
+                    match condition {
+                        CaseCondition::Value(expr) => rewrite_generic_bindings_in_expr(expr, generic_params),
+                        CaseCondition::Range { from, to } => {
+                            rewrite_generic_bindings_in_expr(from, generic_params);
+                            rewrite_generic_bindings_in_expr(to, generic_params);
+                        }
+                        CaseCondition::Comparison { expr, .. } => {
+                            rewrite_generic_bindings_in_expr(expr, generic_params);
+                        }
+                    }
+                }
+                rewrite_generic_bindings_in_statements(&mut case.body, generic_params);
+            }
+            if let Some(default) = default {
+                rewrite_generic_bindings_in_statements(default, generic_params);
+            }
+        }
+        StmtKind::Try { body, catches, else_body, finally } => {
+            rewrite_generic_bindings_in_statements(body, generic_params);
+            for catch in catches {
+                if let Some(when_clause) = &mut catch.when_clause {
+                    rewrite_generic_bindings_in_expr(when_clause, generic_params);
+                }
+                rewrite_generic_bindings_in_statements(&mut catch.body, generic_params);
+            }
+            if let Some(else_body) = else_body {
+                rewrite_generic_bindings_in_statements(else_body, generic_params);
+            }
+            if let Some(finally) = finally {
+                rewrite_generic_bindings_in_statements(finally, generic_params);
+            }
+        }
+        StmtKind::With { items, body, .. } => {
+            for item in items {
+                rewrite_generic_bindings_in_expr(&mut item.expr, generic_params);
+            }
+            rewrite_generic_bindings_in_statements(body, generic_params);
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_generic_bindings_in_expr(target, generic_params);
+            }
+            rewrite_generic_bindings_in_expr(value, generic_params);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_generic_bindings_in_expr(expr: &mut Expression, generic_params: &[String]) {
+    match &mut expr.kind {
+        ExprKind::Binary { left, right, .. } | ExprKind::NullCoalesce { left, right } => {
+            rewrite_generic_bindings_in_expr(left, generic_params);
+            rewrite_generic_bindings_in_expr(right, generic_params);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Spread(expr)
+        | ExprKind::Cast { expr, .. } => {
+            rewrite_generic_bindings_in_expr(expr, generic_params);
+        }
+        ExprKind::DefaultOf(type_name) => {
+            if let Some(index) = generic_params.iter().position(|param| param == type_name) {
+                expr.kind = ExprKind::Ident(csharp_generic_default_param_name(index));
+            }
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_generic_bindings_in_expr(cond, generic_params);
+            rewrite_generic_bindings_in_expr(then, generic_params);
+            rewrite_generic_bindings_in_expr(else_, generic_params);
+        }
+        ExprKind::Member { object, .. } => rewrite_generic_bindings_in_expr(object, generic_params),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_generic_bindings_in_expr(object, generic_params);
+            rewrite_generic_bindings_in_expr(index, generic_params);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_generic_bindings_in_expr(callee, generic_params);
+            for arg in args {
+                rewrite_generic_bindings_in_expr(&mut arg.value, generic_params);
+            }
+        }
+        ExprKind::New { class, args } => {
+            rewrite_generic_bindings_in_expr(class, generic_params);
+            if let ExprKind::Ident(name) = &class.kind {
+                if let Some(index) = generic_params.iter().position(|param| param == name) {
+                    class.kind = ExprKind::Ident(csharp_generic_ctor_param_name(index));
+                }
+            }
+            for arg in args {
+                rewrite_generic_bindings_in_expr(&mut arg.value, generic_params);
+            }
+        }
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            rewrite_generic_bindings_in_expr(target, generic_params);
+            rewrite_generic_bindings_in_expr(value, generic_params);
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(expr) => rewrite_generic_bindings_in_expr(expr, generic_params),
+            LambdaBody::Block(body) => rewrite_generic_bindings_in_statements(body, generic_params),
+        },
+        ExprKind::Array(items) => {
+            for item in items {
+                rewrite_generic_bindings_in_expr(&mut item.value, generic_params);
+                if let Some(key) = &mut item.key {
+                    rewrite_generic_bindings_in_expr(key, generic_params);
+                }
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_generic_bindings_in_expr(item, generic_params);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        rewrite_generic_bindings_in_expr(key, generic_params);
+                        rewrite_generic_bindings_in_expr(value, generic_params);
+                    }
+                    ObjectProperty::Spread(expr) => rewrite_generic_bindings_in_expr(expr, generic_params),
+                    ObjectProperty::Method { value, .. } | ObjectProperty::Accessor { value, .. } => {
+                        rewrite_generic_bindings_in_statement(value, generic_params);
+                    }
+                    ObjectProperty::Shorthand(_) => {}
+                }
+            }
+        }
+        ExprKind::Interpolation(parts) => {
+            for part in parts {
+                match part {
+                    InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
+                        rewrite_generic_bindings_in_expr(expr, generic_params);
+                    }
+                    InterpolPart::Text(_) => {}
+                }
+            }
+        }
+        ExprKind::Comprehension { element, generators, .. } => {
+            rewrite_generic_bindings_in_expr(element, generic_params);
+            for generator in generators {
+                rewrite_generic_bindings_in_expr(&mut generator.iter, generic_params);
+                for condition in &mut generator.conditions {
+                    rewrite_generic_bindings_in_expr(condition, generic_params);
+                }
+            }
+        }
+        ExprKind::Slice { lower, upper, step } => {
+            if let Some(lower) = lower { rewrite_generic_bindings_in_expr(lower, generic_params); }
+            if let Some(upper) = upper { rewrite_generic_bindings_in_expr(upper, generic_params); }
+            if let Some(step) = step { rewrite_generic_bindings_in_expr(step, generic_params); }
+        }
+        ExprKind::Range { start, end, .. } => {
+            rewrite_generic_bindings_in_expr(start, generic_params);
+            rewrite_generic_bindings_in_expr(end, generic_params);
+        }
+        ExprKind::Match { subject, arms } => {
+            rewrite_generic_bindings_in_expr(subject, generic_params);
+            for arm in arms {
+                if let Some(conditions) = &mut arm.conditions {
+                    for expr in conditions {
+                        rewrite_generic_bindings_in_expr(expr, generic_params);
+                    }
+                }
+                rewrite_generic_bindings_in_expr(&mut arm.body, generic_params);
+            }
+        }
+        ExprKind::StaticAccess { class, member } => {
+            rewrite_generic_bindings_in_expr(class, generic_params);
+            rewrite_generic_bindings_in_expr(member, generic_params);
+        }
+        _ => {}
+    }
 }
 
 fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
@@ -3353,6 +4088,7 @@ fn rewrite_bare_throws_in_stmt(stmt: &mut Statement, var_name: &str) {
 /// free function.
 fn walk_local_function(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut name = String::new();
+    let mut generic_params = Vec::new();
     let mut return_type = None;
     let mut params = Vec::new();
     let mut body = Vec::new();
@@ -3376,6 +4112,8 @@ fn walk_local_function(pair: Pair<Rule>) -> Result<StmtKind, String> {
             Rule::ident_name => {
                 if name.is_empty() {
                     name = p.as_str().to_string();
+                } else {
+                    generic_params.push(p.as_str().to_string());
                 }
             }
             Rule::param_list => params = walk_params(p)?,
@@ -3392,6 +4130,10 @@ fn walk_local_function(pair: Pair<Rule>) -> Result<StmtKind, String> {
             }
             _ => {}
         }
+    }
+    if !generic_params.is_empty() {
+        inject_csharp_generic_binding_params(&mut params, generic_params.len());
+        rewrite_generic_bindings_in_statements(&mut body, &generic_params);
     }
     let is_sub = return_type.as_deref() == Some("void");
     let is_generator = body_has_yield(&body);
@@ -3596,6 +4338,7 @@ fn walk_indexer(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, S
 fn walk_method(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String> {
     let mut mods = mods;
     let mut name = String::new();
+    let mut generic_params = Vec::new();
     let mut explicit_interface = None;
     let mut return_type = None;
     let mut params = Vec::new();
@@ -3619,6 +4362,9 @@ fn walk_method(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String>
             }
             Rule::ident_name if name.is_empty() => {
                 name = p.as_str().to_string();
+            }
+            Rule::ident_name => {
+                generic_params.push(p.as_str().to_string());
             }
             Rule::param_list => {
                 let (parsed_params, param_decorators) = walk_params_with_decorators(p)?;
@@ -3656,6 +4402,10 @@ fn walk_method(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String>
 
     if let Some(interface_name) = explicit_interface {
         name = explicit_interface_runtime_name(&interface_name, &name);
+    }
+    if !generic_params.is_empty() {
+        inject_csharp_generic_binding_params(&mut params, generic_params.len());
+        rewrite_generic_bindings_in_statements(&mut body, &generic_params);
     }
 
     let is_sub = return_type.as_deref() == Some("void");
@@ -5646,18 +6396,13 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
         // default or default(Type)
         Rule::default_expression => {
-            // default(int) → 0, default(bool) → false, etc.
             let type_name = pair.into_inner()
                 .find(|p| p.as_rule() == Rule::type_name)
                 .map(|p| p.as_str().to_string());
-            match type_name.as_deref() {
-                Some("int") | Some("long") | Some("short") | Some("byte")
-                | Some("double") | Some("float") | Some("decimal") => {
-                    Ok(ExprKind::Lit(Literal::Int(0)))
-                }
-                Some("bool") => Ok(ExprKind::Lit(Literal::Bool(false))),
-                Some("char") => Ok(ExprKind::Lit(Literal::Char('\0'))),
-                _ => Ok(ExprKind::Lit(Literal::Null)),
+            if let Some(type_name) = type_name {
+                Ok(ExprKind::DefaultOf(type_name))
+            } else {
+                Ok(ExprKind::Lit(Literal::Null))
             }
         }
 
@@ -5961,15 +6706,32 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
         if chain_src.starts_with("?.") {
             // Null-conditional member access
-            let name = chain_src[2..].trim().to_string();
+            let name = strip_csharp_terminal_type_args(chain_src[2..].trim());
             expr = Expression::new(ExprKind::Member {
                 object: Box::new(expr), field: name, null_safe: true,
             });
         } else if chain_src.starts_with("(") {
             // Call — normalize known method calls to canonical builtins
+            let mut generic_type_args = Vec::new();
+            if let ExprKind::Ident(name) = &expr.kind {
+                generic_type_args = extract_csharp_terminal_type_args(name);
+                let stripped = strip_csharp_terminal_type_args(name);
+                if stripped != *name {
+                    expr = build_dotted_expr(&stripped);
+                }
+            } else if let ExprKind::Member { field, .. } = &mut expr.kind {
+                generic_type_args = extract_csharp_terminal_type_args(field);
+                let stripped = strip_csharp_terminal_type_args(field);
+                if stripped != *field {
+                    *field = stripped;
+                }
+            }
             let mut args = if let Some(arg_pair) = chain_inner.into_iter().find(|p| p.as_rule() == Rule::argument_list) {
                 walk_arguments(arg_pair)?
             } else { Vec::new() };
+            if !generic_type_args.is_empty() {
+                args.extend(csharp_method_generic_binding_args(&generic_type_args));
+            }
             // Inject default fill char for `PadLeft(n)` / `PadRight(n)` —
             // .NET defaults to space, but the value-method dispatch expects
             // both args. Same idea as JS-default lowering.
@@ -5982,7 +6744,7 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
             expr = canonicalize_method_call(expr, args);
         } else if chain_src.starts_with(".") {
             // Member access — normalize known property accessors to canonical builtins
-            let name = chain_src[1..].trim().to_string();
+            let name = strip_csharp_terminal_type_args(chain_src[1..].trim());
             // C# tuple ItemN accessor: `(1, 2, 3).Item1` → `t[0]`,
             // `Item2` → `t[1]`, etc. Tuples compile to Arrays so the
             // ItemN names need to lower to indexed access. Pattern is
@@ -6095,6 +6857,7 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
 fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut type_name = String::new();
+    let mut raw_type_name = String::new();
     let mut args = Vec::new();
     let mut is_array = false;
     let mut array_init = Vec::new();
@@ -6105,6 +6868,7 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
             Rule::type_name_for_new => {
                 // Strip generic params: "List<string>" → "List"
                 let raw = p.as_str();
+                raw_type_name = raw.trim().to_string();
                 type_name = raw.split('<').next().unwrap_or(raw).trim().to_string();
             }
             Rule::argument_list => args = walk_arguments(p)?,
@@ -6246,13 +7010,172 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
             class: Box::new(class_expr),
             args,
         });
+        let generic_bindings = csharp_generic_ctor_bindings(&raw_type_name, &type_name);
+        let new_call = if generic_bindings.is_empty() {
+            new_call
+        } else {
+            Expression::new(emit_generic_ctor_binding_iife(new_call, generic_bindings))
+        };
         return Ok(emit_object_init_iife(new_call, obj_init));
+    }
+
+    let generic_bindings = csharp_generic_ctor_bindings(&raw_type_name, &type_name);
+    if !generic_bindings.is_empty() {
+        let new_call = Expression::new(ExprKind::New {
+            class: Box::new(class_expr),
+            args,
+        });
+        return Ok(emit_generic_ctor_binding_iife(new_call, generic_bindings));
     }
 
     Ok(ExprKind::New {
         class: Box::new(class_expr),
         args,
     })
+}
+
+fn parse_csharp_generic_type_args(raw_type_name: &str) -> Vec<String> {
+    let Some(start) = raw_type_name.find('<') else {
+        return Vec::new();
+    };
+    let Some(end) = raw_type_name.rfind('>') else {
+        return Vec::new();
+    };
+    let inner = &raw_type_name[start + 1..end];
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0usize;
+    for ch in inner.chars() {
+        match ch {
+            '<' => {
+                depth += 1;
+                current.push(ch);
+            }
+            '>' => {
+                depth = depth.saturating_sub(1);
+                current.push(ch);
+            }
+            ',' if depth == 0 => {
+                let trimmed = current.trim();
+                if !trimmed.is_empty() {
+                    args.push(trimmed.to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    let trimmed = current.trim();
+    if !trimmed.is_empty() {
+        args.push(trimmed.to_string());
+    }
+    args
+}
+
+fn looks_like_csharp_runtime_ctor_type(type_name: &str) -> bool {
+    let trimmed = strip_global_namespace_qualifier(type_name.trim())
+        .trim_end_matches('?')
+        .trim();
+    if trimmed.is_empty() || trimmed.ends_with("[]") {
+        return false;
+    }
+    let bare = trimmed.split('<').next().unwrap_or(trimmed).trim();
+    let leaf = bare.rsplit('.').next().unwrap_or(bare);
+    leaf.chars().next().is_some_and(|ch| ch.is_ascii_uppercase())
+}
+
+fn is_csharp_builtin_generic_type(base_type: &str) -> bool {
+    matches!(
+        base_type,
+        "List"
+            | "ArrayList"
+            | "Dictionary"
+            | "HashSet"
+            | "Queue"
+            | "Stack"
+            | "Nullable"
+            | "Task"
+            | "Func"
+            | "Action"
+            | "Tuple"
+            | "ValueTuple"
+            | "IEnumerable"
+            | "ICollection"
+            | "IList"
+            | "IReadOnlyCollection"
+            | "IReadOnlyList"
+            | "IComparer"
+            | "IComparable"
+            | "KeyValuePair"
+    )
+}
+
+fn csharp_generic_ctor_bindings(raw_type_name: &str, base_type_name: &str) -> Vec<(usize, Expression)> {
+    if is_csharp_builtin_generic_type(base_type_name) {
+        return Vec::new();
+    }
+
+    parse_csharp_generic_type_args(raw_type_name)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, type_name)| {
+            looks_like_csharp_runtime_ctor_type(&type_name).then(|| {
+                let bare = strip_global_namespace_qualifier(type_name.trim())
+                    .split('<')
+                    .next()
+                    .unwrap_or(type_name.trim())
+                    .trim()
+                    .to_string();
+                (index, build_dotted_expr(&bare))
+            })
+        })
+        .collect()
+}
+
+fn emit_generic_ctor_binding_iife(new_call: Expression, bindings: Vec<(usize, Expression)>) -> ExprKind {
+    let mut body: Vec<Statement> = Vec::new();
+    body.push(Statement::with_span(
+        StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__obj".into()),
+                type_hint: None,
+                init: Some(new_call),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        },
+        Span::default(),
+    ));
+    for (index, binding_expr) in bindings {
+        let assign = Expression::new(ExprKind::Assign {
+            target: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident("__obj")),
+                field: csharp_generic_ctor_field_name(index),
+                null_safe: false,
+            })),
+            value: Box::new(binding_expr),
+        });
+        body.push(Statement::with_span(
+            StmtKind::Expr(assign),
+            Span::default(),
+        ));
+    }
+    body.push(Statement::with_span(
+        StmtKind::Return(Some(Expression::ident("__obj"))),
+        Span::default(),
+    ));
+    let lambda = Expression::new(ExprKind::Lambda {
+        params: vec![],
+        body: LambdaBody::Block(body),
+        is_async: false,
+        captures: Vec::new(),
+    });
+    ExprKind::Call {
+        callee: Box::new(lambda),
+        args: vec![],
+        optional: false,
+    }
 }
 
 /// IIFE-style lowering for `new T(args) { Prop = value, ... }`. Builds
@@ -6323,6 +7246,73 @@ fn build_dotted_expr(name: &str) -> Expression {
         });
     }
     expr
+}
+
+fn strip_csharp_terminal_type_args(name: &str) -> String {
+    let trimmed = name.trim();
+    if !trimmed.ends_with('>') {
+        return trimmed.to_string();
+    }
+
+    let mut depth = 0usize;
+    let mut start = None;
+    for (idx, ch) in trimmed.char_indices().rev() {
+        match ch {
+            '>' => depth += 1,
+            '<' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    start = Some(idx);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let Some(start_idx) = start else {
+        return trimmed.to_string();
+    };
+
+    trimmed[..start_idx].trim_end().to_string()
+}
+
+fn extract_csharp_terminal_type_args(name: &str) -> Vec<String> {
+    let trimmed = name.trim();
+    let stripped = strip_csharp_terminal_type_args(trimmed);
+    if stripped == trimmed || !trimmed.ends_with('>') {
+        return Vec::new();
+    }
+    parse_csharp_generic_type_args(trimmed)
+}
+
+fn csharp_method_generic_binding_args(type_args: &[String]) -> Vec<Argument> {
+    let mut args = Vec::new();
+    for type_arg in type_args {
+        let ctor_binding = if looks_like_csharp_runtime_ctor_type(type_arg) {
+            let bare = strip_global_namespace_qualifier(type_arg.trim())
+                .split('<')
+                .next()
+                .unwrap_or(type_arg.trim())
+                .trim()
+                .to_string();
+            build_dotted_expr(&bare)
+        } else {
+            Expression::null()
+        };
+        args.push(Argument::positional(ctor_binding));
+
+        let normalized = normalize_runtime_type_name(type_arg);
+        let default_binding = match normalized.as_str() {
+            "int" | "long" | "short" | "byte" | "uint" | "ulong" | "ushort" | "sbyte"
+            | "double" | "float" | "decimal" => Expression::int(0),
+            "bool" => Expression::new(ExprKind::Lit(Literal::Bool(false))),
+            "char" => Expression::new(ExprKind::Lit(Literal::Char('\0'))),
+            _ => Expression::null(),
+        };
+        args.push(Argument::positional(default_binding));
+    }
+    args
 }
 
 /// Lower a C# 9 record `with` expression: `record_val with { Prop = v, ... }`.
@@ -7610,9 +8600,6 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
     // Instance-method rewrite: `a.CompareTo(b)` → `a < b ? -1 : a > b ? 1 : 0`
     // (works for strings AND numbers — same JS comparison semantics).
     if let ExprKind::Member { object, field, .. } = &callee.kind {
-        if field.eq_ignore_ascii_case("Count") && args.is_empty() {
-            return canonicalize_member_access((**object).clone(), "Count");
-        }
         if field.eq_ignore_ascii_case("ThenBy") && args.len() == 1 {
             if let ExprKind::Call { callee: prior_callee, args: prior_args, .. } = &object.kind {
                 if let ExprKind::Member { field: prior_field, .. } = &prior_callee.kind {

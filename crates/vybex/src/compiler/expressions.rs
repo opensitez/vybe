@@ -682,16 +682,32 @@ impl Compiler {
                     let unknown_receiver_default = field == "Length";
                     let is_collection_like_type = |type_hint: &str| {
                         let normalized = Self::normalize_type_hint(type_hint);
+                        let bare = normalized
+                            .split('<')
+                            .next()
+                            .unwrap_or(normalized.as_str())
+                            .trim_end_matches('?');
+                        let terminal = bare.rsplit('.').next().unwrap_or(bare);
                         Self::is_string_type_hint(type_hint)
-                            || normalized.contains("list")
-                            || normalized.contains("dictionary")
-                            || normalized.contains("queue")
-                            || normalized.contains("stack")
-                            || normalized.contains("set")
-                            || normalized.contains("collection")
-                            || normalized.contains("enumerable")
-                            || normalized.contains("array")
-                            || normalized.contains("[]")
+                            || matches!(
+                                terminal,
+                                "list"
+                                    | "arraylist"
+                                    | "dictionary"
+                                    | "queue"
+                                    | "stack"
+                                    | "hashset"
+                                    | "set"
+                                    | "collection"
+                                    | "icollection"
+                                    | "readonlycollection"
+                                    | "enumerable"
+                                    | "ienumerable"
+                                    | "readonlylist"
+                                    | "ilist"
+                                    | "array"
+                            )
+                            || bare.ends_with("[]")
                     };
 
                     match &object.kind {
@@ -1695,6 +1711,31 @@ impl Compiler {
                 self.emit(Op::DYN_EQ);
                 match_patches.push(self.emit_jump(Op::BR_IF_TRUE));
 
+                let reflection_matches: Vec<String> = self
+                    .reflection_types
+                    .keys()
+                    .filter(|candidate| {
+                        !candidate.eq_ignore_ascii_case(&canon_type)
+                            && self.reflection_is_assignable_from(type_name, candidate)
+                    })
+                    .cloned()
+                    .collect();
+                for candidate in &reflection_matches {
+                    let candidate_idx = self.chunk().add_constant(
+                        vybe_bytecode::Value::String(std::sync::Arc::from(candidate.as_str())),
+                    );
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.chunk().emit_op_u16(vybe_bytecode::Op::REF_TEST, candidate_idx, line);
+                    match_patches.push(self.emit_jump(Op::BR_IF_TRUE));
+
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    let type_key = self.str_const("__type");
+                    self.emit_u16(Op::STRUCT_GET, type_key);
+                    self.emit_const(Value::String(Arc::from(candidate.as_str())));
+                    self.emit(Op::DYN_EQ);
+                    match_patches.push(self.emit_jump(Op::BR_IF_TRUE));
+                }
+
                 if matches!(canon_type.as_str(), "IEnumerable" | "ICollection" | "IList" | "IReadOnlyCollection" | "IReadOnlyList") {
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.emit(Op::REF_IS_ARRAY);
@@ -1736,6 +1777,12 @@ impl Compiler {
                 self.emit_const(Value::String(Arc::from(canon_type.as_str())));
                 common::collections::emit_contains(&mut self.chunks, self.current, line);
                 match_patches.push(self.emit_jump(Op::BR_IF_TRUE));
+                for candidate in &reflection_matches {
+                    self.emit(Op::DUP);
+                    self.emit_const(Value::String(Arc::from(candidate.as_str())));
+                    common::collections::emit_contains(&mut self.chunks, self.current, line);
+                    match_patches.push(self.emit_jump(Op::BR_IF_TRUE));
+                }
                 self.emit(Op::FALSE);
                 let end_false = self.emit_jump(Op::BR);
 
@@ -1799,6 +1846,25 @@ impl Compiler {
 
                 // Cast is otherwise a no-op in our dynamic VM.
                 self.compile_expr(inner)?;
+            }
+
+            ExprKind::DefaultOf(type_name) => {
+                let normalized = Self::normalize_type_hint(type_name);
+                match normalized.as_str() {
+                    "int" | "long" | "short" | "byte" | "uint" | "ulong" | "ushort"
+                    | "sbyte" | "double" | "float" | "decimal" => {
+                        self.emit_const(Value::I32(0));
+                    }
+                    "bool" => {
+                        self.emit_const(Value::Bool(false));
+                    }
+                    "char" => {
+                        self.emit_const(Value::String(Arc::from("\0")));
+                    }
+                    _ => {
+                        self.emit(Op::NULL);
+                    }
+                }
             }
 
             ExprKind::TypeOf(inner) => {

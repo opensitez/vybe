@@ -52,6 +52,10 @@ struct PendingClass {
     fields: Vec<String>,
     is_value_type: bool,
     instance_member_names: Vec<String>,
+    /// Type hints for instance fields, keyed by canonical field name.
+    /// Used when implicit-self resolution turns a bare field name into
+    /// `this.<field>` so member access keeps the original receiver type.
+    instance_field_types: HashMap<String, String>,
     /// Static field names (declared `static T name`). Looked up from
     /// inside instance methods so a bare `Name` resolves to
     /// `<ClassName>.Name` (struct_get on the class global) rather than
@@ -1743,6 +1747,7 @@ impl Compiler {
             fields: Vec::new(),
             is_value_type: false,
             instance_member_names: Vec::new(),
+            instance_field_types: HashMap::new(),
             static_fields: Vec::new(),
             static_field_types: HashMap::new(),
             static_method_names: Vec::new(),
@@ -1902,8 +1907,28 @@ impl Compiler {
                 return Some(type_hint);
             }
         }
+        if let Some(type_hint) = self.lookup_implicit_self_field_type_hint(name) {
+            return Some(type_hint);
+        }
         let cname = self.canon(name);
         self.global_type_hints.get(&cname).map(|s| s.as_str())
+    }
+
+    fn lookup_implicit_self_field_type_hint(&self, name: &str) -> Option<&str> {
+        if !self.current_class_implicit_self {
+            return None;
+        }
+
+        let canon_name = self.canon(name);
+        let mut current = self.current_class.as_deref();
+        while let Some(class_name) = current {
+            let pending = self.pending_classes.get(class_name)?;
+            if let Some(type_hint) = pending.instance_field_types.get(&canon_name) {
+                return Some(type_hint.as_str());
+            }
+            current = pending.parent.as_deref();
+        }
+        None
     }
 
     fn expr_terminal_type_name(expr: &Expression) -> Option<String> {
@@ -4781,6 +4806,42 @@ impl Compiler {
     // Assignment target
     // ════════════════════════════════════════════════════════════════════════
 
+    fn compile_array_pattern_assignment_from_slot(
+        &mut self,
+        arr_slot: u16,
+        elems: &[ArrayPatternElem],
+    ) -> Result<(), String> {
+        for (i, elem) in elems.iter().enumerate() {
+            match elem {
+                ArrayPatternElem::Pattern(BindingPattern::Ident(name), _) => {
+                    self.emit_u16(Op::LOCAL_GET, arr_slot);
+                    self.emit_const(Value::F64(i as f64));
+                    { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+                    self.emit_var_set(name);
+                }
+                ArrayPatternElem::Pattern(BindingPattern::Array(items), _) => {
+                    self.emit_u16(Op::LOCAL_GET, arr_slot);
+                    self.emit_const(Value::F64(i as f64));
+                    { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+                    let nested_slot = self.define_local("__destruct_nested_arr");
+                    self.emit_u16(Op::LOCAL_SET, nested_slot); self.emit(Op::DROP);
+                    self.compile_array_pattern_assignment_from_slot(nested_slot, items)?;
+                }
+                ArrayPatternElem::Rest(name) => {
+                    self.emit_u16(Op::LOCAL_GET, arr_slot);
+                    self.emit_const(Value::F64(i as f64));
+                    self.emit_u16(Op::LOCAL_GET, arr_slot);
+                    { let l = self.line; common::collections::emit_len(&mut self.chunks, self.current, l); }
+                    let line = self.line;
+                    common::collections::emit_slice(&mut self.chunks, self.current, line);
+                    self.emit_var_set(name);
+                }
+                ArrayPatternElem::Hole | ArrayPatternElem::Pattern(BindingPattern::Object(_), _) => {}
+            }
+        }
+        Ok(())
+    }
+
     fn compile_assign_target(&mut self, target: &Expression) -> Result<(), String> {
         match &target.kind {
             ExprKind::Ident(name) => {
@@ -5127,26 +5188,7 @@ impl Compiler {
                     DestructurePattern::Array(elems) => {
                         let arr_slot = self.define_local("__destruct_arr");
                         self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
-                        for (i, elem) in elems.iter().enumerate() {
-                            match elem {
-                                ArrayPatternElem::Pattern(BindingPattern::Ident(name), _) => {
-                                    self.emit_u16(Op::LOCAL_GET, arr_slot);
-                                    self.emit_const(Value::F64(i as f64));
-                                    { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
-                                    self.emit_var_set(name);
-                                }
-                                ArrayPatternElem::Rest(name) => {
-                                    self.emit_u16(Op::LOCAL_GET, arr_slot);
-                                    self.emit_const(Value::F64(i as f64));
-                                    self.emit_u16(Op::LOCAL_GET, arr_slot);
-                                    { let l = self.line; common::collections::emit_len(&mut self.chunks, self.current, l); }
-                                    let line = self.line;
-                                    common::collections::emit_slice(&mut self.chunks, self.current, line);
-                                    self.emit_var_set(name);
-                                }
-                                _ => {}
-                            }
-                        }
+                        self.compile_array_pattern_assignment_from_slot(arr_slot, elems)?;
                     }
                 }
             }
@@ -5165,6 +5207,16 @@ impl Compiler {
                     { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
                     let target = elem.value.clone();
                     self.compile_assign_target(&target)?;
+                }
+            }
+            ExprKind::Tuple(elems) => {
+                let arr_slot = self.define_local("__assign_tuple_arr");
+                self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
+                for (i, elem) in elems.iter().enumerate() {
+                    self.emit_u16(Op::LOCAL_GET, arr_slot);
+                    self.emit_const(Value::F64(i as f64));
+                    { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+                    self.compile_assign_target(elem)?;
                 }
             }
             ExprKind::Object(props) => {
@@ -6251,6 +6303,7 @@ impl Compiler {
             "f64_max" => self.emit(Op::F64_MAX),
             "i32_from_f64" => self.emit(Op::I32_FROM_F64),
             "f64_from_i32" => self.emit(Op::F64_FROM_I32),
+            "dyn_eq" => self.emit(Op::DYN_EQ),
             "dyn_to_bool" => self.emit(Op::DYN_TO_BOOL),
             "dyn_not" => self.emit(Op::DYN_NOT),
             "ref_is_null" => self.emit(Op::REF_IS_NULL),

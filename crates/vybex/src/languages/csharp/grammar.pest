@@ -315,7 +315,16 @@ var_kw = @{ "var" ~ !(ASCII_ALPHANUMERIC | "_") }
 // Pairs with the compiler's multi-value receive path when the RHS is
 // a direct call to a multi-return function.
 tuple_deconstruction_decl = {
-    var_kw ~ "(" ~ ident_name ~ ("," ~ ident_name)+ ~ ")" ~ "=" ~ expression ~ ";"
+    var_kw ~ tuple_binding_list ~ "=" ~ expression ~ ";"
+}
+
+tuple_binding_list = {
+    "(" ~ tuple_binding_pattern ~ ("," ~ tuple_binding_pattern)+ ~ ")"
+}
+
+tuple_binding_pattern = {
+    ident_name
+    | tuple_binding_list
 }
 
 // ── If ──────────────────────────────────────────────────────────────────────

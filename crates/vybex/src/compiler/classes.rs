@@ -370,6 +370,9 @@ impl Compiler {
                 .iter()
                 .map(|method| method.canonical_name.clone())
                 .collect(),
+            instance_field_types: class.instance_fields.iter().filter_map(|f| {
+                f.type_hint.as_ref().map(|t| (self.canon(&f.name), Self::normalize_type_hint(t)))
+            }).collect(),
             static_fields: static_field_names,
             static_field_types: class.static_fields.iter().filter_map(|f| {
                 f.type_hint.as_ref().map(|t| (self.canon(&f.name), Self::normalize_type_hint(t)))
@@ -1248,6 +1251,15 @@ impl Compiler {
 
         // Finalize: instanceof chain
         common::classes::emit_instanceof_chain(&mut self.chunks, self.current, this_slot, name, line);
+        for interface_name in self.reflection_interfaces(name) {
+            common::classes::emit_instanceof_chain(
+                &mut self.chunks,
+                self.current,
+                this_slot,
+                &interface_name,
+                line,
+            );
+        }
         common::classes::emit_constructor_return(self.chunk(), this_slot, line);
 
         let locals = self.scope().next_slot.max(self.chunks[ctor_idx].local_count);

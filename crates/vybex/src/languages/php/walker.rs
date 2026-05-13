@@ -867,7 +867,7 @@ fn body_contains_yield(stmts: &[Statement]) -> bool {
             // Scope boundaries — separate generator context
             ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_) | ExprKind::ClassExpr { .. } => false,
             // Leaves
-            ExprKind::Lit(_) | ExprKind::Ident(_) | ExprKind::This | ExprKind::Super
+            ExprKind::Lit(_) | ExprKind::Ident(_) | ExprKind::DefaultOf(_) | ExprKind::This | ExprKind::Super
             | ExprKind::AddressOf(_) | ExprKind::Destructure(_) => false,
             // Unary wrappers
             ExprKind::Unary { expr: i, .. } | ExprKind::IsType { expr: i, .. }
