@@ -2452,6 +2452,41 @@ fn infer_csharp_new_type_name(class: &Expression) -> Option<String> {
     }
 }
 
+fn infer_csharp_iife_return_type(expr: &Expression) -> Option<String> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !args.is_empty() {
+        return None;
+    }
+    let ExprKind::Lambda { body: LambdaBody::Block(body), .. } = &callee.kind else {
+        return None;
+    };
+    let StmtKind::Return(Some(Expression { kind: ExprKind::Ident(return_name), .. })) = &body.last()?.kind else {
+        return None;
+    };
+    for stmt in body {
+        let StmtKind::VarDecl { declarations, .. } = &stmt.kind else {
+            continue;
+        };
+        for decl in declarations {
+            let BindingPattern::Ident(name) = &decl.pattern else {
+                continue;
+            };
+            if name != return_name {
+                continue;
+            }
+            if let Some(type_hint) = decl.type_hint.as_ref() {
+                return Some(type_hint.clone());
+            }
+            if let Some(Expression { kind: ExprKind::New { class, .. }, .. }) = decl.init.as_ref() {
+                return infer_csharp_new_type_name(class);
+            }
+        }
+    }
+    None
+}
+
 fn infer_csharp_type_from_expr(expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::Lit(Literal::Int(_)) => Some("int".into()),
@@ -2475,6 +2510,7 @@ fn infer_csharp_type_from_expr(expr: &Expression) -> Option<String> {
             }
             element_type.map(|inner| format!("{}[]", inner))
         }
+        ExprKind::Call { .. } => infer_csharp_iife_return_type(expr),
         _ => None,
     }
 }
@@ -2923,6 +2959,18 @@ fn walk_property(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, 
                                     acc_body = Some(walk_body(ap)?);
                                     is_auto = false;
                                 }
+                                Rule::expression_body => {
+                                    is_auto = false;
+                                    if let Some(expr_pair) = ap.into_inner().next() {
+                                        let span = to_span(&expr_pair);
+                                        let expr = walk_expression(expr_pair)?;
+                                        acc_body = Some(if is_get {
+                                            vec![Statement::with_span(StmtKind::Return(Some(expr)), span)]
+                                        } else {
+                                            vec![Statement::with_span(StmtKind::Expr(expr), span)]
+                                        });
+                                    }
+                                }
                                 Rule::class_modifiers => {} // skip accessor modifiers
                                 _ => {}
                             }
@@ -3230,6 +3278,17 @@ fn walk_indexer(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, S
                             match ap.as_rule() {
                                 Rule::block_statement => {
                                     acc_body = Some(walk_body(ap)?);
+                                }
+                                Rule::expression_body => {
+                                    if let Some(expr_pair) = ap.into_inner().next() {
+                                        let span = to_span(&expr_pair);
+                                        let expr = walk_expression(expr_pair)?;
+                                        acc_body = Some(if is_get {
+                                            vec![Statement::with_span(StmtKind::Return(Some(expr)), span)]
+                                        } else {
+                                            vec![Statement::with_span(StmtKind::Expr(expr), span)]
+                                        });
+                                    }
                                 }
                                 Rule::class_modifiers => {}
                                 _ => {}
@@ -4008,6 +4067,7 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
 }
 
 fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
+    let foreach_src = pair.as_str().to_string();
     let hidden_suffix = pair.as_span().start();
     let mut var = String::new();
     let mut explicit_type_hint = None;
@@ -4062,21 +4122,58 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
             kind: VarDeclKind::Let,
         }));
     } else {
-        let binding_type = explicit_type_hint.or_else(|| infer_csharp_foreach_element_type(&iter));
-        if let Some(type_hint) = binding_type {
+        let uses_entry_fields = !var.is_empty()
+            && (foreach_src.contains(&format!("{}.Key", var))
+                || foreach_src.contains(&format!("{}.Value", var)));
+        if uses_entry_fields {
             let user_var = var.clone();
             let source_var = format!("__csharp_foreach_item_{}", hidden_suffix);
+            let entry_object = Expression::new(ExprKind::Object(vec![
+                ObjectProperty::KeyValue {
+                    key: Expression::string("key"),
+                    value: Expression::new(ExprKind::Index {
+                        object: Box::new(Expression::ident(&source_var)),
+                        index: Box::new(Expression::int(0)),
+                        null_safe: false,
+                    }),
+                },
+                ObjectProperty::KeyValue {
+                    key: Expression::string("value"),
+                    value: Expression::new(ExprKind::Index {
+                        object: Box::new(Expression::ident(&source_var)),
+                        index: Box::new(Expression::int(1)),
+                        null_safe: false,
+                    }),
+                },
+            ]));
             body.insert(0, Statement::new(StmtKind::VarDecl {
                 declarations: vec![VarDeclarator {
                     pattern: BindingPattern::Ident(user_var),
-                    type_hint: Some(type_hint),
-                    init: Some(Expression::ident(&source_var)),
+                    type_hint: None,
+                    init: Some(entry_object),
                     array_bounds: None,
                     with_events: false,
                 }],
                 kind: VarDeclKind::Let,
             }));
             var = source_var;
+        } else {
+            let binding_type = explicit_type_hint.or_else(|| infer_csharp_foreach_element_type(&iter));
+            if let Some(type_hint) = binding_type {
+                let user_var = var.clone();
+                let source_var = format!("__csharp_foreach_item_{}", hidden_suffix);
+                body.insert(0, Statement::new(StmtKind::VarDecl {
+                    declarations: vec![VarDeclarator {
+                        pattern: BindingPattern::Ident(user_var),
+                        type_hint: Some(type_hint),
+                        init: Some(Expression::ident(&source_var)),
+                        array_bounds: None,
+                        with_events: false,
+                    }],
+                    kind: VarDeclKind::Let,
+                }));
+                var = source_var;
+            }
         }
     }
 
@@ -5365,7 +5462,9 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
     // backing is `ObjectKind::Set`, registered separately in
     // `vybe_host::builtin_types`, so we need a real `new HashSet()`.
     let is_set_ctor = type_name.eq_ignore_ascii_case("HashSet")
-        || type_name.ends_with("HashSet");
+        || type_name.ends_with("HashSet")
+        || type_name.eq_ignore_ascii_case("SortedSet")
+        || type_name.ends_with("SortedSet");
     if is_set_ctor && !array_init.is_empty() {
         return Ok(emit_set_iife(type_name.clone(), array_init));
     }
@@ -6518,10 +6617,13 @@ fn walk_arguments(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
             // declaration prepended elsewhere (TODO). For now, we
             // extract the ident as a write-target reference.
             if src.starts_with("out ") {
-                let last = inner_pairs.last().ok_or("Empty out argument".to_string())?;
-                let name = last.as_str().trim().to_string();
+                let name_pair = inner_pairs.iter()
+                    .find(|part| part.as_rule() == Rule::ident_name)
+                    .or_else(|| inner_pairs.last())
+                    .ok_or("Empty out argument".to_string())?;
+                let name = name_pair.as_str().trim().to_string();
                 return Ok(Argument {
-                    value: Expression::with_span(ExprKind::Ident(name), to_span(last)),
+                    value: Expression::with_span(ExprKind::Ident(name), to_span(name_pair)),
                     name: None, by_ref: true, spread: false,
                 });
             }

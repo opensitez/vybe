@@ -167,7 +167,7 @@ property_body = {
 }
 
 accessor = {
-    class_modifiers ~ ("get" | "set" | "init") ~ (block_statement | ";")
+    class_modifiers ~ ("get" | "set" | "init") ~ (block_statement | expression_body | ";")
 }
 
 // Event: event EventHandler Click;

@@ -1242,6 +1242,19 @@ impl Compiler {
             || normalized.ends_with(".string")
     }
 
+    fn is_dictionary_type_hint(type_hint: &str) -> bool {
+        let normalized = Self::normalize_type_hint(type_hint);
+        normalized.contains("dictionary") || normalized.ends_with("hashtable")
+    }
+
+    fn is_sorted_dictionary_type_hint(type_hint: &str) -> bool {
+        Self::normalize_type_hint(type_hint).contains("sorteddictionary")
+    }
+
+    fn is_sorted_set_type_hint(type_hint: &str) -> bool {
+        Self::normalize_type_hint(type_hint).contains("sortedset")
+    }
+
     pub(super) fn is_callable_type_hint(type_hint: &str) -> bool {
         let normalized = Self::normalize_type_hint(type_hint);
         normalized.starts_with("func")
@@ -2160,6 +2173,24 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, iter_slot);
 
+                    let iter_type_hint = match &iter.kind {
+                        ExprKind::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
+                        _ => self.infer_expr_type_hint(iter),
+                    };
+
+                    let iterates_dictionary_entries = key.is_none() && *of && iter_type_hint
+                        .as_deref()
+                        .map(Self::is_dictionary_type_hint)
+                        .unwrap_or(false);
+                    let iterates_sorted_dictionary_entries = key.is_none() && *of && iter_type_hint
+                        .as_deref()
+                        .map(Self::is_sorted_dictionary_type_hint)
+                        .unwrap_or(false);
+                    let iterates_sorted_set_values = key.is_none() && *of && iter_type_hint
+                        .as_deref()
+                        .map(Self::is_sorted_set_type_hint)
+                        .unwrap_or(false);
+
                     // Pick the polymorphic iteration primitive. All three
                     // dispatch on Array / Map / Ordinary uniformly so PHP
                     // assoc arrays, Python dicts, JS objects, Ruby hashes
@@ -2168,12 +2199,18 @@ impl Compiler {
                     //   for v in X       → values(X)        (Python for)
                     //   for k => v in X  → entries(X)       (PHP foreach, Ruby each_pair, JS for..of of Map/entries)
                     //   for k in X       → keys(X)          (JS for..in, Python dict iter-keys)
-                    if key.is_some() {
+                    if key.is_some() || iterates_dictionary_entries {
                         common::collections::emit_iter_entries(&mut self.chunks, self.current, line);
                     } else if *of {
                         common::collections::emit_iter_values(&mut self.chunks, self.current, line);
                     } else {
                         common::collections::emit_iter_keys(&mut self.chunks, self.current, line);
+                    }
+
+                    if iterates_sorted_dictionary_entries {
+                        self.emit_common("dotnet.sorted_dictionary_entries", 1, line);
+                    } else if iterates_sorted_set_values {
+                        common::collections::emit_sorted(&mut self.chunks, self.current, line);
                     }
 
                     let arr_slot = self.define_local("__forin_arr");
@@ -2219,6 +2256,9 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, pair_slot);
                         self.emit_const(Value::I32(1));
                         common::collections::emit_get(&mut self.chunks, self.current, line);
+                        let var_slot = self.define_local(var);
+                        self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
+                    } else if iterates_dictionary_entries {
                         let var_slot = self.define_local(var);
                         self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
                     } else {
@@ -2715,32 +2755,22 @@ impl Compiler {
                     _ => {}
                 }
 
-                self.emit_u16(Op::STRUCT_NEW, 0);
                 let mut next_val = 0i64;
                 let mut value_names = HashMap::new();
                 for m in members {
-                    self.emit(Op::DUP);
                     if let Some(ref v) = m.value {
                         if let ExprKind::Lit(Literal::Int(n)) = &v.kind {
                             next_val = *n;
                         }
-                        self.compile_expr(v)?;
-                    } else {
-                        self.emit_const(Value::F64(next_val as f64));
                     }
                     next_val += 1;
                     let mname = self.canon(&m.name);
-                    let key = self.str_const(&mname);
-                    self.emit_u16(Op::STRUCT_SET, key);
-                    self.emit(Op::DROP);
                     // Register member → enum type for bare-name resolution
                     self.enum_members.insert(mname, cname.clone());
                     value_names.insert(next_val - 1, m.name.clone());
                 }
                 self.enum_value_names.insert(cname.clone(), value_names);
-                let gidx = self.str_const(&cname);
-                self.emit_u16(Op::GLOBAL_SET, gidx);
-                self.emit(Op::DROP);
+                self.compile_shared_enum_decl(name, interfaces, body_members, members, stmt.span)?;
                 self.defined_globals.insert(cname);
             }
 
@@ -3381,10 +3411,12 @@ impl Compiler {
     fn compile_enum_decl_as_class(
         &mut self,
         name: &str,
+        parent: Option<&str>,
         interfaces: &[String],
         members: Vec<ClassMember>,
         span: Span,
     ) -> Result<(), String> {
+        let parents: Vec<String> = parent.into_iter().map(|value| value.to_string()).collect();
         let cname = self.canon(name);
         self.defined_globals.insert(cname.clone());
         self.defined_classes.insert(cname.clone());
@@ -3392,11 +3424,50 @@ impl Compiler {
             self,
             span,
             &cname,
-            &[],
+            &parents,
             interfaces,
             &members,
             &ClassModifiers::default(),
         )
+    }
+
+    fn compile_shared_enum_decl(
+        &mut self,
+        name: &str,
+        interfaces: &[String],
+        body_members: &[ClassMember],
+        members: &[EnumMember],
+        span: Span,
+    ) -> Result<(), String> {
+        let static_modifiers = {
+            let mut modifiers = Modifiers::default();
+            modifiers.is_static = true;
+            modifiers
+        };
+        let mut synthetic_members = body_members.to_vec();
+        let mut next_val = 0i64;
+
+        for member in members {
+            let value_expr = if let Some(value) = &member.value {
+                if let ExprKind::Lit(Literal::Int(n)) = &value.kind {
+                    next_val = *n;
+                }
+                value.clone()
+            } else {
+                Expression::new(ExprKind::Lit(Literal::Int(next_val)))
+            };
+            synthetic_members.push(ClassMember::Field {
+                name: member.name.clone(),
+                type_hint: Some(name.to_string()),
+                init: Some(value_expr),
+                modifiers: static_modifiers.clone(),
+                with_events: false,
+                array_bounds: None,
+            });
+            next_val += 1;
+        }
+
+        self.compile_enum_decl_as_class(name, None, interfaces, synthetic_members, span)
     }
 
     fn compile_dart_enum_decl(
@@ -3455,7 +3526,7 @@ impl Compiler {
             array_bounds: None,
         });
 
-        self.compile_enum_decl_as_class(name, interfaces, synthetic_members, span)
+        self.compile_enum_decl_as_class(name, Some("Enum"), interfaces, synthetic_members, span)
     }
 
     fn compile_php_enum_decl(
@@ -3564,7 +3635,7 @@ impl Compiler {
             });
         }
 
-        self.compile_enum_decl_as_class(name, interfaces, synthetic_members, span)?;
+        self.compile_enum_decl_as_class(name, None, interfaces, synthetic_members, span)?;
 
         let class_global = self.str_const(&self.canon(name));
         let name_key = self.str_const("name");

@@ -329,6 +329,23 @@ impl Compiler {
 
             // ── Member access ───────────────────────────────────────────
             ExprKind::Member { object, field, null_safe } => {
+                if field.eq_ignore_ascii_case("IsEnum") {
+                    if let ExprKind::Lit(Literal::Str(type_name)) = &object.kind {
+                        let full_name = type_name
+                            .strip_prefix("System.")
+                            .unwrap_or(type_name.as_str())
+                            .trim();
+                        let short_name = full_name.rsplit('.').next().unwrap_or(full_name).trim();
+                        let is_enum = [full_name, short_name].into_iter().any(|candidate| {
+                            let canon = self.canon(candidate);
+                            self.enum_value_names.contains_key(&canon)
+                                || self.enum_value_names.keys().any(|known| known.eq_ignore_ascii_case(candidate))
+                        });
+                        self.emit(if is_enum { Op::TRUE } else { Op::FALSE });
+                        return Ok(());
+                    }
+                }
+
                 // Namespace constant check (Math.PI, etc.)
                 if let ExprKind::Ident(obj_name) = &object.kind {
                     if let Some(key) = self.generic_static_member_key(obj_name, field) {

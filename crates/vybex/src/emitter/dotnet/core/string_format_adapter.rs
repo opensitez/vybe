@@ -10,9 +10,8 @@
 //!   `{{` / `}}`     literal `{` / `}`
 //!   `{N}`           args[N] formatted with default `ToString()`
 //!   `{N,W}`         padded to width W (right-align if W>0, left if W<0)
-//!   `{N:fmt}` / `{N,W:fmt}` — format spec is currently passed through as
-//!                              `ToString()` (no D/N/F/X handling yet —
-//!                              extend this adapter if a test demands it).
+//!   `{N:fmt}` / `{N,W:fmt}` — format spec and alignment are routed through
+//!                              the shared .NET numeric formatter.
 //!
 //! Call shape: at the call site, stack on entry is `[fmt, arg0, arg1, ..., argN-2]`
 //! (so `argc` is the number of args including the format string). The adapter
@@ -26,6 +25,24 @@ use std::sync::Arc;
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     let idx = chunk.add_constant(val);
     chunk.emit_op_u16(Op::CONST, idx, line);
+}
+
+fn emit_dotnet_format_value_call(
+    chunk: &mut Chunk,
+    args_slot: u16,
+    idx_slot: u16,
+    format_slot: u16,
+    width_slot: u16,
+    line: u32,
+) {
+    let helper = chunk.add_constant(Value::String(Arc::from("__vybe_dotnet_numeric_format")));
+    chunk.emit_op_u16(Op::GLOBAL_GET, helper, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, args_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, format_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, width_slot, line);
+    chunk.emit_op_u8(Op::CALL_REF, 3, line);
 }
 
 /// Emit `String.Format(fmt, ...args)` at the call site.
@@ -271,6 +288,13 @@ fn emit_handle_open_brace(
     chunk.emit_op_u16(Op::LOCAL_SET, inner_slot, line);
     chunk.emit_op(Op::DROP, line);
 
+    let inner_len_slot = chunk.local_count;
+    chunk.local_count = inner_len_slot + 1;
+    chunk.emit_op_u16(Op::LOCAL_GET, inner_slot, line);
+    chunk.emit_op(Op::STR_LENGTH, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, inner_len_slot, line);
+    chunk.emit_op(Op::DROP, line);
+
     // idx = parseInt(inner) — parseInt stops at first non-digit, so the
     // optional `,W` / `:fmt` suffixes are naturally trimmed.
     let idx_slot = chunk.local_count;
@@ -283,14 +307,89 @@ fn emit_handle_open_brace(
     chunk.emit_op_u16(Op::LOCAL_SET, idx_slot, line);
     chunk.emit_op(Op::DROP, line);
 
-    // out = out + String(args[idx])
-    let to_str = chunk.add_import("ecma:string", "String");
-    chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, args_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    chunk.emit_op(Op::ARRAY_GET, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, to_str, line);
+    let comma_slot = chunk.local_count;
+    let colon_slot = comma_slot + 1;
+    let format_slot = colon_slot + 1;
+    let width_slot = format_slot + 1;
+    chunk.local_count = width_slot + 1;
+
+    let comma_const = chunk.add_constant(Value::String(Arc::from(",")));
+    let colon_const = chunk.add_constant(Value::String(Arc::from(":")));
+    let empty_str = chunk.add_constant(Value::String(Arc::from("")));
+    let zero_num = chunk.add_constant(Value::F64(0.0));
+
+    chunk.emit_op_u16(Op::LOCAL_GET, inner_slot, line);
+    chunk.emit_op_u16(Op::CONST, comma_const, line);
+    chunk.emit_op(Op::STR_INDEX_OF, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, comma_slot, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, inner_slot, line);
+    chunk.emit_op_u16(Op::CONST, colon_const, line);
+    chunk.emit_op(Op::STR_INDEX_OF, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, colon_slot, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op_u16(Op::CONST, empty_str, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, format_slot, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op_u16(Op::CONST, zero_num, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, width_slot, line);
+    chunk.emit_op(Op::DROP, line);
+
+    let no_format_spec = chunk.emit_block(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, colon_slot, line);
+    chunk.emit_op(Op::I32_CONST_0, line);
+    chunk.emit_op(Op::DYN_LT, line);
+    chunk.emit_br_if(0, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, inner_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, colon_slot, line);
+    chunk.emit_op(Op::I32_CONST_1, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, inner_len_slot, line);
+    chunk.emit_op(Op::STR_SUBSTRING, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, format_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_end(line);
+    chunk.patch_block(no_format_spec);
+
+    let no_width_spec = chunk.emit_block(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, comma_slot, line);
+    chunk.emit_op(Op::I32_CONST_0, line);
+    chunk.emit_op(Op::DYN_LT, line);
+    chunk.emit_br_if(0, line);
+    let width_end_slot = chunk.local_count;
+    chunk.local_count = width_end_slot + 1;
+    chunk.emit_op_u16(Op::LOCAL_GET, inner_len_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, width_end_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    let no_colon_after_width = chunk.emit_block(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, colon_slot, line);
+    chunk.emit_op(Op::I32_CONST_0, line);
+    chunk.emit_op(Op::DYN_LT, line);
+    chunk.emit_br_if(0, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, colon_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, width_end_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_end(line);
+    chunk.patch_block(no_colon_after_width);
+    chunk.emit_op_u16(Op::LOCAL_GET, inner_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, comma_slot, line);
+    chunk.emit_op(Op::I32_CONST_1, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, width_end_slot, line);
+    chunk.emit_op(Op::STR_SUBSTRING, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, pf_idx, line);
     chunk.emit(1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, width_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_end(line);
+    chunk.patch_block(no_width_spec);
+
+    // out = out + format(args[idx], format, width)
+    chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
+    emit_dotnet_format_value_call(chunk, args_slot, idx_slot, format_slot, width_slot, line);
     chunk.emit_op(Op::DYN_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
     chunk.emit_op(Op::DROP, line);

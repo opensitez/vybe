@@ -133,3 +133,31 @@ pub fn emit_parse_bool(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_end(line);
     chunk.patch_block(outer);
 }
+
+/// `char.Parse(s)` — require a single-character string and return it.
+pub fn emit_parse_char(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let value = alloc_local(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    chunk.emit_op(Op::DROP, line);
+
+    let ok_block = chunk.emit_block(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_op(Op::STR_LENGTH, line);
+    chunk.emit_op(Op::I32_CONST_1, line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    chunk.emit_br_if(0, line);
+
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_op(Op::DUP, line);
+    let msg = chunk.add_constant(Value::String(Arc::from(
+        "String must be exactly one character long.",
+    )));
+    chunk.emit_op_u16(Op::CONST, msg, line);
+    crate::emitter::errors::emit_exception_new_finalize(chunk, "FormatException", line);
+    crate::emitter::errors::emit_throw(chunk, line);
+    chunk.emit_end(line);
+    chunk.patch_block(ok_block);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+}

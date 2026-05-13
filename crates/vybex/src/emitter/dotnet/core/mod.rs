@@ -17,6 +17,7 @@ pub mod format_picture_adapter;
 pub mod console_adapter;
 pub mod linq_adapter;
 pub mod parse_adapter;
+pub mod collections_adapter;
 
 use vybe_bytecode::component_model::ComponentDescriptor;
 

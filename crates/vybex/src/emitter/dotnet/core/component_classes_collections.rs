@@ -85,15 +85,15 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             "dotnet.System.Collections.Generic",
             ClassType::new("HashSet")
                 .with_constructor(ConstructorDef::new(0).with_backing(HostTarget::new("ecma:set", "new")))
-                .with_method(MethodDef::new("Add", 1, MethodBody::HostCall(HostTarget::new("ecma:set", "add"))))
+                .with_method(MethodDef::new("Add", 1, MethodBody::Common("dotnet.hashset_add".into())))
                 .with_method(MethodDef::new("Remove", 1, MethodBody::HostCall(HostTarget::new("ecma:set", "delete"))))
                 .with_method(MethodDef::new("Contains", 1, MethodBody::HostCall(HostTarget::new("ecma:set", "has"))))
                 .with_method(MethodDef::new("Count", 0, MethodBody::HostCall(HostTarget::new("ecma:set", "size"))))
                 .with_method(MethodDef::new("Clear", 0, MethodBody::HostCall(HostTarget::new("ecma:set", "clear"))))
-                .with_method(MethodDef::new("UnionWith", 1, MethodBody::HostCall(HostTarget::new("ecma:set", "unionWith"))))
-                .with_method(MethodDef::new("IntersectWith", 1, MethodBody::HostCall(HostTarget::new("ecma:set", "intersectWith"))))
-                .with_method(MethodDef::new("ExceptWith", 1, MethodBody::HostCall(HostTarget::new("ecma:set", "exceptWith"))))
-                .with_method(MethodDef::new("SymmetricExceptWith", 1, MethodBody::HostCall(HostTarget::new("ecma:set", "symmetricExceptWith"))))
+                .with_method(MethodDef::new("UnionWith", 1, MethodBody::Common("dotnet.hashset_union_with".into())))
+                .with_method(MethodDef::new("IntersectWith", 1, MethodBody::Common("dotnet.hashset_intersect_with".into())))
+                .with_method(MethodDef::new("ExceptWith", 1, MethodBody::Common("dotnet.hashset_except_with".into())))
+                .with_method(MethodDef::new("SymmetricExceptWith", 1, MethodBody::Common("dotnet.hashset_symmetric_except_with".into())))
                 .with_method(MethodDef::new("IsSubsetOf", 1, MethodBody::HostCall(HostTarget::new("ecma:set", "isSubsetOf"))))
                 .with_method(MethodDef::new("IsSupersetOf", 1, MethodBody::HostCall(HostTarget::new("ecma:set", "isSupersetOf"))))
                 .with_method(MethodDef::new("Overlaps", 1, MethodBody::HostCall(HostTarget::new("ecma:set", "overlaps")))),
@@ -135,8 +135,40 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new("TryPeek", 0, MethodBody::Common("collections.get".into())))
                 .with_method(MethodDef::new("Count", 0, MethodBody::Common("collections.length".into()))),
         ),
+        DotnetClassExport::new(
+            "dotnet.System.Collections.Generic",
+            ClassType::new("SortedDictionary")
+                .with_constructor(ConstructorDef::new(0).with_backing(HostTarget::new("ecma:map", "new")))
+                .with_method(MethodDef::new("Add", 2, MethodBody::HostCall(HostTarget::new("ecma:map", "set"))))
+                .with_method(MethodDef::new("Item", 1, MethodBody::HostCall(HostTarget::new("ecma:map", "get"))))
+                .with_method(MethodDef::new("ContainsKey", 1, MethodBody::HostCall(HostTarget::new("ecma:map", "has"))))
+                .with_method(MethodDef::new("Remove", 1, MethodBody::HostCall(HostTarget::new("ecma:map", "delete"))))
+                .with_method(MethodDef::new("Keys", 0, MethodBody::HostCall(HostTarget::new("ecma:map", "keys"))))
+                .with_method(MethodDef::new("Values", 0, MethodBody::HostCall(HostTarget::new("ecma:map", "values"))))
+                .with_method(MethodDef::new("Clear", 0, MethodBody::HostCall(HostTarget::new("ecma:map", "clear"))))
+                .with_method(MethodDef::new("Count", 0, MethodBody::HostCall(HostTarget::new("ecma:map", "size")))),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Collections.Generic",
+            ClassType::new("SortedSet")
+                .with_constructor(ConstructorDef::new(0).with_backing(HostTarget::new("ecma:set", "new")))
+                .with_method(MethodDef::new("Add", 1, MethodBody::Common("dotnet.hashset_add".into())))
+                .with_method(MethodDef::new("Remove", 1, MethodBody::HostCall(HostTarget::new("ecma:set", "delete"))))
+                .with_method(MethodDef::new("Contains", 1, MethodBody::HostCall(HostTarget::new("ecma:set", "has"))))
+                .with_method(MethodDef::new("Count", 0, MethodBody::HostCall(HostTarget::new("ecma:set", "size"))))
+                .with_method(MethodDef::new("Clear", 0, MethodBody::HostCall(HostTarget::new("ecma:set", "clear")))),
+        ),
         constructor_class("dotnet.System.Collections.Generic", "SortedList", "ecma:map", "new"),
-        common_constructor_class("dotnet.System.Collections.Generic", "LinkedList", "collections.new"),
+        DotnetClassExport::new(
+            "dotnet.System.Collections.Generic",
+            ClassType::new("LinkedList")
+                .with_constructor(ConstructorDef::new(0).with_common_backing("collections.new"))
+                .with_method(MethodDef::new("AddFirst", 1, MethodBody::Common("dotnet.linked_list_add_first".into())))
+                .with_method(MethodDef::new("AddLast", 1, MethodBody::Common("dotnet.linked_list_add_last".into())))
+                .with_method(MethodDef::new("Find", 1, MethodBody::Common("dotnet.linked_list_find".into())))
+                .with_method(MethodDef::new("Clear", 0, MethodBody::Common("collections.clear".into())))
+                .with_method(MethodDef::new("Count", 0, MethodBody::Common("collections.length".into()))),
+        ),
         DotnetClassExport::new(
             "dotnet.System.Collections",
             ClassType::new("ArrayList")

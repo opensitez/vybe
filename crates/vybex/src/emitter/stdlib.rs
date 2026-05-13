@@ -336,6 +336,7 @@ pub fn build_stdlib(imports: &mut Chunk) -> StdLib {
     chunks.push(build_id(imports));                exports.push("__stdlib_id");
     chunks.push(build_hash(imports));              exports.push("__stdlib_hash");
     chunks.push(build_vb_format(imports));         exports.push("__stdlib_vb_format");
+    chunks.push(build_dotnet_numeric_format(imports)); exports.push("__stdlib_dotnet_numeric_format");
     chunks.push(build_transform_values(imports));  exports.push("__stdlib_transform_values");
     chunks.push(build_transform_keys(imports));    exports.push("__stdlib_transform_keys");
     // PHP `$x++` / `$x--` migrated to inline opcode emitter in
@@ -3701,6 +3702,318 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::CALL_IMPORT, to_fixed, 0);
     c.emit(2, 0);
     c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+fn build_dotnet_numeric_format(imports: &mut Chunk) -> Chunk {
+    let mut c = Chunk::new("__stdlib_dotnet_numeric_format");
+    c.arity = 3;
+    c.local_count = 8;
+    let value = 0u16;
+    let format = 1u16;
+    let width = 2u16;
+    let fmt = 3u16;
+    let precision = 4u16;
+    let first_code = 5u16;
+    let rendered = 6u16;
+    let abs_width = 7u16;
+
+    let to_str = imports.add_import("ecma:string", "String");
+    let parse_int = imports.add_import("ecma:number", "parseInt");
+    let number = imports.add_import("ecma:number", "Number");
+    let number_to_string = imports.add_import("ecma:number", "toString");
+    let to_fixed = imports.add_import("ecma:number", "toFixed");
+    let to_upper = imports.add_import("ecma:string", "toUpperCase");
+    let pad_start = imports.add_import("ecma:string", "padStart");
+    let pad_end = imports.add_import("ecma:string", "padEnd");
+
+    let zero_num = c.add_constant(Value::F64(0.0));
+    let sixteen = c.add_constant(Value::F64(16.0));
+    let hundred = c.add_constant(Value::F64(100.0));
+    let zero_str = c.add_constant(Value::String(Arc::from("0")));
+    let space_str = c.add_constant(Value::String(Arc::from(" ")));
+    let minus_str = c.add_constant(Value::String(Arc::from("-")));
+    let percent_suffix = c.add_constant(Value::String(Arc::from(" %")));
+    let d_code = c.add_constant(Value::I32(b'D' as i32));
+    let x_code = c.add_constant(Value::I32(b'X' as i32));
+    let f_code = c.add_constant(Value::I32(b'F' as i32));
+    let p_code = c.add_constant(Value::I32(b'P' as i32));
+    let minus_code = c.add_constant(Value::I32(b'-' as i32));
+
+    let has_format = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, format, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, to_str, 0);
+    c.emit(1, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0);
+    c.patch_block(has_format);
+
+    c.emit_op_u16(Op::LOCAL_GET, format, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, to_str, 0);
+    c.emit(1, 0);
+    c.emit_op(Op::STR_TRIM, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, to_upper, 0);
+    c.emit(1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, fmt, 0);
+    c.emit_op(Op::DROP, 0);
+
+    let non_empty_format = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, fmt, 0);
+    c.emit_op(Op::STR_LENGTH, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, to_str, 0);
+    c.emit(1, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0);
+    c.patch_block(non_empty_format);
+
+    c.emit_op_u16(Op::CONST, zero_num, 0);
+    c.emit_op_u16(Op::LOCAL_SET, precision, 0);
+    c.emit_op(Op::DROP, 0);
+
+    let no_precision_suffix = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, fmt, 0);
+    c.emit_op(Op::STR_LENGTH, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::DYN_GT, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, fmt, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, fmt, 0);
+    c.emit_op(Op::STR_LENGTH, 0);
+    c.emit_op(Op::STR_SUBSTRING, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, parse_int, 0);
+    c.emit(1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, precision, 0);
+    c.emit_op(Op::DROP, 0);
+    let precision_is_number = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, precision, 0);
+    c.emit_op_u16(Op::LOCAL_GET, precision, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::CONST, zero_num, 0);
+    c.emit_op_u16(Op::LOCAL_SET, precision, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_end(0);
+    c.patch_block(precision_is_number);
+    c.emit_end(0);
+    c.patch_block(no_precision_suffix);
+
+    c.emit_op_u16(Op::LOCAL_GET, fmt, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::STR_CHAR_CODE_AT, 0);
+    c.emit_op_u16(Op::LOCAL_SET, first_code, 0);
+    c.emit_op(Op::DROP, 0);
+
+    let dispatch = c.emit_block(0);
+
+    let not_decimal = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, first_code, 0);
+    c.emit_op_u16(Op::CONST, d_code, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, parse_int, 0);
+    c.emit(1, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, to_str, 0);
+    c.emit(1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
+    c.emit_op(Op::DROP, 0);
+
+    let non_negative = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
+    c.emit_op(Op::STR_LENGTH, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_GT, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::STR_CHAR_CODE_AT, 0);
+    c.emit_op_u16(Op::CONST, minus_code, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::CONST, minus_str, 0);
+    c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
+    c.emit_op(Op::STR_LENGTH, 0);
+    c.emit_op(Op::STR_SUBSTRING, 0);
+    c.emit_op_u16(Op::LOCAL_GET, precision, 0);
+    c.emit_op_u16(Op::CONST, zero_str, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, pad_start, 0);
+    c.emit(3, 0);
+    c.emit_op(Op::STR_CONCAT, 0);
+    c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(2, 0);
+    c.emit_end(0);
+    c.patch_block(non_negative);
+
+    c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
+    c.emit_op_u16(Op::LOCAL_GET, precision, 0);
+    c.emit_op_u16(Op::CONST, zero_str, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, pad_start, 0);
+    c.emit(3, 0);
+    c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(1, 0);
+    c.emit_end(0);
+    c.patch_block(not_decimal);
+
+    let not_hex = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, first_code, 0);
+    c.emit_op_u16(Op::CONST, x_code, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, number, 0);
+    c.emit(1, 0);
+    c.emit_op_u16(Op::CONST, sixteen, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, number_to_string, 0);
+    c.emit(2, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, to_upper, 0);
+    c.emit(1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, precision, 0);
+    c.emit_op_u16(Op::CONST, zero_str, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, pad_start, 0);
+    c.emit(3, 0);
+    c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(1, 0);
+    c.emit_end(0);
+    c.patch_block(not_hex);
+
+    let not_fixed = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, first_code, 0);
+    c.emit_op_u16(Op::CONST, f_code, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, number, 0);
+    c.emit(1, 0);
+    c.emit_op_u16(Op::LOCAL_GET, precision, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, to_fixed, 0);
+    c.emit(2, 0);
+    c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(1, 0);
+    c.emit_end(0);
+    c.patch_block(not_fixed);
+
+    let not_percent = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, first_code, 0);
+    c.emit_op_u16(Op::CONST, p_code, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, number, 0);
+    c.emit(1, 0);
+    c.emit_op_u16(Op::CONST, hundred, 0);
+    c.emit_op(Op::F64_MUL, 0);
+    c.emit_op_u16(Op::LOCAL_GET, precision, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, to_fixed, 0);
+    c.emit(2, 0);
+    c.emit_op_u16(Op::CONST, percent_suffix, 0);
+    c.emit_op(Op::STR_CONCAT, 0);
+    c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(1, 0);
+    c.emit_end(0);
+    c.patch_block(not_percent);
+
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, to_str, 0);
+    c.emit(1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, rendered, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_end(0);
+    c.patch_block(dispatch);
+
+    let width_is_number = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, width, 0);
+    c.emit_op_u16(Op::LOCAL_GET, width, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0);
+    c.patch_block(width_is_number);
+
+    let width_is_zero = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, width, 0);
+    c.emit_op_u16(Op::CONST, zero_num, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0);
+    c.patch_block(width_is_zero);
+
+    c.emit_op_u16(Op::LOCAL_GET, width, 0);
+    c.emit_op_u16(Op::LOCAL_SET, abs_width, 0);
+    c.emit_op(Op::DROP, 0);
+    let width_non_negative = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, width, 0);
+    c.emit_op_u16(Op::CONST, zero_num, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::CONST, zero_num, 0);
+    c.emit_op_u16(Op::LOCAL_GET, width, 0);
+    c.emit_op(Op::F64_SUB, 0);
+    c.emit_op_u16(Op::LOCAL_SET, abs_width, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_end(0);
+    c.patch_block(width_non_negative);
+
+    let already_wide_enough = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
+    c.emit_op(Op::STR_LENGTH, 0);
+    c.emit_op_u16(Op::LOCAL_GET, abs_width, 0);
+    c.emit_op(Op::DYN_GE, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0);
+    c.patch_block(already_wide_enough);
+
+    let right_aligned = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, width, 0);
+    c.emit_op_u16(Op::CONST, zero_num, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
+    c.emit_op_u16(Op::LOCAL_GET, abs_width, 0);
+    c.emit_op_u16(Op::CONST, space_str, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, pad_end, 0);
+    c.emit(3, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0);
+    c.patch_block(right_aligned);
+
+    c.emit_op_u16(Op::LOCAL_GET, rendered, 0);
+    c.emit_op_u16(Op::LOCAL_GET, abs_width, 0);
+    c.emit_op_u16(Op::CONST, space_str, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, pad_start, 0);
+    c.emit(3, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }

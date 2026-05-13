@@ -76,7 +76,7 @@ enum Direction { North, South, East, West }
 Direction d = Direction.East;
 Console.WriteLine(d);
 "#);
-    assert_eq!(out, vec!["2"]);
+    assert_eq!(out, vec!["East"]);
 }
 
 #[test]

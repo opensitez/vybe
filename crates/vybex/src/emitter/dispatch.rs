@@ -238,6 +238,24 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::dotnet::core::array_adapter::emit_array_resize(chunks, current, line),
         "dotnet.array_sort"
             => crate::emitter::dotnet::core::array_adapter::emit_array_sort(chunks, current, line),
+        "dotnet.hashset_add"
+            => crate::emitter::dotnet::core::collections_adapter::emit_hashset_add(chunks, current, line),
+        "dotnet.hashset_union_with"
+            => crate::emitter::dotnet::core::collections_adapter::emit_hashset_union_with(chunks, current, line),
+        "dotnet.hashset_intersect_with"
+            => crate::emitter::dotnet::core::collections_adapter::emit_hashset_intersect_with(chunks, current, line),
+        "dotnet.hashset_except_with"
+            => crate::emitter::dotnet::core::collections_adapter::emit_hashset_except_with(chunks, current, line),
+        "dotnet.hashset_symmetric_except_with"
+            => crate::emitter::dotnet::core::collections_adapter::emit_hashset_symmetric_except_with(chunks, current, line),
+        "dotnet.linked_list_add_first"
+            => crate::emitter::dotnet::core::collections_adapter::emit_linked_list_add_first(chunks, current, line),
+        "dotnet.linked_list_add_last"
+            => crate::emitter::dotnet::core::collections_adapter::emit_linked_list_add_last(chunks, current, line),
+        "dotnet.linked_list_find"
+            => crate::emitter::dotnet::core::collections_adapter::emit_linked_list_find(chunks, current, line),
+        "dotnet.sorted_dictionary_entries"
+            => crate::emitter::dotnet::core::collections_adapter::emit_sorted_dictionary_entries(chunks, current, line),
 
         // ── .NET TimeSpan factory adapters ──────────────────────────
         // `TimeSpan.From*(n)` factories build a duration record by
@@ -705,10 +723,20 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         // (matches ECMA-335; JS `Number(s)` returns NaN silently).
         "dotnet.parse_int"
             => crate::emitter::dotnet::core::parse_adapter::emit_parse_int(chunks, current, line),
+        "dotnet.parse_byte"
+            => crate::emitter::dotnet::core::parse_adapter::emit_parse_int(chunks, current, line),
+        "dotnet.parse_long"
+            => crate::emitter::dotnet::core::parse_adapter::emit_parse_int(chunks, current, line),
+        "dotnet.parse_float"
+            => crate::emitter::dotnet::core::parse_adapter::emit_parse_double(chunks, current, line),
+        "dotnet.parse_decimal"
+            => crate::emitter::dotnet::core::parse_adapter::emit_parse_double(chunks, current, line),
         "dotnet.parse_double"
             => crate::emitter::dotnet::core::parse_adapter::emit_parse_double(chunks, current, line),
         "dotnet.parse_bool"
             => crate::emitter::dotnet::core::parse_adapter::emit_parse_bool(chunks, current, line),
+        "dotnet.parse_char"
+            => crate::emitter::dotnet::core::parse_adapter::emit_parse_char(chunks, current, line),
 
         // ── PHP `isset(...)` — variadic null check, returns true iff
         // ALL args are non-null. Inline emit folds an AND chain.

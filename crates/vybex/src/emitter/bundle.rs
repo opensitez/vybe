@@ -94,6 +94,7 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_id",         "__vybe_id"),
     ("__stdlib_hash",       "__vybe_hash"),
     ("__stdlib_vb_format",  "__vybe_vb_format"),
+    ("__stdlib_dotnet_numeric_format", "__vybe_dotnet_numeric_format"),
     ("__stdlib_transform_values", "__vybe_transform_values"),
     ("__stdlib_transform_keys",   "__vybe_transform_keys"),
     // PHP `$x++` / `$x--` migrated to inline opcode emitter in

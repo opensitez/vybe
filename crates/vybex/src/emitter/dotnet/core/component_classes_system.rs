@@ -1,9 +1,36 @@
 use super::super::super::class_exports::DotnetClassExport;
+use super::super::super::classes::DotnetClass;
 use super::component_classes_common::{constructor_class, static_only_class};
 use vybe_bytecode::component_model::{ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef};
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     vec![
+        DotnetClassExport::with_wrapper(
+            "dotnet.System",
+            ClassType::new("ValueType").with_parent("Object"),
+            DotnetClass {
+                name: "ValueType",
+                parent: Some("Object"),
+                properties: &[],
+                methods: &[],
+                ctor_arity: 0,
+                widget_host_fn: None,
+                widget_host_module: "vybe:gui",
+            },
+        ),
+        DotnetClassExport::with_wrapper(
+            "dotnet.System",
+            ClassType::new("Enum").with_parent("ValueType"),
+            DotnetClass {
+                name: "Enum",
+                parent: Some("ValueType"),
+                properties: &[],
+                methods: &[],
+                ctor_arity: 0,
+                widget_host_fn: None,
+                widget_host_module: "vybe:gui",
+            },
+        ),
         DotnetClassExport::new(
             "dotnet.System",
             ClassType::new("DateTime")

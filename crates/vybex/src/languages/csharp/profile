@@ -89,13 +89,24 @@ multi_value_tuple_returns = true
 # so VB picks them up by listing the same `common:dotnet.parse_*`
 # emit targets (lower-cased keys for case-insensitive dispatch).
 "int.Parse"          = { emit = "common:dotnet.parse_int",      min_args = 1, max_args = 1 }
+"byte.Parse"         = { emit = "common:dotnet.parse_byte",     min_args = 1, max_args = 1 }
+"long.Parse"         = { emit = "common:dotnet.parse_long",     min_args = 1, max_args = 1 }
+"float.Parse"        = { emit = "common:dotnet.parse_float",    min_args = 1, max_args = 1 }
+"decimal.Parse"      = { emit = "common:dotnet.parse_decimal",  min_args = 1, max_args = 1 }
+"char.Parse"         = { emit = "common:dotnet.parse_char",     min_args = 1, max_args = 1 }
 "double.Parse"       = { emit = "common:dotnet.parse_double",   min_args = 1, max_args = 1 }
 "bool.Parse"         = { emit = "common:dotnet.parse_bool",     min_args = 1, max_args = 1 }
+"Byte.Parse"         = { emit = "common:dotnet.parse_byte",     min_args = 1, max_args = 1 }
+"Int64.Parse"        = { emit = "common:dotnet.parse_long",     min_args = 1, max_args = 1 }
+"Single.Parse"       = { emit = "common:dotnet.parse_float",    min_args = 1, max_args = 1 }
+"Decimal.Parse"      = { emit = "common:dotnet.parse_decimal",  min_args = 1, max_args = 1 }
+"Char.Parse"         = { emit = "common:dotnet.parse_char",     min_args = 1, max_args = 1 }
 "Int32.Parse"        = { emit = "common:dotnet.parse_int",      min_args = 1, max_args = 1 }
 "Double.Parse"       = { emit = "common:dotnet.parse_double",   min_args = 1, max_args = 1 }
 # TryParse: `int.TryParse(s, out result)` returns bool. Stays on the
 # silent intrinsic since failure shouldn't throw (returns false).
 "Int32.TryParse"     = { emit = "intrinsic:cint",         min_args = 1, max_args = 2 }
+"int.TryParse"       = { emit = "intrinsic:cint",         min_args = 1, max_args = 2 }
 
 # ── String static methods ────────────────────────────────────────────────────
 

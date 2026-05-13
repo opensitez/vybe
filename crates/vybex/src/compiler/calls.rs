@@ -251,6 +251,15 @@ impl Compiler {
     pub(super) fn compile_call(&mut self, callee: &Expression, args: &[Argument]) -> Result<(), String> {
         let arg_exprs: Vec<&Expression> = args.iter().map(|a| &a.value).collect();
 
+        if self.try_compile_dotnet_numeric_try_parse(callee, args)? {
+            return Ok(());
+        }
+        if self.try_compile_dotnet_dictionary_try_get_value(callee, args)? {
+            return Ok(());
+        }
+        if self.try_compile_dotnet_formatted_tostring(callee, args)? {
+            return Ok(());
+        }
         if self.try_compile_dotnet_guid_try_parse(callee, args)? {
             return Ok(());
         }
@@ -2734,6 +2743,175 @@ impl Compiler {
         }
         self.emit(Op::FALSE);
         self.patch_jump(done);
+        Ok(true)
+    }
+
+    fn try_compile_dotnet_numeric_try_parse(&mut self, callee: &Expression, args: &[Argument]) -> Result<bool, String> {
+        if args.len() != 2 {
+            return Ok(false);
+        }
+        let parsed_type = match &callee.kind {
+            ExprKind::Member { object, field, .. } if field.eq_ignore_ascii_case("TryParse") => {
+                terminal_type_name(object)
+            }
+            _ => None,
+        };
+        let Some(type_name) = parsed_type else {
+            return Ok(false);
+        };
+        let normalized = Self::normalize_type_hint(&type_name);
+        if normalized != "int" && normalized != "int32" {
+            return Ok(false);
+        }
+
+        let line = self.line;
+        self.compile_expr(&args[0].value)?;
+        let number_idx = self.import("ecma:number", "Number");
+        self.emit_host_call(number_idx, 1);
+
+        let parsed_slot = self.define_local("__numeric_try_parse_value");
+        self.emit_u16(Op::LOCAL_SET, parsed_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, parsed_slot);
+        self.emit_u16(Op::LOCAL_GET, parsed_slot);
+        self.emit(Op::DYN_EQ);
+        let invalid = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, parsed_slot);
+        self.emit(Op::F64_FLOOR);
+        self.compile_assign_target(&args[1].value)?;
+        if let ExprKind::Ident(name) = &args[1].value.kind {
+            let normalized = Self::normalize_type_hint("int");
+            if let Some(slot) = self.scope().resolve_ci(name) {
+                if let Some(local) = self.scope_mut().locals.iter_mut().rev().find(|local| local.slot == slot) {
+                    local.type_hint = Some(normalized.clone());
+                }
+            } else {
+                self.global_type_hints.insert(self.canon(name), normalized);
+            }
+        }
+        self.emit(Op::TRUE);
+        let done = self.emit_jump(Op::BR);
+
+        self.patch_jump(invalid);
+        self.emit_const(Value::F64(0.0));
+        self.compile_assign_target(&args[1].value)?;
+        self.emit(Op::FALSE);
+        self.patch_jump(done);
+        let _ = line;
+        Ok(true)
+    }
+
+    fn try_compile_dotnet_dictionary_try_get_value(&mut self, callee: &Expression, args: &[Argument]) -> Result<bool, String> {
+        if args.len() != 2 {
+            return Ok(false);
+        }
+        let ExprKind::Member { object, field, .. } = &callee.kind else {
+            return Ok(false);
+        };
+        if !field.eq_ignore_ascii_case("TryGetValue") {
+            return Ok(false);
+        }
+        let is_dictionary = resolve_receiver_type_hint(self, object)
+            .as_deref()
+            .map(Self::is_dictionary_type_hint)
+            .unwrap_or(false);
+        if !is_dictionary {
+            return Ok(false);
+        }
+
+        if let ExprKind::Ident(name) = &args[1].value.kind {
+            let unresolved = self.scope().resolve(name).is_none()
+                && (!self.case_sensitive && self.scope().resolve_ci(name).is_none() || self.case_sensitive)
+                && !self.defined_globals.contains(&self.canon(name));
+            if unresolved {
+                self.define_local_typed(name, None);
+            }
+        }
+
+        self.compile_expr(object)?;
+        let map_slot = self.define_local("__dict_try_get_map");
+        self.emit_u16(Op::LOCAL_SET, map_slot);
+        self.emit(Op::DROP);
+
+        self.compile_expr(&args[0].value)?;
+        let key_slot = self.define_local("__dict_try_get_key");
+        self.emit_u16(Op::LOCAL_SET, key_slot);
+        self.emit(Op::DROP);
+
+        let has_idx = self.import("ecma:map", "has");
+        self.emit_u16(Op::LOCAL_GET, map_slot);
+        self.emit_u16(Op::LOCAL_GET, key_slot);
+        self.emit_host_call(has_idx, 2);
+        let has_slot = self.define_local("__dict_try_get_has");
+        self.emit_u16(Op::LOCAL_SET, has_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, has_slot);
+        let missing = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, map_slot);
+        let getter_key = self.str_const("__get___index__");
+        self.emit_u16(Op::STRUCT_GET, getter_key);
+        let getter_slot = self.define_local("__dict_try_get_getter");
+        self.emit_u16(Op::LOCAL_SET, getter_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, getter_slot);
+        self.emit(Op::REF_IS_NULL);
+        let fallback = self.emit_jump(Op::BR_IF_TRUE);
+
+        self.emit_u16(Op::LOCAL_GET, getter_slot);
+        self.emit_u16(Op::LOCAL_GET, map_slot);
+        self.emit_u16(Op::LOCAL_GET, key_slot);
+        self.emit_u8(Op::CALL_REF, 2);
+        let done = self.emit_jump(Op::BR);
+
+        self.patch_jump(fallback);
+        self.emit_u16(Op::LOCAL_GET, map_slot);
+        self.emit_u16(Op::LOCAL_GET, key_slot);
+        common::collections::emit_get(&mut self.chunks, self.current, self.line);
+        self.patch_jump(done);
+
+        self.compile_assign_target(&args[1].value)?;
+        self.emit(Op::TRUE);
+        let done = self.emit_jump(Op::BR);
+
+        self.patch_jump(missing);
+        self.emit(Op::NULL);
+        self.compile_assign_target(&args[1].value)?;
+        self.emit(Op::FALSE);
+        self.patch_jump(done);
+        Ok(true)
+    }
+
+    fn try_compile_dotnet_formatted_tostring(&mut self, callee: &Expression, args: &[Argument]) -> Result<bool, String> {
+        if args.len() != 1 {
+            return Ok(false);
+        }
+        let ExprKind::Member { object, field, .. } = &callee.kind else {
+            return Ok(false);
+        };
+        if !field.eq_ignore_ascii_case("ToString") {
+            return Ok(false);
+        }
+
+        let format_looks_string = matches!(&args[0].value.kind, ExprKind::Lit(Literal::Str(_)))
+            || resolve_receiver_type_hint(self, &args[0].value)
+                .as_deref()
+                .map(Self::is_string_type_hint)
+                .unwrap_or(false);
+        if !format_looks_string {
+            return Ok(false);
+        }
+
+        let helper = self.str_const("__vybe_dotnet_numeric_format");
+        self.emit_u16(Op::GLOBAL_GET, helper);
+        self.compile_expr(object)?;
+        self.compile_expr(&args[0].value)?;
+        self.emit_const(Value::F64(0.0));
+        self.emit_u8(Op::CALL_REF, 3);
         Ok(true)
     }
 
