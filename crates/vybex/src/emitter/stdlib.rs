@@ -638,12 +638,13 @@ fn build_sorted(imports: &mut Chunk) -> Chunk {
 fn build_sort_in_place(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_sort_in_place");
     c.arity = 1;
-    c.local_count = 5; // arr(0) + i(1) + j(2) + len(3) + key(4)
+    c.local_count = 6; // arr(0) + i(1) + j(2) + len(3) + key(4) + lhs(5)
     let arr = 0u16;
     let i = 1;
     let j = 2;
     let len = 3;
     let key = 4;
+    let lhs = 5;
 
     // len = arr.length
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
@@ -690,8 +691,17 @@ fn build_sort_in_place(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, j, 0);
     crate::emitter::collections::emit_get_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::LOCAL_GET, key, 0);
-    c.emit_op(Op::DYN_GT, 0);
+    c.emit_op_u16(Op::LOCAL_SET, lhs, 0);
+    c.emit_op(Op::DROP, 0);
+
+    crate::emitter::expressions::emit_rich_compare_locals(
+        &mut c,
+        lhs,
+        key,
+        "__gt__",
+        Op::DYN_GT,
+        0,
+    );
     c.emit_op(Op::DYN_NOT, 0);
     c.emit_br_if(1, 0); // exit inner loop (second condition)
 

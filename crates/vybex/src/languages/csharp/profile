@@ -211,7 +211,10 @@ Add           = [
 ]
 Clear         = { emit = "host:ecma:array:clear",      min_args = 0, max_args = 0 }
 Reverse       = { emit = "common:collections.reverse",       min_args = 0, max_args = 0 }
-Sort          = { emit = "stdlib:sort_in_place",       min_args = 0, max_args = 0 }
+Sort          = [
+    { emit = "stdlib:sort_in_place",         min_args = 0, max_args = 0 },
+    { emit = "stdlib:sort_with_comparator",  min_args = 1, max_args = 1 },
+]
 join          = { emit = "common:collections.join",    min_args = 1, max_args = 1 }
 # `Count` 0-arg defers to the runtime collection registry (List<T>.Count,
 # Dict.Count, HashSet.Count are all component-model methods on the
@@ -242,6 +245,7 @@ Select             = { emit = "common:dotnet.linq_select",                min_ar
 Average            = { emit = "common:dotnet.linq_average",               min_args = 0, max_args = 0 }
 FirstOrDefault     = { emit = "common:dotnet.linq_first_or_default",      min_args = 0, max_args = 0 }
 Distinct           = { emit = "common:dotnet.linq_distinct",              min_args = 0, max_args = 0 }
+SequenceEqual      = { emit = "common:dotnet.linq_sequence_equal",        min_args = 1, max_args = 1 }
 Skip               = { emit = "common:dotnet.linq_skip",                  min_args = 1, max_args = 1 }
 Take               = { emit = "common:dotnet.linq_take",                  min_args = 1, max_args = 1 }
 Aggregate          = { emit = "common:dotnet.linq_aggregate",             min_args = 2, max_args = 2 }

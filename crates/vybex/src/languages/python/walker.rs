@@ -521,6 +521,7 @@ fn walk_class_def(pair: Pair<Rule>, _decorators: Vec<Expression>) -> Result<Stmt
         interfaces: Vec::new(),
         members,
         modifiers: ClassModifiers::default(),
+        decorators: vec![],
     })
 }
 

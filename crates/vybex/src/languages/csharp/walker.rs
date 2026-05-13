@@ -10,7 +10,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         .map_err(|e| format!("Parse error: {}", e))?;
     let mut body = Vec::new();
     let mut imports = Vec::new();
-    let mut pending_attributes: Vec<String> = Vec::new();
+    let mut pending_attributes: Vec<Expression> = Vec::new();
 
     for top in pairs {
         let inner = match top.as_rule() {
@@ -21,17 +21,17 @@ pub fn parse(source: &str) -> Result<Module, String> {
         for pair in inner {
             match pair.as_rule() {
                 Rule::EOI => continue,
-                Rule::attribute_list => pending_attributes.extend(parse_attribute_names(pair.as_str())),
+                Rule::attribute_list => pending_attributes.extend(parse_attribute_specs(pair.as_str())),
                 Rule::using_directive => imports.push(walk_using(pair)?),
                 Rule::namespace_declaration => {
                     // Build NamespaceDecl with name and body
                     let mut ns_name = String::new();
                     let mut ns_body: Vec<Statement> = Vec::new();
-                    let mut namespace_pending_attributes: Vec<String> = Vec::new();
+                    let mut namespace_pending_attributes: Vec<Expression> = Vec::new();
                     for p in pair.into_inner() {
                         match p.as_rule() {
-                            Rule::dotted_name => ns_name = p.as_str().to_string(),
-                            Rule::attribute_list => namespace_pending_attributes.extend(parse_attribute_names(p.as_str())),
+                            Rule::dotted_name => ns_name = strip_global_namespace_qualifier(p.as_str()).to_string(),
+                            Rule::attribute_list => namespace_pending_attributes.extend(parse_attribute_specs(p.as_str())),
                             Rule::using_directive => imports.push(walk_using(p)?),
                             _ => {
                                 if let Ok(stmt) = walk_top_level_with_attributes(p, &namespace_pending_attributes) {
@@ -65,7 +65,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // declarations: each takes a `string msg` ctor that stamps `Message`
     // on `this`. `try { ... } catch (T e) { ... e.Message ... }`
     // resolves T to the synthesized class and reads `e.Message`.
-    body.splice(0..0, synthesize_exception_classes());
+    let mut synthesized = synthesize_exception_classes();
+    synthesized.extend(synthesize_attribute_classes());
+    body.splice(0..0, synthesized);
 
     let mut module = Module {
         name: "main".into(),
@@ -81,20 +83,171 @@ pub fn parse(source: &str) -> Result<Module, String> {
     Ok(module)
 }
 
-fn parse_attribute_names(raw: &str) -> Vec<String> {
-    raw.trim()
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .split(',')
-        .filter_map(|part| {
-            let name = part.trim().split('(').next()?.trim();
-            if name.is_empty() {
-                None
-            } else {
-                Some(name.to_string())
+fn split_csharp_top_level(text: &str, separator: char) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut in_string = false;
+    let mut string_delim = '\0';
+    let mut escaped = false;
+
+    for ch in text.chars() {
+        if in_string {
+            current.push(ch);
+            if escaped {
+                escaped = false;
+                continue;
             }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == string_delim {
+                in_string = false;
+                string_delim = '\0';
+            }
+            continue;
+        }
+
+        match ch {
+            '"' | '\'' => {
+                in_string = true;
+                string_delim = ch;
+                current.push(ch);
+            }
+            '(' => {
+                paren_depth += 1;
+                current.push(ch);
+            }
+            ')' => {
+                paren_depth = paren_depth.saturating_sub(1);
+                current.push(ch);
+            }
+            '[' => {
+                bracket_depth += 1;
+                current.push(ch);
+            }
+            ']' => {
+                bracket_depth = bracket_depth.saturating_sub(1);
+                current.push(ch);
+            }
+            '{' => {
+                brace_depth += 1;
+                current.push(ch);
+            }
+            '}' => {
+                brace_depth = brace_depth.saturating_sub(1);
+                current.push(ch);
+            }
+            _ if ch == separator && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                let piece = current.trim();
+                if !piece.is_empty() {
+                    parts.push(piece.to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    let piece = current.trim();
+    if !piece.is_empty() {
+        parts.push(piece.to_string());
+    }
+    parts
+}
+
+fn normalize_attribute_type_name(name: &str) -> String {
+    let trimmed = name.trim();
+    let Some((prefix, leaf)) = trimmed.rsplit_once('.') else {
+        return if trimmed.ends_with("Attribute") {
+            trimmed.to_string()
+        } else {
+            format!("{trimmed}Attribute")
+        };
+    };
+    if leaf.ends_with("Attribute") {
+        trimmed.to_string()
+    } else {
+        format!("{prefix}.{}Attribute", leaf)
+    }
+}
+
+fn parse_csharp_inline_expression(text: &str) -> Option<Expression> {
+    let mut parsed = CSharpParser::parse(Rule::expression, text).ok()?;
+    let pair = parsed.next()?;
+    walk_expression(pair).ok()
+}
+
+fn parse_attribute_argument(text: &str) -> Option<Argument> {
+    let trimmed = text.trim();
+    if let Some((lhs, rhs)) = trimmed.split_once('=') {
+        let lhs_trimmed = lhs.trim();
+        if lhs_trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.')
+        {
+            return Some(Argument {
+                value: parse_csharp_inline_expression(rhs.trim())?,
+                name: Some(lhs_trimmed.rsplit('.').next()?.to_string()),
+                by_ref: false,
+                spread: false,
+            });
+        }
+    }
+
+    Some(Argument {
+        value: parse_csharp_inline_expression(trimmed)?,
+        name: None,
+        by_ref: false,
+        spread: false,
+    })
+}
+
+fn parse_attribute_specs(raw: &str) -> Vec<Expression> {
+    let inner = raw.trim().trim_start_matches('[').trim_end_matches(']');
+    split_csharp_top_level(inner, ',')
+        .into_iter()
+        .filter_map(|part| {
+            let trimmed = part.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+
+            let (name, args) = if let Some(open_idx) = trimmed.find('(') {
+                let close_idx = trimmed.rfind(')').unwrap_or(trimmed.len().saturating_sub(1));
+                let name = trimmed[..open_idx].trim();
+                let args_src = &trimmed[open_idx + 1..close_idx];
+                let args = split_csharp_top_level(args_src, ',')
+                    .into_iter()
+                    .filter_map(|arg| parse_attribute_argument(&arg))
+                    .collect::<Vec<_>>();
+                (name, args)
+            } else {
+                (trimmed, Vec::new())
+            };
+
+            Some(Expression::new(ExprKind::New {
+                class: Box::new(build_dotted_expr(&normalize_attribute_type_name(name))),
+                args,
+            }))
         })
         .collect()
+}
+
+fn attribute_leaf_name(expr: &Expression) -> Option<String> {
+    let callee = match &expr.kind {
+        ExprKind::Call { callee, .. } => callee.as_ref(),
+        ExprKind::New { class, .. } => class.as_ref(),
+        _ => expr,
+    };
+    match &callee.kind {
+        ExprKind::Ident(name) => Some(name.rsplit('.').next().unwrap_or(name).to_string()),
+        ExprKind::Member { field, .. } => Some(field.clone()),
+        _ => None,
+    }
 }
 
 fn explicit_interface_runtime_name(interface_name: &str, member_name: &str) -> String {
@@ -118,8 +271,15 @@ fn parse_explicit_interface_runtime_name(name: &str) -> Option<(String, String)>
     Some((iface.to_string(), member.to_string()))
 }
 
+fn strip_global_namespace_qualifier(name: &str) -> &str {
+    name.strip_prefix("global::").unwrap_or(name)
+}
+
 fn extract_explicit_interface_name(pair: Pair<Rule>) -> String {
-    pair.as_str().trim_end_matches('.').trim().to_string()
+    strip_global_namespace_qualifier(pair.as_str())
+        .trim_end_matches('.')
+        .trim()
+        .to_string()
 }
 
 fn rewrite_explicit_interface_accesses(module: &mut Module) {
@@ -2050,6 +2210,32 @@ fn synthesize_exception_classes() -> Vec<Statement> {
     names.iter().map(|n| synthesize_exception_class(n)).collect()
 }
 
+fn synthesize_attribute_classes() -> Vec<Statement> {
+    vec![
+        synthesize_attribute_class("Attribute"),
+        synthesize_attribute_class("System.Attribute"),
+    ]
+}
+
+fn synthesize_attribute_class(name: &str) -> Statement {
+    Statement::with_span(
+        StmtKind::ClassDecl {
+            name: name.into(),
+            parents: Vec::new(),
+            interfaces: Vec::new(),
+            members: vec![ClassMember::Constructor {
+                params: Vec::new(),
+                body: Vec::new(),
+                base_args: None,
+                visibility: Visibility::Public,
+            }],
+            modifiers: ClassModifiers::default(),
+            decorators: Vec::new(),
+        },
+        Span::default(),
+    )
+}
+
 fn synthesize_exception_class(name: &str) -> Statement {
     let span = Span::default();
     // Per-type constructor signatures per ECMA-335 / .NET BCL:
@@ -2165,6 +2351,7 @@ fn synthesize_exception_class(name: &str) -> Statement {
             interfaces: Vec::new(),
             members,
             modifiers: ClassModifiers::default(),
+            decorators: Vec::new(),
         },
         span,
     )
@@ -2172,15 +2359,15 @@ fn synthesize_exception_class(name: &str) -> Statement {
 
 // ── Top-level items ─────────────────────────────────────────────────────────
 
-fn walk_top_level_with_attributes(pair: Pair<Rule>, attributes: &[String]) -> Result<Statement, String> {
+fn walk_top_level_with_attributes(pair: Pair<Rule>, attributes: &[Expression]) -> Result<Statement, String> {
     let span = to_span(&pair);
     let kind = match pair.as_rule() {
-        Rule::record_struct_declaration => walk_record_decl(pair)?,
-        Rule::class_declaration => walk_class_decl(pair)?,
-        Rule::struct_declaration => walk_struct_decl(pair)?,
-        Rule::interface_declaration => walk_interface_decl(pair)?,
+        Rule::record_struct_declaration => walk_record_decl(pair, attributes)?,
+        Rule::class_declaration => walk_class_decl(pair, attributes)?,
+        Rule::struct_declaration => walk_struct_decl(pair, attributes)?,
+        Rule::interface_declaration => walk_interface_decl(pair, attributes)?,
         Rule::enum_declaration => walk_enum_decl(pair, attributes)?,
-        Rule::record_declaration => walk_record_decl(pair)?,
+        Rule::record_declaration => walk_record_decl(pair, attributes)?,
         Rule::delegate_declaration => walk_delegate_decl(pair)?,
         _ => walk_statement(pair)?.kind,
     };
@@ -2223,12 +2410,12 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             classify_expr_stmt(expr)
         }
         // Type declarations can appear inside methods
-        Rule::record_struct_declaration => walk_record_decl(pair)?,
-        Rule::class_declaration => walk_class_decl(pair)?,
-        Rule::struct_declaration => walk_struct_decl(pair)?,
-        Rule::interface_declaration => walk_interface_decl(pair)?,
+        Rule::record_struct_declaration => walk_record_decl(pair, &[] )?,
+        Rule::class_declaration => walk_class_decl(pair, &[] )?,
+        Rule::struct_declaration => walk_struct_decl(pair, &[] )?,
+        Rule::interface_declaration => walk_interface_decl(pair, &[] )?,
         Rule::enum_declaration => walk_enum_decl(pair, &[])?,
-        Rule::record_declaration => walk_record_decl(pair)?,
+        Rule::record_declaration => walk_record_decl(pair, &[] )?,
         Rule::delegate_declaration => walk_delegate_decl(pair)?,
         other => return Err(format!("Unexpected statement rule: {:?}", other)),
     };
@@ -2337,22 +2524,22 @@ fn walk_using(pair: Pair<Rule>) -> Result<Import, String> {
                         Rule::using_static_directive => {
                             is_static = true;
                             if let Some(name) = inner.into_inner().find(|p| p.as_rule() == Rule::dotted_name) {
-                                path = name.as_str().to_string();
+                                path = strip_global_namespace_qualifier(name.as_str()).to_string();
                             }
                         }
                         Rule::using_alias_directive => {
                             let mut parts = inner.into_inner();
                             alias = parts.next().map(|p| p.as_str().to_string());
                             if let Some(target) = parts.next() {
-                                path = target.as_str().to_string();
+                                path = strip_global_namespace_qualifier(target.as_str()).to_string();
                             }
                         }
-                        Rule::dotted_name => path = inner.as_str().to_string(),
+                        Rule::dotted_name => path = strip_global_namespace_qualifier(inner.as_str()).to_string(),
                         _ => {}
                     }
                 }
             }
-            Rule::dotted_name => path = child.as_str().to_string(),
+            Rule::dotted_name => path = strip_global_namespace_qualifier(child.as_str()).to_string(),
             _ => {}
         }
     }
@@ -2452,6 +2639,23 @@ fn infer_csharp_new_type_name(class: &Expression) -> Option<String> {
     }
 }
 
+fn has_ordinal_ignore_case_comparer_arg(args: &[Argument]) -> bool {
+    args.iter().any(|arg| {
+        matches!(
+            &arg.value.kind,
+            ExprKind::Lit(Literal::Str(tag)) if tag == "__dotnet_stringcomparer_ordinalignorecase"
+        )
+    })
+}
+
+fn annotate_case_insensitive_ctor_type(type_name: String, args: &[Argument]) -> String {
+    if has_ordinal_ignore_case_comparer_arg(args) {
+        format!("{type_name}#ordinalignorecase")
+    } else {
+        type_name
+    }
+}
+
 fn infer_csharp_iife_return_type(expr: &Expression) -> Option<String> {
     let ExprKind::Call { callee, args, .. } = &expr.kind else {
         return None;
@@ -2494,7 +2698,8 @@ fn infer_csharp_type_from_expr(expr: &Expression) -> Option<String> {
         ExprKind::Lit(Literal::Str(_)) => Some("string".into()),
         ExprKind::Lit(Literal::Bool(_)) => Some("bool".into()),
         ExprKind::Lit(Literal::Char(_)) => Some("char".into()),
-        ExprKind::New { class, .. } => infer_csharp_new_type_name(class),
+        ExprKind::New { class, args } => infer_csharp_new_type_name(class)
+            .map(|type_name| annotate_case_insensitive_ctor_type(type_name, args)),
         ExprKind::Array(elements) => {
             let mut element_type: Option<String> = None;
             for element in elements {
@@ -2630,7 +2835,23 @@ fn walk_var_declarator(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
 
 // ── Class declaration ───────────────────────────────────────────────────────
 
-fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn looks_like_csharp_interface_type(type_name: &str) -> bool {
+    let leaf = type_name
+        .trim()
+        .rsplit('.')
+        .next()
+        .unwrap_or(type_name)
+        .split('<')
+        .next()
+        .unwrap_or(type_name)
+        .trim_end_matches('?');
+
+    leaf.starts_with('I')
+        && leaf.len() > 1
+        && leaf.chars().nth(1).is_some_and(|ch| ch.is_ascii_uppercase())
+}
+
+fn walk_class_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut parents = Vec::new();
     let mut interfaces = Vec::new();
@@ -2668,10 +2889,11 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 for bp in p.into_inner() {
                     if bp.as_rule() == Rule::type_name {
                         let type_str = bp.as_str().trim().to_string();
-                        // First is parent class, rest are interfaces (heuristic: starts with I)
+                        // C# allows either a single base class or interfaces in the first slot.
+                        // Classify using the leaf type name so namespaced interfaces like
+                        // `System.IComparable<T>` do not get misread as a parent class.
                         if first {
-                            // Check if it's a known framework type or starts with uppercase (not I)
-                            if type_str.starts_with('I') && type_str.len() > 1 && type_str.chars().nth(1).map_or(false, |c| c.is_uppercase()) {
+                            if looks_like_csharp_interface_type(&type_str) {
                                 interfaces.push(type_str);
                             } else {
                                 parents.push(type_str);
@@ -2698,7 +2920,14 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     expand_explicit_interface_members(&mut members);
 
-    Ok(StmtKind::ClassDecl { name, parents, interfaces, members, modifiers: class_mods })
+    Ok(StmtKind::ClassDecl {
+        name,
+        parents,
+        interfaces,
+        members,
+        modifiers: class_mods,
+        decorators: decorators.to_vec(),
+    })
 }
 
 fn expand_explicit_interface_members(members: &mut Vec<ClassMember>) {
@@ -2769,11 +2998,11 @@ fn expand_explicit_interface_members(members: &mut Vec<ClassMember>) {
 fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
     let mut mods = Modifiers::default();
     let mut member_pair = None;
-    let mut attributes = Vec::new();
+    let mut attributes: Vec<Expression> = Vec::new();
 
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::attribute_list => attributes.extend(parse_attribute_names(p.as_str())),
+            Rule::attribute_list => attributes.extend(parse_attribute_specs(p.as_str())),
             Rule::class_modifiers => {
                 for m in p.into_inner() {
                     match m.as_str() {
@@ -2798,6 +3027,8 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
         }
     }
 
+    mods.decorators.extend(attributes.iter().cloned());
+
     let mp = member_pair.ok_or("Empty class member")?;
     match mp.as_rule() {
         Rule::constructor_declaration => walk_constructor(mp, mods).map(|m| vec![m]),
@@ -2818,9 +3049,9 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
         | Rule::enum_declaration => {
             let span = to_span(&mp);
             let kind = match mp.as_rule() {
-                Rule::class_declaration => walk_class_decl(mp)?,
-                Rule::struct_declaration => walk_struct_decl(mp)?,
-                Rule::interface_declaration => walk_interface_decl(mp)?,
+                Rule::class_declaration => walk_class_decl(mp, &attributes)?,
+                Rule::struct_declaration => walk_struct_decl(mp, &attributes)?,
+                Rule::interface_declaration => walk_interface_decl(mp, &attributes)?,
                 Rule::enum_declaration => walk_enum_decl(mp, &attributes)?,
                 _ => unreachable!(),
             };
@@ -3125,8 +3356,18 @@ fn walk_local_function(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut return_type = None;
     let mut params = Vec::new();
     let mut body = Vec::new();
+    let mut modifiers = Modifiers::default();
     for p in pair.into_inner() {
         match p.as_rule() {
+            Rule::class_modifiers => {
+                for m in p.into_inner() {
+                    match m.as_str() {
+                        s if s.starts_with("static") => modifiers.is_static = true,
+                        s if s.starts_with("async") => {}
+                        _ => {}
+                    }
+                }
+            }
             Rule::type_name => {
                 if return_type.is_none() {
                     return_type = Some(p.as_str().to_string());
@@ -3159,7 +3400,7 @@ fn walk_local_function(pair: Pair<Rule>) -> Result<StmtKind, String> {
         params,
         return_type,
         body,
-        modifiers: Modifiers::default(),
+        modifiers,
         is_async: false,
         is_generator,
         is_sub,
@@ -3353,6 +3594,7 @@ fn walk_indexer(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, S
 }
 
 fn walk_method(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String> {
+    let mut mods = mods;
     let mut name = String::new();
     let mut explicit_interface = None;
     let mut return_type = None;
@@ -3378,7 +3620,11 @@ fn walk_method(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String>
             Rule::ident_name if name.is_empty() => {
                 name = p.as_str().to_string();
             }
-            Rule::param_list => params = walk_params(p)?,
+            Rule::param_list => {
+                let (parsed_params, param_decorators) = walk_params_with_decorators(p)?;
+                params = parsed_params;
+                mods.decorators.extend(param_decorators);
+            }
             Rule::block_statement => body = walk_body(p)?,
             Rule::expression_body => {
                 // C# expression-bodied member: `=> expr;` lowers to
@@ -3461,7 +3707,7 @@ fn walk_field(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String> 
 
 // ── Struct ──────────────────────────────────────────────────────────────────
 
-fn walk_struct_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_struct_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut interfaces = Vec::new();
     let mut members = Vec::new();
@@ -3495,12 +3741,13 @@ fn walk_struct_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         interfaces,
         members,
         visibility: Visibility::Public,
+        decorators: decorators.to_vec(),
     })
 }
 
 // ── Interface ───────────────────────────────────────────────────────────────
 
-fn walk_interface_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_interface_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut parents = Vec::new();
     let mut members = Vec::new();
@@ -3529,7 +3776,12 @@ fn walk_interface_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
-    Ok(StmtKind::InterfaceDecl { name, parents, members })
+    Ok(StmtKind::InterfaceDecl {
+        name,
+        parents,
+        members,
+        decorators: decorators.to_vec(),
+    })
 }
 
 fn walk_interface_member(pair: Pair<Rule>) -> Result<InterfaceMember, String> {
@@ -3579,12 +3831,13 @@ fn walk_interface_member(pair: Pair<Rule>) -> Result<InterfaceMember, String> {
 
 // ── Enum ────────────────────────────────────────────────────────────────────
 
-fn walk_enum_decl(pair: Pair<Rule>, attributes: &[String]) -> Result<StmtKind, String> {
+fn walk_enum_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut members = Vec::new();
-    let is_flags = attributes.iter().any(|attr| {
-        let short = attr.rsplit('.').next().unwrap_or(attr);
-        short.eq_ignore_ascii_case("Flags") || short.eq_ignore_ascii_case("FlagsAttribute")
+    let is_flags = decorators.iter().any(|attr| {
+        attribute_leaf_name(attr).is_some_and(|short| {
+            short.eq_ignore_ascii_case("Flags") || short.eq_ignore_ascii_case("FlagsAttribute")
+        })
     });
 
     for p in pair.into_inner() {
@@ -3618,12 +3871,13 @@ fn walk_enum_decl(pair: Pair<Rule>, attributes: &[String]) -> Result<StmtKind, S
         backing_type: None,
         interfaces: Vec::new(),
         body_members: Vec::new(),
+        decorators: decorators.to_vec(),
     })
 }
 
 // ── Record ──────────────────────────────────────────────────────────────────
 
-fn walk_record_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut params = Vec::new();
     let mut parents = Vec::new();
@@ -3931,6 +4185,7 @@ fn walk_record_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         interfaces: Vec::new(),
         members,
         modifiers: record_mods,
+        decorators: decorators.to_vec(),
     })
 }
 
@@ -4123,8 +4378,7 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }));
     } else {
         let uses_entry_fields = !var.is_empty()
-            && (foreach_src.contains(&format!("{}.Key", var))
-                || foreach_src.contains(&format!("{}.Value", var)));
+            && foreach_src.contains(&format!("{}.Key", var));
         if uses_entry_fields {
             let user_var = var.clone();
             let source_var = format!("__csharp_foreach_item_{}", hidden_suffix);
@@ -4585,21 +4839,47 @@ fn walk_lock(pair: Pair<Rule>) -> Result<StmtKind, String> {
 // ── Parameters ──────────────────────────────────────────────────────────────
 
 fn walk_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
-    pair.into_inner()
-        .filter(|p| p.as_rule() == Rule::param)
-        .map(walk_param)
-        .collect()
+    Ok(walk_params_with_decorators(pair)?.0)
 }
 
-fn walk_param(pair: Pair<Rule>) -> Result<Param, String> {
+fn walk_params_with_decorators(pair: Pair<Rule>) -> Result<(Vec<Param>, Vec<Expression>), String> {
+    let mut params = Vec::new();
+    let mut decorators = Vec::new();
+
+    for (index, param_pair) in pair.into_inner().filter(|p| p.as_rule() == Rule::param).enumerate() {
+        let (param, param_decorators) = walk_param_with_decorators(param_pair)?;
+        decorators.extend(
+            param_decorators
+                .into_iter()
+                .map(|decorator| param_attribute_carrier(index, decorator)),
+        );
+        params.push(param);
+    }
+
+    Ok((params, decorators))
+}
+
+fn param_attribute_carrier(index: usize, decorator: Expression) -> Expression {
+    Expression::new(ExprKind::New {
+        class: Box::new(Expression::ident("__vybe_param_attribute")),
+        args: vec![
+            Argument::positional(Expression::int(index as i64)),
+            Argument::positional(decorator),
+        ],
+    })
+}
+
+fn walk_param_with_decorators(pair: Pair<Rule>) -> Result<(Param, Vec<Expression>), String> {
     let mut name = String::new();
     let mut type_hint = None;
     let mut default = None;
     let mut pass_by = PassBy::Value;
     let mut is_rest = false;
+    let mut decorators = Vec::new();
 
     for p in pair.into_inner() {
         match p.as_rule() {
+            Rule::attribute_list => decorators.extend(parse_attribute_specs(p.as_str())),
             Rule::param_modifier => {
                 match p.as_str() {
                     "ref" => pass_by = PassBy::Ref,
@@ -4619,16 +4899,19 @@ fn walk_param(pair: Pair<Rule>) -> Result<Param, String> {
         }
     }
 
-    Ok(Param {
-        name,
-        type_hint,
-        default,
-        pass_by,
-        is_rest,
-        is_kwargs: false,
-        is_optional: false,
-        is_nullable: false,
-    })
+    Ok((
+        Param {
+            name,
+            type_hint,
+            default,
+            pass_by,
+            is_rest,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        },
+        decorators,
+    ))
 }
 
 // ── Expressions ─────────────────────────────────────────────────────────────
@@ -4961,8 +5244,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         }
 
         // Type name used as expression (cast, etc.)
-        Rule::type_name | Rule::generic_type_expr | Rule::base_type | Rule::dotted_name => {
-            Ok(ExprKind::Ident(pair.as_str().to_string()))
+        Rule::type_name | Rule::generic_type_expr | Rule::base_type | Rule::dotted_name | Rule::global_qualified_name => {
+            Ok(ExprKind::Ident(strip_global_namespace_qualifier(pair.as_str()).to_string()))
         }
 
         // Passthrough wrappers
@@ -5296,7 +5579,7 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
             } else {
                 expr = canonicalize_member_access(expr, &name);
             }
-        } else if chain_src.starts_with("[") {
+        } else if chain_src.starts_with("[") || chain_src.starts_with("?[") {
             // Index / range / from-end. The C# 8 forms covered:
             //   arr[i]     — plain index
             //   arr[^N]    — from-end index, i.e. arr[arr.Length - N]
@@ -5304,6 +5587,7 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
             //   arr[^N..]  — range with from-end start, open end
             //   arr[..^N]  — range with from-end end
             //   arr[..]    — full slice
+            let null_safe = chain_src.starts_with("?[");
             let inner_pairs: Vec<Pair<Rule>> = chain_inner.into_iter().collect();
             // Find the index_expression child (grammar wraps the brackets'
             // contents in `index_expression`).
@@ -5346,7 +5630,7 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     expr = Expression::new(ExprKind::Index {
                         object: Box::new(expr),
                         index: Box::new(range),
-                        null_safe: false,
+                        null_safe,
                     });
                 } else {
                     // Multi-arg index `m[i, j]` lowers to nested
@@ -5355,7 +5639,7 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     if let Some(first) = iter.next() {
                         let index = walk_index_part(first, expr.clone())?;
                         expr = Expression::new(ExprKind::Index {
-                            object: Box::new(expr), index: Box::new(index), null_safe: false,
+                            object: Box::new(expr), index: Box::new(index), null_safe,
                         });
                         for p in iter {
                             let index = walk_index_part(p, expr.clone())?;
@@ -5466,7 +5750,15 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
         || type_name.eq_ignore_ascii_case("SortedSet")
         || type_name.ends_with("SortedSet");
     if is_set_ctor && !array_init.is_empty() {
-        return Ok(emit_set_iife(type_name.clone(), array_init));
+        return Ok(emit_set_iife(type_name.clone(), args.clone(), array_init));
+    }
+
+    let is_list_ctor = matches!(
+        type_name.rsplit('.').next().unwrap_or(type_name.as_str()),
+        "List" | "ArrayList"
+    );
+    if is_list_ctor && !array_init.is_empty() {
+        return Ok(emit_list_iife(type_name.clone(), args.clone(), array_init));
     }
 
     if is_array && !array_init.is_empty() {
@@ -5582,7 +5874,8 @@ fn emit_object_init_iife(new_call: Expression, props: Vec<(String, Expression)>)
 
 /// Convert a dotted name like "MyApp.Foo.Bar" into a Member chain expression.
 fn build_dotted_expr(name: &str) -> Expression {
-    let parts: Vec<&str> = name.split('.').collect();
+    let normalized = strip_global_namespace_qualifier(name);
+    let parts: Vec<&str> = normalized.split('.').collect();
     if parts.len() == 1 {
         return Expression::ident(parts[0]);
     }
@@ -6402,6 +6695,7 @@ fn emit_dict_iife(
     args: Vec<Argument>,
     pairs: Vec<(Expression, Expression)>,
 ) -> ExprKind {
+    let type_hint = annotate_case_insensitive_ctor_type(type_name.clone(), &args);
     let new_dict = Expression::new(ExprKind::New {
         class: Box::new(Expression::ident(&type_name)),
         args,
@@ -6411,7 +6705,7 @@ fn emit_dict_iife(
         StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident("__d".into()),
-                type_hint: None,
+                type_hint: Some(type_hint),
                 init: Some(new_dict),
                 array_bounds: None,
                 with_events: false,
@@ -6454,17 +6748,17 @@ fn emit_dict_iife(
 
 /// IIFE-style lowering for `new HashSet<T> { v1, v2, ... }` — same
 /// shape as `emit_dict_iife` but adds single values rather than pairs.
-fn emit_set_iife(type_name: String, elements: Vec<Expression>) -> ExprKind {
+fn emit_set_iife(type_name: String, args: Vec<Argument>, elements: Vec<Expression>) -> ExprKind {
     let new_set = Expression::new(ExprKind::New {
         class: Box::new(Expression::ident(&type_name)),
-        args: vec![],
+        args: args.clone(),
     });
     let mut body: Vec<Statement> = Vec::new();
     body.push(Statement::with_span(
         StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident("__s".into()),
-                type_hint: None,
+                type_hint: Some(annotate_case_insensitive_ctor_type(type_name.clone(), &args)),
                 init: Some(new_set),
                 array_bounds: None,
                 with_events: false,
@@ -6490,6 +6784,60 @@ fn emit_set_iife(type_name: String, elements: Vec<Expression>) -> ExprKind {
     }
     body.push(Statement::with_span(
         StmtKind::Return(Some(Expression::ident("__s"))),
+        Span::default(),
+    ));
+    let lambda = Expression::new(ExprKind::Lambda {
+        params: vec![],
+        body: LambdaBody::Block(body),
+        is_async: false,
+        captures: Vec::new(),
+    });
+    ExprKind::Call {
+        callee: Box::new(lambda),
+        args: vec![],
+        optional: false,
+    }
+}
+
+/// IIFE-style lowering for `new List<T> { v1, v2, ... }` /
+/// `new ArrayList { v1, v2, ... }` — construct the real .NET list
+/// surface, populate it via `Add`, then return it.
+fn emit_list_iife(type_name: String, args: Vec<Argument>, elements: Vec<Expression>) -> ExprKind {
+    let new_list = Expression::new(ExprKind::New {
+        class: Box::new(Expression::ident(&type_name)),
+        args: args.clone(),
+    });
+    let mut body: Vec<Statement> = Vec::new();
+    body.push(Statement::with_span(
+        StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__l".into()),
+                type_hint: Some(annotate_case_insensitive_ctor_type(type_name.clone(), &args)),
+                init: Some(new_list),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        },
+        Span::default(),
+    ));
+    for v in elements {
+        let add_call = Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident("__l")),
+                field: "Add".into(),
+                null_safe: false,
+            })),
+            args: vec![Argument::positional(v)],
+            optional: false,
+        });
+        body.push(Statement::with_span(
+            StmtKind::Expr(add_call),
+            Span::default(),
+        ));
+    }
+    body.push(Statement::with_span(
+        StmtKind::Return(Some(Expression::ident("__l"))),
         Span::default(),
     ));
     let lambda = Expression::new(ExprKind::Lambda {
@@ -6689,6 +7037,38 @@ fn unquote(s: &str) -> String {
 /// `arr.Length` → `Call(__len__, [arr])`
 /// `list.Count` → `Call(__len__, [list])`
 fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
+    if let Some(path) = expr_dotted_name(&object) {
+        let normalized = path.trim();
+        if (normalized.eq_ignore_ascii_case("StringComparer")
+            || normalized.eq_ignore_ascii_case("System.StringComparer"))
+            && name.eq_ignore_ascii_case("OrdinalIgnoreCase")
+        {
+            return Expression::new(ExprKind::Lit(Literal::Str(
+                "__dotnet_stringcomparer_ordinalignorecase".into(),
+            )));
+        }
+        if (normalized.eq_ignore_ascii_case("StringComparer")
+            || normalized.eq_ignore_ascii_case("System.StringComparer"))
+            && name.eq_ignore_ascii_case("Ordinal")
+        {
+            return Expression::new(ExprKind::Lit(Literal::Str(
+                "__dotnet_stringcomparer_ordinal".into(),
+            )));
+        }
+        if normalized.contains("EqualityComparer<") && name.eq_ignore_ascii_case("Default") {
+            return Expression::new(ExprKind::Lit(Literal::Str(
+                "__dotnet_equalitycomparer_default".into(),
+            )));
+        }
+        if normalized.contains("Comparer<") && !normalized.contains("EqualityComparer<")
+            && name.eq_ignore_ascii_case("Default")
+        {
+            return Expression::new(ExprKind::Lit(Literal::Str(
+                "__dotnet_comparer_default".into(),
+            )));
+        }
+    }
+
     // typeof(T) emits a string literal `"System.<Name>"`. Resolve
     // `.Name` / `.FullName` access on such literals at compile time
     // so `typeof(int).Name` constant-folds to `"Int32"`.
@@ -6809,31 +7189,178 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
     // Instance-method rewrite: `a.CompareTo(b)` → `a < b ? -1 : a > b ? 1 : 0`
     // (works for strings AND numbers — same JS comparison semantics).
     if let ExprKind::Member { object, field, .. } = &callee.kind {
+        if field.eq_ignore_ascii_case("ThenBy") && args.len() == 1 {
+            if let ExprKind::Call { callee: prior_callee, args: prior_args, .. } = &object.kind {
+                if let ExprKind::Member { field: prior_field, .. } = &prior_callee.kind {
+                    if prior_field.eq_ignore_ascii_case("OrderBy") && prior_args.len() == 1 {
+                        let primary_selector = prior_args[0].value.clone();
+                        let secondary_selector = args[0].value.clone();
+                        let primary_cmp = compare_expr(
+                            invoke_selector(primary_selector.clone(), Expression::ident("left")),
+                            invoke_selector(primary_selector, Expression::ident("right")),
+                        );
+                        let secondary_cmp = compare_expr(
+                            invoke_selector(secondary_selector.clone(), Expression::ident("left")),
+                            invoke_selector(secondary_selector, Expression::ident("right")),
+                        );
+                        let comparator = Expression::new(ExprKind::Lambda {
+                            params: vec![
+                                Param {
+                                    name: "left".into(),
+                                    type_hint: None,
+                                    default: None,
+                                    pass_by: PassBy::Value,
+                                    is_rest: false,
+                                    is_kwargs: false,
+                                    is_optional: false,
+                                    is_nullable: false,
+                                },
+                                Param {
+                                    name: "right".into(),
+                                    type_hint: None,
+                                    default: None,
+                                    pass_by: PassBy::Value,
+                                    is_rest: false,
+                                    is_kwargs: false,
+                                    is_optional: false,
+                                    is_nullable: false,
+                                },
+                            ],
+                            body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Ternary {
+                                cond: Box::new(Expression::new(ExprKind::Binary {
+                                    op: BinOp::NotEq,
+                                    left: Box::new(primary_cmp.clone()),
+                                    right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
+                                })),
+                                then: Box::new(primary_cmp),
+                                else_: Box::new(secondary_cmp),
+                            }))),
+                            is_async: false,
+                            captures: Vec::new(),
+                        });
+                        return Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new((**object).clone()),
+                                field: "Sort".into(),
+                                null_safe: false,
+                            })),
+                            args: vec![Argument::positional(comparator)],
+                            optional: false,
+                        });
+                    }
+                }
+            }
+        }
+        if let Some(path) = expr_dotted_name(object) {
+            if (path.eq_ignore_ascii_case("Array") || path.eq_ignore_ascii_case("System.Array"))
+                && field.eq_ignore_ascii_case("Sort")
+                && args.len() == 2
+            {
+                if let ExprKind::Lit(Literal::Str(tag)) = &args[1].value.kind {
+                    if tag == "__dotnet_stringcomparer_ordinalignorecase"
+                        || tag == "__dotnet_stringcomparer_ordinal"
+                    {
+                        let ignore_case = tag.ends_with("ignorecase");
+                        return Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new(args[0].value.clone()),
+                                field: "Sort".into(),
+                                null_safe: false,
+                            })),
+                            args: vec![Argument::positional(build_string_comparer_lambda(ignore_case))],
+                            optional: false,
+                        });
+                    }
+                }
+            }
+        }
         if field == "CompareTo" && args.len() == 1 {
-            let a = (**object).clone();
-            let b = args[0].value.clone();
-            let lt = Expression::new(ExprKind::Binary {
-                op: BinOp::Lt, left: Box::new(a.clone()), right: Box::new(b.clone()),
-            });
-            let gt = Expression::new(ExprKind::Binary {
-                op: BinOp::Gt, left: Box::new(a), right: Box::new(b),
-            });
-            return Expression::new(ExprKind::Ternary {
-                cond: Box::new(lt),
-                then: Box::new(Expression::new(ExprKind::Lit(Literal::Int(-1)))),
-                else_: Box::new(Expression::new(ExprKind::Ternary {
-                    cond: Box::new(gt),
-                    then: Box::new(Expression::new(ExprKind::Lit(Literal::Int(1)))),
-                    else_: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
-                })),
-            });
+            return compare_expr((**object).clone(), args[0].value.clone());
         }
     }
     // Static method rewrites to canonical instance form
     if let ExprKind::Member { object, field, .. } = &callee.kind {
+        if let ExprKind::Lit(Literal::Str(tag)) = &object.kind {
+            if (tag == "__dotnet_stringcomparer_ordinalignorecase"
+                || tag == "__dotnet_stringcomparer_ordinal")
+                && field.eq_ignore_ascii_case("Equals")
+                && args.len() == 2
+            {
+                let ignore_case = tag.ends_with("ignorecase");
+                let left = if ignore_case {
+                    lower_case_expr(args[0].value.clone())
+                } else {
+                    args[0].value.clone()
+                };
+                let right = if ignore_case {
+                    lower_case_expr(args[1].value.clone())
+                } else {
+                    args[1].value.clone()
+                };
+                return Expression::new(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                });
+            }
+            if (tag == "__dotnet_stringcomparer_ordinalignorecase"
+                || tag == "__dotnet_stringcomparer_ordinal")
+                && field.eq_ignore_ascii_case("Compare")
+                && args.len() == 2
+            {
+                let ignore_case = tag.ends_with("ignorecase");
+                let left = if ignore_case {
+                    lower_case_expr(args[0].value.clone())
+                } else {
+                    args[0].value.clone()
+                };
+                let right = if ignore_case {
+                    lower_case_expr(args[1].value.clone())
+                } else {
+                    args[1].value.clone()
+                };
+                return compare_expr(left, right);
+            }
+            if tag == "__dotnet_comparer_default"
+                && field.eq_ignore_ascii_case("Compare")
+                && args.len() == 2
+            {
+                return compare_expr(args[0].value.clone(), args[1].value.clone());
+            }
+            if tag == "__dotnet_equalitycomparer_default"
+                && field.eq_ignore_ascii_case("Equals")
+                && args.len() == 2
+            {
+                return Expression::new(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(args[0].value.clone()),
+                    right: Box::new(args[1].value.clone()),
+                });
+            }
+        }
+        if let Some(path) = expr_dotted_name(object) {
+            if (path.eq_ignore_ascii_case("string") || path.eq_ignore_ascii_case("System.String"))
+                && field.eq_ignore_ascii_case("Compare")
+                && (args.len() == 2 || args.len() == 3)
+            {
+                let ignore_case = args.get(2).map_or(false, |arg| matches!(arg.value.kind, ExprKind::Lit(Literal::Bool(true))));
+                let left = if ignore_case {
+                    lower_case_expr(args[0].value.clone())
+                } else {
+                    args[0].value.clone()
+                };
+                let right = if ignore_case {
+                    lower_case_expr(args[1].value.clone())
+                } else {
+                    args[1].value.clone()
+                };
+                return compare_expr(left, right);
+            }
+        }
         if let ExprKind::Ident(obj_name) = &object.kind {
             // string.Join(sep, arr) → arr.join(sep)
-            if obj_name.eq_ignore_ascii_case("string")
+            if (obj_name.eq_ignore_ascii_case("string")
+                || obj_name.eq_ignore_ascii_case("System.String"))
                && field.eq_ignore_ascii_case("Join")
                && args.len() == 2
             {
@@ -6852,7 +7379,8 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
             // string.Equals(a, b, StringComparison.OrdinalIgnoreCase)
             //   → a.toLowerCase() === b.toLowerCase()
             // string.Equals(a, b) → a === b
-            if obj_name.eq_ignore_ascii_case("string")
+            if (obj_name.eq_ignore_ascii_case("string")
+                || obj_name.eq_ignore_ascii_case("System.String"))
                 && field.eq_ignore_ascii_case("Equals")
                 && (args.len() == 2 || args.len() == 3)
             {
@@ -6922,9 +7450,111 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
             // emit targets — no walker rewrite required.
         }
     }
+    if let ExprKind::Ident(name) = &callee.kind {
+        if let Some((prefix, field)) = name.rsplit_once('.') {
+            if (prefix.eq_ignore_ascii_case("string") || prefix.eq_ignore_ascii_case("System.String"))
+                && field.eq_ignore_ascii_case("Join")
+                && args.len() == 2
+            {
+                let sep = args[0].value.clone();
+                let arr = args[1].value.clone();
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(arr),
+                        field: "join".to_string(),
+                        null_safe: false,
+                    })),
+                    args: vec![Argument::positional(sep)],
+                    optional: false,
+                });
+            }
+        }
+    }
     Expression::new(ExprKind::Call {
         callee: Box::new(callee),
         args,
+        optional: false,
+    })
+}
+
+fn lower_case_expr(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(expr),
+            field: "toLowerCase".into(),
+            null_safe: false,
+        })),
+        args: vec![],
+        optional: false,
+    })
+}
+
+fn compare_expr(left: Expression, right: Expression) -> Expression {
+    let lt = Expression::new(ExprKind::Binary {
+        op: BinOp::Lt,
+        left: Box::new(left.clone()),
+        right: Box::new(right.clone()),
+    });
+    let gt = Expression::new(ExprKind::Binary {
+        op: BinOp::Gt,
+        left: Box::new(left),
+        right: Box::new(right),
+    });
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(lt),
+        then: Box::new(Expression::new(ExprKind::Lit(Literal::Int(-1)))),
+        else_: Box::new(Expression::new(ExprKind::Ternary {
+            cond: Box::new(gt),
+            then: Box::new(Expression::new(ExprKind::Lit(Literal::Int(1)))),
+            else_: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
+        })),
+    })
+}
+
+fn build_string_comparer_lambda(ignore_case: bool) -> Expression {
+    let left_expr = if ignore_case {
+        lower_case_expr(Expression::ident("left"))
+    } else {
+        Expression::ident("left")
+    };
+    let right_expr = if ignore_case {
+        lower_case_expr(Expression::ident("right"))
+    } else {
+        Expression::ident("right")
+    };
+    Expression::new(ExprKind::Lambda {
+        params: vec![
+            Param {
+                name: "left".into(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            },
+            Param {
+                name: "right".into(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            },
+        ],
+        body: LambdaBody::Expr(Box::new(compare_expr(left_expr, right_expr))),
+        is_async: false,
+        captures: Vec::new(),
+    })
+}
+
+fn invoke_selector(selector: Expression, arg: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(selector),
+        args: vec![Argument::positional(arg)],
         optional: false,
     })
 }

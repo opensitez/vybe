@@ -574,9 +574,43 @@ impl Compiler {
                     return Ok(());
                 }
 
-                self.compile_expr(object)?;
+                let is_csharp_len_accessor = matches!(self.profile.name.as_str(), "csharp" | "vb")
+                    && matches!(field.as_str(), "Length" | "Count")
+                    && !matches!(
+                        &object.kind,
+                        ExprKind::Ident(name)
+                            if name.chars().next().map_or(false, |c| c.is_ascii_uppercase())
+                    );
 
-                if *null_safe {
+                if *null_safe && is_csharp_len_accessor {
+                    self.compile_expr(object)?;
+                    self.emit(Op::DUP);
+                    self.emit(Op::REF_IS_NULL);
+                    let non_null = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit(Op::DROP);
+                    self.emit(Op::NULL);
+                    let end = self.emit_jump(Op::BR);
+                    self.patch_jump(non_null);
+                    common::collections::emit_len(&mut self.chunks, self.current, self.line);
+                    self.patch_jump(end);
+                    return Ok(());
+                } else {
+                    self.compile_expr(object)?;
+                }
+
+                if *null_safe && matches!(self.profile.name.as_str(), "csharp" | "vb") && !is_csharp_len_accessor {
+                    self.emit(Op::DUP);
+                    self.emit(Op::REF_IS_NULL);
+                    let non_null = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit(Op::DROP);
+                    self.emit(Op::NULL);
+                    let end = self.emit_jump(Op::BR);
+                    self.patch_jump(non_null);
+                    let field_name = self.canon(field);
+                    let idx = self.str_const(&field_name);
+                    self.emit_u16(Op::STRUCT_GET, idx);
+                    self.patch_jump(end);
+                } else if *null_safe {
                     // ?. — null-safe access. PHP `?->` short-circuits to
                     // null whenever the receiver isn't an Object. That
                     // also catches the "called a method on a string"
@@ -779,6 +813,18 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, obj_slot);
                     self.emit(Op::DROP);
 
+                    let null_safe_end = if *null_safe {
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit(Op::REF_IS_NULL);
+                        let non_null = self.emit_jump(Op::BR_IF_FALSE);
+                        self.emit(Op::NULL);
+                        let end = self.emit_jump(Op::BR);
+                        self.patch_jump(non_null);
+                        Some(end)
+                    } else {
+                        None
+                    };
+
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     let getter_key = self.str_const("__get___index__");
                     self.emit_u16(Op::STRUCT_GET, getter_key);
@@ -792,18 +838,21 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, getter_slot);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    self.compile_expr(index)?;
+                    self.compile_collection_key(object, index)?;
                     self.emit_u8(Op::CALL_REF, 2);
                     let done = self.emit_jump(Op::BR);
 
                     self.patch_jump(fallback);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    self.compile_expr(index)?;
+                    self.compile_collection_key(object, index)?;
                     if self.profile.negative_index_wraps {
                         self.emit_negative_index_wrap();
                     }
                     { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
                     self.patch_jump(done);
+                    if let Some(end) = null_safe_end {
+                        self.patch_jump(end);
+                    }
                 } else {
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
@@ -983,6 +1032,30 @@ impl Compiler {
                         self.emit_const(Value::String(Arc::from(proper_name.as_str())));
                         let stamp_idx = self.import("vybe:types", "__stamp_type");
                         self.emit_host_call(stamp_idx, 2);
+
+                        // .NET List / ArrayList instance calls like `list.Sort()`
+                        // should stay on the shared compare-aware frontend path
+                        // instead of falling through to the runtime collection
+                        // vtable's raw host sort mapping.
+                        let bare_proper_name = proper_name
+                            .split('<')
+                            .next()
+                            .map(str::trim)
+                            .unwrap_or(proper_name.as_str());
+                        if matches!(bare_proper_name, "List" | "ArrayList") {
+                            let sort_global = self.str_const("__vybe_sort_in_place");
+                            let sort_key = self.str_const("sort");
+                            self.emit(Op::DUP);
+                            self.emit_u16(Op::GLOBAL_GET, sort_global);
+                            self.emit_u16(Op::STRUCT_SET, sort_key);
+                            self.emit(Op::DROP);
+
+                            let sort_pascal_key = self.str_const("Sort");
+                            self.emit(Op::DUP);
+                            self.emit_u16(Op::GLOBAL_GET, sort_global);
+                            self.emit_u16(Op::STRUCT_SET, sort_pascal_key);
+                            self.emit(Op::DROP);
+                        }
                         return Ok(());
                     }
 
@@ -1012,6 +1085,21 @@ impl Compiler {
                         self.emit_u16(Op::GLOBAL_GET, ctor_idx);
                         for a in args { self.compile_expr(&a.value)?; }
                         self.emit_u8(Op::CALL_REF, args.len() as u8);
+
+                        if bare_str.eq_ignore_ascii_case("list") || bare_str.eq_ignore_ascii_case("arraylist") {
+                            let sort_global = self.str_const("__vybe_sort_in_place");
+                            let sort_key = self.str_const("sort");
+                            self.emit(Op::DUP);
+                            self.emit_u16(Op::GLOBAL_GET, sort_global);
+                            self.emit_u16(Op::STRUCT_SET, sort_key);
+                            self.emit(Op::DROP);
+
+                            let sort_pascal_key = self.str_const("Sort");
+                            self.emit(Op::DUP);
+                            self.emit_u16(Op::GLOBAL_GET, sort_global);
+                            self.emit_u16(Op::STRUCT_SET, sort_pascal_key);
+                            self.emit(Op::DROP);
+                        }
                         return Ok(());
                     }
                 }

@@ -596,6 +596,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         interfaces: Vec::new(),
         members,
         modifiers: ClassModifiers::default(),
+        decorators: vec![],
     };
 
     if static_init_stmts.is_empty() && pre_class_stmts.is_empty() {

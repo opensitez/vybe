@@ -28,7 +28,9 @@ using_directive_body = { using_static_directive | using_alias_directive | dotted
 using_static_directive = { "static" ~ dotted_name }
 using_alias_directive = { ident_name ~ "=" ~ type_name }
 
-dotted_name = @{ ident_name ~ ("." ~ ident_name)* }
+global_qualifier = @{ "global::" }
+global_qualified_name = @{ global_qualifier ~ ident_name ~ ("." ~ ident_name)* }
+dotted_name = @{ global_qualifier? ~ ident_name ~ ("." ~ ident_name)* }
 
 // ── Namespace ───────────────────────────────────────────────────────────────
 
@@ -292,7 +294,7 @@ statement = _{
 // Local / top-level function. Same shape as a class method but lives
 // in a statement context. Walker emits `StmtKind::FunctionDecl`.
 local_function_decl = {
-    type_name ~ ident_name ~ generic_params? ~ "(" ~ param_list? ~ ")" ~
+    class_modifiers ~ type_name ~ ident_name ~ generic_params? ~ "(" ~ param_list? ~ ")" ~
         where_clauses? ~ (block_statement | expression_body)
 }
 
@@ -675,6 +677,7 @@ initializer_member = { ident_name ~ "=" ~ expression }
 
 call_chain = {
     "?." ~ ident_or_keyword                              // null-conditional member
+    | "?[" ~ index_expression ~ "]"                    // null-conditional indexer
     | "(" ~ argument_list? ~ ")"                          // call
     | "." ~ ident_or_keyword ~ generic_type_args?         // member access
     | "[" ~ index_expression ~ "]"                        // index / range / from-end
@@ -735,6 +738,7 @@ primary = {
     | string_literal
     | primitive_type_ident
     | generic_type_expr
+    | global_qualified_name
     | ident_name
 }
 
@@ -835,8 +839,8 @@ array_rank = { "[" ~ ","* ~ "]" }
 param_list = { param ~ ("," ~ param)* ~ ","? }
 
 param = {
-    param_modifier? ~ type_name ~ ident_name ~ ("=" ~ expression)?
-    | param_modifier? ~ ident_name ~ ("=" ~ expression)?
+    attribute_list* ~ param_modifier? ~ type_name ~ ident_name ~ ("=" ~ expression)?
+    | attribute_list* ~ param_modifier? ~ ident_name ~ ("=" ~ expression)?
 }
 
 param_modifier = { "params" | "ref" | "out" | "this" }

@@ -285,9 +285,11 @@ pub fn emit_fill(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_import_call(chunks, current, "vybe:js-array", "fill", 4, line);
 }
 
-/// Array sort (in-place). Stack: [array] → [array] via `ecma:array.sort`.
+/// Array sort (in-place). Stack: [array] → [array] via the shared
+/// `__vybe_sort_in_place` helper so language-level compare semantics
+/// stay aligned across collection surfaces.
 pub fn emit_sort(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "ecma:array", "sort", 1, line);
+    emit_stdlib_call(chunks, current, "__vybe_sort_in_place", 1, line);
 }
 
 /// Array lastIndexOf. Stack: [array, value] → [i32] via `ecma:array.lastIndexOf`.

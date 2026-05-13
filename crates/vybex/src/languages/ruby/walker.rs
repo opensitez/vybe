@@ -287,6 +287,7 @@ fn walk_class_def(pair: Pair<Rule>) -> Result<StmtKind, String> {
         interfaces: Vec::new(),
         members,
         modifiers: ClassModifiers::default(),
+        decorators: vec![],
     })
 }
 

@@ -485,6 +485,7 @@ fn synthesize_exception_class() -> Statement {
                 },
             ],
             modifiers: ClassModifiers::default(),
+            decorators: vec![],
         },
         span,
     )
@@ -498,6 +499,7 @@ fn synthesize_tinterfacedobject_class() -> Statement {
             interfaces: Vec::new(),
             members: Vec::new(),
             modifiers: ClassModifiers::default(),
+            decorators: vec![],
         },
         Span::default(),
     )
@@ -1195,6 +1197,7 @@ fn walk_class_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statement
         interfaces: Vec::new(),
         members,
         modifiers: ClassModifiers::default(),
+        decorators: vec![],
     }, span))
 }
 
@@ -1216,6 +1219,7 @@ fn walk_class_helper_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<St
         interfaces: Vec::new(),
         members,
         modifiers: ClassModifiers::default(),
+        decorators: vec![],
     }, span))
 }
 
@@ -1253,6 +1257,7 @@ fn walk_record_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statemen
         interfaces: Vec::new(),
         members,
         visibility: Visibility::Public,
+        decorators: vec![],
     }, span))
 }
 
@@ -1273,6 +1278,7 @@ fn walk_record_helper_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<S
         interfaces: vec![format!("{}{}", PASCAL_HELPER_TARGET_PREFIX, target)],
         members,
         visibility: Visibility::Public,
+        decorators: vec![],
     }, span))
 }
 
@@ -1329,6 +1335,7 @@ fn walk_interface_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<State
         name: name.to_string(),
         parents,
         members,
+        decorators: vec![],
     }, span))
 }
 
@@ -1426,6 +1433,7 @@ fn walk_enum_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statement,
         backing_type: None,
         interfaces: Vec::new(),
         body_members: Vec::new(),
+        decorators: vec![],
     }, span))
 }
 

@@ -966,6 +966,7 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
             is_sealed: is_not_inheritable,
             is_static: false,
         },
+        decorators: vec![],
     }, span))
 }
 
@@ -2878,6 +2879,7 @@ fn parse_enum_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         backing_type: None,
         interfaces: Vec::new(),
         body_members: Vec::new(),
+        decorators: vec![],
     }, span))
 }
 
@@ -3216,7 +3218,7 @@ fn parse_interface_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         }
     }
 
-    Ok(Statement::with_span(StmtKind::InterfaceDecl { name, parents, members }, span))
+    Ok(Statement::with_span(StmtKind::InterfaceDecl { name, parents, members, decorators: vec![] }, span))
 }
 
 fn parse_structure_decl(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -3301,7 +3303,7 @@ fn parse_structure_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         }
     }
 
-    Ok(Statement::with_span(StmtKind::StructDecl { name, interfaces, members, visibility }, span))
+    Ok(Statement::with_span(StmtKind::StructDecl { name, interfaces, members, visibility, decorators: vec![] }, span))
 }
 
 fn parse_delegate_decl(pair: Pair<Rule>, is_sub: bool) -> Result<Statement, String> {

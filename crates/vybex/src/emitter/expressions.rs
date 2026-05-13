@@ -357,13 +357,37 @@ pub fn emit_rich_compare_locals(chunk: &mut Chunk, left_slot: u16, right_slot: u
     chunk.emit_op_u8(Op::CALL_REF, 2, line);
     let done = chunk.emit_jump(Op::BR, line);
 
-    // Not found: drop null, use primitive opcode
+    // Not found: try compare-style methods like C# CompareTo / Ruby <=>.
     chunk.patch_jump(is_null);
     chunk.emit_op(Op::DROP, line); // drop null from dup
     chunk.emit_op(Op::DROP, line); // drop null from struct_get
+
+    let mut compare_done: Vec<usize> = Vec::new();
+    for method_name in ["compare", "CompareTo", "compareTo", "__cmp__", "<=>"] {
+        let method_key = chunk.add_constant(Value::String(Arc::from(method_name)));
+        chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+        chunk.emit_op_u16(Op::STRUCT_GET, method_key, line);
+        chunk.emit_op(Op::DUP, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+        let compare_missing = chunk.emit_jump(Op::BR_IF_TRUE, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
+        chunk.emit_op_u8(Op::CALL_REF, 2, line);
+        chunk.emit_op(Op::I32_CONST_0, line);
+        chunk.emit_op(fallback_op, line);
+        compare_done.push(chunk.emit_jump(Op::BR, line));
+        chunk.patch_jump(compare_missing);
+        chunk.emit_op(Op::DROP, line);
+        chunk.emit_op(Op::DROP, line);
+    }
+
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
     chunk.emit_op(fallback_op, line);
+
+    for jump in compare_done {
+        chunk.patch_jump(jump);
+    }
 
     chunk.patch_jump(done);
 }

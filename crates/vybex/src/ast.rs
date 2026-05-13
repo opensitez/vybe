@@ -118,12 +118,14 @@ pub enum StmtKind {
         interfaces: Vec<String>,
         members: Vec<ClassMember>,
         modifiers: ClassModifiers,
+        decorators: Vec<Expression>,
     },
 
     InterfaceDecl {
         name: String,
         parents: Vec<String>,
         members: Vec<InterfaceMember>,
+        decorators: Vec<Expression>,
     },
 
     EnumDecl {
@@ -134,6 +136,7 @@ pub enum StmtKind {
         backing_type: Option<String>,
         interfaces: Vec<String>,
         body_members: Vec<ClassMember>,
+        decorators: Vec<Expression>,
     },
 
     StructDecl {
@@ -141,6 +144,7 @@ pub enum StmtKind {
         interfaces: Vec<String>,
         members: Vec<ClassMember>,
         visibility: Visibility,
+        decorators: Vec<Expression>,
     },
 
     ModuleDecl {

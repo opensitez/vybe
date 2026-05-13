@@ -67,6 +67,56 @@ struct PendingClass {
     statics: Vec<(String, usize)>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AttributeUsageMetadata {
+    pub allow_multiple: bool,
+    pub inherited: bool,
+}
+
+impl Default for AttributeUsageMetadata {
+    fn default() -> Self {
+        Self {
+            allow_multiple: false,
+            inherited: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ReflectionParamMetadata {
+    pub name: String,
+    pub decorators: Vec<Expression>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ReflectionMethodMetadata {
+    pub decorators: Vec<Expression>,
+    pub params: Vec<ReflectionParamMetadata>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ReflectionMemberMetadata {
+    pub decorators: Vec<Expression>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ReflectionTypeMetadata {
+    pub parents: Vec<String>,
+    pub decorators: Vec<Expression>,
+    pub methods: HashMap<String, ReflectionMethodMetadata>,
+    pub properties: HashMap<String, ReflectionMemberMetadata>,
+    pub fields: HashMap<String, ReflectionMemberMetadata>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ReflectionBinding {
+    Type(String),
+    Method { type_name: String, method_name: String },
+    Property { type_name: String, property_name: String },
+    Field { type_name: String, field_name: String },
+    Parameter { type_name: String, method_name: String, index: usize },
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Compiler
 // ════════════════════════════════════════════════════════════════════════════
@@ -105,6 +155,9 @@ pub struct Compiler {
     /// Reverse enum lookup: enum type -> underlying integer -> member name.
     enum_value_names: HashMap<String, HashMap<i64, String>>,
     enum_flags: HashSet<String>,
+    pub(crate) reflection_types: HashMap<String, ReflectionTypeMetadata>,
+    pub(crate) attribute_usage: HashMap<String, AttributeUsageMetadata>,
+    pub(crate) reflection_bindings: HashMap<String, ReflectionBinding>,
     case_sensitive: bool,
     pub(crate) profile: LanguageProfile,
     current_func_name: Option<String>,
@@ -337,6 +390,9 @@ impl Compiler {
             enum_members: HashMap::new(),
             enum_value_names: HashMap::new(),
             enum_flags: HashSet::new(),
+            reflection_types: HashMap::new(),
+            attribute_usage: HashMap::new(),
+            reflection_bindings: HashMap::new(),
             case_sensitive: profile.case_sensitive,
             profile,
             current_func_name: None,
@@ -439,6 +495,8 @@ impl Compiler {
             module.body.clone()
         };
 
+        self.collect_reflection_metadata(&merged_body);
+
         // Multi-value pre-scan: any function whose every explicit `Return`
         // is a same-arity tuple literal is a candidate for the WASM
         // multi-value ABI. We only opt in when the language profile
@@ -448,6 +506,15 @@ impl Compiler {
         }
 
         for stmt in &merged_body {
+            if matches!(&stmt.kind, StmtKind::FunctionDecl { .. }) {
+                self.compile_stmt(stmt)?;
+            }
+        }
+
+        for stmt in &merged_body {
+            if matches!(&stmt.kind, StmtKind::FunctionDecl { .. }) {
+                continue;
+            }
             self.compile_stmt(stmt)?;
         }
 
@@ -603,6 +670,286 @@ impl Compiler {
                 | crate::ast::ImportKind::Simple { .. } => {}
             }
         }
+    }
+
+    fn collect_reflection_metadata(&mut self, body: &[Statement]) {
+        self.reflection_types.clear();
+        self.attribute_usage.clear();
+        self.reflection_bindings.clear();
+        for stmt in body {
+            self.collect_reflection_stmt(stmt, None);
+        }
+    }
+
+    fn collect_reflection_stmt(&mut self, stmt: &Statement, parent_runtime_name: Option<&str>) {
+        match &stmt.kind {
+            StmtKind::ClassDecl {
+                name,
+                parents,
+                members,
+                decorators,
+                ..
+            } => {
+                let runtime_name = self.reflection_runtime_type_name(name, parent_runtime_name);
+                self.record_reflection_type(
+                    &runtime_name,
+                    parents,
+                    decorators,
+                    members,
+                );
+            }
+            StmtKind::StructDecl {
+                name,
+                interfaces,
+                members,
+                decorators,
+                ..
+            } => {
+                let runtime_name = self.reflection_runtime_type_name(name, parent_runtime_name);
+                self.record_reflection_type(
+                    &runtime_name,
+                    interfaces,
+                    decorators,
+                    members,
+                );
+            }
+            StmtKind::InterfaceDecl {
+                name,
+                parents,
+                decorators,
+                ..
+            } => {
+                let runtime_name = self.reflection_runtime_type_name(name, parent_runtime_name);
+                let metadata = ReflectionTypeMetadata {
+                    parents: parents
+                    .iter()
+                    .map(|parent| self.reflection_runtime_type_name(parent, None))
+                    .collect(),
+                    decorators: decorators.clone(),
+                    ..ReflectionTypeMetadata::default()
+                };
+                self.reflection_types.insert(runtime_name.clone(), metadata);
+                let usage = self.extract_attribute_usage(decorators);
+                self.attribute_usage.insert(runtime_name, usage);
+            }
+            StmtKind::EnumDecl {
+                name,
+                interfaces,
+                decorators,
+                body_members,
+                ..
+            } => {
+                let runtime_name = self.reflection_runtime_type_name(name, parent_runtime_name);
+                self.record_reflection_type(
+                    &runtime_name,
+                    interfaces,
+                    decorators,
+                    body_members,
+                );
+            }
+            StmtKind::NamespaceDecl { name, body } => {
+                let namespace_runtime = self.reflection_runtime_type_name(name, parent_runtime_name);
+                for nested in body {
+                    self.collect_reflection_stmt(nested, Some(namespace_runtime.as_str()));
+                }
+            }
+            StmtKind::Block(body) => {
+                for nested in body {
+                    self.collect_reflection_stmt(nested, parent_runtime_name);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn record_reflection_type(
+        &mut self,
+        runtime_name: &str,
+        parents: &[String],
+        decorators: &[Expression],
+        members: &[ClassMember],
+    ) {
+        let mut metadata = ReflectionTypeMetadata {
+            parents: parents
+            .iter()
+            .map(|parent| self.reflection_runtime_type_name(parent, None))
+            .collect(),
+            decorators: decorators.to_vec(),
+            ..ReflectionTypeMetadata::default()
+        };
+        let mut nested_types: Vec<&Statement> = Vec::new();
+
+        for member in members {
+            match member {
+                ClassMember::Method(stmt) => {
+                    if let StmtKind::FunctionDecl {
+                        name,
+                        params,
+                        modifiers,
+                        ..
+                    } = &stmt.kind
+                    {
+                        let mut method_decorators = Vec::new();
+                        let mut param_decorators: HashMap<usize, Vec<Expression>> = HashMap::new();
+                        for decorator in &modifiers.decorators {
+                            if let Some((index, attr)) = self.unpack_param_decorator_carrier(decorator) {
+                                param_decorators.entry(index).or_default().push(attr);
+                            } else {
+                                method_decorators.push(decorator.clone());
+                            }
+                        }
+                        metadata.methods.insert(
+                            name.clone(),
+                            ReflectionMethodMetadata {
+                                decorators: method_decorators,
+                                params: params
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(index, param)| ReflectionParamMetadata {
+                                        name: param.name.clone(),
+                                        decorators: param_decorators.remove(&index).unwrap_or_default(),
+                                    })
+                                    .collect(),
+                            },
+                        );
+                    }
+                }
+                ClassMember::Property {
+                    name,
+                    modifiers,
+                    ..
+                } => {
+                    metadata.properties.insert(
+                        name.clone(),
+                        ReflectionMemberMetadata {
+                            decorators: modifiers.decorators.clone(),
+                        },
+                    );
+                }
+                ClassMember::Field {
+                    name,
+                    modifiers,
+                    ..
+                } => {
+                    metadata.fields.insert(
+                        name.clone(),
+                        ReflectionMemberMetadata {
+                            decorators: modifiers.decorators.clone(),
+                        },
+                    );
+                }
+                ClassMember::NestedType(stmt) => {
+                    nested_types.push(stmt);
+                }
+                _ => {}
+            }
+        }
+
+        self.reflection_types.insert(runtime_name.to_string(), metadata);
+        let usage = self.extract_attribute_usage(decorators);
+        self.attribute_usage.insert(runtime_name.to_string(), usage);
+        for stmt in nested_types {
+            self.collect_reflection_stmt(stmt, Some(runtime_name));
+        }
+    }
+
+    fn extract_attribute_usage(&self, decorators: &[Expression]) -> AttributeUsageMetadata {
+        let mut usage = AttributeUsageMetadata::default();
+
+        for decorator in decorators {
+            let ExprKind::New { args, .. } = &decorator.kind else {
+                continue;
+            };
+            let Some(attr_type) = self.reflection_attribute_type_name(decorator) else {
+                continue;
+            };
+            if !attr_type.eq_ignore_ascii_case("System.AttributeUsageAttribute") {
+                continue;
+            }
+
+            for arg in args {
+                match arg.name.as_deref() {
+                    Some("AllowMultiple") => {
+                        usage.allow_multiple = matches!(arg.value.kind, ExprKind::Lit(Literal::Bool(true)));
+                    }
+                    Some("Inherited") => {
+                        usage.inherited = matches!(arg.value.kind, ExprKind::Lit(Literal::Bool(true)));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        usage
+    }
+
+    pub(crate) fn reflection_runtime_type_name(&self, type_name: &str, parent_runtime_name: Option<&str>) -> String {
+        let trimmed = type_name.trim().trim_end_matches('?').trim();
+        let mut without_generics = String::with_capacity(trimmed.len());
+        let mut depth = 0usize;
+        for ch in trimmed.chars() {
+            match ch {
+                '<' => depth += 1,
+                '>' => depth = depth.saturating_sub(1),
+                _ if depth == 0 => without_generics.push(ch),
+                _ => {}
+            }
+        }
+        let normalized = without_generics.trim();
+        if let Some(parent) = parent_runtime_name {
+            let leaf = normalized.rsplit('.').next().unwrap_or(normalized).trim();
+            return format!("{parent}.{leaf}");
+        }
+        if normalized.starts_with("System.") {
+            normalized.to_string()
+        } else {
+            format!("System.{}", normalized)
+        }
+    }
+
+    pub(crate) fn reflection_attribute_type_name(&self, expr: &Expression) -> Option<String> {
+        let class = match &expr.kind {
+            ExprKind::New { class, .. } => class.as_ref(),
+            _ => return None,
+        };
+
+        let raw_name = match &class.kind {
+            ExprKind::Ident(name) => name.clone(),
+            ExprKind::Member { .. } => self.flatten_member_chain(class).join("."),
+            _ => return None,
+        };
+
+        if !raw_name.contains('.') {
+            let mut matches: Vec<String> = self
+                .reflection_types
+                .keys()
+                .filter(|known| known.rsplit('.').next().is_some_and(|leaf| leaf == raw_name))
+                .cloned()
+                .collect();
+            matches.sort();
+            matches.dedup();
+            if matches.len() == 1 {
+                return matches.into_iter().next();
+            }
+        }
+
+        Some(self.reflection_runtime_type_name(&raw_name, None))
+    }
+
+    fn unpack_param_decorator_carrier(&self, expr: &Expression) -> Option<(usize, Expression)> {
+        let ExprKind::New { class, args } = &expr.kind else {
+            return None;
+        };
+        let ExprKind::Ident(name) = &class.kind else {
+            return None;
+        };
+        if name != "__vybe_param_attribute" || args.len() != 2 {
+            return None;
+        }
+        let ExprKind::Lit(Literal::Int(index)) = args[0].value.kind else {
+            return None;
+        };
+        Some((index.max(0) as usize, args[1].value.clone()))
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -1255,6 +1602,31 @@ impl Compiler {
         Self::normalize_type_hint(type_hint).contains("sortedset")
     }
 
+    fn is_case_insensitive_string_key_type_hint(type_hint: &str) -> bool {
+        Self::normalize_type_hint(type_hint).contains("#ordinalignorecase")
+    }
+
+    fn expr_uses_case_insensitive_string_keys(&self, expr: &Expression) -> bool {
+        match &expr.kind {
+            ExprKind::Ident(name) => self
+                .lookup_var_type_hint(name)
+                .is_some_and(Self::is_case_insensitive_string_key_type_hint),
+            _ => self
+                .infer_expr_type_hint(expr)
+                .as_deref()
+                .is_some_and(Self::is_case_insensitive_string_key_type_hint),
+        }
+    }
+
+    fn compile_collection_key(&mut self, owner: &Expression, key: &Expression) -> Result<(), String> {
+        self.compile_expr(key)?;
+        if self.expr_uses_case_insensitive_string_keys(owner) {
+            let line = self.line;
+            common::strings::emit_to_lower(self.chunk(), line);
+        }
+        Ok(())
+    }
+
     pub(super) fn is_callable_type_hint(type_hint: &str) -> bool {
         let normalized = Self::normalize_type_hint(type_hint);
         normalized.starts_with("func")
@@ -1890,6 +2262,16 @@ impl Compiler {
 
             // ── Assignment ──────────────────────────────────────────────
             StmtKind::Assign { targets, value } => {
+                if targets.len() == 1 {
+                    if let ExprKind::Ident(name) = &targets[0].kind {
+                        let binding_key = self.canon(name);
+                        if let Some(binding) = self.resolve_reflection_binding_expr(value) {
+                            self.reflection_bindings.insert(binding_key, binding);
+                        } else {
+                            self.reflection_bindings.remove(&binding_key);
+                        }
+                    }
+                }
                 if (self.profile.name == "csharp" || self.profile.name == "vb") && targets.len() == 1 {
                     if let ExprKind::Binary { op, left, right } = &value.kind {
                         if self.assign_target_matches_expr(&targets[0], left)
@@ -1980,6 +2362,23 @@ impl Compiler {
                         }
                         _ => {}
                     }
+                }
+                if matches!(op, CompoundOp::NullCoalesce) {
+                    self.compile_expr(target)?;
+                    let current_slot = self.define_local("__null_coalesce_current");
+                    self.emit_u16(Op::LOCAL_SET, current_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, current_slot);
+                    self.emit(Op::REF_IS_NULL);
+                    let keep_current = self.emit_jump(Op::BR_IF_FALSE);
+                    self.compile_expr(value)?;
+                    let done = self.emit_jump(Op::BR);
+                    self.patch_jump(keep_current);
+                    self.emit_u16(Op::LOCAL_GET, current_slot);
+                    self.patch_jump(done);
+                    self.compile_assign_target(target)?;
+                    return Ok(());
                 }
                 // Load current value
                 self.compile_expr(target)?;
@@ -2907,7 +3306,7 @@ impl Compiler {
             // works without import). Also builds namespace struct for qualified access.
             StmtKind::NamespaceDecl { name, body } => {
                 let ns_name = self.canon(name);
-                let mut member_names: Vec<String> = Vec::new();
+                let mut member_names: Vec<(String, String, bool)> = Vec::new();
                 for s in body {
                     // Track top-level type/function names declared in this namespace
                     match &s.kind {
@@ -2915,22 +3314,46 @@ impl Compiler {
                         | StmtKind::StructDecl { name: cn, .. }
                         | StmtKind::EnumDecl { name: cn, .. }
                         | StmtKind::InterfaceDecl { name: cn, .. }
-                        | StmtKind::ModuleDecl { name: cn, .. }
-                        | StmtKind::FunctionDecl { name: cn, .. } => {
-                            member_names.push(self.canon(cn));
+                        | StmtKind::ModuleDecl { name: cn, .. } => {
+                            let member_name = self.canon(cn);
+                            member_names.push((
+                                member_name.clone(),
+                                format!("{ns_name}.{member_name}"),
+                                true,
+                            ));
+                        }
+                        StmtKind::FunctionDecl { name: cn, .. } => {
+                            let member_name = self.canon(cn);
+                            member_names.push((
+                                member_name.clone(),
+                                format!("{ns_name}.{member_name}"),
+                                false,
+                            ));
                         }
                         _ => {}
                     }
                     self.compile_stmt(s)?;
                 }
 
+                for (member_name, qualified_name, is_type_like) in &member_names {
+                    let source_idx = self.str_const(member_name);
+                    let qualified_idx = self.str_const(qualified_name);
+                    self.emit_u16(Op::GLOBAL_GET, source_idx);
+                    self.emit_u16(Op::GLOBAL_SET, qualified_idx);
+                    self.emit(Op::DROP);
+                    self.defined_globals.insert(qualified_name.clone());
+                    if *is_type_like {
+                        self.defined_classes.insert(qualified_name.clone());
+                    }
+                }
+
                 // Build namespace struct
                 self.emit_u16(Op::STRUCT_NEW, 0);
-                for mn in &member_names {
+                for (member_name, qualified_name, _) in &member_names {
                     self.emit(Op::DUP);
-                    let gidx = self.str_const(mn);
+                    let gidx = self.str_const(qualified_name);
                     self.emit_u16(Op::GLOBAL_GET, gidx);
-                    let key = self.str_const(mn);
+                    let key = self.str_const(member_name);
                     self.emit_u16(Op::STRUCT_SET, key);
                     self.emit(Op::DROP);
                 }
@@ -2938,6 +3361,32 @@ impl Compiler {
                 self.emit_u16(Op::GLOBAL_SET, ns_idx);
                 self.emit(Op::DROP);
                 self.defined_globals.insert(ns_name);
+
+                let namespace_parts: Vec<&str> = name.split('.').map(|part| part.trim()).filter(|part| !part.is_empty()).collect();
+                if namespace_parts.len() > 1 {
+                    for depth in 1..namespace_parts.len() {
+                        let parent_name = self.canon(&namespace_parts[..depth].join("."));
+                        let child_name = self.canon(&namespace_parts[..=depth].join("."));
+                        let child_key = self.canon(namespace_parts[depth]);
+
+                        if self.defined_globals.contains(&parent_name) {
+                            let parent_idx = self.str_const(&parent_name);
+                            self.emit_u16(Op::GLOBAL_GET, parent_idx);
+                        } else {
+                            self.emit_u16(Op::STRUCT_NEW, 0);
+                        }
+                        self.emit(Op::DUP);
+                        let child_idx = self.str_const(&child_name);
+                        self.emit_u16(Op::GLOBAL_GET, child_idx);
+                        let key_idx = self.str_const(&child_key);
+                        self.emit_u16(Op::STRUCT_SET, key_idx);
+                        self.emit(Op::DROP);
+                        let parent_idx = self.str_const(&parent_name);
+                        self.emit_u16(Op::GLOBAL_SET, parent_idx);
+                        self.emit(Op::DROP);
+                        self.defined_globals.insert(parent_name);
+                    }
+                }
             }
 
             // ── Delegate declaration ────────────────────────────────────
@@ -3784,6 +4233,10 @@ impl Compiler {
     fn compile_var_declarator(&mut self, decl: &VarDeclarator, kind: &VarDeclKind) -> Result<(), String> {
         match &decl.pattern {
             BindingPattern::Ident(name) => {
+                let reflection_binding = decl
+                    .init
+                    .as_ref()
+                    .and_then(|expr| self.resolve_reflection_binding_expr(expr));
                 let inferred_type_hint = decl.type_hint.clone().or_else(|| {
                     decl.init.as_ref().and_then(|expr| self.infer_expr_type_hint(expr))
                 });
@@ -3892,6 +4345,13 @@ impl Compiler {
                     };
                     self.emit_u16(Op::LOCAL_SET, slot);
                     self.emit(Op::DROP);
+                }
+
+                let binding_key = self.canon(name);
+                if let Some(binding) = reflection_binding {
+                    self.reflection_bindings.insert(binding_key, binding);
+                } else {
+                    self.reflection_bindings.remove(&binding_key);
                 }
             }
             BindingPattern::Object(_) | BindingPattern::Array(_) => {
@@ -4221,7 +4681,7 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, setter_tmp);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.compile_expr(index)?;
+                    self.compile_collection_key(object, index)?;
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     self.emit_u8(Op::CALL_REF, 3);
                     self.emit(Op::DROP);
@@ -4229,7 +4689,7 @@ impl Compiler {
 
                     self.patch_jump(fallback);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.compile_expr(index)?;
+                    self.compile_collection_key(object, index)?;
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     common::collections::emit_set(&mut self.chunks, self.current, line);
                     self.emit(Op::DROP);
@@ -4643,25 +5103,57 @@ impl Compiler {
                 if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
                 else if self.is_php_profile() { self.coerce_top_two_php_datetime_for_compare(); }
                 if self.profile.name == "pascal" { self.emit_pascal_relational_compare(Op::DYN_LT); }
-                else { self.emit(Op::DYN_LT); }
+                else if self.is_js_profile() || self.is_php_profile() { self.emit(Op::DYN_LT); }
+                else {
+                    let right_slot = self.define_local("__rich_cmp_rhs");
+                    let left_slot = self.define_local("__rich_cmp_lhs");
+                    self.emit_u16(Op::LOCAL_SET, right_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, left_slot); self.emit(Op::DROP);
+                    let line = self.line;
+                    common::expressions::emit_rich_compare_locals(self.chunk(), left_slot, right_slot, "__lt__", Op::DYN_LT, line);
+                }
             },
             BinOp::Gt => {
                 if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
                 else if self.is_php_profile() { self.coerce_top_two_php_datetime_for_compare(); }
                 if self.profile.name == "pascal" { self.emit_pascal_relational_compare(Op::DYN_GT); }
-                else { self.emit(Op::DYN_GT); }
+                else if self.is_js_profile() || self.is_php_profile() { self.emit(Op::DYN_GT); }
+                else {
+                    let right_slot = self.define_local("__rich_cmp_rhs");
+                    let left_slot = self.define_local("__rich_cmp_lhs");
+                    self.emit_u16(Op::LOCAL_SET, right_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, left_slot); self.emit(Op::DROP);
+                    let line = self.line;
+                    common::expressions::emit_rich_compare_locals(self.chunk(), left_slot, right_slot, "__gt__", Op::DYN_GT, line);
+                }
             },
             BinOp::LtEq => {
                 if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
                 else if self.is_php_profile() { self.coerce_top_two_php_datetime_for_compare(); }
                 if self.profile.name == "pascal" { self.emit_pascal_relational_compare(Op::DYN_LE); }
-                else { self.emit(Op::DYN_LE); }
+                else if self.is_js_profile() || self.is_php_profile() { self.emit(Op::DYN_LE); }
+                else {
+                    let right_slot = self.define_local("__rich_cmp_rhs");
+                    let left_slot = self.define_local("__rich_cmp_lhs");
+                    self.emit_u16(Op::LOCAL_SET, right_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, left_slot); self.emit(Op::DROP);
+                    let line = self.line;
+                    common::expressions::emit_rich_compare_locals(self.chunk(), left_slot, right_slot, "__le__", Op::DYN_LE, line);
+                }
             },
             BinOp::GtEq => {
                 if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
                 else if self.is_php_profile() { self.coerce_top_two_php_datetime_for_compare(); }
                 if self.profile.name == "pascal" { self.emit_pascal_relational_compare(Op::DYN_GE); }
-                else { self.emit(Op::DYN_GE); }
+                else if self.is_js_profile() || self.is_php_profile() { self.emit(Op::DYN_GE); }
+                else {
+                    let right_slot = self.define_local("__rich_cmp_rhs");
+                    let left_slot = self.define_local("__rich_cmp_lhs");
+                    self.emit_u16(Op::LOCAL_SET, right_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_SET, left_slot); self.emit(Op::DROP);
+                    let line = self.line;
+                    common::expressions::emit_rich_compare_locals(self.chunk(), left_slot, right_slot, "__ge__", Op::DYN_GE, line);
+                }
             },
             BinOp::Spaceship => {
                 // a <=> b: returns -1, 0, or 1

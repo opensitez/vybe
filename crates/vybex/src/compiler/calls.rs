@@ -251,6 +251,9 @@ impl Compiler {
     pub(super) fn compile_call(&mut self, callee: &Expression, args: &[Argument]) -> Result<(), String> {
         let arg_exprs: Vec<&Expression> = args.iter().map(|a| &a.value).collect();
 
+        if self.try_compile_dotnet_case_insensitive_collection_call(callee, args)? {
+            return Ok(());
+        }
         if self.try_compile_dotnet_numeric_try_parse(callee, args)? {
             return Ok(());
         }
@@ -264,6 +267,9 @@ impl Compiler {
             return Ok(());
         }
         if self.try_compile_dotnet_enum_call(callee, args)? {
+            return Ok(());
+        }
+        if self.try_compile_dotnet_attribute_reflection_call(callee, args)? {
             return Ok(());
         }
 
@@ -508,6 +514,58 @@ impl Compiler {
                     .to_string();
                 let surface = common::dotnet::surface();
                 if let Some(target) = surface.lookup_instance_method(&class_name, field, arg_exprs.len() as u8) {
+                    if matches!(&target, common::dotnet::InstanceMethodTarget::Common { emit, .. } if emit == "collections.sort")
+                        && arg_exprs.is_empty()
+                        && !self.is_js_profile()
+                    {
+                        let sort_global = self.str_const("__vybe_sort_with_comparator");
+                        self.emit_u16(Op::GLOBAL_GET, sort_global);
+                        self.compile_expr(object)?;
+                        self.compile_lambda(
+                            &[
+                                Param {
+                                    name: "left".into(),
+                                    type_hint: None,
+                                    default: None,
+                                    pass_by: PassBy::Value,
+                                    is_rest: false,
+                                    is_kwargs: false,
+                                    is_optional: false,
+                                    is_nullable: false,
+                                },
+                                Param {
+                                    name: "right".into(),
+                                    type_hint: None,
+                                    default: None,
+                                    pass_by: PassBy::Value,
+                                    is_rest: false,
+                                    is_kwargs: false,
+                                    is_optional: false,
+                                    is_nullable: false,
+                                },
+                            ],
+                            &LambdaBody::Expr(Box::new(Expression::new(ExprKind::Ternary {
+                                cond: Box::new(Expression::new(ExprKind::Binary {
+                                    op: BinOp::Lt,
+                                    left: Box::new(Expression::ident("left")),
+                                    right: Box::new(Expression::ident("right")),
+                                })),
+                                then: Box::new(Expression::new(ExprKind::Lit(Literal::Int(-1)))),
+                                else_: Box::new(Expression::new(ExprKind::Ternary {
+                                    cond: Box::new(Expression::new(ExprKind::Binary {
+                                        op: BinOp::Gt,
+                                        left: Box::new(Expression::ident("left")),
+                                        right: Box::new(Expression::ident("right")),
+                                    })),
+                                    then: Box::new(Expression::new(ExprKind::Lit(Literal::Int(1)))),
+                                    else_: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
+                                })),
+                            }))),
+                        )?;
+                        self.emit_u8(Op::CALL_REF, 2);
+                        return Ok(());
+                    }
+
                     self.compile_expr(object)?;
                     for a in &arg_exprs { self.compile_expr(a)?; }
                     let total_argc = (arg_exprs.len() + 1) as u8;
@@ -1107,6 +1165,58 @@ impl Compiler {
                     .to_string();
                 let surface = common::dotnet::surface();
                 if let Some(target) = surface.lookup_instance_method(&class_name, field, arg_exprs.len() as u8) {
+                    if matches!(&target, common::dotnet::InstanceMethodTarget::Common { emit, .. } if emit == "collections.sort")
+                        && arg_exprs.is_empty()
+                        && !self.is_js_profile()
+                    {
+                        let sort_global = self.str_const("__vybe_sort_with_comparator");
+                        self.emit_u16(Op::GLOBAL_GET, sort_global);
+                        self.compile_expr(object)?;
+                        self.compile_lambda(
+                            &[
+                                Param {
+                                    name: "left".into(),
+                                    type_hint: None,
+                                    default: None,
+                                    pass_by: PassBy::Value,
+                                    is_rest: false,
+                                    is_kwargs: false,
+                                    is_optional: false,
+                                    is_nullable: false,
+                                },
+                                Param {
+                                    name: "right".into(),
+                                    type_hint: None,
+                                    default: None,
+                                    pass_by: PassBy::Value,
+                                    is_rest: false,
+                                    is_kwargs: false,
+                                    is_optional: false,
+                                    is_nullable: false,
+                                },
+                            ],
+                            &LambdaBody::Expr(Box::new(Expression::new(ExprKind::Ternary {
+                                cond: Box::new(Expression::new(ExprKind::Binary {
+                                    op: BinOp::Lt,
+                                    left: Box::new(Expression::ident("left")),
+                                    right: Box::new(Expression::ident("right")),
+                                })),
+                                then: Box::new(Expression::new(ExprKind::Lit(Literal::Int(-1)))),
+                                else_: Box::new(Expression::new(ExprKind::Ternary {
+                                    cond: Box::new(Expression::new(ExprKind::Binary {
+                                        op: BinOp::Gt,
+                                        left: Box::new(Expression::ident("left")),
+                                        right: Box::new(Expression::ident("right")),
+                                    })),
+                                    then: Box::new(Expression::new(ExprKind::Lit(Literal::Int(1)))),
+                                    else_: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
+                                })),
+                            }))),
+                        )?;
+                        self.emit_u8(Op::CALL_REF, 2);
+                        return Ok(());
+                    }
+
                     // Compile receiver, then args.
                     self.compile_expr(object)?;
                     for a in &arg_exprs { self.compile_expr(a)?; }
@@ -1518,10 +1628,51 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, arr_slot);
                             self.emit_host_call(idx, 1);
                         } else {
-                            let sort_global = self.str_const("__vybe_sort_in_place");
+                            let sort_global = self.str_const("__vybe_sort_with_comparator");
                             self.emit_u16(Op::GLOBAL_GET, sort_global);
                             self.emit_u16(Op::LOCAL_GET, arr_slot);
-                            self.emit_u8(Op::CALL_REF, 1);
+                            self.compile_lambda(
+                                &[
+                                    Param {
+                                        name: "left".into(),
+                                        type_hint: None,
+                                        default: None,
+                                        pass_by: PassBy::Value,
+                                        is_rest: false,
+                                        is_kwargs: false,
+                                        is_optional: false,
+                                        is_nullable: false,
+                                    },
+                                    Param {
+                                        name: "right".into(),
+                                        type_hint: None,
+                                        default: None,
+                                        pass_by: PassBy::Value,
+                                        is_rest: false,
+                                        is_kwargs: false,
+                                        is_optional: false,
+                                        is_nullable: false,
+                                    },
+                                ],
+                                &LambdaBody::Expr(Box::new(Expression::new(ExprKind::Ternary {
+                                    cond: Box::new(Expression::new(ExprKind::Binary {
+                                        op: BinOp::Lt,
+                                        left: Box::new(Expression::ident("left")),
+                                        right: Box::new(Expression::ident("right")),
+                                    })),
+                                    then: Box::new(Expression::new(ExprKind::Lit(Literal::Int(-1)))),
+                                    else_: Box::new(Expression::new(ExprKind::Ternary {
+                                        cond: Box::new(Expression::new(ExprKind::Binary {
+                                            op: BinOp::Gt,
+                                            left: Box::new(Expression::ident("left")),
+                                            right: Box::new(Expression::ident("right")),
+                                        })),
+                                        then: Box::new(Expression::new(ExprKind::Lit(Literal::Int(1)))),
+                                        else_: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
+                                    })),
+                                }))),
+                            )?;
+                            self.emit_u8(Op::CALL_REF, 2);
                         }
                         self.patch_jump(done);
                     }
@@ -2364,6 +2515,19 @@ impl Compiler {
 
                     let end = self.emit_jump(Op::BR);
                     self.patch_jump(not_gen);
+                    if self.profile.namespaces.use_dotnet
+                        && arg_exprs.is_empty()
+                        && field.eq_ignore_ascii_case("sort")
+                        && common::dotnet::uses_runtime_collection_dispatch_arity(field, 0)
+                    {
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        let line = self.line;
+                        self.emit_common("dotnet.array_sort", 1, line);
+                        let generic_done = self.emit_jump(Op::BR);
+                        self.patch_jump(end);
+                        self.patch_jump(generic_done);
+                        return Ok(());
+                    }
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     self.emit_u16(Op::STRUCT_GET, prop);
                     let fn_tmp = self.define_local("__fn");
@@ -2378,6 +2542,17 @@ impl Compiler {
                     self.patch_jump(generic_done);
                     return Ok(());
                 }
+            }
+
+            if self.profile.namespaces.use_dotnet
+                && arg_exprs.is_empty()
+                && field.eq_ignore_ascii_case("sort")
+                && common::dotnet::uses_runtime_collection_dispatch_arity(field, 0)
+            {
+                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                let line = self.line;
+                self.emit_common("dotnet.array_sort", 1, line);
+                return Ok(());
             }
 
             self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -2836,6 +3011,10 @@ impl Compiler {
         self.emit(Op::DROP);
 
         self.compile_expr(&args[0].value)?;
+        if self.expr_uses_case_insensitive_string_keys(object) {
+            let line = self.line;
+            common::strings::emit_to_lower(self.chunk(), line);
+        }
         let key_slot = self.define_local("__dict_try_get_key");
         self.emit_u16(Op::LOCAL_SET, key_slot);
         self.emit(Op::DROP);
@@ -2884,6 +3063,464 @@ impl Compiler {
         self.emit(Op::FALSE);
         self.patch_jump(done);
         Ok(true)
+    }
+
+    fn try_compile_dotnet_case_insensitive_collection_call(&mut self, callee: &Expression, args: &[Argument]) -> Result<bool, String> {
+        let ExprKind::Member { object, field, .. } = &callee.kind else {
+            return Ok(false);
+        };
+        if !self.expr_uses_case_insensitive_string_keys(object) {
+            return Ok(false);
+        }
+
+        let receiver_type = resolve_receiver_type_hint(self, object).unwrap_or_default();
+        let normalized = Self::normalize_type_hint(&receiver_type);
+        let line = self.line;
+
+        if Self::is_dictionary_type_hint(&normalized) {
+            match (field.as_str(), args.len()) {
+                ("Add", 2) => {
+                    self.compile_expr(object)?;
+                    self.compile_collection_key(object, &args[0].value)?;
+                    self.compile_expr(&args[1].value)?;
+                    let idx = self.import("ecma:map", "set");
+                    self.emit_host_call(idx, 3);
+                    return Ok(true);
+                }
+                ("ContainsKey", 1) => {
+                    self.compile_expr(object)?;
+                    self.compile_collection_key(object, &args[0].value)?;
+                    let idx = self.import("ecma:map", "has");
+                    self.emit_host_call(idx, 2);
+                    return Ok(true);
+                }
+                ("Remove", 1) => {
+                    self.compile_expr(object)?;
+                    self.compile_collection_key(object, &args[0].value)?;
+                    let idx = self.import("ecma:map", "delete");
+                    self.emit_host_call(idx, 2);
+                    return Ok(true);
+                }
+                _ => {}
+            }
+        }
+
+        if normalized.contains("hashset") || normalized.contains("sortedset") {
+            match (field.as_str(), args.len()) {
+                ("Add", 1) => {
+                    self.compile_expr(object)?;
+                    self.compile_collection_key(object, &args[0].value)?;
+                    self.emit_common("dotnet.hashset_add", 2, line);
+                    return Ok(true);
+                }
+                ("Contains", 1) => {
+                    self.compile_expr(object)?;
+                    self.compile_collection_key(object, &args[0].value)?;
+                    let idx = self.import("ecma:set", "has");
+                    self.emit_host_call(idx, 2);
+                    return Ok(true);
+                }
+                ("Remove", 1) => {
+                    self.compile_expr(object)?;
+                    self.compile_collection_key(object, &args[0].value)?;
+                    let idx = self.import("ecma:set", "delete");
+                    self.emit_host_call(idx, 2);
+                    return Ok(true);
+                }
+                _ => {}
+            }
+        }
+
+        Ok(false)
+    }
+
+    pub(crate) fn resolve_reflection_binding_expr(&self, expr: &Expression) -> Option<ReflectionBinding> {
+        match &expr.kind {
+            ExprKind::Lit(Literal::Str(type_name)) if type_name.starts_with("System.") => {
+                Some(ReflectionBinding::Type(type_name.clone()))
+            }
+            ExprKind::Ident(name) => self.reflection_bindings.get(&self.canon(name)).cloned(),
+            ExprKind::Call { callee, args, .. } => {
+                let ExprKind::Member { object, field, .. } = &callee.kind else {
+                    return None;
+                };
+                let receiver = self.resolve_reflection_binding_expr(object)?;
+                match (receiver, strip_generic_suffix(field.as_str())) {
+                    (ReflectionBinding::Type(type_name), "GetMethod") => {
+                        let method_name = self.resolve_reflection_string_arg(args.first()?)?;
+                        Some(ReflectionBinding::Method { type_name, method_name })
+                    }
+                    (ReflectionBinding::Type(type_name), "GetProperty") => {
+                        let property_name = self.resolve_reflection_string_arg(args.first()?)?;
+                        Some(ReflectionBinding::Property { type_name, property_name })
+                    }
+                    (ReflectionBinding::Type(type_name), "GetField") => {
+                        let field_name = self.resolve_reflection_string_arg(args.first()?)?;
+                        Some(ReflectionBinding::Field { type_name, field_name })
+                    }
+                    _ => None,
+                }
+            }
+            ExprKind::Index { object, index, .. } => {
+                let ExprKind::Call { callee, args, .. } = &object.kind else {
+                    return None;
+                };
+                if !args.is_empty() {
+                    return None;
+                }
+                let ExprKind::Member { object: method_object, field, .. } = &callee.kind else {
+                    return None;
+                };
+                if strip_generic_suffix(field.as_str()) != "GetParameters" {
+                    return None;
+                }
+                let ReflectionBinding::Method { type_name, method_name } = self.resolve_reflection_binding_expr(method_object)? else {
+                    return None;
+                };
+                let ExprKind::Lit(Literal::Int(position)) = &index.kind else {
+                    return None;
+                };
+                Some(ReflectionBinding::Parameter {
+                    type_name,
+                    method_name,
+                    index: (*position).max(0) as usize,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn resolve_reflection_string_arg(&self, arg: &Argument) -> Option<String> {
+        match &arg.value.kind {
+            ExprKind::Lit(Literal::Str(value)) => Some(value.clone()),
+            ExprKind::Ident(name) => self.reflection_bindings.get(&self.canon(name)).and_then(|binding| {
+                if let ReflectionBinding::Type(type_name) = binding {
+                    Some(type_name.clone())
+                } else {
+                    None
+                }
+            }),
+            _ => None,
+        }
+    }
+
+    fn resolve_reflection_type_arg(&self, expr: &Expression) -> Option<String> {
+        match self.resolve_reflection_binding_expr(expr)? {
+            ReflectionBinding::Type(type_name) => Some(type_name),
+            _ => None,
+        }
+    }
+
+    fn reflection_attributes_for_binding(
+        &self,
+        binding: &ReflectionBinding,
+        attribute_type: Option<&str>,
+        inherit: bool,
+    ) -> Vec<Expression> {
+        match binding {
+            ReflectionBinding::Type(type_name) => self.reflection_attributes_for_type(type_name, attribute_type, inherit),
+            ReflectionBinding::Method { type_name, method_name } => self
+                .reflection_types
+                .get(type_name)
+                .and_then(|meta| meta.methods.get(method_name))
+                .map(|meta| self.filter_reflection_attributes(&meta.decorators, attribute_type))
+                .unwrap_or_default(),
+            ReflectionBinding::Property { type_name, property_name } => self
+                .reflection_types
+                .get(type_name)
+                .and_then(|meta| meta.properties.get(property_name))
+                .map(|meta| self.filter_reflection_attributes(&meta.decorators, attribute_type))
+                .unwrap_or_default(),
+            ReflectionBinding::Field { type_name, field_name } => self
+                .reflection_types
+                .get(type_name)
+                .and_then(|meta| meta.fields.get(field_name))
+                .map(|meta| self.filter_reflection_attributes(&meta.decorators, attribute_type))
+                .unwrap_or_default(),
+            ReflectionBinding::Parameter { type_name, method_name, index } => self
+                .reflection_types
+                .get(type_name)
+                .and_then(|meta| meta.methods.get(method_name))
+                .and_then(|meta| meta.params.get(*index))
+                .map(|meta| self.filter_reflection_attributes(&meta.decorators, attribute_type))
+                .unwrap_or_default(),
+        }
+    }
+
+    fn reflection_attributes_for_type(
+        &self,
+        type_name: &str,
+        attribute_type: Option<&str>,
+        inherit: bool,
+    ) -> Vec<Expression> {
+        let mut attrs = Vec::new();
+        let mut current = Some(type_name.to_string());
+
+        while let Some(current_type) = current {
+            let Some(meta) = self.reflection_types.get(&current_type) else {
+                break;
+            };
+            let matching = self.filter_reflection_attributes(&meta.decorators, attribute_type);
+            if !matching.is_empty() {
+                if let Some(attribute_type) = attribute_type {
+                    let usage = self.attribute_usage.get(attribute_type).copied().unwrap_or_default();
+                    if usage.allow_multiple {
+                        attrs.extend(matching);
+                    } else {
+                        attrs.push(matching[0].clone());
+                        break;
+                    }
+                } else {
+                    attrs.extend(matching);
+                }
+            }
+
+            if !inherit {
+                break;
+            }
+            let should_inherit = attribute_type
+                .and_then(|name| self.attribute_usage.get(name))
+                .copied()
+                .unwrap_or_default()
+                .inherited;
+            if !should_inherit {
+                break;
+            }
+            current = meta.parents.first().cloned();
+        }
+
+        attrs
+    }
+
+    fn filter_reflection_attributes(
+        &self,
+        decorators: &[Expression],
+        attribute_type: Option<&str>,
+    ) -> Vec<Expression> {
+        decorators
+            .iter()
+            .filter(|decorator| {
+                attribute_type.is_none_or(|wanted| {
+                    self.reflection_attribute_type_name(decorator)
+                        .is_some_and(|actual| actual.eq_ignore_ascii_case(wanted))
+                })
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn compile_reflection_attribute_instance(&mut self, attr: &Expression) -> Result<(), String> {
+        let ExprKind::New { class, args } = &attr.kind else {
+            return self.compile_expr(attr);
+        };
+
+        let positional_args: Vec<Argument> = args.iter().filter(|arg| arg.name.is_none()).cloned().collect();
+        let named_args: Vec<&Argument> = args.iter().filter(|arg| arg.name.is_some()).collect();
+        if named_args.is_empty() {
+            return self.compile_expr(attr);
+        }
+
+        self.compile_expr(&Expression::new(ExprKind::New {
+            class: class.clone(),
+            args: positional_args,
+        }))?;
+        let slot = self.define_local("__reflection_attr");
+        self.emit_u16(Op::LOCAL_SET, slot);
+        self.emit(Op::DROP);
+
+        for arg in named_args {
+            self.compile_expr(&arg.value)?;
+            self.compile_assign_target(&Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident("__reflection_attr")),
+                field: arg.name.clone().unwrap_or_default(),
+                null_safe: false,
+            }))?;
+        }
+
+        self.emit_u16(Op::LOCAL_GET, slot);
+        Ok(())
+    }
+
+    fn compile_reflection_attribute_array(&mut self, attrs: &[Expression]) -> Result<(), String> {
+        let line = self.line;
+        common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+        for attr in attrs {
+            self.emit(Op::DUP);
+            self.compile_reflection_attribute_instance(attr)?;
+            common::collections::emit_push(&mut self.chunks, self.current, line);
+            self.emit(Op::DROP);
+        }
+        Ok(())
+    }
+
+    fn compile_reflection_binding_value(&mut self, binding: &ReflectionBinding) -> Result<(), String> {
+        match binding {
+            ReflectionBinding::Type(type_name) => {
+                self.compile_expr(&Expression::string(type_name))?;
+            }
+            ReflectionBinding::Method { method_name, .. } => {
+                self.compile_expr(&Expression::new(ExprKind::Object(vec![
+                    ObjectProperty::KeyValue {
+                        key: Expression::string("Name"),
+                        value: Expression::string(method_name),
+                    },
+                ])))?;
+            }
+            ReflectionBinding::Property { property_name, .. } => {
+                self.compile_expr(&Expression::new(ExprKind::Object(vec![
+                    ObjectProperty::KeyValue {
+                        key: Expression::string("Name"),
+                        value: Expression::string(property_name),
+                    },
+                ])))?;
+            }
+            ReflectionBinding::Field { field_name, .. } => {
+                self.compile_expr(&Expression::new(ExprKind::Object(vec![
+                    ObjectProperty::KeyValue {
+                        key: Expression::string("Name"),
+                        value: Expression::string(field_name),
+                    },
+                ])))?;
+            }
+            ReflectionBinding::Parameter { type_name, method_name, index } => {
+                let name = self
+                    .reflection_types
+                    .get(type_name)
+                    .and_then(|meta| meta.methods.get(method_name))
+                    .and_then(|meta| meta.params.get(*index))
+                    .map(|param| param.name.clone())
+                    .unwrap_or_default();
+                self.compile_expr(&Expression::new(ExprKind::Object(vec![
+                    ObjectProperty::KeyValue {
+                        key: Expression::string("Name"),
+                        value: Expression::string(&name),
+                    },
+                    ObjectProperty::KeyValue {
+                        key: Expression::string("Position"),
+                        value: Expression::int(*index as i64),
+                    },
+                ])))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn try_compile_dotnet_attribute_reflection_call(&mut self, callee: &Expression, args: &[Argument]) -> Result<bool, String> {
+        let ExprKind::Member { object, field, .. } = &callee.kind else {
+            return Ok(false);
+        };
+        let field_name = strip_generic_suffix(field);
+        let receiver_type = terminal_type_name(object).unwrap_or_default();
+
+        if (receiver_type.eq_ignore_ascii_case("Attribute") || receiver_type.eq_ignore_ascii_case("System.Attribute"))
+            && field_name == "GetCustomAttribute" && args.len() >= 2
+        {
+            let Some(provider) = self.resolve_reflection_binding_expr(&args[0].value) else {
+                return Ok(false);
+            };
+            let Some(attribute_type) = self.resolve_reflection_type_arg(&args[1].value) else {
+                return Ok(false);
+            };
+            let attrs = self.reflection_attributes_for_binding(&provider, Some(&attribute_type), true);
+            if let Some(attr) = attrs.first() {
+                self.compile_reflection_attribute_instance(attr)?;
+            } else {
+                self.emit(Op::NULL);
+            }
+            return Ok(true);
+        }
+
+        if (receiver_type.eq_ignore_ascii_case("Attribute") || receiver_type.eq_ignore_ascii_case("System.Attribute"))
+            && field_name == "IsDefined" && args.len() >= 2
+        {
+            let Some(provider) = self.resolve_reflection_binding_expr(&args[0].value) else {
+                return Ok(false);
+            };
+            let Some(attribute_type) = self.resolve_reflection_type_arg(&args[1].value) else {
+                return Ok(false);
+            };
+            let attrs = self.reflection_attributes_for_binding(&provider, Some(&attribute_type), true);
+            self.emit(if attrs.is_empty() { Op::FALSE } else { Op::TRUE });
+            return Ok(true);
+        }
+
+        let Some(provider) = self.resolve_reflection_binding_expr(object) else {
+            return Ok(false);
+        };
+        match field_name {
+            "GetMethod" if args.len() >= 1 => {
+                let Some(binding) = self.resolve_reflection_binding_expr(&Expression::new(ExprKind::Call {
+                    callee: Box::new(callee.clone()),
+                    args: args.to_vec(),
+                    optional: false,
+                })) else {
+                    return Ok(false);
+                };
+                self.compile_reflection_binding_value(&binding)?;
+                Ok(true)
+            }
+            "GetProperty" if args.len() >= 1 => {
+                let Some(binding) = self.resolve_reflection_binding_expr(&Expression::new(ExprKind::Call {
+                    callee: Box::new(callee.clone()),
+                    args: args.to_vec(),
+                    optional: false,
+                })) else {
+                    return Ok(false);
+                };
+                self.compile_reflection_binding_value(&binding)?;
+                Ok(true)
+            }
+            "GetField" if args.len() >= 1 => {
+                let Some(binding) = self.resolve_reflection_binding_expr(&Expression::new(ExprKind::Call {
+                    callee: Box::new(callee.clone()),
+                    args: args.to_vec(),
+                    optional: false,
+                })) else {
+                    return Ok(false);
+                };
+                self.compile_reflection_binding_value(&binding)?;
+                Ok(true)
+            }
+            "GetParameters" if args.is_empty() => {
+                let ReflectionBinding::Method { type_name, method_name } = provider else {
+                    return Ok(false);
+                };
+                let params = self
+                    .reflection_types
+                    .get(&type_name)
+                    .and_then(|meta| meta.methods.get(&method_name))
+                    .map(|meta| meta.params.clone())
+                    .unwrap_or_default();
+                let line = self.line;
+                common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+                for (index, param) in params.iter().enumerate() {
+                    self.emit(Op::DUP);
+                    self.compile_expr(&Expression::new(ExprKind::Object(vec![
+                        ObjectProperty::KeyValue {
+                            key: Expression::string("Name"),
+                            value: Expression::string(&param.name),
+                        },
+                        ObjectProperty::KeyValue {
+                            key: Expression::string("Position"),
+                            value: Expression::int(index as i64),
+                        },
+                    ])))?;
+                    common::collections::emit_push(&mut self.chunks, self.current, line);
+                    self.emit(Op::DROP);
+                }
+                Ok(true)
+            }
+            "GetCustomAttributes" if args.len() >= 2 => {
+                let Some(attribute_type) = self.resolve_reflection_type_arg(&args[0].value) else {
+                    return Ok(false);
+                };
+                let inherit = matches!(args[1].value.kind, ExprKind::Lit(Literal::Bool(true)));
+                let attrs = self.reflection_attributes_for_binding(&provider, Some(&attribute_type), inherit);
+                self.compile_reflection_attribute_array(&attrs)?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 
     fn try_compile_dotnet_formatted_tostring(&mut self, callee: &Expression, args: &[Argument]) -> Result<bool, String> {

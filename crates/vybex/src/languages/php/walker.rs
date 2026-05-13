@@ -1128,7 +1128,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     pop_class_context();
     walk_result?;
 
-    Ok(StmtKind::ClassDecl { name, parents, interfaces, members, modifiers })
+    Ok(StmtKind::ClassDecl { name, parents, interfaces, members, modifiers, decorators: vec![] })
 }
 
 fn walk_interface_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -1175,6 +1175,7 @@ fn walk_interface_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         interfaces: Vec::new(),
         members: class_members,
         modifiers: ClassModifiers::default(),
+        decorators: vec![],
     })
 }
 
@@ -1215,6 +1216,7 @@ fn walk_trait_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         interfaces: Vec::new(),
         members,
         modifiers: ClassModifiers::default(),
+        decorators: vec![],
     })
 }
 
@@ -1280,6 +1282,7 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         backing_type,
         interfaces,
         body_members,
+        decorators: vec![],
     })
 }
 

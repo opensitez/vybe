@@ -681,6 +681,8 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::dotnet::core::linq_adapter::emit_linq_first_or_default(chunks, current, line),
         "dotnet.linq_distinct"
             => crate::emitter::dotnet::core::linq_adapter::emit_linq_distinct(chunks, current, line),
+        "dotnet.linq_sequence_equal"
+            => crate::emitter::dotnet::core::linq_adapter::emit_linq_sequence_equal(chunks, current, line),
         "dotnet.linq_count_pred"
             => crate::emitter::dotnet::core::linq_adapter::emit_linq_count_pred(chunks, current, line),
         "dotnet.linq_aggregate"

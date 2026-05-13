@@ -709,6 +709,7 @@ fn walk_type(pair: Pair<Rule>) -> Result<Statement, String> {
     }
     Ok(Statement::new(StmtKind::ClassDecl {
         name: nm, parents, interfaces: vec![], members, modifiers: ClassModifiers::default(),
+        decorators: vec![],
     }))
 }
 

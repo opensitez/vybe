@@ -3147,6 +3147,7 @@ fn walk_class_id(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), Stri
             interfaces,
             members,
             modifiers: ClassModifiers::default(),
+            decorators: vec![],
         },
         span,
     ));
@@ -3395,6 +3396,7 @@ fn walk_interface_id(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), 
             name,
             parents,
             members,
+            decorators: vec![],
         },
         span,
     ));

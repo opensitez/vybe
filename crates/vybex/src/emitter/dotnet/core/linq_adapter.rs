@@ -179,6 +179,101 @@ pub fn emit_linq_distinct(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
+/// `arr.SequenceEqual(other)` — same length and pairwise equal values.
+/// Stack: [arr, other] → [bool].
+pub fn emit_linq_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32) {
+    let left_slot = alloc_locals(&mut chunks[current], 6);
+    let right_slot = left_slot + 1;
+    let len_slot = left_slot + 2;
+    let idx_slot = left_slot + 3;
+    let right_elem_slot = left_slot + 4;
+    let result_slot = left_slot + 5;
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, right_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, left_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    collections::emit_iter_values(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, left_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    collections::emit_iter_values(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, right_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op(Op::TRUE, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunks[current].emit_op(Op::DYN_EQ, line);
+    let lengths_match = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
+    chunks[current].emit_op(Op::FALSE, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+    let done = chunks[current].emit_jump(Op::BR, line);
+
+    chunks[current].patch_jump(lengths_match);
+    chunks[current].emit_op(Op::I32_CONST_0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    let outer_block = chunks[current].emit_block(line);
+    let (outer_loop, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunks[current].emit_op(Op::DYN_LT, line);
+    chunks[current].emit_op(Op::DYN_NOT, line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, right_elem_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_elem_slot, line);
+    chunks[current].emit_op(Op::DYN_EQ, line);
+    let equal_values = chunks[current].emit_block(line);
+    chunks[current].emit_br_if(0, line);
+
+    chunks[current].emit_op(Op::FALSE, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_br(2, line);
+
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(equal_values);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    let one = chunks[current].add_constant(Value::I32(1));
+    chunks[current].emit_op_u16(Op::CONST, one, line);
+    chunks[current].emit_op(Op::DYN_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(outer_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer_block);
+
+    chunks[current].patch_jump(done);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
 // ── HOFs (one fn arg) ────────────────────────────────────────────────────
 //
 // Each emitter receives the receiver and predicate / selector / reducer

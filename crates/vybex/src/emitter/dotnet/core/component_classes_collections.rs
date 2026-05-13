@@ -22,7 +22,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 ("Count", 0, "collections.length"),
                 ("Clear", 0, "collections.clear"),
                 ("IndexOf", 1, "collections.index_of"),
-                ("Sort", 0, "collections.sort"),
+                ("Sort", 0, "dotnet.array_sort"),
                 ("Reverse", 0, "collections.reverse"),
                 ("ToArray", 0, "collections.clone"),
                 ("Item", 1, "collections.get"),
@@ -184,7 +184,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new("IndexOf2", 2, MethodBody::Common("collections.index_of_from".into())))
                 .with_method(MethodDef::new("LastIndexOf", 1, MethodBody::Common("collections.last_index_of".into())))
                 .with_method(MethodDef::new("LastIndexOf2", 2, MethodBody::Common("collections.last_index_of_from".into())))
-                .with_method(MethodDef::new("Sort", 0, MethodBody::Common("collections.sort".into())))
+                .with_method(MethodDef::new("Sort", 0, MethodBody::Common("dotnet.array_sort".into())))
                 .with_method(MethodDef::new("Reverse", 0, MethodBody::Common("collections.reverse".into())))
                 .with_method(MethodDef::new("ReverseRange", 2, MethodBody::Common("collections.reverse_range".into())))
                 .with_method(MethodDef::new("ToArray", 0, MethodBody::Common("collections.clone".into())))

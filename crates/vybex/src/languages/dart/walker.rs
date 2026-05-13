@@ -719,7 +719,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
-    Ok(StmtKind::ClassDecl { name, parents, interfaces, members, modifiers })
+    Ok(StmtKind::ClassDecl { name, parents, interfaces, members, modifiers, decorators: vec![] })
 }
 
 /// Rewrite bare `field` to `ClassName.field` for matching static fields.
@@ -868,6 +868,7 @@ fn walk_mixin_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::ClassDecl {
         name, parents, interfaces, members,
         modifiers: ClassModifiers::default(),
+        decorators: vec![],
     })
 }
 
@@ -901,6 +902,7 @@ fn walk_extension_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::ClassDecl {
         name, parents, interfaces: Vec::new(), members,
         modifiers: ClassModifiers { is_static: true, ..Default::default() },
+        decorators: vec![],
     })
 }
 
@@ -984,6 +986,7 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         is_flags: false,
         backing_type: None,
         body_members,
+        decorators: vec![],
     })
 }
 
