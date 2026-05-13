@@ -2806,7 +2806,7 @@ impl Compiler {
                             PassBy::Out => self.emit(Op::NULL),
                             PassBy::Ref | PassBy::Const | PassBy::Value => {
                                 if !matches!(param_modes.get(index), Some(PassBy::Out)) {
-                                    self.compile_expr(&arg.value)?;
+                                    self.compile_expr_with_value_copy(&arg.value)?;
                                 }
                             }
                         }
@@ -2833,7 +2833,7 @@ impl Compiler {
                     return Ok(());
                 }
             }
-            for a in &arg_exprs { self.compile_expr(a)?; }
+            for a in &arg_exprs { self.compile_expr_with_value_copy(a)?; }
             self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
             return Ok(());
         }

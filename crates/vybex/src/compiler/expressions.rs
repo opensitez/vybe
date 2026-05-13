@@ -625,6 +625,31 @@ impl Compiler {
                     return Ok(());
                 }
 
+                let receiver_type_hint = match &object.kind {
+                    ExprKind::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
+                    _ => self.infer_expr_type_hint(object),
+                };
+
+                let receiver_is_nullable = receiver_type_hint
+                    .as_deref()
+                    .is_some_and(|type_hint| type_hint.trim().ends_with('?'));
+
+                if matches!(self.profile.name.as_str(), "csharp" | "vb") && receiver_is_nullable {
+                    match field.as_str() {
+                        "HasValue" => {
+                            self.compile_expr(object)?;
+                            self.emit(Op::REF_IS_NULL);
+                            self.emit(Op::DYN_NOT);
+                            return Ok(());
+                        }
+                        "Value" => {
+                            self.compile_expr(object)?;
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                }
+
                 let receiver_is_collection_like = if matches!(self.profile.name.as_str(), "csharp" | "vb")
                     && matches!(field.as_str(), "Length" | "Count")
                 {
@@ -643,12 +668,7 @@ impl Compiler {
                     };
 
                     match &object.kind {
-                        ExprKind::Ident(name) => match self.lookup_var_type_hint(name) {
-                            Some(type_hint) => is_collection_like_type(type_hint),
-                            None => true,
-                        },
-                        ExprKind::New { .. } | ExprKind::Call { .. } => self
-                            .infer_expr_type_hint(object)
+                        ExprKind::Ident(_) | ExprKind::New { .. } | ExprKind::Call { .. } => receiver_type_hint
                             .as_deref()
                             .map(is_collection_like_type)
                             .unwrap_or(true),
@@ -2160,6 +2180,7 @@ impl Compiler {
                     &[],
                     members,
                     &crate::ast::ClassModifiers::default(),
+                    false,
                 )?;
                 self.emit_var_get(&class_name);
             }

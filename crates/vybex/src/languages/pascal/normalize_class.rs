@@ -233,6 +233,7 @@ pub fn normalize_class(
         is_abstract: modifiers.is_abstract,
         is_sealed: modifiers.is_sealed,
         is_partial: false,
+        is_value_type: false,
         explicit_self_param: false, // Pascal: Self is implicit
         implicit_self_fields: true, // Pascal: bare field names resolve to Self.field inside methods
         instance_fields,

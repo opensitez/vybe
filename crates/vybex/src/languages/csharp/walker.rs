@@ -2767,7 +2767,7 @@ fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
-    if let Some(type_hint) = type_hint {
+    if let Some(type_hint) = type_hint.filter(|hint| !hint.eq_ignore_ascii_case("var")) {
         let normalized_hint = normalize_runtime_type_name(&type_hint).to_lowercase();
         for decl in &mut declarations {
             decl.type_hint = Some(type_hint.clone());
@@ -3676,11 +3676,12 @@ fn walk_method(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String>
 
 fn walk_field(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String> {
     let mut name = String::new();
+    let mut type_hint = None;
     let mut init = None;
 
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::type_name => {} // skip type
+            Rule::type_name => type_hint = Some(p.as_str().to_string()),
             Rule::var_declarator_list => {
                 // Take first declarator
                 if let Some(vd) = p.into_inner().find(|p| p.as_rule() == Rule::var_declarator) {
@@ -3697,7 +3698,7 @@ fn walk_field(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String> 
 
     Ok(ClassMember::Field {
         name,
-        type_hint: None,
+        type_hint,
         init,
         modifiers: mods,
         with_events: false,
@@ -3734,6 +3735,72 @@ fn walk_struct_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
             }
             _ => {}
         }
+    }
+
+    let has_user_equals = members.iter().any(|member| matches!(
+        member,
+        ClassMember::Method(stmt) if matches!(
+            &stmt.kind,
+            StmtKind::FunctionDecl { name, .. } if name == "Equals"
+        )
+    ));
+
+    if !has_user_equals {
+        let comparable_members: Vec<String> = members
+            .iter()
+            .filter_map(|member| match member {
+                ClassMember::Field { name, modifiers, .. } if !modifiers.is_static => Some(name.clone()),
+                ClassMember::Property { name, modifiers, .. } if !modifiers.is_static => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+
+        let other_param = Param {
+            name: "other".into(),
+            type_hint: Some(name.clone()),
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        };
+
+        let mut eq_expr = Expression::bool(true);
+        for member_name in comparable_members {
+            let left = Expression::new(ExprKind::Member {
+                object: Box::new(Expression::new(ExprKind::This)),
+                field: member_name.clone(),
+                null_safe: false,
+            });
+            let right = Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident("other")),
+                field: member_name,
+                null_safe: false,
+            });
+            let cmp = Expression::new(ExprKind::Binary {
+                op: BinOp::Eq,
+                left: Box::new(left),
+                right: Box::new(right),
+            });
+            eq_expr = Expression::new(ExprKind::Binary {
+                op: BinOp::And,
+                left: Box::new(eq_expr),
+                right: Box::new(cmp),
+            });
+        }
+
+        members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
+            name: "Equals".into(),
+            params: vec![other_param],
+            body: vec![Statement::new(StmtKind::Return(Some(eq_expr)))],
+            return_type: Some("bool".into()),
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
+            handles: Vec::new(),
+            modifiers: Modifiers { is_override: true, ..Default::default() },
+        }))));
     }
 
     Ok(StmtKind::StructDecl {

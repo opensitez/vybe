@@ -50,6 +50,8 @@ struct LoopCtx {
 struct PendingClass {
     parent: Option<String>,
     fields: Vec<String>,
+    is_value_type: bool,
+    instance_member_names: Vec<String>,
     /// Static field names (declared `static T name`). Looked up from
     /// inside instance methods so a bare `Name` resolves to
     /// `<ClassName>.Name` (struct_get on the class global) rather than
@@ -1739,6 +1741,8 @@ impl Compiler {
         self.pending_classes.insert(name.to_string(), PendingClass {
             parent,
             fields: Vec::new(),
+            is_value_type: false,
+            instance_member_names: Vec::new(),
             static_fields: Vec::new(),
             static_field_types: HashMap::new(),
             static_method_names: Vec::new(),
@@ -1815,6 +1819,20 @@ impl Compiler {
 
     fn normalize_type_hint(type_hint: &str) -> String {
         type_hint.trim().to_lowercase()
+    }
+
+    pub(super) fn emit_default_value_for_type_hint(&mut self, type_hint: Option<&str>) {
+        match type_hint.map(Self::normalize_type_hint).as_deref() {
+            Some("integer") | Some("int") | Some("int32") | Some("longint") | Some("real")
+            | Some("double") | Some("float") | Some("single") | Some("decimal")
+            | Some("long") | Some("int64") | Some("short") | Some("int16")
+            | Some("uint") | Some("uint32") | Some("ulong") | Some("uint64")
+            | Some("ushort") | Some("uint16") | Some("byte") | Some("sbyte")
+            | Some("char") => self.emit(Op::F64_CONST_0),
+            Some("boolean") | Some("bool") => self.emit(Op::FALSE),
+            Some("string") | Some("system.string") => self.emit_const(Value::String(Arc::from(""))),
+            _ => self.emit(Op::NULL),
+        }
     }
 
     fn is_string_type_hint(type_hint: &str) -> bool {
@@ -1929,6 +1947,7 @@ impl Compiler {
 
     fn infer_expr_type_hint(&self, expr: &Expression) -> Option<String> {
         match &expr.kind {
+            ExprKind::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
             ExprKind::New { class, .. } => Self::expr_terminal_type_name(class),
             ExprKind::Call { callee, .. } => self.infer_dotnet_factory_return_type(callee),
             ExprKind::Member { object, .. } => {
@@ -1950,6 +1969,70 @@ impl Compiler {
             }
             _ => None,
         }
+    }
+
+    fn user_value_type_name_from_hint(&self, type_hint: &str) -> Option<String> {
+        let trimmed = type_hint.trim().trim_end_matches('?').trim();
+        let canonical = self.canon(trimmed);
+        if self.pending_classes.get(&canonical).is_some_and(|pending| pending.is_value_type) {
+            return Some(canonical);
+        }
+        self.pending_classes
+            .iter()
+            .find(|(name, pending)| pending.is_value_type && name.eq_ignore_ascii_case(trimmed))
+            .map(|(name, _)| name.clone())
+    }
+
+    fn expr_user_value_type_name(&self, expr: &Expression) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Ident(name) => self
+                .lookup_var_type_hint(name)
+                .and_then(|type_hint| self.user_value_type_name_from_hint(type_hint)),
+            _ => self
+                .infer_expr_type_hint(expr)
+                .and_then(|type_hint| self.user_value_type_name_from_hint(&type_hint)),
+        }
+    }
+
+    pub(super) fn compile_expr_with_value_copy(&mut self, expr: &Expression) -> Result<(), String> {
+        self.compile_expr(expr)?;
+        let should_clone = matches!(
+            expr.kind,
+            ExprKind::Ident(_) | ExprKind::Member { .. } | ExprKind::Index { .. }
+        );
+        if should_clone {
+            if let Some(type_name) = self.expr_user_value_type_name(expr) {
+                self.emit_user_value_type_clone_from_stack(&type_name);
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_user_value_type_clone_from_stack(&mut self, type_name: &str) {
+        let Some((fields, instance_member_names)) = self.pending_classes.get(type_name).map(|pending| {
+            (pending.fields.clone(), pending.instance_member_names.clone())
+        }) else {
+            return;
+        };
+
+        let source_slot = self.define_local("__value_type_src");
+        self.emit_u16(Op::LOCAL_SET, source_slot);
+        self.emit(Op::DROP);
+
+        let clone_slot = self.define_local("__value_type_clone");
+        let line = self.line;
+        common::classes::emit_new_typed_object(self.chunk(), clone_slot, type_name, line);
+
+        for member_name in fields.iter().chain(instance_member_names.iter()) {
+            let member_key = self.str_const(member_name);
+            self.emit_u16(Op::LOCAL_GET, clone_slot);
+            self.emit_u16(Op::LOCAL_GET, source_slot);
+            self.emit_u16(Op::STRUCT_GET, member_key);
+            self.emit_u16(Op::STRUCT_SET, member_key);
+            self.emit(Op::DROP);
+        }
+
+        self.emit_u16(Op::LOCAL_GET, clone_slot);
     }
 
     fn expr_is_known_string_receiver(&self, expr: &Expression) -> bool {
@@ -3356,7 +3439,7 @@ impl Compiler {
                 // loudly rather than silently picking a legacy path.
                 let span = stmt.span.clone();
                 crate::common::classes::emit::emit_class_from_ast(
-                    self, span, &cname, parents, interfaces, members, modifiers,
+                    self, span, &cname, parents, interfaces, members, modifiers, false,
                 )?;
             }
 
@@ -3417,9 +3500,10 @@ impl Compiler {
             StmtKind::StructDecl { name, members, .. } => {
                 let cn = self.canon(name);
                 self.defined_globals.insert(cn.clone());
+                self.defined_classes.insert(cn.clone());
                 let span = stmt.span.clone();
                 crate::common::classes::emit::emit_class_from_ast(
-                    self, span, &cn, &[], &[], members, &crate::ast::ClassModifiers::default(),
+                    self, span, &cn, &[], &[], members, &crate::ast::ClassModifiers::default(), true,
                 )?;
             }
 
@@ -4112,6 +4196,7 @@ impl Compiler {
             interfaces,
             &members,
             &ClassModifiers::default(),
+            false,
         )
     }
 
@@ -4508,7 +4593,7 @@ impl Compiler {
                 }
 
                 if let Some(ref init_expr) = decl.init {
-                    self.compile_expr(init_expr)?;
+                    self.compile_expr_with_value_copy(init_expr)?;
                     self.maybe_promote_pascal_array_literal_to_set(decl.type_hint.as_deref(), init_expr);
                     // ECMA-262 §10.2.9 SetFunctionName — anonymous
                     // function expressions assigned to a binding take
@@ -5869,10 +5954,7 @@ impl Compiler {
             && matches!(&args[0].kind, ExprKind::Ident(_))
         {
             let builtin_name = self.canon(name);
-            let Some(var_name) = (match &args[0].kind {
-                ExprKind::Ident(var_name) => Some(var_name.as_str()),
-                _ => None,
-            }) else {
+            let ExprKind::Ident(var_name) = &args[0].kind else {
                 unreachable!();
             };
 

@@ -84,6 +84,7 @@ pub fn normalize_class(
         is_abstract: modifiers.is_abstract,
         is_sealed: modifiers.is_sealed,
         is_partial: modifiers.is_partial,
+        is_value_type: false,
         explicit_self_param: false,
         implicit_self_fields: true,
         instance_fields,

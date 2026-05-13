@@ -137,6 +137,7 @@ pub fn normalize_class(
         is_abstract: modifiers.is_abstract,
         is_sealed: modifiers.is_sealed,
         is_partial: false,
+        is_value_type: false,
         explicit_self_param: false,
         // Dart resolves bare identifiers in instance methods to `this.field`
         // (the `this.` is only needed when a local shadows). Setting this true

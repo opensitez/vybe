@@ -172,6 +172,7 @@ pub fn normalize_class(
         is_abstract: modifiers.is_abstract,
         is_sealed: modifiers.is_sealed,
         is_partial: modifiers.is_partial, // informational; merging already done
+        is_value_type: false,
         explicit_self_param: false, // VB: Me is implicit
         implicit_self_fields: true, // VB: bare field names resolve to Me.field
         instance_fields,

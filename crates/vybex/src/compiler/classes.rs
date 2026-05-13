@@ -315,12 +315,12 @@ impl Compiler {
         // for auto-properties. Reads NormalClass directly; no longer
         // iterates the reconstructed member list.
         let mut fields: Vec<String> = Vec::new();
-        let mut field_inits: Vec<(String, Option<Expression>)> = Vec::new();
+        let mut field_inits: Vec<(String, Option<String>, Option<Expression>)> = Vec::new();
         let mut static_field_inits: Vec<(String, Option<Expression>)> = Vec::new();
         for f in &class.instance_fields {
             let fname = self.canon(&f.name);
             fields.push(fname.clone());
-            field_inits.push((fname, f.init.clone()));
+            field_inits.push((fname, f.type_hint.clone(), f.init.clone()));
         }
         for f in &class.static_fields {
             let fname = self.canon(&f.name);
@@ -338,7 +338,7 @@ impl Compiler {
                     }
                 } else if !fields.contains(&pname_canon) {
                     fields.push(pname_canon.clone());
-                    field_inits.push((pname_canon, None));
+                    field_inits.push((pname_canon, None, None));
                 }
             }
         }
@@ -351,7 +351,7 @@ impl Compiler {
                 let fname = self.canon(ename);
                 if !fields.contains(&fname) {
                     fields.push(fname.clone());
-                    field_inits.push((fname, None));
+                    field_inits.push((fname, None, None));
                 }
             }
         }
@@ -364,6 +364,12 @@ impl Compiler {
         self.pending_classes.insert(name.to_string(), PendingClass {
             parent: parent.clone(),
             fields: fields.clone(),
+            is_value_type: class.is_value_type,
+            instance_member_names: class
+                .instance_methods
+                .iter()
+                .map(|method| method.canonical_name.clone())
+                .collect(),
             static_fields: static_field_names,
             static_field_types: class.static_fields.iter().filter_map(|f| {
                 f.type_hint.as_ref().map(|t| (self.canon(&f.name), Self::normalize_type_hint(t)))
@@ -952,10 +958,14 @@ impl Compiler {
                     self.patch_jump(skip);
                 }
 
-                for (fname, init) in &field_inits {
+                for (fname, type_hint, init) in &field_inits {
                     if let Some(init_expr) = init {
                         common::classes::emit_init_field_start(self.chunk(), this_slot, line);
                         self.compile_expr(init_expr)?;
+                        common::classes::emit_init_field_end(self.chunk(), fname, line);
+                    } else if class.is_value_type {
+                        common::classes::emit_init_field_start(self.chunk(), this_slot, line);
+                        self.emit_default_value_for_type_hint(type_hint.as_deref());
                         common::classes::emit_init_field_end(self.chunk(), fname, line);
                     } else {
                         common::classes::emit_init_field_null(self.chunk(), this_slot, fname, line);
@@ -1116,10 +1126,14 @@ impl Compiler {
                     common::classes::emit_store_super(self.chunk(), this_slot, &pname, line);
                 }
 
-                for (fname, init) in &field_inits {
+                for (fname, type_hint, init) in &field_inits {
                     if let Some(init_expr) = init {
                         common::classes::emit_init_field_start(self.chunk(), this_slot, line);
                         self.compile_expr(init_expr)?;
+                        common::classes::emit_init_field_end(self.chunk(), fname, line);
+                    } else if class.is_value_type {
+                        common::classes::emit_init_field_start(self.chunk(), this_slot, line);
+                        self.emit_default_value_for_type_hint(type_hint.as_deref());
                         common::classes::emit_init_field_end(self.chunk(), fname, line);
                     }
                 }
@@ -1162,10 +1176,14 @@ impl Compiler {
             common::classes::emit_new_typed_object(self.chunk(), this_slot, &canon_name, line);
 
             // Initialize fields
-            for (fname, init) in &field_inits {
+            for (fname, type_hint, init) in &field_inits {
                 if let Some(init_expr) = init {
                     common::classes::emit_init_field_start(self.chunk(), this_slot, line);
                     self.compile_expr(init_expr)?;
+                    common::classes::emit_init_field_end(self.chunk(), fname, line);
+                } else if class.is_value_type {
+                    common::classes::emit_init_field_start(self.chunk(), this_slot, line);
+                    self.emit_default_value_for_type_hint(type_hint.as_deref());
                     common::classes::emit_init_field_end(self.chunk(), fname, line);
                 } else {
                     common::classes::emit_init_field_null(self.chunk(), this_slot, fname, line);

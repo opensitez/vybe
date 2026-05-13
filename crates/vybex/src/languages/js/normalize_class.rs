@@ -156,6 +156,7 @@ pub fn normalize_class(
         is_abstract: modifiers.is_abstract,
         is_sealed: modifiers.is_sealed,
         is_partial: false,
+        is_value_type: false,
         explicit_self_param: false,
         implicit_self_fields: false, // JS: bare `foo` doesn't resolve to this.foo
         instance_fields,

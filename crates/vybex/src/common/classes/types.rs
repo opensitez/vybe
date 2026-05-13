@@ -36,6 +36,9 @@ pub struct NormalClass {
     /// Walker merged all partial parts before producing this value.
     /// Flag is informational / diagnostic — `emit_class` ignores it.
     pub is_partial: bool,
+    /// Value types (for example C# structs) still use the shared class
+    /// pipeline, but they need different default-value semantics.
+    pub is_value_type: bool,
 
     /// Every instance method (including the constructor) has `self` as
     /// the first positional parameter, as in Python (`def f(self, …)`).

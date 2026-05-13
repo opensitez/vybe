@@ -36,8 +36,9 @@ pub fn emit_class_from_ast(
     interfaces: &[String],
     members: &[ClassMember],
     modifiers: &ClassModifiers,
+    is_value_type: bool,
 ) -> Result<(), String> {
-    let nc = normalize_for_profile(
+    let mut nc = normalize_for_profile(
         compiler.profile.name.as_str(),
         span,
         cname,
@@ -46,6 +47,7 @@ pub fn emit_class_from_ast(
         members,
         modifiers,
     )?;
+    nc.is_value_type = is_value_type;
     emit_class(compiler, nc)
 }
 
