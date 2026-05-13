@@ -4445,7 +4445,8 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }));
     } else {
         let uses_entry_fields = !var.is_empty()
-            && foreach_src.contains(&format!("{}.Key", var));
+            && foreach_src.contains(&format!("{}.Key", var))
+            && foreach_src.contains(&format!("{}.Value", var));
         if uses_entry_fields {
             let user_var = var.clone();
             let source_var = format!("__csharp_foreach_item_{}", hidden_suffix);
@@ -4989,6 +4990,371 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
     Ok(Expression::with_span(kind, span))
 }
 
+#[derive(Clone)]
+struct QueryState {
+    result_expr: Expression,
+    item_param: String,
+    bindings: Vec<(String, Expression)>,
+}
+
+fn query_param(name: &str) -> Param {
+    Param {
+        name: name.to_string(),
+        type_hint: None,
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
+    }
+}
+
+fn query_member(object: Expression, field: &str) -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(object),
+        field: field.to_string(),
+        null_safe: false,
+    })
+}
+
+fn query_lambda(param: &str, body: Expression) -> Expression {
+    Expression::new(ExprKind::Lambda {
+        params: vec![query_param(param)],
+        body: LambdaBody::Expr(Box::new(body)),
+        is_async: false,
+        captures: Vec::new(),
+    })
+}
+
+fn query_call(target: Expression, method: &str, args: Vec<Expression>) -> Expression {
+    canonicalize_method_call(
+        query_member(target, method),
+        args.into_iter().map(Argument::positional).collect(),
+    )
+}
+
+fn rewrite_query_expr(expr: &Expression, bindings: &[(String, Expression)]) -> Expression {
+    let mut rewritten = expr.clone();
+    for (name, replacement) in bindings {
+        rewritten = rewrite_ident_expr(&rewritten, name, replacement);
+    }
+    rewritten
+}
+
+fn query_bindings_for_item(item_param: &str, names: &[String]) -> Vec<(String, Expression)> {
+    names.iter()
+        .map(|name| (name.clone(), query_member(Expression::ident(item_param), name)))
+        .collect()
+}
+
+fn query_binding_names(bindings: &[(String, Expression)]) -> Vec<String> {
+    bindings.iter().map(|(name, _)| name.clone()).collect()
+}
+
+fn query_object_from_bindings(
+    bindings: &[(String, Expression)],
+    extra: Option<(String, Expression)>,
+) -> Expression {
+    let mut props = Vec::new();
+    for (name, value) in bindings {
+        props.push(ObjectProperty::KeyValue {
+            key: Expression::string(name),
+            value: value.clone(),
+        });
+    }
+    if let Some((name, value)) = extra {
+        props.push(ObjectProperty::KeyValue {
+            key: Expression::string(&name),
+            value,
+        });
+    }
+    Expression::new(ExprKind::Object(props))
+}
+
+fn parse_csharp_from_clause(pair: Pair<Rule>) -> Result<(String, Expression), String> {
+    let mut range_var = None;
+    let mut source_expr = None;
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::ident_name if range_var.is_none() => range_var = Some(child.as_str().to_string()),
+            Rule::expression => source_expr = Some(walk_expression(child)?),
+            _ => {}
+        }
+    }
+    Ok((
+        range_var.ok_or("query from clause missing range variable")?,
+        source_expr.ok_or("query from clause missing source expression")?,
+    ))
+}
+
+fn parse_csharp_join_clause(
+    pair: Pair<Rule>,
+) -> Result<(String, Expression, Expression, Expression), String> {
+    let mut join_var = None;
+    let mut exprs = Vec::new();
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::ident_name if join_var.is_none() => join_var = Some(child.as_str().to_string()),
+            Rule::expression => exprs.push(walk_expression(child)?),
+            _ => {}
+        }
+    }
+    if exprs.len() != 3 {
+        return Err("query join clause expects source, left key, and right key".to_string());
+    }
+    Ok((
+        join_var.ok_or("query join clause missing range variable")?,
+        exprs.remove(0),
+        exprs.remove(0),
+        exprs.remove(0),
+    ))
+}
+
+fn parse_csharp_let_clause(pair: Pair<Rule>) -> Result<(String, Expression), String> {
+    let mut name = None;
+    let mut value = None;
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::ident_name if name.is_none() => name = Some(child.as_str().to_string()),
+            Rule::expression => value = Some(walk_expression(child)?),
+            _ => {}
+        }
+    }
+    Ok((
+        name.ok_or("query let clause missing variable name")?,
+        value.ok_or("query let clause missing value expression")?,
+    ))
+}
+
+fn parse_csharp_ordering(pair: Pair<Rule>) -> Result<(Expression, bool), String> {
+    let mut key_expr = None;
+    let mut descending = false;
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::expression => key_expr = Some(walk_expression(child)?),
+            Rule::q_order_direction => descending = child.as_str().eq_ignore_ascii_case("descending"),
+            _ => {}
+        }
+    }
+    Ok((
+        key_expr.ok_or("query ordering missing key expression")?,
+        descending,
+    ))
+}
+
+fn is_query_item_expr(expr: &Expression, item_param: &str) -> bool {
+    matches!(&expr.kind, ExprKind::Ident(name) if name == item_param)
+}
+
+fn lower_csharp_query_body(pair: Pair<Rule>, state: QueryState) -> Result<Expression, String> {
+    let mut state = state;
+    let mut terminal: Option<Pair<Rule>> = None;
+    let mut continuation: Option<Pair<Rule>> = None;
+
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::query_body_clause => {
+                let clause = child.into_inner().next().ok_or("empty query clause")?;
+                match clause.as_rule() {
+                    Rule::q_where_clause => {
+                        let predicate = clause.into_inner().next().ok_or("where clause missing predicate")?;
+                        let raw = walk_expression(predicate)?;
+                        let rewritten = rewrite_query_expr(&raw, &state.bindings);
+                        state.result_expr = query_call(
+                            state.result_expr,
+                            "Where",
+                            vec![query_lambda(&state.item_param, rewritten)],
+                        );
+                    }
+                    Rule::q_orderby_clause => {
+                        let orderings: Vec<Pair<Rule>> = clause.into_inner().collect();
+                        for (index, ordering) in orderings.into_iter().enumerate() {
+                            let (raw_key, descending) = parse_csharp_ordering(ordering)?;
+                            let rewritten = rewrite_query_expr(&raw_key, &state.bindings);
+                            let method = if index == 0 {
+                                if descending { "OrderByDescending" } else { "OrderBy" }
+                            } else if descending {
+                                "ThenByDescending"
+                            } else {
+                                "ThenBy"
+                            };
+                            state.result_expr = query_call(
+                                state.result_expr,
+                                method,
+                                vec![query_lambda(&state.item_param, rewritten)],
+                            );
+                        }
+                    }
+                    Rule::q_let_clause => {
+                        let (let_name, raw_value) = parse_csharp_let_clause(clause)?;
+                        let rewritten_value = rewrite_query_expr(&raw_value, &state.bindings);
+                        let projection = query_object_from_bindings(
+                            &state.bindings,
+                            Some((let_name.clone(), rewritten_value)),
+                        );
+                        state.result_expr = query_call(
+                            state.result_expr,
+                            "Select",
+                            vec![query_lambda(&state.item_param, projection)],
+                        );
+                        let mut names = query_binding_names(&state.bindings);
+                        names.push(let_name);
+                        state.item_param = "__query_item".to_string();
+                        state.bindings = query_bindings_for_item(&state.item_param, &names);
+                    }
+                    Rule::q_from_clause => {
+                        let (range_var, source_expr) = parse_csharp_from_clause(clause)?;
+                        let outer_item_param = state.item_param.clone();
+                        let visible_bindings = state.bindings.clone();
+                        let rewritten_source = rewrite_query_expr(&source_expr, &visible_bindings);
+                        let inner_projection = query_object_from_bindings(
+                            &visible_bindings,
+                            Some((range_var.clone(), Expression::ident(&range_var))),
+                        );
+                        let inner_select = query_call(
+                            rewritten_source,
+                            "Select",
+                            vec![query_lambda(&range_var, inner_projection)],
+                        );
+                        state.result_expr = query_call(
+                            state.result_expr,
+                            "SelectMany",
+                            vec![query_lambda(&outer_item_param, inner_select)],
+                        );
+                        let mut names = query_binding_names(&state.bindings);
+                        names.push(range_var);
+                        state.item_param = "__query_item".to_string();
+                        state.bindings = query_bindings_for_item(&state.item_param, &names);
+                    }
+                    Rule::q_join_clause => {
+                        let (join_var, join_source, left_key, right_key) = parse_csharp_join_clause(clause)?;
+                        let outer_item_param = state.item_param.clone();
+                        let visible_bindings = state.bindings.clone();
+                        let rewritten_source = rewrite_query_expr(&join_source, &visible_bindings);
+                        let left_key_expr = rewrite_query_expr(&left_key, &visible_bindings);
+                        let mut right_bindings = visible_bindings.clone();
+                        right_bindings.push((join_var.clone(), Expression::ident(&join_var)));
+                        let right_key_expr = rewrite_query_expr(&right_key, &right_bindings);
+                        let filtered = query_call(
+                            rewritten_source,
+                            "Where",
+                            vec![query_lambda(
+                                &join_var,
+                                Expression::new(ExprKind::Binary {
+                                    op: BinOp::Eq,
+                                    left: Box::new(left_key_expr),
+                                    right: Box::new(right_key_expr),
+                                }),
+                            )],
+                        );
+                        let projected = query_call(
+                            filtered,
+                            "Select",
+                            vec![query_lambda(
+                                &join_var,
+                                query_object_from_bindings(
+                                    &visible_bindings,
+                                    Some((join_var.clone(), Expression::ident(&join_var))),
+                                ),
+                            )],
+                        );
+                        state.result_expr = query_call(
+                            state.result_expr,
+                            "SelectMany",
+                            vec![query_lambda(&outer_item_param, projected)],
+                        );
+                        let mut names = query_binding_names(&state.bindings);
+                        names.push(join_var);
+                        state.item_param = "__query_item".to_string();
+                        state.bindings = query_bindings_for_item(&state.item_param, &names);
+                    }
+                    _ => return Err(format!("unsupported query clause: {:?}", clause.as_rule())),
+                }
+            }
+            Rule::query_select_or_group_clause => terminal = Some(child),
+            Rule::query_continuation => continuation = Some(child),
+            _ => {}
+        }
+    }
+
+    let terminal = terminal.ok_or("query body missing terminal clause")?;
+    let terminal_expr = terminal.into_inner().next().ok_or("empty query terminal clause")?;
+    let result_after_terminal = match terminal_expr.as_rule() {
+        Rule::q_select_clause => {
+            let selection = terminal_expr.into_inner().next().ok_or("select clause missing projection")?;
+            let raw = walk_expression(selection)?;
+            let rewritten = rewrite_query_expr(&raw, &state.bindings);
+            query_call(
+                state.result_expr,
+                "Select",
+                vec![query_lambda(&state.item_param, rewritten)],
+            )
+        }
+        Rule::q_group_clause => {
+            let mut exprs = terminal_expr.into_inner();
+            let group_expr = walk_expression(exprs.next().ok_or("group clause missing element")?)?;
+            let key_expr = walk_expression(exprs.next().ok_or("group clause missing key")?)?;
+            let rewritten_group = rewrite_query_expr(&group_expr, &state.bindings);
+            let rewritten_key = rewrite_query_expr(&key_expr, &state.bindings);
+            let groups_current_item = is_query_item_expr(&rewritten_group, &state.item_param);
+            let grouped_source = if groups_current_item {
+                state.result_expr
+            } else {
+                query_call(
+                    state.result_expr,
+                    "Select",
+                    vec![query_lambda(&state.item_param, rewritten_group)],
+                )
+            };
+            let key_param = if groups_current_item {
+                state.item_param.clone()
+            } else {
+                "__group_item".to_string()
+            };
+            query_call(
+                grouped_source,
+                "GroupBy",
+                vec![query_lambda(&key_param, rewritten_key)],
+            )
+        }
+        _ => return Err(format!("unsupported query terminal clause: {:?}", terminal_expr.as_rule())),
+    };
+
+    if let Some(continuation) = continuation {
+        let mut inner = continuation.into_inner();
+        let name = inner.next().ok_or("query continuation missing range variable")?.as_str().to_string();
+        let body = inner.next().ok_or("query continuation missing query body")?;
+        return lower_csharp_query_body(
+            body,
+            QueryState {
+                result_expr: result_after_terminal,
+                item_param: name.clone(),
+                bindings: vec![(name.clone(), Expression::ident(&name))],
+            },
+        );
+    }
+
+    Ok(result_after_terminal)
+}
+
+fn parse_csharp_query_expression(pair: Pair<Rule>) -> Result<Expression, String> {
+    let span = to_span(&pair);
+    let mut inner = pair.into_inner();
+    let from_clause = inner.next().ok_or("query expression missing from clause")?;
+    let query_body = inner.next().ok_or("query expression missing query body")?;
+    let (range_var, source_expr) = parse_csharp_from_clause(from_clause)?;
+    let lowered = lower_csharp_query_body(
+        query_body,
+        QueryState {
+            result_expr: source_expr,
+            item_param: range_var.clone(),
+            bindings: vec![(range_var.clone(), Expression::ident(&range_var))],
+        },
+    )?;
+    Ok(Expression::with_span(lowered.kind, span))
+}
+
 fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
     match pair.as_rule() {
         // Literals
@@ -5076,6 +5442,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let inner = pair.into_inner().next().ok_or("Empty expression")?;
             walk_expr_kind(inner)
         }
+
+        Rule::query_expression => Ok(parse_csharp_query_expression(pair)?.kind),
 
         // Assignment
         Rule::assignment_expression => {
@@ -7242,6 +7610,9 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
     // Instance-method rewrite: `a.CompareTo(b)` → `a < b ? -1 : a > b ? 1 : 0`
     // (works for strings AND numbers — same JS comparison semantics).
     if let ExprKind::Member { object, field, .. } = &callee.kind {
+        if field.eq_ignore_ascii_case("Count") && args.is_empty() {
+            return canonicalize_member_access((**object).clone(), "Count");
+        }
         if field.eq_ignore_ascii_case("ThenBy") && args.len() == 1 {
             if let ExprKind::Call { callee: prior_callee, args: prior_args, .. } = &object.kind {
                 if let ExprKind::Member { field: prior_field, .. } = &prior_callee.kind {

@@ -440,7 +440,22 @@ expression_statement = { expression ~ ";" }
 
 // ── Expressions ─────────────────────────────────────────────────────────────
 
-expression = { assignment_expression }
+expression = { query_expression | assignment_expression }
+
+query_expression = { q_from_clause ~ query_body }
+q_from_clause = { "from" ~ ident_name ~ "in" ~ expression }
+query_body = { query_body_clause* ~ query_select_or_group_clause ~ query_continuation? }
+query_body_clause = { q_from_clause | q_let_clause | q_where_clause | q_join_clause | q_orderby_clause }
+query_select_or_group_clause = { q_select_clause | q_group_clause }
+query_continuation = { "into" ~ ident_name ~ query_body }
+q_where_clause = { "where" ~ expression }
+q_let_clause = { "let" ~ ident_name ~ "=" ~ expression }
+q_join_clause = { "join" ~ ident_name ~ "in" ~ expression ~ "on" ~ expression ~ "equals" ~ expression }
+q_orderby_clause = { "orderby" ~ q_ordering ~ ("," ~ q_ordering)* }
+q_ordering = { expression ~ q_order_direction? }
+q_order_direction = { "ascending" | "descending" }
+q_select_clause = { "select" ~ expression }
+q_group_clause = { "group" ~ expression ~ "by" ~ expression }
 
 assignment_expression = {
     lambda_expression

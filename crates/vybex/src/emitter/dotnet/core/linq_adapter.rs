@@ -478,11 +478,11 @@ pub fn emit_linq_select_many(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
-/// `arr.GroupBy(keyFn)` — returns an array of group arrays.
-/// Each group is an array with an extra property `Key`.
+/// `arr.GroupBy(keyFn)` — returns an array of grouping objects.
+/// Each group has `Key`, `Items`, and `Count` properties.
 /// Stack: [arr, keyFn] → [groups].
 pub fn emit_linq_group_by(chunks: &mut [Chunk], current: usize, line: u32) {
-    let arr_slot = alloc_locals(&mut chunks[current], 8);
+    let arr_slot = alloc_locals(&mut chunks[current], 9);
     let fn_slot = arr_slot + 1;
     let map_slot = arr_slot + 2;
     let out_slot = arr_slot + 3;
@@ -490,6 +490,7 @@ pub fn emit_linq_group_by(chunks: &mut [Chunk], current: usize, line: u32) {
     let elem_slot = arr_slot + 5;
     let key_slot = arr_slot + 6;
     let group_slot = arr_slot + 7;
+    let items_slot = arr_slot + 8;
 
     // Stack: [arr, keyFn]
     chunks[current].emit_op_u16(Op::LOCAL_SET, fn_slot, line);  chunks[current].emit_op(Op::DROP, line);
@@ -514,7 +515,11 @@ pub fn emit_linq_group_by(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
     chunks[current].emit_op(Op::DROP, line);
 
-    // if !groupMap.has(key) { create group, set Key, save map, out.push(group) }
+    let key_name = chunks[current].add_constant(Value::String(Arc::from("Key")));
+    let count_name = chunks[current].add_constant(Value::String(Arc::from("Count")));
+    let items_name = chunks[current].add_constant(Value::String(Arc::from("Items")));
+
+    // if !groupMap.has(key) { create group object, initialize fields, save map, out.push(group) }
     chunks[current].emit_op_u16(Op::LOCAL_GET, map_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     emit_import_call(chunks, current, "ecma:map", "has", 2, line);
@@ -522,15 +527,31 @@ pub fn emit_linq_group_by(chunks: &mut [Chunk], current: usize, line: u32) {
     let maybe_new = chunks[current].emit_block(line);
     chunks[current].emit_br_if(0, line); // already exists
 
-    collections::emit_array_new(chunks, current, 0, line);
+    emit_import_call(chunks, current, "ecma:object", "new", 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, group_slot, line);
     chunks[current].emit_op(Op::DROP, line);
 
     // group["Key"] = key
     chunks[current].emit_op_u16(Op::LOCAL_GET, group_slot, line);
-    let key_name = chunks[current].add_constant(Value::String(Arc::from("Key")));
     chunks[current].emit_op_u16(Op::CONST, key_name, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    // group["Items"] = []
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, items_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, group_slot, line);
+    chunks[current].emit_op_u16(Op::CONST, items_name, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items_slot, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    // group["Count"] = 0
+    chunks[current].emit_op_u16(Op::LOCAL_GET, group_slot, line);
+    chunks[current].emit_op_u16(Op::CONST, count_name, line);
+    chunks[current].emit_op(Op::I32_CONST_0, line);
     collections::emit_set(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -557,10 +578,25 @@ pub fn emit_linq_group_by(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, group_slot, line);
     chunks[current].emit_op(Op::DROP, line);
 
-    // group.push(elem)
+    // items = group["Items"]
     chunks[current].emit_op_u16(Op::LOCAL_GET, group_slot, line);
+    chunks[current].emit_op_u16(Op::CONST, items_name, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, items_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    // items.push(elem)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    // group["Count"] = items.length
+    chunks[current].emit_op_u16(Op::LOCAL_GET, group_slot, line);
+    chunks[current].emit_op_u16(Op::CONST, count_name, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, items_slot, line);
+    collections::emit_len(chunks, current, line);
+    collections::emit_set(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
     loops::emit_for_in_end(chunks, current, idx_slot, state, line);

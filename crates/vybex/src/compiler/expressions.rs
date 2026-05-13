@@ -140,6 +140,20 @@ impl Compiler {
 
             // ── Binary ──────────────────────────────────────────────────
             ExprKind::Binary { op, left, right } => {
+                let is_csharp_integral_type = |type_hint: &str| {
+                    matches!(
+                        Self::normalize_type_hint(type_hint).as_str(),
+                        "int" | "uint" | "long" | "ulong" | "short" | "ushort" | "byte" | "sbyte"
+                    )
+                };
+                let expr_is_csharp_integral = |compiler: &Compiler, expr: &Expression| {
+                    matches!(expr.kind, ExprKind::Lit(Literal::Int(_)))
+                        || compiler
+                            .infer_expr_type_hint(expr)
+                            .as_deref()
+                            .is_some_and(is_csharp_integral_type)
+                };
+
                 // Short-circuit for And/Or
                 if *op == BinOp::And {
                     self.compile_expr(left)?;
@@ -224,6 +238,18 @@ impl Compiler {
                 if self.try_compile_dotnet_datetime_timespan_binary_operator(op, left, right)? {
                     return Ok(());
                 }
+
+                if self.profile.name == "csharp"
+                    && *op == BinOp::Div
+                    && expr_is_csharp_integral(self, left)
+                    && expr_is_csharp_integral(self, right)
+                {
+                    self.compile_expr(left)?;
+                    self.compile_expr(right)?;
+                    self.compile_binop(&BinOp::IDiv);
+                    return Ok(());
+                }
+
                 self.compile_expr(left)?;
                 self.compile_expr(right)?;
                 self.compile_binop(op);
@@ -653,6 +679,7 @@ impl Compiler {
                 let receiver_is_collection_like = if matches!(self.profile.name.as_str(), "csharp" | "vb")
                     && matches!(field.as_str(), "Length" | "Count")
                 {
+                    let unknown_receiver_default = field == "Length";
                     let is_collection_like_type = |type_hint: &str| {
                         let normalized = Self::normalize_type_hint(type_hint);
                         Self::is_string_type_hint(type_hint)
@@ -671,9 +698,9 @@ impl Compiler {
                         ExprKind::Ident(_) | ExprKind::New { .. } | ExprKind::Call { .. } => receiver_type_hint
                             .as_deref()
                             .map(is_collection_like_type)
-                            .unwrap_or(true),
+                            .unwrap_or(unknown_receiver_default),
                         ExprKind::Lit(Literal::Str(_)) | ExprKind::Interpolation(_) | ExprKind::Array(_) => true,
-                        _ => true,
+                        _ => unknown_receiver_default,
                     }
                 } else {
                     false
