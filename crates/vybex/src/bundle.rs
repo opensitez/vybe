@@ -51,35 +51,10 @@ pub struct CompiledBundle {
 }
 
 impl Bundle {
-    /// Parse all sources and compile to bytecode chunks.
-    ///
-    /// Legacy API — retains the `Vec<Chunk>` return shape for callers
-    /// (tests, older code) that don't need the import metadata. Newer
-    /// callers that install ESM host bindings should use
-    /// [`Self::compile_full`].
-    pub fn compile(&self) -> Result<Vec<vybe_bytecode::Chunk>, String> {
-        self.compile_full().map(|r| r.chunks)
-    }
-
-    /// Compile and return chunks + ESM import metadata. Uses an empty
-    /// module registry — no Adapter resolution. Call sites that need
-    /// Adapter modules (`node:*` etc.) should use
-    /// [`Self::compile_full_with_modules`].
-    pub fn compile_full(&self) -> Result<CompiledBundle, String> {
-        self.compile_full_with_modules(&std::collections::HashMap::new())
-    }
-
-    /// Compile with a read-only snapshot of `vm.modules` so the Linker
-    /// can resolve Adapter-module imports (`import { X } from "node:http"`)
-    /// by walking the re-export chain to the ultimate Synthetic target.
-    ///
-    /// The snapshot is flattened in this function — each adapter's
-    /// `Indirect` exports are resolved transitively so the Compiler's
-    /// Linker sees pre-resolved `(final_module, final_name)` pairs.
-    pub fn compile_full_with_modules(
-        &self,
-        modules: &std::collections::HashMap<String, vybe_bytecode::ModuleRecord>,
-    ) -> Result<CompiledBundle, String> {
+    /// Parse all sources into the common AST and apply the same
+    /// bundle-level preparation that compilation uses: source-import
+    /// resolution plus entry-point injection.
+    pub fn prepared_module(&self) -> Result<Module, String> {
         // Concatenate all sources
         let combined: String = self.sources.iter()
             .map(|s| s.code.as_str())
@@ -146,6 +121,40 @@ impl Bundle {
                 })
             )));
         }
+
+        Ok(module)
+    }
+
+    /// Parse all sources and compile to bytecode chunks.
+    ///
+    /// Legacy API — retains the `Vec<Chunk>` return shape for callers
+    /// (tests, older code) that don't need the import metadata. Newer
+    /// callers that install ESM host bindings should use
+    /// [`Self::compile_full`].
+    pub fn compile(&self) -> Result<Vec<vybe_bytecode::Chunk>, String> {
+        self.compile_full().map(|r| r.chunks)
+    }
+
+    /// Compile and return chunks + ESM import metadata. Uses an empty
+    /// module registry — no Adapter resolution. Call sites that need
+    /// Adapter modules (`node:*` etc.) should use
+    /// [`Self::compile_full_with_modules`].
+    pub fn compile_full(&self) -> Result<CompiledBundle, String> {
+        self.compile_full_with_modules(&std::collections::HashMap::new())
+    }
+
+    /// Compile with a read-only snapshot of `vm.modules` so the Linker
+    /// can resolve Adapter-module imports (`import { X } from "node:http"`)
+    /// by walking the re-export chain to the ultimate Synthetic target.
+    ///
+    /// The snapshot is flattened in this function — each adapter's
+    /// `Indirect` exports are resolved transitively so the Compiler's
+    /// Linker sees pre-resolved `(final_module, final_name)` pairs.
+    pub fn compile_full_with_modules(
+        &self,
+        modules: &std::collections::HashMap<String, vybe_bytecode::ModuleRecord>,
+    ) -> Result<CompiledBundle, String> {
+        let module = self.prepared_module()?;
 
         // Load profile + compile source code.
         //

@@ -130,6 +130,10 @@ pub enum StmtKind {
         name: String,
         members: Vec<EnumMember>,
         visibility: Visibility,
+        is_flags: bool,
+        backing_type: Option<String>,
+        interfaces: Vec<String>,
+        body_members: Vec<ClassMember>,
     },
 
     StructDecl {
@@ -961,4 +965,5 @@ pub enum Visibility {
 pub struct EnumMember {
     pub name: String,
     pub value: Option<Expression>,
+    pub constructor_args: Vec<Expression>,
 }

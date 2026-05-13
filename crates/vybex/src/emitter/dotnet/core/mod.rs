@@ -9,6 +9,8 @@ pub mod process_adapter;
 pub mod array_adapter;
 pub mod timespan_adapter;
 pub mod datetime_adapter;
+pub mod guid_adapter;
+pub mod version_adapter;
 pub mod string_format_adapter;
 pub mod stream_io_adapter;
 pub mod format_picture_adapter;

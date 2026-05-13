@@ -268,6 +268,41 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         "dotnet.timespan_sub"
             => crate::emitter::dotnet::core::timespan_adapter::emit_timespan_sub(chunks, current, line),
 
+        // ── .NET Guid adapters ──────────────────────────────────────
+        // `Guid` is stored as a .NET-shaped object carrying the
+        // canonical lowercase text representation in `__value`.
+        "dotnet.guid_empty"
+            => crate::emitter::dotnet::core::guid_adapter::emit_guid_empty(chunks, current, line),
+        "dotnet.guid_new_guid"
+            => crate::emitter::dotnet::core::guid_adapter::emit_guid_new_guid(chunks, current, line),
+        "dotnet.guid_parse"
+            => crate::emitter::dotnet::core::guid_adapter::emit_guid_parse(chunks, current, line),
+        "dotnet.guid_new"
+            => crate::emitter::dotnet::core::guid_adapter::emit_guid_new(chunks, current, argc, line),
+        "dotnet.guid_to_string"
+            => crate::emitter::dotnet::core::guid_adapter::emit_guid_to_string(chunks, current, line),
+        "dotnet.guid_try_parse"
+            => crate::emitter::dotnet::core::guid_adapter::emit_guid_try_parse(chunks, current, argc, line),
+
+        "dotnet.version_new"
+            => crate::emitter::dotnet::core::version_adapter::emit_version_new(chunks, current, argc, line),
+        "dotnet.version_parse"
+            => crate::emitter::dotnet::core::version_adapter::emit_version_parse(chunks, current, line),
+        "dotnet.version_to_string"
+            => crate::emitter::dotnet::core::version_adapter::emit_version_to_string(chunks, current, line),
+        "dotnet.version_compare"
+            => crate::emitter::dotnet::core::version_adapter::emit_version_compare(chunks, current, line),
+        "dotnet.version_equals"
+            => crate::emitter::dotnet::core::version_adapter::emit_version_equals(chunks, current, line),
+        "dotnet.version_lt"
+            => crate::emitter::dotnet::core::version_adapter::emit_version_lt(chunks, current, line),
+        "dotnet.version_gt"
+            => crate::emitter::dotnet::core::version_adapter::emit_version_gt(chunks, current, line),
+        "dotnet.version_eq"
+            => crate::emitter::dotnet::core::version_adapter::emit_version_eq(chunks, current, line),
+        "dotnet.version_ne"
+            => crate::emitter::dotnet::core::version_adapter::emit_version_ne(chunks, current, line),
+
         // ── .NET DateTime static adapters ───────────────────────────
         // `Now` / `UtcNow` / `Today` lower to `ecma:date.now` (which
         // reads `wasi:clocks/wall-clock.now`); `Parse` lowers to

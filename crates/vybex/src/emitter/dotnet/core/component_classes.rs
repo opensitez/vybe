@@ -19,6 +19,10 @@ mod component_classes_linq;
 mod component_classes_network;
 #[path = "component_classes_system.rs"]
 mod component_classes_system;
+#[path = "component_classes_system_values.rs"]
+mod component_classes_system_values;
+#[path = "component_classes_system_version.rs"]
+mod component_classes_system_version;
 #[path = "component_classes_text.rs"]
 mod component_classes_text;
 #[path = "component_classes_threading.rs"]
@@ -29,6 +33,8 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
         let mut exports = component_classes_collections::exports();
         component_classes_linq::apply_linq_registrations(&mut exports);
         exports.extend(component_classes_system::exports());
+        exports.extend(component_classes_system_values::exports());
+        exports.extend(component_classes_system_version::exports());
         exports.extend(component_classes_threading::exports());
         exports.extend(component_classes_text::exports());
         exports.extend(component_classes_data_drawing::exports());

@@ -4,6 +4,7 @@
 //!
 //! Flags:
 //!   --dump, -d        Disassemble bytecode and exit (no run)
+//!   --dump-ast        Parse and print the prepared common AST, then exit
 //!   --emit-wasm, -w   Compile to .wasm binary and exit
 //!   --sandbox, -s     Restricted mode (no filesystem/network/database)
 //!   --portable, -p    Minimal WASI runtime only (no Vybe host optimizations)
@@ -22,6 +23,7 @@ use vybe_bytecode::VM;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut dump = false;
+    let mut dump_ast = false;
     let mut emit_wasm = false;
     let mut sandbox = false;
     let mut portable = false;
@@ -39,6 +41,7 @@ fn main() {
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--dump" | "-d" => dump = true,
+            "--dump-ast" => dump_ast = true,
             "--emit-wasm" | "-w" => emit_wasm = true,
             "--sandbox" | "-s" => sandbox = true,
             "--portable" | "-p" => portable = true,
@@ -92,6 +95,10 @@ fn main() {
 
     // ── Handle .wasm binaries directly ──────────────────────────────────────
     if path.extension().and_then(|e| e.to_str()) == Some("wasm") {
+        if dump_ast {
+            eprintln!("AST dump is only available for source files and projects");
+            std::process::exit(1);
+        }
         run_wasm(path, dump, trace, chunk_filter.as_deref());
         return;
     }
@@ -108,6 +115,15 @@ fn main() {
         bundle.entry_point);
     for s in &bundle.sources {
         eprintln!("  → {} ({} bytes)", s.path.display(), s.code.len());
+    }
+
+    if dump_ast {
+        let module = match bundle.prepared_module() {
+            Ok(module) => module,
+            Err(e) => { eprintln!("Parse error: {e}"); std::process::exit(1); }
+        };
+        println!("{:#?}", module);
+        return;
     }
 
     // ── Set up VM first (so adapter modules can be registered ──────────────
@@ -295,6 +311,7 @@ fn print_usage() {
     eprintln!();
     eprintln!("Flags:");
     eprintln!("  -d, --dump        Disassemble bytecode (no run)");
+    eprintln!("      --dump-ast    Parse and print the prepared common AST");
     eprintln!("  -w, --emit-wasm   Compile to .wasm binary");
     eprintln!("  -s, --sandbox     Restricted mode (safe capabilities only)");
     eprintln!("  -p, --portable    Minimal WASI runtime (no Vybe host)");

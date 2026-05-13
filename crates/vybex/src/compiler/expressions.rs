@@ -392,6 +392,60 @@ impl Compiler {
                     }
                 }
 
+                if self.profile.namespaces.use_dotnet {
+                    let parts = self.flatten_member_chain(expr);
+                    if !parts.is_empty() {
+                        let lower_parts: Vec<String> = parts.iter().map(|part| self.canon(part)).collect();
+                        if common::dotnet::is_namespace_root(&lower_parts[0]) {
+                            let scope = self.scope();
+                            let dotnet_surface = common::dotnet::surface();
+                            let mut imports = dotnet_surface.default_imports().to_vec();
+                            imports.extend(self.profile.namespaces.extra_imports.clone());
+                            let field_set: std::collections::HashSet<String> = if let Some(ref class_name) = self.current_class {
+                                self.pending_classes.get(class_name.as_str())
+                                    .map(|pending| pending.fields.iter().cloned().collect())
+                                    .unwrap_or_default()
+                            } else {
+                                std::collections::HashSet::new()
+                            };
+                            let defined_globals = self.defined_globals.clone();
+                            let defined_classes = self.defined_classes.clone();
+                            let is_user_class_fn = move |name: &str| -> bool {
+                                defined_classes.contains(name)
+                                    || defined_classes.iter().any(|class_name| class_name.eq_ignore_ascii_case(name))
+                            };
+                            let is_user_class_for_local = is_user_class_fn.clone();
+                            let ctx = common::dotnet::ResolutionContext {
+                                is_local: &|name: &str| {
+                                    if is_user_class_for_local(name) {
+                                        return false;
+                                    }
+                                    scope.resolve(name).is_some()
+                                        || scope.resolve_ci(name).is_some()
+                                        || defined_globals.contains(name)
+                                        || defined_globals.iter().any(|global_name| global_name.eq_ignore_ascii_case(name))
+                                },
+                                is_class_field: &|name: &str| field_set.contains(name),
+                                is_user_type: &is_user_class_fn,
+                                imports: &imports,
+                            };
+                            let refs: Vec<&str> = lower_parts.iter().map(|part| part.as_str()).collect();
+                            match common::dotnet::resolve_dotted_name(&refs, &ctx) {
+                                common::dotnet::DottedResolution::CommonCall { emit } => {
+                                    self.emit_common(&emit, 0, self.line);
+                                    return Ok(());
+                                }
+                                common::dotnet::DottedResolution::HostCall { module, func } => {
+                                    let idx = self.import(&module, &func);
+                                    self.emit_host_call(idx, 0);
+                                    return Ok(());
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+
                 // Proxy get-trap dispatch (JS profile, only when the
                 // module references `Proxy` somewhere). Routes member
                 // reads through the inline dispatcher in
@@ -2126,6 +2180,21 @@ impl Compiler {
     fn dotnet_expr_static_type(&self, expr: &Expression) -> Option<String> {
         match &expr.kind {
             ExprKind::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
+            ExprKind::New { class, .. } => match &class.kind {
+                ExprKind::Ident(name) => Some(name.rsplit('.').next().unwrap_or(name).to_string()),
+                ExprKind::Member { field, .. } => Some(field.to_string()),
+                _ => None,
+            },
+            ExprKind::Call { callee, .. } => match &callee.kind {
+                ExprKind::Member { object, field, .. } if field.eq_ignore_ascii_case("Parse") => {
+                    match &object.kind {
+                        ExprKind::Ident(name) if name.eq_ignore_ascii_case("Version") => Some("Version".into()),
+                        ExprKind::Member { field, .. } if field.eq_ignore_ascii_case("Version") => Some("Version".into()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -2165,6 +2234,18 @@ impl Compiler {
             BinOp::Sub
                 if Self::is_dotnet_type_name(&left_type, "DateTime")
                     && Self::is_dotnet_type_name(&right_type, "DateTime") => Some("dotnet.datetime_subtract_datetime"),
+            BinOp::Lt
+                if Self::is_dotnet_type_name(&left_type, "Version")
+                    && Self::is_dotnet_type_name(&right_type, "Version") => Some("dotnet.version_lt"),
+            BinOp::Gt
+                if Self::is_dotnet_type_name(&left_type, "Version")
+                    && Self::is_dotnet_type_name(&right_type, "Version") => Some("dotnet.version_gt"),
+            BinOp::Eq
+                if Self::is_dotnet_type_name(&left_type, "Version")
+                    && Self::is_dotnet_type_name(&right_type, "Version") => Some("dotnet.version_eq"),
+            BinOp::NotEq
+                if Self::is_dotnet_type_name(&left_type, "Version")
+                    && Self::is_dotnet_type_name(&right_type, "Version") => Some("dotnet.version_ne"),
             _ => None,
         };
 

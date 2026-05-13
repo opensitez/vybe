@@ -365,10 +365,6 @@ doevents     = { emit = "noop",                            min_args = 0, max_arg
 "environment.setenvironmentvariable"  = { emit = "noop",                      min_args = 2, max_args = 2 }
 "environment.getfolderpath"           = { emit = "host:wasi:cli:getFolderPath", min_args = 1, max_args = 1 }
 
-# ── Guid ─────────────────────────────────────────────────────────────────────
-
-"guid.newguid" = { emit = "host:web:crypto:randomUUID",   min_args = 0, max_args = 0 }
-
 # ── Convert (Base64) ─────────────────────────────────────────────────────────
 
 "convert.tobase64string"   = { emit = "host:ecma:string:btoa",  min_args = 1, max_args = 1 }

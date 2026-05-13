@@ -906,7 +906,9 @@ fn walk_extension_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut name = String::new();
-    let mut value_names: Vec<String> = Vec::new();
+    let mut members: Vec<EnumMember> = Vec::new();
+    let mut interfaces: Vec<String> = Vec::new();
+    let mut body_members: Vec<ClassMember> = Vec::new();
 
     for p in pair.into_inner() {
         match p.as_rule() {
@@ -919,91 +921,69 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 for vp in p.into_inner() {
                     match vp.as_rule() {
                         Rule::ident_name => {
-                            // Bare-form: just the identifier.
-                            value_names.push(vp.as_str().to_string());
+                            members.push(EnumMember {
+                                name: vp.as_str().to_string(),
+                                value: None,
+                                constructor_args: Vec::new(),
+                            });
                         }
                         Rule::enum_value => {
-                            // Enhanced form: ident_name + optional `(args)`.
-                            // We keep the name; constructor args are discarded
-                            // for now (Vybe doesn't model parameterized enum
-                            // instances yet).
+                            let mut value_name = String::new();
+                            let mut constructor_args = Vec::new();
                             for inner in vp.into_inner() {
-                                if inner.as_rule() == Rule::ident_name {
-                                    value_names.push(inner.as_str().to_string());
-                                    break;
+                                match inner.as_rule() {
+                                    Rule::ident_name if value_name.is_empty() => {
+                                        value_name = inner.as_str().to_string();
+                                    }
+                                    Rule::argument_list => {
+                                        constructor_args = walk_arguments(inner)?
+                                            .into_iter()
+                                            .map(|arg| arg.value)
+                                            .collect();
+                                    }
+                                    _ => {}
                                 }
                             }
+                            members.push(EnumMember {
+                                name: value_name,
+                                value: None,
+                                constructor_args,
+                            });
                         }
                         _ => {}
                     }
                 }
             }
-            Rule::enum_clauses => { /* with/implements — discard for now */ }
-            Rule::class_member => { /* enhanced-enum methods/fields — discard */ }
+            Rule::enum_clauses => {
+                let raw = p.as_str();
+                if let Some(idx) = raw.find("implements") {
+                    let tail = &raw[idx + "implements".len()..];
+                    interfaces.extend(
+                        tail.split(',')
+                            .map(str::trim)
+                            .filter(|name| !name.is_empty())
+                            .map(|name| name.to_string())
+                    );
+                }
+            }
+            Rule::class_member => {
+                if let Some(member) = walk_class_member(p, &name)? {
+                    body_members.push(member);
+                }
+            }
             Rule::type_params => {}
             _ => {}
         }
     }
 
-    // Dart enums are full objects with `.index`, `.name`, plus a static
-    // `.values` list. Walker normalizes to `Const` members each holding
-    // an object literal `{ index, name, __type }`. The shared class
-    // compiler then makes them static-accessible as `Color.red`,
-    // `Color.red.index`, etc., and `Color.values` as a literal list.
-    let mut members: Vec<ClassMember> = Vec::new();
-    let mut values_array: Vec<crate::ast::ArrayElement> = Vec::new();
-    let static_modifiers = {
-        let mut m = Modifiers::default();
-        m.is_static = true;
-        m
-    };
-    for (idx, val_name) in value_names.iter().enumerate() {
-        let obj_props = vec![
-            ObjectProperty::KeyValue {
-                key: Expression::new(ExprKind::Lit(Literal::Str("index".into()))),
-                value: Expression::new(ExprKind::Lit(Literal::Int(idx as i64))),
-            },
-            ObjectProperty::KeyValue {
-                key: Expression::new(ExprKind::Lit(Literal::Str("name".into()))),
-                value: Expression::new(ExprKind::Lit(Literal::Str(val_name.clone()))),
-            },
-            ObjectProperty::KeyValue {
-                key: Expression::new(ExprKind::Lit(Literal::Str("__type".into()))),
-                value: Expression::new(ExprKind::Lit(Literal::Str(name.clone()))),
-            },
-        ];
-        let obj_expr = Expression::new(ExprKind::Object(obj_props));
-        members.push(ClassMember::Field {
-            name: val_name.clone(),
-            type_hint: None,
-            init: Some(obj_expr.clone()),
-            modifiers: static_modifiers.clone(),
-            with_events: false,
-            array_bounds: None,
-        });
-        values_array.push(crate::ast::ArrayElement {
-            key: None,
-            value: obj_expr,
-            spread: false,
-            by_ref: false,
-        });
-    }
-    // Static `values` list — Dart spec: `Color.values` returns all members.
-    members.push(ClassMember::Field {
-        name: "values".into(),
-        type_hint: None,
-        init: Some(Expression::new(ExprKind::Array(values_array))),
-        modifiers: static_modifiers.clone(),
-        with_events: false,
-        array_bounds: None,
-    });
-
-    Ok(StmtKind::ClassDecl {
+    Ok(StmtKind::EnumDecl {
         name,
-        parents: Vec::new(),
         interfaces: Vec::new(),
         members,
-        modifiers: ClassModifiers::default(),
+        visibility: Visibility::Public,
+        is_flags: false,
+        backing_type: None,
+        body_members,
     })
 }
 

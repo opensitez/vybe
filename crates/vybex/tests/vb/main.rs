@@ -7,6 +7,7 @@ mod test_vb_date_literals;
 mod test_vb_error_handling;
 mod test_vb_exit_do;
 mod test_vb_events;
+mod test_vb_guid;
 mod test_vb_if_operator;
 mod test_vb_lambdas;
 mod test_vb_line_continuations;

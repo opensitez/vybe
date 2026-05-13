@@ -10,6 +10,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         .map_err(|e| format!("Parse error: {}", e))?;
     let mut body = Vec::new();
     let mut imports = Vec::new();
+    let mut pending_attributes: Vec<String> = Vec::new();
 
     for top in pairs {
         let inner = match top.as_rule() {
@@ -20,19 +21,23 @@ pub fn parse(source: &str) -> Result<Module, String> {
         for pair in inner {
             match pair.as_rule() {
                 Rule::EOI => continue,
+                Rule::attribute_list => pending_attributes.extend(parse_attribute_names(pair.as_str())),
                 Rule::using_directive => imports.push(walk_using(pair)?),
                 Rule::namespace_declaration => {
                     // Build NamespaceDecl with name and body
                     let mut ns_name = String::new();
                     let mut ns_body: Vec<Statement> = Vec::new();
+                    let mut namespace_pending_attributes: Vec<String> = Vec::new();
                     for p in pair.into_inner() {
                         match p.as_rule() {
                             Rule::dotted_name => ns_name = p.as_str().to_string(),
+                            Rule::attribute_list => namespace_pending_attributes.extend(parse_attribute_names(p.as_str())),
                             Rule::using_directive => imports.push(walk_using(p)?),
                             _ => {
-                                if let Ok(stmt) = walk_top_level(p) {
+                                if let Ok(stmt) = walk_top_level_with_attributes(p, &namespace_pending_attributes) {
                                     ns_body.push(stmt);
                                 }
+                                namespace_pending_attributes.clear();
                             }
                         }
                     }
@@ -42,9 +47,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
                     }));
                 }
                 _ => {
-                    if let Ok(stmt) = walk_top_level(pair) {
+                    if let Ok(stmt) = walk_top_level_with_attributes(pair, &pending_attributes) {
                         body.push(stmt);
                     }
+                    pending_attributes.clear();
                 }
             }
         }
@@ -73,6 +79,22 @@ pub fn parse(source: &str) -> Result<Module, String> {
     rewrite_record_uses(&mut module);
     rewrite_extension_calls(&mut module);
     Ok(module)
+}
+
+fn parse_attribute_names(raw: &str) -> Vec<String> {
+    raw.trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .filter_map(|part| {
+            let name = part.trim().split('(').next()?.trim();
+            if name.is_empty() {
+                None
+            } else {
+                Some(name.to_string())
+            }
+        })
+        .collect()
 }
 
 fn explicit_interface_runtime_name(interface_name: &str, member_name: &str) -> String {
@@ -2150,14 +2172,14 @@ fn synthesize_exception_class(name: &str) -> Statement {
 
 // ── Top-level items ─────────────────────────────────────────────────────────
 
-fn walk_top_level(pair: Pair<Rule>) -> Result<Statement, String> {
+fn walk_top_level_with_attributes(pair: Pair<Rule>, attributes: &[String]) -> Result<Statement, String> {
     let span = to_span(&pair);
     let kind = match pair.as_rule() {
         Rule::record_struct_declaration => walk_record_decl(pair)?,
         Rule::class_declaration => walk_class_decl(pair)?,
         Rule::struct_declaration => walk_struct_decl(pair)?,
         Rule::interface_declaration => walk_interface_decl(pair)?,
-        Rule::enum_declaration => walk_enum_decl(pair)?,
+        Rule::enum_declaration => walk_enum_decl(pair, attributes)?,
         Rule::record_declaration => walk_record_decl(pair)?,
         Rule::delegate_declaration => walk_delegate_decl(pair)?,
         _ => walk_statement(pair)?.kind,
@@ -2205,7 +2227,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         Rule::class_declaration => walk_class_decl(pair)?,
         Rule::struct_declaration => walk_struct_decl(pair)?,
         Rule::interface_declaration => walk_interface_decl(pair)?,
-        Rule::enum_declaration => walk_enum_decl(pair)?,
+        Rule::enum_declaration => walk_enum_decl(pair, &[])?,
         Rule::record_declaration => walk_record_decl(pair)?,
         Rule::delegate_declaration => walk_delegate_decl(pair)?,
         other => return Err(format!("Unexpected statement rule: {:?}", other)),
@@ -2711,9 +2733,11 @@ fn expand_explicit_interface_members(members: &mut Vec<ClassMember>) {
 fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
     let mut mods = Modifiers::default();
     let mut member_pair = None;
+    let mut attributes = Vec::new();
 
     for p in pair.into_inner() {
         match p.as_rule() {
+            Rule::attribute_list => attributes.extend(parse_attribute_names(p.as_str())),
             Rule::class_modifiers => {
                 for m in p.into_inner() {
                     match m.as_str() {
@@ -2761,7 +2785,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                 Rule::class_declaration => walk_class_decl(mp)?,
                 Rule::struct_declaration => walk_struct_decl(mp)?,
                 Rule::interface_declaration => walk_interface_decl(mp)?,
-                Rule::enum_declaration => walk_enum_decl(mp)?,
+                Rule::enum_declaration => walk_enum_decl(mp, &attributes)?,
                 _ => unreachable!(),
             };
             Ok(vec![ClassMember::NestedType(Box::new(
@@ -3496,9 +3520,13 @@ fn walk_interface_member(pair: Pair<Rule>) -> Result<InterfaceMember, String> {
 
 // ── Enum ────────────────────────────────────────────────────────────────────
 
-fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_enum_decl(pair: Pair<Rule>, attributes: &[String]) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut members = Vec::new();
+    let is_flags = attributes.iter().any(|attr| {
+        let short = attr.rsplit('.').next().unwrap_or(attr);
+        short.eq_ignore_ascii_case("Flags") || short.eq_ignore_ascii_case("FlagsAttribute")
+    });
 
     for p in pair.into_inner() {
         match p.as_rule() {
@@ -3515,7 +3543,7 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                                 _ => val = Some(walk_expression(ep)?),
                             }
                         }
-                        members.push(EnumMember { name: en, value: val });
+                        members.push(EnumMember { name: en, value: val, constructor_args: Vec::new() });
                     }
                 }
             }
@@ -3523,7 +3551,15 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
-    Ok(StmtKind::EnumDecl { name, members, visibility: Visibility::Public })
+    Ok(StmtKind::EnumDecl {
+        name,
+        members,
+        visibility: Visibility::Public,
+        is_flags,
+        backing_type: None,
+        interfaces: Vec::new(),
+        body_members: Vec::new(),
+    })
 }
 
 // ── Record ──────────────────────────────────────────────────────────────────
@@ -5110,10 +5146,7 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
         if chain_src.starts_with("?.") {
             // Null-conditional member access
-            let name = chain_inner.into_iter()
-                .find(|p| p.as_rule() == Rule::ident_or_keyword || p.as_rule() == Rule::ident_name)
-                .map(|p| p.as_str().to_string())
-                .unwrap_or_default();
+            let name = chain_src[2..].trim().to_string();
             expr = Expression::new(ExprKind::Member {
                 object: Box::new(expr), field: name, null_safe: true,
             });
@@ -5134,10 +5167,7 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
             expr = canonicalize_method_call(expr, args);
         } else if chain_src.starts_with(".") {
             // Member access — normalize known property accessors to canonical builtins
-            let name = chain_inner.into_iter()
-                .find(|p| p.as_rule() == Rule::ident_or_keyword || p.as_rule() == Rule::ident_name)
-                .map(|p| p.as_str().to_string())
-                .unwrap_or_default();
+            let name = chain_src[1..].trim().to_string();
             // C# tuple ItemN accessor: `(1, 2, 3).Item1` → `t[0]`,
             // `Item2` → `t[1]`, etc. Tuples compile to Arrays so the
             // ItemN names need to lower to indexed access. Pattern is

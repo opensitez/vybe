@@ -1414,7 +1414,7 @@ fn walk_enum_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statement,
                     _ => {}
                 }
             }
-            members.push(EnumMember { name: ename, value });
+            members.push(EnumMember { name: ename, value, constructor_args: Vec::new() });
         }
     }
 
@@ -1422,6 +1422,10 @@ fn walk_enum_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statement,
         name: name.to_string(),
         members,
         visibility: Visibility::Public,
+        is_flags: false,
+        backing_type: None,
+        interfaces: Vec::new(),
+        body_members: Vec::new(),
     }, span))
 }
 

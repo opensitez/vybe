@@ -1219,20 +1219,11 @@ fn walk_trait_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
 }
 
 fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    // PHP enums compile to a class with static constants. Each enum
-    // case becomes a Const member whose value is an object literal
-    // `{ name: "Case", value: <backing-value or "Case"> }` so user code
-    // can reach `EnumName::Case->name` and `EnumName::Case->value` via
-    // ordinary member access. A static `cases()` method returns the
-    // ordered list of all cases. Backed enums (with a backing type
-    // like `: string` or `: int`) additionally get static `from()` and
-    // `tryFrom()` methods that look up cases by their backing value.
     let mut name = String::new();
     let mut backing_type: Option<String> = None;
     let mut interfaces: Vec<String> = Vec::new();
-    let mut members: Vec<ClassMember> = Vec::new();
-    let mut case_names: Vec<String> = Vec::new();
-    let mut case_backings: Vec<(String, Option<Expression>)> = Vec::new();
+    let mut members: Vec<EnumMember> = Vec::new();
+    let mut body_members: Vec<ClassMember> = Vec::new();
     let mut deferred: Vec<Pair<Rule>> = Vec::new();
 
     // First pass: extract name + simple metadata (no expression walks yet).
@@ -1264,28 +1255,14 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                             _ => {}
                         }
                     }
-                    case_names.push(case_name.clone());
-                    case_backings.push((case_name.clone(), backing.clone()));
-                    let value_expr = backing.unwrap_or_else(|| Expression::string(&case_name));
-                    let case_obj = Expression::new(ExprKind::Object(vec![
-                        ObjectProperty::KeyValue {
-                            key: Expression::string("name"),
-                            value: Expression::string(&case_name),
-                        },
-                        ObjectProperty::KeyValue {
-                            key: Expression::string("value"),
-                            value: value_expr,
-                        },
-                    ]));
-                    members.push(ClassMember::Const {
+                    members.push(EnumMember {
                         name: case_name,
-                        type_hint: None,
-                        value: case_obj,
-                        visibility: Visibility::Public,
+                        value: backing,
+                        constructor_args: Vec::new(),
                     });
                 }
                 Rule::class_constant | Rule::method_declaration | Rule::use_trait => {
-                    if let Some(m) = walk_class_member(p)? { members.push(m); }
+                    if let Some(m) = walk_class_member(p)? { body_members.push(m); }
                 }
                 _ => {}
             }
@@ -1295,135 +1272,14 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     pop_class_context();
     walk_result?;
 
-    // Synthesize `static function cases(): array { return [<case>, ...]; }`.
-    if !case_names.is_empty() {
-        let elements: Vec<ArrayElement> = case_names.iter().map(|c| {
-            ArrayElement {
-                key: None,
-                value: Expression::new(ExprKind::StaticAccess {
-                    class: Box::new(Expression::ident(&name)),
-                    member: Box::new(Expression::ident(c)),
-                }),
-                spread: false,
-                by_ref: false,
-            }
-        }).collect();
-        let arr_expr = Expression::new(ExprKind::Array(elements));
-        let return_stmt = Statement::new(StmtKind::Return(Some(arr_expr)));
-        let cases_method = Statement::new(StmtKind::FunctionDecl {
-            name: "cases".to_string(),
-            params: vec![],
-            return_type: Some("array".to_string()),
-            body: vec![return_stmt],
-            modifiers: Modifiers { is_static: true, ..Modifiers::default() },
-            handles: Vec::new(),
-            is_async: false,
-            is_generator: false,
-            is_sub: false,
-        });
-        members.push(ClassMember::Method(Box::new(cases_method)));
-    }
-
-    // Backed enums (`enum X: string { ... }`) get `from()` and
-    // `tryFrom()` accessible as `EnumName::from(...)`. They're
-    // synthesised as Const members whose value is a Lambda — that way
-    // `EnumName::from` resolves via STRUCT_GET to a plain Closure with
-    // no `$this` slot, sidestepping the static-method dispatch path
-    // that would prepend the class as receiver. Each lambda walks
-    // cases in declaration order and returns the match on `===`.
-    if backing_type.is_some()
-        && case_backings.iter().any(|(_, b)| b.is_some())
-    {
-        let mk_param = |n: &str| Param {
-            name: n.to_string(),
-            type_hint: None,
-            default: None,
-            pass_by: PassBy::Value,
-            is_rest: false, is_kwargs: false,
-            is_optional: false, is_nullable: false,
-        };
-        let case_ref = |c: &str| Expression::new(ExprKind::StaticAccess {
-            class: Box::new(Expression::ident(&name)),
-            member: Box::new(Expression::ident(c)),
-        });
-        let build_match_chain = |fallback: Statement| -> Vec<Statement> {
-            let mut body: Vec<Statement> = Vec::new();
-            for (case_name, backing) in &case_backings {
-                if let Some(b) = backing {
-                    let cond = Expression::new(ExprKind::Binary {
-                        op: BinOp::StrictEq,
-                        left: Box::new(Expression::ident("v")),
-                        right: Box::new(b.clone()),
-                    });
-                    let then_body = vec![
-                        Statement::new(StmtKind::Return(Some(case_ref(case_name)))),
-                    ];
-                    body.push(Statement::new(StmtKind::If {
-                        cond,
-                        then_body,
-                        elifs: Vec::new(),
-                        else_body: None,
-                    }));
-                }
-            }
-            body.push(fallback);
-            body
-        };
-        // tryFrom: returns null on no match.
-        // Two-arg signature `($_self, $v)`: when called as
-        // `EnumName::tryFrom("X")` the static-method dispatch in the
-        // compiler pushes the class object as `$this` slot 0 (via the
-        // Member-shape rewrite for Class::method calls). The Lambda
-        // can't tell apart a regular call from a static method
-        // dispatch, so we accept the class as a leading arg and
-        // ignore it. `$v` is the user's backing value.
-        let try_from_body = build_match_chain(
-            Statement::new(StmtKind::Return(Some(Expression::null()))),
-        );
-        let try_from_lambda = Expression::new(ExprKind::Lambda {
-            params: vec![mk_param("_self"), mk_param("v")],
-            body: LambdaBody::Block(try_from_body),
-            is_async: false,
-            captures: vec![],
-        });
-        members.push(ClassMember::Const {
-            name: "tryFrom".to_string(),
-            type_hint: None,
-            value: try_from_lambda,
-            visibility: Visibility::Public,
-        });
-        // from: throws on no match. Use `throw new Error(...)`.
-        let from_body = build_match_chain(
-            Statement::new(StmtKind::Throw {
-                expr: Some(Expression::new(ExprKind::New {
-                    class: Box::new(Expression::ident("Error")),
-                    args: vec![Argument::positional(
-                        Expression::string(&format!("Invalid backing value for enum \"{}\"", name)),
-                    )],
-                })),
-                cause: None,
-            }),
-        );
-        let from_lambda = Expression::new(ExprKind::Lambda {
-            params: vec![mk_param("_self"), mk_param("v")],
-            body: LambdaBody::Block(from_body),
-            is_async: false,
-            captures: vec![],
-        });
-        members.push(ClassMember::Const {
-            name: "from".to_string(),
-            type_hint: None,
-            value: from_lambda,
-            visibility: Visibility::Public,
-        });
-    }
-
-    Ok(StmtKind::ClassDecl {
+    Ok(StmtKind::EnumDecl {
         name,
-        parents: Vec::new(),
-        interfaces,
         members,
-        modifiers: ClassModifiers::default(),
+        visibility: Visibility::Public,
+        is_flags: false,
+        backing_type,
+        interfaces,
+        body_members,
     })
 }
 

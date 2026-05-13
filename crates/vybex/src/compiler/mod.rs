@@ -104,6 +104,7 @@ pub struct Compiler {
     enum_members: HashMap<String, String>,
     /// Reverse enum lookup: enum type -> underlying integer -> member name.
     enum_value_names: HashMap<String, HashMap<i64, String>>,
+    enum_flags: HashSet<String>,
     case_sensitive: bool,
     pub(crate) profile: LanguageProfile,
     current_func_name: Option<String>,
@@ -335,6 +336,7 @@ impl Compiler {
             global_type_hints: HashMap::new(),
             enum_members: HashMap::new(),
             enum_value_names: HashMap::new(),
+            enum_flags: HashSet::new(),
             case_sensitive: profile.case_sensitive,
             profile,
             current_func_name: None,
@@ -1292,6 +1294,16 @@ impl Compiler {
         {
             return Some("DateTime".into());
         }
+        if class_name.eq_ignore_ascii_case("Guid")
+            && matches!(field.as_str(), "Empty" | "NewGuid" | "Parse")
+        {
+            return Some("Guid".into());
+        }
+        if class_name.eq_ignore_ascii_case("Version")
+            && matches!(field.as_str(), "Parse")
+        {
+            return Some("Version".into());
+        }
         None
     }
 
@@ -1299,6 +1311,23 @@ impl Compiler {
         match &expr.kind {
             ExprKind::New { class, .. } => Self::expr_terminal_type_name(class),
             ExprKind::Call { callee, .. } => self.infer_dotnet_factory_return_type(callee),
+            ExprKind::Member { object, .. } => {
+                let enum_type = Self::expr_terminal_type_name(object)?;
+                self.enum_value_names
+                    .contains_key(&self.canon(&enum_type))
+                    .then_some(enum_type)
+            }
+            ExprKind::Binary { op, left, right } if matches!(op, BinOp::BitOr | BinOp::BitAnd | BinOp::BitXor) => {
+                let left_type = self.infer_expr_type_hint(left)?;
+                let right_type = self.infer_expr_type_hint(right)?;
+                if left_type.eq_ignore_ascii_case(&right_type)
+                    && self.enum_value_names.contains_key(&self.canon(&left_type))
+                {
+                    Some(left_type)
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
@@ -2666,8 +2695,26 @@ impl Compiler {
             // Compiles to a namespace object: Color = { Red: 0, Green: 1, Blue: 2 }
             // Bare member references (e.g. Pascal `c := Green`) are resolved at
             // compile time via the enum_members map.
-            StmtKind::EnumDecl { name, members, .. } => {
+            StmtKind::EnumDecl { name, members, is_flags, backing_type, interfaces, body_members, .. } => {
                 let cname = self.canon(name);
+                if *is_flags {
+                    self.enum_flags.insert(cname.clone());
+                } else {
+                    self.enum_flags.remove(&cname);
+                }
+
+                match self.profile.name.as_str() {
+                    "dart" => {
+                        self.compile_dart_enum_decl(name, interfaces, body_members, members, stmt.span)?;
+                        return Ok(());
+                    }
+                    "php" => {
+                        self.compile_php_enum_decl(name, backing_type.as_ref(), interfaces, body_members, members, stmt.span)?;
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+
                 self.emit_u16(Op::STRUCT_NEW, 0);
                 let mut next_val = 0i64;
                 let mut value_names = HashMap::new();
@@ -3328,6 +3375,231 @@ impl Compiler {
             // ── Empty ───────────────────────────────────────────────────
             StmtKind::Empty => {}
         }
+        Ok(())
+    }
+
+    fn compile_enum_decl_as_class(
+        &mut self,
+        name: &str,
+        interfaces: &[String],
+        members: Vec<ClassMember>,
+        span: Span,
+    ) -> Result<(), String> {
+        let cname = self.canon(name);
+        self.defined_globals.insert(cname.clone());
+        self.defined_classes.insert(cname.clone());
+        crate::common::classes::emit::emit_class_from_ast(
+            self,
+            span,
+            &cname,
+            &[],
+            interfaces,
+            &members,
+            &ClassModifiers::default(),
+        )
+    }
+
+    fn compile_dart_enum_decl(
+        &mut self,
+        name: &str,
+        interfaces: &[String],
+        body_members: &[ClassMember],
+        members: &[EnumMember],
+        span: Span,
+    ) -> Result<(), String> {
+        let mut synthetic_members = body_members.to_vec();
+        let static_modifiers = {
+            let mut modifiers = Modifiers::default();
+            modifiers.is_static = true;
+            modifiers
+        };
+        let mut values_array = Vec::new();
+
+        for (index, member) in members.iter().enumerate() {
+            let obj_expr = Expression::new(ExprKind::Object(vec![
+                ObjectProperty::KeyValue {
+                    key: Expression::string("index"),
+                    value: Expression::new(ExprKind::Lit(Literal::Int(index as i64))),
+                },
+                ObjectProperty::KeyValue {
+                    key: Expression::string("name"),
+                    value: Expression::string(&member.name),
+                },
+                ObjectProperty::KeyValue {
+                    key: Expression::string("__type"),
+                    value: Expression::string(name),
+                },
+            ]));
+            synthetic_members.push(ClassMember::Field {
+                name: member.name.clone(),
+                type_hint: None,
+                init: Some(obj_expr.clone()),
+                modifiers: static_modifiers.clone(),
+                with_events: false,
+                array_bounds: None,
+            });
+            values_array.push(ArrayElement {
+                key: None,
+                value: obj_expr,
+                spread: false,
+                by_ref: false,
+            });
+        }
+
+        synthetic_members.push(ClassMember::Field {
+            name: "values".into(),
+            type_hint: None,
+            init: Some(Expression::new(ExprKind::Array(values_array))),
+            modifiers: static_modifiers,
+            with_events: false,
+            array_bounds: None,
+        });
+
+        self.compile_enum_decl_as_class(name, interfaces, synthetic_members, span)
+    }
+
+    fn compile_php_enum_decl(
+        &mut self,
+        name: &str,
+        backing_type: Option<&String>,
+        interfaces: &[String],
+        body_members: &[ClassMember],
+        members: &[EnumMember],
+        span: Span,
+    ) -> Result<(), String> {
+        let mut synthetic_members = Vec::new();
+
+        synthetic_members.extend(body_members.iter().cloned());
+
+        if !members.is_empty() {
+            let elements: Vec<ArrayElement> = members.iter().map(|member| ArrayElement {
+                key: None,
+                value: Expression::new(ExprKind::StaticAccess {
+                    class: Box::new(Expression::ident(name)),
+                    member: Box::new(Expression::ident(&member.name)),
+                }),
+                spread: false,
+                by_ref: false,
+            }).collect();
+            let cases_method = Statement::new(StmtKind::FunctionDecl {
+                name: "cases".to_string(),
+                params: vec![],
+                return_type: Some("array".to_string()),
+                body: vec![Statement::new(StmtKind::Return(Some(Expression::new(ExprKind::Array(elements)))) )],
+                modifiers: Modifiers { is_static: true, ..Modifiers::default() },
+                handles: Vec::new(),
+                is_async: false,
+                is_generator: false,
+                is_sub: false,
+            });
+            synthetic_members.push(ClassMember::Method(Box::new(cases_method)));
+        }
+
+        if backing_type.is_some() && members.iter().any(|member| member.value.is_some()) {
+            let mk_param = |param_name: &str| Param {
+                name: param_name.to_string(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            };
+            let case_ref = |case_name: &str| Expression::new(ExprKind::StaticAccess {
+                class: Box::new(Expression::ident(name)),
+                member: Box::new(Expression::ident(case_name)),
+            });
+            let build_match_chain = |fallback: Statement| -> Vec<Statement> {
+                let mut body = Vec::new();
+                for member in members {
+                    if let Some(backing) = member.value.clone() {
+                        let cond = Expression::new(ExprKind::Binary {
+                            op: BinOp::StrictEq,
+                            left: Box::new(Expression::ident("v")),
+                            right: Box::new(backing),
+                        });
+                        body.push(Statement::new(StmtKind::If {
+                            cond,
+                            then_body: vec![Statement::new(StmtKind::Return(Some(case_ref(&member.name))))],
+                            elifs: Vec::new(),
+                            else_body: None,
+                        }));
+                    }
+                }
+                body.push(fallback);
+                body
+            };
+
+            let try_from_lambda = Expression::new(ExprKind::Lambda {
+                params: vec![mk_param("_self"), mk_param("v")],
+                body: LambdaBody::Block(build_match_chain(Statement::new(StmtKind::Return(Some(Expression::null()))))),
+                is_async: false,
+                captures: vec![],
+            });
+            synthetic_members.push(ClassMember::Const {
+                name: "tryFrom".to_string(),
+                type_hint: None,
+                value: try_from_lambda,
+                visibility: Visibility::Public,
+            });
+
+            let from_lambda = Expression::new(ExprKind::Lambda {
+                params: vec![mk_param("_self"), mk_param("v")],
+                body: LambdaBody::Block(build_match_chain(Statement::new(StmtKind::Throw {
+                    expr: Some(Expression::new(ExprKind::New {
+                        class: Box::new(Expression::ident("Error")),
+                        args: vec![Argument::positional(Expression::string(&format!("Invalid backing value for enum \"{}\"", name)))],
+                    })),
+                    cause: None,
+                }))),
+                is_async: false,
+                captures: vec![],
+            });
+            synthetic_members.push(ClassMember::Const {
+                name: "from".to_string(),
+                type_hint: None,
+                value: from_lambda,
+                visibility: Visibility::Public,
+            });
+        }
+
+        self.compile_enum_decl_as_class(name, interfaces, synthetic_members, span)?;
+
+        let class_global = self.str_const(&self.canon(name));
+        let name_key = self.str_const("name");
+        let value_key = self.str_const("value");
+        for member in members {
+            let case_slot = self.define_local(&format!("__php_enum_case_{}_{}", self.canon(name), self.canon(&member.name)));
+            let case_expr = Expression::new(ExprKind::New {
+                class: Box::new(Expression::ident(name)),
+                args: vec![],
+            });
+            self.compile_expr(&case_expr)?;
+            self.emit_u16(Op::LOCAL_SET, case_slot);
+            self.emit(Op::DROP);
+
+            self.emit_u16(Op::LOCAL_GET, case_slot);
+            self.emit_const(Value::String(Arc::from(member.name.as_str())));
+            self.emit_u16(Op::STRUCT_SET, name_key);
+            self.emit(Op::DROP);
+
+            self.emit_u16(Op::LOCAL_GET, case_slot);
+            if let Some(value_expr) = &member.value {
+                self.compile_expr(value_expr)?;
+            } else {
+                self.emit_const(Value::String(Arc::from(member.name.as_str())));
+            }
+            self.emit_u16(Op::STRUCT_SET, value_key);
+            self.emit(Op::DROP);
+
+            self.emit_u16(Op::GLOBAL_GET, class_global);
+            self.emit_u16(Op::LOCAL_GET, case_slot);
+            let case_key = self.str_const(&member.name);
+            self.emit_u16(Op::STRUCT_SET, case_key);
+            self.emit(Op::DROP);
+        }
+
         Ok(())
     }
 
@@ -4939,7 +5211,13 @@ impl Compiler {
         if let Some(def) = builtin {
             match &def.emit {
                 BuiltinEmit::Print => {
-                    for a in args { self.compile_expr(a)?; }
+                    for a in args {
+                        if let Some(enum_type) = self.console_enum_type_from_expr(a) {
+                            self.emit_enum_value_to_string(&enum_type, a)?;
+                        } else {
+                            self.compile_expr(a)?;
+                        }
+                    }
                     let idx = self.import("wasi:cli", "log");
                     common::io::emit_print_with_import(self.chunk(), idx, args.len() as u8, line);
                 }
@@ -5006,8 +5284,18 @@ impl Compiler {
                     self.emit_intrinsic(intrinsic_name, args)?;
                 }
                 BuiltinEmit::Common(name) => {
-                    // Compile args, then dispatch to compiler_common emitter
-                    for a in args { self.compile_expr(a)?; }
+                    // Compile args, then dispatch to compiler_common emitter.
+                    // Console.WriteLine/Write should preserve enum names instead
+                    // of logging raw ordinals.
+                    if name.eq_ignore_ascii_case("dotnet.console_writeline") && args.len() == 1 {
+                        if let Some(enum_type) = self.console_enum_type_from_expr(args[0]) {
+                            self.emit_enum_value_to_string(&enum_type, args[0])?;
+                        } else {
+                            self.compile_expr(args[0])?;
+                        }
+                    } else {
+                        for a in args { self.compile_expr(a)?; }
+                    }
                     let line = self.line;
                     self.emit_common(name.as_str(), args.len() as u8, line);
                 }

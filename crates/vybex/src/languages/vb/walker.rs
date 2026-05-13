@@ -2863,14 +2863,22 @@ fn parse_enum_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     .find(|e| e.as_rule() == Rule::expression)
                     .map(|e| parse_expression(e))
                     .transpose()?;
-                members.push(EnumMember { name: member_name, value });
+                members.push(EnumMember { name: member_name, value, constructor_args: Vec::new() });
             }
             Rule::enum_end | Rule::NEWLINE => {}
             _ => {}
         }
     }
 
-    Ok(Statement::with_span(StmtKind::EnumDecl { name, members, visibility }, span))
+    Ok(Statement::with_span(StmtKind::EnumDecl {
+        name,
+        members,
+        visibility,
+        is_flags: false,
+        backing_type: None,
+        interfaces: Vec::new(),
+        body_members: Vec::new(),
+    }, span))
 }
 
 fn parse_single_line_if(pair: Pair<Rule>) -> Result<Statement, String> {

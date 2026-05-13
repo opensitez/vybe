@@ -27,6 +27,17 @@ fn terminal_type_name(expr: &Expression) -> Option<String> {
     }
 }
 
+fn strip_generic_suffix(name: &str) -> &str {
+    name.split('<').next().unwrap_or(name).trim()
+}
+
+fn extract_generic_type_name(name: &str) -> Option<String> {
+    let start = name.find('<')?;
+    let end = name.rfind('>')?;
+    let inner = name[start + 1..end].trim();
+    Some(inner.rsplit('.').next().unwrap_or(inner).trim().to_string())
+}
+
 fn dotnet_factory_return_type(callee: &Expression) -> Option<String> {
     let ExprKind::Member { object, field, .. } = &callee.kind else {
         return None;
@@ -42,6 +53,44 @@ fn dotnet_factory_return_type(callee: &Expression) -> Option<String> {
     {
         return Some("DateTime".into());
     }
+    if class_name.eq_ignore_ascii_case("Guid")
+        && matches!(field.as_str(), "Empty" | "NewGuid" | "Parse")
+    {
+        return Some("Guid".into());
+    }
+    if class_name.eq_ignore_ascii_case("Version")
+        && matches!(field.as_str(), "Parse")
+    {
+        return Some("Version".into());
+    }
+    None
+}
+
+fn dotnet_static_member_return_type(expr: &Expression) -> Option<String> {
+    let ExprKind::Member { object, field, .. } = &expr.kind else {
+        return None;
+    };
+    let class_name = terminal_type_name(object)?;
+    if class_name.eq_ignore_ascii_case("DateTime")
+        && matches!(field.as_str(), "Now" | "UtcNow" | "Today")
+    {
+        return Some("DateTime".into());
+    }
+    if class_name.eq_ignore_ascii_case("TimeSpan")
+        && field == "Zero"
+    {
+        return Some("TimeSpan".into());
+    }
+    if class_name.eq_ignore_ascii_case("Guid")
+        && field == "Empty"
+    {
+        return Some("Guid".into());
+    }
+    if class_name.eq_ignore_ascii_case("Version")
+        && field == "Parse"
+    {
+        return Some("Version".into());
+    }
     None
 }
 
@@ -54,6 +103,9 @@ fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression) -> Option<
             })
             .or_else(|| compiler.is_class_static_field_type_hint(local_name)),
         ExprKind::Member { object, field, .. } => {
+            if let Some(type_name) = dotnet_static_member_return_type(recv) {
+                return Some(type_name);
+            }
             let owner_is_self = matches!(&object.kind, ExprKind::This | ExprKind::Super)
                 || matches!(&object.kind, ExprKind::Ident(n)
                     if {
@@ -198,6 +250,13 @@ impl Compiler {
 
     pub(super) fn compile_call(&mut self, callee: &Expression, args: &[Argument]) -> Result<(), String> {
         let arg_exprs: Vec<&Expression> = args.iter().map(|a| &a.value).collect();
+
+        if self.try_compile_dotnet_guid_try_parse(callee, args)? {
+            return Ok(());
+        }
+        if self.try_compile_dotnet_enum_call(callee, args)? {
+            return Ok(());
+        }
 
         if self.is_python_profile() {
             if let ExprKind::Ident(name) = &callee.kind {
@@ -626,7 +685,15 @@ impl Compiler {
 
                     match resolution {
                         common::dotnet::DottedResolution::CommonCall { emit } => {
-                            for a in &arg_exprs { self.compile_expr(a)?; }
+                            if emit.eq_ignore_ascii_case("dotnet.console_writeline") && arg_exprs.len() == 1 {
+                                if let Some(enum_type) = self.console_enum_type_from_expr(arg_exprs[0]) {
+                                    self.emit_enum_value_to_string(&enum_type, arg_exprs[0])?;
+                                } else {
+                                    self.compile_expr(arg_exprs[0])?;
+                                }
+                            } else {
+                                for a in &arg_exprs { self.compile_expr(a)?; }
+                            }
                             let line = self.line;
                             self.emit_common(&emit, arg_exprs.len() as u8, line);
                             return Ok(());
@@ -2608,6 +2675,422 @@ impl Compiler {
         for a in &arg_exprs { self.compile_expr(a)?; }
         self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
         Ok(())
+    }
+
+    fn try_compile_dotnet_guid_try_parse(&mut self, callee: &Expression, args: &[Argument]) -> Result<bool, String> {
+        if args.len() != 2 {
+            return Ok(false);
+        }
+        let is_guid_try_parse = match &callee.kind {
+            ExprKind::Member { object, field, .. } if field.eq_ignore_ascii_case("TryParse") => {
+                terminal_type_name(object)
+                    .is_some_and(|type_name| type_name.eq_ignore_ascii_case("Guid"))
+            }
+            _ => false,
+        };
+        if !is_guid_try_parse {
+            return Ok(false);
+        }
+
+        let line = self.line;
+        self.compile_expr(&args[0].value)?;
+        self.emit_common("dotnet.guid_try_parse", 1, line);
+
+        let parsed_slot = self.define_local("__guid_try_parse_value");
+        self.emit_u16(Op::LOCAL_SET, parsed_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, parsed_slot);
+        self.emit(Op::REF_IS_NULL);
+        let invalid = self.emit_jump(Op::BR_IF_TRUE);
+
+        self.emit_u16(Op::LOCAL_GET, parsed_slot);
+        self.compile_assign_target(&args[1].value)?;
+        if let ExprKind::Ident(name) = &args[1].value.kind {
+            let normalized = Self::normalize_type_hint("Guid");
+            if let Some(slot) = self.scope().resolve_ci(name) {
+                if let Some(local) = self.scope_mut().locals.iter_mut().rev().find(|local| local.slot == slot) {
+                    local.type_hint = Some(normalized.clone());
+                }
+            } else {
+                self.global_type_hints.insert(self.canon(name), normalized.clone());
+            }
+        }
+        self.emit(Op::TRUE);
+        let done = self.emit_jump(Op::BR);
+
+        self.patch_jump(invalid);
+        self.emit_common("dotnet.guid_empty", 0, line);
+        self.compile_assign_target(&args[1].value)?;
+        if let ExprKind::Ident(name) = &args[1].value.kind {
+            let normalized = Self::normalize_type_hint("Guid");
+            if let Some(slot) = self.scope().resolve_ci(name) {
+                if let Some(local) = self.scope_mut().locals.iter_mut().rev().find(|local| local.slot == slot) {
+                    local.type_hint = Some(normalized.clone());
+                }
+            } else {
+                self.global_type_hints.insert(self.canon(name), normalized.clone());
+            }
+        }
+        self.emit(Op::FALSE);
+        self.patch_jump(done);
+        Ok(true)
+    }
+
+    fn canonical_enum_type_from_runtime_type(&self, expr: &Expression) -> Option<String> {
+        let ExprKind::Lit(Literal::Str(type_name)) = &expr.kind else {
+            return None;
+        };
+        let short = type_name.rsplit('.').next().unwrap_or(type_name).trim();
+        self.resolve_known_enum_type(short)
+    }
+
+    pub(super) fn canonical_enum_type_from_expr(&self, expr: &Expression) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Ident(name) => {
+                self.lookup_var_type_hint(name)
+                    .and_then(|hint| self.resolve_known_enum_type(hint))
+                    .or_else(|| self.resolve_known_enum_type(name))
+            }
+            ExprKind::Member { object, .. } => {
+                let enum_type = terminal_type_name(object)?;
+                self.resolve_known_enum_type(strip_generic_suffix(&enum_type))
+            }
+            _ => resolve_receiver_type_hint(self, expr)
+                .and_then(|hint| self.resolve_known_enum_type(strip_generic_suffix(&hint))),
+        }
+    }
+
+    pub(super) fn console_enum_type_from_expr(&self, expr: &Expression) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Ident(_) => self.canonical_enum_type_from_expr(expr),
+            ExprKind::Member { object, .. } if !matches!(&object.kind, ExprKind::Ident(_)) => {
+                self.canonical_enum_type_from_expr(expr)
+            }
+            _ => None,
+        }
+    }
+
+    fn resolve_known_enum_type(&self, name: &str) -> Option<String> {
+        let canon = self.canon(name);
+        if self.enum_value_names.contains_key(&canon) {
+            return Some(canon);
+        }
+        self.enum_value_names
+            .keys()
+            .find(|known| known.eq_ignore_ascii_case(name) || known.eq_ignore_ascii_case(&canon))
+            .cloned()
+    }
+
+    fn enum_entries_sorted(&self, enum_type: &str) -> Option<Vec<(i64, String)>> {
+        let mut entries: Vec<(i64, String)> = self
+            .enum_value_names
+            .get(enum_type)?
+            .iter()
+            .map(|(value, name)| (*value, name.clone()))
+            .collect();
+        entries.sort_by_key(|(value, _)| *value);
+        Some(entries)
+    }
+
+    fn compile_string_array(&mut self, values: &[String]) -> Result<(), String> {
+        let expr = Expression::new(ExprKind::Array(
+            values
+                .iter()
+                .map(|value| ArrayElement {
+                    key: None,
+                    value: Expression::string(value),
+                    spread: false,
+                    by_ref: false,
+                })
+                .collect(),
+        ));
+        self.compile_expr(&expr)
+    }
+
+    fn emit_enum_name_lookup(&mut self, enum_type: &str, value_expr: &Expression, ignore_case: bool) -> Result<(), String> {
+        let Some(entries) = self.enum_entries_sorted(enum_type) else {
+            self.emit(Op::NULL);
+            return Ok(());
+        };
+
+        let line = self.line;
+        let to_str_idx = self.import("ecma:string", "String");
+        let lower_idx = if ignore_case {
+            Some(self.import("ecma:string", "toLowerCase"))
+        } else {
+            None
+        };
+
+        self.compile_expr(value_expr)?;
+        self.emit_host_call(to_str_idx, 1);
+        if let Some(lower_idx) = lower_idx {
+            self.emit_host_call(lower_idx, 1);
+        }
+        let input_slot = self.define_local("__enum_name_input");
+        self.emit_u16(Op::LOCAL_SET, input_slot);
+        self.emit(Op::DROP);
+
+        let mut done_jumps = Vec::new();
+        for (_, name) in entries {
+            self.emit_u16(Op::LOCAL_GET, input_slot);
+            let candidate = if ignore_case { name.to_ascii_lowercase() } else { name.clone() };
+            self.emit_const(Value::String(Arc::from(candidate.as_str())));
+            self.emit(Op::DYN_EQ);
+            let no_match = self.emit_jump(Op::BR_IF_FALSE);
+            self.emit_const(Value::String(Arc::from(name.as_str())));
+            done_jumps.push(self.emit_jump(Op::BR));
+            self.patch_jump(no_match);
+        }
+
+        self.emit(Op::NULL);
+        for jump in done_jumps {
+            self.patch_jump(jump);
+        }
+        let _ = line;
+        Ok(())
+    }
+
+    pub(super) fn emit_enum_value_to_string(&mut self, enum_type: &str, value_expr: &Expression) -> Result<(), String> {
+        let Some(entries) = self.enum_entries_sorted(enum_type) else {
+            self.compile_expr(value_expr)?;
+            let to_str_idx = self.import("ecma:string", "String");
+            self.emit_host_call(to_str_idx, 1);
+            return Ok(());
+        };
+
+        let value_slot = self.define_local("__enum_tostring_value");
+        self.compile_expr(value_expr)?;
+        self.emit_u16(Op::LOCAL_SET, value_slot);
+        self.emit(Op::DROP);
+
+        let mut done_jumps = Vec::new();
+        for (value, name) in &entries {
+            self.emit_u16(Op::LOCAL_GET, value_slot);
+            self.emit_const(Value::F64(*value as f64));
+            self.emit(Op::DYN_EQ);
+            let no_match = self.emit_jump(Op::BR_IF_FALSE);
+            self.emit_const(Value::String(Arc::from(name.as_str())));
+            done_jumps.push(self.emit_jump(Op::BR));
+            self.patch_jump(no_match);
+        }
+
+        if self.enum_flags.contains(enum_type) {
+            let result_slot = self.define_local("__enum_tostring_result");
+            let matched_slot = self.define_local("__enum_tostring_matched");
+            self.emit_const(Value::String(Arc::from("")));
+            self.emit_u16(Op::LOCAL_SET, result_slot);
+            self.emit(Op::DROP);
+            self.emit(Op::FALSE);
+            self.emit_u16(Op::LOCAL_SET, matched_slot);
+            self.emit(Op::DROP);
+
+            for (value, name) in &entries {
+                if *value <= 0 || (value & (value - 1)) != 0 {
+                    continue;
+                }
+                self.emit_u16(Op::LOCAL_GET, value_slot);
+                self.emit_const(Value::F64(*value as f64));
+                self.emit(Op::I32_AND);
+                self.emit_const(Value::F64(*value as f64));
+                self.emit(Op::DYN_EQ);
+                let skip = self.emit_jump(Op::BR_IF_FALSE);
+
+                self.emit_u16(Op::LOCAL_GET, matched_slot);
+                let first = self.emit_jump(Op::BR_IF_FALSE);
+                self.emit_u16(Op::LOCAL_GET, result_slot);
+                self.emit_const(Value::String(Arc::from(", ")));
+                self.emit(Op::DYN_ADD);
+                self.emit_const(Value::String(Arc::from(name.as_str())));
+                self.emit(Op::DYN_ADD);
+                let with_separator = self.emit_jump(Op::BR);
+
+                self.patch_jump(first);
+                self.emit_const(Value::String(Arc::from(name.as_str())));
+                self.patch_jump(with_separator);
+
+                self.emit_u16(Op::LOCAL_SET, result_slot);
+                self.emit(Op::DROP);
+                self.emit(Op::TRUE);
+                self.emit_u16(Op::LOCAL_SET, matched_slot);
+                self.emit(Op::DROP);
+                self.patch_jump(skip);
+            }
+
+            self.emit_u16(Op::LOCAL_GET, matched_slot);
+            let no_flags_match = self.emit_jump(Op::BR_IF_FALSE);
+            self.emit_u16(Op::LOCAL_GET, result_slot);
+            done_jumps.push(self.emit_jump(Op::BR));
+            self.patch_jump(no_flags_match);
+        }
+
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        let to_str_idx = self.import("ecma:string", "String");
+        self.emit_host_call(to_str_idx, 1);
+        for jump in done_jumps {
+            self.patch_jump(jump);
+        }
+        Ok(())
+    }
+
+    fn emit_enum_has_flag(&mut self, value_expr: &Expression, flag_expr: &Expression) -> Result<(), String> {
+        let flag_slot = self.define_local("__enum_flag_value");
+        let value_slot = self.define_local("__enum_flag_source");
+        self.compile_expr(flag_expr)?;
+        self.emit_u16(Op::LOCAL_SET, flag_slot);
+        self.emit(Op::DROP);
+        self.compile_expr(value_expr)?;
+        self.emit_u16(Op::LOCAL_SET, value_slot);
+        self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.emit_u16(Op::LOCAL_GET, flag_slot);
+        self.emit(Op::I32_AND);
+        self.emit_u16(Op::LOCAL_GET, flag_slot);
+        self.emit(Op::DYN_EQ);
+        Ok(())
+    }
+
+    fn try_compile_dotnet_enum_call(&mut self, callee: &Expression, args: &[Argument]) -> Result<bool, String> {
+        let mut static_enum_call = false;
+        let (field, instance_object) = match &callee.kind {
+            ExprKind::Member { object, field, .. } => {
+                if terminal_type_name(object)
+                    .is_some_and(|type_name| type_name.eq_ignore_ascii_case("Enum"))
+                {
+                    static_enum_call = true;
+                    (field.as_str(), None)
+                } else {
+                    (field.as_str(), Some(object.as_ref()))
+                }
+            }
+            ExprKind::Ident(name) => {
+                let Some((receiver, field)) = name.rsplit_once('.') else {
+                    return Ok(false);
+                };
+                if receiver.rsplit('.').next().is_some_and(|type_name| type_name.eq_ignore_ascii_case("Enum")) {
+                    static_enum_call = true;
+                    (field, None)
+                } else {
+                    return Ok(false);
+                }
+            }
+            _ => return Ok(false),
+        };
+        let field_name = strip_generic_suffix(field);
+
+        if static_enum_call {
+            match field_name {
+                "GetNames" if args.len() == 1 => {
+                    let Some(enum_type) = self.canonical_enum_type_from_runtime_type(&args[0].value) else {
+                        return Ok(false);
+                    };
+                    let Some(entries) = self.enum_entries_sorted(&enum_type) else {
+                        return Ok(false);
+                    };
+                    let names: Vec<String> = entries.into_iter().map(|(_, name)| name).collect();
+                    self.compile_string_array(&names)?;
+                    return Ok(true);
+                }
+                "GetValues" if args.len() == 1 => {
+                    let Some(enum_type) = self.canonical_enum_type_from_runtime_type(&args[0].value) else {
+                        return Ok(false);
+                    };
+                    let Some(entries) = self.enum_entries_sorted(&enum_type) else {
+                        return Ok(false);
+                    };
+                    let names: Vec<String> = entries.into_iter().map(|(_, name)| name).collect();
+                    self.compile_string_array(&names)?;
+                    return Ok(true);
+                }
+                "Parse" if args.len() >= 2 => {
+                    let Some(enum_type) = self.canonical_enum_type_from_runtime_type(&args[0].value) else {
+                        return Ok(false);
+                    };
+                    self.emit_enum_name_lookup(&enum_type, &args[1].value, false)?;
+                    return Ok(true);
+                }
+                "IsDefined" if args.len() >= 2 => {
+                    let Some(enum_type) = self.canonical_enum_type_from_runtime_type(&args[0].value) else {
+                        return Ok(false);
+                    };
+                    self.emit_enum_name_lookup(&enum_type, &args[1].value, false)?;
+                    self.emit(Op::REF_IS_NULL);
+                    self.emit(Op::DYN_NOT);
+                    return Ok(true);
+                }
+                "GetUnderlyingType" if args.len() == 1 => {
+                    let expr = Expression::new(ExprKind::Object(vec![
+                        ObjectProperty::KeyValue {
+                            key: Expression::string("Name"),
+                            value: Expression::string("Int32"),
+                        },
+                        ObjectProperty::KeyValue {
+                            key: Expression::string("FullName"),
+                            value: Expression::string("System.Int32"),
+                        },
+                    ]));
+                    self.compile_expr(&expr)?;
+                    return Ok(true);
+                }
+                "Format" if args.len() >= 3 => {
+                    self.compile_expr(&args[1].value)?;
+                    let to_str_idx = self.import("ecma:string", "String");
+                    self.emit_host_call(to_str_idx, 1);
+                    return Ok(true);
+                }
+                "TryParse" if args.len() == 2 || args.len() == 3 => {
+                    let enum_type = extract_generic_type_name(field)
+                        .map(|name| self.canon(&name))
+                        .filter(|canon| self.enum_value_names.contains_key(canon));
+                    let Some(enum_type) = enum_type else {
+                        return Ok(false);
+                    };
+                    let (value_arg, ignore_case, out_arg) = if args.len() == 3 {
+                        (&args[0].value, matches!(args[1].value.kind, ExprKind::Lit(Literal::Bool(true))), &args[2].value)
+                    } else {
+                        (&args[0].value, false, &args[1].value)
+                    };
+                    self.emit_enum_name_lookup(&enum_type, value_arg, ignore_case)?;
+                    let parsed_slot = self.define_local("__enum_try_parse_value");
+                    self.emit_u16(Op::LOCAL_SET, parsed_slot);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, parsed_slot);
+                    self.emit(Op::REF_IS_NULL);
+                    let invalid = self.emit_jump(Op::BR_IF_TRUE);
+                    self.emit_u16(Op::LOCAL_GET, parsed_slot);
+                    self.compile_assign_target(out_arg)?;
+                    self.emit(Op::TRUE);
+                    let done = self.emit_jump(Op::BR);
+                    self.patch_jump(invalid);
+                    self.emit(Op::NULL);
+                    self.compile_assign_target(out_arg)?;
+                    self.emit(Op::FALSE);
+                    self.patch_jump(done);
+                    return Ok(true);
+                }
+                _ => {}
+            }
+        }
+
+        let Some(object) = instance_object else {
+            return Ok(false);
+        };
+
+        let Some(enum_type) = self.canonical_enum_type_from_expr(object) else {
+            return Ok(false);
+        };
+
+        match field_name {
+            "HasFlag" if args.len() == 1 => {
+                self.emit_enum_has_flag(object, &args[0].value)?;
+                Ok(true)
+            }
+            "ToString" if args.is_empty() => {
+                self.emit_enum_value_to_string(&enum_type, object)?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 
     // ════════════════════════════════════════════════════════════════════════
