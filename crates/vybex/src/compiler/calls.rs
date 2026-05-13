@@ -251,6 +251,17 @@ impl Compiler {
     pub(super) fn compile_call(&mut self, callee: &Expression, args: &[Argument]) -> Result<(), String> {
         let arg_exprs: Vec<&Expression> = args.iter().map(|a| &a.value).collect();
 
+        if let ExprKind::Member { object, field, null_safe } = &callee.kind {
+            if let Some(text) = self.resolve_reflection_string_member_expr(object) {
+                let rewritten = Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::string(&text)),
+                    field: field.clone(),
+                    null_safe: *null_safe,
+                });
+                return self.compile_call(&rewritten, args);
+            }
+        }
+
         if self.try_compile_dotnet_case_insensitive_collection_call(callee, args)? {
             return Ok(());
         }
@@ -3140,6 +3151,16 @@ impl Compiler {
                 Some(ReflectionBinding::Type(type_name.clone()))
             }
             ExprKind::Ident(name) => self.reflection_bindings.get(&self.canon(name)).cloned(),
+            ExprKind::Member { object, field, .. } => {
+                let receiver = self.resolve_reflection_binding_expr(object)?;
+                match (receiver, strip_generic_suffix(field.as_str())) {
+                    (ReflectionBinding::Type(type_name), "BaseType") => {
+                        self.reflection_base_type_name(&type_name)
+                            .map(ReflectionBinding::Type)
+                    }
+                    _ => None,
+                }
+            }
             ExprKind::Call { callee, args, .. } => {
                 let ExprKind::Member { object, field, .. } = &callee.kind else {
                     return None;
@@ -3157,6 +3178,18 @@ impl Compiler {
                     (ReflectionBinding::Type(type_name), "GetField") => {
                         let field_name = self.resolve_reflection_string_arg(args.first()?)?;
                         Some(ReflectionBinding::Field { type_name, field_name })
+                    }
+                    (ReflectionBinding::Type(type_name), "GetNestedType") => {
+                        let nested_name = self.resolve_reflection_string_arg(args.first()?)?;
+                        self.reflection_nested_type_name(&type_name, &nested_name)
+                            .map(ReflectionBinding::Type)
+                    }
+                    (ReflectionBinding::Type(type_name), "GetGenericTypeDefinition") => {
+                        Some(ReflectionBinding::Type(self.reflection_open_generic_type_name(&type_name)))
+                    }
+                    (ReflectionBinding::Type(type_name), "GetConstructor") => {
+                        let param_types = self.resolve_reflection_type_array_expr(&args.first()?.value)?;
+                        self.reflection_constructor_for_types(&type_name, &param_types)
                     }
                     _ => None,
                 }
@@ -3211,6 +3244,93 @@ impl Compiler {
         }
     }
 
+    fn resolve_reflection_type_array_expr(&self, expr: &Expression) -> Option<Vec<String>> {
+        match &expr.kind {
+            ExprKind::Array(items) => items
+                .iter()
+                .map(|item| self.resolve_reflection_type_arg(&item.value))
+                .collect(),
+            ExprKind::Lit(Literal::Null) => Some(Vec::new()),
+            _ => None,
+        }
+    }
+
+    fn resolve_reflection_invoke_args(&self, expr: &Expression) -> Option<Vec<Argument>> {
+        match &expr.kind {
+            ExprKind::Lit(Literal::Null) => Some(Vec::new()),
+            ExprKind::Array(items) => Some(
+                items.iter()
+                    .map(|item| Argument::positional(item.value.clone()))
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+
+    fn resolve_reflection_string_member_expr(&self, expr: &Expression) -> Option<String> {
+        let ExprKind::Member { object, field, .. } = &expr.kind else {
+            return None;
+        };
+        match (self.resolve_reflection_binding_expr(object)?, strip_generic_suffix(field.as_str())) {
+            (ReflectionBinding::Type(type_name), "Name") => Some(self.reflection_type_short_name(&type_name)),
+            (ReflectionBinding::Type(type_name), "FullName") => Some(self.reflection_type_full_name(&type_name)),
+            _ => None,
+        }
+    }
+
+    fn reflection_class_expr(&self, type_name: &str) -> Expression {
+        let trimmed = type_name.trim().trim_end_matches('?').trim();
+        let without_system = trimmed.strip_prefix("System.").unwrap_or(trimmed);
+        let mut parts = without_system.split('.').filter(|part| !part.is_empty());
+        let first = parts.next().unwrap_or(without_system);
+        let mut expr = Expression::ident(first);
+        for part in parts {
+            expr = Expression::new(ExprKind::Member {
+                object: Box::new(expr),
+                field: part.to_string(),
+                null_safe: false,
+            });
+        }
+        expr
+    }
+
+    pub(crate) fn compile_reflection_type_value(&mut self, type_name: &str) -> Result<(), String> {
+        let short_name = self.reflection_type_short_name(type_name);
+        let full_name = self.reflection_type_full_name(type_name);
+        let is_enum = self.reflection_is_enum_type(type_name);
+        let is_value_type = self.reflection_is_value_type(type_name);
+        self.compile_expr(&Expression::new(ExprKind::Object(vec![
+            ObjectProperty::KeyValue {
+                key: Expression::string("Name"),
+                value: Expression::string(&short_name),
+            },
+            ObjectProperty::KeyValue {
+                key: Expression::string("FullName"),
+                value: Expression::string(&full_name),
+            },
+            ObjectProperty::KeyValue {
+                key: Expression::string("IsEnum"),
+                value: Expression::bool(is_enum),
+            },
+            ObjectProperty::KeyValue {
+                key: Expression::string("IsValueType"),
+                value: Expression::bool(is_value_type),
+            },
+        ])))
+    }
+
+    fn compile_reflection_type_array(&mut self, type_names: &[String]) -> Result<(), String> {
+        let line = self.line;
+        common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+        for type_name in type_names {
+            self.emit(Op::DUP);
+            self.compile_reflection_type_value(type_name)?;
+            common::collections::emit_push(&mut self.chunks, self.current, line);
+            self.emit(Op::DROP);
+        }
+        Ok(())
+    }
+
     fn reflection_attributes_for_binding(
         &self,
         binding: &ReflectionBinding,
@@ -3219,6 +3339,7 @@ impl Compiler {
     ) -> Vec<Expression> {
         match binding {
             ReflectionBinding::Type(type_name) => self.reflection_attributes_for_type(type_name, attribute_type, inherit),
+            ReflectionBinding::Constructor { .. } => Vec::new(),
             ReflectionBinding::Method { type_name, method_name } => self
                 .reflection_types
                 .get(type_name)
@@ -3356,21 +3477,47 @@ impl Compiler {
     fn compile_reflection_binding_value(&mut self, binding: &ReflectionBinding) -> Result<(), String> {
         match binding {
             ReflectionBinding::Type(type_name) => {
-                self.compile_expr(&Expression::string(type_name))?;
+                self.compile_reflection_type_value(type_name)?;
             }
-            ReflectionBinding::Method { method_name, .. } => {
+            ReflectionBinding::Constructor { .. } => {
+                self.compile_expr(&Expression::new(ExprKind::Object(vec![
+                    ObjectProperty::KeyValue {
+                        key: Expression::string("Name"),
+                        value: Expression::string(".ctor"),
+                    },
+                ])))?;
+            }
+            ReflectionBinding::Method { type_name, method_name } => {
+                let is_static = self
+                    .reflection_type_metadata(type_name)
+                    .and_then(|meta| meta.methods.get(method_name))
+                    .map(|meta| meta.is_static)
+                    .unwrap_or(false);
                 self.compile_expr(&Expression::new(ExprKind::Object(vec![
                     ObjectProperty::KeyValue {
                         key: Expression::string("Name"),
                         value: Expression::string(method_name),
                     },
+                    ObjectProperty::KeyValue {
+                        key: Expression::string("IsStatic"),
+                        value: Expression::bool(is_static),
+                    },
                 ])))?;
             }
-            ReflectionBinding::Property { property_name, .. } => {
+            ReflectionBinding::Property { type_name, property_name } => {
+                let can_write = self
+                    .reflection_type_metadata(type_name)
+                    .and_then(|meta| meta.properties.get(property_name))
+                    .map(|meta| meta.can_write)
+                    .unwrap_or(false);
                 self.compile_expr(&Expression::new(ExprKind::Object(vec![
                     ObjectProperty::KeyValue {
                         key: Expression::string("Name"),
                         value: Expression::string(property_name),
+                    },
+                    ObjectProperty::KeyValue {
+                        key: Expression::string("CanWrite"),
+                        value: Expression::bool(can_write),
                     },
                 ])))?;
             }
@@ -3411,6 +3558,19 @@ impl Compiler {
         };
         let field_name = strip_generic_suffix(field);
         let receiver_type = terminal_type_name(object).unwrap_or_default();
+
+        if (receiver_type.eq_ignore_ascii_case("Activator") || receiver_type.eq_ignore_ascii_case("System.Activator"))
+            && field_name == "CreateInstance" && !args.is_empty()
+        {
+            let Some(type_name) = self.resolve_reflection_type_arg(&args[0].value) else {
+                return Ok(false);
+            };
+            self.compile_expr(&Expression::new(ExprKind::New {
+                class: Box::new(self.reflection_class_expr(&type_name)),
+                args: Vec::new(),
+            }))?;
+            return Ok(true);
+        }
 
         if (receiver_type.eq_ignore_ascii_case("Attribute") || receiver_type.eq_ignore_ascii_case("System.Attribute"))
             && field_name == "GetCustomAttribute" && args.len() >= 2
@@ -3481,6 +3641,70 @@ impl Compiler {
                 self.compile_reflection_binding_value(&binding)?;
                 Ok(true)
             }
+            "GetConstructor" if args.len() >= 1 => {
+                let Some(binding) = self.resolve_reflection_binding_expr(&Expression::new(ExprKind::Call {
+                    callee: Box::new(callee.clone()),
+                    args: args.to_vec(),
+                    optional: false,
+                })) else {
+                    return Ok(false);
+                };
+                self.compile_reflection_binding_value(&binding)?;
+                Ok(true)
+            }
+            "GetNestedType" if args.len() >= 1 => {
+                let Some(binding) = self.resolve_reflection_binding_expr(&Expression::new(ExprKind::Call {
+                    callee: Box::new(callee.clone()),
+                    args: args.to_vec(),
+                    optional: false,
+                })) else {
+                    self.emit(Op::NULL);
+                    return Ok(true);
+                };
+                self.compile_reflection_binding_value(&binding)?;
+                Ok(true)
+            }
+            "GetGenericArguments" if args.is_empty() => {
+                let ReflectionBinding::Type(type_name) = provider else {
+                    return Ok(false);
+                };
+                let args = self.reflection_generic_argument_types(&type_name);
+                self.compile_reflection_type_array(&args)?;
+                Ok(true)
+            }
+            "GetGenericTypeDefinition" if args.is_empty() => {
+                let Some(binding) = self.resolve_reflection_binding_expr(&Expression::new(ExprKind::Call {
+                    callee: Box::new(callee.clone()),
+                    args: args.to_vec(),
+                    optional: false,
+                })) else {
+                    return Ok(false);
+                };
+                self.compile_reflection_binding_value(&binding)?;
+                Ok(true)
+            }
+            "GetInterfaces" if args.is_empty() => {
+                let ReflectionBinding::Type(type_name) = provider else {
+                    return Ok(false);
+                };
+                let interfaces = self.reflection_interfaces(&type_name);
+                self.compile_reflection_type_array(&interfaces)?;
+                Ok(true)
+            }
+            "IsAssignableFrom" if args.len() >= 1 => {
+                let ReflectionBinding::Type(type_name) = provider else {
+                    return Ok(false);
+                };
+                let Some(other_type) = self.resolve_reflection_type_arg(&args[0].value) else {
+                    return Ok(false);
+                };
+                self.emit(if self.reflection_is_assignable_from(&type_name, &other_type) {
+                    Op::TRUE
+                } else {
+                    Op::FALSE
+                });
+                Ok(true)
+            }
             "GetParameters" if args.is_empty() => {
                 let ReflectionBinding::Method { type_name, method_name } = provider else {
                     return Ok(false);
@@ -3518,6 +3742,96 @@ impl Compiler {
                 let attrs = self.reflection_attributes_for_binding(&provider, Some(&attribute_type), inherit);
                 self.compile_reflection_attribute_array(&attrs)?;
                 Ok(true)
+            }
+            "Invoke" => {
+                match provider {
+                    ReflectionBinding::Constructor { type_name, .. } => {
+                        let ctor_args = args
+                            .first()
+                            .and_then(|arg| self.resolve_reflection_invoke_args(&arg.value))
+                            .unwrap_or_default();
+                        self.compile_expr(&Expression::new(ExprKind::New {
+                            class: Box::new(self.reflection_class_expr(&type_name)),
+                            args: ctor_args,
+                        }))?;
+                        Ok(true)
+                    }
+                    ReflectionBinding::Method { method_name, .. } => {
+                        let Some(instance_arg) = args.first() else {
+                            return Ok(false);
+                        };
+                        let invoke_args = args
+                            .get(1)
+                            .and_then(|arg| self.resolve_reflection_invoke_args(&arg.value))
+                            .unwrap_or_default();
+                        self.compile_expr(&Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new(instance_arg.value.clone()),
+                                field: method_name,
+                                null_safe: false,
+                            })),
+                            args: invoke_args,
+                            optional: false,
+                        }))?;
+                        Ok(true)
+                    }
+                    _ => Ok(false),
+                }
+            }
+            "GetValue" if !args.is_empty() => {
+                match provider {
+                    ReflectionBinding::Property { property_name, .. } | ReflectionBinding::Field { field_name: property_name, .. } => {
+                        self.compile_expr(&Expression::new(ExprKind::Member {
+                            object: Box::new(args[0].value.clone()),
+                            field: property_name,
+                            null_safe: false,
+                        }))?;
+                        Ok(true)
+                    }
+                    _ => Ok(false),
+                }
+            }
+            "SetValue" if args.len() >= 2 => {
+                match provider {
+                    ReflectionBinding::Property { property_name, .. } => {
+                        self.compile_expr(&args[1].value)?;
+                        self.compile_assign_target(&Expression::new(ExprKind::Member {
+                            object: Box::new(args[0].value.clone()),
+                            field: property_name,
+                            null_safe: false,
+                        }))?;
+                        self.emit(Op::NULL);
+                        Ok(true)
+                    }
+                    ReflectionBinding::Field { field_name, .. } => {
+                        if let ExprKind::Ident(name) = &args[0].value.kind {
+                            let value_slot = self.define_local("__reflection_field_value");
+                            self.compile_expr(&args[1].value)?;
+                            self.emit_u16(Op::LOCAL_SET, value_slot);
+                            self.emit(Op::DROP);
+
+                            self.compile_expr(&args[0].value)?;
+                            self.emit(Op::DUP);
+                            self.emit_u16(Op::LOCAL_GET, value_slot);
+                            let field_idx = self.str_const(&self.canon(&field_name));
+                            self.emit_u16(Op::STRUCT_SET, field_idx);
+                            self.emit(Op::DROP);
+                            self.emit_var_set(name);
+                            self.emit(Op::NULL);
+                            Ok(true)
+                        } else {
+                            self.compile_expr(&args[1].value)?;
+                            self.compile_assign_target(&Expression::new(ExprKind::Member {
+                                object: Box::new(args[0].value.clone()),
+                                field: field_name,
+                                null_safe: false,
+                            }))?;
+                            self.emit(Op::NULL);
+                            Ok(true)
+                        }
+                    }
+                    _ => Ok(false),
+                }
             }
             _ => Ok(false),
         }

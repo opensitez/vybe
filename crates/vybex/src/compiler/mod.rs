@@ -92,17 +92,29 @@ pub(crate) struct ReflectionParamMetadata {
 pub(crate) struct ReflectionMethodMetadata {
     pub decorators: Vec<Expression>,
     pub params: Vec<ReflectionParamMetadata>,
+    pub is_static: bool,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ReflectionMemberMetadata {
     pub decorators: Vec<Expression>,
+    pub is_static: bool,
+    pub can_write: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ReflectionConstructorMetadata {
+    pub param_types: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ReflectionTypeMetadata {
     pub parents: Vec<String>,
     pub decorators: Vec<Expression>,
+    pub interfaces: Vec<String>,
+    pub nested_types: Vec<String>,
+    pub constructors: Vec<ReflectionConstructorMetadata>,
+    pub is_value_type: bool,
     pub methods: HashMap<String, ReflectionMethodMetadata>,
     pub properties: HashMap<String, ReflectionMemberMetadata>,
     pub fields: HashMap<String, ReflectionMemberMetadata>,
@@ -111,6 +123,7 @@ pub(crate) struct ReflectionTypeMetadata {
 #[derive(Debug, Clone)]
 pub(crate) enum ReflectionBinding {
     Type(String),
+    Constructor { type_name: String, param_types: Vec<String> },
     Method { type_name: String, method_name: String },
     Property { type_name: String, property_name: String },
     Field { type_name: String, field_name: String },
@@ -686,20 +699,6 @@ impl Compiler {
             StmtKind::ClassDecl {
                 name,
                 parents,
-                members,
-                decorators,
-                ..
-            } => {
-                let runtime_name = self.reflection_runtime_type_name(name, parent_runtime_name);
-                self.record_reflection_type(
-                    &runtime_name,
-                    parents,
-                    decorators,
-                    members,
-                );
-            }
-            StmtKind::StructDecl {
-                name,
                 interfaces,
                 members,
                 decorators,
@@ -708,9 +707,24 @@ impl Compiler {
                 let runtime_name = self.reflection_runtime_type_name(name, parent_runtime_name);
                 self.record_reflection_type(
                     &runtime_name,
+                    parents,
                     interfaces,
                     decorators,
                     members,
+                    false,
+                );
+            }
+            StmtKind::StructDecl {
+                name, interfaces, members, decorators, ..
+            } => {
+                let runtime_name = self.reflection_runtime_type_name(name, parent_runtime_name);
+                self.record_reflection_type(
+                    &runtime_name,
+                    &[],
+                    interfaces,
+                    decorators,
+                    members,
+                    true,
                 );
             }
             StmtKind::InterfaceDecl {
@@ -726,6 +740,10 @@ impl Compiler {
                     .map(|parent| self.reflection_runtime_type_name(parent, None))
                     .collect(),
                     decorators: decorators.clone(),
+                    interfaces: parents
+                        .iter()
+                        .map(|parent| self.reflection_runtime_type_name(parent, None))
+                        .collect(),
                     ..ReflectionTypeMetadata::default()
                 };
                 self.reflection_types.insert(runtime_name.clone(), metadata);
@@ -742,9 +760,11 @@ impl Compiler {
                 let runtime_name = self.reflection_runtime_type_name(name, parent_runtime_name);
                 self.record_reflection_type(
                     &runtime_name,
+                    &[],
                     interfaces,
                     decorators,
                     body_members,
+                    true,
                 );
             }
             StmtKind::NamespaceDecl { name, body } => {
@@ -766,15 +786,22 @@ impl Compiler {
         &mut self,
         runtime_name: &str,
         parents: &[String],
+        interfaces: &[String],
         decorators: &[Expression],
         members: &[ClassMember],
+        is_value_type: bool,
     ) {
         let mut metadata = ReflectionTypeMetadata {
             parents: parents
             .iter()
             .map(|parent| self.reflection_runtime_type_name(parent, None))
             .collect(),
+            interfaces: interfaces
+                .iter()
+                .map(|parent| self.reflection_runtime_type_name(parent, None))
+                .collect(),
             decorators: decorators.to_vec(),
+            is_value_type,
             ..ReflectionTypeMetadata::default()
         };
         let mut nested_types: Vec<&Statement> = Vec::new();
@@ -802,6 +829,7 @@ impl Compiler {
                             name.clone(),
                             ReflectionMethodMetadata {
                                 decorators: method_decorators,
+                                is_static: modifiers.is_static,
                                 params: params
                                     .iter()
                                     .enumerate()
@@ -816,6 +844,7 @@ impl Compiler {
                 }
                 ClassMember::Property {
                     name,
+                    setter,
                     modifiers,
                     ..
                 } => {
@@ -823,6 +852,8 @@ impl Compiler {
                         name.clone(),
                         ReflectionMemberMetadata {
                             decorators: modifiers.decorators.clone(),
+                            is_static: modifiers.is_static,
+                            can_write: setter.is_some(),
                         },
                     );
                 }
@@ -835,10 +866,35 @@ impl Compiler {
                         name.clone(),
                         ReflectionMemberMetadata {
                             decorators: modifiers.decorators.clone(),
+                            is_static: modifiers.is_static,
+                            can_write: true,
                         },
                     );
                 }
+                ClassMember::Constructor { params, .. } => {
+                    metadata.constructors.push(ReflectionConstructorMetadata {
+                        param_types: params
+                            .iter()
+                            .map(|param| self.reflection_runtime_type_name(
+                                param.type_hint.as_deref().unwrap_or("Object"),
+                                None,
+                            ))
+                            .collect(),
+                    });
+                }
                 ClassMember::NestedType(stmt) => {
+                    let nested_runtime = match &stmt.kind {
+                        StmtKind::ClassDecl { name, .. }
+                        | StmtKind::StructDecl { name, .. }
+                        | StmtKind::InterfaceDecl { name, .. }
+                        | StmtKind::EnumDecl { name, .. } => {
+                            Some(self.reflection_runtime_type_name(name, Some(runtime_name)))
+                        }
+                        _ => None,
+                    };
+                    if let Some(nested_runtime) = nested_runtime {
+                        metadata.nested_types.push(nested_runtime);
+                    }
                     nested_types.push(stmt);
                 }
                 _ => {}
@@ -895,7 +951,25 @@ impl Compiler {
                 _ => {}
             }
         }
-        let normalized = without_generics.trim();
+        let normalized = match without_generics.trim() {
+            "int" | "Int32" => "Int32",
+            "uint" | "UInt32" => "UInt32",
+            "long" | "Int64" => "Int64",
+            "ulong" | "UInt64" => "UInt64",
+            "short" | "Int16" => "Int16",
+            "ushort" | "UInt16" => "UInt16",
+            "byte" | "Byte" => "Byte",
+            "sbyte" | "SByte" => "SByte",
+            "float" | "Single" => "Single",
+            "double" | "Double" => "Double",
+            "decimal" | "Decimal" => "Decimal",
+            "bool" | "Boolean" => "Boolean",
+            "char" | "Char" => "Char",
+            "string" | "String" => "String",
+            "object" | "Object" => "Object",
+            other => other,
+        };
+        let normalized = normalized.strip_prefix("System.System.").unwrap_or(normalized);
         if let Some(parent) = parent_runtime_name {
             let leaf = normalized.rsplit('.').next().unwrap_or(normalized).trim();
             return format!("{parent}.{leaf}");
@@ -950,6 +1024,166 @@ impl Compiler {
             return None;
         };
         Some((index.max(0) as usize, args[1].value.clone()))
+    }
+
+    pub(crate) fn reflection_type_lookup_name(&self, type_name: &str) -> String {
+        self.reflection_runtime_type_name(type_name, None)
+    }
+
+    pub(crate) fn reflection_type_metadata(&self, type_name: &str) -> Option<&ReflectionTypeMetadata> {
+        let lookup = self.reflection_type_lookup_name(type_name);
+        self.reflection_types.get(&lookup)
+    }
+
+    pub(crate) fn reflection_type_short_name(&self, type_name: &str) -> String {
+        let trimmed = type_name.trim().trim_end_matches('?').trim();
+        let without_namespace = trimmed.rsplit('.').next().unwrap_or(trimmed).trim();
+        let without_generics = without_namespace.split('<').next().unwrap_or(without_namespace).trim();
+        without_generics.to_string()
+    }
+
+    pub(crate) fn reflection_type_full_name(&self, type_name: &str) -> String {
+        self.reflection_runtime_type_name(type_name, None)
+    }
+
+    pub(crate) fn reflection_is_enum_type(&self, type_name: &str) -> bool {
+        let lookup = self.reflection_type_lookup_name(type_name);
+        let short_name = self.canon(&self.reflection_type_short_name(type_name));
+        self.enum_value_names.contains_key(&lookup)
+            || self.enum_value_names.contains_key(&short_name)
+            || self.enum_value_names.keys().any(|known| known.eq_ignore_ascii_case(&lookup) || known.eq_ignore_ascii_case(&short_name))
+    }
+
+    pub(crate) fn reflection_is_value_type(&self, type_name: &str) -> bool {
+        let lookup = self.reflection_type_lookup_name(type_name);
+        if self.reflection_types.get(&lookup).is_some_and(|meta| meta.is_value_type) {
+            return true;
+        }
+        matches!(
+            lookup.as_str(),
+            "System.Boolean"
+                | "System.Byte"
+                | "System.SByte"
+                | "System.Int16"
+                | "System.UInt16"
+                | "System.Int32"
+                | "System.UInt32"
+                | "System.Int64"
+                | "System.UInt64"
+                | "System.Single"
+                | "System.Double"
+                | "System.Decimal"
+                | "System.Char"
+                | "System.DateTime"
+                | "System.TimeSpan"
+                | "System.Guid"
+        )
+    }
+
+    pub(crate) fn reflection_base_type_name(&self, type_name: &str) -> Option<String> {
+        self.reflection_type_metadata(type_name)
+            .and_then(|meta| meta.parents.first().cloned())
+    }
+
+    pub(crate) fn reflection_nested_type_name(&self, type_name: &str, nested_name: &str) -> Option<String> {
+        let parent = self.reflection_type_lookup_name(type_name);
+        let desired = nested_name.trim();
+        self.reflection_types.keys().find(|candidate| {
+            candidate
+                .strip_prefix(&(parent.clone() + "."))
+                .is_some_and(|leaf| leaf.eq_ignore_ascii_case(desired))
+        }).cloned()
+    }
+
+    pub(crate) fn reflection_generic_argument_types(&self, type_name: &str) -> Vec<String> {
+        let trimmed = type_name.trim();
+        let Some(start) = trimmed.find('<') else {
+            return Vec::new();
+        };
+        let Some(end) = trimmed.rfind('>') else {
+            return Vec::new();
+        };
+        let inner = &trimmed[start + 1..end];
+        let mut parts = Vec::new();
+        let mut current = String::new();
+        let mut depth = 0usize;
+        for ch in inner.chars() {
+            match ch {
+                '<' => {
+                    depth += 1;
+                    current.push(ch);
+                }
+                '>' => {
+                    depth = depth.saturating_sub(1);
+                    current.push(ch);
+                }
+                ',' if depth == 0 => {
+                    let part = current.trim();
+                    if !part.is_empty() {
+                        parts.push(self.reflection_type_full_name(part));
+                    }
+                    current.clear();
+                }
+                _ => current.push(ch),
+            }
+        }
+        let part = current.trim();
+        if !part.is_empty() {
+            parts.push(self.reflection_type_full_name(part));
+        }
+        parts
+    }
+
+    pub(crate) fn reflection_open_generic_type_name(&self, type_name: &str) -> String {
+        self.reflection_type_lookup_name(type_name)
+    }
+
+    pub(crate) fn reflection_interfaces(&self, type_name: &str) -> Vec<String> {
+        self.reflection_type_metadata(type_name)
+            .map(|meta| meta.interfaces.clone())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn reflection_is_assignable_from(&self, target_type: &str, candidate_type: &str) -> bool {
+        let target = self.reflection_type_lookup_name(target_type);
+        let mut pending = vec![self.reflection_type_lookup_name(candidate_type)];
+        let mut visited = HashSet::new();
+
+        while let Some(current) = pending.pop() {
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            if current.eq_ignore_ascii_case(&target) {
+                return true;
+            }
+            if let Some(meta) = self.reflection_types.get(&current) {
+                pending.extend(meta.parents.iter().cloned());
+                pending.extend(meta.interfaces.iter().cloned());
+            }
+        }
+
+        false
+    }
+
+    pub(crate) fn reflection_constructor_for_types(&self, type_name: &str, param_types: &[String]) -> Option<ReflectionBinding> {
+        let lookup = self.reflection_type_lookup_name(type_name);
+        let normalized_params: Vec<String> = param_types
+            .iter()
+            .map(|param| self.reflection_type_lookup_name(param))
+            .collect();
+        let meta = self.reflection_types.get(&lookup)?;
+        let ctor = meta.constructors.iter().find(|ctor| {
+            ctor.param_types.len() == normalized_params.len()
+                && ctor
+                    .param_types
+                    .iter()
+                    .zip(normalized_params.iter())
+                    .all(|(left, right)| left.eq_ignore_ascii_case(right))
+        })?;
+        Some(ReflectionBinding::Constructor {
+            type_name: lookup,
+            param_types: ctor.param_types.clone(),
+        })
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -1119,6 +1353,7 @@ impl Compiler {
         self.chunk().emit_end(line);
         self.chunk().patch_block(body_block);
         self.label_depth -= 1;
+
 
         // Continue the loop.
         self.emit_u8(Op::BR_LABEL, 0);

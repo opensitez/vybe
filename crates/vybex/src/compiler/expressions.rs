@@ -329,6 +329,57 @@ impl Compiler {
 
             // ── Member access ───────────────────────────────────────────
             ExprKind::Member { object, field, null_safe } => {
+                let reflection_field = field.split('<').next().unwrap_or(field.as_str()).trim();
+                if let Some(binding) = self.resolve_reflection_binding_expr(object) {
+                    match (binding, reflection_field) {
+                        (ReflectionBinding::Type(type_name), "Name") => {
+                            let short_name = self.reflection_type_short_name(&type_name);
+                            self.compile_expr(&Expression::string(&short_name))?;
+                            return Ok(());
+                        }
+                        (ReflectionBinding::Type(type_name), "FullName") => {
+                            let full_name = self.reflection_type_full_name(&type_name);
+                            self.compile_expr(&Expression::string(&full_name))?;
+                            return Ok(());
+                        }
+                        (ReflectionBinding::Type(type_name), "IsEnum") => {
+                            self.emit(if self.reflection_is_enum_type(&type_name) { Op::TRUE } else { Op::FALSE });
+                            return Ok(());
+                        }
+                        (ReflectionBinding::Type(type_name), "IsValueType") => {
+                            self.emit(if self.reflection_is_value_type(&type_name) { Op::TRUE } else { Op::FALSE });
+                            return Ok(());
+                        }
+                        (ReflectionBinding::Type(type_name), "BaseType") => {
+                            if let Some(parent_type) = self.reflection_base_type_name(&type_name) {
+                                self.compile_reflection_type_value(&parent_type)?;
+                            } else {
+                                self.emit(Op::NULL);
+                            }
+                            return Ok(());
+                        }
+                        (ReflectionBinding::Method { type_name, method_name }, "IsStatic") => {
+                            let is_static = self
+                                .reflection_type_metadata(&type_name)
+                                .and_then(|meta| meta.methods.get(&method_name))
+                                .map(|meta| meta.is_static)
+                                .unwrap_or(false);
+                            self.emit(if is_static { Op::TRUE } else { Op::FALSE });
+                            return Ok(());
+                        }
+                        (ReflectionBinding::Property { type_name, property_name }, "CanWrite") => {
+                            let can_write = self
+                                .reflection_type_metadata(&type_name)
+                                .and_then(|meta| meta.properties.get(&property_name))
+                                .map(|meta| meta.can_write)
+                                .unwrap_or(false);
+                            self.emit(if can_write { Op::TRUE } else { Op::FALSE });
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                }
+
                 if field.eq_ignore_ascii_case("IsEnum") {
                     if let ExprKind::Lit(Literal::Str(type_name)) = &object.kind {
                         let full_name = type_name
@@ -574,8 +625,43 @@ impl Compiler {
                     return Ok(());
                 }
 
+                let receiver_is_collection_like = if matches!(self.profile.name.as_str(), "csharp" | "vb")
+                    && matches!(field.as_str(), "Length" | "Count")
+                {
+                    let is_collection_like_type = |type_hint: &str| {
+                        let normalized = Self::normalize_type_hint(type_hint);
+                        Self::is_string_type_hint(type_hint)
+                            || normalized.contains("list")
+                            || normalized.contains("dictionary")
+                            || normalized.contains("queue")
+                            || normalized.contains("stack")
+                            || normalized.contains("set")
+                            || normalized.contains("collection")
+                            || normalized.contains("enumerable")
+                            || normalized.contains("array")
+                            || normalized.contains("[]")
+                    };
+
+                    match &object.kind {
+                        ExprKind::Ident(name) => match self.lookup_var_type_hint(name) {
+                            Some(type_hint) => is_collection_like_type(type_hint),
+                            None => true,
+                        },
+                        ExprKind::New { .. } | ExprKind::Call { .. } => self
+                            .infer_expr_type_hint(object)
+                            .as_deref()
+                            .map(is_collection_like_type)
+                            .unwrap_or(true),
+                        ExprKind::Lit(Literal::Str(_)) | ExprKind::Interpolation(_) | ExprKind::Array(_) => true,
+                        _ => true,
+                    }
+                } else {
+                    false
+                };
+
                 let is_csharp_len_accessor = matches!(self.profile.name.as_str(), "csharp" | "vb")
                     && matches!(field.as_str(), "Length" | "Count")
+                    && receiver_is_collection_like
                     && !matches!(
                         &object.kind,
                         ExprKind::Ident(name)
@@ -596,6 +682,11 @@ impl Compiler {
                     return Ok(());
                 } else {
                     self.compile_expr(object)?;
+                }
+
+                if is_csharp_len_accessor {
+                    common::collections::emit_len(&mut self.chunks, self.current, self.line);
+                    return Ok(());
                 }
 
                 if *null_safe && matches!(self.profile.name.as_str(), "csharp" | "vb") && !is_csharp_len_accessor {

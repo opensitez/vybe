@@ -7110,17 +7110,10 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
             }
         }
     }
-    // C# `.Length` / `.Count` lowers to `__len__(receiver)` so the
-    // value-method dispatch picks a single canonical opcode regardless
-    // of receiver type (string vs. array vs. List). One trap: a class
-    // identifier as the receiver (`Counter.Count` reading a user
-    // static int field) MUST go through plain Member access — the
-    // class object isn't a sequence and `__len__` would silently
-    // return 0. We detect class identifiers by checking the receiver
-    // is a single `Ident` starting with an uppercase letter (PascalCase
-    // — the C# convention for class names). User instance variables
-    // by convention use camelCase, so `arr.Length` / `list.Count` /
-    // `s.Length` keep the canonical lowering.
+    // Leave `.Length` / `.Count` as plain member access here.
+    // The compiler has better receiver context for deciding whether
+    // those names mean collection length or a user-defined field /
+    // property (for example `item.Count` on a custom class).
     let is_class_static = matches!(
         &object.kind,
         ExprKind::Ident(n) if n.chars().next().map_or(false, |c| c.is_ascii_uppercase())
@@ -7131,14 +7124,7 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
     // For example: dict.Keys → dict.Keys(), dict.Values → dict.Values()
     let is_zero_arity_method = matches!(name, "Keys" | "Values");
     
-    let canonical = if is_class_static {
-        None
-    } else {
-        match name {
-            "Length" | "Count" => Some("__len__"),
-            _ => None,
-        }
-    };
+    let canonical = None;
     if let Some(canonical_name) = canonical {
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident(canonical_name)),
