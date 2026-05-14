@@ -12,6 +12,7 @@ gui_forms = []
 [dependencies]
 pest = { workspace = true }
 pest_derive = { workspace = true }
+chrono = { workspace = true }
 vybe_bytecode = { workspace = true }
 vybe_host = { workspace = true, features = ["gui"] }
 vybe_widgets = { workspace = true }

@@ -1,5 +1,6 @@
 use pest::Parser;
 use pest::iterators::Pair;
+use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 
 use super::{Rule, VbParser};
 use crate::ast::*;
@@ -65,8 +66,357 @@ fn normalize_vb_identifier(name: &str) -> String {
         .to_string()
 }
 
-fn canonicalize_call(_name: &str, _arguments: &[Argument]) -> Option<Expression> {
+#[derive(Clone)]
+enum VbDateValue {
+    Date(NaiveDate),
+    Time(NaiveTime),
+    DateTime(NaiveDateTime),
+}
+
+fn zero_arg_call(name: &str) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(name)),
+        args: vec![],
+        optional: false,
+    })
+}
+
+fn call_expr(callee: Expression, args: Vec<Argument>) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(callee),
+        args,
+        optional: false,
+    })
+}
+
+fn member_expr(object: Expression, field: &str) -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(object),
+        field: field.to_string(),
+        null_safe: false,
+    })
+}
+
+fn binary_expr(op: BinOp, left: Expression, right: Expression) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
+}
+
+fn ternary_expr(cond: Expression, then_expr: Expression, else_expr: Expression) -> Expression {
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(cond),
+        then: Box::new(then_expr),
+        else_: Box::new(else_expr),
+    })
+}
+
+fn literal_number(expr: &Expression) -> Option<f64> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(n)) => Some(*n as f64),
+        ExprKind::Lit(Literal::Float(n)) => Some(*n),
+        ExprKind::Unary { op: UnaryOp::Neg, expr } => literal_number(expr).map(|value| -value),
+        ExprKind::Unary { op: UnaryOp::Pos, expr } => literal_number(expr),
+        _ => None,
+    }
+}
+
+fn literal_i64(expr: &Expression) -> Option<i64> {
+    literal_number(expr).map(|n| n.trunc() as i64)
+}
+
+fn literal_bool(expr: &Expression) -> Option<bool> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Bool(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+fn literal_string(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(value)) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn last_day_of_month(year: i32, month: u32) -> Option<u32> {
+    let (next_year, next_month) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
+    let first_of_next = NaiveDate::from_ymd_opt(next_year, next_month, 1)?;
+    Some((first_of_next - Duration::days(1)).day())
+}
+
+fn normalize_year_month(year: i64, month: i64) -> Option<(i32, u32)> {
+    let total_months = year.checked_mul(12)?.checked_add(month - 1)?;
+    let normalized_year = total_months.div_euclid(12);
+    let normalized_month = total_months.rem_euclid(12) + 1;
+    Some((i32::try_from(normalized_year).ok()?, u32::try_from(normalized_month).ok()?))
+}
+
+fn build_date_serial(year: i64, month: i64, day: i64) -> Option<NaiveDate> {
+    let (normalized_year, normalized_month) = normalize_year_month(year, month)?;
+    let first_of_month = NaiveDate::from_ymd_opt(normalized_year, normalized_month, 1)?;
+    Some(first_of_month + Duration::days(day - 1))
+}
+
+fn build_time_serial(hour: i64, minute: i64, second: i64) -> Option<NaiveTime> {
+    let total_seconds = hour
+        .checked_mul(3600)?
+        .checked_add(minute.checked_mul(60)?)?
+        .checked_add(second)?;
+    let seconds_in_day = 24 * 3600;
+    let normalized = total_seconds.rem_euclid(seconds_in_day);
+    let hours = (normalized / 3600) as u32;
+    let minutes = ((normalized % 3600) / 60) as u32;
+    let seconds = (normalized % 60) as u32;
+    NaiveTime::from_hms_opt(hours, minutes, seconds)
+}
+
+fn parse_vb_date_text(text: &str) -> Option<VbDateValue> {
+    let text = text.trim();
+
+    for pattern in ["%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %I:%M %p"] {
+        if let Ok(value) = NaiveDateTime::parse_from_str(text, pattern) {
+            return Some(VbDateValue::DateTime(value));
+        }
+    }
+
+    if let Ok(value) = NaiveDate::parse_from_str(text, "%m/%d/%Y") {
+        return Some(VbDateValue::Date(value));
+    }
+
+    for pattern in ["%I:%M:%S %p", "%I:%M %p"] {
+        if let Ok(value) = NaiveTime::parse_from_str(text, pattern) {
+            return Some(VbDateValue::Time(value));
+        }
+    }
+
     None
+}
+
+fn parse_vb_date_expr(expr: &Expression) -> Option<VbDateValue> {
+    literal_string(expr).and_then(|text| parse_vb_date_text(&text))
+}
+
+fn format_vb_time(time: NaiveTime) -> String {
+    let mut hour = time.hour() % 12;
+    if hour == 0 {
+        hour = 12;
+    }
+    let suffix = if time.hour() < 12 { "AM" } else { "PM" };
+    format!("{}:{:02}:{:02} {}", hour, time.minute(), time.second(), suffix)
+}
+
+fn format_vb_date(value: NaiveDate) -> String {
+    format!("{}/{}/{}", value.month(), value.day(), value.year())
+}
+
+fn format_vb_date_value(value: &VbDateValue) -> String {
+    match value {
+        VbDateValue::Date(date) => format_vb_date(*date),
+        VbDateValue::Time(time) => format_vb_time(*time),
+        VbDateValue::DateTime(datetime) => {
+            format!("{} {}", format_vb_date(datetime.date()), format_vb_time(datetime.time()))
+        }
+    }
+}
+
+fn date_value_as_datetime(value: &VbDateValue) -> Option<NaiveDateTime> {
+    match value {
+        VbDateValue::Date(date) => date.and_hms_opt(0, 0, 0),
+        VbDateValue::Time(time) => NaiveDate::from_ymd_opt(1970, 1, 1)?.and_hms_opt(time.hour(), time.minute(), time.second()),
+        VbDateValue::DateTime(datetime) => Some(*datetime),
+    }
+}
+
+fn add_months_to_date(date: NaiveDate, months: i64) -> Option<NaiveDate> {
+    let total_months = i64::from(date.year())
+        .checked_mul(12)?
+        .checked_add(i64::from(date.month()) - 1)?
+        .checked_add(months)?;
+    let year = total_months.div_euclid(12);
+    let month = total_months.rem_euclid(12) + 1;
+    let year = i32::try_from(year).ok()?;
+    let month = u32::try_from(month).ok()?;
+    let day = date.day().min(last_day_of_month(year, month)?);
+    NaiveDate::from_ymd_opt(year, month, day)
+}
+
+fn add_interval(value: &VbDateValue, interval: &str, amount: i64) -> Option<VbDateValue> {
+    match interval {
+        "day" => match value {
+            VbDateValue::Date(date) => Some(VbDateValue::Date(*date + Duration::days(amount))),
+            VbDateValue::DateTime(datetime) => Some(VbDateValue::DateTime(*datetime + Duration::days(amount))),
+            VbDateValue::Time(time) => Some(VbDateValue::Time(*time)),
+        },
+        "hour" => match value {
+            VbDateValue::Date(date) => Some(VbDateValue::DateTime(date.and_hms_opt(0, 0, 0)? + Duration::hours(amount))),
+            VbDateValue::DateTime(datetime) => Some(VbDateValue::DateTime(*datetime + Duration::hours(amount))),
+            VbDateValue::Time(time) => Some(VbDateValue::Time(build_time_serial(i64::from(time.hour()) + amount, i64::from(time.minute()), i64::from(time.second()))?)),
+        },
+        "month" => match value {
+            VbDateValue::Date(date) => Some(VbDateValue::Date(add_months_to_date(*date, amount)?)),
+            VbDateValue::DateTime(datetime) => {
+                let next_date = add_months_to_date(datetime.date(), amount)?;
+                Some(VbDateValue::DateTime(next_date.and_hms_opt(datetime.hour(), datetime.minute(), datetime.second())?))
+            }
+            VbDateValue::Time(time) => Some(VbDateValue::Time(*time)),
+        },
+        "year" => add_interval(value, "month", amount.checked_mul(12)?),
+        _ => None,
+    }
+}
+
+fn parse_interval_expr(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Member { object, field, .. } => match &object.kind {
+            ExprKind::Ident(name) if name.eq_ignore_ascii_case("DateInterval") => Some(field.to_lowercase()),
+            _ => None,
+        },
+        ExprKind::Lit(Literal::Str(value)) => Some(value.to_lowercase()),
+        _ => None,
+    }
+}
+
+fn date_diff(interval: &str, start: &VbDateValue, end: &VbDateValue) -> Option<i64> {
+    let start_dt = date_value_as_datetime(start)?;
+    let end_dt = date_value_as_datetime(end)?;
+    match interval {
+        "day" => Some((end_dt - start_dt).num_days()),
+        "hour" => Some((end_dt - start_dt).num_hours()),
+        "month" => Some(i64::from(end_dt.year() - start_dt.year()) * 12 + i64::from(end_dt.month()) - i64::from(start_dt.month())),
+        "year" => Some(i64::from(end_dt.year() - start_dt.year())),
+        _ => None,
+    }
+}
+
+fn date_part(interval: &str, value: &VbDateValue) -> Option<i64> {
+    let datetime = date_value_as_datetime(value)?;
+    match interval {
+        "quarter" => Some(i64::from(((datetime.month() - 1) / 3) + 1)),
+        "dayofyear" => Some(i64::from(datetime.ordinal())),
+        _ => None,
+    }
+}
+
+fn weekday_index(value: &VbDateValue) -> Option<i64> {
+    Some(i64::from(date_value_as_datetime(value)?.weekday().number_from_sunday()))
+}
+
+fn fold_date_constructor(args: &[Argument], is_time: bool) -> Option<Expression> {
+    if is_time {
+        let hour = literal_i64(&args.get(0)?.value)?;
+        let minute = literal_i64(&args.get(1)?.value)?;
+        let second = literal_i64(&args.get(2)?.value)?;
+        let time = build_time_serial(hour, minute, second)?;
+        return Some(Expression::string(&format_vb_date_value(&VbDateValue::Time(time))));
+    }
+
+    let year = literal_i64(&args.get(0)?.value)?;
+    let month = literal_i64(&args.get(1)?.value)?;
+    let day = literal_i64(&args.get(2)?.value)?;
+    let date = build_date_serial(year, month, day)?;
+    Some(Expression::string(&format_vb_date_value(&VbDateValue::Date(date))))
+}
+
+fn fold_month_name(args: &[Argument]) -> Option<Expression> {
+    let month = literal_i64(&args.get(0)?.value)?;
+    let abbreviate = args.get(1).and_then(|arg| literal_bool(&arg.value)).unwrap_or(false);
+    let names = if abbreviate {
+        ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    } else {
+        ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+    };
+    let index = usize::try_from(month.checked_sub(1)?).ok()?;
+    Some(Expression::string(names.get(index)?))
+}
+
+fn fold_weekday_name(args: &[Argument]) -> Option<Expression> {
+    let weekday = literal_i64(&args.get(0)?.value)?;
+    let abbreviate = args.get(1).and_then(|arg| literal_bool(&arg.value)).unwrap_or(false);
+    let names = if abbreviate {
+        ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    } else {
+        ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+    };
+    let index = usize::try_from(weekday.checked_sub(1)?).ok()?;
+    Some(Expression::string(names.get(index)?))
+}
+
+fn fold_date_value(name: &str, args: &[Argument]) -> Option<Expression> {
+    let interval = args.get(0).and_then(|arg| parse_interval_expr(&arg.value));
+    match name.to_ascii_lowercase().as_str() {
+        "dateserial" => fold_date_constructor(args, false),
+        "timeserial" => fold_date_constructor(args, true),
+        "datevalue" | "timevalue" | "cdate" => {
+            let parsed = parse_vb_date_text(&literal_string(&args.get(0)?.value)?)?;
+            Some(Expression::string(&format_vb_date_value(&parsed)))
+        }
+        "dateadd" => {
+            let amount = literal_i64(&args.get(1)?.value)?;
+            let input = parse_vb_date_expr(&args.get(2)?.value)?;
+            let value = add_interval(&input, interval.as_deref()?, amount)?;
+            Some(Expression::string(&format_vb_date_value(&value)))
+        }
+        "datediff" => {
+            let start = parse_vb_date_expr(&args.get(1)?.value)?;
+            let end = parse_vb_date_expr(&args.get(2)?.value)?;
+            Some(Expression::int(date_diff(interval.as_deref()?, &start, &end)?))
+        }
+        "datepart" => {
+            let value = parse_vb_date_expr(&args.get(1)?.value)?;
+            Some(Expression::int(date_part(interval.as_deref()?, &value)?))
+        }
+        "year" => Some(Expression::int(i64::from(date_value_as_datetime(&parse_vb_date_expr(&args.get(0)?.value)?)?.year()))),
+        "month" => Some(Expression::int(i64::from(date_value_as_datetime(&parse_vb_date_expr(&args.get(0)?.value)?)?.month()))),
+        "day" => Some(Expression::int(i64::from(date_value_as_datetime(&parse_vb_date_expr(&args.get(0)?.value)?)?.day()))),
+        "hour" => Some(Expression::int(i64::from(date_value_as_datetime(&parse_vb_date_expr(&args.get(0)?.value)?)?.hour()))),
+        "minute" => Some(Expression::int(i64::from(date_value_as_datetime(&parse_vb_date_expr(&args.get(0)?.value)?)?.minute()))),
+        "second" => Some(Expression::int(i64::from(date_value_as_datetime(&parse_vb_date_expr(&args.get(0)?.value)?)?.second()))),
+        "weekday" => Some(Expression::int(weekday_index(&parse_vb_date_expr(&args.get(0)?.value)?)?)),
+        "monthname" => fold_month_name(args),
+        "weekdayname" => fold_weekday_name(args),
+        "isdate" => {
+            let is_valid = parse_vb_date_text(&literal_string(&args.get(0)?.value)?).is_some();
+            Some(Expression::bool(is_valid))
+        }
+        _ => None,
+    }
+}
+
+fn canonicalize_special_identifier(name: &str) -> Option<Expression> {
+    match name.to_ascii_lowercase().as_str() {
+        "now" => Some(zero_arg_call("now")),
+        "today" => Some(zero_arg_call("today")),
+        "timeofday" => Some(zero_arg_call("timeofday")),
+        _ => None,
+    }
+}
+
+fn canonicalize_call(name: &str, arguments: &[Argument]) -> Option<Expression> {
+    match name.to_ascii_lowercase().as_str() {
+        "fix" if arguments.len() == 1 => Some(call_expr(build_dotted_expr("System.Math.Truncate"), arguments.to_vec())),
+        "dateserial"
+        | "timeserial"
+        | "dateadd"
+        | "datediff"
+        | "datepart"
+        | "datevalue"
+        | "timevalue"
+        | "cdate"
+        | "year"
+        | "month"
+        | "day"
+        | "hour"
+        | "minute"
+        | "second"
+        | "weekday"
+        | "monthname"
+        | "weekdayname"
+        | "isdate" => fold_date_value(name, arguments),
+        _ => None,
+    }
 }
 
 fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
@@ -2251,7 +2601,13 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
             }
             Rule::query_expression => return parse_query_expression(pair),
             Rule::xml_literal => return parse_xml_literal(pair),
-            Rule::identifier => ExprKind::Ident(normalize_vb_identifier(pair.as_str())),
+            Rule::identifier => {
+                let name = normalize_vb_identifier(pair.as_str());
+                if let Some(rewritten) = canonicalize_special_identifier(&name) {
+                    return Ok(rewritten);
+                }
+                ExprKind::Ident(name)
+            }
             Rule::cast_expression => {
                 let text = pair.as_str();
                 let cast_kind = if text.len() >= 10 && text[..10].eq_ignore_ascii_case("DirectCast") {
@@ -3324,6 +3680,11 @@ fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expres
                 .map(parse_argument_list)
                 .transpose()?
                 .unwrap_or_default();
+            if let ExprKind::Ident(name) = &expr.kind {
+                if let Some(rewritten) = canonicalize_call(name, &arguments) {
+                    return Ok(rewritten);
+                }
+            }
             Ok(Expression::new(ExprKind::Call {
                 callee: Box::new(expr),
                 args: arguments,
