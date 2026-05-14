@@ -302,6 +302,8 @@ pub struct Compiler {
     /// even though the VM's TRY_START handler currently ignores the
     /// reserved finally offset operand.
     active_finally_blocks: Vec<FinallyAction>,
+    /// Nesting depth of the catch body currently being compiled.
+    catch_depth: usize,
 }
 
 /// §16.2.1.3 wildcard — `import * as alias from "module"`.
@@ -507,6 +509,7 @@ impl Compiler {
             source_type_aliases: HashMap::new(),
             module_exports: HashMap::new(),
             active_finally_blocks: Vec::new(),
+            catch_depth: 0,
             uses_proxy: false,
         }
     }
@@ -2150,7 +2153,6 @@ impl Compiler {
         self.compile_expr(target)?;
         self.emit_u16(Op::LOCAL_SET, target_slot);
         self.emit(Op::DROP);
-
         self.compile_expr(start)?;
     common::convert::emit_to_int(self.chunk(), line);
         self.emit_const(Value::I32(1));
@@ -2220,6 +2222,36 @@ impl Compiler {
         }
 
         self.compile_assign_target(target)
+    }
+
+    fn compile_vb_err_raise_stmt(&mut self, args: &[Argument]) -> Result<(), String> {
+        if let Some(description) = args.get(2).or_else(|| args.get(1)).or_else(|| args.first()) {
+            self.compile_expr(&description.value)?;
+        } else {
+            self.emit_const(Value::String(Arc::from("")));
+        }
+
+        self.emit_js_exception_ctor_from_message_value("Exception")?;
+
+        if let Some(number) = args.first() {
+            self.emit(Op::DUP);
+            self.compile_expr(&number.value)?;
+            let key = self.str_const("number");
+            self.emit_u16(Op::STRUCT_SET, key);
+            self.emit(Op::DROP);
+        }
+
+        if let Some(source) = args.get(1) {
+            self.emit(Op::DUP);
+            self.compile_expr(&source.value)?;
+            let key = self.str_const("source");
+            self.emit_u16(Op::STRUCT_SET, key);
+            self.emit(Op::DROP);
+        }
+
+        let line = self.line;
+        common::errors::emit_throw(self.chunk(), line);
+        Ok(())
     }
 
     pub(super) fn is_collection_like_type_hint(type_hint: &str) -> bool {
@@ -3323,6 +3355,10 @@ impl Compiler {
                         if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vb_mid_stmt") && args.len() == 4 => {
                         return self.compile_vb_mid_stmt(&args[0].value, &args[1].value, &args[2].value, &args[3].value);
                     }
+                    ExprKind::Call { callee, args, .. }
+                        if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vb_err_raise") => {
+                        return self.compile_vb_err_raise_stmt(args);
+                    }
                     // Bare identifier that's a known function → call with 0 args
                     ExprKind::Ident(name) if self.defined_functions.contains(name.as_str()) => {
                         let saved_js_this = self.save_js_this("__js_stmt_prev_this");
@@ -4139,7 +4175,9 @@ impl Compiler {
                         }
 
                         self.emit(Op::DROP);
+                        self.catch_depth += 1;
                         for s in &c.body { self.compile_stmt(s)?; }
+                        self.catch_depth = self.catch_depth.saturating_sub(1);
                         self.scope_mut().end_scope();
                         end_patches.push(self.emit_jump(Op::BR));
 
@@ -4158,6 +4196,9 @@ impl Compiler {
                     for s in fin { self.compile_stmt(s)?; }
                 }
                 if let Some(exc_slot) = finally_exc_slot {
+                    if self.catch_depth > 0 {
+                        return Ok(());
+                    }
                     self.emit_u16(Op::LOCAL_GET, exc_slot);
                     self.emit(Op::REF_IS_NULL);
                     let done = self.emit_jump(Op::BR_IF_TRUE);

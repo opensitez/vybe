@@ -84,8 +84,8 @@ statement = _{
     | removehandler_statement
     | raiseevent_statement
     | static_statement
-    | expression_statement
     | synclock_statement
+    | expression_statement
 }
 dim_new_keyword = { ^"New" }
 array_rank_spec = { "(" ~ array_bounds? ~ ")" }
@@ -223,9 +223,12 @@ with_statement = {
 with_end = { ^"End" ~ ^"With" }
 
 using_statement = {
-    ^"Using" ~ identifier ~ (^"As" ~ (new_expression | type_name ~ "=" ~ expression) | "=" ~ expression) ~ (NEWLINE | EOI)
+    ^"Using" ~ using_resource_decl ~ ("," ~ using_resource_decl)* ~ (NEWLINE | EOI)
     ~ (!using_end ~ line)*
     ~ using_end
+}
+using_resource_decl = {
+    identifier ~ (^"As" ~ (new_expression | type_name ~ "=" ~ expression) | "=" ~ expression)
 }
 using_end = { ^"End" ~ ^"Using" }
 
@@ -263,7 +266,7 @@ label_statement = { identifier ~ ":" }
 on_error_statement = {
     ^"On" ~ ^"Error" ~ (
         ^"Resume" ~ ^"Next"
-        | ^"GoTo" ~ (^"0" | identifier)
+        | ^"GoTo" ~ (^"0" | "-1" | identifier)
     )
 }
 resume_statement = { ^"Resume" ~ (^"Next" | identifier)? }
@@ -572,8 +575,11 @@ removehandler_statement = { ^"RemoveHandler" ~ dotted_identifier ~ "," ~ express
 
 member_access = { identifier ~ ("." ~ member_identifier)+ }
 named_argument = { identifier ~ ":=" ~ expression }
-argument = { named_argument | expression }
-argument_list = { argument ~ ("," ~ argument)* }
+omitted_argument = { &("," | ")") }
+first_argument = { named_argument | expression }
+trailing_argument = { named_argument | expression | omitted_argument }
+argument = { first_argument | trailing_argument }
+argument_list = { first_argument ~ ("," ~ trailing_argument)* }
 
 // Literals
 literal = _{
@@ -616,7 +622,7 @@ member_identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
 // Keywords
 keyword = _{
-    (^"Me" | ^"If" | ^"Then" | ^"Else" | ^"End" | ^"Sub" | ^"Function" | ^"Dim" | ^"ReDim" | ^"Preserve" | ^"Const" | ^"As" | ^"Set" | ^"For" | ^"To" | ^"Step" | ^"Next" | ^"While" | ^"Wend" | ^"Do" | ^"Loop" | ^"Until" | ^"Exit" | ^"Return" | ^"Call" | ^"True" | ^"False" | ^"Nothing" | ^"Not" | ^"Or" | ^"And" | ^"Mod" | ^"Module" | ^"Class" | ^"Private" | ^"Public" | ^"ByVal" | ^"ByRef" | ^"Select" | ^"Case" | ^"Try" | ^"Catch" | ^"Finally" | ^"Continue" | ^"New" | ^"When" | ^"Partial" | ^"Friend" | ^"Protected" | ^"Overrides" | ^"Overloads" | ^"Shared" | ^"WithEvents" | ^"Handles" | ^"Imports" | ^"Is" | ^"IsNot" | ^"AndAlso" | ^"OrElse" | ^"Optional" | ^"ParamArray" | ^"MyBase" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" | ^"With" | ^"Each" | ^"In" | ^"Enum" | ^"Open" | ^"Close" | ^"Print" | ^"Line" | ^"Input" | ^"Write" | ^"Append" | ^"Output" | ^"Binary" | ^"Random" | ^"RaiseEvent" | ^"TypeOf" | ^"Throw" | ^"AddHandler" | ^"RemoveHandler" | ^"GoTo" | ^"Static" | ^"Interface" | ^"Structure" | ^"Delegate" | ^"Event" | ^"Resume" | ^"Namespace")
+    (^"Me" | ^"If" | ^"Then" | ^"Else" | ^"End" | ^"Sub" | ^"Function" | ^"Dim" | ^"ReDim" | ^"Preserve" | ^"Const" | ^"As" | ^"Set" | ^"For" | ^"To" | ^"Step" | ^"Next" | ^"While" | ^"Wend" | ^"Do" | ^"Loop" | ^"Until" | ^"Exit" | ^"Return" | ^"Call" | ^"True" | ^"False" | ^"Nothing" | ^"Not" | ^"Or" | ^"And" | ^"Mod" | ^"Module" | ^"Class" | ^"Private" | ^"Public" | ^"ByVal" | ^"ByRef" | ^"Select" | ^"Case" | ^"Try" | ^"Catch" | ^"Finally" | ^"Continue" | ^"New" | ^"When" | ^"Partial" | ^"Friend" | ^"Protected" | ^"Overrides" | ^"Overloads" | ^"Shared" | ^"WithEvents" | ^"Handles" | ^"Imports" | ^"Is" | ^"IsNot" | ^"AndAlso" | ^"OrElse" | ^"Optional" | ^"ParamArray" | ^"MyBase" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" | ^"With" | ^"Each" | ^"In" | ^"Enum" | ^"Open" | ^"Close" | ^"Print" | ^"Line" | ^"Input" | ^"Write" | ^"Append" | ^"Output" | ^"Binary" | ^"Random" | ^"RaiseEvent" | ^"TypeOf" | ^"Throw" | ^"AddHandler" | ^"RemoveHandler" | ^"GoTo" | ^"Static" | ^"Interface" | ^"Structure" | ^"Delegate" | ^"Event" | ^"Resume" | ^"Namespace" | ^"Using" | ^"SyncLock")
     ~ !(ASCII_ALPHANUMERIC | "_")
 }
 

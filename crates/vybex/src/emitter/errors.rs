@@ -129,7 +129,7 @@ pub fn is_exception_type(name: &str) -> bool {
         | "zerodivisionerror" | "filenotfounderror" | "importerror"
         | "notimplementederror" | "overflowerror" | "ioerror" | "oserror"
         // .NET / VB / C#
-        | "systemexception" | "argumentexception" | "argumentnullexception"
+        | "systemexception" | "applicationexception" | "argumentexception" | "argumentnullexception"
         | "invalidoperationexception" | "notimplementedexception"
         | "notsupportedexception" | "nullreferenceexception"
         | "indexoutofrangeexception" | "keynotfoundexception"

@@ -924,6 +924,491 @@ fn rewrite_vb_aliases_in_expr(expr: &mut Expression, aliases: &HashMap<String, S
     }
 }
 
+fn vb_err_state_expr() -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("message"),
+            value: Expression::string(""),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("number"),
+            value: Expression::int(0),
+        },
+    ]))
+}
+
+fn vb_err_state_ident() -> Expression {
+    Expression::ident("__vb_err")
+}
+
+fn vb_err_member(field: &str) -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(vb_err_state_ident()),
+        field: field.to_string(),
+        null_safe: false,
+    })
+}
+
+fn vb_err_decl_stmt() -> Statement {
+    Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident("__vb_err".into()),
+            type_hint: Some("Object".into()),
+            init: Some(vb_err_state_expr()),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Dim,
+    })
+}
+
+fn vb_err_clear_statements() -> Vec<Statement> {
+    vec![
+        Statement::new(StmtKind::Assign {
+            targets: vec![vb_err_member("message")],
+            value: Expression::string(""),
+        }),
+        Statement::new(StmtKind::Assign {
+            targets: vec![vb_err_member("number")],
+            value: Expression::int(0),
+        }),
+    ]
+}
+
+fn vb_err_capture_stmt(name: &str) -> Statement {
+    Statement::new(StmtKind::Assign {
+        targets: vec![vb_err_state_ident()],
+        value: Expression::ident(name),
+    })
+}
+
+fn is_vb_err_ident(expr: &Expression) -> bool {
+    matches!(&expr.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Err"))
+}
+
+fn is_vb_err_clear_call(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind,
+                ExprKind::Member { object, field, .. }
+                    if is_vb_err_ident(object) && field.eq_ignore_ascii_case("Clear"))
+    )
+}
+
+fn find_vb_label(body: &[Statement], label: &str, start: usize) -> Option<usize> {
+    body.iter().enumerate().skip(start).find_map(|(idx, stmt)| {
+        match &stmt.kind {
+            StmtKind::Label(name) if name.eq_ignore_ascii_case(label) => Some(idx),
+            _ => None,
+        }
+    })
+}
+
+fn wrap_vb_resume_next(stmt: Statement, span: Span) -> Statement {
+    Statement::with_span(
+        StmtKind::Try {
+            body: vec![stmt],
+            catches: vec![CatchClause {
+                types: Vec::new(),
+                var_name: Some("__vb_err_catch".into()),
+                stack_var: None,
+                body: vec![vb_err_capture_stmt("__vb_err_catch")],
+                when_clause: None,
+            }],
+            else_body: None,
+            finally: None,
+        },
+        span,
+    )
+}
+
+fn rewrite_vb_err_expr(expr: &mut Expression) -> bool {
+    match &mut expr.kind {
+        ExprKind::Member { object, field, .. } => {
+            let mut used = rewrite_vb_err_expr(object);
+            if is_vb_err_ident(object) {
+                if field.eq_ignore_ascii_case("Description") {
+                    *expr = vb_err_member("message");
+                    used = true;
+                } else if field.eq_ignore_ascii_case("Number") {
+                    *expr = vb_err_member("number");
+                    used = true;
+                }
+            }
+            used
+        }
+        ExprKind::Call { callee, args, .. } => {
+            let mut used = false;
+            used |= rewrite_vb_err_expr(callee);
+            for arg in args {
+                used |= rewrite_vb_err_expr(&mut arg.value);
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if is_vb_err_ident(object) && field.eq_ignore_ascii_case("Raise") {
+                    *callee = Box::new(Expression::ident("__vb_err_raise"));
+                    used = true;
+                }
+            }
+            used
+        }
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::NullCoalesce { left, right }
+        | ExprKind::Walrus { target: left, value: right } => {
+            rewrite_vb_err_expr(left) | rewrite_vb_err_expr(right)
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Spread(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::TypeOf(expr) => rewrite_vb_err_expr(expr),
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_vb_err_expr(cond) | rewrite_vb_err_expr(then) | rewrite_vb_err_expr(else_)
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_vb_err_expr(object) | rewrite_vb_err_expr(index)
+        }
+        ExprKind::New { class, args } => {
+            let mut used = rewrite_vb_err_expr(class);
+            for arg in args {
+                used |= rewrite_vb_err_expr(&mut arg.value);
+            }
+            used
+        }
+        ExprKind::Assign { target, value } => rewrite_vb_err_expr(target) | rewrite_vb_err_expr(value),
+        ExprKind::Lambda { body, .. } => {
+            if let LambdaBody::Expr(expr) = body {
+                rewrite_vb_err_expr(expr)
+            } else {
+                false
+            }
+        }
+        ExprKind::Array(items) => {
+            let mut used = false;
+            for item in items {
+                if let Some(key) = &mut item.key {
+                    used |= rewrite_vb_err_expr(key);
+                }
+                used |= rewrite_vb_err_expr(&mut item.value);
+            }
+            used
+        }
+        ExprKind::Tuple(items)
+        | ExprKind::Set(items)
+        | ExprKind::Sequence(items) => {
+            let mut used = false;
+            for item in items {
+                used |= rewrite_vb_err_expr(item);
+            }
+            used
+        }
+        ExprKind::Object(props) => {
+            let mut used = false;
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value } => {
+                        used |= rewrite_vb_err_expr(key);
+                        used |= rewrite_vb_err_expr(value);
+                    }
+                    ObjectProperty::Spread(expr) => used |= rewrite_vb_err_expr(expr),
+                    ObjectProperty::Computed { key, value } => {
+                        used |= rewrite_vb_err_expr(key);
+                        used |= rewrite_vb_err_expr(value);
+                    }
+                    ObjectProperty::Method { .. }
+                    | ObjectProperty::Accessor { .. }
+                    | ObjectProperty::Shorthand(_) => {}
+                }
+            }
+            used
+        }
+        ExprKind::Interpolation(parts) => {
+            let mut used = false;
+            for part in parts {
+                if let InterpolPart::Expr(expr) = part {
+                    used |= rewrite_vb_err_expr(expr);
+                }
+            }
+            used
+        }
+        ExprKind::IsType { expr, .. } | ExprKind::Cast { expr, .. } => rewrite_vb_err_expr(expr),
+        ExprKind::Yield(Some(expr)) => rewrite_vb_err_expr(expr),
+        ExprKind::SuperCall { args, .. } => {
+            let mut used = false;
+            for arg in args {
+                used |= rewrite_vb_err_expr(&mut arg.value);
+            }
+            used
+        }
+        ExprKind::Comprehension { element, generators, .. } => {
+            let mut used = rewrite_vb_err_expr(element);
+            for generator in generators {
+                used |= rewrite_vb_err_expr(&mut generator.iter);
+                for condition in &mut generator.conditions {
+                    used |= rewrite_vb_err_expr(condition);
+                }
+            }
+            used
+        }
+        ExprKind::Slice { lower, upper, step } => {
+            let mut used = false;
+            if let Some(lower) = lower {
+                used |= rewrite_vb_err_expr(lower);
+            }
+            if let Some(upper) = upper {
+                used |= rewrite_vb_err_expr(upper);
+            }
+            if let Some(step) = step {
+                used |= rewrite_vb_err_expr(step);
+            }
+            used
+        }
+        ExprKind::Range { start, end, .. } => rewrite_vb_err_expr(start) | rewrite_vb_err_expr(end),
+        ExprKind::StaticAccess { class, member } => rewrite_vb_err_expr(class) | rewrite_vb_err_expr(member),
+        ExprKind::Match { subject, arms } => {
+            let mut used = rewrite_vb_err_expr(subject);
+            for arm in arms {
+                if let Some(conditions) = &mut arm.conditions {
+                    for condition in conditions {
+                        used |= rewrite_vb_err_expr(condition);
+                    }
+                }
+                used |= rewrite_vb_err_expr(&mut arm.body);
+            }
+            used
+        }
+        ExprKind::Lit(_)
+        | ExprKind::Ident(_)
+        | ExprKind::This
+        | ExprKind::Super
+        | ExprKind::DefaultOf(_)
+        | ExprKind::Yield(None)
+        | ExprKind::AddressOf(_)
+        | ExprKind::Destructure(_)
+        | ExprKind::ClassExpr { .. }
+        | ExprKind::FunctionExpr(_) => false,
+    }
+}
+
+fn normalize_vb_legacy_error_statement(stmt: &mut Statement) -> bool {
+    if matches!(&stmt.kind, StmtKind::Expr(expr) if is_vb_err_clear_call(expr)) {
+        stmt.kind = StmtKind::Block(vb_err_clear_statements());
+        return true;
+    }
+
+    match &mut stmt.kind {
+        StmtKind::Expr(expr)
+        | StmtKind::Return(Some(expr))
+        | StmtKind::CompoundAssign { value: expr, .. } => rewrite_vb_err_expr(expr),
+        StmtKind::Throw { expr: Some(expr), cause: None } => rewrite_vb_err_expr(expr),
+        StmtKind::Throw { expr: Some(expr), cause: Some(cause) } => {
+            rewrite_vb_err_expr(expr) | rewrite_vb_err_expr(cause)
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            let mut used = false;
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    used |= rewrite_vb_err_expr(init);
+                }
+                if let Some(bounds) = &mut decl.array_bounds {
+                    for bound in bounds {
+                        used |= rewrite_vb_err_expr(bound);
+                    }
+                }
+            }
+            used
+        }
+        StmtKind::Assign { targets, value } => {
+            let mut used = rewrite_vb_err_expr(value);
+            for target in targets {
+                used |= rewrite_vb_err_expr(target);
+            }
+            used
+        }
+        StmtKind::Block(body)
+        | StmtKind::Using { body, .. } => {
+            normalize_vb_legacy_error_body(body)
+        }
+        StmtKind::Lock { expr, body } => {
+            rewrite_vb_err_expr(expr) | normalize_vb_legacy_error_body(body)
+        }
+        StmtKind::If { cond, then_body, elifs, else_body } => {
+            let mut used = rewrite_vb_err_expr(cond) | normalize_vb_legacy_error_body(then_body);
+            for (elif_cond, elif_body) in elifs {
+                used |= rewrite_vb_err_expr(elif_cond);
+                used |= normalize_vb_legacy_error_body(elif_body);
+            }
+            if let Some(else_body) = else_body {
+                used |= normalize_vb_legacy_error_body(else_body);
+            }
+            used
+        }
+        StmtKind::For { init, cond, update, body } => {
+            let mut used = false;
+            if let Some(init) = init {
+                used |= normalize_vb_legacy_error_statement(init);
+            }
+            if let Some(cond) = cond {
+                used |= rewrite_vb_err_expr(cond);
+            }
+            if let Some(update) = update {
+                used |= rewrite_vb_err_expr(update);
+            }
+            used | normalize_vb_legacy_error_body(body)
+        }
+        StmtKind::ForIn { iter, body, else_body, .. } => {
+            let mut used = rewrite_vb_err_expr(iter) | normalize_vb_legacy_error_body(body);
+            if let Some(else_body) = else_body {
+                used |= normalize_vb_legacy_error_body(else_body);
+            }
+            used
+        }
+        StmtKind::While { cond, body, else_body } => {
+            let mut used = rewrite_vb_err_expr(cond) | normalize_vb_legacy_error_body(body);
+            if let Some(else_body) = else_body {
+                used |= normalize_vb_legacy_error_body(else_body);
+            }
+            used
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            normalize_vb_legacy_error_body(body) | rewrite_vb_err_expr(cond)
+        }
+        StmtKind::Try { body, catches, else_body, finally } => {
+            let mut used = normalize_vb_legacy_error_body(body);
+            for catch in catches {
+                if let Some(when_clause) = &mut catch.when_clause {
+                    used |= rewrite_vb_err_expr(when_clause);
+                }
+                used |= normalize_vb_legacy_error_body(&mut catch.body);
+            }
+            if let Some(else_body) = else_body {
+                used |= normalize_vb_legacy_error_body(else_body);
+            }
+            if let Some(finally) = finally {
+                used |= normalize_vb_legacy_error_body(finally);
+            }
+            used
+        }
+        StmtKind::FunctionDecl { body, .. } => normalize_vb_legacy_error_body(body),
+        _ => false,
+    }
+}
+
+fn normalize_vb_legacy_error_body(body: &mut Vec<Statement>) -> bool {
+    let original = std::mem::take(body);
+    let mut rewritten = Vec::new();
+    let mut uses_err_state = false;
+    let mut resume_next = false;
+    let mut index = 0usize;
+
+    while index < original.len() {
+        match &original[index].kind {
+            StmtKind::OnErrorResumeNext => {
+                uses_err_state = true;
+                resume_next = true;
+                index += 1;
+            }
+            StmtKind::OnErrorGoTo(target) if target == "0" => {
+                uses_err_state = true;
+                resume_next = false;
+                index += 1;
+            }
+            StmtKind::OnErrorGoTo(target) if target == "-1" => {
+                uses_err_state = true;
+                rewritten.extend(vb_err_clear_statements());
+                index += 1;
+            }
+            StmtKind::OnErrorGoTo(target) => {
+                uses_err_state = true;
+                if let Some(label_index) = find_vb_label(&original, target, index + 1) {
+                    let mut try_body = original[index + 1..label_index].to_vec();
+                    let mut handler_body = original[label_index + 1..].to_vec();
+                    normalize_vb_legacy_error_body(&mut try_body);
+                    normalize_vb_legacy_error_body(&mut handler_body);
+                    let mut catch_body = vec![vb_err_capture_stmt("__vb_err_catch")];
+                    catch_body.append(&mut handler_body);
+                    rewritten.push(Statement::with_span(
+                        StmtKind::Try {
+                            body: try_body,
+                            catches: vec![CatchClause {
+                                types: Vec::new(),
+                                var_name: Some("__vb_err_catch".into()),
+                                stack_var: None,
+                                body: catch_body,
+                                when_clause: None,
+                            }],
+                            else_body: None,
+                            finally: None,
+                        },
+                        original[index].span,
+                    ));
+                    index = original.len();
+                } else {
+                    index += 1;
+                }
+            }
+            _ => {
+                let mut stmt = original[index].clone();
+                uses_err_state |= normalize_vb_legacy_error_statement(&mut stmt);
+                if resume_next {
+                    uses_err_state = true;
+                    rewritten.push(wrap_vb_resume_next(stmt, original[index].span));
+                } else {
+                    rewritten.push(stmt);
+                }
+                index += 1;
+            }
+        }
+    }
+
+    if uses_err_state {
+        rewritten.insert(0, vb_err_decl_stmt());
+    }
+    *body = rewritten;
+    uses_err_state
+}
+
+fn rewrite_vb_bare_throws(stmts: &mut Vec<Statement>, var_name: &str) {
+    for stmt in stmts.iter_mut() {
+        rewrite_vb_bare_throws_in_stmt(stmt, var_name);
+    }
+}
+
+fn rewrite_vb_bare_throws_in_stmt(stmt: &mut Statement, var_name: &str) {
+    match &mut stmt.kind {
+        StmtKind::Throw { expr, .. } if expr.is_none() => {
+            *expr = Some(Expression::ident(var_name));
+        }
+        StmtKind::Block(inner) => rewrite_vb_bare_throws(inner, var_name),
+        StmtKind::If { then_body, elifs, else_body, .. } => {
+            rewrite_vb_bare_throws(then_body, var_name);
+            for (_, body) in elifs {
+                rewrite_vb_bare_throws(body, var_name);
+            }
+            if let Some(else_body) = else_body {
+                rewrite_vb_bare_throws(else_body, var_name);
+            }
+        }
+        StmtKind::For { body, .. }
+        | StmtKind::ForIn { body, .. }
+        | StmtKind::While { body, .. }
+        | StmtKind::DoWhile { body, .. }
+        | StmtKind::Using { body, .. }
+        | StmtKind::Lock { body, .. } => {
+            rewrite_vb_bare_throws(body, var_name);
+        }
+        StmtKind::Try { body, finally, .. } => {
+            rewrite_vb_bare_throws(body, var_name);
+            if let Some(finally) = finally {
+                rewrite_vb_bare_throws(finally, var_name);
+            }
+        }
+        _ => {}
+    }
+}
+
 /*
 
 pub fn parse(source: &str) -> Result<Module, String> {
@@ -1305,6 +1790,8 @@ fn parse_sub_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         }
     }
 
+    normalize_vb_legacy_error_body(&mut body);
+
     Ok(Statement::with_span(StmtKind::FunctionDecl {
         name,
         params: parameters,
@@ -1399,6 +1886,8 @@ fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
             _ => {}
         }
     }
+
+    normalize_vb_legacy_error_body(&mut body);
 
     Ok(Statement::with_span(StmtKind::FunctionDecl {
         name,
@@ -4258,6 +4747,27 @@ fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expres
 fn parse_argument_list(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
     pair.into_inner()
         .map(|p| match p.as_rule() {
+            Rule::omitted_argument => Ok(Argument::positional(Expression::null())),
+            Rule::first_argument | Rule::trailing_argument => {
+                let Some(inner) = p.into_inner().next() else {
+                    return Ok(Argument::positional(Expression::null()));
+                };
+                match inner.as_rule() {
+                    Rule::omitted_argument => Ok(Argument::positional(Expression::null())),
+                    Rule::named_argument => {
+                        let mut named_inner = inner.into_inner();
+                        let name = normalize_vb_identifier(named_inner.next().unwrap().as_str());
+                        let value = parse_expression(named_inner.next().unwrap())?;
+                        Ok(Argument {
+                            value,
+                            name: Some(name),
+                            by_ref: false,
+                            spread: false,
+                        })
+                    }
+                    _ => parse_expression(inner).map(Argument::positional),
+                }
+            }
             Rule::named_argument => {
                 let mut inner = p.into_inner();
                 let name = normalize_vb_identifier(inner.next().unwrap().as_str());
@@ -4270,8 +4780,11 @@ fn parse_argument_list(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
                 })
             }
             Rule::argument => {
-                let inner = p.into_inner().next().unwrap();
+                let Some(inner) = p.into_inner().next() else {
+                    return Ok(Argument::positional(Expression::null()));
+                };
                 match inner.as_rule() {
+                    Rule::omitted_argument => Ok(Argument::positional(Expression::null())),
                     Rule::named_argument => {
                         let mut named_inner = inner.into_inner();
                         let name = normalize_vb_identifier(named_inner.next().unwrap().as_str());
@@ -4315,6 +4828,18 @@ fn parse_try_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             }
             Rule::try_end => {},
             _ => {}
+        }
+    }
+
+    if let Some(exit_index) = body.iter().position(|stmt| {
+        matches!(stmt.kind, StmtKind::Break(BreakTarget::Kind(ExitKind::Try)))
+    }) {
+        body.truncate(exit_index);
+    }
+
+    for catch in catches.iter_mut() {
+        if let Some(var_name) = catch.var_name.clone() {
+            rewrite_vb_bare_throws(&mut catch.body, &var_name);
         }
     }
 
@@ -4527,39 +5052,28 @@ fn parse_with_statement(pair: Pair<Rule>) -> Result<Statement, String> {
 
 fn parse_using_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
-    let mut inner = pair.into_inner();
-    let variable = inner.next().unwrap().as_str().to_string();
-
-    // Collect remaining pairs
-    let remaining: Vec<_> = inner.collect();
-
-    // Find the expression (resource)
-    let mut resource_expr = None;
-    let mut body_start_idx = 0;
-
-    for (idx, p) in remaining.iter().enumerate() {
-        match p.as_rule() {
-            Rule::type_name => {}, // Skip type annotation
-            Rule::new_expression => {
-                resource_expr = Some(parse_expression(p.clone())?);
-                body_start_idx = idx + 1;
-                break;
-            }
-            Rule::expression => {
-                resource_expr = Some(parse_expression(p.clone())?);
-                body_start_idx = idx + 1;
-                break;
-            }
-            _ => {}
-        }
-    }
-
-    let resource = resource_expr.ok_or_else(|| "Using statement missing resource expression".to_string())?;
-
-    // Parse body statements
+    let inner: Vec<_> = pair.into_inner().collect();
+    let mut resources: Vec<(String, Expression)> = Vec::new();
     let mut body = Vec::new();
-    for p in remaining.iter().skip(body_start_idx) {
+
+    for p in &inner {
         match p.as_rule() {
+            Rule::using_resource_decl => {
+                let mut var_name = String::new();
+                let mut resource_expr = None;
+                for rp in p.clone().into_inner() {
+                    match rp.as_rule() {
+                        Rule::identifier => var_name = rp.as_str().to_string(),
+                        Rule::type_name => {}
+                        Rule::new_expression | Rule::expression => {
+                            resource_expr = Some(parse_expression(rp)?);
+                        }
+                        _ => {}
+                    }
+                }
+                let resource = resource_expr.ok_or_else(|| "Using statement missing resource expression".to_string())?;
+                resources.push((var_name, resource));
+            }
             Rule::statement_line => {
                 for stmt_pair in p.clone().into_inner() {
                     if stmt_pair.as_rule() != Rule::NEWLINE && stmt_pair.as_rule() != Rule::EOI {
@@ -4572,7 +5086,19 @@ fn parse_using_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         }
     }
 
-    Ok(Statement::with_span(StmtKind::Using { var: variable, resource, body }, span))
+    let mut nested_body = body;
+    let mut nested_stmt = None;
+    for (var, resource) in resources.into_iter().rev() {
+        let using_stmt = Statement::with_span(StmtKind::Using {
+            var,
+            resource,
+            body: nested_body,
+        }, span.clone());
+        nested_body = vec![using_stmt.clone()];
+        nested_stmt = Some(using_stmt);
+    }
+
+    nested_stmt.ok_or_else(|| "Using statement missing resource declaration".to_string())
 }
 
 fn parse_enum_decl(pair: Pair<Rule>) -> Result<Statement, String> {

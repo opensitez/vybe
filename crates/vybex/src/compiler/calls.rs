@@ -772,7 +772,7 @@ impl Compiler {
         if let ExprKind::Super = &callee.kind {
             if let Some(ref class_name) = self.current_class.clone() {
                 if let Some(parent_name) = self.pending_classes.get(class_name.as_str()).and_then(|pc| pc.parent.clone()) {
-                    if self.is_js_profile() && common::errors::is_exception_type(&parent_name) {
+                    if common::errors::is_exception_type(&parent_name) {
                         self.emit_js_exception_ctor_value(&parent_name, &arg_exprs)?;
                         let self_kw = self.profile.self_keyword.clone();
                         if let Some(slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {

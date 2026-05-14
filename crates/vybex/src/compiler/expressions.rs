@@ -2303,6 +2303,16 @@ impl Compiler {
                     // super() / MyBase.New(args) → call parent constructor
                     if let Some(ref class_name) = self.current_class.clone() {
                         if let Some(parent_name) = self.pending_classes.get(class_name.as_str()).and_then(|c| c.parent.clone()) {
+                            if common::errors::is_exception_type(&parent_name) {
+                                let arg_exprs: Vec<&Expression> = args.iter().map(|arg| &arg.value).collect();
+                                self.emit_js_exception_ctor_value(&parent_name, &arg_exprs)?;
+                                if let Some(slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
+                                    self.emit(Op::DUP);
+                                    self.emit_u16(Op::LOCAL_SET, slot);
+                                    self.emit(Op::DROP);
+                                }
+                                return Ok(());
+                            }
                             let pname = self.canon(&parent_name);
                             let pidx = self.str_const(&pname);
                             self.emit_u16(Op::GLOBAL_GET, pidx);
