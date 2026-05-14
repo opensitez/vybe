@@ -91,6 +91,12 @@ impl Compiler {
                     }
                 }
 
+                if self.profile.name == "vb" && !is_local && self.defined_functions.contains(name.as_str()) {
+                    self.emit_var_get(name);
+                    self.emit_u8(Op::CALL_REF, 0);
+                    return Ok(());
+                }
+
                 self.emit_var_get(name);
             }
 
@@ -1934,6 +1940,75 @@ impl Compiler {
                 let obj_slot = self.define_local("__is_type_obj");
                 self.emit_u16(Op::LOCAL_SET, obj_slot);
                 self.emit(Op::DROP);
+
+                if self.profile.name == "vb" {
+                    match canon_type.as_str() {
+                        "string" => {
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            self.emit(Op::REF_IS_STRING);
+                            return Ok(());
+                        }
+                        "boolean" | "bool" => {
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            self.emit(Op::REF_IS_BOOL);
+                            return Ok(());
+                        }
+                        "integer" | "int" => {
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            self.emit(Op::REF_IS_NUMBER);
+                            let not_number = self.emit_jump(Op::BR_IF_FALSE);
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            self.emit(Op::DUP);
+                            self.emit(Op::F64_TRUNC);
+                            self.emit(Op::DYN_EQ);
+                            let done = self.emit_jump(Op::BR);
+                            self.patch_jump(not_number);
+                            self.emit(Op::FALSE);
+                            self.patch_jump(done);
+                            return Ok(());
+                        }
+                        "double" | "single" | "decimal" | "float" => {
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            self.emit(Op::REF_IS_NUMBER);
+                            let not_number = self.emit_jump(Op::BR_IF_FALSE);
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            self.emit(Op::DUP);
+                            self.emit(Op::F64_TRUNC);
+                            self.emit(Op::DYN_EQ);
+                            let is_integer = self.emit_jump(Op::BR_IF_TRUE);
+                            self.emit(Op::TRUE);
+                            let done = self.emit_jump(Op::BR);
+                            self.patch_jump(is_integer);
+                            self.emit(Op::FALSE);
+                            let after_integer = self.emit_jump(Op::BR);
+                            self.patch_jump(not_number);
+                            self.emit(Op::FALSE);
+                            self.patch_jump(done);
+                            self.patch_jump(after_integer);
+                            return Ok(());
+                        }
+                        "object" => {
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            self.emit(Op::REF_IS_STRING);
+                            let is_string = self.emit_jump(Op::BR_IF_TRUE);
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            self.emit(Op::REF_IS_ARRAY);
+                            let is_array = self.emit_jump(Op::BR_IF_TRUE);
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            self.emit(Op::REF_IS_OBJECT);
+                            let done = self.emit_jump(Op::BR);
+                            self.patch_jump(is_string);
+                            self.emit(Op::TRUE);
+                            let end_true = self.emit_jump(Op::BR);
+                            self.patch_jump(is_array);
+                            self.emit(Op::TRUE);
+                            self.patch_jump(end_true);
+                            self.patch_jump(done);
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                }
 
                 let line = self.line;
                 let type_idx = self.chunk().add_constant(

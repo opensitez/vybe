@@ -3021,7 +3021,7 @@ fn build_isdate(_imports: &mut Chunk) -> Chunk {
 //   8192=Array (added to base type)
 //
 // We collapse to the JS-typeof landscape:
-//   null → 1, "boolean" → 11, integral numerics → 2,
+//   null/Nothing → 0, "boolean" → 11, integral numerics → 2,
 //   non-integral numerics → 5, "i32" → 2, "i64" → 3,
 //   "string" → 8, arrays → 8194, "object" → 9,
 //   DateTime → 7, default 12.
@@ -3033,7 +3033,6 @@ fn build_vartype(_imports: &mut Chunk) -> Chunk {
     let result = 1u16;
     let tag = 2u16;
 
-    let null_str = c.add_constant(Value::String(std::sync::Arc::from("null")));
     let bool_str = c.add_constant(Value::String(std::sync::Arc::from("boolean")));
     let num_str = c.add_constant(Value::String(std::sync::Arc::from("number")));
     let i32_str = c.add_constant(Value::String(std::sync::Arc::from("i32")));
@@ -3043,7 +3042,7 @@ fn build_vartype(_imports: &mut Chunk) -> Chunk {
     let type_key = c.add_constant(Value::String(std::sync::Arc::from("__type")));
     let dt_str = c.add_constant(Value::String(std::sync::Arc::from("DateTime")));
     let v12 = c.add_constant(Value::I32(12));
-    let v1 = c.add_constant(Value::I32(1));
+    let v0 = c.add_constant(Value::I32(0));
     let v2 = c.add_constant(Value::I32(2));
     let v3 = c.add_constant(Value::I32(3));
     let v11 = c.add_constant(Value::I32(11));
@@ -3057,6 +3056,30 @@ fn build_vartype(_imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::CONST, v12, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
     c.emit_op(Op::DROP, 0);
+
+    // null / Nothing → Empty (0)
+    c.emit_op_u16(Op::LOCAL_GET, val, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    let is_null = c.emit_block(0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::CONST, v0, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(1, 0);
+    c.emit_end(0); c.patch_block(is_null);
+
+    // arrays are a distinct VM kind, not "object"
+    c.emit_op_u16(Op::LOCAL_GET, val, 0);
+    c.emit_op(Op::REF_IS_ARRAY, 0);
+    let is_array = c.emit_block(0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::CONST, v8194, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(1, 0);
+    c.emit_end(0); c.patch_block(is_array);
 
     // tag = typeof(val)
     c.emit_op_u16(Op::LOCAL_GET, val, 0);
@@ -3085,7 +3108,6 @@ fn build_vartype(_imports: &mut Chunk) -> Chunk {
             c.emit_op(Op::DROP, 0); // drop the leftover bool
         };
     }
-    check!(null_str, v1);
     check!(bool_str, v11);
     check!(i32_str, v2);
     check!(i64_str, v3);
@@ -3123,17 +3145,6 @@ fn build_vartype(_imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::STR_EQUALS, 0);
     c.emit_op(Op::DYN_NOT, 0);
     c.emit_br_if(0, 0);
-
-    c.emit_op_u16(Op::LOCAL_GET, val, 0);
-    c.emit_op(Op::REF_IS_ARRAY, 0);
-    let _is_array = c.emit_block(0);
-    c.emit_op(Op::DYN_NOT, 0);
-    c.emit_br_if(0, 0);
-    c.emit_op_u16(Op::CONST, v8194, 0);
-    c.emit_op_u16(Op::LOCAL_SET, result, 0);
-    c.emit_op(Op::DROP, 0);
-    c.emit_br(1, 0);
-    c.emit_end(0); c.patch_block(_is_array);
 
     // It's an object; check __type
     c.emit_op_u16(Op::LOCAL_GET, val, 0);

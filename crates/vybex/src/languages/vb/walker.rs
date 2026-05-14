@@ -354,6 +354,9 @@ fn literal_bool(expr: &Expression) -> Option<bool> {
 fn literal_string(expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::Lit(Literal::Str(value)) => Some(value.clone()),
+        ExprKind::Cast { expr, type_name } if type_name.eq_ignore_ascii_case("Date") => {
+            literal_string(expr)
+        }
         _ => None,
     }
 }
@@ -414,6 +417,49 @@ fn parse_vb_date_text(text: &str) -> Option<VbDateValue> {
 
 fn parse_vb_date_expr(expr: &Expression) -> Option<VbDateValue> {
     literal_string(expr).and_then(|text| parse_vb_date_text(&text))
+}
+
+fn is_vb_date_literal_expr(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Cast { expr, type_name }
+            if type_name.eq_ignore_ascii_case("Date")
+                && matches!(expr.kind, ExprKind::Lit(Literal::Str(_)))
+    )
+}
+
+fn partition_literal_args(arguments: &[Argument]) -> Option<(i64, i64, i64, i64)> {
+    if arguments.len() != 4 {
+        return None;
+    }
+    let mut values = [0i64; 4];
+    for (index, arg) in arguments.iter().enumerate() {
+        let ExprKind::Lit(Literal::Int(value)) = arg.value.kind else {
+            return None;
+        };
+        values[index] = value;
+    }
+    Some((values[0], values[1], values[2], values[3]))
+}
+
+fn fold_partition(arguments: &[Argument]) -> Option<Expression> {
+    let (number, start, stop, interval) = partition_literal_args(arguments)?;
+    if interval <= 0 {
+        return None;
+    }
+
+    let (low, high) = if number > stop {
+        let overflow = stop.saturating_add(1);
+        (overflow, overflow)
+    } else {
+        let bucket = ((number - start).max(0)) / interval;
+        let low = start + (bucket * interval);
+        let high = (low + interval - 1).min(stop);
+        (low, high)
+    };
+
+    let width = (stop.saturating_add(1)).abs().to_string().len().max(start.abs().to_string().len());
+    Some(Expression::string(&format!("{low:>width$}:{high:>width$}")))
 }
 
 fn format_vb_time(time: NaiveTime) -> String {
@@ -607,6 +653,7 @@ fn canonicalize_special_identifier(name: &str) -> Option<Expression> {
         "now" => Some(zero_arg_call("now")),
         "today" => Some(zero_arg_call("today")),
         "timeofday" => Some(zero_arg_call("timeofday")),
+        "timer" => Some(zero_arg_call("timer")),
         _ => None,
     }
 }
@@ -620,6 +667,13 @@ fn canonicalize_call(name: &str, arguments: &[Argument]) -> Option<Expression> {
             arguments[0].value.clone(),
             arguments[1].value.clone(),
         )),
+        "vartype" if arguments.len() == 1 && matches!(arguments[0].value.kind, ExprKind::Lit(Literal::Null)) => {
+            Some(Expression::int(0))
+        }
+        "vartype" if arguments.len() == 1 && is_vb_date_literal_expr(&arguments[0].value) => {
+            Some(Expression::int(7))
+        }
+        "partition" if arguments.len() == 4 => fold_partition(arguments),
         "dateserial"
         | "timeserial"
         | "dateadd"
@@ -3963,7 +4017,10 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
             }
             Rule::date_literal => {
                 let s = pair.as_str();
-                ExprKind::Lit(Literal::Str(s[1..s.len() - 1].trim().to_string()))
+                ExprKind::Cast {
+                    expr: Box::new(Expression::string(&s[1..s.len() - 1].trim())),
+                    type_name: "Date".to_string(),
+                }
             }
             Rule::nothing_literal => ExprKind::Lit(Literal::Null),
             Rule::new_expression => {
@@ -4504,7 +4561,10 @@ fn parse_binary_expression(pair: Pair<Rule>) -> Result<Expression, String> {
             let s = pair.as_str();
             // Strip the surrounding # delimiters
             let inner = s[1..s.len()-1].trim().to_string();
-            ExprKind::Lit(Literal::Str(inner))
+            ExprKind::Cast {
+                expr: Box::new(Expression::string(&inner)),
+                type_name: "Date".to_string(),
+            }
         }
         Rule::nothing_literal => ExprKind::Lit(Literal::Null),
         Rule::new_expression => {
@@ -4789,7 +4849,10 @@ fn parse_binary_expression(pair: Pair<Rule>) -> Result<Expression, String> {
             Rule::date_literal => {
                 let s = pair.as_str();
                 let inner = s.trim_matches('#').to_string();
-                ExprKind::Lit(Literal::Str(inner))
+                ExprKind::Cast {
+                    expr: Box::new(Expression::string(&inner)),
+                    type_name: "Date".to_string(),
+                }
             }
             Rule::string_literal => {
                 let raw = pair.as_str().trim_end_matches(|c: char| c == 'c' || c == 'C');

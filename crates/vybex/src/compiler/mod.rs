@@ -2644,7 +2644,17 @@ impl Compiler {
 
     fn infer_function_return_type(&self, callee: &Expression) -> Option<String> {
         match &callee.kind {
-            ExprKind::Ident(name) => self.function_return_types.get(&self.canon(name)).cloned(),
+            ExprKind::Ident(name) => {
+                if self.profile.name == "vb" {
+                    if name.eq_ignore_ascii_case("command") || name.eq_ignore_ascii_case("environ") {
+                        return Some("String".into());
+                    }
+                    if name.eq_ignore_ascii_case("timer") {
+                        return Some("Double".into());
+                    }
+                }
+                self.function_return_types.get(&self.canon(name)).cloned()
+            }
             ExprKind::Member { object, field, .. } => {
                 if let ExprKind::Ident(object_name) = &object.kind {
                     let qualified = self.canon(&format!("{}.{}", object_name, field));
@@ -2683,6 +2693,7 @@ impl Compiler {
             ExprKind::Lit(Literal::Str(_)) => Some("string".into()),
             ExprKind::Lit(Literal::Bool(_)) => Some("bool".into()),
             ExprKind::Lit(Literal::Char(_)) => Some("char".into()),
+            ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
             ExprKind::New { class, .. } => Self::expr_terminal_type_name(class),
             ExprKind::Array(elements) => Some(format!(
                 "{}()",
@@ -2778,6 +2789,188 @@ impl Compiler {
             _ => self
                 .infer_expr_type_hint(expr)
                 .and_then(|type_hint| self.user_value_type_name_from_hint(&type_hint)),
+        }
+    }
+
+    fn vb_generic_type_display_name(&self, type_hint: &str) -> Option<String> {
+        let trimmed = type_hint.trim().trim_end_matches('?').trim();
+        let short_name = trimmed.rsplit('.').next().unwrap_or(trimmed).trim();
+
+        let angle_arity = self.reflection_generic_argument_types(trimmed).len();
+        if angle_arity > 0 {
+            let base = short_name.split('<').next().unwrap_or(short_name).trim();
+            return Some(format!("{base}`{angle_arity}"));
+        }
+
+        let lowered = trimmed.to_lowercase();
+        let marker = "(of ";
+        let start = lowered.find(marker)?;
+        let base = trimmed[..start].trim().rsplit('.').next().unwrap_or(trimmed[..start].trim()).trim();
+        let inner = trimmed.get(start + marker.len()..trimmed.len().saturating_sub(1))?;
+        let mut depth = 0usize;
+        let mut arity = 1usize;
+        for ch in inner.chars() {
+            match ch {
+                '(' | '<' => depth += 1,
+                ')' | '>' => depth = depth.saturating_sub(1),
+                ',' if depth == 0 => arity += 1,
+                _ => {}
+            }
+        }
+        Some(format!("{base}`{arity}"))
+    }
+
+    fn vb_reflection_display_type_name(&self, type_name: &str) -> Option<String> {
+        let trimmed = type_name.trim().trim_end_matches('?').trim();
+        let short_target = trimmed.rsplit('.').next().unwrap_or(trimmed).trim();
+        self.reflection_types
+            .keys()
+            .find(|candidate| {
+                candidate.eq_ignore_ascii_case(trimmed)
+                    || candidate
+                        .rsplit('.')
+                        .next()
+                        .is_some_and(|leaf| leaf.eq_ignore_ascii_case(short_target))
+            })
+            .map(|candidate| self.reflection_type_short_name(candidate))
+    }
+
+    fn vb_typename_from_type_hint(&self, type_hint: &str) -> Option<String> {
+        let resolved = self.resolve_source_type_alias(type_hint);
+        let trimmed = resolved.trim().trim_end_matches('?').trim();
+
+        if let Some(element_type) = trimmed.strip_suffix("()") {
+            return self
+                .vb_typename_from_type_hint(element_type.trim())
+                .map(|name| format!("{name}()"));
+        }
+
+        let normalized = Self::normalize_type_hint(trimmed);
+        let primitive = match normalized.as_str() {
+            "integer" | "int" | "int32" | "longint" | "system.int32" => Some("Integer"),
+            "long" | "int64" | "system.int64" => Some("Long"),
+            "short" | "int16" | "system.int16" => Some("Short"),
+            "ushort" | "uint16" | "system.uint16" => Some("UShort"),
+            "uint" | "uint32" | "system.uint32" => Some("UInteger"),
+            "ulong" | "uint64" | "system.uint64" => Some("ULong"),
+            "byte" | "system.byte" => Some("Byte"),
+            "sbyte" | "system.sbyte" => Some("SByte"),
+            "single" | "float" | "system.single" => Some("Single"),
+            "double" | "real" | "system.double" => Some("Double"),
+            "decimal" | "system.decimal" => Some("Decimal"),
+            "boolean" | "bool" | "system.boolean" => Some("Boolean"),
+            "char" | "system.char" => Some("Char"),
+            "string" | "system.string" => Some("String"),
+            "datetime" | "date" | "system.datetime" => Some("Date"),
+            "object" | "system.object" => Some("Object"),
+            _ => None,
+        };
+        if let Some(name) = primitive {
+            return Some(name.into());
+        }
+
+        if let Some(name) = self.vb_generic_type_display_name(trimmed) {
+            return Some(name);
+        }
+
+        if let Some(name) = self.vb_reflection_display_type_name(trimmed) {
+            return Some(name);
+        }
+
+        let short_target = trimmed.rsplit('.').next().unwrap_or(trimmed).trim();
+        if let Some((display_name, _)) = self.pending_classes.iter().find(|(candidate, _)| {
+            candidate.eq_ignore_ascii_case(trimmed)
+                || candidate
+                    .rsplit('.')
+                    .next()
+                    .is_some_and(|leaf| leaf.eq_ignore_ascii_case(short_target))
+        }) {
+            return Some(display_name.rsplit('.').next().unwrap_or(display_name).to_string());
+        }
+
+        if self.reflection_type_metadata(trimmed).is_some() || self.reflection_is_enum_type(trimmed) {
+            return Some(self.reflection_type_short_name(trimmed));
+        }
+        None
+    }
+
+    fn vb_typename_from_expr(&self, expr: &Expression) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Lit(Literal::Int(_)) => Some("Integer".into()),
+            ExprKind::Lit(Literal::Float(_)) => Some("Double".into()),
+            ExprKind::Lit(Literal::Str(_)) => Some("String".into()),
+            ExprKind::Lit(Literal::Bool(_)) => Some("Boolean".into()),
+            ExprKind::Lit(Literal::Char(_)) => Some("Char".into()),
+            ExprKind::Lit(Literal::Null | Literal::Undefined) => Some("Nothing".into()),
+            _ => self
+                .infer_expr_type_hint(expr)
+                .and_then(|type_hint| self.vb_typename_from_type_hint(&type_hint)),
+        }
+    }
+
+    fn vb_is_reference_type_hint(&self, type_hint: &str) -> bool {
+        let resolved = self.resolve_source_type_alias(type_hint);
+        let trimmed = resolved.trim().trim_end_matches('?').trim();
+        if trimmed.ends_with("()") {
+            return true;
+        }
+        if self.reflection_is_enum_type(trimmed) || self.reflection_is_value_type(trimmed) {
+            return false;
+        }
+        match self.vb_typename_from_type_hint(trimmed).as_deref() {
+            Some("Integer" | "Long" | "Short" | "UShort" | "UInteger" | "ULong" | "Byte" | "SByte"
+                | "Single" | "Double" | "Decimal" | "Boolean" | "Char" | "Date") => false,
+            Some("String" | "Object") => true,
+            Some(name) if name.ends_with("()") => true,
+            Some(_) => true,
+            None => false,
+        }
+    }
+
+    fn vb_is_object_type_hint(&self, type_hint: &str) -> bool {
+        let resolved = self.resolve_source_type_alias(type_hint);
+        let trimmed = resolved.trim().trim_end_matches('?').trim();
+        if trimmed.ends_with("()") {
+            return true;
+        }
+        if self.reflection_is_enum_type(trimmed) || self.reflection_is_value_type(trimmed) {
+            return false;
+        }
+        match self.vb_typename_from_type_hint(trimmed).as_deref() {
+            Some("Object") => true,
+            Some("String" | "Integer" | "Long" | "Short" | "UShort" | "UInteger" | "ULong" | "Byte"
+                | "SByte" | "Single" | "Double" | "Decimal" | "Boolean" | "Char" | "Date") => false,
+            Some(name) if name.ends_with("()") => true,
+            Some(_) => true,
+            None => false,
+        }
+    }
+
+    fn vb_is_reference_expr(&self, expr: &Expression) -> Option<bool> {
+        match &expr.kind {
+            ExprKind::Lit(Literal::Int(_))
+            | ExprKind::Lit(Literal::Float(_))
+            | ExprKind::Lit(Literal::Bool(_))
+            | ExprKind::Lit(Literal::Char(_))
+            | ExprKind::Lit(Literal::Null | Literal::Undefined) => Some(false),
+            ExprKind::Lit(Literal::Str(_)) => Some(true),
+            _ => self
+                .infer_expr_type_hint(expr)
+                .map(|type_hint| self.vb_is_reference_type_hint(&type_hint)),
+        }
+    }
+
+    fn vb_is_object_expr(&self, expr: &Expression) -> Option<bool> {
+        match &expr.kind {
+            ExprKind::Lit(Literal::Int(_))
+            | ExprKind::Lit(Literal::Float(_))
+            | ExprKind::Lit(Literal::Bool(_))
+            | ExprKind::Lit(Literal::Char(_))
+            | ExprKind::Lit(Literal::Str(_))
+            | ExprKind::Lit(Literal::Null | Literal::Undefined) => Some(false),
+            _ => self
+                .infer_expr_type_hint(expr)
+                .map(|type_hint| self.vb_is_object_type_hint(&type_hint)),
         }
     }
 
@@ -7821,6 +8014,141 @@ impl Compiler {
                 self.compile_expr(args[0])?;
                 common::convert::emit_to_int(self.chunk(), line);
                 common::strings::emit_repeat(self.chunk(), line);
+            }
+            "isobject" => {
+                if let Some(arg) = args.first() {
+                    if let Some(result) = self.vb_is_object_expr(arg) {
+                        self.emit_const(Value::Bool(result));
+                    } else {
+                        self.compile_expr(arg)?;
+                        let value_slot = self.define_local("__vb_isobject_value");
+                        self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                        self.emit(Op::REF_IS_ARRAY);
+                        let is_array = self.emit_jump(Op::BR_IF_TRUE);
+                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                        self.emit(Op::REF_IS_OBJECT);
+                        let done = self.emit_jump(Op::BR);
+                        self.patch_jump(is_array);
+                        self.emit_const(Value::Bool(true));
+                        self.patch_jump(done);
+                    }
+                } else {
+                    self.emit_const(Value::Bool(false));
+                }
+            }
+            "isreference" => {
+                if let Some(arg) = args.first() {
+                    if let Some(result) = self.vb_is_reference_expr(arg) {
+                        self.emit_const(Value::Bool(result));
+                    } else {
+                        self.compile_expr(arg)?;
+                        let value_slot = self.define_local("__vb_isref_value");
+                        self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+
+                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                        self.emit(Op::REF_IS_STRING);
+                        let is_string = self.emit_jump(Op::BR_IF_TRUE);
+                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                        self.emit(Op::REF_IS_ARRAY);
+                        let is_array = self.emit_jump(Op::BR_IF_TRUE);
+                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                        self.emit(Op::REF_IS_OBJECT);
+                        let done = self.emit_jump(Op::BR);
+                        self.patch_jump(is_string);
+                        self.emit_const(Value::Bool(true));
+                        let end_true = self.emit_jump(Op::BR);
+                        self.patch_jump(is_array);
+                        self.emit_const(Value::Bool(true));
+                        self.patch_jump(end_true);
+                        self.patch_jump(done);
+                    }
+                } else {
+                    self.emit_const(Value::Bool(false));
+                }
+            }
+            "typename" => {
+                if let Some(arg) = args.first() {
+                    if let Some(name) = self.vb_typename_from_expr(arg) {
+                        self.emit_const(Value::String(Arc::from(name)));
+                    } else {
+                        self.compile_expr(arg)?;
+                        self.emit(Op::REF_TYPEOF);
+                    }
+                } else {
+                    self.emit_const(Value::String(Arc::from("Nothing")));
+                }
+            }
+            "command" => {
+                let args_idx = self.import("wasi:cli", "args");
+                self.emit_host_call(args_idx, 0);
+                self.emit_const(Value::String(Arc::from(" ")));
+                common::collections::emit_join(&mut self.chunks, self.current, line);
+            }
+            "environ" => {
+                if let Some(arg) = args.first() {
+                    self.compile_expr(arg)?;
+                    let env_idx = self.import("wasi:cli", "getEnv");
+                    self.emit_host_call(env_idx, 1);
+                } else {
+                    self.emit_const(Value::String(Arc::from("")));
+                }
+            }
+            "timer" => {
+                let timer_idx = self.import("wasi:clocks", "vbTimer");
+                self.emit_host_call(timer_idx, 0);
+                let value_slot = self.define_local("__vb_timer_value");
+                self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, value_slot);
+                self.emit(Op::REF_IS_NUMBER);
+                let not_number = self.emit_jump(Op::BR_IF_FALSE);
+
+                self.emit_u16(Op::LOCAL_GET, value_slot);
+                self.emit_const(Value::I32(0));
+                self.emit(Op::DYN_LT);
+                let non_negative = self.emit_jump(Op::BR_IF_FALSE);
+                self.emit_const(Value::I32(0));
+                let done = self.emit_jump(Op::BR);
+
+                self.patch_jump(non_negative);
+                self.emit_u16(Op::LOCAL_GET, value_slot);
+                let end = self.emit_jump(Op::BR);
+
+                self.patch_jump(not_number);
+                self.emit_const(Value::I32(0));
+                self.patch_jump(done);
+                self.patch_jump(end);
+            }
+            "switch" => {
+                if args.len() < 2 {
+                    self.emit(Op::NULL);
+                } else {
+                    let mut slots = Vec::with_capacity(args.len());
+                    for (index, arg) in args.iter().enumerate() {
+                        self.compile_expr(arg)?;
+                        let slot = self.define_local(&format!("__vb_switch_{index}"));
+                        self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+                        slots.push(slot);
+                    }
+
+                    let mut done_jumps = Vec::new();
+                    for pair in slots.chunks(2) {
+                        if pair.len() < 2 {
+                            break;
+                        }
+                        self.emit_u16(Op::LOCAL_GET, pair[0]);
+                        self.emit(Op::DYN_TO_BOOL);
+                        let next = self.emit_jump(Op::BR_IF_FALSE);
+                        self.emit_u16(Op::LOCAL_GET, pair[1]);
+                        done_jumps.push(self.emit_jump(Op::BR));
+                        self.patch_jump(next);
+                    }
+                    self.emit(Op::NULL);
+                    for jump in done_jumps {
+                        self.patch_jump(jump);
+                    }
+                }
             }
             "string_repeat" => {
                 // String(n, char): VB arg order reversed

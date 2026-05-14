@@ -106,12 +106,13 @@ isnumeric  = { emit = "stdlib:isnumeric",              min_args = 1, max_args = 
 isnothing  = { emit = "opcode:ref_is_null",            min_args = 1, max_args = 1 }
 isnull     = { emit = "opcode:ref_is_null",            min_args = 1, max_args = 1 }
 isempty    = { emit = "stdlib:isempty",                min_args = 1, max_args = 1 }
-isobject   = { emit = "stdlib:isobject",               min_args = 1, max_args = 1 }
+isobject   = { emit = "intrinsic:isobject",            min_args = 1, max_args = 1 }
+isreference = { emit = "intrinsic:isreference",        min_args = 1, max_args = 1 }
 isarray    = { emit = "opcode:ref_is_array",           min_args = 1, max_args = 1 }
 isdate     = { emit = "stdlib:isdate",                 min_args = 1, max_args = 1 }
 isdbnull   = { emit = "opcode:ref_is_null",            min_args = 1, max_args = 1 }
 iserror    = { emit = "opcode:ref_is_null",            min_args = 1, max_args = 1 }
-typename   = { emit = "opcode:ref_typeof",             min_args = 1, max_args = 1 }
+typename   = { emit = "intrinsic:typename",            min_args = 1, max_args = 1 }
 vartype    = { emit = "stdlib:vartype",                min_args = 1, max_args = 1 }
 
 # ── Math — WASM opcodes (zero overhead) ─────────────────────────────────────
@@ -253,7 +254,7 @@ date         = { emit = "host:wasi:clocks:vbDate",   min_args = 0, max_args = 0 
 today        = { emit = "host:wasi:clocks:vbDate",   min_args = 0, max_args = 0 }
 time         = { emit = "host:wasi:clocks:vbTime",   min_args = 0, max_args = 0 }
 timeofday    = { emit = "host:wasi:clocks:vbTime",   min_args = 0, max_args = 0 }
-timer        = { emit = "host:wasi:clocks:vbTimer",  min_args = 0, max_args = 0 }
+timer        = { emit = "intrinsic:timer",          min_args = 0, max_args = 0 }
 year         = { emit = "host:wasi:clocks:vbYear",   min_args = 1, max_args = 1 }
 month        = { emit = "host:wasi:clocks:vbMonth",  min_args = 1, max_args = 1 }
 day          = { emit = "host:wasi:clocks:vbDay",    min_args = 1, max_args = 1 }
@@ -341,10 +342,10 @@ performlayout  = { emit = "noop", min_args = 0, max_args = 0 }
 
 beep         = { emit = "noop",                            min_args = 0, max_args = 0 }
 shell        = { emit = "host:node:child_process:execSync", min_args = 1, max_args = 2 }
-environ      = { emit = "host:wasi:cli:getEnv",            min_args = 1, max_args = 1 }
-"environ$"   = { emit = "host:wasi:cli:getEnv",            min_args = 1, max_args = 1 }
-command      = { emit = "host:wasi:cli:args",              min_args = 0, max_args = 0 }
-"command$"   = { emit = "host:wasi:cli:args",              min_args = 0, max_args = 0 }
+environ      = { emit = "intrinsic:environ",               min_args = 1, max_args = 1 }
+"environ$"   = { emit = "intrinsic:environ",               min_args = 1, max_args = 1 }
+command      = { emit = "intrinsic:command",               min_args = 0, max_args = 0 }
+"command$"   = { emit = "intrinsic:command",               min_args = 0, max_args = 0 }
 sendkeys     = { emit = "noop",                            min_args = 1, max_args = 2 }
 appactivate  = { emit = "noop",                            min_args = 1, max_args = 1 }
 doevents     = { emit = "noop",                            min_args = 0, max_args = 0 }
@@ -405,7 +406,7 @@ doevents     = { emit = "noop",                            min_args = 0, max_arg
 # Free-function `StringBuilder()` retired — `New StringBuilder()`
 # / `New StringBuilder("init")` lower at compile time through the
 # dotnet wrapper Component Model adapter (`stringbuilder_adapter`).
-switch        = { emit = "common:dotnet.choose",             min_args = 2, max_args = 255 }
+switch        = { emit = "intrinsic:switch",                min_args = 2, max_args = 255 }
 
 # ── Array static methods ─────────────────────────────────────────────────────
 # Shared with C# via `common:dotnet.array_*` adapters in
