@@ -10,6 +10,8 @@
 use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
 use std::sync::Arc;
+use crate::emitter::classes::emit_bind_method;
+use crate::emitter::functions::create_function_chunk;
 
 const FILENAME_KEY: &str = "filename";
 const ARGUMENTS_KEY: &str = "arguments";
@@ -24,6 +26,17 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
     let slot = chunk.local_count;
     chunk.local_count = slot + 1;
     slot
+}
+
+fn bind_process_wait_for_exit(chunks: &mut Vec<Chunk>, current: usize, this_slot: u16, line: u32) {
+    let mut method = create_function_chunk("__process_waitforexit", 1);
+    method.emit_op(Op::DROP, line);
+    method.emit_op(Op::NULL, line);
+    method.emit_op(Op::RETURN, line);
+    method.local_count = 1;
+    chunks.push(method);
+    let method_idx = chunks.len() - 1;
+    emit_bind_method(&mut chunks[current], this_slot, "waitforexit", method_idx, line);
 }
 
 /// `new ProcessStartInfo()` / `new ProcessStartInfo(cmd)` /
@@ -81,14 +94,20 @@ pub fn emit_process_start_info_new(chunks: &mut [Chunk], current: usize, argc: u
 /// `Process.Start(...)` which runs the process and returns a populated
 /// Process; the bare `new Process()` is a placeholder. Stack: `[]` →
 /// `[process]`.
-pub fn emit_process_new(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+pub fn emit_process_new(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
+    let process_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, process_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, process_slot, line);
     chunk.emit_op(Op::DUP, line);
     push_const(chunk, Value::String(Arc::from("Process")), line);
     chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
     chunk.emit_op(Op::DROP, line);
+    bind_process_wait_for_exit(chunks, current, process_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, process_slot, line);
 }
 
 /// `Process.Start(cmd)` static method. The arg may be a string
@@ -99,7 +118,7 @@ pub fn emit_process_new(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
 ///
 /// Stack on entry: `[arg]` (string or ProcessStartInfo)
 /// Stack on exit:  `[Process { HasExited, ExitCode, __type }]`
-pub fn emit_process_start(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let spawn_idx = chunks[0].add_import("node:child_process", "spawnSync");
     let chunk = &mut chunks[current];
     let filename_key = chunk.add_constant(Value::String(Arc::from(FILENAME_KEY)));
@@ -107,6 +126,7 @@ pub fn emit_process_start(chunks: &mut [Chunk], current: usize, line: u32) {
     let arg_slot = reserve_slot(chunk);
     let args_slot = reserve_slot(chunk);
     let result_slot = reserve_slot(chunk);
+    let process_slot = reserve_slot(chunk);
 
     // Stash the arg
     chunk.emit_op_u16(Op::LOCAL_SET, arg_slot, line); chunk.emit_op(Op::DROP, line);
@@ -196,6 +216,10 @@ pub fn emit_process_start(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.patch_jump(skip_status);
     chunk.emit_op_u16(Op::STRUCT_SET, ec_key, line);
     chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, process_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    bind_process_wait_for_exit(chunks, current, process_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, process_slot, line);
     // Stack: [Process struct]
 }
 
@@ -204,13 +228,17 @@ pub fn emit_process_start(chunks: &mut [Chunk], current: usize, line: u32) {
 /// reading `node:process.pid`.
 ///
 /// Stack on entry: `[]` ; Stack on exit: `[process_info]`
-pub fn emit_process_get_current(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_process_get_current(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let pid_idx = chunks[0].add_import("node:process", "pid");
     let chunk = &mut chunks[current];
     let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
     let pid_key = chunk.add_constant(Value::String(Arc::from("pid")));
+    let process_slot = reserve_slot(chunk);
 
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, process_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, process_slot, line);
     chunk.emit_op(Op::DUP, line);
     push_const(chunk, Value::String(Arc::from("Process")), line);
     chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
@@ -220,6 +248,8 @@ pub fn emit_process_get_current(chunks: &mut [Chunk], current: usize, line: u32)
     chunk.emit(0, line);
     chunk.emit_op_u16(Op::STRUCT_SET, pid_key, line);
     chunk.emit_op(Op::DROP, line);
+    bind_process_wait_for_exit(chunks, current, process_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, process_slot, line);
 }
 
 /// `process.WaitForExit()` — `node:child_process.spawnSync` is already
@@ -227,7 +257,7 @@ pub fn emit_process_get_current(chunks: &mut [Chunk], current: usize, line: u32)
 /// Drop the receiver and return null.
 ///
 /// Stack on entry: `[process]` ; Stack on exit: `[null]`
-pub fn emit_process_wait_for_exit(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_process_wait_for_exit(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op(Op::NULL, line);
 }
