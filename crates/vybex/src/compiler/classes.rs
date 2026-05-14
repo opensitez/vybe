@@ -391,16 +391,32 @@ impl Compiler {
             f.type_hint.as_ref().map(|t| (self.canon(&f.name), Self::normalize_type_hint(t)))
         }).collect();
         for member in &class.raw_extra_members {
-            if let ClassMember::Event { name, type_hint: Some(type_hint), .. } = member {
-                instance_field_types
-                    .entry(self.canon(name))
-                    .or_insert_with(|| Self::normalize_type_hint(type_hint));
+            match member {
+                ClassMember::Event { name, type_hint: Some(type_hint), .. } => {
+                    instance_field_types
+                        .entry(self.canon(name))
+                        .or_insert_with(|| Self::normalize_type_hint(type_hint));
+                }
+                ClassMember::Property {
+                    name,
+                    type_hint: Some(type_hint),
+                    modifiers,
+                    ..
+                } if !modifiers.is_static => {
+                    instance_field_types
+                        .entry(self.canon(name))
+                        .or_insert_with(|| Self::normalize_type_hint(type_hint));
+                }
+                _ => {}
             }
         }
         let mut static_member_names = static_field_names;
+        let mut static_const_names: Vec<String> = Vec::new();
         for member in &class.raw_extra_members {
             if let ClassMember::Const { name, .. } = member {
-                static_member_names.push(name.clone());
+                let const_name = self.canon(name);
+                static_member_names.push(const_name.clone());
+                static_const_names.push(const_name);
             }
         }
 
@@ -1394,6 +1410,16 @@ impl Compiler {
             }
             let fk = self.str_const(fname);
             self.emit_u16(Op::STRUCT_SET, fk);
+            self.emit(Op::DROP);
+        }
+
+        for const_name in &static_const_names {
+            self.emit_u16(Op::LOCAL_GET, ctor_local);
+            let global_name = self.canon(&format!("{}.{}", name, const_name));
+            let global_idx = self.str_const(&global_name);
+            self.emit_u16(Op::GLOBAL_GET, global_idx);
+            let field_idx = self.str_const(const_name);
+            self.emit_u16(Op::STRUCT_SET, field_idx);
             self.emit(Op::DROP);
         }
 

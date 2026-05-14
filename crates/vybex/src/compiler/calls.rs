@@ -29,7 +29,15 @@ fn terminal_type_name(expr: &Expression) -> Option<String> {
 }
 
 fn strip_generic_suffix(name: &str) -> &str {
-    name.split('<').next().unwrap_or(name).trim()
+    let trimmed = name.trim();
+    let angle = trimmed.find('<');
+    let vb = trimmed.to_ascii_lowercase().find("(of");
+    match (angle, vb) {
+        (Some(a), Some(b)) => trimmed[..a.min(b)].trim(),
+        (Some(a), None) => trimmed[..a].trim(),
+        (None, Some(b)) => trimmed[..b].trim(),
+        (None, None) => trimmed,
+    }
 }
 
 fn extract_generic_type_name(name: &str) -> Option<String> {
@@ -103,7 +111,8 @@ fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression) -> Option<
                 let cn = compiler.canon(local_name);
                 compiler.global_type_hints.get(&cn).cloned()
             })
-            .or_else(|| compiler.is_class_static_field_type_hint(local_name)),
+            .or_else(|| compiler.is_class_static_field_type_hint(local_name))
+            .map(|name| compiler.resolve_source_type_alias(&name)),
         ExprKind::Member { object, field, .. } => {
             if let Some(type_name) = dotnet_static_member_return_type(recv) {
                 return Some(type_name);
@@ -138,7 +147,7 @@ fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression) -> Option<
                     while let Some(cn) = current {
                         if let Some(pc) = compiler.pending_classes.get(cn) {
                             if let Some(type_hint) = pc.static_field_types.get(&canon_field) {
-                                return Some(type_hint.clone());
+                                return Some(compiler.resolve_source_type_alias(type_hint));
                             }
                             current = pc.parent.as_deref();
                         } else {
@@ -151,18 +160,59 @@ fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression) -> Option<
                 None
             }
         }
-        ExprKind::New { class, .. } => terminal_type_name(class),
+        ExprKind::New { class, .. } => terminal_type_name(class)
+            .map(|name| compiler.resolve_source_type_alias(&name)),
         ExprKind::Call { callee, .. } => dotnet_factory_return_type(callee).or_else(|| match &callee.kind {
-            ExprKind::Ident(name) => common::dotnet::surface()
-                .lookup_constructor(name)
-                .map(|_| name.rsplit('.').next().unwrap_or(name).to_string()),
-            ExprKind::Member { field, .. } => common::dotnet::surface()
-                .lookup_constructor(field)
-                .map(|_| field.to_string()),
+            ExprKind::Ident(name) => {
+                let resolved = compiler.resolve_source_type_alias(name);
+                common::dotnet::surface()
+                    .lookup_constructor(&resolved)
+                    .map(|_| resolved)
+            }
+            ExprKind::Member { field, .. } => {
+                let resolved = compiler.resolve_source_type_alias(field);
+                common::dotnet::surface()
+                    .lookup_constructor(&resolved)
+                    .map(|_| resolved)
+            }
             _ => None,
         }),
         _ => None,
     }
+}
+
+fn resolves_to_static_container_method(
+    compiler: &Compiler,
+    object: &Expression,
+    field: &str,
+) -> bool {
+    let class_parts = compiler.flatten_member_chain(object);
+    if class_parts.is_empty() {
+        return false;
+    }
+
+    let head_name = class_parts.first().map(String::as_str).unwrap_or("");
+    if compiler.scope().resolve(head_name).is_some()
+        || compiler.scope().resolve_ci(head_name).is_some()
+        || compiler.lookup_var_type_hint(head_name).is_some()
+    {
+        return false;
+    }
+
+    let full_canon = compiler.canon(&class_parts.join("."));
+    let short_canon = compiler.canon(class_parts.last().map(String::as_str).unwrap_or(""));
+    let method_canon = compiler.canon(field);
+
+    [full_canon, short_canon]
+        .into_iter()
+        .any(|container_canon| {
+            compiler.defined_classes.contains(&container_canon)
+                && compiler
+                    .pending_classes
+                    .get(container_canon.as_str())
+                    .map(|pending| pending.static_method_names.iter().any(|name| name == &method_canon))
+                    .unwrap_or(false)
+        })
 }
 
 fn is_numeric_overload_type(type_hint: &str) -> bool {
@@ -270,7 +320,8 @@ impl Compiler {
     }
 
     pub(super) fn resolve_pending_class_name_for_type_hint(&self, type_hint: &str) -> Option<String> {
-        let receiver_type = type_hint.trim().trim_end_matches('?');
+        let resolved_type = self.resolve_source_type_alias(type_hint);
+        let receiver_type = resolved_type.trim().trim_end_matches('?');
         let receiver_canon = self.canon(strip_generic_suffix(receiver_type));
         if self.pending_classes.contains_key(&receiver_canon) {
             return Some(receiver_canon);
@@ -610,6 +661,9 @@ impl Compiler {
         if self.try_compile_dotnet_enum_call(callee, args)? {
             return Ok(());
         }
+        if self.try_compile_dotnet_zero_arg_tostring(callee, args)? {
+            return Ok(());
+        }
         if self.try_compile_dotnet_attribute_reflection_call(callee, args)? {
             return Ok(());
         }
@@ -946,6 +1000,17 @@ impl Compiler {
                 for a in &arg_exprs { self.compile_expr(a)?; }
                 let idx = self.import(&module, &func);
                 self.emit_host_call(idx, arg_exprs.len() as u8);
+                return Ok(());
+            }
+        }
+
+        if let ExprKind::Member { object, field, .. } = &callee.kind {
+            if resolves_to_static_container_method(self, object, field) {
+                self.compile_expr(object)?;
+                let method_idx = self.str_const(&self.canon(field));
+                self.emit_u16(Op::STRUCT_GET, method_idx);
+                for a in &arg_exprs { self.compile_expr(a)?; }
+                self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
                 return Ok(());
             }
         }
@@ -2784,6 +2849,27 @@ impl Compiler {
             let field_name = self.canon(field);
             let prop = self.str_const(&field_name);
 
+            if self.profile.parens_for_index && !arg_exprs.is_empty() {
+                let is_indexable_typed = self
+                    .infer_expr_type_hint(callee)
+                    .as_deref()
+                    .map(Self::normalize_type_hint)
+                    .is_some_and(|type_hint| {
+                        Self::is_collection_like_type_hint(&type_hint)
+                            && !Self::is_callable_type_hint(&type_hint)
+                    });
+                if is_indexable_typed {
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_u16(Op::STRUCT_GET, prop);
+                    for arg in &arg_exprs {
+                        self.compile_expr(arg)?;
+                        let line = self.line;
+                        common::collections::emit_get(&mut self.chunks, self.current, line);
+                    }
+                    return Ok(());
+                }
+            }
+
             if *null_safe {
                 // obj?.method() — short-circuit to null if obj is null/undefined.
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -3085,6 +3171,49 @@ impl Compiler {
                     self.emit_u16(Op::STRUCT_GET, prop);
                     let fn_tmp = self.define_local("__fn");
                     self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
+                    if resolves_to_static_container_method(self, object, field) {
+                        self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                        for a in &arg_exprs { self.compile_expr(a)?; }
+                        self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                        let generic_done = self.emit_jump(Op::BR);
+
+                        self.patch_jump(end);
+                        self.patch_jump(generic_done);
+                        return Ok(());
+                    }
+                    let primitive_tostring_done = if self.profile.namespaces.use_dotnet
+                        && arg_exprs.is_empty()
+                        && field.eq_ignore_ascii_case("ToString")
+                    {
+                        let type_tmp = self.define_local("__dotnet_tostring_type");
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit(Op::REF_TYPEOF);
+                        self.emit_u16(Op::LOCAL_SET, type_tmp);
+                        self.emit(Op::DROP);
+
+                        let mut primitive_matches = Vec::new();
+                        for type_name in ["number", "i32", "i64", "string", "boolean"] {
+                            self.emit_u16(Op::LOCAL_GET, type_tmp);
+                            self.emit_const(Value::String(Arc::from(type_name)));
+                            self.emit(Op::DYN_EQ);
+                            primitive_matches.push(self.emit_jump(Op::BR_IF_TRUE));
+                        }
+                        let not_primitive = self.emit_jump(Op::BR);
+
+                        for patch in primitive_matches {
+                            self.patch_jump(patch);
+                        }
+                        let tostring_global = self.str_const("__vybe_tostring");
+                        self.emit_u16(Op::GLOBAL_GET, tostring_global);
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit_u8(Op::CALL_REF, 1);
+                        let done = self.emit_jump(Op::BR);
+
+                        self.patch_jump(not_primitive);
+                        Some(done)
+                    } else {
+                        None
+                    };
                     if self.profile.namespaces.use_dotnet
                         && arg_exprs.is_empty()
                         && field.eq_ignore_ascii_case("Count")
@@ -3109,6 +3238,9 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     for a in &arg_exprs { self.compile_expr(a)?; }
                     self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                    if let Some(done) = primitive_tostring_done {
+                        self.patch_jump(done);
+                    }
                     let generic_done = self.emit_jump(Op::BR);
 
                     self.patch_jump(end);
@@ -3137,6 +3269,70 @@ impl Compiler {
             self.emit_u16(Op::STRUCT_GET, prop);
             let fn_tmp = self.define_local("__fn");
             self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
+            let member_index_done = if self.profile.parens_for_index && !arg_exprs.is_empty() {
+                self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                self.emit(Op::REF_TYPEOF);
+                self.emit_const(Value::String(Arc::from("function")));
+                self.emit(Op::DYN_EQ);
+                let use_call = self.emit_jump(Op::BR_IF_TRUE);
+
+                self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                for arg in &arg_exprs {
+                    self.compile_expr(arg)?;
+                    let line = self.line;
+                    common::collections::emit_get(&mut self.chunks, self.current, line);
+                }
+                let done = self.emit_jump(Op::BR);
+                self.patch_jump(use_call);
+                Some(done)
+            } else {
+                None
+            };
+            if resolves_to_static_container_method(self, object, field) {
+                self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                for a in &arg_exprs { self.compile_expr(a)?; }
+                self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                if let Some(done) = member_index_done {
+                    self.patch_jump(done);
+                }
+                return Ok(());
+            }
+            let primitive_tostring_done = if self.profile.namespaces.use_dotnet
+                && arg_exprs.is_empty()
+                && field.eq_ignore_ascii_case("ToString")
+            {
+                let type_tmp = self.define_local("__dotnet_tostring_type");
+                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                self.emit(Op::REF_TYPEOF);
+                self.emit_u16(Op::LOCAL_SET, type_tmp);
+                self.emit(Op::DROP);
+
+                let mut primitive_matches = Vec::new();
+                for type_name in ["number", "i32", "i64", "string", "boolean"] {
+                    self.emit_u16(Op::LOCAL_GET, type_tmp);
+                    self.emit_const(Value::String(Arc::from(type_name)));
+                    self.emit(Op::DYN_EQ);
+                    primitive_matches.push(self.emit_jump(Op::BR_IF_TRUE));
+                }
+                let not_primitive = self.emit_jump(Op::BR);
+
+                for patch in primitive_matches {
+                    self.patch_jump(patch);
+                }
+                let tostring_global = self.str_const("__vybe_tostring");
+                self.emit_u16(Op::GLOBAL_GET, tostring_global);
+                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                self.emit_u8(Op::CALL_REF, 1);
+                let done = self.emit_jump(Op::BR);
+
+                self.patch_jump(not_primitive);
+                Some(done)
+            } else {
+                if let Some(done) = member_index_done {
+                    self.patch_jump(done);
+                }
+                None
+            };
             if self.profile.namespaces.use_dotnet
                 && arg_exprs.is_empty()
                 && field.eq_ignore_ascii_case("Count")
@@ -3161,6 +3357,12 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, obj_tmp);
             for a in &arg_exprs { self.compile_expr(a)?; }
             self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+            if let Some(done) = member_index_done {
+                self.patch_jump(done);
+            }
+            if let Some(done) = primitive_tostring_done {
+                self.patch_jump(done);
+            }
             return Ok(());
         }
 
@@ -3237,7 +3439,7 @@ impl Compiler {
                         }
 
                         self.emit_u16(Op::LOCAL_GET, fn_tmp);
-                        for a in &arg_exprs { self.compile_expr(a)?; }
+                        for a in &arg_exprs { self.compile_expr_with_value_copy(a)?; }
                         self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
                         return Ok(());
                     }
@@ -3302,14 +3504,14 @@ impl Compiler {
                             .is_some_and(Self::is_callable_type_hint);
                         if (self.profile.name == "pascal" && self.is_class_field(name)) || is_callable_field {
                             self.emit_u16(Op::LOCAL_GET, fn_tmp);
-                            for a in &arg_exprs { self.compile_expr(a)?; }
+                            for a in &arg_exprs { self.compile_expr_with_value_copy(a)?; }
                             self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
                             return Ok(());
                         }
 
                         self.emit_u16(Op::LOCAL_GET, fn_tmp);
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                        for a in &arg_exprs { self.compile_expr(a)?; }
+                        for a in &arg_exprs { self.compile_expr_with_value_copy(a)?; }
                         self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
                         return Ok(());
                     }
@@ -4700,6 +4902,86 @@ impl Compiler {
         Ok(true)
     }
 
+    fn try_compile_dotnet_zero_arg_tostring(&mut self, callee: &Expression, args: &[Argument]) -> Result<bool, String> {
+        if !matches!(self.profile.name.as_str(), "csharp" | "vb") || !self.profile.namespaces.use_dotnet {
+            return Ok(false);
+        }
+        if !args.is_empty() {
+            return Ok(false);
+        }
+        let ExprKind::Member { object, field, .. } = &callee.kind else {
+            return Ok(false);
+        };
+        if !field.eq_ignore_ascii_case("ToString") {
+            return Ok(false);
+        }
+
+        self.compile_expr(object)?;
+        let obj_slot = self.define_local("__dotnet_tostring_obj");
+        self.emit_u16(Op::LOCAL_SET, obj_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit(Op::REF_TYPEOF);
+        let type_slot = self.define_local("__dotnet_tostring_type");
+        self.emit_u16(Op::LOCAL_SET, type_slot);
+        self.emit(Op::DROP);
+
+        let mut primitive_matches = Vec::new();
+        for type_name in ["number", "i32", "i64", "string", "boolean"] {
+            self.emit_u16(Op::LOCAL_GET, type_slot);
+            self.emit_const(Value::String(Arc::from(type_name)));
+            self.emit(Op::DYN_EQ);
+            primitive_matches.push(self.emit_jump(Op::BR_IF_TRUE));
+        }
+        let object_path = self.emit_jump(Op::BR);
+
+        for patch in primitive_matches {
+            self.patch_jump(patch);
+        }
+        let tostring_global = self.str_const("__vybe_tostring");
+        self.emit_u16(Op::GLOBAL_GET, tostring_global);
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_u8(Op::CALL_REF, 1);
+        let done = self.emit_jump(Op::BR);
+
+        self.patch_jump(object_path);
+        let canon_key = self.str_const(&self.canon(field));
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_u16(Op::STRUCT_GET, canon_key);
+        let fn_slot = self.define_local("__dotnet_tostring_fn");
+        self.emit_u16(Op::LOCAL_SET, fn_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, fn_slot);
+        self.emit(Op::REF_IS_UNDEFINED);
+        let have_canon = self.emit_jump(Op::BR_IF_FALSE);
+        if field.as_str() != self.canon(field) {
+            let exact_key = self.str_const(field);
+            self.emit_u16(Op::LOCAL_GET, obj_slot);
+            self.emit_u16(Op::STRUCT_GET, exact_key);
+            self.emit_u16(Op::LOCAL_SET, fn_slot);
+            self.emit(Op::DROP);
+        }
+        self.patch_jump(have_canon);
+
+        self.emit_u16(Op::LOCAL_GET, fn_slot);
+        self.emit(Op::REF_IS_UNDEFINED);
+        let no_method = self.emit_jump(Op::BR_IF_FALSE);
+        self.emit_u16(Op::GLOBAL_GET, tostring_global);
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_u8(Op::CALL_REF, 1);
+        let object_done = self.emit_jump(Op::BR);
+
+        self.patch_jump(no_method);
+        self.emit_u16(Op::LOCAL_GET, fn_slot);
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_u8(Op::CALL_REF, 1);
+        self.patch_jump(object_done);
+        self.patch_jump(done);
+        Ok(true)
+    }
+
     fn canonical_enum_type_from_runtime_type(&self, expr: &Expression) -> Option<String> {
         let ExprKind::Lit(Literal::Str(type_name)) = &expr.kind else {
             return None;
@@ -4734,7 +5016,7 @@ impl Compiler {
         }
     }
 
-    fn resolve_known_enum_type(&self, name: &str) -> Option<String> {
+    pub(super) fn resolve_known_enum_type(&self, name: &str) -> Option<String> {
         let canon = self.canon(name);
         if self.enum_value_names.contains_key(&canon) {
             return Some(canon);
@@ -4743,6 +5025,15 @@ impl Compiler {
             .keys()
             .find(|known| known.eq_ignore_ascii_case(name) || known.eq_ignore_ascii_case(&canon))
             .cloned()
+    }
+
+    pub(super) fn enum_member_ordinal(&self, enum_type: &str, member_name: &str) -> Option<i64> {
+        let enum_type = self.resolve_known_enum_type(enum_type)?;
+        self.enum_value_names
+            .get(&enum_type)?
+            .iter()
+            .find(|(_, name)| name.eq_ignore_ascii_case(member_name))
+            .map(|(value, _)| *value)
     }
 
     fn enum_entries_sorted(&self, enum_type: &str) -> Option<Vec<(i64, String)>> {

@@ -1,6 +1,7 @@
 use pest::Parser;
 use pest::iterators::Pair;
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+use std::collections::HashMap;
 
 use super::{Rule, VbParser};
 use crate::ast::*;
@@ -44,12 +45,14 @@ pub fn parse(source: &str) -> Result<Module, String> {
         }
     }
 
-    Ok(Module {
+    let mut module = Module {
         name: "main".into(),
         language: Lang::VB,
         body,
         imports,
-    })
+    };
+    rewrite_vb_import_aliases(&mut module);
+    Ok(module)
 }
 
 pub fn parse_expression_str(source: &str) -> Result<Expression, String> {
@@ -64,6 +67,15 @@ fn normalize_vb_identifier(name: &str) -> String {
         .and_then(|s| s.strip_suffix(']'))
         .unwrap_or(name)
         .to_string()
+}
+
+fn strip_vb_generic_suffix(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    if let Some(idx) = lower.find("(of") {
+        name[..idx].trim().to_string()
+    } else {
+        name.trim().to_string()
+    }
 }
 
 #[derive(Clone)]
@@ -86,30 +98,6 @@ fn call_expr(callee: Expression, args: Vec<Argument>) -> Expression {
         callee: Box::new(callee),
         args,
         optional: false,
-    })
-}
-
-fn member_expr(object: Expression, field: &str) -> Expression {
-    Expression::new(ExprKind::Member {
-        object: Box::new(object),
-        field: field.to_string(),
-        null_safe: false,
-    })
-}
-
-fn binary_expr(op: BinOp, left: Expression, right: Expression) -> Expression {
-    Expression::new(ExprKind::Binary {
-        op,
-        left: Box::new(left),
-        right: Box::new(right),
-    })
-}
-
-fn ternary_expr(cond: Expression, then_expr: Expression, else_expr: Expression) -> Expression {
-    Expression::new(ExprKind::Ternary {
-        cond: Box::new(cond),
-        then: Box::new(then_expr),
-        else_: Box::new(else_expr),
     })
 }
 
@@ -509,6 +497,433 @@ fn try_parse_declaration(pair: Pair<Rule>) -> Result<Option<Statement>, String> 
     Ok(stmt)
 }
 
+fn rewrite_vb_import_aliases(module: &mut Module) {
+    let mut aliases: HashMap<String, String> = HashMap::new();
+    for import in &module.imports {
+        if let ImportKind::Simple { path, alias: Some(alias) } = &import.kind {
+            aliases.insert(alias.clone(), path.clone());
+        }
+    }
+    if aliases.is_empty() {
+        return;
+    }
+    rewrite_vb_aliases_in_statements(&mut module.body, &aliases);
+}
+
+fn rewrite_vb_aliases_in_statements(body: &mut [Statement], aliases: &HashMap<String, String>) {
+    for stmt in body {
+        rewrite_vb_aliases_in_statement(stmt, aliases);
+    }
+}
+
+fn rewrite_vb_aliases_in_statement(stmt: &mut Statement, aliases: &HashMap<String, String>) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr)
+        | StmtKind::Return(Some(expr))
+        | StmtKind::CompoundAssign { value: expr, .. } => {
+            rewrite_vb_aliases_in_expr(expr, aliases);
+        }
+        StmtKind::Using { resource, body, .. } => {
+            rewrite_vb_aliases_in_expr(resource, aliases);
+            rewrite_vb_aliases_in_statements(body, aliases);
+        }
+        StmtKind::Lock { expr, body } => {
+            rewrite_vb_aliases_in_expr(expr, aliases);
+            rewrite_vb_aliases_in_statements(body, aliases);
+        }
+        StmtKind::Throw { expr: Some(expr), cause: None } => {
+            rewrite_vb_aliases_in_expr(expr, aliases);
+        }
+        StmtKind::Throw { expr: Some(expr), cause: Some(cause) } => {
+            rewrite_vb_aliases_in_expr(expr, aliases);
+            rewrite_vb_aliases_in_expr(cause, aliases);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                rewrite_vb_alias_in_type_hint(&mut decl.type_hint, aliases);
+                if let Some(init) = &mut decl.init {
+                    rewrite_vb_aliases_in_expr(init, aliases);
+                }
+                if let Some(bounds) = &mut decl.array_bounds {
+                    for bound in bounds {
+                        rewrite_vb_aliases_in_expr(bound, aliases);
+                    }
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_vb_aliases_in_expr(target, aliases);
+            }
+            rewrite_vb_aliases_in_expr(value, aliases);
+        }
+        StmtKind::FunctionDecl { params, return_type, body, .. } => {
+            for param in params {
+                rewrite_vb_alias_in_param(param, aliases);
+            }
+            rewrite_vb_alias_in_type_hint(return_type, aliases);
+            rewrite_vb_aliases_in_statements(body, aliases);
+        }
+        StmtKind::Block(body)
+        | StmtKind::NamespaceDecl { body, .. } => {
+            rewrite_vb_aliases_in_statements(body, aliases);
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_vb_aliases_in_member(member, aliases);
+            }
+        }
+        StmtKind::If { cond, then_body, elifs, else_body } => {
+            rewrite_vb_aliases_in_expr(cond, aliases);
+            rewrite_vb_aliases_in_statements(then_body, aliases);
+            for (elif_cond, elif_body) in elifs {
+                rewrite_vb_aliases_in_expr(elif_cond, aliases);
+                rewrite_vb_aliases_in_statements(elif_body, aliases);
+            }
+            if let Some(else_body) = else_body {
+                rewrite_vb_aliases_in_statements(else_body, aliases);
+            }
+        }
+        StmtKind::For { init, cond, update, body } => {
+            if let Some(init) = init {
+                rewrite_vb_aliases_in_statement(init, aliases);
+            }
+            if let Some(cond) = cond {
+                rewrite_vb_aliases_in_expr(cond, aliases);
+            }
+            if let Some(update) = update {
+                rewrite_vb_aliases_in_expr(update, aliases);
+            }
+            rewrite_vb_aliases_in_statements(body, aliases);
+        }
+        StmtKind::ForIn { iter, body, else_body, .. } => {
+            rewrite_vb_aliases_in_expr(iter, aliases);
+            rewrite_vb_aliases_in_statements(body, aliases);
+            if let Some(else_body) = else_body {
+                rewrite_vb_aliases_in_statements(else_body, aliases);
+            }
+        }
+        StmtKind::While { cond, body, else_body } => {
+            rewrite_vb_aliases_in_expr(cond, aliases);
+            rewrite_vb_aliases_in_statements(body, aliases);
+            if let Some(else_body) = else_body {
+                rewrite_vb_aliases_in_statements(else_body, aliases);
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            rewrite_vb_aliases_in_statements(body, aliases);
+            rewrite_vb_aliases_in_expr(cond, aliases);
+        }
+        StmtKind::Try { body, catches, finally, .. } => {
+            rewrite_vb_aliases_in_statements(body, aliases);
+            for catch in catches {
+                for ty in &mut catch.types {
+                    if let Some(rewritten) = rewrite_vb_alias_name(ty, aliases) {
+                        *ty = rewritten;
+                    }
+                }
+                if let Some(when_clause) = &mut catch.when_clause {
+                    rewrite_vb_aliases_in_expr(when_clause, aliases);
+                }
+                rewrite_vb_aliases_in_statements(&mut catch.body, aliases);
+            }
+            if let Some(finally) = finally {
+                rewrite_vb_aliases_in_statements(finally, aliases);
+            }
+        }
+        StmtKind::Switch { expr, cases, default } => {
+            rewrite_vb_aliases_in_expr(expr, aliases);
+            for case in cases {
+                for condition in &mut case.conditions {
+                    match condition {
+                        CaseCondition::Value(expr)
+                        | CaseCondition::Comparison { expr, .. } => rewrite_vb_aliases_in_expr(expr, aliases),
+                        CaseCondition::Range { from, to } => {
+                            rewrite_vb_aliases_in_expr(from, aliases);
+                            rewrite_vb_aliases_in_expr(to, aliases);
+                        }
+                    }
+                }
+                rewrite_vb_aliases_in_statements(&mut case.body, aliases);
+            }
+            if let Some(default) = default {
+                rewrite_vb_aliases_in_statements(default, aliases);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_vb_aliases_in_member(member: &mut ClassMember, aliases: &HashMap<String, String>) {
+    match member {
+        ClassMember::Field { type_hint, init, array_bounds, .. } => {
+            rewrite_vb_alias_in_type_hint(type_hint, aliases);
+            if let Some(init) = init {
+                rewrite_vb_aliases_in_expr(init, aliases);
+            }
+            if let Some(bounds) = array_bounds {
+                for bound in bounds {
+                    rewrite_vb_aliases_in_expr(bound, aliases);
+                }
+            }
+        }
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_vb_aliases_in_statement(stmt, aliases);
+        }
+        ClassMember::Constructor { params, body, base_args, .. } => {
+            for param in params {
+                rewrite_vb_alias_in_param(param, aliases);
+            }
+            if let Some(base_args) = base_args {
+                for arg in base_args {
+                    rewrite_vb_aliases_in_expr(arg, aliases);
+                }
+            }
+            rewrite_vb_aliases_in_statements(body, aliases);
+        }
+        ClassMember::Property { type_hint, getter, setter, .. } => {
+            rewrite_vb_alias_in_type_hint(type_hint, aliases);
+            if let Some(getter) = getter {
+                rewrite_vb_aliases_in_statements(getter, aliases);
+            }
+            if let Some(setter) = setter {
+                rewrite_vb_alias_in_param(&mut setter.param, aliases);
+                rewrite_vb_aliases_in_statements(&mut setter.body, aliases);
+            }
+        }
+        ClassMember::Event { type_hint, params, .. } => {
+            rewrite_vb_alias_in_type_hint(type_hint, aliases);
+            for param in params {
+                rewrite_vb_alias_in_param(param, aliases);
+            }
+        }
+        ClassMember::Const { type_hint, value, .. } => {
+            rewrite_vb_alias_in_type_hint(type_hint, aliases);
+            rewrite_vb_aliases_in_expr(value, aliases);
+        }
+    }
+}
+
+fn rewrite_vb_alias_in_param(param: &mut Param, aliases: &HashMap<String, String>) {
+    rewrite_vb_alias_in_type_hint(&mut param.type_hint, aliases);
+    if let Some(default) = &mut param.default {
+        rewrite_vb_aliases_in_expr(default, aliases);
+    }
+}
+
+fn rewrite_vb_alias_in_type_hint(type_hint: &mut Option<String>, aliases: &HashMap<String, String>) {
+    if let Some(current) = type_hint.as_ref() {
+        if let Some(rewritten) = rewrite_vb_alias_type_name(current, aliases) {
+            *type_hint = Some(rewritten);
+        }
+    }
+}
+
+fn rewrite_vb_alias_type_name(name: &str, aliases: &HashMap<String, String>) -> Option<String> {
+    if let Some(path) = aliases.get(name) {
+        return Some(vb_alias_target_type_name(path));
+    }
+    let (head, tail) = name.split_once('.')?;
+    aliases
+        .get(head)
+        .map(|path| format!("{}.{}", vb_alias_target_type_name(path), tail))
+}
+
+fn vb_alias_target_type_name(path: &str) -> String {
+    path.rsplit('.')
+        .next()
+        .unwrap_or(path)
+        .to_string()
+}
+
+fn rewrite_vb_alias_name(name: &str, aliases: &HashMap<String, String>) -> Option<String> {
+    if let Some(path) = aliases.get(name) {
+        return Some(path.clone());
+    }
+    let (head, tail) = name.split_once('.')?;
+    aliases.get(head).map(|path| format!("{}.{}", path, tail))
+}
+
+fn rewrite_vb_aliases_in_expr(expr: &mut Expression, aliases: &HashMap<String, String>) {
+    match &mut expr.kind {
+        ExprKind::Ident(name) => {
+            if let Some(path) = aliases.get(name) {
+                *expr = build_dotted_expr(path);
+            }
+        }
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::NullCoalesce { left, right }
+        | ExprKind::Walrus { target: left, value: right } => {
+            rewrite_vb_aliases_in_expr(left, aliases);
+            rewrite_vb_aliases_in_expr(right, aliases);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Spread(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::TypeOf(expr) => {
+            rewrite_vb_aliases_in_expr(expr, aliases);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_vb_aliases_in_expr(cond, aliases);
+            rewrite_vb_aliases_in_expr(then, aliases);
+            rewrite_vb_aliases_in_expr(else_, aliases);
+        }
+        ExprKind::Member { object, .. } => rewrite_vb_aliases_in_expr(object, aliases),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_vb_aliases_in_expr(object, aliases);
+            rewrite_vb_aliases_in_expr(index, aliases);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_vb_aliases_in_expr(callee, aliases);
+            for arg in args {
+                rewrite_vb_aliases_in_expr(&mut arg.value, aliases);
+            }
+        }
+        ExprKind::New { class, args } => {
+            if let ExprKind::Ident(name) = &class.kind {
+                if let Some(path) = aliases.get(name) {
+                    **class = Expression::ident(&vb_alias_target_type_name(path));
+                } else {
+                    rewrite_vb_aliases_in_expr(class, aliases);
+                }
+            } else {
+                rewrite_vb_aliases_in_expr(class, aliases);
+            }
+            for arg in args {
+                rewrite_vb_aliases_in_expr(&mut arg.value, aliases);
+            }
+        }
+        ExprKind::Assign { target, value } => {
+            rewrite_vb_aliases_in_expr(target, aliases);
+            rewrite_vb_aliases_in_expr(value, aliases);
+        }
+        ExprKind::Lambda { params, body, .. } => {
+            for param in params {
+                rewrite_vb_alias_in_param(param, aliases);
+            }
+            match body {
+                LambdaBody::Expr(expr) => rewrite_vb_aliases_in_expr(expr, aliases),
+                LambdaBody::Block(body) => rewrite_vb_aliases_in_statements(body, aliases),
+            }
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                if let Some(key) = &mut item.key {
+                    rewrite_vb_aliases_in_expr(key, aliases);
+                }
+                rewrite_vb_aliases_in_expr(&mut item.value, aliases);
+            }
+        }
+        ExprKind::Tuple(items)
+        | ExprKind::Set(items)
+        | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_vb_aliases_in_expr(item, aliases);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value } => {
+                        rewrite_vb_aliases_in_expr(key, aliases);
+                        rewrite_vb_aliases_in_expr(value, aliases);
+                    }
+                    ObjectProperty::Spread(expr) => rewrite_vb_aliases_in_expr(expr, aliases),
+                    ObjectProperty::Computed { key, value } => {
+                        rewrite_vb_aliases_in_expr(key, aliases);
+                        rewrite_vb_aliases_in_expr(value, aliases);
+                    }
+                    ObjectProperty::Method { value, .. }
+                    | ObjectProperty::Accessor { value, .. } => {
+                        rewrite_vb_aliases_in_statement(value, aliases);
+                    }
+                    ObjectProperty::Shorthand(_) => {}
+                }
+            }
+        }
+        ExprKind::Interpolation(parts) => {
+            for part in parts {
+                if let InterpolPart::Expr(expr) = part {
+                    rewrite_vb_aliases_in_expr(expr, aliases);
+                }
+            }
+        }
+        ExprKind::IsType { expr, type_name }
+        | ExprKind::Cast { expr, type_name } => {
+            rewrite_vb_aliases_in_expr(expr, aliases);
+            if let Some(rewritten) = rewrite_vb_alias_name(type_name, aliases) {
+                *type_name = rewritten;
+            }
+        }
+        ExprKind::DefaultOf(type_name) => {
+            if let Some(rewritten) = rewrite_vb_alias_name(type_name, aliases) {
+                *type_name = rewritten;
+            }
+        }
+        ExprKind::Yield(Some(expr)) => rewrite_vb_aliases_in_expr(expr, aliases),
+        ExprKind::Yield(None) | ExprKind::AddressOf(_) | ExprKind::This | ExprKind::Super | ExprKind::Lit(_) => {}
+        ExprKind::SuperCall { args, .. } => {
+            for arg in args {
+                rewrite_vb_aliases_in_expr(&mut arg.value, aliases);
+            }
+        }
+        ExprKind::Comprehension { element, generators, .. } => {
+            rewrite_vb_aliases_in_expr(element, aliases);
+            for generator in generators {
+                rewrite_vb_aliases_in_expr(&mut generator.iter, aliases);
+                for condition in &mut generator.conditions {
+                    rewrite_vb_aliases_in_expr(condition, aliases);
+                }
+            }
+        }
+        ExprKind::Slice { lower, upper, step } => {
+            if let Some(lower) = lower {
+                rewrite_vb_aliases_in_expr(lower, aliases);
+            }
+            if let Some(upper) = upper {
+                rewrite_vb_aliases_in_expr(upper, aliases);
+            }
+            if let Some(step) = step {
+                rewrite_vb_aliases_in_expr(step, aliases);
+            }
+        }
+        ExprKind::Destructure(_) => {}
+        ExprKind::ClassExpr { parent, members, .. } => {
+            if let Some(parent) = parent {
+                rewrite_vb_aliases_in_expr(parent, aliases);
+            }
+            for member in members {
+                rewrite_vb_aliases_in_member(member, aliases);
+            }
+        }
+        ExprKind::FunctionExpr(stmt) => rewrite_vb_aliases_in_statement(stmt, aliases),
+        ExprKind::Range { start, end, .. } => {
+            rewrite_vb_aliases_in_expr(start, aliases);
+            rewrite_vb_aliases_in_expr(end, aliases);
+        }
+        ExprKind::StaticAccess { class, member } => {
+            rewrite_vb_aliases_in_expr(class, aliases);
+            rewrite_vb_aliases_in_expr(member, aliases);
+        }
+        ExprKind::Match { subject, arms } => {
+            rewrite_vb_aliases_in_expr(subject, aliases);
+            for arm in arms {
+                if let Some(conditions) = &mut arm.conditions {
+                    for condition in conditions {
+                        rewrite_vb_aliases_in_expr(condition, aliases);
+                    }
+                }
+                rewrite_vb_aliases_in_expr(&mut arm.body, aliases);
+            }
+        }
+    }
+}
+
 /*
 
 pub fn parse(source: &str) -> Result<Module, String> {
@@ -857,6 +1272,7 @@ fn parse_sub_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 }
             }
             Rule::identifier | Rule::member_identifier | Rule::sub_name => name = p.as_str().to_string(),
+            Rule::generic_suffix => {}
             Rule::param_list => parameters = parse_param_list(p)?,
             Rule::statement | Rule::statement_line => {
                 for stmt_pair in p.into_inner() {
@@ -884,6 +1300,7 @@ fn parse_sub_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     }
                 }
             }
+            Rule::implements_member_clause => {}
             _ => {}
         }
     }
@@ -949,6 +1366,7 @@ fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 }
             },
             Rule::identifier | Rule::member_identifier | Rule::function_name => name = p.as_str().to_string(),
+            Rule::generic_suffix => {}
             Rule::param_list => parameters = parse_param_list(p)?,
             Rule::type_name => return_type = Some(p.as_str().to_string()),
             Rule::statement | Rule::statement_line => {
@@ -977,6 +1395,7 @@ fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     }
                 }
             }
+            Rule::implements_member_clause => {}
             _ => {}
         }
     }
@@ -1014,6 +1433,23 @@ fn parse_module_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::identifier => name = p.as_str().to_string(),
+            Rule::generic_suffix => {}
+            Rule::property_decl => members.push(parse_property_decl_to_member(p)?),
+            Rule::auto_property_decl => {
+                let d = parse_auto_property_as_field(p)?;
+                let field_name = match d.pattern {
+                    BindingPattern::Ident(n) => n,
+                    _ => String::new(),
+                };
+                members.push(ClassMember::Field {
+                    name: field_name,
+                    type_hint: d.type_hint,
+                    init: d.init,
+                    modifiers: Modifiers::default(),
+                    with_events: d.with_events,
+                    array_bounds: d.array_bounds,
+                });
+            }
             Rule::sub_decl => members.push(ClassMember::Method(Box::new(parse_sub_decl(p)?))),
             Rule::function_decl => members.push(ClassMember::Method(Box::new(parse_function_decl(p)?))),
             Rule::const_statement => {
@@ -1066,6 +1502,12 @@ fn parse_module_decl(pair: Pair<Rule>) -> Result<Statement, String> {
             Rule::class_decl => {
                 members.push(ClassMember::NestedType(Box::new(parse_class_decl(p)?)));
             }
+            Rule::interface_decl => {
+                members.push(ClassMember::NestedType(Box::new(parse_interface_decl(p)?)));
+            }
+            Rule::structure_decl => {
+                members.push(ClassMember::NestedType(Box::new(parse_structure_decl(p)?)));
+            }
             Rule::enum_decl => {
                 members.push(ClassMember::NestedType(Box::new(parse_enum_decl(p)?)));
             }
@@ -1100,7 +1542,7 @@ fn parse_field_modifiers(pair: &Pair<Rule>) -> Modifiers {
     modifiers
 }
 
-/// Parse `Imports [alias =] dotted.path`
+/// Parse `Imports [alias =] namespace.or.type`
 fn parse_imports_statement(pair: Pair<Rule>) -> Result<Import, String> {
     let span = to_span(&pair);
     let mut alias: Option<String> = None;
@@ -1114,7 +1556,7 @@ fn parse_imports_statement(pair: Pair<Rule>) -> Result<Import, String> {
                     alias = Some(id.as_str().to_string());
                 }
             }
-            Rule::dotted_identifier => {
+            Rule::dotted_identifier | Rule::type_name => {
                 path = p.as_str().to_string();
             }
             Rule::NEWLINE => {}
@@ -1205,6 +1647,7 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
 
     for p in inner {
         match p.as_rule() {
+            Rule::generic_suffix => {}
             Rule::partial_keyword => is_partial = true,
             Rule::visibility_modifier => {
                 visibility = parse_visibility(p.as_str());
@@ -1278,6 +1721,20 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
             Rule::function_decl => {
                 members.push(ClassMember::Method(Box::new(parse_function_decl(p)?)));
             }
+            Rule::const_statement => {
+                let (vis, decl) = parse_const_statement(p)?;
+                let init = decl.init.unwrap_or_else(|| Expression::null());
+                let name = match decl.pattern {
+                    BindingPattern::Ident(n) => n,
+                    _ => String::new(),
+                };
+                members.push(ClassMember::Const {
+                    name,
+                    type_hint: decl.type_hint,
+                    value: init,
+                    visibility: vis,
+                });
+            }
             Rule::dim_statement => {
                 let decls = parse_dim_statement(p)?;
                 for d in decls {
@@ -1317,6 +1774,12 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
             }
             Rule::class_decl => {
                 members.push(ClassMember::NestedType(Box::new(parse_class_decl(p)?)));
+            }
+            Rule::interface_decl => {
+                members.push(ClassMember::NestedType(Box::new(parse_interface_decl(p)?)));
+            }
+            Rule::structure_decl => {
+                members.push(ClassMember::NestedType(Box::new(parse_structure_decl(p)?)));
             }
             Rule::enum_decl => {
                 members.push(ClassMember::NestedType(Box::new(parse_enum_decl(p)?)));
@@ -1785,6 +2248,17 @@ fn parse_dim_statement(pair: Pair<Rule>) -> Result<Vec<VarDeclarator>, String> {
             }
         }
 
+        if is_new {
+            if let Some(type_hint_value) = type_hint.as_mut() {
+                *type_hint_value = type_hint_value
+                    .trim()
+                    .strip_suffix("()")
+                    .unwrap_or(type_hint_value.trim())
+                    .trim()
+                    .to_string();
+            }
+        }
+
         if is_new && init.is_none() {
             if let Some(class_name) = &type_hint {
                 init = Some(Expression::new(ExprKind::New {
@@ -1989,6 +2463,41 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
                 targets: vec![Expression::ident(&target_name)],
                 value,
             }
+        }
+        Rule::lset_statement | Rule::rset_statement => {
+            let is_right = pair.as_rule() == Rule::rset_statement;
+            let mut inner = pair.into_inner();
+            let target = parse_l_value_expression(inner.next().unwrap())?;
+            let value = parse_expression(inner.next().unwrap())?;
+
+            StmtKind::Expr(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(if is_right { "__vb_rset_stmt" } else { "__vb_lset_stmt" })),
+                args: vec![Argument::positional(target), Argument::positional(value)],
+                optional: false,
+            }))
+        }
+        Rule::mid_assign_statement => {
+            let mut inner = pair.into_inner();
+            let target = parse_l_value_expression(inner.next().unwrap())?;
+            let start = parse_expression(inner.next().unwrap())?;
+            let mut trailing: Vec<_> = inner.collect();
+            let value = parse_expression(trailing.pop().ok_or_else(|| "Mid statement missing value".to_string())?)?;
+            let count = if let Some(count_pair) = trailing.pop() {
+                parse_expression(count_pair)?
+            } else {
+                Expression::int(-1)
+            };
+
+            StmtKind::Expr(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__vb_mid_stmt")),
+                args: vec![
+                    Argument::positional(target),
+                    Argument::positional(start),
+                    Argument::positional(count),
+                    Argument::positional(value),
+                ],
+                optional: false,
+            }))
         }
         Rule::compound_assign_statement => {
             let mut inner = pair.into_inner();
@@ -2554,12 +3063,16 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
             Rule::unary => return parse_unary_expression(pair),
             Rule::postfix => return parse_postfix_expression(pair),
             Rule::call_expression => {
-                let mut inner = pair.into_inner();
-                let name = inner.next().unwrap().as_str().to_string();
-                let arguments = inner.next()
-                    .map(parse_argument_list)
-                    .transpose()?
-                    .unwrap_or_default();
+                let mut name = String::new();
+                let mut arguments = Vec::new();
+                for part in pair.into_inner() {
+                    match part.as_rule() {
+                        Rule::identifier => name = strip_vb_generic_suffix(part.as_str()),
+                        Rule::generic_suffix => {}
+                        Rule::argument_list => arguments = parse_argument_list(part)?,
+                        _ => {}
+                    }
+                }
 
                 if let Some(rewritten) = canonicalize_call(&name, &arguments) {
                     return Ok(rewritten);
@@ -2702,7 +3215,7 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                 }
             }
             Rule::string_literal => {
-                let s = pair.as_str();
+                let s = pair.as_str().trim_end_matches(|c: char| c == 'c' || c == 'C');
                 ExprKind::Lit(Literal::Str(s[1..s.len() - 1].replace("\"\"", "\"")))
             }
             Rule::numeric_literal => {
@@ -3110,12 +3623,16 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                 return Ok(expr);
             }
             Rule::call_expression => {
-                let mut inner = pair.into_inner();
-                let name = inner.next().unwrap().as_str().to_string();
-                let arguments = inner.next()
-                    .map(parse_argument_list)
-                    .transpose()?
-                    .unwrap_or_default();
+                let mut name = String::new();
+                let mut arguments = Vec::new();
+                for part in pair.into_inner() {
+                    match part.as_rule() {
+                        Rule::identifier => name = strip_vb_generic_suffix(part.as_str()),
+                        Rule::generic_suffix => {}
+                        Rule::argument_list => arguments = parse_argument_list(part)?,
+                        _ => {}
+                    }
+                }
 
                 if let Some(rewritten) = canonicalize_call(&name, &arguments) {
                     return Ok(rewritten);
@@ -3221,7 +3738,7 @@ fn parse_binary_expression(pair: Pair<Rule>) -> Result<Expression, String> {
             }
         }
         Rule::string_literal => {
-            let s = pair.as_str();
+            let s = pair.as_str().trim_end_matches(|c: char| c == 'c' || c == 'C');
             // Strip outer quotes, then unescape VB-style doubled quotes ("" -> ")
             let inner = s[1..s.len()-1].replace("\"\"", "\"");
             ExprKind::Lit(Literal::Str(inner))
@@ -3253,14 +3770,11 @@ fn parse_binary_expression(pair: Pair<Rule>) -> Result<Expression, String> {
             let mut inner = pair.into_inner();
             let id_pair = inner.next().unwrap();
             let mut class_name = id_pair.as_str().to_string();
-            // Check for generic_suffix: List(Of String) -> "List(Of String)"
             let mut args: Vec<Argument> = Vec::new();
             let mut array_init: Option<Vec<Expression>> = None;
             for p in inner {
                 match p.as_rule() {
-                    Rule::generic_suffix => {
-                        class_name.push_str(p.as_str());
-                    }
+                    Rule::generic_suffix => {}
                     Rule::argument_list => {
                         args = parse_argument_list(p)?;
                     }
@@ -3537,7 +4051,7 @@ fn parse_binary_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                 ExprKind::Lit(Literal::Str(inner))
             }
             Rule::string_literal => {
-                let raw = pair.as_str();
+                let raw = pair.as_str().trim_end_matches(|c: char| c == 'c' || c == 'C');
                 let inner = &raw[1..raw.len()-1];
                 let s = inner.replace("\"\"", "\"");
                 ExprKind::Lit(Literal::Str(s))
@@ -3692,13 +4206,17 @@ fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expres
             }))
         }
         Rule::member_chain_call => {
-            let mut chain_inner = chain.into_inner();
-            let name = chain_inner.next().unwrap().as_str().to_string();
-            let arguments = if let Some(arg_list) = chain_inner.next() {
-                parse_argument_list(arg_list)?
-            } else {
-                vec![]
-            };
+            let chain_inner = chain.into_inner();
+            let mut name = String::new();
+            let mut arguments = Vec::new();
+            for part in chain_inner {
+                match part.as_rule() {
+                    Rule::member_identifier => name = strip_vb_generic_suffix(part.as_str()),
+                    Rule::generic_suffix => {}
+                    Rule::argument_list => arguments = parse_argument_list(part)?,
+                    _ => {}
+                }
+            }
             if name.eq_ignore_ascii_case("Item") && !arguments.is_empty() {
                 let mut indexed = expr;
                 for arg in arguments {
@@ -4159,6 +4677,17 @@ fn parse_field_decl(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
     }
 
     // Handle "As New Type" syntax
+    if is_new {
+        if let Some(field_type_value) = field_type.as_mut() {
+            *field_type_value = field_type_value
+                .trim()
+                .strip_suffix("()")
+                .unwrap_or(field_type_value.trim())
+                .trim()
+                .to_string();
+        }
+    }
+
     if is_new && field_init.is_none() {
         if let Some(t) = &field_type {
             field_init = Some(Expression::new(ExprKind::New {

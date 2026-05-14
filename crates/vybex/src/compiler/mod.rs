@@ -230,6 +230,7 @@ pub struct Compiler {
     current_ref_out_params: Option<Vec<u16>>,
     pending_classes: HashMap<String, PendingClass>,
     current_class: Option<String>,
+    current_namespace: Option<String>,
     /// Mirrors `NormalClass.implicit_self_fields` for the class the
     /// compiler is currently inside. Saved/restored by `compile_class`
     /// alongside `current_class`. Expression + call-site resolution
@@ -276,6 +277,10 @@ pub struct Compiler {
     /// Phase 3 will wire `calls.rs`'s qualified-chain path to consume
     /// this map instead of `profile.namespaces.host_packages`.
     host_package_roots: HashMap<String, String>,
+    /// Source-language type aliases: canon(alias) -> target type path.
+    /// Shared across languages so `Imports X = System.Text.StringBuilder`
+    /// and `using X = System.Text.StringBuilder` normalize below the walker.
+    source_type_aliases: HashMap<String, String>,
     /// JS-only: set when the module references `new Proxy(...)`. Member /
     /// Index reads + writes route through `emitter::js::proxy_adapter`
     /// for runtime trap dispatch. Off → direct `STRUCT_GET` / `ARRAY_GET`
@@ -439,6 +444,18 @@ pub struct CompileResult {
 }
 
 impl Compiler {
+    fn strip_global_namespace_prefix(name: &str) -> String {
+        let trimmed = name.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.starts_with("global::") {
+            return trimmed[8..].trim().to_string();
+        }
+        if lower.starts_with("global.") {
+            return trimmed[7..].trim().to_string();
+        }
+        trimmed.to_string()
+    }
+
     pub fn with_profile(profile: LanguageProfile) -> Self {
         Self {
             chunks: vec![Chunk::new("<script>")],
@@ -472,6 +489,7 @@ impl Compiler {
             current_ref_out_params: None,
             pending_classes: HashMap::new(),
             current_class: None,
+            current_namespace: None,
             current_class_implicit_self: false,
             current_member_is_static: false,
             static_local_bindings: Vec::new(),
@@ -486,6 +504,7 @@ impl Compiler {
             host_import_bindings: HashMap::new(),
             host_namespace_aliases: HashMap::new(),
             host_package_roots: HashMap::new(),
+            source_type_aliases: HashMap::new(),
             module_exports: HashMap::new(),
             active_finally_blocks: Vec::new(),
             uses_proxy: false,
@@ -672,9 +691,82 @@ impl Compiler {
                         self.defined_classes.insert(qualified);
                     }
                 }
+                StmtKind::ModuleDecl { name, members, .. } => {
+                    let member = self.canon(name);
+                    self.defined_globals.insert(member.clone());
+                    self.defined_classes.insert(member.clone());
+                    self.register_module_static_container(&member, members);
+                    if let Some(prefix) = namespace {
+                        let qualified = format!("{prefix}.{member}");
+                        self.defined_globals.insert(qualified.clone());
+                        self.defined_classes.insert(qualified);
+                    }
+                }
                 _ => {}
             }
         }
+    }
+
+    fn register_module_static_container(&mut self, module_name: &str, members: &[ClassMember]) {
+        let mut module_static_fields: Vec<String> = Vec::new();
+        let mut module_static_field_types: HashMap<String, String> = HashMap::new();
+        let mut module_static_methods: Vec<String> = Vec::new();
+        let mut module_nested_types: Vec<String> = Vec::new();
+
+        for member in members {
+            match member {
+                ClassMember::Field { name, type_hint, .. } => {
+                    let field_name = self.canon(name);
+                    module_static_fields.push(field_name.clone());
+                    if let Some(type_hint) = type_hint.as_ref() {
+                        module_static_field_types
+                            .insert(field_name, Self::normalize_type_hint(type_hint));
+                    }
+                }
+                ClassMember::Const { name, type_hint, .. } => {
+                    let const_name = self.canon(name);
+                    module_static_fields.push(const_name.clone());
+                    if let Some(type_hint) = type_hint.as_ref() {
+                        module_static_field_types
+                            .insert(const_name, Self::normalize_type_hint(type_hint));
+                    }
+                }
+                ClassMember::Method(stmt) => {
+                    if let StmtKind::FunctionDecl { name: method_name, .. } = &stmt.kind {
+                        module_static_methods.push(self.canon(method_name));
+                    }
+                }
+                ClassMember::NestedType(stmt) => {
+                    if let Some(type_name) = match &stmt.kind {
+                        StmtKind::ClassDecl { name, .. }
+                        | StmtKind::StructDecl { name, .. }
+                        | StmtKind::EnumDecl { name, .. }
+                        | StmtKind::InterfaceDecl { name, .. }
+                        | StmtKind::ModuleDecl { name, .. } => Some(self.canon(name)),
+                        _ => None,
+                    } {
+                        module_nested_types.push(type_name);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        self.pending_classes.insert(module_name.to_string(), PendingClass {
+            parent: None,
+            enclosing_class: self.current_class.clone(),
+            fields: Vec::new(),
+            is_value_type: false,
+            instance_member_names: Vec::new(),
+            instance_field_types: HashMap::new(),
+            static_fields: module_static_fields,
+            static_field_types: module_static_field_types,
+            static_method_names: module_static_methods,
+            instance_method_overloads: HashMap::new(),
+            static_method_overloads: HashMap::new(),
+            nested_types: module_nested_types,
+            statics: Vec::new(),
+        });
     }
 
     /// The Linker phase — ECMA-262 §16.2.1.5 Link adapted for Vybe.
@@ -735,6 +827,9 @@ impl Compiler {
         };
         for imp in &module.imports {
             match &imp.kind {
+                crate::ast::ImportKind::Simple { path, alias: Some(alias) } => {
+                    self.source_type_aliases.insert(self.canon(alias), path.clone());
+                }
                 crate::ast::ImportKind::Named { path, names, .. } => {
                     let path = normalize_bare(path);
                     if is_host_specifier(&path) {
@@ -772,6 +867,27 @@ impl Compiler {
                 crate::ast::ImportKind::Default { .. }
                 | crate::ast::ImportKind::Simple { .. } => {}
             }
+        }
+    }
+
+    pub(super) fn resolve_source_type_alias(&self, name: &str) -> String {
+        let normalized = Self::strip_global_namespace_prefix(name);
+        let trimmed = normalized.trim();
+        let (head, tail) = trimmed
+            .split_once('.')
+            .map(|(head, tail)| (head.trim(), Some(tail.trim())))
+            .unwrap_or((trimmed, None));
+        let (alias_head, suffix) = head
+            .strip_suffix("()")
+            .map(|bare| (bare.trim_end(), "()"))
+            .unwrap_or((head, ""));
+        let key = self.canon(alias_head);
+        let Some(target) = self.source_type_aliases.get(&key) else {
+            return trimmed.to_string();
+        };
+        match tail {
+            Some(tail) if !tail.is_empty() => format!("{}{}.{}", target, suffix, tail),
+            _ => format!("{}{}", target, suffix),
         }
     }
 
@@ -1030,7 +1146,8 @@ impl Compiler {
     }
 
     pub(crate) fn reflection_runtime_type_name(&self, type_name: &str, parent_runtime_name: Option<&str>) -> String {
-        let trimmed = type_name.trim().trim_end_matches('?').trim();
+        let global_stripped = Self::strip_global_namespace_prefix(type_name);
+        let trimmed = global_stripped.trim().trim_end_matches('?').trim();
         let mut without_generics = String::with_capacity(trimmed.len());
         let mut depth = 0usize;
         for ch in trimmed.chars() {
@@ -1948,6 +2065,194 @@ impl Compiler {
             || normalized.ends_with(".string")
     }
 
+    fn vb_fixed_string_len(type_hint: &str) -> Option<i32> {
+        let normalized = Self::normalize_type_hint(type_hint);
+        let (base, len) = normalized.split_once('*')?;
+        let base = base.trim();
+        if base != "string" && base != "system.string" && !base.ends_with(".string") {
+            return None;
+        }
+        len.trim().parse::<i32>().ok().filter(|len| *len >= 0)
+    }
+
+    fn emit_vb_fixed_string_adjust_from_stack(&mut self, target_len: i32, align_right: bool) {
+        let line = self.line;
+        let value_slot = self.define_local("__vb_fixed_string_value");
+        let to_string = self.import("ecma:string", "String");
+        let pad_idx = self.import("ecma:string", if align_right { "padStart" } else { "padEnd" });
+
+        self.emit_host_call(to_string, 1);
+        self.emit_u16(Op::LOCAL_SET, value_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+    common::strings::emit_length(self.chunk(), line);
+        self.emit_const(Value::I32(target_len));
+        self.emit(Op::DYN_GT);
+        let no_truncate = self.emit_jump(Op::BR_IF_FALSE);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.emit(Op::I32_CONST_0);
+        self.emit_const(Value::I32(target_len));
+    common::strings::emit_substring(self.chunk(), line);
+        self.emit_u16(Op::LOCAL_SET, value_slot);
+        self.emit(Op::DROP);
+        self.patch_jump(no_truncate);
+
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.emit_const(Value::I32(target_len));
+        self.emit_const(Value::String(Arc::from(" ")));
+        self.emit_host_call(pad_idx, 3);
+    }
+
+    fn compile_vb_fixed_string_stmt(
+        &mut self,
+        target: &Expression,
+        value: &Expression,
+        align_right: bool,
+    ) -> Result<(), String> {
+        let ExprKind::Ident(name) = &target.kind else {
+            self.compile_expr(value)?;
+            self.emit(Op::DROP);
+            return Ok(());
+        };
+        let Some(type_hint) = self.lookup_var_type_hint(name) else {
+            self.compile_expr(value)?;
+            self.compile_assign_target(target)?;
+            return Ok(());
+        };
+        let Some(target_len) = Self::vb_fixed_string_len(type_hint) else {
+            self.compile_expr(value)?;
+            self.compile_assign_target(target)?;
+            return Ok(());
+        };
+
+        self.compile_expr(value)?;
+        self.emit_vb_fixed_string_adjust_from_stack(target_len, align_right);
+        self.compile_assign_target(target)
+    }
+
+    fn compile_vb_mid_stmt(
+        &mut self,
+        target: &Expression,
+        start: &Expression,
+        count: &Expression,
+        value: &Expression,
+    ) -> Result<(), String> {
+        let line = self.line;
+        let target_slot = self.define_local("__vb_mid_target");
+        let start_slot = self.define_local("__vb_mid_start");
+        let count_slot = self.define_local("__vb_mid_count");
+        let value_slot = self.define_local("__vb_mid_value");
+        let prefix_slot = self.define_local("__vb_mid_prefix");
+        let replace_slot = self.define_local("__vb_mid_replace");
+        let to_string = self.import("ecma:string", "String");
+
+        self.compile_expr(target)?;
+        self.emit_u16(Op::LOCAL_SET, target_slot);
+        self.emit(Op::DROP);
+
+        self.compile_expr(start)?;
+    common::convert::emit_to_int(self.chunk(), line);
+        self.emit_const(Value::I32(1));
+        self.emit(Op::I32_SUB);
+        self.emit_u16(Op::LOCAL_SET, start_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, start_slot);
+        self.emit(Op::I32_CONST_0);
+        self.emit(Op::DYN_GE);
+        let start_ok = self.emit_jump(Op::BR_IF_TRUE);
+        self.emit(Op::I32_CONST_0);
+        self.emit_u16(Op::LOCAL_SET, start_slot);
+        self.emit(Op::DROP);
+        self.patch_jump(start_ok);
+
+        self.compile_expr(value)?;
+        self.emit_host_call(to_string, 1);
+        self.emit_u16(Op::LOCAL_SET, value_slot);
+        self.emit(Op::DROP);
+
+        self.compile_expr(count)?;
+    common::convert::emit_to_int(self.chunk(), line);
+        self.emit_u16(Op::LOCAL_SET, count_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, count_slot);
+        self.emit_const(Value::I32(0));
+        self.emit(Op::DYN_GE);
+        let use_explicit_count = self.emit_jump(Op::BR_IF_TRUE);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        common::strings::emit_length(self.chunk(), line);
+        self.emit_u16(Op::LOCAL_SET, replace_slot);
+        self.emit(Op::DROP);
+        let count_done = self.emit_jump(Op::BR);
+        self.patch_jump(use_explicit_count);
+        self.emit_u16(Op::LOCAL_GET, count_slot);
+        self.emit_u16(Op::LOCAL_SET, replace_slot);
+        self.emit(Op::DROP);
+        self.patch_jump(count_done);
+
+        self.emit_u16(Op::LOCAL_GET, target_slot);
+        self.emit(Op::I32_CONST_0);
+        self.emit_u16(Op::LOCAL_GET, start_slot);
+        common::strings::emit_substring(self.chunk(), line);
+        self.emit_u16(Op::LOCAL_SET, prefix_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, prefix_slot);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.emit(Op::DYN_ADD);
+        self.emit_u16(Op::LOCAL_GET, target_slot);
+        self.emit_u16(Op::LOCAL_GET, start_slot);
+        self.emit_u16(Op::LOCAL_GET, replace_slot);
+        self.emit(Op::I32_ADD);
+        self.emit_u16(Op::LOCAL_GET, target_slot);
+        common::strings::emit_length(self.chunk(), line);
+        common::strings::emit_substring(self.chunk(), line);
+        self.emit(Op::DYN_ADD);
+
+        if let ExprKind::Ident(name) = &target.kind {
+            if let Some(type_hint) = self.lookup_var_type_hint(name) {
+                if let Some(target_len) = Self::vb_fixed_string_len(type_hint) {
+                    self.emit_vb_fixed_string_adjust_from_stack(target_len, false);
+                }
+            }
+        }
+
+        self.compile_assign_target(target)
+    }
+
+    pub(super) fn is_collection_like_type_hint(type_hint: &str) -> bool {
+        let normalized = Self::normalize_type_hint(type_hint);
+        let bare = normalized
+            .split('<')
+            .next()
+            .unwrap_or(normalized.as_str())
+            .trim_end_matches('?');
+        let terminal = bare.rsplit('.').next().unwrap_or(bare);
+        Self::is_string_type_hint(type_hint)
+            || matches!(
+                terminal,
+                "list"
+                    | "arraylist"
+                    | "dictionary"
+                    | "queue"
+                    | "stack"
+                    | "hashset"
+                    | "set"
+                    | "collection"
+                    | "icollection"
+                    | "readonlycollection"
+                    | "enumerable"
+                    | "ienumerable"
+                    | "readonlylist"
+                    | "ilist"
+                    | "array"
+            )
+            || bare.ends_with("[]")
+            || normalized.ends_with("()")
+    }
+
     fn is_dictionary_type_hint(type_hint: &str) -> bool {
         let normalized = Self::normalize_type_hint(type_hint);
         normalized.contains("dictionary") || normalized.ends_with("hashtable")
@@ -2199,7 +2504,9 @@ impl Compiler {
                 self.emit(Op::NULL);
             }
         } else {
-            if let Some(type_name) = decl
+            if decl.type_hint.as_deref().and_then(Self::vb_fixed_string_len).is_some() {
+                self.emit_const(Value::String(Arc::from("")));
+            } else if let Some(type_name) = decl
                 .type_hint
                 .as_deref()
                 .and_then(|type_hint| self.user_value_type_name_from_hint(type_hint))
@@ -2208,15 +2515,19 @@ impl Compiler {
                 self.emit_u16(Op::GLOBAL_GET, idx);
                 self.emit_u8(Op::CALL_REF, 0);
                 return Ok(());
-            }
-            match decl.type_hint.as_deref().map(|s| s.to_lowercase()).as_deref() {
-                Some("integer") | Some("int") | Some("longint") | Some("real") | Some("double") | Some("float") => {
-                    self.emit(Op::F64_CONST_0);
+            } else {
+                match decl.type_hint.as_deref().map(|s| s.to_lowercase()).as_deref() {
+                    Some("integer") | Some("int") | Some("longint") | Some("real") | Some("double") | Some("float") => {
+                        self.emit(Op::F64_CONST_0);
+                    }
+                    Some("boolean") | Some("bool") => self.emit(Op::FALSE),
+                    Some("string") => self.emit_const(Value::String(Arc::from(""))),
+                    _ => self.emit(Op::NULL),
                 }
-                Some("boolean") | Some("bool") => self.emit(Op::FALSE),
-                Some("string") => self.emit_const(Value::String(Arc::from(""))),
-                _ => self.emit(Op::NULL),
             }
+        }
+        if let Some(target_len) = decl.type_hint.as_deref().and_then(Self::vb_fixed_string_len) {
+            self.emit_vb_fixed_string_adjust_from_stack(target_len, false);
         }
         Ok(())
     }
@@ -2236,6 +2547,28 @@ impl Compiler {
             current = pending.parent.as_deref();
         }
         None
+    }
+
+    pub(super) fn prefers_type_qualified_member_lookup(&self, type_name: &str, member_name: &str) -> bool {
+        if self.enum_member_ordinal(type_name, member_name).is_some() {
+            return true;
+        }
+
+        let type_canon = self.canon(type_name);
+        let Some(pending) = self.pending_classes.get(&type_canon).or_else(|| {
+            self.pending_classes
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(type_name) || name.eq_ignore_ascii_case(&type_canon))
+                .map(|(_, pending)| pending)
+        }) else {
+            return false;
+        };
+
+        let member_canon = self.canon(member_name);
+        pending.static_fields.iter().any(|name| name == &member_canon)
+            || pending.static_method_names.iter().any(|name| self.canon(name) == member_canon)
+            || pending.static_method_overloads.contains_key(&member_canon)
+            || pending.nested_types.iter().any(|name| self.canon(name) == member_canon)
     }
 
     fn expr_terminal_type_name(expr: &Expression) -> Option<String> {
@@ -2348,7 +2681,18 @@ impl Compiler {
             ExprKind::Index { object, .. } => self
                 .infer_expr_type_hint(object)
                 .and_then(|type_hint| type_hint.trim().trim_end_matches('?').trim().strip_suffix("()").map(str::to_string)),
-            ExprKind::Member { object, .. } => {
+            ExprKind::Member { object, field, .. } => {
+                if let Some(receiver_type) = self.infer_expr_type_hint(object) {
+                    if let Some(class_name) = self.resolve_pending_class_name_for_type_hint(&receiver_type) {
+                        if let Some(type_hint) = self
+                            .pending_classes
+                            .get(class_name.as_str())
+                            .and_then(|pending| pending.instance_field_types.get(&self.canon(field)))
+                        {
+                            return Some(type_hint.clone());
+                        }
+                    }
+                }
                 let enum_type = Self::expr_terminal_type_name(object)?;
                 self.enum_value_names
                     .contains_key(&self.canon(&enum_type))
@@ -2370,15 +2714,28 @@ impl Compiler {
     }
 
     fn user_value_type_name_from_hint(&self, type_hint: &str) -> Option<String> {
-        let trimmed = type_hint.trim().trim_end_matches('?').trim();
-        let canonical = self.canon(trimmed);
-        if self.pending_classes.get(&canonical).is_some_and(|pending| pending.is_value_type) {
-            return Some(canonical);
+        let resolved = self.resolve_source_type_alias(type_hint);
+        let trimmed = resolved.trim().trim_end_matches('?').trim();
+        for candidate in [
+            Some(trimmed),
+            trimmed.rsplit('.').next().filter(|segment| *segment != trimmed),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let canonical = self.canon(candidate);
+            if self.pending_classes.get(&canonical).is_some_and(|pending| pending.is_value_type) {
+                return Some(canonical);
+            }
+            if let Some((name, _)) = self
+                .pending_classes
+                .iter()
+                .find(|(name, pending)| pending.is_value_type && name.eq_ignore_ascii_case(candidate))
+            {
+                return Some(name.clone());
+            }
         }
-        self.pending_classes
-            .iter()
-            .find(|(name, pending)| pending.is_value_type && name.eq_ignore_ascii_case(trimmed))
-            .map(|(name, _)| name.clone())
+        None
     }
 
     fn expr_user_value_type_name(&self, expr: &Expression) -> Option<String> {
@@ -2917,12 +3274,21 @@ impl Compiler {
 
     fn flatten_member_chain(&self, expr: &Expression) -> Vec<String> {
         match &expr.kind {
-            ExprKind::Ident(name) => vec![name.clone()],
+            ExprKind::Ident(name) => Self::strip_global_namespace_prefix(name)
+                .replace("::", ".")
+                .split('.')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .map(ToString::to_string)
+                .collect(),
             ExprKind::This => vec![self.profile.self_keyword.clone()],
             ExprKind::Super => vec![self.profile.base_keyword.clone().unwrap_or_else(|| "super".into())],
             ExprKind::Member { object, field, .. } => {
                 let mut parts = self.flatten_member_chain(object);
                 parts.push(field.clone());
+                if parts.first().is_some_and(|part| part.eq_ignore_ascii_case("global")) {
+                    parts.remove(0);
+                }
                 parts
             }
             _ => Vec::new(),
@@ -2945,6 +3311,18 @@ impl Compiler {
             // ── Expression statement ────────────────────────────────────
             StmtKind::Expr(expr) => {
                 match &expr.kind {
+                    ExprKind::Call { callee, args, .. }
+                        if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vb_lset_stmt") && args.len() == 2 => {
+                        return self.compile_vb_fixed_string_stmt(&args[0].value, &args[1].value, false);
+                    }
+                    ExprKind::Call { callee, args, .. }
+                        if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vb_rset_stmt") && args.len() == 2 => {
+                        return self.compile_vb_fixed_string_stmt(&args[0].value, &args[1].value, true);
+                    }
+                    ExprKind::Call { callee, args, .. }
+                        if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vb_mid_stmt") && args.len() == 4 => {
+                        return self.compile_vb_mid_stmt(&args[0].value, &args[1].value, &args[2].value, &args[3].value);
+                    }
                     // Bare identifier that's a known function → call with 0 args
                     ExprKind::Ident(name) if self.defined_functions.contains(name.as_str()) => {
                         let saved_js_this = self.save_js_this("__js_stmt_prev_this");
@@ -3080,6 +3458,15 @@ impl Compiler {
                     }
                 } else {
                     self.compile_expr(value)?;
+                    if let [target] = targets.as_slice() {
+                        if let ExprKind::Ident(name) = &target.kind {
+                            if let Some(type_hint) = self.lookup_var_type_hint(name) {
+                                if let Some(target_len) = Self::vb_fixed_string_len(type_hint) {
+                                    self.emit_vb_fixed_string_adjust_from_stack(target_len, false);
+                                }
+                            }
+                        }
+                    }
                     if let [target] = targets.as_slice() {
                         if let ExprKind::Ident(name) = &target.kind {
                             let type_hint = self.lookup_var_type_hint(name).map(str::to_string);
@@ -3973,6 +4360,8 @@ impl Compiler {
             // - A namespace struct is built so qualified `Module.Member` works too
             StmtKind::ModuleDecl { name, members, .. } => {
                 let module_name = self.canon(name);
+                self.defined_classes.insert(module_name.clone());
+                self.register_module_static_container(&module_name, members);
                 let mut member_names: Vec<String> = Vec::new();
 
                 // First pass: compile all members as globals + collect names
@@ -3981,7 +4370,16 @@ impl Compiler {
                         ClassMember::Method(stmt) => {
                             if let StmtKind::FunctionDecl { name: mname, .. } = &stmt.kind {
                                 let mn = self.canon(mname);
+                                let saved_class = self.current_class.clone();
+                                let saved_implicit_self = self.current_class_implicit_self;
+                                let saved_member_static = self.current_member_is_static;
+                                self.current_class = Some(module_name.clone());
+                                self.current_class_implicit_self = false;
+                                self.current_member_is_static = true;
                                 self.compile_stmt(stmt)?;
+                                self.current_class = saved_class;
+                                self.current_class_implicit_self = saved_implicit_self;
+                                self.current_member_is_static = saved_member_static;
                                 member_names.push(mn);
                             }
                         }
@@ -4033,9 +4431,17 @@ impl Compiler {
                             }
                         }
                         ClassMember::NestedType(stmt) => {
-                            // Nested class — gets its own global; also attach to module
-                            if let StmtKind::ClassDecl { name: cname, .. } = &stmt.kind {
-                                let cn = self.canon(cname);
+                            // Nested types get their own globals; attach them to the
+                            // module object so `Module.Type.Member` resolves through the
+                            // same shared namespace path used by classes.
+                            if let Some(cn) = match &stmt.kind {
+                                StmtKind::ClassDecl { name: cname, .. }
+                                | StmtKind::StructDecl { name: cname, .. }
+                                | StmtKind::EnumDecl { name: cname, .. }
+                                | StmtKind::InterfaceDecl { name: cname, .. }
+                                | StmtKind::ModuleDecl { name: cname, .. } => Some(self.canon(cname)),
+                                _ => None,
+                            } {
                                 member_names.push(cn);
                             }
                             self.compile_stmt(stmt)?;
@@ -4053,7 +4459,16 @@ impl Compiler {
                                 is_generator: false,
                                 is_sub: true,
                             });
+                            let saved_class = self.current_class.clone();
+                            let saved_implicit_self = self.current_class_implicit_self;
+                            let saved_member_static = self.current_member_is_static;
+                            self.current_class = Some(module_name.clone());
+                            self.current_class_implicit_self = false;
+                            self.current_member_is_static = true;
                             self.compile_stmt(&ctor_stmt)?;
+                            self.current_class = saved_class;
+                            self.current_class_implicit_self = saved_implicit_self;
+                            self.current_member_is_static = saved_member_static;
                             member_names.push(self.canon(&self.profile.constructor_name));
                         }
                         _ => {}
@@ -4083,8 +4498,14 @@ impl Compiler {
             // (matches .NET behavior — within the same compilation unit, bare type access
             // works without import). Also builds namespace struct for qualified access.
             StmtKind::NamespaceDecl { name, body } => {
-                let ns_name = self.canon(name);
+                let local_ns_name = self.canon(name);
+                let ns_name = match self.current_namespace.as_deref() {
+                    Some(prefix) if !prefix.is_empty() => format!("{prefix}.{local_ns_name}"),
+                    _ => local_ns_name,
+                };
                 let mut member_names: Vec<(String, String, bool)> = Vec::new();
+                let prev_namespace = self.current_namespace.clone();
+                self.current_namespace = Some(ns_name.clone());
                 for s in body {
                     // Track top-level type/function names declared in this namespace
                     match &s.kind {
@@ -4112,6 +4533,7 @@ impl Compiler {
                     }
                     self.compile_stmt(s)?;
                 }
+                self.current_namespace = prev_namespace;
 
                 for (member_name, qualified_name, is_type_like) in &member_names {
                     let source_idx = self.str_const(member_name);
@@ -4138,9 +4560,9 @@ impl Compiler {
                 let ns_idx = self.str_const(&ns_name);
                 self.emit_u16(Op::GLOBAL_SET, ns_idx);
                 self.emit(Op::DROP);
-                self.defined_globals.insert(ns_name);
+                self.defined_globals.insert(ns_name.clone());
 
-                let namespace_parts: Vec<&str> = name.split('.').map(|part| part.trim()).filter(|part| !part.is_empty()).collect();
+                let namespace_parts: Vec<&str> = ns_name.split('.').map(|part| part.trim()).filter(|part| !part.is_empty()).collect();
                 if namespace_parts.len() > 1 {
                     for depth in 1..namespace_parts.len() {
                         let parent_name = self.canon(&namespace_parts[..depth].join("."));
@@ -7474,6 +7896,17 @@ impl Compiler {
                     common::strings::emit_length(self.chunk(), line);
                     self.emit_u16(Op::LOCAL_GET, n_slot);
                     self.emit(Op::I32_SUB);
+                    let start_slot = self.define_local("__right_start");
+                    self.emit_u16(Op::LOCAL_SET, start_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, start_slot);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit(Op::DYN_LT);
+                    let keep_start = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit(Op::I32_CONST_0);
+                    let after_start = self.emit_jump(Op::BR);
+                    self.patch_jump(keep_start);
+                    self.emit_u16(Op::LOCAL_GET, start_slot);
+                    self.patch_jump(after_start);
                     // end = len(s)
                     self.emit_u16(Op::LOCAL_GET, s_slot);
                     common::strings::emit_length(self.chunk(), line);
@@ -7571,50 +8004,553 @@ impl Compiler {
                     self.emit_const(Value::I32(1));
                     self.emit(Op::I32_ADD);
                 } else if args.len() == 3 {
-                    self.compile_expr(args[1])?;
+                    let start_slot = self.define_local("__instr_start");
                     self.compile_expr(args[0])?;
                     common::convert::emit_to_int(self.chunk(), line);
-                    self.emit_const(Value::I32(1));
-                    self.emit(Op::I32_SUB);
+                    self.emit_u16(Op::LOCAL_SET, start_slot);
+                    self.emit(Op::DROP);
+
+                    self.compile_expr(args[1])?;
+                    self.emit_u16(Op::LOCAL_GET, start_slot);
                     self.emit_const(Value::I32(0x7FFF_FFFF));
                     common::strings::emit_substring(self.chunk(), line);
                     self.compile_expr(args[2])?;
                     common::strings::emit_index_of(self.chunk(), line);
+                    let idx_slot = self.define_local("__instr_idx");
+                    self.emit_u16(Op::LOCAL_SET, idx_slot);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, idx_slot);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit(Op::DYN_LT);
+                    let found = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit(Op::I32_CONST_0);
+                    let done = self.emit_jump(Op::BR);
+                    self.patch_jump(found);
+                    self.emit_u16(Op::LOCAL_GET, idx_slot);
+                    self.emit_u16(Op::LOCAL_GET, start_slot);
+                    self.emit(Op::I32_ADD);
                     self.emit_const(Value::I32(1));
                     self.emit(Op::I32_ADD);
+                    self.patch_jump(done);
+                } else {
+                    self.emit(Op::NULL);
+                }
+            }
+            "strcomp" => {
+                if args.len() >= 2 {
+                    let left_slot = self.define_local("__strcomp_left");
+                    let right_slot = self.define_local("__strcomp_right");
+                    let text_slot = self.define_local("__strcomp_text");
+
+                    self.compile_expr(args[0])?;
+                    self.emit_u16(Op::LOCAL_SET, left_slot);
+                    self.emit(Op::DROP);
+                    self.compile_expr(args[1])?;
+                    self.emit_u16(Op::LOCAL_SET, right_slot);
+                    self.emit(Op::DROP);
+                    if let Some(compare_arg) = args.get(2) {
+                        self.compile_expr(compare_arg)?;
+                        self.emit(Op::DYN_TO_BOOL);
+                    } else {
+                        self.emit(Op::FALSE);
+                    }
+                    self.emit_u16(Op::LOCAL_SET, text_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, text_slot);
+                    let binary_compare = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit_u16(Op::LOCAL_GET, left_slot);
+                    common::strings::emit_to_lower(self.chunk(), line);
+                    self.emit_u16(Op::LOCAL_GET, right_slot);
+                    common::strings::emit_to_lower(self.chunk(), line);
+                    self.emit(Op::STR_COMPARE);
+                    let done = self.emit_jump(Op::BR);
+                    self.patch_jump(binary_compare);
+                    self.emit_u16(Op::LOCAL_GET, left_slot);
+                    self.emit_u16(Op::LOCAL_GET, right_slot);
+                    self.emit(Op::STR_COMPARE);
+                    self.patch_jump(done);
                 } else {
                     self.emit(Op::NULL);
                 }
             }
             "instrrev" => {
                 if args.len() >= 2 {
-                    self.compile_expr(args[0])?;
-                    self.compile_expr(args[1])?;
-                    common::strings::emit_last_index_of(self.chunk(), line);
-                    self.emit_const(Value::I32(1));
-                    self.emit(Op::I32_ADD);
+                    if args.len() >= 3 {
+                        let source_slot = self.define_local("__instrrev_source");
+                        let start_slot = self.define_local("__instrrev_start");
+                        self.compile_expr(args[0])?;
+                        self.emit_u16(Op::LOCAL_SET, source_slot);
+                        self.emit(Op::DROP);
+                        self.compile_expr(args[2])?;
+                        common::convert::emit_to_int(self.chunk(), line);
+                        self.emit_u16(Op::LOCAL_SET, start_slot);
+                        self.emit(Op::DROP);
+
+                        self.emit_u16(Op::LOCAL_GET, source_slot);
+                        self.emit(Op::I32_CONST_0);
+                        self.emit_u16(Op::LOCAL_GET, start_slot);
+                        common::strings::emit_substring(self.chunk(), line);
+                        self.compile_expr(args[1])?;
+                        common::strings::emit_last_index_of(self.chunk(), line);
+                        let idx_slot = self.define_local("__instrrev_idx");
+                        self.emit_u16(Op::LOCAL_SET, idx_slot);
+                        self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, idx_slot);
+                        self.emit(Op::I32_CONST_0);
+                        self.emit(Op::DYN_LT);
+                        let found = self.emit_jump(Op::BR_IF_FALSE);
+                        self.emit(Op::I32_CONST_0);
+                        let done = self.emit_jump(Op::BR);
+                        self.patch_jump(found);
+                        self.emit_u16(Op::LOCAL_GET, idx_slot);
+                        self.emit_const(Value::I32(1));
+                        self.emit(Op::I32_ADD);
+                        self.patch_jump(done);
+                    } else {
+                        self.compile_expr(args[0])?;
+                        self.compile_expr(args[1])?;
+                        common::strings::emit_last_index_of(self.chunk(), line);
+                        self.emit_const(Value::I32(1));
+                        self.emit(Op::I32_ADD);
+                    }
                 } else {
                     self.emit(Op::NULL);
                 }
             }
             "replace" => {
                 if args.len() >= 3 {
+                    let source_slot = self.define_local("__vb_replace_source");
+                    let find_slot = self.define_local("__vb_replace_find");
+                    let repl_slot = self.define_local("__vb_replace_repl");
+                    let start_slot = self.define_local("__vb_replace_start");
+                    let count_slot = self.define_local("__vb_replace_count");
+                    let text_slot = self.define_local("__vb_replace_text");
+                    let result_slot = self.define_local("__vb_replace_result");
+                    let remaining_slot = self.define_local("__vb_replace_remaining");
+                    let find_cmp_slot = self.define_local("__vb_replace_find_cmp");
+                    let current_cmp_slot = self.define_local("__vb_replace_current_cmp");
+                    let find_len_slot = self.define_local("__vb_replace_find_len");
+                    let idx_slot = self.define_local("__vb_replace_idx");
+                    let replaced_slot = self.define_local("__vb_replace_done");
+                    let prefix_slot = self.define_local("__vb_replace_prefix_end");
+
                     self.compile_expr(args[0])?;
+                    self.emit_u16(Op::LOCAL_SET, source_slot);
+                    self.emit(Op::DROP);
+
                     self.compile_expr(args[1])?;
+                    self.emit_u16(Op::LOCAL_SET, find_slot);
+                    self.emit(Op::DROP);
+
                     self.compile_expr(args[2])?;
-                    common::strings::emit_replace(self.chunk(), line);
+                    self.emit_u16(Op::LOCAL_SET, repl_slot);
+                    self.emit(Op::DROP);
+
+                    if let Some(start_arg) = args.get(3) {
+                        self.compile_expr(start_arg)?;
+                        common::convert::emit_to_int(self.chunk(), line);
+                    } else {
+                        self.emit_const(Value::I32(0));
+                    }
+                    self.emit_u16(Op::LOCAL_SET, start_slot);
+                    self.emit(Op::DROP);
+
+                    if let Some(count_arg) = args.get(4) {
+                        self.compile_expr(count_arg)?;
+                        common::convert::emit_to_int(self.chunk(), line);
+                    } else if args.get(3).is_some() {
+                        self.emit_const(Value::I32(1));
+                    } else {
+                        self.emit_const(Value::I32(-1));
+                    }
+                    self.emit_u16(Op::LOCAL_SET, count_slot);
+                    self.emit(Op::DROP);
+
+                    if let Some(compare_arg) = args.get(5) {
+                        self.compile_expr(compare_arg)?;
+                        self.emit(Op::DYN_TO_BOOL);
+                    } else {
+                        self.emit(Op::FALSE);
+                    }
+                    self.emit_u16(Op::LOCAL_SET, text_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, find_slot);
+                    common::strings::emit_length(self.chunk(), line);
+                    self.emit_u16(Op::LOCAL_SET, find_len_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, text_slot);
+                    let use_binary_find = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit_u16(Op::LOCAL_GET, find_slot);
+                    common::strings::emit_to_lower(self.chunk(), line);
+                    let find_cmp_done = self.emit_jump(Op::BR);
+                    self.patch_jump(use_binary_find);
+                    self.emit_u16(Op::LOCAL_GET, find_slot);
+                    self.patch_jump(find_cmp_done);
+                    self.emit_u16(Op::LOCAL_SET, find_cmp_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, start_slot);
+                    self.emit_u16(Op::LOCAL_SET, prefix_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, prefix_slot);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit(Op::DYN_GE);
+                    let prefix_ok = self.emit_jump(Op::BR_IF_TRUE);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit_u16(Op::LOCAL_SET, prefix_slot);
+                    self.emit(Op::DROP);
+                    self.patch_jump(prefix_ok);
+
+                    self.emit_u16(Op::LOCAL_GET, source_slot);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit_u16(Op::LOCAL_GET, prefix_slot);
+                    common::strings::emit_substring(self.chunk(), line);
+                    self.emit_u16(Op::LOCAL_SET, result_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, source_slot);
+                    if args.get(3).is_some() && args.get(4).is_none() {
+                        self.emit_u16(Op::LOCAL_GET, start_slot);
+                        self.emit_const(Value::I32(1));
+                        self.emit(Op::I32_SUB);
+                    } else {
+                        self.emit_u16(Op::LOCAL_GET, prefix_slot);
+                    }
+                    self.emit_u16(Op::LOCAL_GET, source_slot);
+                    common::strings::emit_length(self.chunk(), line);
+                    common::strings::emit_substring(self.chunk(), line);
+                    self.emit_u16(Op::LOCAL_SET, remaining_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit(Op::I32_CONST_0);
+                    self.emit_u16(Op::LOCAL_SET, replaced_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, find_len_slot);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit(Op::DYN_EQ);
+                    let nonempty_find = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit_u16(Op::LOCAL_GET, source_slot);
+                    let done_empty_find = self.emit_jump(Op::BR);
+                    self.patch_jump(nonempty_find);
+
+                    let loop_top = self.current_offset();
+                    let mut exit_patches = Vec::new();
+
+                    self.emit_u16(Op::LOCAL_GET, count_slot);
+                    self.emit_const(Value::I32(0));
+                    self.emit(Op::DYN_GE);
+                    let unlimited_count = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit_u16(Op::LOCAL_GET, replaced_slot);
+                    self.emit_u16(Op::LOCAL_GET, count_slot);
+                    self.emit(Op::DYN_GE);
+                    exit_patches.push(self.emit_jump(Op::BR_IF_TRUE));
+                    self.patch_jump(unlimited_count);
+
+                    self.emit_u16(Op::LOCAL_GET, text_slot);
+                    let binary_current = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit_u16(Op::LOCAL_GET, remaining_slot);
+                    common::strings::emit_to_lower(self.chunk(), line);
+                    let current_cmp_done = self.emit_jump(Op::BR);
+                    self.patch_jump(binary_current);
+                    self.emit_u16(Op::LOCAL_GET, remaining_slot);
+                    self.patch_jump(current_cmp_done);
+                    self.emit_u16(Op::LOCAL_SET, current_cmp_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, current_cmp_slot);
+                    self.emit_u16(Op::LOCAL_GET, find_cmp_slot);
+                    common::strings::emit_index_of(self.chunk(), line);
+                    self.emit_u16(Op::LOCAL_SET, idx_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, idx_slot);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit(Op::DYN_LT);
+                    exit_patches.push(self.emit_jump(Op::BR_IF_TRUE));
+
+                    self.emit_u16(Op::LOCAL_GET, result_slot);
+                    self.emit_u16(Op::LOCAL_GET, remaining_slot);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit_u16(Op::LOCAL_GET, idx_slot);
+                    common::strings::emit_substring(self.chunk(), line);
+                    self.emit(Op::DYN_ADD);
+                    self.emit_u16(Op::LOCAL_GET, repl_slot);
+                    self.emit(Op::DYN_ADD);
+                    self.emit_u16(Op::LOCAL_SET, result_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, remaining_slot);
+                    self.emit_u16(Op::LOCAL_GET, idx_slot);
+                    self.emit_u16(Op::LOCAL_GET, find_len_slot);
+                    self.emit(Op::I32_ADD);
+                    self.emit_u16(Op::LOCAL_GET, remaining_slot);
+                    common::strings::emit_length(self.chunk(), line);
+                    common::strings::emit_substring(self.chunk(), line);
+                    self.emit_u16(Op::LOCAL_SET, remaining_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, replaced_slot);
+                    self.emit_const(Value::I32(1));
+                    self.emit(Op::I32_ADD);
+                    self.emit_u16(Op::LOCAL_SET, replaced_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_loop(loop_top);
+                    for exit in exit_patches {
+                        self.patch_jump(exit);
+                    }
+
+                    self.emit_u16(Op::LOCAL_GET, result_slot);
+                    self.emit_u16(Op::LOCAL_GET, remaining_slot);
+                    self.emit(Op::DYN_ADD);
+                    self.patch_jump(done_empty_find);
+                } else {
+                    self.emit(Op::NULL);
+                }
+            }
+            "filter" => {
+                if args.len() >= 2 {
+                    let arr_slot = self.define_local("__vb_filter_arr");
+                    let match_slot = self.define_local("__vb_filter_match");
+                    let include_slot = self.define_local("__vb_filter_include");
+                    let text_slot = self.define_local("__vb_filter_text");
+                    let result_slot = self.define_local("__vb_filter_result");
+                    let idx_slot = self.define_local("__vb_filter_idx");
+                    let elem_slot = self.define_local("__vb_filter_elem");
+
+                    self.compile_expr(args[0])?;
+                    self.emit_u16(Op::LOCAL_SET, arr_slot);
+                    self.emit(Op::DROP);
+
+                    self.compile_expr(args[1])?;
+                    self.emit_u16(Op::LOCAL_SET, match_slot);
+                    self.emit(Op::DROP);
+
+                    if let Some(include_arg) = args.get(2) {
+                        self.compile_expr(include_arg)?;
+                    } else {
+                        self.emit(Op::TRUE);
+                    }
+                    self.emit(Op::DYN_TO_BOOL);
+                    self.emit_u16(Op::LOCAL_SET, include_slot);
+                    self.emit(Op::DROP);
+
+                    if let Some(compare_arg) = args.get(3) {
+                        self.compile_expr(compare_arg)?;
+                        self.emit(Op::DYN_TO_BOOL);
+                    } else {
+                        self.emit(Op::FALSE);
+                    }
+                    self.emit_u16(Op::LOCAL_SET, text_slot);
+                    self.emit(Op::DROP);
+
+                    common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+                    self.emit_u16(Op::LOCAL_SET, result_slot);
+                    self.emit(Op::DROP);
+
+                    let state = common::loops::emit_for_in_start(&mut self.chunks, self.current, arr_slot, idx_slot, line);
+                    self.emit_u16(Op::LOCAL_SET, elem_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, text_slot);
+                    let binary_compare = self.emit_jump(Op::BR_IF_FALSE);
+
+                    self.emit_u16(Op::LOCAL_GET, elem_slot);
+                    common::strings::emit_to_lower(self.chunk(), line);
+                    self.emit_u16(Op::LOCAL_GET, match_slot);
+                    common::strings::emit_to_lower(self.chunk(), line);
+                    common::strings::emit_index_of(self.chunk(), line);
+                    let after_compare = self.emit_jump(Op::BR);
+
+                    self.patch_jump(binary_compare);
+                    self.emit_u16(Op::LOCAL_GET, elem_slot);
+                    self.emit_u16(Op::LOCAL_GET, match_slot);
+                    common::strings::emit_index_of(self.chunk(), line);
+                    self.patch_jump(after_compare);
+
+                    self.emit(Op::I32_CONST_0);
+                    self.emit(Op::DYN_GE);
+
+                    self.emit_u16(Op::LOCAL_GET, include_slot);
+                    self.emit(Op::DYN_EQ);
+
+                    let if_block = self.chunks[self.current].emit_block(line);
+                    self.emit(Op::DYN_NOT);
+                    self.chunks[self.current].emit_br_if(0, line);
+
+                    self.emit_u16(Op::LOCAL_GET, result_slot);
+                    self.emit_u16(Op::LOCAL_GET, elem_slot);
+                    common::collections::emit_push(&mut self.chunks, self.current, line);
+                    self.emit(Op::DROP);
+
+                    self.chunks[self.current].emit_end(line);
+                    self.chunks[self.current].patch_block(if_block);
+
+                    common::loops::emit_for_in_end(&mut self.chunks, self.current, idx_slot, state, line);
+                    self.emit_u16(Op::LOCAL_GET, result_slot);
                 } else {
                     self.emit(Op::NULL);
                 }
             }
             "split" => {
+                let source_slot = self.define_local("__vb_split_source");
+                let delim_slot = self.define_local("__vb_split_delim");
+                let delim_cmp_slot = self.define_local("__vb_split_delim_cmp");
+                let limit_slot = self.define_local("__vb_split_limit");
+                let text_slot = self.define_local("__vb_split_text");
+                let result_slot = self.define_local("__vb_split_result");
+                let count_slot = self.define_local("__vb_split_count");
+                let remaining_slot = self.define_local("__vb_split_remaining");
+                let cmp_slot = self.define_local("__vb_split_cmp");
+                let delim_len_slot = self.define_local("__vb_split_delim_len");
+                let idx_slot = self.define_local("__vb_split_idx");
+
                 self.compile_expr(args[0])?;
-                if args.len() >= 2 {
-                    self.compile_expr(args[1])?;
+                self.emit_u16(Op::LOCAL_SET, source_slot);
+                self.emit(Op::DROP);
+
+                if let Some(delim_arg) = args.get(1) {
+                    self.compile_expr(delim_arg)?;
                 } else {
                     self.emit_const(Value::String(Arc::from(" ")));
                 }
-                self.emit(Op::STR_SPLIT);
+                self.emit_u16(Op::LOCAL_SET, delim_slot);
+                self.emit(Op::DROP);
+
+                if let Some(limit_arg) = args.get(2) {
+                    self.compile_expr(limit_arg)?;
+                    common::convert::emit_to_int(self.chunk(), line);
+                } else {
+                    self.emit_const(Value::I32(-1));
+                }
+                self.emit_u16(Op::LOCAL_SET, limit_slot);
+                self.emit(Op::DROP);
+
+                if let Some(compare_arg) = args.get(3) {
+                    self.compile_expr(compare_arg)?;
+                    self.emit(Op::DYN_TO_BOOL);
+                } else {
+                    self.emit(Op::FALSE);
+                }
+                self.emit_u16(Op::LOCAL_SET, text_slot);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, delim_slot);
+                common::strings::emit_length(self.chunk(), line);
+                self.emit_u16(Op::LOCAL_SET, delim_len_slot);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, text_slot);
+                let split_binary_delim = self.emit_jump(Op::BR_IF_FALSE);
+                self.emit_u16(Op::LOCAL_GET, delim_slot);
+                common::strings::emit_to_lower(self.chunk(), line);
+                let split_delim_done = self.emit_jump(Op::BR);
+                self.patch_jump(split_binary_delim);
+                self.emit_u16(Op::LOCAL_GET, delim_slot);
+                self.patch_jump(split_delim_done);
+                self.emit_u16(Op::LOCAL_SET, delim_cmp_slot);
+                self.emit(Op::DROP);
+
+                common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+                self.emit_u16(Op::LOCAL_SET, result_slot);
+                self.emit(Op::DROP);
+
+                self.emit(Op::I32_CONST_0);
+                self.emit_u16(Op::LOCAL_SET, count_slot);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, source_slot);
+                self.emit_u16(Op::LOCAL_SET, remaining_slot);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, delim_len_slot);
+                self.emit(Op::I32_CONST_0);
+                self.emit(Op::DYN_EQ);
+                let nonempty_delim = self.emit_jump(Op::BR_IF_FALSE);
+                self.emit_u16(Op::LOCAL_GET, result_slot);
+                self.emit_u16(Op::LOCAL_GET, source_slot);
+                common::collections::emit_push(&mut self.chunks, self.current, line);
+                self.emit(Op::DROP);
+                let done_empty_delim = self.emit_jump(Op::BR);
+                self.patch_jump(nonempty_delim);
+
+                let loop_top = self.current_offset();
+                let mut exit_patches = Vec::new();
+
+                self.emit_u16(Op::LOCAL_GET, limit_slot);
+                self.emit_const(Value::I32(0));
+                self.emit(Op::DYN_GT);
+                let unlimited_limit = self.emit_jump(Op::BR_IF_FALSE);
+                self.emit_u16(Op::LOCAL_GET, count_slot);
+                self.emit_u16(Op::LOCAL_GET, limit_slot);
+                self.emit_const(Value::I32(1));
+                self.emit(Op::I32_SUB);
+                self.emit(Op::DYN_GE);
+                exit_patches.push(self.emit_jump(Op::BR_IF_TRUE));
+                self.patch_jump(unlimited_limit);
+
+                self.emit_u16(Op::LOCAL_GET, text_slot);
+                let split_binary_current = self.emit_jump(Op::BR_IF_FALSE);
+                self.emit_u16(Op::LOCAL_GET, remaining_slot);
+                common::strings::emit_to_lower(self.chunk(), line);
+                let split_cmp_done = self.emit_jump(Op::BR);
+                self.patch_jump(split_binary_current);
+                self.emit_u16(Op::LOCAL_GET, remaining_slot);
+                self.patch_jump(split_cmp_done);
+                self.emit_u16(Op::LOCAL_SET, cmp_slot);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, cmp_slot);
+                self.emit_u16(Op::LOCAL_GET, delim_cmp_slot);
+                common::strings::emit_index_of(self.chunk(), line);
+                self.emit_u16(Op::LOCAL_SET, idx_slot);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, idx_slot);
+                self.emit(Op::I32_CONST_0);
+                self.emit(Op::DYN_LT);
+                exit_patches.push(self.emit_jump(Op::BR_IF_TRUE));
+
+                self.emit_u16(Op::LOCAL_GET, result_slot);
+                self.emit_u16(Op::LOCAL_GET, remaining_slot);
+                self.emit(Op::I32_CONST_0);
+                self.emit_u16(Op::LOCAL_GET, idx_slot);
+                common::strings::emit_substring(self.chunk(), line);
+                common::collections::emit_push(&mut self.chunks, self.current, line);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, count_slot);
+                self.emit_const(Value::I32(1));
+                self.emit(Op::I32_ADD);
+                self.emit_u16(Op::LOCAL_SET, count_slot);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, remaining_slot);
+                self.emit_u16(Op::LOCAL_GET, idx_slot);
+                self.emit_u16(Op::LOCAL_GET, delim_len_slot);
+                self.emit(Op::I32_ADD);
+                self.emit_u16(Op::LOCAL_GET, remaining_slot);
+                common::strings::emit_length(self.chunk(), line);
+                common::strings::emit_substring(self.chunk(), line);
+                self.emit_u16(Op::LOCAL_SET, remaining_slot);
+                self.emit(Op::DROP);
+
+                self.emit_loop(loop_top);
+                for exit in exit_patches {
+                    self.patch_jump(exit);
+                }
+
+                self.emit_u16(Op::LOCAL_GET, result_slot);
+                self.emit_u16(Op::LOCAL_GET, remaining_slot);
+                common::collections::emit_push(&mut self.chunks, self.current, line);
+                self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, result_slot);
+                self.patch_jump(done_empty_delim);
             }
             "join" => {
                 // Two callers:

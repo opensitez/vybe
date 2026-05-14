@@ -3598,21 +3598,40 @@ fn build_hash(imports: &mut Chunk) -> Chunk {
 fn build_vb_format(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_vb_format");
     c.arity = 2;
-    c.local_count = 5; // value(0), picture(1), prefix(2), dot_pos(3), decimals(4)
+    c.local_count = 12; // value(0), picture(1), prefix(2), dot_pos(3), decimals(4), fmt_lower(5), val_str(6), work(7), idx_a(8), idx_b(9), idx_c(10), percent(11)
     let value = 0u16;
     let picture = 1u16;
     let prefix = 2u16;
     let dot_pos = 3u16;
     let decimals = 4u16;
+    let fmt_lower = 5u16;
+    let val_str = 6u16;
+    let work = 7u16;
+    let idx_a = 8u16;
+    let idx_b = 9u16;
+    let idx_c = 10u16;
+    let percent = 11u16;
 
     let to_str = imports.add_import("ecma:string", "String");
+    let to_lower = imports.add_import("ecma:string", "toLowerCase");
+    let pad_start = imports.add_import("ecma:string", "padStart");
     let to_fixed = imports.add_import("ecma:number", "toFixed");
     let parse_int = imports.add_import("ecma:number", "parseInt");
 
     // prefix = ""
     let empty = c.add_constant(Value::String(Arc::from("")));
+    let short_date = c.add_constant(Value::String(Arc::from("short date")));
+    let short_time = c.add_constant(Value::String(Arc::from("short time")));
+    let percent_str = c.add_constant(Value::String(Arc::from("%")));
+    let zero_str = c.add_constant(Value::String(Arc::from("0")));
+    let space_str = c.add_constant(Value::String(Arc::from(" ")));
+    let slash_str = c.add_constant(Value::String(Arc::from("/")));
+    let colon_str = c.add_constant(Value::String(Arc::from(":")));
     c.emit_op_u16(Op::CONST, empty, 0);
     c.emit_op_u16(Op::LOCAL_SET, prefix, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op(Op::FALSE, 0);
+    c.emit_op_u16(Op::LOCAL_SET, percent, 0);
     c.emit_op(Op::DROP, 0);
 
     // If picture is null/empty, return String(value).
@@ -3644,6 +3663,149 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::RETURN, 0);
     c.emit_end(0); c.patch_block(no_picture_block);
 
+    // fmt_lower = picture.Trim().ToLowerCase(); val_str = String(value)
+    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
+    c.emit_op(Op::STR_TRIM, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, to_lower, 0);
+    c.emit(1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, fmt_lower, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, to_str, 0);
+    c.emit(1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, val_str, 0);
+    c.emit_op(Op::DROP, 0);
+
+    // Short Date → first segment before space, else whole value string.
+    let not_short_date = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, fmt_lower, 0);
+    c.emit_op_u16(Op::CONST, short_date, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, val_str, 0);
+    c.emit_op_u16(Op::CONST, space_str, 0);
+    c.emit_op(Op::STR_INDEX_OF, 0);
+    c.emit_op_u16(Op::LOCAL_SET, idx_a, 0);
+    c.emit_op(Op::DROP, 0);
+    let no_date_space = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, val_str, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0); c.patch_block(no_date_space);
+    c.emit_op_u16(Op::LOCAL_GET, val_str, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
+    c.emit_op(Op::STR_SUBSTRING, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0); c.patch_block(not_short_date);
+
+    // Short Time → trim optional date prefix, drop seconds, keep AM/PM.
+    let not_short_time = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, fmt_lower, 0);
+    c.emit_op_u16(Op::CONST, short_time, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, val_str, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, to_str, 0);
+    c.emit(1, 0);
+    c.emit_op_u16(Op::LOCAL_SET, work, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, work, 0);
+    c.emit_op_u16(Op::CONST, space_str, 0);
+    c.emit_op(Op::STR_INDEX_OF, 0);
+    c.emit_op_u16(Op::LOCAL_SET, idx_a, 0);
+    c.emit_op(Op::DROP, 0);
+    let no_prefix = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, work, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
+    c.emit_op(Op::STR_SUBSTRING, 0);
+    c.emit_op_u16(Op::LOCAL_SET, idx_b, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, idx_b, 0);
+    c.emit_op_u16(Op::CONST, slash_str, 0);
+    c.emit_op(Op::STR_INDEX_OF, 0);
+    c.emit_op_u16(Op::LOCAL_SET, idx_c, 0);
+    c.emit_op(Op::DROP, 0);
+    let keep_work = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, idx_c, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_LT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, work, 0);
+    c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_GET, work, 0);
+    c.emit_op(Op::STR_LENGTH, 0);
+    c.emit_op(Op::STR_SUBSTRING, 0);
+    c.emit_op_u16(Op::LOCAL_SET, work, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_end(0); c.patch_block(keep_work);
+    c.emit_end(0); c.patch_block(no_prefix);
+    c.emit_op_u16(Op::LOCAL_GET, work, 0);
+    c.emit_op_u16(Op::CONST, space_str, 0);
+    c.emit_op(Op::STR_LAST_INDEX_OF, 0);
+    c.emit_op_u16(Op::LOCAL_SET, idx_a, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, work, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
+    c.emit_op(Op::STR_SUBSTRING, 0);
+    c.emit_op_u16(Op::LOCAL_SET, idx_b, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, work, 0);
+    c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_GET, work, 0);
+    c.emit_op(Op::STR_LENGTH, 0);
+    c.emit_op(Op::STR_SUBSTRING, 0);
+    c.emit_op_u16(Op::LOCAL_SET, idx_c, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, idx_b, 0);
+    c.emit_op_u16(Op::CONST, colon_str, 0);
+    c.emit_op(Op::STR_LAST_INDEX_OF, 0);
+    c.emit_op_u16(Op::LOCAL_SET, idx_a, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, idx_b, 0);
+    c.emit_op_u16(Op::CONST, colon_str, 0);
+    c.emit_op(Op::STR_INDEX_OF, 0);
+    c.emit_op_u16(Op::LOCAL_SET, work, 0);
+    c.emit_op(Op::DROP, 0);
+    let already_short_time = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, work, 0);
+    c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, idx_b, 0);
+    c.emit_op_u16(Op::CONST, space_str, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_GET, idx_c, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0); c.patch_block(already_short_time);
+    c.emit_op_u16(Op::LOCAL_GET, idx_b, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, idx_a, 0);
+    c.emit_op(Op::STR_SUBSTRING, 0);
+    c.emit_op_u16(Op::CONST, space_str, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op_u16(Op::LOCAL_GET, idx_c, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_op(Op::RETURN, 0);
+    c.emit_end(0); c.patch_block(not_short_time);
+
     // If picture starts with '$', strip it and stash as prefix.
     let dollar_block = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, picture, 0);
@@ -3669,6 +3831,39 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::DROP, 0);
     c.emit_end(0); c.patch_block(dollar_block);
 
+    // If picture ends with '%', strip it and mark percentage mode.
+    let percent_block = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
+    c.emit_op(Op::STR_LENGTH, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::DYN_GT, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
+    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
+    c.emit_op(Op::STR_LENGTH, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op(Op::STR_CHAR_CODE_AT, 0);
+    let percent_code = c.add_constant(Value::I32(b'%' as i32));
+    c.emit_op_u16(Op::CONST, percent_code, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op(Op::TRUE, 0);
+    c.emit_op_u16(Op::LOCAL_SET, percent, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
+    c.emit_op(Op::STR_LENGTH, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::I32_SUB, 0);
+    c.emit_op(Op::STR_SUBSTRING, 0);
+    c.emit_op_u16(Op::LOCAL_SET, picture, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_end(0); c.patch_block(percent_block);
+
     // dot_pos = picture.indexOf(".")
     c.emit_op_u16(Op::LOCAL_GET, picture, 0);
     let dot_str = c.add_constant(Value::String(Arc::from(".")));
@@ -3684,14 +3879,59 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::DYN_LT, 0);
     c.emit_op(Op::DYN_NOT, 0);
     c.emit_br_if(0, 0);
-    // No dot — integer rendering
-    c.emit_op_u16(Op::LOCAL_GET, prefix, 0);
+    // No dot — integer rendering, optionally zero-padded / percentage.
+    let no_pct_int = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, percent, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    let hundred = c.add_constant(Value::F64(100.0));
+    c.emit_op_u16(Op::CONST, hundred, 0);
+    c.emit_op(Op::F64_MUL, 0);
+    c.emit_op_u16(Op::LOCAL_SET, work, 0);
+    c.emit_op(Op::DROP, 0);
+    let after_pct_int = c.emit_jump(Op::BR, 0);
+    c.emit_end(0); c.patch_block(no_pct_int);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op_u16(Op::LOCAL_SET, work, 0);
+    c.emit_op(Op::DROP, 0);
+    c.patch_jump(after_pct_int);
+
+    c.emit_op_u16(Op::LOCAL_GET, prefix, 0);
+    c.emit_op_u16(Op::LOCAL_GET, work, 0);
     c.emit_op_u16(Op::CALL_IMPORT, parse_int, 0);
     c.emit(1, 0);
     c.emit_op_u16(Op::CALL_IMPORT, to_str, 0);
     c.emit(1, 0);
+    let zero_pad_block = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
+    c.emit_op(Op::STR_LENGTH, 0);
+    c.emit_op(Op::I32_CONST_1, 0);
+    c.emit_op(Op::DYN_GT, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op(Op::STR_CHAR_CODE_AT, 0);
+    let zero_code = c.add_constant(Value::I32(b'0' as i32));
+    c.emit_op_u16(Op::CONST, zero_code, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, picture, 0);
+    c.emit_op(Op::STR_LENGTH, 0);
+    c.emit_op_u16(Op::CONST, zero_str, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, pad_start, 0);
+    c.emit(3, 0);
+    c.emit_end(0); c.patch_block(zero_pad_block);
     c.emit_op(Op::DYN_ADD, 0);
+    let no_pct_suffix_int = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, percent, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::CONST, percent_str, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_end(0); c.patch_block(no_pct_suffix_int);
     c.emit_op(Op::RETURN, 0);
     c.emit_end(0); c.patch_block(no_decimals_block);
 
@@ -3705,13 +3945,37 @@ fn build_vb_format(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, decimals, 0);
     c.emit_op(Op::DROP, 0);
 
-    // return prefix + Number(value).toFixed(decimals)
+    // return prefix + Number(value).toFixed(decimals), with optional percentage suffix
     c.emit_op_u16(Op::LOCAL_GET, prefix, 0);
+    let no_pct_dec = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, percent, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    let hundred_dec = c.add_constant(Value::F64(100.0));
+    c.emit_op_u16(Op::CONST, hundred_dec, 0);
+    c.emit_op(Op::F64_MUL, 0);
+    c.emit_op_u16(Op::LOCAL_SET, work, 0);
+    c.emit_op(Op::DROP, 0);
+    let after_pct_dec = c.emit_jump(Op::BR, 0);
+    c.emit_end(0); c.patch_block(no_pct_dec);
+    c.emit_op_u16(Op::LOCAL_GET, value, 0);
+    c.emit_op_u16(Op::LOCAL_SET, work, 0);
+    c.emit_op(Op::DROP, 0);
+    c.patch_jump(after_pct_dec);
+
+    c.emit_op_u16(Op::LOCAL_GET, work, 0);
     c.emit_op_u16(Op::LOCAL_GET, decimals, 0);
     c.emit_op_u16(Op::CALL_IMPORT, to_fixed, 0);
     c.emit(2, 0);
     c.emit_op(Op::DYN_ADD, 0);
+    let no_pct_suffix_dec = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, percent, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::CONST, percent_str, 0);
+    c.emit_op(Op::DYN_ADD, 0);
+    c.emit_end(0); c.patch_block(no_pct_suffix_dec);
     c.emit_op(Op::RETURN, 0);
     c
 }

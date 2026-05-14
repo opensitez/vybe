@@ -29,7 +29,7 @@ attribute_line = _{ (extension_attribute ~ (NEWLINE | EOI)?) | (attribute ~ (NEW
 // Supports: Imports System.IO
 //           Imports IO = System.IO  (alias)
 imports_alias = { identifier ~ "=" }
-imports_statement = { ^"Imports" ~ imports_alias? ~ dotted_identifier ~ (NEWLINE | EOI) }
+imports_statement = { ^"Imports" ~ imports_alias? ~ type_name ~ (NEWLINE | EOI) }
 
 // Statements
 statement = _{
@@ -48,6 +48,9 @@ statement = _{
     | redim_statement
     | erase_statement
     | set_statement
+    | mid_assign_statement
+    | lset_statement
+    | rset_statement
     | dot_assign_statement
     | me_assign_statement
     | compound_assign_statement
@@ -100,6 +103,9 @@ dim_statement = {
 static_statement = { ^"Static" ~ identifier ~ (^"As" ~ type_name)? ~ ("=" ~ expression)? }
 const_statement = { visibility_modifier? ~ ^"Const" ~ identifier ~ ^"As" ~ type_name ~ "=" ~ expression }
 set_statement = { ^"Set" ~ identifier ~ "=" ~ expression }
+lset_statement = { ^"LSet" ~ l_value_expression ~ "=" ~ expression }
+rset_statement = { ^"RSet" ~ l_value_expression ~ "=" ~ expression }
+mid_assign_statement = { ^"Mid" ~ "(" ~ l_value_expression ~ "," ~ expression ~ ("," ~ expression)? ~ ")" ~ "=" ~ expression }
 compound_assign_op = { "+=" | "-=" | "*=" | "/=" | "\\=" | "&=" | "^=" | "<<=" | ">>=" }
 l_value_expression = { identifier ~ ( ("." ~ member_identifier) | ("(" ~ argument_list? ~ ")") )* }
 compound_assign_statement = { l_value_expression ~ compound_assign_op ~ expression }
@@ -123,6 +129,9 @@ single_line_stmt = _{
     | continue_statement
     | erase_statement
     | set_statement
+    | mid_assign_statement
+    | lset_statement
+    | rset_statement
     | dot_assign_statement
     | me_assign_statement
     | compound_assign_statement
@@ -270,14 +279,15 @@ line_input_statement = { ^"Line" ~ ^"Input" ~ "#" ~ expression ~ "," ~ identifie
 
 // Procedure declarations
 // sub_modifier covers: Public, Private, Protected, Friend, Overrides, Overloads, Shared, etc.
-sub_modifier_keyword = { ^"Overrides" | ^"Overloads" | ^"Shared" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" }
+sub_modifier_keyword = { ^"Overrides" | ^"Overloads" | ^"Shared" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" | ^"Shadows" }
 sub_modifier = _{ visibility_modifier | sub_modifier_keyword | async_kw }
 sub_name = { identifier | member_identifier | ^"New" }
 function_name = { identifier | member_identifier }
 handles_clause = { ^"Handles" ~ dotted_identifier ~ ("," ~ dotted_identifier)* }
+implements_member_clause = { ^"Implements" ~ dotted_identifier ~ ("," ~ dotted_identifier)* }
 sub_decl = {
     attribute_line* ~
-    sub_modifier* ~ ^"Sub" ~ sub_name ~ "(" ~ param_list? ~ ")" ~ handles_clause?
+    sub_modifier* ~ ^"Sub" ~ sub_name ~ generic_suffix? ~ "(" ~ param_list? ~ ")" ~ handles_clause? ~ implements_member_clause?
     ~ (sub_inline_body | sub_block_body | abstract_body)
 }
 abstract_body = { &(NEWLINE | EOI) }
@@ -287,7 +297,7 @@ sub_end = { ^"End" ~ ^"Sub" }
 
 function_decl = {
     attribute_line* ~
-    sub_modifier* ~ ^"Function" ~ function_name ~ "(" ~ param_list? ~ ")" ~ (^"As" ~ type_name)?
+    sub_modifier* ~ ^"Function" ~ function_name ~ generic_suffix? ~ "(" ~ param_list? ~ ")" ~ (^"As" ~ type_name)? ~ implements_member_clause?
     ~ (func_inline_body | func_block_body | abstract_body)
 }
 func_inline_body = { ":" ~ statement? ~ (":" ~ statement)* ~ ":" ~ func_end }
@@ -306,8 +316,8 @@ module_decl = {
     (^"Public" | ^"Private" | ^"Friend")? ~ ^"Module" ~ identifier
     ~ (module_inline_body | module_block_body)
 }
-module_member = _{ sub_decl | function_decl | const_statement_line | event_line | delegate_line | field_line | dim_line | class_decl | interface_decl | structure_decl | enum_decl | NEWLINE | COMMENT }
-module_inline_member = _{ sub_decl | function_decl | const_statement | event_decl | delegate_sub_decl | delegate_function_decl | field_decl | dim_statement | class_decl | interface_decl | structure_decl | enum_decl }
+module_member = _{ property_decl | auto_property_line | sub_decl | function_decl | const_statement_line | event_line | delegate_line | field_line | dim_line | class_decl | interface_decl | structure_decl | enum_decl | NEWLINE | COMMENT }
+module_inline_member = _{ property_decl | auto_property_decl | sub_decl | function_decl | const_statement | event_decl | delegate_sub_decl | delegate_function_decl | field_decl | dim_statement | class_decl | interface_decl | structure_decl | enum_decl }
 module_inline_body = _{ (":" ~ module_end) | (":" ~ module_inline_member ~ (":" ~ module_inline_member)* ~ ":" ~ module_end) }
 module_block_body = _{ (NEWLINE | EOI) ~ (!module_end ~ module_member)* ~ module_end }
 module_end = { ^"End" ~ ^"Module" }
@@ -321,7 +331,7 @@ visibility_modifier = { ^"Public" | ^"Private" | ^"Protected" | ^"Friend" }
 
 class_decl = {
     attribute_line* ~
-    class_modifier* ~ ^"Class" ~ identifier
+    class_modifier* ~ ^"Class" ~ identifier ~ generic_suffix?
     ~ (class_inline_body | class_block_body)
 }
 class_member = _{ class_decl | property_decl | auto_property_line | sub_decl | function_decl | const_statement_line | event_line | delegate_line | field_line | dim_line | enum_decl | imports_statement | attribute_line | NEWLINE | COMMENT }
@@ -346,7 +356,7 @@ implements_statement = { ^"Implements" ~ type_name ~ ("," ~ type_name)* }
 implements_line = _{ implements_statement ~ (NEWLINE | EOI) }
 
 interface_decl = {
-    visibility_modifier? ~ ^"Interface" ~ identifier ~ (NEWLINE | EOI)
+    visibility_modifier? ~ ^"Interface" ~ identifier ~ generic_suffix? ~ (NEWLINE | EOI)
     ~ inherits_line?
     ~ (!interface_end ~ (interface_sub | interface_function | interface_property | interface_event | NEWLINE | COMMENT))*
     ~ interface_end
@@ -359,7 +369,7 @@ interface_event = { ^"Event" ~ identifier ~ (^"As" ~ type_name | "(" ~ param_lis
 
 // Structure declarations
 structure_decl = {
-    visibility_modifier? ~ ^"Structure" ~ identifier
+    visibility_modifier? ~ ^"Structure" ~ identifier ~ generic_suffix?
     ~ (structure_inline_body | structure_block_body)
 }
 structure_member = _{ property_decl | auto_property_line | sub_decl | function_decl | const_statement_line | field_line | dim_line | NEWLINE | COMMENT }
@@ -402,14 +412,16 @@ field_modifier = _{ visibility_modifier | sub_modifier_keyword | withevents_keyw
 field_decl = { field_modifier* ~ identifier ~ array_rank_spec? ~ (^"As" ~ dim_new_keyword? ~ type_name)? ~ ("=" ~ (array_literal | expression))? }
 field_line = _{ field_decl ~ (NEWLINE | EOI) }
 
+default_keyword = { ^"Default" }
+
 // Auto-implemented property: Public Property Name As String [= defaultValue]
 auto_property_decl = {
-    (^"Public" | ^"Private" | ^"Protected")? ~ (^"Overrides" | ^"Overloads")? ~ (^"ReadOnly" | ^"WriteOnly")? ~ ^"Property" ~ identifier ~ (^"As" ~ dim_new_keyword? ~ type_name)? ~ ("=" ~ expression)?
+    default_keyword? ~ (^"Public" | ^"Private" | ^"Protected")? ~ (^"Overrides" | ^"Overloads")? ~ (^"ReadOnly" | ^"WriteOnly")? ~ ^"Property" ~ identifier ~ (^"As" ~ dim_new_keyword? ~ type_name)? ~ ("=" ~ expression)?
 }
 auto_property_line = _{ auto_property_decl ~ (NEWLINE | EOI) }
 
 property_decl = {
-    (^"Public" | ^"Private")? ~ (^"Overrides" | ^"Overloads")? ~ (^"ReadOnly" | ^"WriteOnly")? ~ ^"Property" ~ identifier ~ ("(" ~ param_list? ~ ")")? ~ (^"As" ~ type_name)? ~ (NEWLINE | EOI)
+    default_keyword? ~ (^"Public" | ^"Private")? ~ (^"Overrides" | ^"Overloads")? ~ (^"ReadOnly" | ^"WriteOnly")? ~ ^"Property" ~ identifier ~ ("(" ~ param_list? ~ ")")? ~ (^"As" ~ type_name)? ~ (NEWLINE | EOI)
     ~ (property_get | property_set | NEWLINE)*
     ~ property_end
 }
@@ -532,9 +544,9 @@ from_initializer = { ^"From" ~ "{" ~ NEWLINE* ~ (expression ~ (NEWLINE* ~ "," ~ 
 with_initializer = { ^"With" ~ "{" ~ NEWLINE* ~ (member_initializer ~ (NEWLINE* ~ "," ~ NEWLINE* ~ member_initializer)*)? ~ NEWLINE* ~ "}" }
 member_initializer = { "." ~ member_identifier ~ "=" ~ expression }
 
-call_expression = { identifier ~ "(" ~ argument_list? ~ ")" }
+call_expression = { identifier ~ generic_suffix? ~ "(" ~ argument_list? ~ ")" }
 member_chain_invoke = { "(" ~ argument_list? ~ ")" }
-member_chain_call = { "." ~ member_identifier ~ "(" ~ argument_list? ~ ")" }
+member_chain_call = { "." ~ member_identifier ~ generic_suffix? ~ "(" ~ argument_list? ~ ")" }
 member_chain_access = { "." ~ member_identifier }
 member_chain = { member_chain_invoke | member_chain_call | member_chain_access }
 member_call = { identifier ~ member_chain+ }
@@ -579,7 +591,7 @@ nothing_literal = { ^"Nothing" }
 date_literal = @{ "#" ~ (!"#" ~ ANY)+ ~ "#" }
 // Interpolated string: $"text {expr} text" — captured as raw token, decomposed in Rust parser
 interpolated_string = @{ "$\"" ~ ("\"\"" | (!("\"") ~ ANY))* ~ "\"" }
-string_literal = @{ "\"" ~ ("\"\"" | (!"\"" ~ ANY))* ~ "\"" }
+string_literal = @{ "\"" ~ ("\"\"" | (!"\"" ~ ANY))* ~ "\"" ~ (^"C")? }
 // Numeric literals: support optional type suffix (F, D, L, S, US, UI, UL, R, !)
 numeric_literal = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ (^"F" | ^"D" | ^"L" | ^"R" | ^"S" | ^"US" | ^"UI" | ^"UL" | "!" | "#" | "@" | "%")? }
 boolean_literal = { ^"True" | ^"False" }
@@ -590,9 +602,10 @@ type_name = {
         (^"Integer" | ^"Long" | ^"Single" | ^"Double" | ^"String" | ^"Boolean" | ^"Variant" | ^"Object")
         ~ !(ASCII_ALPHANUMERIC | "_")
         | dotted_identifier
-    ) ~ (generic_suffix | array_type_suffix)? ~ "?"?
+    ) ~ fixed_length_suffix? ~ (generic_suffix | array_type_suffix)? ~ "?"?
 }
 
+fixed_length_suffix = { "*" ~ numeric_literal }
 array_type_suffix = { "(" ~ ")" }
 generic_suffix = { "(" ~ ^"Of" ~ type_name ~ ("," ~ type_name)* ~ ")" }
 

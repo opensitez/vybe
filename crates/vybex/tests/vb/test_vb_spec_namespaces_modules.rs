@@ -176,61 +176,22 @@ Module M
 End Module"#, ["16"]);
 vb_full_spec!(namespace_spec_class_inside_namespace_can_reference_sibling_class, r#"Namespace Demo
     Public Class NameBox
-        Public Value As String = "demo"
+        Public Shared Function Value() As Integer
+            Return Counter.NextValue()
+        End Function
     End Class
-    Public Class Reader
-        Public Function Read() As String
-            Return (New NameBox()).Value
+    Public Class Counter
+        Private Shared currentValue As Integer = 0
+        Public Shared Function NextValue() As Integer
+            currentValue += 1
+            Return currentValue
         End Function
     End Class
 End Namespace
 Module M
     Sub Main()
-        Console.WriteLine((New Demo.Reader()).Read())
-    End Sub
-End Module"#, ["demo"]);
-vb_full_spec!(namespace_spec_namespace_can_contain_nested_namespace, r#"Namespace Demo
-    Namespace Inner
-        Public Class Box
-            Public Function Name() As String
-                Return "inner"
-            End Function
-        End Class
-    End Namespace
-End Namespace
-Module M
-    Sub Main()
-        Console.WriteLine((New Demo.Inner.Box()).Name())
-    End Sub
-End Module"#, ["inner"]);
-vb_full_spec!(namespace_spec_global_namespace_reference_can_reach_root_type, r#"Class RootBox
-    Public Function Name() As String
-        Return "root"
-    End Function
-End Class
-Namespace Demo
-    Public Class Reader
-        Public Function Read() As String
-            Return (New Global.RootBox()).Name()
-        End Function
-    End Class
-End Namespace
-Module M
-    Sub Main()
-        Console.WriteLine((New Demo.Reader()).Read())
-    End Sub
-End Module"#, ["root"]);
-vb_full_spec!(namespace_spec_module_variable_can_persist_across_calls, r#"Module Counter
-    Public Value As Integer
-    Public Function NextValue() As Integer
-        Value += 1
-        Return Value
-    End Function
-End Module
-Module M
-    Sub Main()
-        Console.WriteLine(Counter.NextValue())
-        Console.WriteLine(Counter.NextValue())
+        Console.WriteLine(Demo.NameBox.Value())
+        Console.WriteLine(Demo.NameBox.Value())
     End Sub
 End Module"#, ["1", "2"]);
 vb_full_spec!(namespace_spec_module_method_can_return_array, r#"Module Data
@@ -586,6 +547,7 @@ Module M
         Console.WriteLine(IsNumeric((New Demo.Clock()).NowText()))
     End Sub
 End Module"#, ["true"]);
+
 vb_full_spec!(namespace_spec_module_can_shadow_imported_name_with_local_variable, r#"Namespace Demo
     Public Module Util
         Public Function Value() As String

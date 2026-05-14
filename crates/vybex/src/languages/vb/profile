@@ -210,7 +210,7 @@ ascw       = { emit = "intrinsic:asc",             min_args = 1, max_args = 1 }
 "string"   = { emit = "intrinsic:string_repeat",   min_args = 2, max_args = 2 }
 "string$"  = { emit = "intrinsic:string_repeat",   min_args = 2, max_args = 2 }
 instr      = { emit = "intrinsic:instr",           min_args = 2, max_args = 3 }
-instrrev   = { emit = "intrinsic:instrrev",        min_args = 2, max_args = 2 }
+instrrev   = { emit = "intrinsic:instrrev",        min_args = 2, max_args = 4 }
 replace    = { emit = "intrinsic:replace",         min_args = 3, max_args = 3 }
 split      = { emit = "intrinsic:split",           min_args = 1, max_args = 2 }
 join       = { emit = "intrinsic:join",            min_args = 1, max_args = 2 }
@@ -223,15 +223,12 @@ mid        = { emit = "intrinsic:mid",             min_args = 2, max_args = 3 }
 space      = { emit = "intrinsic:space",           min_args = 1, max_args = 1 }
 "space$"   = { emit = "intrinsic:space",           min_args = 1, max_args = 1 }
 spc        = { emit = "intrinsic:space",           min_args = 1, max_args = 1 }
-strcomp    = { emit = "opcode:str_compare",        min_args = 2, max_args = 2 }
+strcomp    = { emit = "intrinsic:strcomp",         min_args = 2, max_args = 3 }
 format     = { emit = "common:dotnet.format_picture", min_args = 1, max_args = 2 }
 "format$"  = { emit = "common:dotnet.format_picture", min_args = 1, max_args = 2 }
 lset       = { emit = "host:ecma:string:padEnd",     min_args = 2, max_args = 2 }
 rset       = { emit = "host:ecma:string:padStart",     min_args = 2, max_args = 2 }
-# `Filter(arr, match, [include], [compare])` retired — VB walker
-# rewrites it to `arr.filter(s => InStr(s, match) > 0)` (or `= 0`
-# when `include` is False) at parse time, dispatched through the
-# common-AST array HOF surface.
+filter     = { emit = "intrinsic:filter",         min_args = 2, max_args = 4 }
 "string.isnullorempty" = { emit = "intrinsic:string_isnullorempty", min_args = 1, max_args = 1 }
 
 # Format variants
@@ -712,6 +709,11 @@ extra_imports = [
 [namespace_constants]
 "math.pi" = 3.141592653589793
 "math.e"  = 2.718281828459045
+"comparemethod.binary" = 0.0
+"comparemethod.text" = 1.0
+"vbtab" = "\t"
+"vbcrlf" = "\r\n"
+"vbnewline" = "\r\n"
 
 # System.Text.RegularExpressions.RegexOptions enum values
 "regexoptions.none"                    = 0.0

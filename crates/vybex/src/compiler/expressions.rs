@@ -441,6 +441,19 @@ impl Compiler {
 
                 // Namespace constant check (Math.PI, etc.)
                 if let ExprKind::Ident(obj_name) = &object.kind {
+                    let prefers_type_lookup = self.prefers_type_qualified_member_lookup(obj_name, field);
+                    let obj_is_local = self.scope().resolve(obj_name).is_some()
+                        || self.has_static_local_binding(obj_name)
+                        || (!self.case_sensitive
+                            && self.scope().resolve_ci(obj_name).is_some()
+                            && !prefers_type_lookup);
+                    if !obj_is_local {
+                        if let Some(value) = self.enum_member_ordinal(obj_name, field) {
+                            self.emit_const(Value::F64(value as f64));
+                            return Ok(());
+                        }
+                    }
+
                     if let Some(key) = self.generic_static_member_key(obj_name, field) {
                         let idx = self.str_const(&key);
                         self.emit_u16(Op::GLOBAL_GET, idx);
@@ -943,8 +956,37 @@ impl Compiler {
                     self.patch_jump(end);
                 } else {
                     let field_name = self.canon(field);
-                    let idx = self.str_const(&field_name);
-                    self.emit_u16(Op::STRUCT_GET, idx);
+                    if matches!(self.profile.name.as_str(), "csharp" | "vb")
+                        && self.profile.namespaces.use_dotnet
+                        && field.as_str() != field_name
+                    {
+                        let obj_slot = self.define_local("__dotnet_member_obj");
+                        self.emit_u16(Op::LOCAL_SET, obj_slot);
+                        self.emit(Op::DROP);
+
+                        let idx = self.str_const(&field_name);
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit_u16(Op::STRUCT_GET, idx);
+                        let value_slot = self.define_local("__dotnet_member_value");
+                        self.emit_u16(Op::LOCAL_SET, value_slot);
+                        self.emit(Op::DROP);
+
+                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                        self.emit(Op::REF_IS_UNDEFINED);
+                        let has_canonical_value = self.emit_jump(Op::BR_IF_FALSE);
+
+                        let exact_idx = self.str_const(field);
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit_u16(Op::STRUCT_GET, exact_idx);
+                        let done = self.emit_jump(Op::BR);
+
+                        self.patch_jump(has_canonical_value);
+                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                        self.patch_jump(done);
+                    } else {
+                        let idx = self.str_const(&field_name);
+                        self.emit_u16(Op::STRUCT_GET, idx);
+                    }
                 }
             }
 
@@ -1219,9 +1261,9 @@ impl Compiler {
                 }
                 let class_parts = self.flatten_member_chain(class);
                 let dotted_type_name = match &class.kind {
-                    ExprKind::Ident(name) => Some(name.clone()),
+                    ExprKind::Ident(name) => Some(self.resolve_source_type_alias(name)),
                     ExprKind::Member { .. } if self.profile.namespaces.use_dotnet && !class_parts.is_empty() => {
-                        Some(class_parts.join("."))
+                        Some(self.resolve_source_type_alias(&class_parts.join(".")))
                     }
                     _ => None,
                 };
@@ -2502,10 +2544,18 @@ impl Compiler {
 
             // ── StaticAccess (PHP) ──────────────────────────────────────
             ExprKind::StaticAccess { class, member } => {
+                if let (ExprKind::Ident(class_name), ExprKind::Ident(member_name)) = (&class.kind, &member.kind) {
+                    if let Some(value) = self.enum_member_ordinal(class_name, member_name) {
+                        self.emit_const(Value::F64(value as f64));
+                        return Ok(());
+                    }
+                }
+
                 // class::member → look up class, then get static member
                 self.compile_expr(class)?;
                 if let ExprKind::Ident(name) = &member.kind {
-                    let idx = self.str_const(name);
+                    let field_name = self.canon(name);
+                    let idx = self.str_const(&field_name);
                     self.emit_u16(Op::STRUCT_GET, idx);
                 } else {
                     self.compile_expr(member)?;
