@@ -9,9 +9,9 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.5.0"
 edition = "2024"
-authors = ["vybe Rust Team"]
+authors = ["Opensitez Vybe Team"]
 license = "GPLv3"
 
 [workspace.dependencies]
@@ -48,6 +48,16 @@ percent-encoding = "2"
 form_urlencoded = "1"
 mime_guess = "2"
 httpdate = "1"
+
+# Cryptographic hashes — RustCrypto family. Replaces hand-rolled
+# SHA-256 / MD5 in `vybe_host::modules::crypto`.
+sha2 = "0.10"
+md-5 = "0.10"
+
+# WHATWG DOM Parsing & Serialization backing — pull-based XML parser.
+# `web:dom-parser` (the `DOMParser` / `XMLSerializer` host module)
+# uses this to materialise spec-compliant Document trees.
+quick-xml = "0.36"
 
 # Internal crates
 vybe_bytecode = { path = "crates/vybe_bytecode" }
