@@ -46,6 +46,7 @@ statement = _{
     | const_statement
     | dim_statement
     | redim_statement
+    | erase_statement
     | set_statement
     | dot_assign_statement
     | me_assign_statement
@@ -87,7 +88,7 @@ dim_new_keyword = { ^"New" }
 array_rank_spec = { "(" ~ array_bounds? ~ ")" }
 dim_declaration_part = {
     identifier ~
-    array_rank_spec? ~
+    array_rank_spec* ~
     (^"As" ~ dim_new_keyword? ~ type_name ~ ("(" ~ argument_list? ~ ")")? ~ (from_initializer | with_initializer)?)? ~
     ("=" ~ (array_literal | expression))?
 }
@@ -105,6 +106,7 @@ compound_assign_statement = { l_value_expression ~ compound_assign_op ~ expressi
 assign_statement = { l_value_expression ~ "=" ~ expression }
 preserve_keyword = { ^"Preserve" }
 redim_statement = { ^"ReDim" ~ preserve_keyword? ~ identifier ~ "(" ~ array_bounds ~ ")" }
+erase_statement = { ^"Erase" ~ identifier }
 raiseevent_statement = { ^"RaiseEvent" ~ identifier ~ ("(" ~ argument_list? ~ ")")? }
 
 // Array support
@@ -113,13 +115,13 @@ array_literal = { "{" ~ (expression ~ ("," ~ expression)*)? ~ "}" }
 
 // Control flow
 single_line_if_statement = {
-    ^"If" ~ expression ~ ^"Then" ~ single_line_then_body ~ (^"Else" ~ single_line_then_body)?
+    ^"If" ~ expression ~ ^"Then" ~ single_line_stmt ~ (^"Else" ~ single_line_stmt)?
 }
-single_line_then_body = { single_line_stmt ~ (":" ~ single_line_stmt)* }
 single_line_stmt = _{
     return_statement
     | exit_statement
     | continue_statement
+    | erase_statement
     | set_statement
     | dot_assign_statement
     | me_assign_statement
@@ -145,17 +147,19 @@ else_block = { ^"Else" ~ (NEWLINE | EOI) ~ if_body }
 if_end = { ^"End" ~ ^"If" }
 
 for_statement = {
-    ^"For" ~ identifier ~ (^"As" ~ type_name)? ~ "=" ~ expression ~ ^"To" ~ expression ~ (^"Step" ~ expression)? ~ (NEWLINE | EOI)
-    ~ (!for_end ~ line)*
-    ~ for_end
+    ^"For" ~ identifier ~ (^"As" ~ type_name)? ~ "=" ~ expression ~ ^"To" ~ expression ~ (^"Step" ~ expression)?
+    ~ (for_inline_body | for_block_body)
 }
+for_inline_body = _{ ":" ~ statement ~ (":" ~ statement)* ~ ":" ~ for_end }
+for_block_body = _{ (NEWLINE | EOI) ~ (!for_end ~ line)* ~ for_end }
 for_end = { ^"Next" ~ identifier? }
 
 for_each_statement = {
-    ^"For" ~ ^"Each" ~ identifier ~ (^"As" ~ type_name)? ~ ^"In" ~ expression ~ (NEWLINE | EOI)
-    ~ (!for_end ~ line)*
-    ~ for_end
+    ^"For" ~ ^"Each" ~ identifier ~ (^"As" ~ type_name)? ~ ^"In" ~ expression
+    ~ (for_each_inline_body | for_each_block_body)
 }
+for_each_inline_body = _{ ":" ~ statement ~ (":" ~ statement)* ~ ":" ~ for_end }
+for_each_block_body = _{ (NEWLINE | EOI) ~ (!for_end ~ line)* ~ for_end }
 
 while_statement = {
     ^"While" ~ expression ~ (NEWLINE | EOI)
@@ -268,7 +272,8 @@ line_input_statement = { ^"Line" ~ ^"Input" ~ "#" ~ expression ~ "," ~ identifie
 // sub_modifier covers: Public, Private, Protected, Friend, Overrides, Overloads, Shared, etc.
 sub_modifier_keyword = { ^"Overrides" | ^"Overloads" | ^"Shared" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" }
 sub_modifier = _{ visibility_modifier | sub_modifier_keyword | async_kw }
-sub_name = { identifier | ^"New" }
+sub_name = { identifier | member_identifier | ^"New" }
+function_name = { identifier | member_identifier }
 handles_clause = { ^"Handles" ~ dotted_identifier ~ ("," ~ dotted_identifier)* }
 sub_decl = {
     attribute_line* ~
@@ -282,7 +287,7 @@ sub_end = { ^"End" ~ ^"Sub" }
 
 function_decl = {
     attribute_line* ~
-    sub_modifier* ~ ^"Function" ~ identifier ~ "(" ~ param_list? ~ ")" ~ (^"As" ~ type_name)?
+    sub_modifier* ~ ^"Function" ~ function_name ~ "(" ~ param_list? ~ ")" ~ (^"As" ~ type_name)?
     ~ (func_inline_body | func_block_body | abstract_body)
 }
 func_inline_body = { ":" ~ statement? ~ (":" ~ statement)* ~ ":" ~ func_end }
@@ -298,10 +303,13 @@ nullable_marker = { "?" }
 
 // Module declarations (VB.NET style - members are implicitly shared)
 module_decl = {
-    (^"Public" | ^"Private" | ^"Friend")? ~ ^"Module" ~ identifier ~ (NEWLINE | EOI)
-    ~ (!module_end ~ (sub_decl | function_decl | const_statement_line | event_line | delegate_line | field_line | dim_line | class_decl | interface_decl | structure_decl | enum_decl | NEWLINE | COMMENT))*
-    ~ module_end
+    (^"Public" | ^"Private" | ^"Friend")? ~ ^"Module" ~ identifier
+    ~ (module_inline_body | module_block_body)
 }
+module_member = _{ sub_decl | function_decl | const_statement_line | event_line | delegate_line | field_line | dim_line | class_decl | interface_decl | structure_decl | enum_decl | NEWLINE | COMMENT }
+module_inline_member = _{ sub_decl | function_decl | const_statement | event_decl | delegate_sub_decl | delegate_function_decl | field_decl | dim_statement | class_decl | interface_decl | structure_decl | enum_decl }
+module_inline_body = _{ (":" ~ module_end) | (":" ~ module_inline_member ~ (":" ~ module_inline_member)* ~ ":" ~ module_end) }
+module_block_body = _{ (NEWLINE | EOI) ~ (!module_end ~ module_member)* ~ module_end }
 module_end = { ^"End" ~ ^"Module" }
 const_statement_line = _{ const_statement ~ (NEWLINE | EOI) }
 
@@ -313,10 +321,17 @@ visibility_modifier = { ^"Public" | ^"Private" | ^"Protected" | ^"Friend" }
 
 class_decl = {
     attribute_line* ~
-    class_modifier* ~ ^"Class" ~ identifier ~ (NEWLINE | EOI)
+    class_modifier* ~ ^"Class" ~ identifier
+    ~ (class_inline_body | class_block_body)
+}
+class_member = _{ class_decl | property_decl | auto_property_line | sub_decl | function_decl | const_statement_line | event_line | delegate_line | field_line | dim_line | enum_decl | imports_statement | attribute_line | NEWLINE | COMMENT }
+class_inline_clause = _{ inherits_statement | implements_statement | class_decl | property_decl | auto_property_decl | sub_decl | function_decl | const_statement | event_decl | delegate_sub_decl | delegate_function_decl | field_decl | dim_statement | enum_decl | imports_statement }
+class_inline_body = _{ (":" ~ class_end) | (":" ~ class_inline_clause ~ (":" ~ class_inline_clause)* ~ ":" ~ class_end) }
+class_block_body = _{
+    (NEWLINE | EOI)
     ~ inherits_line?
     ~ implements_line?
-    ~ (!class_end ~ (class_decl | property_decl | auto_property_line | sub_decl | function_decl | const_statement_line | event_line | delegate_line | field_line | dim_line | enum_decl | imports_statement | attribute_line | NEWLINE | COMMENT))*
+    ~ (!class_end ~ class_member)*
     ~ class_end
 }
 class_modifier = _{ partial_keyword | must_inherit_keyword | not_inheritable_keyword | visibility_modifier }
@@ -344,11 +359,13 @@ interface_event = { ^"Event" ~ identifier ~ (^"As" ~ type_name | "(" ~ param_lis
 
 // Structure declarations
 structure_decl = {
-    visibility_modifier? ~ ^"Structure" ~ identifier ~ (NEWLINE | EOI)
-    ~ implements_line?
-    ~ (!structure_end ~ (property_decl | auto_property_line | sub_decl | function_decl | const_statement_line | field_line | dim_line | NEWLINE | COMMENT))*
-    ~ structure_end
+    visibility_modifier? ~ ^"Structure" ~ identifier
+    ~ (structure_inline_body | structure_block_body)
 }
+structure_member = _{ property_decl | auto_property_line | sub_decl | function_decl | const_statement_line | field_line | dim_line | NEWLINE | COMMENT }
+structure_inline_clause = _{ implements_statement | property_decl | auto_property_decl | sub_decl | function_decl | const_statement | field_decl | dim_statement }
+structure_inline_body = _{ (":" ~ structure_end) | (":" ~ structure_inline_clause ~ (":" ~ structure_inline_clause)* ~ ":" ~ structure_end) }
+structure_block_body = _{ (NEWLINE | EOI) ~ implements_line? ~ (!structure_end ~ structure_member)* ~ structure_end }
 structure_end = { ^"End" ~ ^"Structure" }
 
 // Namespace blocks
@@ -370,16 +387,19 @@ delegate_line = _{ (delegate_sub_decl | delegate_function_decl) ~ (NEWLINE | EOI
 
 // Enum declarations
 enum_decl = {
-    (^"Public" | ^"Private" | ^"Friend")? ~ ^"Enum" ~ identifier ~ (NEWLINE | EOI)
-    ~ (!enum_end ~ (enum_member | NEWLINE | COMMENT))*
-    ~ enum_end
+    (^"Public" | ^"Private" | ^"Friend")? ~ ^"Enum" ~ identifier
+    ~ (enum_inline_body | enum_block_body)
 }
+enum_inline_body = _{ ":" ~ (enum_member_inline ~ ":")* ~ enum_end }
+enum_member_inline = { identifier ~ ("=" ~ expression)? }
+enum_block_body = _{ (NEWLINE | EOI) ~ (!enum_end ~ (enum_member | NEWLINE | COMMENT))* ~ enum_end }
 enum_member = { identifier ~ ("=" ~ expression)? ~ (NEWLINE | EOI) }
 enum_end = { ^"End" ~ ^"Enum" }
 
 // Field declarations: now support Friend, WithEvents, and dotted type names
 withevents_keyword = { ^"WithEvents" }
-field_decl = { (^"Public" | ^"Private" | ^"Protected" | ^"Friend") ~ withevents_keyword? ~ identifier ~ array_rank_spec? ~ (^"As" ~ dim_new_keyword? ~ type_name)? ~ ("=" ~ (array_literal | expression))? }
+field_modifier = _{ visibility_modifier | sub_modifier_keyword | withevents_keyword }
+field_decl = { field_modifier* ~ identifier ~ array_rank_spec? ~ (^"As" ~ dim_new_keyword? ~ type_name)? ~ ("=" ~ (array_literal | expression))? }
 field_line = _{ field_decl ~ (NEWLINE | EOI) }
 
 // Auto-implemented property: Public Property Name As String [= defaultValue]
@@ -523,6 +543,7 @@ call_statement = {
         cast_member_call
         | me_member_call
         | mybase_member_call
+        | postfix
         | member_call
         | member_access
         | call_expression
@@ -530,7 +551,7 @@ call_statement = {
         | identifier
     )
 }
-expression_statement = { cast_member_call | dot_call_statement | me_member_call | mybase_member_call | member_call | call_expression | member_access | dot_member_access }
+expression_statement = { dot_call_statement | dot_member_access | postfix }
 
 // AddHandler / RemoveHandler
 addressof_expr = { ^"AddressOf" ~ dotted_identifier }

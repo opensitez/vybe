@@ -70,10 +70,77 @@ fn canonicalize_call(_name: &str, _arguments: &[Argument]) -> Option<Expression>
 }
 
 fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
-    Expression::new(ExprKind::Member {
-        object: Box::new(object),
-        field: name.to_string(),
-        null_safe: false,
+    let is_class_static = matches!(
+        &object.kind,
+        ExprKind::Ident(n) if n.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+    );
+
+    if matches!(name, "Keys" | "Values") && !is_class_static {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(object),
+                field: name.to_string(),
+                null_safe: false,
+            })),
+            args: vec![],
+            optional: false,
+        })
+    } else {
+        Expression::new(ExprKind::Member {
+            object: Box::new(object),
+            field: name.to_string(),
+            null_safe: false,
+        })
+    }
+}
+
+fn emit_vb_object_init_iife(new_call: Expression, props: Vec<(String, Expression)>) -> Expression {
+    let type_hint = match &new_call.kind {
+        ExprKind::New { class, .. } => match &class.kind {
+            ExprKind::Ident(name) => Some(name.clone()),
+            _ => None,
+        },
+        _ => None,
+    };
+    let mut body: Vec<Statement> = Vec::new();
+    body.push(Statement::with_span(
+        StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident("__obj".into()),
+                type_hint,
+                init: Some(new_call),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Var,
+        },
+        Span::default(),
+    ));
+    for (name, value) in props {
+        let assign = Expression::new(ExprKind::Assign {
+            target: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident("__obj")),
+                field: name,
+                null_safe: false,
+            })),
+            value: Box::new(value),
+        });
+        body.push(Statement::with_span(StmtKind::Expr(assign), Span::default()));
+    }
+    body.push(Statement::with_span(
+        StmtKind::Return(Some(Expression::ident("__obj"))),
+        Span::default(),
+    ));
+
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Lambda {
+            params: vec![],
+            body: LambdaBody::Block(body),
+            is_async: false,
+            captures: Vec::new(),
+        })),
+        args: vec![],
+        optional: false,
     })
 }
 
@@ -137,19 +204,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
                                 let prop_expr = parse_expression(mi_inner.next().unwrap())?;
                                 members.push((prop_name, prop_expr));
                             }
-                            let mut all_args = args;
-                            for (prop_name, prop_expr) in members {
-                                all_args.push(Argument {
-                                    value: prop_expr,
-                                    name: Some(prop_name),
-                                    by_ref: false,
-                                    spread: false,
-                                });
-                            }
-                            return Ok(Expression::with_span(ExprKind::New {
+                            return Ok(emit_vb_object_init_iife(Expression::with_span(ExprKind::New {
                                 class: Box::new(Expression::ident(&class_name)),
-                                args: all_args,
-                            }, span));
+                                args,
+                            }, span), members));
                         }
                         _ => {}
                     }
@@ -448,7 +506,7 @@ fn parse_sub_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     _ => {}
                 }
             }
-            Rule::identifier | Rule::sub_name => name = p.as_str().to_string(),
+            Rule::identifier | Rule::member_identifier | Rule::sub_name => name = p.as_str().to_string(),
             Rule::param_list => parameters = parse_param_list(p)?,
             Rule::statement | Rule::statement_line => {
                 for stmt_pair in p.into_inner() {
@@ -464,17 +522,8 @@ fn parse_sub_decl(pair: Pair<Rule>) -> Result<Statement, String> {
             Rule::sub_inline_body => {
                 for stmt_pair in p.into_inner() {
                     match stmt_pair.as_rule() {
-                        Rule::statement_line => {
-                            for inner in stmt_pair.into_inner() {
-                                if inner.as_rule() == Rule::NEWLINE || inner.as_rule() == Rule::EOI {
-                                    continue;
-                                }
-                                body.push(parse_statement(inner)?);
-                            }
-                        }
-                        Rule::statement => body.push(parse_statement(stmt_pair)?),
                         Rule::sub_end | Rule::NEWLINE | Rule::EOI => {}
-                        _ => {}
+                        _ => body.push(parse_statement(stmt_pair)?),
                     }
                 }
             }
@@ -549,7 +598,7 @@ fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     _ => {}
                 }
             },
-            Rule::identifier => name = p.as_str().to_string(),
+            Rule::identifier | Rule::member_identifier | Rule::function_name => name = p.as_str().to_string(),
             Rule::param_list => parameters = parse_param_list(p)?,
             Rule::type_name => return_type = Some(p.as_str().to_string()),
             Rule::statement | Rule::statement_line => {
@@ -566,18 +615,8 @@ fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
             Rule::func_inline_body => {
                 for stmt_pair in p.into_inner() {
                     match stmt_pair.as_rule() {
-                        Rule::statement_line => {
-                            for inner in stmt_pair.into_inner() {
-                                if inner.as_rule() == Rule::NEWLINE || inner.as_rule() == Rule::EOI {
-                                    continue;
-                                }
-                                body.push(parse_statement(inner)?);
-                            }
-                        }
                         Rule::func_end | Rule::NEWLINE | Rule::EOI => {}
-                        _ => {
-                            body.push(parse_statement(stmt_pair)?);
-                        }
+                        _ => body.push(parse_statement(stmt_pair)?),
                     }
                 }
             }
@@ -659,6 +698,7 @@ fn parse_module_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 }
             }
             Rule::field_decl => {
+                let modifiers = parse_field_modifiers(&p);
                 let d = parse_field_decl(p)?;
                 let field_name = match d.pattern {
                     BindingPattern::Ident(n) => n,
@@ -668,7 +708,7 @@ fn parse_module_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     name: field_name,
                     type_hint: d.type_hint,
                     init: d.init,
-                    modifiers: Modifiers::default(),
+                    modifiers,
                     with_events: d.with_events,
                     array_bounds: d.array_bounds,
                 });
@@ -689,6 +729,25 @@ fn parse_module_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         members,
         visibility: Visibility::Public,
     }, span))
+}
+
+fn parse_field_modifiers(pair: &Pair<Rule>) -> Modifiers {
+    let mut modifiers = Modifiers::default();
+
+    for field_part in pair.clone().into_inner() {
+        match field_part.as_rule() {
+            Rule::visibility_modifier => {
+                modifiers.visibility = parse_visibility(field_part.as_str());
+            }
+            Rule::sub_modifier_keyword if field_part.as_str().eq_ignore_ascii_case("shared") => {
+                modifiers.is_static = true;
+                modifiers.is_shared = true;
+            }
+            _ => {}
+        }
+    }
+
+    modifiers
 }
 
 /// Parse `Imports [alias =] dotted.path`
@@ -887,6 +946,7 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 }
             }
             Rule::field_decl => {
+                let modifiers = parse_field_modifiers(&p);
                 let d = parse_field_decl(p)?;
                 let field_name = match d.pattern {
                     BindingPattern::Ident(n) => n,
@@ -896,7 +956,7 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     name: field_name,
                     type_hint: d.type_hint,
                     init: d.init,
-                    modifiers: Modifiers::default(),
+                    modifiers,
                     with_events: d.with_events,
                     array_bounds: d.array_bounds,
                 });
@@ -1285,6 +1345,22 @@ fn parse_const_statement(pair: Pair<Rule>) -> Result<(Visibility, VarDeclarator)
     }))
 }
 
+fn parse_array_bounds_pair(pair: Pair<Rule>) -> Result<Vec<Expression>, String> {
+    match pair.as_rule() {
+        Rule::array_rank_spec => pair
+            .into_inner()
+            .next()
+            .map(parse_array_bounds_pair)
+            .transpose()
+            .map(|bounds| bounds.unwrap_or_default()),
+        Rule::array_bounds => pair
+            .into_inner()
+            .map(parse_expression)
+            .collect::<Result<Vec<_>, _>>(),
+        _ => Err(format!("Unexpected array bounds rule: {:?}", pair.as_rule())),
+    }
+}
+
 fn parse_dim_statement(pair: Pair<Rule>) -> Result<Vec<VarDeclarator>, String> {
     let mut decls = Vec::new();
     for part in pair.into_inner() {
@@ -1296,6 +1372,7 @@ fn parse_dim_statement(pair: Pair<Rule>) -> Result<Vec<VarDeclarator>, String> {
         let mut type_hint = None;
         let mut init = None;
         let mut array_bounds = None;
+        let mut array_rank_count = 0usize;
         let mut ctor_args = Vec::new();
         let mut is_new = false;
 
@@ -1303,16 +1380,13 @@ fn parse_dim_statement(pair: Pair<Rule>) -> Result<Vec<VarDeclarator>, String> {
             match p.as_rule() {
                 Rule::identifier => name = p.as_str().to_string(),
                 Rule::array_rank_spec => {
-                    let bounds = p.into_inner()
-                        .map(parse_expression)
-                        .collect::<Result<Vec<_>, _>>()?;
-                    array_bounds = Some(bounds);
+                    array_rank_count += 1;
+                    if array_bounds.is_none() {
+                        array_bounds = Some(parse_array_bounds_pair(p)?);
+                    }
                 }
                 Rule::array_bounds => {
-                    let bounds = p.into_inner()
-                        .map(parse_expression)
-                        .collect::<Result<Vec<_>, _>>()?;
-                    array_bounds = Some(bounds);
+                    array_bounds = Some(parse_array_bounds_pair(p)?);
                 }
                 Rule::type_name => type_hint = Some(p.as_str().to_string()),
                 Rule::dim_new_keyword => is_new = true,
@@ -1332,7 +1406,7 @@ fn parse_dim_statement(pair: Pair<Rule>) -> Result<Vec<VarDeclarator>, String> {
                     }
                 }
                 Rule::with_initializer => {
-                    let mut args = ctor_args.clone();
+                    let mut members = Vec::new();
                     for mi in p.into_inner() {
                         if mi.as_rule() != Rule::member_initializer {
                             continue;
@@ -1340,21 +1414,24 @@ fn parse_dim_statement(pair: Pair<Rule>) -> Result<Vec<VarDeclarator>, String> {
                         let mut mi_inner = mi.into_inner();
                         let prop_name = mi_inner.next().unwrap().as_str().to_string();
                         let prop_expr = parse_expression(mi_inner.next().unwrap())?;
-                        args.push(Argument {
-                            value: prop_expr,
-                            name: Some(prop_name),
-                            by_ref: false,
-                            spread: false,
-                        });
+                        members.push((prop_name, prop_expr));
                     }
                     if let Some(class_name) = &type_hint {
-                        init = Some(Expression::new(ExprKind::New {
+                        init = Some(emit_vb_object_init_iife(Expression::new(ExprKind::New {
                             class: Box::new(Expression::ident(class_name)),
-                            args,
-                        }));
+                            args: ctor_args.clone(),
+                        }), members));
                     }
                 }
                 _ => {}
+            }
+        }
+
+        if array_rank_count > 0 {
+            if let Some(type_hint_value) = type_hint.as_mut() {
+                for _ in 0..array_rank_count {
+                    type_hint_value.push_str("()");
+                }
             }
         }
 
@@ -1389,9 +1466,7 @@ fn parse_redim_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             Rule::preserve_keyword => preserve = true,
             Rule::identifier => array = p.as_str().to_string(),
             Rule::array_bounds => {
-                bounds = p.into_inner()
-                    .map(parse_expression)
-                    .collect::<Result<Vec<_>, _>>()?;
+                bounds = parse_array_bounds_pair(p)?;
             }
             _ => {}
         }
@@ -1423,6 +1498,14 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         }
         Rule::redim_statement => {
             return parse_redim_statement(pair);
+        }
+        Rule::erase_statement => {
+            let array = pair
+                .into_inner()
+                .find(|p| p.as_rule() == Rule::identifier)
+                .map(|p| p.as_str().to_string())
+                .ok_or_else(|| "Erase statement missing array name".to_string())?;
+            StmtKind::Erase { array }
         }
         Rule::select_statement => {
             return parse_select_statement(pair);
@@ -1653,7 +1736,7 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
 
             // Check if it's a member_call, member_access, call_expression, me_member_call, cast_member_call, or simple identifier
             match first.as_rule() {
-                Rule::cast_member_call | Rule::me_member_call | Rule::mybase_member_call | Rule::member_call | Rule::member_access | Rule::call_expression => {
+                Rule::postfix | Rule::cast_member_call | Rule::me_member_call | Rule::mybase_member_call | Rule::member_call | Rule::member_access | Rule::call_expression => {
                     // Parse as expression and convert to statement
                     let expr = parse_expression(first)?;
                     StmtKind::Expr(expr)
@@ -1879,7 +1962,7 @@ fn parse_for_statement(pair: Pair<Rule>) -> Result<Statement, String> {
                 }
             }
             Rule::NEWLINE | Rule::for_end => {}
-            _ => {}
+            _ => body.push(parse_statement(p)?),
         }
     }
 
@@ -2335,19 +2418,10 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                                 let prop_expr = parse_expression(mi_inner.next().unwrap())?;
                                 members.push((prop_name, prop_expr));
                             }
-                            let mut all_args = args;
-                            for (prop_name, prop_expr) in members {
-                                all_args.push(Argument {
-                                    value: prop_expr,
-                                    name: Some(prop_name),
-                                    by_ref: false,
-                                    spread: false,
-                                });
-                            }
-                            return Ok(Expression::with_span(ExprKind::New {
+                            return Ok(emit_vb_object_init_iife(Expression::with_span(ExprKind::New {
                                 class: Box::new(Expression::ident(&class_name)),
-                                args: all_args,
-                            }, span));
+                                args,
+                            }, span), members));
                         }
                         _ => {}
                     }
@@ -2866,19 +2940,10 @@ fn parse_binary_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                             let prop_expr = parse_expression(mi_inner.next().unwrap())?;
                             members.push((prop_name, prop_expr));
                         }
-                        let mut all_args = args;
-                        for (prop_name, prop_expr) in members {
-                            all_args.push(Argument {
-                                value: prop_expr,
-                                name: Some(prop_name),
-                                by_ref: false,
-                                spread: false,
-                            });
-                        }
-                        return Ok(Expression::with_span(ExprKind::New {
+                        return Ok(emit_vb_object_init_iife(Expression::with_span(ExprKind::New {
                             class: Box::new(Expression::ident(&class_name)),
-                            args: all_args,
-                        }, span));
+                            args,
+                        }, span), members));
                     }
                     _ => {}
                 }
@@ -3523,7 +3588,7 @@ fn parse_for_each_statement(pair: Pair<Rule>) -> Result<Statement, String> {
                 }
             }
             Rule::NEWLINE | Rule::for_end => {}
-            _ => {}
+            _ => body.push(parse_statement(p)?),
         }
     }
 
@@ -3650,7 +3715,7 @@ fn parse_enum_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     _ => name = p.as_str().to_string(),
                 }
             }
-            Rule::enum_member => {
+            Rule::enum_member | Rule::enum_member_inline => {
                 let mut member_inner = p.into_inner();
                 let member_name = member_inner.next().unwrap().as_str().to_string();
                 let value = member_inner
@@ -3681,20 +3746,10 @@ fn parse_single_line_if(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut inner = pair.into_inner();
     let cond = parse_expression(inner.next().unwrap())?;
 
-    // Parse then body
-    let then_body_pair = inner.next().unwrap(); // single_line_then_body
-    let mut then_body = Vec::new();
-    for stmt_pair in then_body_pair.into_inner() {
-        then_body.push(parse_statement(stmt_pair)?);
-    }
+    let then_body = vec![parse_statement(inner.next().unwrap())?];
 
-    // Parse optional else body
     let else_body = if let Some(else_body_pair) = inner.next() {
-        let mut else_stmts = Vec::new();
-        for stmt_pair in else_body_pair.into_inner() {
-            else_stmts.push(parse_statement(stmt_pair)?);
-        }
-        Some(else_stmts)
+        Some(vec![parse_statement(else_body_pair)?])
     } else {
         None
     };
@@ -3719,21 +3774,15 @@ fn parse_field_decl(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
     for fp in pair.into_inner() {
         match fp.as_rule() {
             Rule::withevents_keyword => { is_with_events = true; }
-            Rule::visibility_modifier | Rule::partial_keyword => {} // modifiers handled by caller
+            Rule::visibility_modifier | Rule::sub_modifier_keyword | Rule::partial_keyword => {} // modifiers handled by caller
             Rule::dim_new_keyword => { is_new = true; }
             Rule::identifier => field_name = fp.as_str().to_string(),
             Rule::type_name => field_type = Some(fp.as_str().to_string()),
             Rule::array_rank_spec => {
-                let bounds: Vec<Expression> = fp.into_inner()
-                    .map(parse_expression)
-                    .collect::<Result<_, _>>()?;
-                field_bounds = Some(bounds);
+                field_bounds = Some(parse_array_bounds_pair(fp)?);
             }
             Rule::array_bounds => {
-                let bounds: Vec<Expression> = fp.into_inner()
-                    .map(|e| parse_expression(e))
-                    .collect::<Result<_, _>>()?;
-                field_bounds = Some(bounds);
+                field_bounds = Some(parse_array_bounds_pair(fp)?);
             }
             Rule::argument_list => {
                 for arg_pair in fp.into_inner() {
@@ -4080,6 +4129,7 @@ fn parse_structure_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 }
             }
             Rule::field_decl => {
+                let modifiers = parse_field_modifiers(&p);
                 let d = parse_field_decl(p)?;
                 let field_name = match d.pattern {
                     BindingPattern::Ident(n) => n,
@@ -4089,7 +4139,7 @@ fn parse_structure_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     name: field_name,
                     type_hint: d.type_hint,
                     init: d.init,
-                    modifiers: Modifiers::default(),
+                    modifiers,
                     with_events: d.with_events,
                     array_bounds: d.array_bounds,
                 });
@@ -4400,36 +4450,85 @@ fn parse_xml_literal(pair: Pair<Rule>) -> Result<Expression, String> {
 }
 
 fn parse_l_value_expression(pair: Pair<Rule>) -> Result<Expression, String> {
-    let mut inner = pair.into_inner();
-    let primary = inner.next().unwrap();
-    let mut expr = parse_expression(primary)?;
+    let source = pair.as_str().trim();
+    let bytes = source.as_bytes();
+    let mut cursor = 0usize;
 
-    // Handle postfix operations (member access, array/method calls)
-    for part in inner {
-        match part.as_rule() {
-            Rule::member_identifier => {
-                let name = part.as_str().to_string();
+    while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+        cursor += 1;
+    }
+    let start = cursor;
+    while cursor < bytes.len()
+        && (bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_')
+    {
+        cursor += 1;
+    }
+
+    if start == cursor {
+        return Err("l_value_expression missing identifier".to_string());
+    }
+
+    let mut expr = Expression::ident(&source[start..cursor]);
+
+    while cursor < bytes.len() {
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if cursor >= bytes.len() {
+            break;
+        }
+
+        match bytes[cursor] {
+            b'.' => {
+                cursor += 1;
+                while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+                    cursor += 1;
+                }
+                let name_start = cursor;
+                while cursor < bytes.len()
+                    && (bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_')
+                {
+                    cursor += 1;
+                }
+                if name_start == cursor {
+                    return Err("l_value_expression missing member name".to_string());
+                }
                 expr = Expression::new(ExprKind::Member {
                     object: Box::new(expr),
-                    field: name,
+                    field: source[name_start..cursor].to_string(),
                     null_safe: false,
                 });
             }
-            _ => {
-                // It's (arg_list) -> parse arguments
-                let args = if let Some(arg_list_pair) = part.into_inner().next() {
-                    parse_argument_list(arg_list_pair)?
-                        .into_iter()
-                        .map(|a| a.value)
-                        .collect::<Vec<_>>()
-                } else {
-                    vec![]
-                };
+            b'(' => {
+                let args_start = cursor + 1;
+                let mut depth = 1usize;
+                cursor += 1;
+                while cursor < bytes.len() && depth > 0 {
+                    match bytes[cursor] {
+                        b'(' => depth += 1,
+                        b')' => depth -= 1,
+                        _ => {}
+                    }
+                    cursor += 1;
+                }
+                if depth != 0 {
+                    return Err("l_value_expression missing closing ')'".to_string());
+                }
 
-                // VB default indexed property syntax often surfaces as
-                // `.Item(...)`. Normalize that to the same Index AST shape
-                // used by C# indexers so both dotnet frontends land on the
-                // same common representation before the compiler sees it.
+                let args_text = source[args_start..cursor - 1].trim();
+                let mut args = Vec::new();
+                if !args_text.is_empty() {
+                    let mut parsed = VbParser::parse(Rule::argument_list, args_text)
+                        .map_err(|err| err.to_string())?;
+                    let arg_list_pair = parsed
+                        .next()
+                        .ok_or_else(|| "l_value_expression missing argument list".to_string())?;
+                    args = parse_argument_list(arg_list_pair)?
+                        .into_iter()
+                        .map(|arg| arg.value)
+                        .collect();
+                }
+
                 if let ExprKind::Member { object, field, .. } = &expr.kind {
                     if field.eq_ignore_ascii_case("Item") && !args.is_empty() {
                         let mut indexed = (**object).clone();
@@ -4445,7 +4544,6 @@ fn parse_l_value_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                     }
                 }
 
-                // Convert to Index expression (array access)
                 if args.len() == 1 {
                     expr = Expression::new(ExprKind::Index {
                         object: Box::new(expr),
@@ -4453,7 +4551,6 @@ fn parse_l_value_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                         null_safe: false,
                     });
                 } else if !args.is_empty() {
-                    // Multiple indices: chain Index operations
                     for idx_expr in args {
                         expr = Expression::new(ExprKind::Index {
                             object: Box::new(expr),
@@ -4462,7 +4559,6 @@ fn parse_l_value_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                         });
                     }
                 } else {
-                    // Empty args → function call
                     expr = Expression::new(ExprKind::Call {
                         callee: Box::new(expr),
                         args: vec![],
@@ -4470,6 +4566,7 @@ fn parse_l_value_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                     });
                 }
             }
+            _ => break,
         }
     }
 

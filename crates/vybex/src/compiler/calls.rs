@@ -3569,6 +3569,26 @@ impl Compiler {
             }
         }
 
+        if self.profile.parens_for_index && !arg_exprs.is_empty() {
+            let is_bound_array = matches!(&callee.kind,
+                ExprKind::Ident(name) if self.lookup_array_binding(name).is_some()
+            );
+            let is_indexable_typed = is_bound_array || self
+                .infer_expr_type_hint(callee)
+                .as_deref()
+                .map(Self::normalize_type_hint)
+                .is_some_and(|type_hint| type_hint.ends_with("()") && !Self::is_callable_type_hint(&type_hint));
+            if is_indexable_typed {
+                self.compile_expr(callee)?;
+                for arg in &arg_exprs {
+                    self.compile_expr(arg)?;
+                    let line = self.line;
+                    common::collections::emit_get(&mut self.chunks, self.current, line);
+                }
+                return Ok(());
+            }
+        }
+
         // ── Fallback: general expression call ───────────────────────
         self.compile_expr(callee)?;
         let callee_slot = self.define_local("__call_ref_callee");
@@ -3832,11 +3852,48 @@ impl Compiler {
         if Self::is_dictionary_type_hint(&normalized) {
             match (field.as_str(), args.len()) {
                 ("Add", 2) => {
+                    let obj_slot = self.define_local("__dict_add_obj");
+                    let key_slot = self.define_local("__dict_add_key");
+                    let keys_slot = self.define_local("__dict_add_keys");
+
                     self.compile_expr(object)?;
+                    self.emit_u16(Op::LOCAL_SET, obj_slot);
+                    self.emit(Op::DROP);
+
                     self.compile_collection_key(object, &args[0].value)?;
+                    self.emit_u16(Op::LOCAL_SET, key_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.emit_u16(Op::LOCAL_GET, key_slot);
                     self.compile_expr(&args[1].value)?;
                     let idx = self.import("ecma:map", "set");
                     self.emit_host_call(idx, 3);
+                    self.emit(Op::DROP);
+
+                    let keys_key = self.str_const("__keys");
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.emit_u16(Op::STRUCT_GET, keys_key);
+                    self.emit_u16(Op::LOCAL_SET, keys_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, keys_slot);
+                    self.emit(Op::REF_IS_NULL);
+                    let have_keys = self.emit_jump(Op::BR_IF_FALSE);
+
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+                    self.emit(Op::DUP);
+                    self.emit_u16(Op::LOCAL_SET, keys_slot);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::STRUCT_SET, keys_key);
+                    self.emit(Op::DROP);
+
+                    self.patch_jump(have_keys);
+                    self.emit_u16(Op::LOCAL_GET, keys_slot);
+                    self.emit_u16(Op::LOCAL_GET, key_slot);
+                    common::collections::emit_push(&mut self.chunks, self.current, line);
+                    self.emit(Op::DROP);
                     return Ok(true);
                 }
                 ("ContainsKey", 1) => {

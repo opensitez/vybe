@@ -173,6 +173,12 @@ struct StaticLocalBinding {
     type_hint: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct ArrayBindingMetadata {
+    is_fixed: bool,
+    type_hint: Option<String>,
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Compiler
 // ════════════════════════════════════════════════════════════════════════════
@@ -233,6 +239,7 @@ pub struct Compiler {
     pub(crate) current_class_implicit_self: bool,
     pub(crate) current_member_is_static: bool,
     static_local_bindings: Vec<HashMap<String, StaticLocalBinding>>,
+    array_bindings: HashMap<String, ArrayBindingMetadata>,
     /// Label for the next loop to be pushed (set by StmtKind::Labeled).
     pending_label: Option<String>,
     with_targets: Vec<u16>,
@@ -468,6 +475,7 @@ impl Compiler {
             current_class_implicit_self: false,
             current_member_is_static: false,
             static_local_bindings: Vec::new(),
+            array_bindings: HashMap::new(),
             pending_label: None,
             with_targets: Vec::new(),
             capture_by_value_vars: Vec::new(),
@@ -2054,6 +2062,27 @@ impl Compiler {
         self.static_local_binding(name).is_some()
     }
 
+    fn array_binding_key(&self, name: &str) -> String {
+        let canon_name = self.canon(name);
+        if self.scopes.len() > 1 {
+            let class_name = self.current_class.as_deref().unwrap_or("<module>");
+            let func_name = self.current_func_name.as_deref().unwrap_or("<top>");
+            format!("{}::{}::{}", self.canon(class_name), self.canon(func_name), canon_name)
+        } else {
+            canon_name
+        }
+    }
+
+    fn record_array_binding(&mut self, name: &str, metadata: ArrayBindingMetadata) {
+        let key = self.array_binding_key(name);
+        self.array_bindings.insert(key, metadata);
+    }
+
+    fn lookup_array_binding(&self, name: &str) -> Option<&ArrayBindingMetadata> {
+        let key = self.array_binding_key(name);
+        self.array_bindings.get(&key).or_else(|| self.array_bindings.get(&self.canon(name)))
+    }
+
     fn ensure_static_local_binding(
         &mut self,
         name: &str,
@@ -2093,12 +2122,74 @@ impl Compiler {
         Ok(binding)
     }
 
+    fn emit_vb_fixed_array_initializer(&mut self, bounds: &[Expression]) -> Result<(), String> {
+        let line = self.line;
+        if bounds.is_empty() {
+            self.emit(Op::NULL);
+            return Ok(());
+        }
+
+        self.compile_expr(&bounds[0])?;
+        self.emit_const(Value::F64(1.0));
+        self.emit(Op::DYN_ADD);
+
+        if bounds.len() == 1 {
+            common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
+            return Ok(());
+        }
+
+        let len_slot = self.define_local("__vb_md_len");
+        self.emit_u16(Op::LOCAL_SET, len_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, len_slot);
+        common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
+        let array_slot = self.define_local("__vb_md_array");
+        self.emit_u16(Op::LOCAL_SET, array_slot);
+        self.emit(Op::DROP);
+
+        let index_slot = self.define_local("__vb_md_index");
+        self.emit(Op::F64_CONST_0);
+        self.emit_u16(Op::LOCAL_SET, index_slot);
+        self.emit(Op::DROP);
+
+        let fill_block = self.chunk().emit_block(line);
+        let (fill_loop, _) = self.chunk().emit_loop_s(line);
+        self.emit_u16(Op::LOCAL_GET, index_slot);
+        self.emit_u16(Op::LOCAL_GET, len_slot);
+        self.emit(Op::DYN_LT);
+        self.emit(Op::DYN_NOT);
+        self.chunk().emit_br_if(1, line);
+
+        self.emit_u16(Op::LOCAL_GET, array_slot);
+        self.emit_u16(Op::LOCAL_GET, index_slot);
+        self.emit_vb_fixed_array_initializer(&bounds[1..])?;
+        common::collections::emit_set(&mut self.chunks, self.current, line);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, index_slot);
+        self.emit_const(Value::F64(1.0));
+        self.emit(Op::DYN_ADD);
+        self.emit_u16(Op::LOCAL_SET, index_slot);
+        self.emit(Op::DROP);
+        self.chunk().emit_br(0, line);
+        self.chunk().emit_end(line);
+        self.chunk().patch_loop(fill_loop);
+        self.chunk().emit_end(line);
+        self.chunk().patch_block(fill_block);
+
+        self.emit_u16(Op::LOCAL_GET, array_slot);
+        Ok(())
+    }
+
     fn emit_var_decl_initializer_value(&mut self, decl: &VarDeclarator) -> Result<(), String> {
         if let Some(ref init_expr) = decl.init {
             self.compile_expr_with_value_copy(init_expr)?;
             self.maybe_promote_pascal_array_literal_to_set(decl.type_hint.as_deref(), init_expr);
         } else if let Some(ref bounds) = decl.array_bounds {
-            if let Some(size_expr) = bounds.first() {
+            if self.profile.name == "vb" && bounds.len() > 1 {
+                self.emit_vb_fixed_array_initializer(bounds)?;
+            } else if let Some(size_expr) = bounds.first() {
                 let line = self.line;
                 self.compile_expr(size_expr)?;
                 self.emit_const(Value::F64(1.0));
@@ -2108,6 +2199,16 @@ impl Compiler {
                 self.emit(Op::NULL);
             }
         } else {
+            if let Some(type_name) = decl
+                .type_hint
+                .as_deref()
+                .and_then(|type_hint| self.user_value_type_name_from_hint(type_hint))
+            {
+                let idx = self.str_const(&type_name);
+                self.emit_u16(Op::GLOBAL_GET, idx);
+                self.emit_u8(Op::CALL_REF, 0);
+                return Ok(());
+            }
             match decl.type_hint.as_deref().map(|s| s.to_lowercase()).as_deref() {
                 Some("integer") | Some("int") | Some("longint") | Some("real") | Some("double") | Some("float") => {
                     self.emit(Op::F64_CONST_0);
@@ -2192,6 +2293,23 @@ impl Compiler {
         }
     }
 
+    fn infer_array_element_type_hint<'a>(&self, values: impl IntoIterator<Item = &'a Expression>) -> String {
+        let mut element_type: Option<String> = None;
+        for value in values {
+            let inferred = self.infer_expr_type_hint(value).unwrap_or_else(|| "object".into());
+            match &element_type {
+                None => element_type = Some(inferred),
+                Some(existing)
+                    if Self::normalize_type_hint(existing) == Self::normalize_type_hint(&inferred) => {}
+                Some(_) => {
+                    element_type = Some("object".into());
+                    break;
+                }
+            }
+        }
+        element_type.unwrap_or_else(|| "object".into())
+    }
+
     fn infer_expr_type_hint(&self, expr: &Expression) -> Option<String> {
         match &expr.kind {
             ExprKind::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
@@ -2201,9 +2319,35 @@ impl Compiler {
             ExprKind::Lit(Literal::Bool(_)) => Some("bool".into()),
             ExprKind::Lit(Literal::Char(_)) => Some("char".into()),
             ExprKind::New { class, .. } => Self::expr_terminal_type_name(class),
-            ExprKind::Call { callee, .. } => self
-                .infer_function_return_type(callee)
-                .or_else(|| self.infer_dotnet_factory_return_type(callee)),
+            ExprKind::Array(elements) => Some(format!(
+                "{}()",
+                self.infer_array_element_type_hint(elements.iter().map(|item| &item.value))
+            )),
+            ExprKind::Call { callee, args, .. } => {
+                if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Array")) {
+                    return Some(format!(
+                        "{}()",
+                        self.infer_array_element_type_hint(args.iter().map(|arg| &arg.value))
+                    ));
+                }
+                if self.profile.parens_for_index
+                    && args.len() == 1
+                    && self
+                        .infer_expr_type_hint(callee)
+                        .as_deref()
+                        .map(Self::normalize_type_hint)
+                        .is_some_and(|type_hint| type_hint.ends_with("()") && !Self::is_callable_type_hint(&type_hint))
+                {
+                    return self
+                        .infer_expr_type_hint(callee)
+                        .and_then(|type_hint| type_hint.trim().trim_end_matches('?').trim().strip_suffix("()").map(str::to_string));
+                }
+                self.infer_function_return_type(callee)
+                    .or_else(|| self.infer_dotnet_factory_return_type(callee))
+            }
+            ExprKind::Index { object, .. } => self
+                .infer_expr_type_hint(object)
+                .and_then(|type_hint| type_hint.trim().trim_end_matches('?').trim().strip_suffix("()").map(str::to_string)),
             ExprKind::Member { object, .. } => {
                 let enum_type = Self::expr_terminal_type_name(object)?;
                 self.enum_value_names
@@ -3296,7 +3440,14 @@ impl Compiler {
                         if *is_async {
                             self.emit(Op::PROMISE_SUSPEND);
                         }
-                        let var_slot = self.define_local(var);
+                        let value_type_hint = iter_type_hint
+                            .as_deref()
+                            .and_then(|type_hint| type_hint.trim().trim_end_matches('?').trim().strip_suffix("()").map(str::to_string));
+                        let var_slot = if let Some(type_hint) = value_type_hint {
+                            self.define_local_typed(var, Some(type_hint))
+                        } else {
+                            self.define_local(var)
+                        };
                         self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
                     }
 
@@ -4256,6 +4407,57 @@ impl Compiler {
             //
             // The handler is registered under the SOURCE-CODE-STABLE control
             // identifier (field name, class name for `Me`/`This`, or runtime
+
+            StmtKind::Erase { array } => {
+                let line = self.line;
+                let Some(binding) = self.lookup_array_binding(array).cloned() else {
+                    self.emit(Op::NULL);
+                    self.emit_var_set(array);
+                    self.emit(Op::DROP);
+                    return Ok(());
+                };
+
+                if !binding.is_fixed {
+                    self.emit(Op::NULL);
+                    self.emit_var_set(array);
+                    self.emit(Op::DROP);
+                    return Ok(());
+                }
+
+                let old_slot = self.define_local("__erase_old");
+                let len_slot = self.define_local("__erase_len");
+                let new_slot = self.define_local("__erase_new");
+
+                self.emit_var_get(array);
+                self.emit_u16(Op::LOCAL_SET, old_slot);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, old_slot);
+                common::collections::emit_len(&mut self.chunks, self.current, line);
+                self.emit_u16(Op::LOCAL_SET, len_slot);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, len_slot);
+                common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
+                self.emit_u16(Op::LOCAL_SET, new_slot);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, new_slot);
+                self.emit_default_value_for_type_hint(
+                    binding
+                        .type_hint
+                        .as_deref()
+                        .map(|type_hint| type_hint.trim().trim_end_matches("()").trim()),
+                );
+                self.emit_const(Value::I32(0));
+                self.emit_const(Value::I32(i32::MAX));
+                common::collections::emit_fill(&mut self.chunks, self.current, line);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, new_slot);
+                self.emit_var_set(array);
+                self.emit(Op::DROP);
+            }
             // `__control_name` for general expressions). This decouples the
             // registry key from the runtime `.Name` property — renaming a
             // control via `btn.Name = "x"` doesn't break wired-up handlers.
@@ -4947,6 +5149,17 @@ impl Compiler {
                         }
                     }
                 }
+                if inferred_type_hint
+                    .as_deref()
+                    .is_some_and(|type_hint| type_hint.trim().ends_with("()"))
+                    || decl.array_bounds.is_some()
+                {
+                    let is_fixed = decl.array_bounds.as_ref().is_some_and(|bounds| !bounds.is_empty());
+                    self.record_array_binding(name, ArrayBindingMetadata {
+                        is_fixed,
+                        type_hint: inferred_type_hint.clone(),
+                    });
+                }
                 // Top-level vars → globals.
                 // `let`/`const` inside a block scope (depth > 0) are locals
                 // even at the top level — they respect block scoping.
@@ -5256,6 +5469,28 @@ impl Compiler {
                         self.emit(Op::DROP);
                         return Ok(());
                     }
+
+                    if self.expr_user_value_type_name(object).is_some() {
+                        let value_tmp = self.define_local("__tmp");
+                        let obj_tmp = self.define_local("__value_type_member_obj");
+                        self.emit_u16(Op::LOCAL_SET, value_tmp);
+                        self.emit(Op::DROP);
+
+                        self.compile_expr(object)?;
+                        self.emit_u16(Op::LOCAL_SET, obj_tmp);
+                        self.emit(Op::DROP);
+
+                        let field_name = self.canon(field);
+                        let idx = self.str_const(&field_name);
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit_u16(Op::LOCAL_GET, value_tmp);
+                        self.emit_u16(Op::STRUCT_SET, idx);
+                        self.emit(Op::DROP);
+
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit_var_set(obj_name);
+                        return Ok(());
+                    }
                 }
 
                 // Proxy set-trap dispatch (JS profile, only when the
@@ -5278,8 +5513,42 @@ impl Compiler {
                 }
                 let tmp = self.define_local("__tmp");
                 self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
-                self.compile_expr(object)?;
                 let field_name = self.canon(field);
+                if matches!(self.profile.name.as_str(), "csharp" | "vb") {
+                    self.compile_expr(object)?;
+                    let obj_tmp = self.define_local("__member_set_obj");
+                    self.emit_u16(Op::LOCAL_SET, obj_tmp);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    let setter_key = self.str_const(&format!("__set_{}", field_name));
+                    self.emit_u16(Op::STRUCT_GET, setter_key);
+                    let setter_tmp = self.define_local("__member_setter");
+                    self.emit_u16(Op::LOCAL_SET, setter_tmp);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, setter_tmp);
+                    self.emit(Op::REF_IS_NULL);
+                    let fallback = self.emit_jump(Op::BR_IF_TRUE);
+
+                    self.emit_u16(Op::LOCAL_GET, setter_tmp);
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    self.emit_u8(Op::CALL_REF, 2);
+                    self.emit(Op::DROP);
+                    let done = self.emit_jump(Op::BR);
+
+                    self.patch_jump(fallback);
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    let idx = self.str_const(&field_name);
+                    self.emit_u16(Op::STRUCT_SET, idx);
+                    self.emit(Op::DROP);
+                    self.patch_jump(done);
+                    return Ok(());
+                }
+
+                self.compile_expr(object)?;
                 // JS `Object.keys` / `Object.entries` need insertion order
                 // (ECMA-262 §7.3.22). The HashMap backing properties is
                 // non-deterministic, so we mirror each direct write into
@@ -6419,6 +6688,17 @@ impl Compiler {
             for a in args { self.compile_expr(a)?; }
             let idx = self.import(&module, &func);
             self.emit_host_call(idx, args.len() as u8);
+            return Ok(true);
+        }
+
+        if self.profile.name == "vb" && name.eq_ignore_ascii_case("Array") {
+            common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+            for arg in args {
+                self.emit(Op::DUP);
+                self.compile_expr(arg)?;
+                common::collections::emit_push(&mut self.chunks, self.current, line);
+                self.emit(Op::DROP);
+            }
             return Ok(true);
         }
 

@@ -280,6 +280,10 @@ pub enum StmtKind {
         bounds: Vec<Expression>,
     },
 
+    Erase {
+        array: String,
+    },
+
     // ── Events ───────────────────────────────────────────────────────────
     //
     // Canonical event binding. Every language frontend produces this for its

@@ -340,6 +340,21 @@ impl Compiler {
                     // Null path: the dup left [null] on stack, use it as result
                     self.patch_jump(end);
                 } else {
+                    if self.profile.parens_for_index
+                        && !args.is_empty()
+                        && matches!(&callee.kind,
+                            ExprKind::Ident(name) if self.lookup_array_binding(name).is_some()
+                        )
+                    {
+                        self.compile_expr(callee)?;
+                        for arg in args {
+                            self.compile_expr(&arg.value)?;
+                            let line = self.line;
+                            common::collections::emit_get(&mut self.chunks, self.current, line);
+                        }
+                        return Ok(());
+                    }
+
                     self.compile_call(callee, args)?;
                     // Multi-value result repack: when the callee is one of
                     // the pre-scanned multi-return functions, CALL leaves
@@ -743,6 +758,31 @@ impl Compiler {
                     false
                 };
 
+                let is_dotnet_dictionary_accessor = !self.case_sensitive
+                    && matches!(field.as_str(), "Keys" | "Values")
+                    && receiver_type_hint
+                        .as_deref()
+                        .map(|type_hint| {
+                            Self::is_dictionary_type_hint(type_hint)
+                                || Self::is_sorted_dictionary_type_hint(type_hint)
+                        })
+                        .unwrap_or(false)
+                    && !matches!(
+                        &object.kind,
+                        ExprKind::Ident(name)
+                            if name.chars().next().map_or(false, |c| c.is_ascii_uppercase())
+                    );
+
+                if is_dotnet_dictionary_accessor {
+                    self.compile_expr(object)?;
+                    if field == "Keys" {
+                        common::collections::emit_iter_keys(&mut self.chunks, self.current, self.line);
+                    } else {
+                        self.emit_common("dict.values", 1, self.line);
+                    }
+                    return Ok(());
+                }
+
                 let is_csharp_len_accessor = matches!(self.profile.name.as_str(), "csharp" | "vb")
                     && matches!(field.as_str(), "Length" | "Count")
                     && receiver_is_collection_like
@@ -811,6 +851,62 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, value_slot);
                     self.patch_jump(done);
                     return Ok(());
+                }
+
+                let static_field_owner = if matches!(self.profile.name.as_str(), "csharp" | "vb") {
+                    receiver_type_hint.as_deref().and_then(|type_hint| {
+                        let trimmed_type_hint = type_hint.trim().trim_end_matches("()").trim();
+                        let metadata_type_hint = self
+                            .reflection_type_metadata(type_hint)
+                            .map(|_| type_hint)
+                            .or_else(|| self.reflection_type_metadata(trimmed_type_hint).map(|_| trimmed_type_hint))?;
+                        self.reflection_type_metadata(metadata_type_hint)
+                            .and_then(|meta| {
+                                meta.fields
+                                    .iter()
+                                    .find(|(name, field_meta)| name.eq_ignore_ascii_case(field) && field_meta.is_static)
+                            })
+                            .map(|_| {
+                                let short_name = self.reflection_type_short_name(metadata_type_hint);
+                                if self.defined_globals.contains(&self.canon(&short_name)) {
+                                    short_name
+                                } else {
+                                    self.reflection_type_lookup_name(metadata_type_hint)
+                                }
+                            })
+                    })
+                } else {
+                    None
+                };
+
+                if self.profile.name == "vb" {
+                    let field_name = self.canon(field);
+                    let idx = self.str_const(&field_name);
+                    if let Some(type_name) = static_field_owner {
+                        let obj_slot = self.define_local("__vb_member_obj");
+                        self.emit_u16(Op::LOCAL_SET, obj_slot);
+                        self.emit(Op::DROP);
+
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit_u16(Op::STRUCT_GET, idx);
+                        let value_slot = self.define_local("__vb_member_value");
+                        self.emit_u16(Op::LOCAL_SET, value_slot);
+                        self.emit(Op::DROP);
+
+                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                        self.emit(Op::REF_IS_UNDEFINED);
+                        let has_instance_value = self.emit_jump(Op::BR_IF_FALSE);
+
+                        let class_idx = self.str_const(&self.canon(&type_name));
+                        self.emit_u16(Op::GLOBAL_GET, class_idx);
+                        self.emit_u16(Op::STRUCT_GET, idx);
+                        let done = self.emit_jump(Op::BR);
+
+                        self.patch_jump(has_instance_value);
+                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                        self.patch_jump(done);
+                        return Ok(());
+                    }
                 }
 
                 if *null_safe && matches!(self.profile.name.as_str(), "csharp" | "vb") && !is_csharp_len_accessor {
