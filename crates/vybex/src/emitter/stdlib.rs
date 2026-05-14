@@ -3021,9 +3021,10 @@ fn build_isdate(_imports: &mut Chunk) -> Chunk {
 //   8192=Array (added to base type)
 //
 // We collapse to the JS-typeof landscape:
-//   null → 1, "boolean" → 11, "number"/"i32"/"i64" → 5,
-//   "string" → 8, "object" → 9 (or 7 if __type=="DateTime",
-//   or 8192+? for arrays), default 12.
+//   null → 1, "boolean" → 11, integral numerics → 2,
+//   non-integral numerics → 5, "i32" → 2, "i64" → 3,
+//   "string" → 8, arrays → 8194, "object" → 9,
+//   DateTime → 7, default 12.
 fn build_vartype(_imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_vartype");
     c.arity = 1;
@@ -3043,11 +3044,14 @@ fn build_vartype(_imports: &mut Chunk) -> Chunk {
     let dt_str = c.add_constant(Value::String(std::sync::Arc::from("DateTime")));
     let v12 = c.add_constant(Value::I32(12));
     let v1 = c.add_constant(Value::I32(1));
+    let v2 = c.add_constant(Value::I32(2));
+    let v3 = c.add_constant(Value::I32(3));
     let v11 = c.add_constant(Value::I32(11));
     let v5 = c.add_constant(Value::I32(5));
     let v8 = c.add_constant(Value::I32(8));
     let v9 = c.add_constant(Value::I32(9));
     let v7 = c.add_constant(Value::I32(7));
+    let v8194 = c.add_constant(Value::I32(8194));
 
     // result = 12 (Variant) — fallthrough default
     c.emit_op_u16(Op::CONST, v12, 0);
@@ -3083,17 +3087,53 @@ fn build_vartype(_imports: &mut Chunk) -> Chunk {
     }
     check!(null_str, v1);
     check!(bool_str, v11);
-    check!(num_str, v5);
-    check!(i32_str, v5);
-    check!(i64_str, v5);
+    check!(i32_str, v2);
+    check!(i64_str, v3);
     check!(str_str, v8);
 
-    // typeof == "object" — distinguish DateTime (7) from generic Object (9)
+    c.emit_op_u16(Op::LOCAL_GET, tag, 0);
+    c.emit_op_u16(Op::CONST, num_str, 0);
+    c.emit_op(Op::STR_EQUALS, 0);
+    let is_number = c.emit_block(0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, val, 0);
+    c.emit_op(Op::F64_TRUNC, 0);
+    c.emit_op_u16(Op::LOCAL_GET, val, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    let is_integral = c.emit_block(0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::CONST, v2, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(2, 0);
+    c.emit_end(0); c.patch_block(is_integral);
+
+    c.emit_op_u16(Op::CONST, v5, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(1, 0);
+    c.emit_end(0); c.patch_block(is_number);
+
+    // typeof == "object" — distinguish arrays, DateTime, and generic Object.
     c.emit_op_u16(Op::LOCAL_GET, tag, 0);
     c.emit_op_u16(Op::CONST, obj_str, 0);
     c.emit_op(Op::STR_EQUALS, 0);
     c.emit_op(Op::DYN_NOT, 0);
     c.emit_br_if(0, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, val, 0);
+    c.emit_op(Op::REF_IS_ARRAY, 0);
+    let _is_array = c.emit_block(0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::CONST, v8194, 0);
+    c.emit_op_u16(Op::LOCAL_SET, result, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_br(1, 0);
+    c.emit_end(0); c.patch_block(_is_array);
 
     // It's an object; check __type
     c.emit_op_u16(Op::LOCAL_GET, val, 0);

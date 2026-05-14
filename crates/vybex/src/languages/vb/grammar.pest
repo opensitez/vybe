@@ -453,8 +453,10 @@ lambda_expression = {
     | (^"Sub" ~ "(" ~ param_list? ~ ")" ~ (statement | (NEWLINE | EOI) ~ (!sub_end ~ line)* ~ sub_end))
 }
 
-expression = { logical_xor }
+expression = { logical_imp }
 
+logical_imp = { logical_eqv ~ (imp_op ~ logical_eqv)* }
+logical_eqv = { logical_xor ~ (eqv_op ~ logical_xor)* }
 logical_xor = { logical_or ~ (xor_op ~ logical_or)* }
 logical_or = { logical_and ~ (or_op ~ logical_and)* }
 logical_and = { not_condition ~ (and_op ~ not_condition)* }
@@ -464,10 +466,12 @@ comparison = { bit_shift ~ (comp_op ~ bit_shift | like_op ~ bit_shift)* }
 bit_shift = { additive ~ (shift_op ~ additive)* }
 additive = { multiplicative ~ (add_op ~ multiplicative)* }
 multiplicative = { unary ~ (mult_op ~ unary)* }
-unary = { (await_op | neg_op)? ~ exponent }
+unary = { (await_op | neg_op | pos_op)? ~ exponent }
 exponent = { postfix ~ (exp_op ~ postfix)* }
 postfix = { primary ~ member_chain* }
 
+imp_op = { ^"Imp" }
+eqv_op = { ^"Eqv" }
 xor_op = { ^"Xor" }
 or_op = { ^"OrElse" | ^"Or" }
 and_op = { ^"AndAlso" | ^"And" }
@@ -480,6 +484,7 @@ mult_op = { "*" | "/" | "\\" | ^"Mod" }
 exp_op = { "^" }
 not_op = @{ ^"Not" ~ !(ASCII_ALPHANUMERIC | "_") } // Atomic: No implicit whitespace before lookahead
 neg_op = { "-" }
+pos_op = { "+" }
 await_op = { ^"Await" }
 
 // Me keyword rules
@@ -622,7 +627,7 @@ member_identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
 // Keywords
 keyword = _{
-    (^"Me" | ^"If" | ^"Then" | ^"Else" | ^"End" | ^"Sub" | ^"Function" | ^"Dim" | ^"ReDim" | ^"Preserve" | ^"Const" | ^"As" | ^"Set" | ^"For" | ^"To" | ^"Step" | ^"Next" | ^"While" | ^"Wend" | ^"Do" | ^"Loop" | ^"Until" | ^"Exit" | ^"Return" | ^"Call" | ^"True" | ^"False" | ^"Nothing" | ^"Not" | ^"Or" | ^"And" | ^"Mod" | ^"Module" | ^"Class" | ^"Private" | ^"Public" | ^"ByVal" | ^"ByRef" | ^"Select" | ^"Case" | ^"Try" | ^"Catch" | ^"Finally" | ^"Continue" | ^"New" | ^"When" | ^"Partial" | ^"Friend" | ^"Protected" | ^"Overrides" | ^"Overloads" | ^"Shared" | ^"WithEvents" | ^"Handles" | ^"Imports" | ^"Is" | ^"IsNot" | ^"AndAlso" | ^"OrElse" | ^"Optional" | ^"ParamArray" | ^"MyBase" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" | ^"With" | ^"Each" | ^"In" | ^"Enum" | ^"Open" | ^"Close" | ^"Print" | ^"Line" | ^"Input" | ^"Write" | ^"Append" | ^"Output" | ^"Binary" | ^"Random" | ^"RaiseEvent" | ^"TypeOf" | ^"Throw" | ^"AddHandler" | ^"RemoveHandler" | ^"GoTo" | ^"Static" | ^"Interface" | ^"Structure" | ^"Delegate" | ^"Event" | ^"Resume" | ^"Namespace" | ^"Using" | ^"SyncLock")
+    (^"Me" | ^"If" | ^"Then" | ^"Else" | ^"End" | ^"Sub" | ^"Function" | ^"Dim" | ^"ReDim" | ^"Preserve" | ^"Const" | ^"As" | ^"Set" | ^"For" | ^"To" | ^"Step" | ^"Next" | ^"While" | ^"Wend" | ^"Do" | ^"Loop" | ^"Until" | ^"Exit" | ^"Return" | ^"Call" | ^"True" | ^"False" | ^"Nothing" | ^"Not" | ^"Or" | ^"And" | ^"Xor" | ^"Eqv" | ^"Imp" | ^"Mod" | ^"Module" | ^"Class" | ^"Private" | ^"Public" | ^"ByVal" | ^"ByRef" | ^"Select" | ^"Case" | ^"Try" | ^"Catch" | ^"Finally" | ^"Continue" | ^"New" | ^"When" | ^"Partial" | ^"Friend" | ^"Protected" | ^"Overrides" | ^"Overloads" | ^"Shared" | ^"WithEvents" | ^"Handles" | ^"Imports" | ^"Is" | ^"IsNot" | ^"AndAlso" | ^"OrElse" | ^"Optional" | ^"ParamArray" | ^"MyBase" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" | ^"With" | ^"Each" | ^"In" | ^"Enum" | ^"Open" | ^"Close" | ^"Print" | ^"Line" | ^"Input" | ^"Write" | ^"Append" | ^"Output" | ^"Binary" | ^"Random" | ^"RaiseEvent" | ^"TypeOf" | ^"Throw" | ^"AddHandler" | ^"RemoveHandler" | ^"GoTo" | ^"Static" | ^"Interface" | ^"Structure" | ^"Delegate" | ^"Event" | ^"Resume" | ^"Namespace" | ^"Using" | ^"SyncLock")
     ~ !(ASCII_ALPHANUMERIC | "_")
 }
 

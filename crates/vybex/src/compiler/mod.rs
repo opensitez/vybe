@@ -6633,7 +6633,28 @@ impl Compiler {
                 self.emit_host_call(i, 2);
             }
             BinOp::And | BinOp::Or => unreachable!(), // handled with short-circuit
-            BinOp::Xor => self.emit(Op::I32_XOR),
+            BinOp::Xor => {
+                self.emit(Op::I32_XOR);
+                self.emit(Op::DYN_TO_BOOL);
+            }
+            BinOp::Eqv => {
+                self.emit(Op::I32_XOR);
+                self.emit(Op::DYN_TO_BOOL);
+                self.emit(Op::DYN_NOT);
+            }
+            BinOp::Imp => {
+                let rhs_slot = self.define_local("__imp_rhs");
+                let lhs_slot = self.define_local("__imp_lhs");
+                self.emit_u16(Op::LOCAL_SET, rhs_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, lhs_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, lhs_slot);
+                self.emit(Op::DYN_TO_BOOL);
+                self.emit(Op::DYN_NOT);
+                self.emit_u16(Op::LOCAL_GET, rhs_slot);
+                self.emit(Op::DYN_TO_BOOL);
+                self.emit(Op::I32_OR);
+                self.emit(Op::DYN_TO_BOOL);
+            }
             BinOp::BitAnd => self.emit(Op::I32_AND),
             BinOp::BitOr => self.emit(Op::I32_OR),
             BinOp::BitXor => self.emit(Op::I32_XOR),
@@ -7516,7 +7537,28 @@ impl Compiler {
         match op_name {
             "abs" => { self.compile_expr(args[0])?; common::math::emit_abs(self.chunk(), line); }
             "sqrt" => { self.compile_expr(args[0])?; common::math::emit_sqrt(self.chunk(), line); }
-            "round" => { self.compile_expr(args[0])?; common::math::emit_round(self.chunk(), line); }
+            "round" => {
+                if args.len() >= 2 {
+                    let number = self.import("ecma:number", "Number");
+                    let scale_slot = self.define_local("__round_scale");
+                    self.emit_const(Value::F64(10.0));
+                    self.compile_expr(args[1])?;
+                    common::math::emit_pow(self.chunk(), line);
+                    self.emit_host_call(number, 1);
+                    self.emit_u16(Op::LOCAL_SET, scale_slot); self.emit(Op::DROP);
+
+                    self.compile_expr(args[0])?;
+                    self.emit_host_call(number, 1);
+                    self.emit_u16(Op::LOCAL_GET, scale_slot);
+                    self.emit(Op::F64_MUL);
+                    common::math::emit_round(self.chunk(), line);
+                    self.emit_u16(Op::LOCAL_GET, scale_slot);
+                    self.emit(Op::F64_DIV);
+                } else {
+                    self.compile_expr(args[0])?;
+                    common::math::emit_round(self.chunk(), line);
+                }
+            }
             "trunc" => { self.compile_expr(args[0])?; common::math::emit_trunc(self.chunk(), line); }
             "floor" => { self.compile_expr(args[0])?; common::math::emit_floor(self.chunk(), line); }
             "ceil" => { self.compile_expr(args[0])?; common::math::emit_ceil(self.chunk(), line); }
@@ -8937,11 +8979,8 @@ impl Compiler {
             // ── Numeric conversion intrinsics ─────────────────────────
             //
             // VB / Pascal / Python `cint` / `int(x)` / `clng` — coerce
-            // to a number then floor. Matches the legacy
-            // `vybe:convert.cint` semantics (floor, not banker's
-            // rounding — VB6 `cint` uses banker's, but the legacy host
-            // fn used floor, so we preserve that here. A separate
-            // banker's rounding intrinsic would be a behavior change.)
+            // to a number and round to nearest-even so midpoint cases
+            // line up with VB's Round semantics.
             "cint" | "clng" => {
                 if let Some(arg) = args.first() {
                     self.compile_expr(arg)?;
@@ -8971,7 +9010,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, value_slot);
                     let num = self.import("ecma:number", "Number");
                     self.emit_host_call(num, 1);
-                    self.emit(Op::F64_FLOOR);
+                    common::math::emit_round(self.chunk(), line);
                     self.patch_jump(done);
                 } else {
                     self.emit_const(Value::F64(0.0));

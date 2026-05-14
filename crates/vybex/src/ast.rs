@@ -907,7 +907,7 @@ pub enum BinOp {
     Add, Sub, Mul, Div, IDiv, Mod, Pow,
     Eq, NotEq, StrictEq, StrictNotEq, Lt, Gt, LtEq, GtEq,
     Spaceship,
-    And, Or, Xor,
+    And, Or, Xor, Eqv, Imp,
     BitAnd, BitOr, BitXor, Shl, Shr, UShr,
     Concat,
     In, NotIn, InstanceOf,

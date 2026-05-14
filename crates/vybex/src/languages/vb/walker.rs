@@ -101,6 +101,235 @@ fn call_expr(callee: Expression, args: Vec<Argument>) -> Expression {
     })
 }
 
+fn dotted_expr_name(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some(name.clone()),
+        ExprKind::Member { object, field, null_safe: false } => {
+            Some(format!("{}.{}", dotted_expr_name(object)?, field))
+        }
+        _ => None,
+    }
+}
+
+fn build_vb_math_call(name: &str, arg: Expression) -> Expression {
+    call_expr(
+        build_dotted_expr(&format!("System.Math.{}", name)),
+        vec![Argument::positional(arg)],
+    )
+}
+
+fn build_vb_bankers_round_expr(value: Expression) -> Expression {
+    let floor = build_vb_math_call("Floor", value.clone());
+    let ceil = build_vb_math_call("Ceiling", value.clone());
+    let frac = Expression::new(ExprKind::Binary {
+        op: BinOp::Sub,
+        left: Box::new(value),
+        right: Box::new(floor.clone()),
+    });
+    let half = Expression::new(ExprKind::Lit(Literal::Float(0.5)));
+    let floor_is_even = Expression::new(ExprKind::Binary {
+        op: BinOp::Eq,
+        left: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::Mod,
+            left: Box::new(floor.clone()),
+            right: Box::new(Expression::int(2)),
+        })),
+        right: Box::new(Expression::int(0)),
+    });
+
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::Lt,
+            left: Box::new(frac.clone()),
+            right: Box::new(half.clone()),
+        })),
+        then: Box::new(floor.clone()),
+        else_: Box::new(Expression::new(ExprKind::Ternary {
+            cond: Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::Gt,
+                left: Box::new(frac),
+                right: Box::new(half),
+            })),
+            then: Box::new(ceil.clone()),
+            else_: Box::new(Expression::new(ExprKind::Ternary {
+                cond: Box::new(floor_is_even),
+                then: Box::new(floor),
+                else_: Box::new(ceil),
+            })),
+        })),
+    })
+}
+
+fn round_decimal_text_to_even(text: &str, digits: usize) -> Option<f64> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let (negative, body) = if let Some(rest) = trimmed.strip_prefix('-') {
+        (true, rest)
+    } else if let Some(rest) = trimmed.strip_prefix('+') {
+        (false, rest)
+    } else {
+        (false, trimmed)
+    };
+
+    let mut parts = body.splitn(2, '.');
+    let mut whole = parts.next().unwrap_or("0").to_string();
+    let frac = parts.next().unwrap_or("");
+    if digits >= frac.len() {
+        return trimmed.parse().ok();
+    }
+
+    let mut kept: Vec<u8> = frac.as_bytes()[..digits].to_vec();
+    let next = frac.as_bytes()[digits];
+    let rest_nonzero = frac.as_bytes()[digits + 1..].iter().any(|digit| *digit != b'0');
+    let last_kept = kept.last().copied().or_else(|| whole.as_bytes().last().copied()).unwrap_or(b'0');
+    let round_up = match next.cmp(&b'5') {
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Less => false,
+        std::cmp::Ordering::Equal => rest_nonzero || ((last_kept - b'0') % 2 == 1),
+    };
+
+    if round_up {
+        let mut carry = true;
+        for digit in kept.iter_mut().rev() {
+            if *digit == b'9' {
+                *digit = b'0';
+            } else {
+                *digit += 1;
+                carry = false;
+                break;
+            }
+        }
+        if carry {
+            let mut whole_digits: Vec<u8> = whole.into_bytes();
+            for digit in whole_digits.iter_mut().rev() {
+                if *digit == b'9' {
+                    *digit = b'0';
+                } else if digit.is_ascii_digit() {
+                    *digit += 1;
+                    carry = false;
+                    break;
+                }
+            }
+            if carry {
+                whole_digits.insert(0, b'1');
+            }
+            whole = String::from_utf8(whole_digits).ok()?;
+        }
+    }
+
+    let frac_text = String::from_utf8(kept).ok()?;
+    let rounded = if digits == 0 {
+        whole
+    } else {
+        format!("{}.{}", whole, frac_text)
+    };
+    let signed = if negative { format!("-{}", rounded) } else { rounded };
+    signed.parse().ok()
+}
+
+fn try_fold_vb_decimal_round(value: &Expression, digits: &Expression) -> Option<Expression> {
+    let digits = literal_number(digits)?;
+    if digits < 0.0 || digits.fract() != 0.0 {
+        return None;
+    }
+    let digits = digits as usize;
+    let ExprKind::Call { callee, args, .. } = &value.kind else {
+        return None;
+    };
+    let ExprKind::Ident(name) = &callee.kind else {
+        return None;
+    };
+    if !name.eq_ignore_ascii_case("cdec") || args.len() != 1 {
+        return None;
+    }
+    let text = literal_string(&args[0].value)?;
+    let rounded = round_decimal_text_to_even(&text, digits)?;
+    Some(Expression::new(ExprKind::Lit(Literal::Float(rounded))))
+}
+
+fn try_fold_vb_double_round(value: &Expression, digits: &Expression) -> Option<Expression> {
+    let digits = literal_number(digits)?;
+    if digits < 0.0 || digits.fract() != 0.0 {
+        return None;
+    }
+    let value = literal_number(value)?;
+    let rounded = format!("{:.*}", digits as usize, value).parse().ok()?;
+    Some(Expression::new(ExprKind::Lit(Literal::Float(rounded))))
+}
+
+fn build_vb_precision_round_expr(value: Expression, digits: Expression) -> Expression {
+    if let Some(folded) = try_fold_vb_decimal_round(&value, &digits) {
+        return folded;
+    }
+
+    let pow_left = call_expr(
+        build_dotted_expr("Math.Pow"),
+        vec![
+            Argument::positional(Expression::float(10.0)),
+            Argument::positional(digits.clone()),
+        ],
+    );
+    let pow_right = call_expr(
+        build_dotted_expr("Math.Pow"),
+        vec![
+            Argument::positional(Expression::float(10.0)),
+            Argument::positional(digits),
+        ],
+    );
+    let scaled = Expression::new(ExprKind::Binary {
+        op: BinOp::Mul,
+        left: Box::new(value),
+        right: Box::new(pow_left),
+    });
+    let rounded = build_vb_bankers_round_expr(scaled);
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Div,
+        left: Box::new(rounded),
+        right: Box::new(pow_right),
+    })
+}
+
+fn vb_like_pattern_to_regex(pattern: &str) -> String {
+    let mut regex = String::from("^");
+    for ch in pattern.chars() {
+        match ch {
+            '*' => regex.push_str(".*"),
+            '?' => regex.push('.'),
+            '#' => regex.push_str("\\d"),
+            '.' | '+' | '(' | ')' | '{' | '}' | '[' | ']' | '^' | '$' | '|' | '\\' => {
+                regex.push('\\');
+                regex.push(ch);
+            }
+            _ => regex.push(ch),
+        }
+    }
+    regex.push('$');
+    regex
+}
+
+fn maybe_rewrite_vb_binary(op: BinOp, left: Expression, right: Expression) -> Expression {
+    if op == BinOp::Like {
+        if let Some(pattern) = literal_string(&right) {
+            return call_expr(
+                build_dotted_expr("Regex.IsMatch"),
+                vec![
+                    Argument::positional(Expression::string(&vb_like_pattern_to_regex(&pattern))),
+                    Argument::positional(left),
+                ],
+            );
+        }
+    }
+
+    Expression::new(ExprKind::Binary {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
+}
+
 fn literal_number(expr: &Expression) -> Option<f64> {
     match &expr.kind {
         ExprKind::Lit(Literal::Int(n)) => Some(*n as f64),
@@ -385,6 +614,12 @@ fn canonicalize_special_identifier(name: &str) -> Option<Expression> {
 fn canonicalize_call(name: &str, arguments: &[Argument]) -> Option<Expression> {
     match name.to_ascii_lowercase().as_str() {
         "fix" if arguments.len() == 1 => Some(call_expr(build_dotted_expr("System.Math.Truncate"), arguments.to_vec())),
+        "cint" | "clng" if arguments.len() == 1 => Some(build_vb_bankers_round_expr(arguments[0].value.clone())),
+        "round" if arguments.len() == 1 => Some(build_vb_bankers_round_expr(arguments[0].value.clone())),
+        "round" if arguments.len() >= 2 => Some(build_vb_precision_round_expr(
+            arguments[0].value.clone(),
+            arguments[1].value.clone(),
+        )),
         "dateserial"
         | "timeserial"
         | "dateadd"
@@ -1713,11 +1948,7 @@ fn parse_binary_expression(pair: Pair<Rule>) -> Result<Expression, String> {
 
         let right_pair = inner.next().unwrap();
         let right = parse_expression(right_pair)?;
-        left = Expression::new(ExprKind::Binary {
-            op,
-            left: Box::new(left),
-            right: Box::new(right),
-        });
+        left = maybe_rewrite_vb_binary(op, left, right);
     }
 
     Ok(left)
@@ -3488,7 +3719,7 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                 pair = inner.next().ok_or_else(|| "Named argument missing value".to_string())?;
                 continue;
             }
-            Rule::expression | Rule::logical_xor | Rule::logical_or | Rule::logical_and |
+            Rule::expression | Rule::logical_imp | Rule::logical_eqv | Rule::logical_xor | Rule::logical_or | Rule::logical_and |
             Rule::equality | Rule::comparison | Rule::bit_shift | Rule::additive |
             Rule::multiplicative | Rule::exponent => {
                 let mut probe = pair.clone().into_inner();
@@ -3989,11 +4220,12 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
 fn parse_binary_expression(pair: Pair<Rule>) -> Result<Expression, String> {
     let mut inner = pair.into_inner();
     let first = inner.next().unwrap();
-    let mut left = parse_expression(first)?;
+    let mut operands = vec![parse_expression(first)?];
+    let mut ops = Vec::new();
 
     while let Some(op_pair) = inner.next() {
         let op = match op_pair.as_rule() {
-            Rule::add_op | Rule::mult_op | Rule::eq_op | Rule::comp_op | Rule::and_op | Rule::or_op | Rule::xor_op | Rule::shift_op | Rule::like_op | Rule::exp_op => {
+            Rule::add_op | Rule::mult_op | Rule::eq_op | Rule::comp_op | Rule::and_op | Rule::or_op | Rule::xor_op | Rule::eqv_op | Rule::imp_op | Rule::shift_op | Rule::like_op | Rule::exp_op => {
                 match op_pair.as_str().to_lowercase().as_str() {
                     "+" => BinOp::Add,
                     "-" => BinOp::Sub,
@@ -4012,6 +4244,8 @@ fn parse_binary_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                     "and" | "andalso" => BinOp::And,
                     "or" | "orelse" => BinOp::Or,
                     "xor" => BinOp::Xor,
+                    "eqv" => BinOp::Eqv,
+                    "imp" => BinOp::Imp,
                     "<<" => BinOp::Shl,
                     ">>" => BinOp::Shr,
                     "is" => BinOp::Is,
@@ -4020,16 +4254,34 @@ fn parse_binary_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                     _ => return Err(format!("Unknown operator: {}", op_pair.as_str())),
                 }
             }
-            _ => return Ok(left),
+            _ => return Ok(operands.pop().unwrap()),
         };
 
         let right_pair = inner.next().unwrap();
-        let right = parse_expression(right_pair)?;
-        left = Expression::new(ExprKind::Binary {
-            op,
-            left: Box::new(left),
-            right: Box::new(right),
-        });
+        ops.push(op);
+        operands.push(parse_expression(right_pair)?);
+    }
+
+    if ops.is_empty() {
+        return Ok(operands.pop().unwrap());
+    }
+
+    if ops.iter().all(|op| *op == BinOp::Pow) {
+        let mut expr = operands.pop().unwrap();
+        while let Some(left) = operands.pop() {
+            expr = Expression::new(ExprKind::Binary {
+                op: BinOp::Pow,
+                left: Box::new(left),
+                right: Box::new(expr),
+            });
+        }
+        return Ok(expr);
+    }
+
+    let mut operands = operands.into_iter();
+    let mut left = operands.next().unwrap();
+    for (op, right) in ops.into_iter().zip(operands) {
+        left = maybe_rewrite_vb_binary(op, left, right);
     }
 
     Ok(left)
@@ -4640,6 +4892,13 @@ fn parse_unary_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                 expr: Box::new(operand),
             }, span))
         }
+        Rule::pos_op => {
+            let operand = parse_expression(inner.next().unwrap())?;
+            Ok(Expression::with_span(ExprKind::Unary {
+                op: UnaryOp::Pos,
+                expr: Box::new(operand),
+            }, span))
+        }
         Rule::neg_op => {
             let operand = parse_expression(inner.next().unwrap())?;
             Ok(Expression::with_span(ExprKind::Unary {
@@ -4716,6 +4975,28 @@ fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expres
                     });
                 }
                 return Ok(indexed);
+            }
+            if name.eq_ignore_ascii_case("Round") {
+                if let Some(path) = dotted_expr_name(&expr) {
+                    if path.eq_ignore_ascii_case("Math") || path.eq_ignore_ascii_case("System.Math") {
+                        if arguments.len() >= 2 {
+                            if let Some(folded) = try_fold_vb_double_round(
+                                &arguments[0].value,
+                                &arguments[1].value,
+                            ) {
+                                return Ok(folded);
+                            }
+                        }
+                        return Ok(if arguments.len() >= 2 {
+                            build_vb_precision_round_expr(
+                                arguments[0].value.clone(),
+                                arguments[1].value.clone(),
+                            )
+                        } else {
+                            build_vb_bankers_round_expr(arguments[0].value.clone())
+                        });
+                    }
+                }
             }
             let callee = Expression::new(ExprKind::Member {
                 object: Box::new(expr),

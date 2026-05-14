@@ -72,8 +72,8 @@ uses_normalize_class = true
 # ── Type Conversions ─────────────────────────────────────────────────────────
 
 cstr    = { emit = "host:ecma:string:String",   min_args = 1, max_args = 1 }
-cint    = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
-cdbl    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
+cint    = { emit = "intrinsic:cint",               min_args = 1, max_args = 1 }
+cdbl    = { emit = "host:ecma:number:Number",      min_args = 1, max_args = 1 }
 cbool   = { emit = "opcode:dyn_to_bool",           min_args = 1, max_args = 1 }
 clng    = { emit = "intrinsic:clng",       min_args = 1, max_args = 1 }
 csng    = { emit = "host:ecma:number:Number",       min_args = 1, max_args = 1 }
@@ -85,7 +85,7 @@ cuint   = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
 culng   = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
 csbyte  = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
 ccur    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
-cdec    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
+cdec    = { emit = "host:ecma:number:Number",      min_args = 1, max_args = 1 }
 cvar    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
 cobj    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
 val     = { emit = "stdlib:val",                   min_args = 1, max_args = 1 }
@@ -132,9 +132,9 @@ sqr           = { emit = "opcode:f64_sqrt",    min_args = 1, max_args = 1 }
 "system.math.sqrt" = { emit = "opcode:f64_sqrt", min_args = 1, max_args = 1 }
 "math.truncate" = { emit = "opcode:f64_trunc", min_args = 1, max_args = 1 }
 "system.math.truncate" = { emit = "opcode:f64_trunc", min_args = 1, max_args = 1 }
-round         = { emit = "opcode:f64_nearest", min_args = 1, max_args = 1 }
-"math.round"  = { emit = "opcode:f64_nearest", min_args = 1, max_args = 1 }
-"system.math.round" = { emit = "opcode:f64_nearest", min_args = 1, max_args = 1 }
+round         = { emit = "opcode:round", min_args = 1, max_args = 2 }
+"math.round"  = { emit = "opcode:round", min_args = 1, max_args = 2 }
+"system.math.round" = { emit = "opcode:round", min_args = 1, max_args = 2 }
 "math.min"    = { emit = "opcode:f64_min",     min_args = 2, max_args = 2 }
 "system.math.min" = { emit = "opcode:f64_min", min_args = 2, max_args = 2 }
 "math.max"    = { emit = "opcode:f64_max",     min_args = 2, max_args = 2 }
