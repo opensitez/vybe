@@ -84,9 +84,10 @@ statement = _{
     | synclock_statement
 }
 dim_new_keyword = { ^"New" }
+array_rank_spec = { "(" ~ array_bounds? ~ ")" }
 dim_declaration_part = {
     identifier ~
-    ("(" ~ array_bounds? ~ ")")? ~
+    array_rank_spec? ~
     (^"As" ~ dim_new_keyword? ~ type_name ~ ("(" ~ argument_list? ~ ")")? ~ (from_initializer | with_initializer)?)? ~
     ("=" ~ (array_literal | expression))?
 }
@@ -378,7 +379,7 @@ enum_end = { ^"End" ~ ^"Enum" }
 
 // Field declarations: now support Friend, WithEvents, and dotted type names
 withevents_keyword = { ^"WithEvents" }
-field_decl = { (^"Public" | ^"Private" | ^"Protected" | ^"Friend") ~ withevents_keyword? ~ identifier ~ ("(" ~ array_bounds? ~ ")")? ~ (^"As" ~ dim_new_keyword? ~ type_name)? ~ ("=" ~ (array_literal | expression))? }
+field_decl = { (^"Public" | ^"Private" | ^"Protected" | ^"Friend") ~ withevents_keyword? ~ identifier ~ array_rank_spec? ~ (^"As" ~ dim_new_keyword? ~ type_name)? ~ ("=" ~ (array_literal | expression))? }
 field_line = _{ field_decl ~ (NEWLINE | EOI) }
 
 // Auto-implemented property: Public Property Name As String [= defaultValue]

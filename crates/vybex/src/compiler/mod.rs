@@ -198,6 +198,7 @@ pub struct Compiler {
     function_param_modes: HashMap<String, Vec<PassBy>>,
     function_min_arity: HashMap<String, usize>,
     function_signatures: HashMap<String, Vec<CallSignature>>,
+    function_return_types: HashMap<String, String>,
     constructor_signatures: HashMap<String, Vec<CallSignature>>,
     defined_classes: HashSet<String>,
     /// Names of methods defined on any user class — used to avoid value method
@@ -235,6 +236,7 @@ pub struct Compiler {
     /// Label for the next loop to be pushed (set by StmtKind::Labeled).
     pending_label: Option<String>,
     with_targets: Vec<u16>,
+    capture_by_value_vars: Vec<String>,
 
 
     /// Functions whose every explicit `Return` carries an `ExprKind::Tuple`
@@ -445,6 +447,7 @@ impl Compiler {
             function_param_modes: HashMap::new(),
             function_min_arity: HashMap::new(),
             function_signatures: HashMap::new(),
+            function_return_types: HashMap::new(),
             constructor_signatures: HashMap::new(),
             defined_classes: HashSet::new(),
             defined_class_methods: HashSet::new(),
@@ -467,6 +470,7 @@ impl Compiler {
             static_local_bindings: Vec::new(),
             pending_label: None,
             with_targets: Vec::new(),
+            capture_by_value_vars: Vec::new(),
 
 
             multi_return_functions: HashMap::new(),
@@ -2011,11 +2015,31 @@ impl Compiler {
                 return Some(type_hint);
             }
         }
+        for scope in self.scopes.iter().rev().skip(1) {
+            if let Some(type_hint) = scope.resolve_type(name) {
+                return Some(type_hint);
+            }
+            if !self.case_sensitive {
+                if let Some(type_hint) = scope.resolve_type_ci(name) {
+                    return Some(type_hint);
+                }
+            }
+        }
         if let Some(type_hint) = self.lookup_implicit_self_field_type_hint(name) {
             return Some(type_hint);
         }
         let cname = self.canon(name);
         self.global_type_hints.get(&cname).map(|s| s.as_str())
+    }
+
+    pub(super) fn has_accessible_local_binding(&self, name: &str) -> bool {
+        if self.static_local_binding(name).is_some() {
+            return true;
+        }
+        self.scopes.iter().rev().any(|scope| {
+            scope.resolve(name).is_some()
+                || (!self.case_sensitive && scope.resolve_ci(name).is_some())
+        })
     }
 
     fn static_local_binding(&self, name: &str) -> Option<&StaticLocalBinding> {
@@ -2152,6 +2176,22 @@ impl Compiler {
         None
     }
 
+    fn infer_function_return_type(&self, callee: &Expression) -> Option<String> {
+        match &callee.kind {
+            ExprKind::Ident(name) => self.function_return_types.get(&self.canon(name)).cloned(),
+            ExprKind::Member { object, field, .. } => {
+                if let ExprKind::Ident(object_name) = &object.kind {
+                    let qualified = self.canon(&format!("{}.{}", object_name, field));
+                    if let Some(return_type) = self.function_return_types.get(&qualified) {
+                        return Some(return_type.clone());
+                    }
+                }
+                self.function_return_types.get(&self.canon(field)).cloned()
+            }
+            _ => None,
+        }
+    }
+
     fn infer_expr_type_hint(&self, expr: &Expression) -> Option<String> {
         match &expr.kind {
             ExprKind::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
@@ -2161,7 +2201,9 @@ impl Compiler {
             ExprKind::Lit(Literal::Bool(_)) => Some("bool".into()),
             ExprKind::Lit(Literal::Char(_)) => Some("char".into()),
             ExprKind::New { class, .. } => Self::expr_terminal_type_name(class),
-            ExprKind::Call { callee, .. } => self.infer_dotnet_factory_return_type(callee),
+            ExprKind::Call { callee, .. } => self
+                .infer_function_return_type(callee)
+                .or_else(|| self.infer_dotnet_factory_return_type(callee)),
             ExprKind::Member { object, .. } => {
                 let enum_type = Self::expr_terminal_type_name(object)?;
                 self.enum_value_names
@@ -3041,6 +3083,17 @@ impl Compiler {
             StmtKind::For { init, cond, update, body } => {
                 self.scope_mut().begin_scope();
                 if let Some(init_stmt) = init { self.compile_stmt(init_stmt)?; }
+                let loop_capture_name = if self.profile.name == "vb" {
+                    init.as_ref().and_then(|stmt| match &stmt.kind {
+                        StmtKind::VarDecl { declarations, .. } if declarations.len() == 1 => match &declarations[0].pattern {
+                            BindingPattern::Ident(name) => Some(self.canon(name)),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                } else {
+                    None
+                };
                 let line = self.line;
                 // For C-style with update: use block { loop { cond, block $body { body }, update, br loop } }
                 let block_patch = self.chunk().emit_block(line);
@@ -3067,7 +3120,13 @@ impl Compiler {
                 let lp = common::loops::LoopState { block_patch, loop_patch, body_block_patch: body_block };
                 self.loop_states.push(lp);
                 self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth, did_break_slot: None });
+                if let Some(loop_capture_name) = loop_capture_name.clone() {
+                    self.capture_by_value_vars.push(loop_capture_name);
+                }
                 for s in body { self.compile_stmt(s)?; }
+                if loop_capture_name.is_some() {
+                    self.capture_by_value_vars.pop();
+                }
                 self.loops.pop();
                 let lp = self.loop_states.pop().unwrap();
                 // Close body block (continue lands here)

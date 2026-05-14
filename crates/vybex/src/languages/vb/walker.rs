@@ -1302,6 +1302,12 @@ fn parse_dim_statement(pair: Pair<Rule>) -> Result<Vec<VarDeclarator>, String> {
         for p in part.into_inner() {
             match p.as_rule() {
                 Rule::identifier => name = p.as_str().to_string(),
+                Rule::array_rank_spec => {
+                    let bounds = p.into_inner()
+                        .map(parse_expression)
+                        .collect::<Result<Vec<_>, _>>()?;
+                    array_bounds = Some(bounds);
+                }
                 Rule::array_bounds => {
                     let bounds = p.into_inner()
                         .map(parse_expression)
@@ -3717,6 +3723,12 @@ fn parse_field_decl(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
             Rule::dim_new_keyword => { is_new = true; }
             Rule::identifier => field_name = fp.as_str().to_string(),
             Rule::type_name => field_type = Some(fp.as_str().to_string()),
+            Rule::array_rank_spec => {
+                let bounds: Vec<Expression> = fp.into_inner()
+                    .map(parse_expression)
+                    .collect::<Result<_, _>>()?;
+                field_bounds = Some(bounds);
+            }
             Rule::array_bounds => {
                 let bounds: Vec<Expression> = fp.into_inner()
                     .map(|e| parse_expression(e))

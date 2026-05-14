@@ -5,6 +5,7 @@
 //! inline WASM GC sequences.
 
 use super::*;
+use crate::scope::UpvalueDesc;
 
 fn python_is_identifier_literal(value: &str) -> bool {
     let mut chars = value.chars();
@@ -96,7 +97,8 @@ fn dotnet_static_member_return_type(expr: &Expression) -> Option<String> {
 
 fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression) -> Option<String> {
     match &recv.kind {
-        ExprKind::Ident(local_name) => compiler.scope().resolve_type_ci(local_name).map(|s| s.to_string())
+        ExprKind::Ident(local_name) => compiler.lookup_var_type_hint(local_name).map(str::to_string)
+            .or_else(|| compiler.scope().resolve_type_ci(local_name).map(|s| s.to_string()))
             .or_else(|| {
                 let cn = compiler.canon(local_name);
                 compiler.global_type_hints.get(&cn).cloned()
@@ -845,12 +847,7 @@ impl Compiler {
         if let ExprKind::Member { object, field, .. } = &callee.kind {
             let class_name = resolve_receiver_type_hint(self, object);
             if let Some(class_name) = class_name {
-                let class_name = class_name
-                    .split('<')
-                    .next()
-                    .map(str::trim)
-                    .unwrap_or(&class_name)
-                    .to_string();
+                let class_name = Self::normalize_type_hint(&class_name);
                 let surface = common::dotnet::surface();
                 if let Some(target) = surface.lookup_instance_method(&class_name, field, arg_exprs.len() as u8) {
                     if matches!(&target, common::dotnet::InstanceMethodTarget::Common { emit, .. } if emit == "collections.sort")
@@ -1149,8 +1146,7 @@ impl Compiler {
                 if self.profile.namespaces.use_dotnet_resolver {
                     let skip_simple_instance_chain = if lower_parts.len() == 2 {
                         let head = &parts[0];
-                        self.scope().resolve(head).is_some()
-                            || self.scope().resolve_ci(head).is_some()
+                        self.has_accessible_local_binding(head)
                             || self.defined_globals.contains(head)
                             || self.defined_globals.iter().any(|g| g.eq_ignore_ascii_case(head))
                             || self.is_class_field(head)
@@ -1169,7 +1165,6 @@ impl Compiler {
                         imp.extend(self.profile.namespaces.extra_imports.clone());
                         imp
                     };
-                    let scope = self.scope();
                     let defined_globals = self.defined_globals.clone();
                     let field_set: std::collections::HashSet<String> = if let Some(ref cn) = self.current_class {
                         self.pending_classes.get(cn.as_str())
@@ -1194,11 +1189,15 @@ impl Compiler {
                             || defined_classes.iter().any(|c| c.eq_ignore_ascii_case(name))
                     };
                     let is_user_class_for_local = is_user_class_fn.clone();
+                    let accessible_locals = self
+                        .scopes
+                        .iter()
+                        .flat_map(|scope| scope.locals.iter().map(|local| local.name.clone()))
+                        .collect::<Vec<_>>();
                     let ctx = common::dotnet::ResolutionContext {
                         is_local: &|name: &str| {
                             if is_user_class_for_local(name) { return false; }
-                            scope.resolve(name).is_some()
-                            || scope.resolve_ci(name).is_some()
+                            accessible_locals.iter().any(|local| local == name || local.eq_ignore_ascii_case(name))
                             || defined_globals.contains(name)
                             || defined_globals.iter().any(|g| g.eq_ignore_ascii_case(name))
                         },
@@ -1702,12 +1701,7 @@ impl Compiler {
         if let ExprKind::Member { object, field, .. } = &callee.kind {
             let class_name = resolve_receiver_type_hint(self, object);
             if let Some(class_name) = class_name {
-                let class_name = class_name
-                    .split('<')
-                    .next()
-                    .map(str::trim)
-                    .unwrap_or(&class_name)
-                    .to_string();
+                let class_name = Self::normalize_type_hint(&class_name);
                 let surface = common::dotnet::surface();
                 if let Some(target) = surface.lookup_instance_method(&class_name, field, arg_exprs.len() as u8) {
                     if matches!(&target, common::dotnet::InstanceMethodTarget::Common { emit, .. } if emit == "collections.sort")
@@ -3179,8 +3173,7 @@ impl Compiler {
             if self.current_class.is_some()
                 && (self.current_member_is_static || self.current_class_implicit_self)
             {
-                let is_local = self.scope().resolve(name).is_some()
-                    || (!self.case_sensitive && self.scope().resolve_ci(name).is_some());
+                let is_local = self.has_accessible_local_binding(name);
                 if !is_local {
                     if let Some(class_name) = self.is_class_static_method(name) {
                         let cls_idx = self.str_const(&class_name);
@@ -3267,8 +3260,7 @@ impl Compiler {
             // `New Result()` (class) would be mis-identified as indexing.
             if !is_known_func && arg_exprs.len() == 1 && self.profile.parens_for_index {
                 let canon_name = self.canon(name);
-                let is_local = self.scope().resolve(name).is_some()
-                    || (!self.case_sensitive && self.scope().resolve_ci(name).is_some());
+                let is_local = self.has_accessible_local_binding(name);
                 let is_global_var = self.defined_globals.contains(&canon_name)
                     && !self.defined_classes.contains(&canon_name)
                     && !self.defined_functions.contains(&canon_name);
@@ -3290,8 +3282,7 @@ impl Compiler {
                 && self.current_class_implicit_self
                 && !self.current_member_is_static
             {
-                let is_local = self.scope().resolve(name).is_some()
-                    || (!self.case_sensitive && self.scope().resolve_ci(name).is_some());
+                let is_local = self.has_accessible_local_binding(name);
                 if !is_local && !is_known_func {
                     if self.emit_self_ref() {
                         // Me.name(args) → load Me, dup, struct_get(name).
@@ -3453,6 +3444,12 @@ impl Compiler {
             let callee_slot = self.define_local("__direct_call_callee");
             self.emit_u16(Op::LOCAL_SET, callee_slot);
             self.emit(Op::DROP);
+            let receiver_key = self.str_const("__vybe_method_receiver");
+            self.emit_u16(Op::LOCAL_GET, callee_slot);
+            self.emit_u16(Op::STRUCT_GET, receiver_key);
+            let receiver_slot = self.define_local("__direct_call_receiver");
+            self.emit_u16(Op::LOCAL_SET, receiver_slot);
+            self.emit(Op::DROP);
             if let Some(param_modes) = self.function_param_modes.get(&self.canon(name)).cloned() {
                 if param_modes.iter().any(|mode| matches!(mode, PassBy::Ref | PassBy::Out)) {
                     let mut arg_slots = Vec::with_capacity(args.len());
@@ -3473,10 +3470,25 @@ impl Compiler {
                     }
 
                     self.emit_u16(Op::LOCAL_GET, callee_slot);
+                    self.emit_u16(Op::LOCAL_GET, receiver_slot);
+                    self.emit(Op::REF_IS_NULL);
+                    let no_receiver = self.emit_jump(Op::BR_IF_TRUE);
+
+                    self.emit_u16(Op::LOCAL_GET, callee_slot);
+                    self.emit_u16(Op::LOCAL_GET, receiver_slot);
+                    for slot in &arg_slots {
+                        self.emit_u16(Op::LOCAL_GET, *slot);
+                    }
+                    self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                    let call_done = self.emit_jump(Op::BR);
+
+                    self.patch_jump(no_receiver);
+                    self.emit_u16(Op::LOCAL_GET, callee_slot);
                     for slot in &arg_slots {
                         self.emit_u16(Op::LOCAL_GET, *slot);
                     }
                     self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                    self.patch_jump(call_done);
 
                     let pack_slot = self.define_local("__ref_call_pack");
                     self.emit_u16(Op::LOCAL_SET, pack_slot);
@@ -3508,11 +3520,25 @@ impl Compiler {
                 arg_slots.push(arg_slot);
             }
 
+            self.emit_u16(Op::LOCAL_GET, receiver_slot);
+            self.emit(Op::REF_IS_NULL);
+            let no_receiver = self.emit_jump(Op::BR_IF_TRUE);
+
+            self.emit_u16(Op::LOCAL_GET, callee_slot);
+            self.emit_u16(Op::LOCAL_GET, receiver_slot);
+            for slot in &arg_slots {
+                self.emit_u16(Op::LOCAL_GET, *slot);
+            }
+            self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+            let call_done = self.emit_jump(Op::BR);
+
+            self.patch_jump(no_receiver);
             self.emit_u16(Op::LOCAL_GET, callee_slot);
             for slot in arg_slots {
                 self.emit_u16(Op::LOCAL_GET, slot);
             }
             self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+            self.patch_jump(call_done);
             return Ok(());
         }
 
@@ -3549,6 +3575,13 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, callee_slot);
         self.emit(Op::DROP);
 
+        let receiver_key = self.str_const("__vybe_method_receiver");
+        self.emit_u16(Op::LOCAL_GET, callee_slot);
+        self.emit_u16(Op::STRUCT_GET, receiver_key);
+        let receiver_slot = self.define_local("__call_ref_receiver");
+        self.emit_u16(Op::LOCAL_SET, receiver_slot);
+        self.emit(Op::DROP);
+
         let mut arg_slots = Vec::with_capacity(arg_exprs.len());
         for (index, arg) in arg_exprs.iter().enumerate() {
             self.compile_expr(arg)?;
@@ -3558,11 +3591,25 @@ impl Compiler {
             arg_slots.push(arg_slot);
         }
 
+        self.emit_u16(Op::LOCAL_GET, receiver_slot);
+        self.emit(Op::REF_IS_NULL);
+        let no_receiver = self.emit_jump(Op::BR_IF_TRUE);
+
+        self.emit_u16(Op::LOCAL_GET, callee_slot);
+        self.emit_u16(Op::LOCAL_GET, receiver_slot);
+        for slot in &arg_slots {
+            self.emit_u16(Op::LOCAL_GET, *slot);
+        }
+        self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+        let done = self.emit_jump(Op::BR);
+
+        self.patch_jump(no_receiver);
         self.emit_u16(Op::LOCAL_GET, callee_slot);
         for slot in arg_slots {
             self.emit_u16(Op::LOCAL_GET, slot);
         }
         self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+        self.patch_jump(done);
         Ok(())
     }
 
@@ -5087,9 +5134,33 @@ impl Compiler {
         let uvs = self.scopes.last().unwrap().upvalues.clone();
         self.scopes.pop();
         self.current = saved;
-        let l = self.line;
-        common::functions::emit_ref_func(&mut self.chunks[self.current], ci, uvs.len() as u8, l);
+        let parent_locals = self.scope().locals.clone();
+        let mut emitted_uvs = Vec::with_capacity(uvs.len());
         for uv in &uvs {
+            let mut emitted = uv.clone();
+            if uv.is_local {
+                if let Some(local) = parent_locals.iter().find(|local| local.slot == uv.index as u16) {
+                    let local_name = self.canon(&local.name);
+                    if self.capture_by_value_vars.iter().any(|name| name == &local_name) {
+                        self.emit_u16(Op::LOCAL_GET, local.slot);
+                        let snapshot_slot = self.define_local_typed(
+                            &format!("__capture_{}_{}", local.name, ci),
+                            local.type_hint.clone(),
+                        );
+                        self.emit_u16(Op::LOCAL_SET, snapshot_slot);
+                        self.emit(Op::DROP);
+                        emitted = UpvalueDesc {
+                            index: snapshot_slot as u8,
+                            is_local: true,
+                        };
+                    }
+                }
+            }
+            emitted_uvs.push(emitted);
+        }
+        let l = self.line;
+        common::functions::emit_ref_func(&mut self.chunks[self.current], ci, emitted_uvs.len() as u8, l);
+        for uv in &emitted_uvs {
             self.chunks[self.current].emit(if uv.is_local { 1 } else { 0 }, l);
             self.chunks[self.current].emit(uv.index, l);
         }

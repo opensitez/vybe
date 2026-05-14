@@ -34,6 +34,9 @@ impl Compiler {
             .entry(cname.clone())
             .or_default()
             .push(CallSignature::from_params(params));
+        if let Some(return_type) = return_type.as_ref() {
+            self.function_return_types.insert(cname.clone(), return_type.clone());
+        }
         let name = &cname;
 
         let has_rest = params.last().map_or(false, |p| p.is_rest);
@@ -522,6 +525,13 @@ impl Compiler {
                 .push(CallSignature::from_params(
                     &user_params.iter().map(|param| (*param).clone()).collect::<Vec<_>>()
                 ));
+            if let Some(return_type) = m.return_type.as_ref() {
+                cc.function_return_types.insert(bound_name.clone(), return_type.clone());
+                cc.function_return_types.insert(
+                    cc.canon(&format!("{}.{}", class.name, mname)),
+                    return_type.clone(),
+                );
+            }
             let uses_js_this = cc.is_js_profile();
             let has_rest = user_params.last().map_or(false, |p| p.is_rest);
             let arity = if has_rest {
@@ -966,7 +976,11 @@ impl Compiler {
                         let prop = mname.strip_prefix("__set_").unwrap_or(mname);
                         common::classes::emit_bind_setter(self.chunk(), this_slot, prop, *mci, line);
                     } else {
-                        common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                        if self.is_js_profile() {
+                            common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                        } else {
+                            common::classes::emit_bind_bound_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                        }
                     }
                 }
                 common::classes::emit_constructor_return(self.chunk(), this_slot, line);
@@ -1092,7 +1106,11 @@ impl Compiler {
                                 let prop = mname.strip_prefix("__set_").unwrap_or(mname);
                                 common::classes::emit_bind_setter(self.chunk(), this_slot, prop, *mci, line);
                             } else {
-                                common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                                if self.is_js_profile() {
+                                    common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                                } else {
+                                    common::classes::emit_bind_bound_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                                }
                             }
                         }
 
@@ -1173,7 +1191,11 @@ impl Compiler {
                                 let prop = mname.strip_prefix("__set_").unwrap_or(mname);
                                 common::classes::emit_bind_setter(self.chunk(), this_slot, prop, *mci, line);
                             } else {
-                                common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                                if self.is_js_profile() {
+                                    common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                                } else {
+                                    common::classes::emit_bind_bound_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                                }
                             }
                         }
                         let user_body = &body_stmts[preamble_end..];
@@ -1211,7 +1233,11 @@ impl Compiler {
                             let prop = mname.strip_prefix("__set_").unwrap_or(mname);
                             common::classes::emit_bind_setter(self.chunk(), this_slot, prop, *mci, line);
                         } else {
-                            common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                            if self.is_js_profile() {
+                                common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                            } else {
+                                common::classes::emit_bind_bound_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                            }
                         }
                     }
                     if self.is_js_profile() {

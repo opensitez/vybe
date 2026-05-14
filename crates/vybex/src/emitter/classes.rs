@@ -142,6 +142,20 @@ pub fn emit_bind_method(chunk: &mut Chunk, this_slot: u16, method_name: &str, me
     chunk.emit_op(Op::DROP, line);
 }
 
+pub fn emit_bind_bound_method(chunk: &mut Chunk, this_slot: u16, method_name: &str, method_chunk_idx: usize, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunk.emit_op_u16(Op::REF_FUNC, method_chunk_idx as u16, line);
+    chunk.emit(0, line); // 0 upvalues (upvalue capture is compiler-specific)
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    let receiver_key = chunk.add_constant(Value::String(Arc::from("__vybe_method_receiver")));
+    chunk.emit_op_u16(Op::STRUCT_SET, receiver_key, line);
+    chunk.emit_op(Op::DROP, line);
+    let key = chunk.add_constant(Value::String(Arc::from(method_name)));
+    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
 /// Bind a method AND all its cross-language aliases.
 /// This is the primary entry point — ensures a method defined in any language
 /// is callable from every other language.
@@ -154,6 +168,16 @@ pub fn emit_bind_method_with_aliases(chunk: &mut Chunk, this_slot: u16, method_n
     emit_bind_method(chunk, this_slot, method_name, method_chunk_idx, line);
     // Bind under all cross-language aliases
     emit_cross_language_aliases(chunk, this_slot, method_name, method_chunk_idx, line);
+}
+
+pub fn emit_bind_bound_method_with_aliases(chunk: &mut Chunk, this_slot: u16, method_name: &str, method_chunk_idx: usize, line: u32) {
+    emit_bind_bound_method(chunk, this_slot, method_name, method_chunk_idx, line);
+    for &alias in cross_language_aliases(method_name) {
+        if alias == method_name {
+            continue;
+        }
+        emit_bind_bound_method(chunk, this_slot, alias, method_chunk_idx, line);
+    }
 }
 
 /// Return the cross-language alias list for a method name.
