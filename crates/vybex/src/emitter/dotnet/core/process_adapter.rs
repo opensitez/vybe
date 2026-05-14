@@ -103,7 +103,9 @@ pub fn emit_process_start(chunks: &mut [Chunk], current: usize, line: u32) {
     let spawn_idx = chunks[0].add_import("node:child_process", "spawnSync");
     let chunk = &mut chunks[current];
     let filename_key = chunk.add_constant(Value::String(Arc::from(FILENAME_KEY)));
+    let args_key = chunk.add_constant(Value::String(Arc::from(ARGUMENTS_KEY)));
     let arg_slot = reserve_slot(chunk);
+    let args_slot = reserve_slot(chunk);
     let result_slot = reserve_slot(chunk);
 
     // Stash the arg
@@ -120,9 +122,37 @@ pub fn emit_process_start(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.patch_jump(skip_fallback);
     // Stack: [filename_str]
 
-    // Push empty array as args
+    // Resolve arguments: arg.arguments if Object; else "".
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_GET, arg_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, args_key, line);
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    let skip_args_fallback = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::DROP, line);
+    push_const(chunk, Value::String(Arc::from("")), line);
+    chunk.patch_jump(skip_args_fallback);
+    chunk.emit_op_u16(Op::LOCAL_SET, args_slot, line);
+    chunk.emit_op(Op::DROP, line);
+
+    // ProcessStartInfo.Arguments is a raw string. For the current
+    // adapter surface, split on spaces into the argv array that the
+    // Node bridge expects. Keep [] for the empty-string default.
+    chunk.emit_op_u16(Op::LOCAL_GET, args_slot, line);
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op(Op::STR_LENGTH, line);
+    push_const(chunk, Value::I32(0), line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let split_args = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::DROP, line);
     crate::emitter::collections::emit_array_new(chunks, current, 0, line);
-    // Stack: [filename_str, []]
+    let after_args = chunks[current].emit_jump(Op::BR, line);
+    let chunk = &mut chunks[current];
+    chunk.patch_jump(split_args);
+    push_const(chunk, Value::String(Arc::from(" ")), line);
+    chunk.emit_op(Op::STR_SPLIT, line);
+    chunk.patch_jump(after_args);
+    // Stack: [filename_str, argv_array]
 
     // Call spawnSync(filename, []) → raw host result on stack
     chunks[current].emit_op_u16(Op::CALL_IMPORT, spawn_idx, line);

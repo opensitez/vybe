@@ -151,6 +151,8 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         "threading.task_run" => threading::emit_task_run(chunks, current, line),
         "threading.task_delay" => threading::emit_task_delay(chunks, current, line),
         "threading.thread_new" => threading::emit_thread_new(chunks, current, line),
+        "threading.thread_start" => threading::emit_thread_start(&mut chunks[current], line),
+        "threading.thread_join" => threading::emit_thread_join(&mut chunks[current], line),
         "threading.thread_spawn" => threading::emit_thread_spawn(chunks, current, line),
 
         // ── .NET sockets adapter ────────────────────────────────────
@@ -775,7 +777,6 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         // .NET-shape rather than stdlib because Choose is a VB.NET / VBA
         // language built-in, not a generic helper.
         "dotnet.choose" => emit_choose(&mut chunks[current], argc, line),
-        "threading.thread_join" => threading::emit_thread_join(&mut chunks[current], line),
         "threading.atomic_load" => threading::emit_atomic_load(&mut chunks[current], line),
         "threading.atomic_store" => threading::emit_atomic_store(&mut chunks[current], line),
         "threading.atomic_add" => threading::emit_atomic_add(&mut chunks[current], line),

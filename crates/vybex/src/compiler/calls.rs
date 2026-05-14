@@ -1485,8 +1485,14 @@ impl Compiler {
                             // through `thread.join` (which returns the exit code, not
                             // a string).
                             if members.len() == 1 && arg_exprs.is_empty() {
-                                let method = members[0].as_str();
-                                match method {
+                                let method = self.canon(members[0].as_str());
+                                match method.as_str() {
+                                    "start" => {
+                                        self.emit_var_get(&local);
+                                        let line = self.line;
+                                        common::threading::emit_thread_start(self.chunk(), line);
+                                        return Ok(());
+                                    }
                                     "join" => {
                                         self.emit_var_get(&local);
                                         let line = self.line;

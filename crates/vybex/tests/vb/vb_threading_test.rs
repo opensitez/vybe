@@ -202,3 +202,18 @@ End Module
     assert!(out.contains(&"true".to_string()), "HasExited should be true after WaitForExit: {:?}", out);
     assert!(out.contains(&"0".to_string()), "ExitCode should be 0: {:?}", out);
 }
+
+#[test]
+fn process_start_info_arguments_are_forwarded() {
+    let out = run_vb(r#"
+Module Program
+    Sub Main()
+        Dim si = New ProcessStartInfo("/usr/bin/test", "hello = hello")
+        Dim p = Process.Start(si)
+        p.WaitForExit()
+        Console.WriteLine(p.ExitCode)
+    End Sub
+End Module
+"#);
+    assert_eq!(out, vec!["0"], "ProcessStartInfo arguments should be forwarded to the child process: {:?}", out);
+}
