@@ -2711,6 +2711,20 @@ fn inject_handles_into_constructor(members: &mut Vec<ClassMember>) {
     for (method_name, handles) in &to_inject {
         for h in handles {
             let (control, event) = split_event_target(h);
+            let control = match control.kind {
+                ExprKind::Ident(name)
+                    if !name.eq_ignore_ascii_case("me")
+                        && !name.eq_ignore_ascii_case("mybase")
+                        && !name.eq_ignore_ascii_case("this") =>
+                {
+                    Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::ident("Me")),
+                        field: name,
+                        null_safe: false,
+                    })
+                }
+                _ => control,
+            };
             // The handler is `Me.<method>` — a Member access on the class self.
             let handler = Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident("Me")),

@@ -274,7 +274,7 @@ resume_statement = { ^"Resume" ~ (^"Next" | identifier)? }
 // VB6 File I/O statements
 open_statement = { ^"Open" ~ expression ~ ^"For" ~ file_mode ~ ^"As" ~ "#"? ~ expression }
 file_mode = { ^"Input" | ^"Output" | ^"Append" | ^"Binary" | ^"Random" }
-close_statement = { ^"Close" ~ ("#"? ~ expression ~ ("," ~ "#"? ~ expression)*)? }
+close_statement = { ^"Close" ~ !(ASCII_ALPHANUMERIC | "_") ~ ("#"? ~ expression ~ ("," ~ "#"? ~ expression)*)? }
 print_file_statement = { ^"Print" ~ "#" ~ expression ~ "," ~ argument_list? }
 write_file_statement = { ^"Write" ~ "#" ~ expression ~ "," ~ argument_list? }
 input_file_statement = { ^"Input" ~ "#" ~ expression ~ "," ~ identifier ~ ("," ~ identifier)* }

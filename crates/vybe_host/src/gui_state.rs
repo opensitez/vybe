@@ -28,6 +28,11 @@ pub struct GuiState {
     pub event_handlers: HashMap<String, Value>,
     /// Control names in insertion order.
     pub control_names: Vec<String>,
+    /// Public control names (for example .NET `Name`) mapped back to the
+    /// physical widget name used by `vybe_widgets`.
+    control_aliases: HashMap<String, String>,
+    /// Current public/logical name for each physical widget name.
+    control_public_names: HashMap<String, String>,
     /// Form dimensions (logical pixels, before scaling).
     pub width: u32,
     pub height: u32,
@@ -76,6 +81,8 @@ impl GuiState {
             form: WidgetForm::new("Form1"),
             event_handlers: HashMap::new(),
             control_names: Vec::new(),
+            control_aliases: HashMap::new(),
+            control_public_names: HashMap::new(),
             width: 800,
             height: 600,
             should_run: false,
@@ -93,6 +100,22 @@ impl GuiState {
     /// Exact match wins. If not found, we do a case-insensitive match so VB-style
     /// callers can still reach controls regardless of source casing.
     fn resolve_control_name(&self, control: &str) -> String {
+        if let Some(target) = self.control_aliases.get(control) {
+            return target.clone();
+        }
+        if let Some((_, target)) = self.control_aliases.iter()
+            .find(|(alias, _)| alias.eq_ignore_ascii_case(control))
+        {
+            return target.clone();
+        }
+        if self.control_public_names.contains_key(control) {
+            return control.to_string();
+        }
+        if let Some((physical, _)) = self.control_public_names.iter()
+            .find(|(physical, _)| physical.eq_ignore_ascii_case(control))
+        {
+            return physical.clone();
+        }
         if self.control_names.iter().any(|n| n == control) {
             return control.to_string();
         }
@@ -100,6 +123,76 @@ impl GuiState {
             return found.clone();
         }
         control.to_string()
+    }
+
+    fn public_control_name(&self, control: &str) -> String {
+        let physical = self.resolve_control_name(control);
+        self.control_public_names
+            .get(&physical)
+            .cloned()
+            .unwrap_or(physical)
+    }
+
+    pub fn is_live_control_name(&self, control: &str) -> bool {
+        let physical = self.resolve_control_name(control);
+        self.control_names.iter().any(|name| name.eq_ignore_ascii_case(&physical))
+    }
+
+    pub fn rename_control(&mut self, control: &str, new_name: &str) {
+        let physical = self.resolve_control_name(control);
+        let new_public = new_name.trim().to_lowercase();
+        if physical.is_empty() || new_public.is_empty() {
+            return;
+        }
+
+        let previous_public = self.public_control_name(&physical);
+        if previous_public.eq_ignore_ascii_case(&new_public) {
+            self.control_public_names.insert(physical.clone(), new_public.clone());
+            self.control_aliases.insert(new_public.clone(), physical);
+            return;
+        }
+
+        self.control_public_names.insert(physical.clone(), new_public.clone());
+        self.control_aliases.retain(|alias, target| {
+            !(target.eq_ignore_ascii_case(&physical) && alias.eq_ignore_ascii_case(&previous_public))
+        });
+        self.control_aliases.insert(new_public.clone(), physical.clone());
+        if !self.control_names.iter().any(|name| name.eq_ignore_ascii_case(&new_public)) {
+            self.control_names.push(new_public.clone());
+        }
+
+        let property_moves: Vec<(String, String)> = self.properties.iter()
+            .filter_map(|((ctrl, prop), value)| {
+                if ctrl.eq_ignore_ascii_case(&previous_public) {
+                    Some((prop.clone(), value.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        self.properties.retain(|(ctrl, _), _| !ctrl.eq_ignore_ascii_case(&previous_public));
+        for (prop, value) in property_moves {
+            self.properties.insert((new_public.clone(), prop), value);
+        }
+
+        let event_moves: Vec<(String, Value)> = self.event_handlers.iter()
+            .filter_map(|(key, callback)| {
+                let (ctrl, event) = key.rsplit_once('.')?;
+                if ctrl.eq_ignore_ascii_case(&previous_public) {
+                    Some((event.to_string(), callback.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        self.event_handlers.retain(|key, _| {
+            key.rsplit_once('.')
+                .map(|(ctrl, _)| !ctrl.eq_ignore_ascii_case(&previous_public))
+                .unwrap_or(true)
+        });
+        for (event, callback) in event_moves {
+            self.event_handlers.insert(format!("{}.{}", new_public, event), callback);
+        }
     }
 
     /// Find a `RecordingCanvas` for `control`. Resolution order:
@@ -160,7 +253,8 @@ impl GuiState {
     /// case normalisation (VB lowercases before calling, C# passes original case).
     /// Event name is lowercased since it is always a fixed word ("click", etc.).
     pub fn register_event(&mut self, control: &str, event: &str, callback: Value) {
-        let key = format!("{}.{}", control, event.to_lowercase());
+        let public = self.public_control_name(control);
+        let key = format!("{}.{}", public, event.to_lowercase());
         if std::env::var("VYBE_GUI_TRACE")
             .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
             .unwrap_or(false)
@@ -174,7 +268,8 @@ impl GuiState {
     /// fallback is used for VB-style callers.
     pub fn get_event_handler(&self, control: &str, event: &str) -> Option<&Value> {
         let event_lower = event.to_lowercase();
-        let exact = format!("{}.{}", control, event_lower);
+        let public = self.public_control_name(control);
+        let exact = format!("{}.{}", public, event_lower);
         if let Some(cb) = self.event_handlers.get(&exact) {
             return Some(cb);
         }
@@ -194,13 +289,40 @@ impl GuiState {
         self.event_handlers.keys().cloned().collect()
     }
 
+    pub fn track_live_control_name(&mut self, physical_name: &str, public_name: &str) {
+        let public = public_name.trim().to_lowercase();
+        if public.is_empty() {
+            return;
+        }
+        if !self.control_names.iter().any(|name| name.eq_ignore_ascii_case(&public)) {
+            self.control_names.push(public.clone());
+        }
+        self.control_aliases.insert(public.clone(), physical_name.to_string());
+        self.control_public_names.insert(physical_name.to_string(), public);
+    }
+
+    fn hide_root_form_entries(&mut self) {
+        self.control_names.retain(|name| {
+            !self.control_public_names.iter().any(|(physical, public)| {
+                physical.starts_with("Form_") && public.eq_ignore_ascii_case(name)
+            })
+        });
+    }
+
     /// Create a widget from a control type name and add it to the form.
     pub fn add_widget(&mut self, type_name: &str, name: &str, text: &str, x: i32, y: i32, w: i32, h: i32) {
         // Pass original-case name to the widget so ButtonClicked events carry the original spelling.
         // Lookup keys (event handlers, control_names membership check) already lowercase at call time.
         let widget = make_widget(type_name, name, text, w as f32, h as f32);
         self.form.add_boxed_control(widget, x as f32, y as f32, w as f32, h as f32);
-        self.control_names.push(name.to_string());
+        self.track_live_control_name(name, name);
+        self.hide_root_form_entries();
+    }
+
+    pub fn seed_form_identity(&mut self, name: &str, title: &str) {
+        self.properties.insert((name.to_string(), "name".into()), name.to_string());
+        self.properties.insert((name.to_string(), "text".into()), title.to_string());
+        self.control_public_names.insert(name.to_string(), name.to_string());
     }
 
     /// Set a property on a control by name — directly updates the widget
@@ -209,9 +331,10 @@ impl GuiState {
     /// isn't represented as a child widget).
     pub fn set_property(&mut self, control: &str, property: &str, value: &str) {
         let name = self.resolve_control_name(control);
+        let public = self.public_control_name(control);
         let prop_lower = property.to_lowercase();
         // Always mirror to the property store first.
-        self.properties.insert((name.clone(), prop_lower.clone()), value.to_string());
+        self.properties.insert((public, prop_lower.clone()), value.to_string());
         match prop_lower.as_str() {
             "text" => {
                 self.form.send_command(&name, &WidgetCommand::SetText(value.to_string()));
@@ -243,8 +366,9 @@ impl GuiState {
     /// the live widget rather than the store.
     pub fn get_property(&mut self, control: &str, property: &str) -> String {
         let name = self.resolve_control_name(control);
+        let public = self.public_control_name(control);
         let prop_lower = property.to_lowercase();
-        if let Some(v) = self.properties.get(&(name.clone(), prop_lower.clone())) {
+        if let Some(v) = self.properties.get(&(public, prop_lower.clone())) {
             return v.clone();
         }
         match prop_lower.as_str() {

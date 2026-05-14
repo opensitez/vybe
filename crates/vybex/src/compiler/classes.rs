@@ -10,6 +10,35 @@ use crate::common::classes::{BaseCall, NormalConstructor, NormalMethod};
 use crate::scope::UpvalueDesc;
 
 impl Compiler {
+    fn class_requires_form_identity_stamp(&self, parent: &Option<String>) -> bool {
+        let mut current = parent.clone().map(|name| self.canon(&name));
+        let mut visited = std::collections::HashSet::new();
+
+        while let Some(name) = current {
+            if !visited.insert(name.clone()) {
+                break;
+            }
+            if name.eq_ignore_ascii_case("form") || self.reflection_is_assignable_from("Form", &name) {
+                return true;
+            }
+            current = self.pending_classes.get(name.as_str())
+                .and_then(|pending| pending.parent.clone())
+                .or_else(|| self.reflection_base_type_name(&name));
+        }
+
+        false
+    }
+
+    fn emit_form_identity_stamp(&mut self, this_slot: u16, class_name: &str, _line: u32) {
+        let stamped_name = self.canon(class_name);
+        let set_property = self.import("vybe:gui", "controlSetProperty");
+        self.emit_u16(Op::LOCAL_GET, this_slot);
+        self.emit_const(Value::String(Arc::from("Name")));
+        self.emit_const(Value::String(Arc::from(stamped_name.as_str())));
+        self.emit_host_call(set_property, 3);
+        self.emit(Op::DROP);
+    }
+
     // ════════════════════════════════════════════════════════════════════════
     // Function declaration compilation
     // ════════════════════════════════════════════════════════════════════════
@@ -865,6 +894,7 @@ impl Compiler {
             vec![None]
         };
         let ctor_global_prefix = self.canon(name);
+        let should_stamp_form_identity = self.class_requires_form_identity_stamp(parent);
         for ctor_variant in &ctor_variants {
             let explicit_arity = ctor_variant.map(|ctor| {
                 let skip = if class.explicit_self_param { 1 } else { 0 };
@@ -1132,6 +1162,9 @@ impl Compiler {
 
                         let ctor_stmts: &[Statement] = ctor_body
                             .as_ref().map(|(b, _, _)| b.as_slice()).unwrap_or(&[]);
+                        if should_stamp_form_identity && !body_has_identity_stamp(ctor_stmts) {
+                            self.emit_form_identity_stamp(this_slot, name, line);
+                        }
                         for aim in &class.auto_init_methods {
                             let has_method = instance_methods.iter().any(|(n, _, _, _)| n.eq_ignore_ascii_case(aim));
                             if has_method && !body_calls_method(ctor_stmts, aim) {
@@ -1215,6 +1248,9 @@ impl Compiler {
                             }
                         }
                         let user_body = &body_stmts[preamble_end..];
+                        if should_stamp_form_identity && !body_has_identity_stamp(body_stmts) {
+                            self.emit_form_identity_stamp(this_slot, name, line);
+                        }
                         for aim in &class.auto_init_methods {
                             let has_method = instance_methods.iter().any(|(n, _, _, _)| n.eq_ignore_ascii_case(aim));
                             if has_method && !body_calls_method(user_body, aim) {

@@ -346,6 +346,33 @@ impl Compiler {
             || pending.instance_member_names.iter().any(|name| self.canon(name) == method_key)
     }
 
+    fn direct_receiver_has_own_pending_method(&self, receiver: &Expression, method_name: &str) -> bool {
+        let class_name = match &receiver.kind {
+            ExprKind::This | ExprKind::Super => self.current_class.clone(),
+            ExprKind::Ident(name) => {
+                let canon = self.canon(name);
+                if canon == self.profile.self_keyword || canon == "me" || canon == "this" || canon == "mybase" {
+                    self.current_class.clone()
+                } else {
+                    resolve_receiver_type_hint(self, receiver)
+                        .and_then(|hint| self.resolve_pending_class_name_for_type_hint(&hint))
+                }
+            }
+            _ => None,
+        };
+
+        let Some(class_name) = class_name else {
+            return false;
+        };
+        let Some(pending) = self.pending_classes.get(&class_name) else {
+            return false;
+        };
+
+        let method_key = self.canon(method_name);
+        pending.instance_method_overloads.contains_key(&method_key)
+            || pending.instance_member_names.iter().any(|name| self.canon(name) == method_key)
+    }
+
     pub(super) fn resolve_static_method_overload_chunk_for_type(
         &self,
         type_hint: &str,
@@ -1705,8 +1732,7 @@ impl Compiler {
         // when the field is defined on a user class so user methods
         // named `call`/`apply` keep working.
         if let ExprKind::Member { object, field, .. } = &callee.kind {
-            let canon_field = self.canon(field);
-            if !self.defined_class_methods.contains(&canon_field)
+            if !self.direct_receiver_has_own_pending_method(object, field)
                 && (field == "call" || field == "apply")
             {
                 let saved_js_this = self.save_js_this("__js_prev_this_call");
@@ -1914,7 +1940,7 @@ impl Compiler {
                 _ => false,
             };
             let user_method_shadow = receiver_is_direct
-                && self.defined_class_methods.contains(&canon_field);
+                && self.direct_receiver_has_own_pending_method(object, field);
             // Also skip value_methods if the field is an array HOF method —
             // the array_methods dispatch handles it with proper HOF semantics.
             // Without this, `[1,2,3].includes(2)` routes through the string
@@ -2025,8 +2051,7 @@ impl Compiler {
             // types at compile time, but it knows what method names user
             // classes have declared.
             let field_lower = if self.case_sensitive { field.clone() } else { field.to_lowercase() };
-            let canon_field_for_user_check = self.canon(field);
-            let user_class_method = self.defined_class_methods.contains(&canon_field_for_user_check);
+            let user_class_method = self.direct_receiver_has_own_pending_method(object, field);
             if !user_class_method
                 && self.profile.lookup_array_method(&field_lower).is_some()
             {

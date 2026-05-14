@@ -298,9 +298,8 @@ fn controls_add_impl(gui: &Arc<Mutex<GuiState>>, parent: Option<&Value>, obj: &A
             text,
         );
     }
-    let name_lower = control_name.to_lowercase();
     for (prop, val) in props {
-        apply_property(&mut g.form, &name_lower, &prop, &val);
+        apply_property(&mut g.form, &control_name, &prop, &val);
     }
     drop(g);
 
@@ -399,6 +398,7 @@ pub fn register(
             let name = title.clone();
             let mut g = gui.lock().unwrap();
             g.form = vybe_widgets::Form::new(&title);
+            g.seed_form_identity(&name, &title);
             Value::String(Arc::from(name.as_str()))
         })
     });
@@ -411,7 +411,11 @@ pub fn register(
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let title = str_arg(args, 0, "Form1");
             let name = title.clone();
-            { let mut g = gui.lock().unwrap(); g.form = vybe_widgets::Form::new(&title); }
+            {
+                let mut g = gui.lock().unwrap();
+                g.form = vybe_widgets::Form::new(&title);
+                g.seed_form_identity(&name, &title);
+            }
             let form_obj = Arc::new(Mutex::new(Object::new()));
             {
                 let mut obj = form_obj.lock().unwrap();
@@ -480,22 +484,42 @@ pub fn register(
                 let val = args.get(2).cloned().unwrap_or(Value::Null);
                 let val_str = format!("{}", val);
                 let prop_lower = property.to_lowercase();
-                let control_name = {
+                let (control_name, fallback_text, control_type) = {
                     let o = obj.lock().unwrap();
-                    o.properties.get("__control_name")
+                    let text = o.properties.get("text").map(|v| format!("{}", v));
+                    let control_type = o.properties
+                        .get("__control_type")
+                        .map(|v| format!("{}", v))
+                        .unwrap_or_default();
+                    let control_name = o.properties.get("__control_name")
                         .or_else(|| o.properties.get("name"))
-                        .map(|v| format!("{}", v)).unwrap_or_default()
+                        .map(|v| format!("{}", v)).unwrap_or_default();
+                    (control_name, text, control_type)
                 };
                 let live_widget = if control_name.is_empty() {
                     false
                 } else {
-                    let g = gui.lock().unwrap();
-                    g.control_names.iter().any(|name| name.eq_ignore_ascii_case(&control_name))
+                    gui.lock().unwrap().is_live_control_name(&control_name)
                 };
                 if !live_widget || prop_lower == "name" {
                     obj.lock().unwrap().properties.insert(prop_lower.clone(), val.clone());
                 }
-                if prop_lower == "name" && !live_widget {
+                if prop_lower == "name" {
+                    {
+                        let mut g = gui.lock().unwrap();
+                        g.rename_control(&control_name, &val_str);
+                        if let Some(text) = fallback_text.as_deref() {
+                            if !text.is_empty() && g.get_property(&val_str, "Text").is_empty() {
+                                g.set_property(&val_str, "Text", text);
+                            }
+                        } else if control_type.eq_ignore_ascii_case("Form")
+                            && g.get_property(&val_str, "Text").is_empty()
+                        {
+                            g.set_property(&val_str, "Text", &val_str);
+                        }
+                    }
+                    obj.lock().unwrap().properties.insert("__control_name".into(), val.clone());
+                } else if !live_widget {
                     obj.lock().unwrap().properties.insert("__control_name".into(), val.clone());
                 }
                 if gui_trace_enabled() && matches!(prop_lower.as_str(), "name" | "text") {
@@ -1082,6 +1106,23 @@ mod tests {
         };
 
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn renamed_control_keeps_properties_and_events_reachable() {
+        let mut gui = GuiState::new();
+        gui.add_widget("Button", "Button_1", "", 0, 0, 100, 30);
+        gui.set_property("Button_1", "Text", "Before");
+        gui.register_event("Button_1", "Click", Value::Null);
+
+        gui.rename_control("Button_1", "btnOk");
+
+        assert_eq!(gui.get_property("btnOk", "Text"), "Before");
+        assert!(gui.get_event_handler("btnOk", "Click").is_some());
+        assert!(gui.get_event_handler("Button_1", "Click").is_some());
+
+        gui.set_property("btnOk", "Text", "After");
+        assert_eq!(gui.get_property("btnOk", "Text"), "After");
     }
 }
 

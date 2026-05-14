@@ -15,6 +15,7 @@
 mod classes;
 mod expressions;
 mod calls;
+mod events;
 
 use std::sync::Arc;
 use std::collections::{HashSet, HashMap};
@@ -281,6 +282,12 @@ pub struct Compiler {
     /// Shared across languages so `Imports X = System.Text.StringBuilder`
     /// and `using X = System.Text.StringBuilder` normalize below the walker.
     source_type_aliases: HashMap<String, String>,
+    /// Snapshot of the current module's source imports.
+    ///
+    /// Used for narrow source-shape decisions that depend on the ambient
+    /// framework surface, such as WinForms form inference for bare VB/C#
+    /// classes inside a module that explicitly imports System.Windows.Forms.
+    current_module_imports: Vec<Import>,
     /// JS-only: set when the module references `new Proxy(...)`. Member /
     /// Index reads + writes route through `emitter::js::proxy_adapter`
     /// for runtime trap dispatch. Off → direct `STRUCT_GET` / `ARRAY_GET`
@@ -507,6 +514,7 @@ impl Compiler {
             host_namespace_aliases: HashMap::new(),
             host_package_roots: HashMap::new(),
             source_type_aliases: HashMap::new(),
+            current_module_imports: Vec::new(),
             module_exports: HashMap::new(),
             active_finally_blocks: Vec::new(),
             catch_depth: 0,
@@ -539,6 +547,7 @@ impl Compiler {
     /// Namespace Objects for `import * as ns` reflective access.
     pub fn compile_with_imports(mut self, module: &Module) -> Result<CompileResult, String> {
         self.case_sensitive = self.profile.case_sensitive;
+        self.current_module_imports = module.imports.clone();
 
         // Pre-scan: detect `new Proxy(...)` anywhere in the module so the
         // Member / Index emit sites can route through the proxy dispatcher
@@ -1375,6 +1384,32 @@ impl Compiler {
         false
     }
 
+    fn module_imports_namespace(&self, namespace: &str) -> bool {
+        self.current_module_imports.iter().any(|import| match &import.kind {
+            ImportKind::Simple { path, .. }
+            | ImportKind::Named { path, .. }
+            | ImportKind::Wildcard { path, .. }
+            | ImportKind::Default { path, .. } => path.eq_ignore_ascii_case(namespace),
+        })
+    }
+
+    fn should_infer_winforms_form(&self, name: &str, parents: &[String]) -> bool {
+        if !parents.is_empty()
+            || !self.profile.namespaces.use_dotnet
+            || !matches!(self.profile.name.as_str(), "vb" | "csharp")
+            || !self.module_imports_namespace("System.Windows.Forms")
+        {
+            return false;
+        }
+
+        // Real VB/C# WinForms code commonly omits the explicit base type in
+        // the user-authored partial while the surrounding project/designer
+        // model still treats the class as a form. Keep the inference narrow:
+        // only classes that follow the standard *Form / FormN naming shape
+        // opt into the existing Form adapter wrapper.
+        name.to_ascii_lowercase().contains("form")
+    }
+
     pub(crate) fn reflection_constructor_for_types(&self, type_name: &str, param_types: &[String]) -> Option<ReflectionBinding> {
         let lookup = self.reflection_type_lookup_name(type_name);
         let normalized_params: Vec<String> = param_types
@@ -1983,62 +2018,6 @@ impl Compiler {
     /// rather than the runtime `.Name` property — renaming a control after
     /// the handler is wired must NOT break dispatch.
     ///
-    /// Static cases (push a string constant):
-    ///   - `Ident("btn")`        → "btn"
-    ///   - `Me` / `This`         → current class name (lowercased)
-    ///   - `Member { Me, "btn" }` → "btn"
-    ///
-    /// Dynamic fallback (runtime lookup):
-    ///   - any other expression  → compile expr, struct_get __control_name
-    fn emit_event_control_key(&mut self, control: &Expression, line: u32) -> Result<(), String> {
-        let is_self_ident = |c: &Compiler, n: &str| {
-            let cn = c.canon(n);
-            cn == c.profile.self_keyword || cn == "me" || cn == "this" || cn == "mybase"
-        };
-        let key: Option<String> = match &control.kind {
-            // `Me` / `This` / `MyBase` as identifier or as keyword node →
-            // the enclosing class is the control. Used for `Handles Me.Load`,
-            // `Handles MyBase.Load`, `this.Click += h`, etc.
-            ExprKind::This | ExprKind::Super => self.current_class.clone().map(|c| self.canon(&c)),
-            ExprKind::Ident(name) if is_self_ident(self, name) =>
-                self.current_class.clone().map(|c| self.canon(&c)),
-            // Plain identifier. If it's a **class field** on the enclosing
-            // type (designer-style `Me.btn1.Click += h` where the walker
-            // stripped the `Me.`), the identifier name IS the key. But if
-            // it's a **local variable** holding a freshly-constructed
-            // control with a user-assigned `.Name`, the compile-time
-            // variable name ("btn") and the runtime widget name ("b1")
-            // diverge — so fall through to the runtime extraction path
-            // which reads `__control_name` off the object.
-            ExprKind::Ident(name) => {
-                let is_class_field = if let Some(ref cn) = self.current_class {
-                    self.pending_classes.get(cn.as_str())
-                        .map(|pc| pc.fields.iter().any(|f| f.eq_ignore_ascii_case(name)))
-                        .unwrap_or(false)
-                } else { false };
-                if is_class_field { Some(self.canon(name)) } else { None }
-            }
-            // `Me.btn` / `this.btn` → the field name on the form/class.
-            ExprKind::Member { object, field, .. } => {
-                let is_self = matches!(&object.kind, ExprKind::This | ExprKind::Super)
-                    || matches!(&object.kind, ExprKind::Ident(n) if is_self_ident(self, n));
-                if is_self {
-                    Some(self.canon(field))
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        };
-        if let Some(k) = key {
-            self.emit_const(Value::String(Arc::from(k.as_str())));
-        } else {
-            self.compile_expr(control)?;
-            common::gui::emit_get_control_name(self.chunk(), line);
-        }
-        Ok(())
-    }
-
     pub(crate) fn canon(&self, name: &str) -> String {
         if self.case_sensitive { name.to_string() } else { name.to_lowercase() }
     }
@@ -4511,6 +4490,13 @@ impl Compiler {
                 let cname = self.canon(name);
                 self.defined_globals.insert(cname.clone());
                 self.defined_classes.insert(cname.clone());
+                let inferred_parents;
+                let effective_parents: &[String] = if self.should_infer_winforms_form(name, parents) {
+                    inferred_parents = vec!["Form".to_string()];
+                    &inferred_parents
+                } else {
+                    parents
+                };
                 // Every language's profile has `uses_normalize_class = true`
                 // after Phase 3. ClassDecl always goes through
                 // walker → normalize_class → emit_class → compile_class.
@@ -4519,7 +4505,7 @@ impl Compiler {
                 // loudly rather than silently picking a legacy path.
                 let span = stmt.span.clone();
                 crate::common::classes::emit::emit_class_from_ast(
-                    self, span, &cname, parents, interfaces, members, modifiers, false,
+                    self, span, &cname, effective_parents, interfaces, members, modifiers, false,
                 )?;
             }
 
@@ -5118,33 +5104,15 @@ impl Compiler {
             // registry key from the runtime `.Name` property — renaming a
             // control via `btn.Name = "x"` doesn't break wired-up handlers.
             StmtKind::AddHandler { control, event, handler } => {
-                let line = self.line;
-                let bind_idx = self.import("vybe:gui", common::gui::HOST_FN_BIND_EVENT);
-                // Stack: [control_name, event_name, handler_fn]
-                self.emit_event_control_key(control, line)?;
-                self.emit_const(Value::String(Arc::from(event.as_str())));
-                self.compile_expr(handler)?;
-                common::gui::emit_bind_event(self.chunk(), bind_idx, line);
-                self.emit(Op::DROP); // statement: discard host call result
+                self.compile_add_handler_stmt(control, event, handler)?;
             }
 
             StmtKind::RemoveHandler { control, event, handler } => {
-                let line = self.line;
-                let unbind_idx = self.import("vybe:gui", common::gui::HOST_FN_UNBIND_EVENT);
-                self.emit_event_control_key(control, line)?;
-                self.emit_const(Value::String(Arc::from(event.as_str())));
-                self.compile_expr(handler)?;
-                common::gui::emit_unbind_event(self.chunk(), unbind_idx, line);
-                self.emit(Op::DROP); // statement: discard host call result
+                self.compile_remove_handler_stmt(control, event, handler)?;
             }
 
             StmtKind::RaiseEvent { event_name, args } => {
-                let line = self.line;
-                let raise_idx = self.import("vybe:gui", common::gui::HOST_FN_RAISE_EVENT);
-                for a in args { self.compile_expr(a)?; }
-                self.emit_const(Value::String(Arc::from(event_name.as_str())));
-                common::gui::emit_raise_event(self.chunk(), raise_idx, (args.len() + 1) as u8, line);
-                self.emit(Op::DROP); // statement: discard host call result
+                self.compile_raise_event_stmt(event_name, args)?;
             }
 
             // ── VB legacy error handling ────────────────────────────────
@@ -9544,6 +9512,10 @@ fn body_has_super_call(body: &[Statement]) -> bool {
             false
         }
     })
+}
+
+fn body_has_identity_stamp(body: &[Statement]) -> bool {
+    body.iter().any(is_identity_stamp)
 }
 
 /// The first declaration of a class name keeps its position in the body and
