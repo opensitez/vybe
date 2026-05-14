@@ -44,7 +44,8 @@ impl Compiler {
                 }
                 // Local variable / parameter takes priority over implicit self field
                 let is_local = self.scope().resolve(name).is_some()
-                    || (!self.case_sensitive && self.scope().resolve_ci(name).is_some());
+                    || (!self.case_sensitive && self.scope().resolve_ci(name).is_some())
+                    || self.has_static_local_binding(name);
 
                 // Implicit self field access (only if NOT a local)
                 if !is_local && self.is_class_field(name) {
@@ -1079,6 +1080,25 @@ impl Compiler {
 
             // ── New ─────────────────────────────────────────────────────
             ExprKind::New { class, args } => {
+                let reordered_args;
+                let args = if args.iter().any(|arg| arg.name.is_some()) {
+                    let ctor_key = match &class.kind {
+                        ExprKind::Ident(name) => Some(self.canon(name)),
+                        ExprKind::Member { field, .. } => Some(self.canon(field)),
+                        _ => None,
+                    };
+                    if let Some(signatures) = ctor_key
+                        .as_ref()
+                        .and_then(|key| self.constructor_signatures.get(key))
+                    {
+                        reordered_args = self.reorder_named_args_with_signatures(args, signatures);
+                        reordered_args.as_slice()
+                    } else {
+                        args.as_slice()
+                    }
+                } else {
+                    args.as_slice()
+                };
                 // ECMA-262 §10.5.2: `new Proxy(target, handler)` creates an
                 // exotic object whose property accesses are intercepted by
                 // handler traps. We lower to an inline emitter that

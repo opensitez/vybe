@@ -11,7 +11,8 @@ line_continuation = _{ "_" ~ (" " | "\t")* ~ ("\r\n" | "\n" | "\r") }
 
 // Program structure
 program = { SOI ~ line* ~ EOI }
-line = _{ imports_statement | statement_line | attribute_line | NEWLINE | COMMENT }
+line = _{ imports_statement | option_directive | statement_line | attribute_line | NEWLINE | COMMENT }
+option_directive = { ^"Option" ~ (^"Explicit" | ^"Strict" | ^"Infer") ~ (^"On" | ^"Off") ~ (NEWLINE | EOI) }
 statement_line = {
     (
         (sub_decl | function_decl)
@@ -462,7 +463,9 @@ mybase_assign_statement = { mybase_keyword ~ ("." ~ member_identifier)+ ~ "=" ~ 
 dotted_identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* ~ ("." ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")*)* }
 
 primary = _{
-    typeof_expression
+    nameof_expression
+    | gettype_expression
+    | typeof_expression
     | cast_expression
     | new_expression
     | literal
@@ -483,6 +486,9 @@ primary = _{
     | identifier
     | "(" ~ expression ~ ")"
 }
+
+nameof_expression = { ^"NameOf" ~ "(" ~ dotted_identifier ~ ")" }
+gettype_expression = { ^"GetType" ~ "(" ~ type_name ~ ")" }
 
 // TypeOf...Is expression
 typeof_expression = { ^"TypeOf" ~ postfix ~ ^"Is" ~ type_name }
@@ -506,9 +512,10 @@ with_initializer = { ^"With" ~ "{" ~ NEWLINE* ~ (member_initializer ~ (NEWLINE* 
 member_initializer = { "." ~ member_identifier ~ "=" ~ expression }
 
 call_expression = { identifier ~ "(" ~ argument_list? ~ ")" }
+member_chain_invoke = { "(" ~ argument_list? ~ ")" }
 member_chain_call = { "." ~ member_identifier ~ "(" ~ argument_list? ~ ")" }
 member_chain_access = { "." ~ member_identifier }
-member_chain = { member_chain_call | member_chain_access }
+member_chain = { member_chain_invoke | member_chain_call | member_chain_access }
 member_call = { identifier ~ member_chain+ }
 call_statement = {
     call_keyword? ~ (
@@ -526,11 +533,13 @@ expression_statement = { cast_member_call | dot_call_statement | me_member_call 
 
 // AddHandler / RemoveHandler
 addressof_expr = { ^"AddressOf" ~ dotted_identifier }
-addhandler_statement = { ^"AddHandler" ~ dotted_identifier ~ "," ~ addressof_expr }
-removehandler_statement = { ^"RemoveHandler" ~ dotted_identifier ~ "," ~ addressof_expr }
+addhandler_statement = { ^"AddHandler" ~ dotted_identifier ~ "," ~ expression }
+removehandler_statement = { ^"RemoveHandler" ~ dotted_identifier ~ "," ~ expression }
 
 member_access = { identifier ~ ("." ~ member_identifier)+ }
-argument_list = { expression ~ ("," ~ expression)* }
+named_argument = { identifier ~ ":=" ~ expression }
+argument = { named_argument | expression }
+argument_list = { argument ~ ("," ~ argument)* }
 
 // Literals
 literal = _{

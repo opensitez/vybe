@@ -1,47 +1,151 @@
 use super::helpers::run_vb;
 
-fn assert_vb_output_owned(src: String, expected: Vec<String>) {
-    let out = run_vb(&src);
-    assert_eq!(out, expected);
+macro_rules! vb_shared_spec {
+    ($name:ident, $reason:expr, $src:expr, [$($expected:expr),* $(,)?]) => {
+        #[test]
+        fn $name() {
+            let out = run_vb($src);
+            assert_eq!(out, vec![$($expected),*]);
+        }
+    };
 }
 
-fn assert_shared_fields(start: i32, step: i32, calls: i32) {
-    let src = format!(r#"
+vb_shared_spec!(shared_field_retains_integer_state_across_shared_calls, "VB Shared field state is not implemented correctly yet", r#"
 Class Counter
-    Public Shared Total As Integer = {start}
+    Public Shared Total As Integer = 0
 
-    Public Shared Sub AddStep()
-        Total = Total + {step}
+    Public Shared Sub AddOne()
+        Total = Total + 1
     End Sub
 End Class
 
 Module M
     Sub Main()
-        For i As Integer = 1 To {calls}
+        Counter.AddOne()
+        Counter.AddOne()
+        Console.WriteLine(Counter.Total)
+    End Sub
+End Module
+"#, ["2"]);
+
+vb_shared_spec!(shared_field_can_start_from_nonzero_seed, "VB Shared field state is not implemented correctly yet", r#"
+Class Counter
+    Public Shared Total As Integer = 10
+
+    Public Shared Sub AddStep()
+        Total = Total + 5
+    End Sub
+End Class
+
+Module M
+    Sub Main()
+        Counter.AddStep()
+        Console.WriteLine(Counter.Total)
+    End Sub
+End Module
+"#, ["15"]);
+
+vb_shared_spec!(shared_field_is_shared_across_multiple_instances, "VB Shared field state is not implemented correctly yet", r#"
+Class Counter
+    Public Shared Total As Integer = 0
+
+    Public Sub AddOne()
+        Total = Total + 1
+    End Sub
+End Class
+
+Module M
+    Sub Main()
+        Dim left As New Counter()
+        Dim right As New Counter()
+        left.AddOne()
+        right.AddOne()
+        Console.WriteLine(Counter.Total)
+    End Sub
+End Module
+"#, ["2"]);
+
+vb_shared_spec!(shared_field_can_be_read_through_instance_reference, "VB Shared field state is not implemented correctly yet", r#"
+Class Counter
+    Public Shared Total As Integer = 3
+End Class
+
+Module M
+    Sub Main()
+        Dim counter As New Counter()
+        Console.WriteLine(counter.Total)
+    End Sub
+End Module
+"#, ["3"]);
+
+vb_shared_spec!(shared_field_can_store_string_state, "VB Shared field state is not implemented correctly yet", r#"
+Class Registry
+    Public Shared Text As String = "A"
+
+    Public Shared Sub Append(value As String)
+        Text = Text & value
+    End Sub
+End Class
+
+Module M
+    Sub Main()
+        Registry.Append("B")
+        Registry.Append("C")
+        Console.WriteLine(Registry.Text)
+    End Sub
+End Module
+"#, ["ABC"]);
+
+vb_shared_spec!(shared_field_updates_from_helper_method_are_visible_later, "VB Shared field state is not implemented correctly yet", r#"
+Class Counter
+    Public Shared Total As Integer = 1
+
+    Public Shared Sub ApplyDouble()
+        Total = Total * 2
+    End Sub
+End Class
+
+Module M
+    Sub Main()
+        Counter.ApplyDouble()
+        Counter.ApplyDouble()
+        Console.WriteLine(Counter.Total)
+    End Sub
+End Module
+"#, ["4"]);
+
+vb_shared_spec!(shared_fields_are_isolated_between_classes, "VB Shared field state is not implemented correctly yet", r#"
+Class LeftCounter
+    Public Shared Total As Integer = 1
+End Class
+
+Class RightCounter
+    Public Shared Total As Integer = 9
+End Class
+
+Module M
+    Sub Main()
+        Console.WriteLine(LeftCounter.Total)
+        Console.WriteLine(RightCounter.Total)
+    End Sub
+End Module
+"#, ["1", "9"]);
+
+vb_shared_spec!(shared_field_can_be_mutated_in_loop, "VB Shared field state is not implemented correctly yet", r#"
+Class Counter
+    Public Shared Total As Integer = 0
+
+    Public Shared Sub AddStep()
+        Total = Total + 2
+    End Sub
+End Class
+
+Module M
+    Sub Main()
+        For i As Integer = 1 To 3
             Counter.AddStep()
         Next
         Console.WriteLine(Counter.Total)
     End Sub
 End Module
-"#, start = start, step = step, calls = calls);
-    assert_vb_output_owned(src, vec![(start + step * calls).to_string()]);
-}
-
-macro_rules! shared_field_cases {
-    ($($name:ident => ($start:expr, $step:expr, $calls:expr)),* $(,)?) => {
-        $(#[test] fn $name() { assert_shared_fields($start, $step, $calls); })*
-    };
-}
-
-shared_field_cases! {
-    shared_fields_001 => (0, 1, 1),
-    shared_fields_002 => (5, 2, 2),
-    shared_fields_003 => (10, 3, 3),
-    shared_fields_004 => (20, 4, 1),
-    shared_fields_005 => (25, 5, 2),
-    shared_fields_006 => (30, 1, 5),
-    shared_fields_007 => (40, 2, 4),
-    shared_fields_008 => (50, 3, 2),
-    shared_fields_009 => (60, 4, 3),
-    shared_fields_010 => (70, 5, 1),
-}
+"#, ["6"]);

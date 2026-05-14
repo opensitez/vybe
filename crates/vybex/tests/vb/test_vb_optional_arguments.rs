@@ -1,76 +1,217 @@
 use super::helpers::run_vb;
 
-fn assert_vb_output_owned(src: String, expected: Vec<String>) {
-    let out = run_vb(&src);
-    assert_eq!(out, expected);
+macro_rules! vb_case {
+    ($name:ident, $src:expr, [$($expected:expr),* $(,)?]) => {
+        #[test]
+        fn $name() {
+            let out = run_vb($src);
+            assert_eq!(out, vec![$($expected),*]);
+        }
+    };
 }
 
-fn assert_optional_arguments(name: &str, default_prefix: &str, explicit_prefix: &str, suffix: &str) {
-    let src = format!(r#"
+vb_case!(optional_arguments_use_both_defaults_when_omitted, r#"
 Module M
-    Function Decorate(name As String, Optional prefix As String = "{default_prefix}", Optional suffix As String = "{suffix}") As String
+    Function Decorate(name As String, Optional prefix As String = "Hello", Optional suffix As String = "!") As String
         Return prefix & ":" & name & ":" & suffix
     End Function
 
     Sub Main()
-        Console.WriteLine(Decorate("{name}"))
-        Console.WriteLine(Decorate("{name}", "{explicit_prefix}"))
-        Console.WriteLine(Decorate("{name}", "{explicit_prefix}", "done"))
+        Console.WriteLine(Decorate("Ada"))
     End Sub
 End Module
-"#, name = name, default_prefix = default_prefix, explicit_prefix = explicit_prefix, suffix = suffix);
-    assert_vb_output_owned(src, vec![
-        format!("{}:{}:{}", default_prefix, name, suffix),
-        format!("{}:{}:{}", explicit_prefix, name, suffix),
-        format!("{}:{}:done", explicit_prefix, name),
-    ]);
-}
+"#, ["Hello:Ada:!"]);
 
-macro_rules! optional_argument_cases {
-    ($($name:ident => ($name_value:expr, $default_prefix:expr, $explicit_prefix:expr, $suffix:expr)),* $(,)?) => {
-        $(#[test] fn $name() { assert_optional_arguments($name_value, $default_prefix, $explicit_prefix, $suffix); })*
-    };
-}
+vb_case!(optional_arguments_override_first_optional_only, r#"
+Module M
+    Function Decorate(name As String, Optional prefix As String = "Hello", Optional suffix As String = "!") As String
+        Return prefix & ":" & name & ":" & suffix
+    End Function
 
-optional_argument_cases! {
-    optional_arguments_001 => ("Ada", "Hello", "Hi", "!"),
-    optional_arguments_002 => ("Bob", "Welcome", "Yo", "?"),
-    optional_arguments_003 => ("Cora", "Start", "Begin", "."),
-    optional_arguments_004 => ("Dax", "Outer", "Inner", "!"),
-    optional_arguments_005 => ("Eli", "North", "South", "*"),
-    optional_arguments_006 => ("Faye", "Red", "Blue", "!"),
-    optional_arguments_007 => ("Gus", "Open", "Close", "?"),
-    optional_arguments_008 => ("Hope", "Fast", "Slow", "."),
-    optional_arguments_009 => ("Ivy", "Warm", "Cool", "!"),
-    optional_arguments_010 => ("Jade", "Early", "Late", "?"),
-    optional_arguments_011 => ("Kai", "Alpha", "Beta", "."),
-    optional_arguments_012 => ("Lia", "One", "Two", "!"),
-    optional_arguments_013 => ("Moe", "Left", "Right", "?"),
-    optional_arguments_014 => ("Nia", "Sun", "Moon", "."),
-    optional_arguments_015 => ("Omar", "Top", "Base", "!"),
-    optional_arguments_016 => ("Pia", "Mint", "Sage", "?"),
-    optional_arguments_017 => ("Quin", "Near", "Far", "."),
-    optional_arguments_018 => ("Rex", "Bold", "Calm", "!"),
-    optional_arguments_019 => ("Sara", "Soft", "Sharp", "?"),
-    optional_arguments_020 => ("Taj", "Fresh", "Dry", "."),
-    optional_arguments_021 => ("Una", "Bright", "Dim", "!"),
-    optional_arguments_022 => ("Vik", "Prime", "Next", "?"),
-    optional_arguments_023 => ("Wren", "Stone", "Glass", "."),
-    optional_arguments_024 => ("Xena", "Cloud", "Rain", "!"),
-    optional_arguments_025 => ("Yara", "Blue", "Gold", "?"),
-    optional_arguments_026 => ("Zed", "Low", "High", "."),
-    optional_arguments_027 => ("Ari", "Quiet", "Loud", "!"),
-    optional_arguments_028 => ("Bea", "First", "Second", "?"),
-    optional_arguments_029 => ("Cy", "Wide", "Narrow", "."),
-    optional_arguments_030 => ("Dee", "Quick", "Steady", "!"),
-    optional_arguments_031 => ("Ena", "Northwest", "Southeast", "?"),
-    optional_arguments_032 => ("Fox", "Silver", "Copper", "."),
-    optional_arguments_033 => ("Gia", "Lake", "River", "!"),
-    optional_arguments_034 => ("Hal", "Root", "Leaf", "?"),
-    optional_arguments_035 => ("Ian", "Code", "Data", "."),
-    optional_arguments_036 => ("Joy", "Circle", "Square", "!"),
-    optional_arguments_037 => ("Kim", "Hot", "Cold", "?"),
-    optional_arguments_038 => ("Lou", "Short", "Long", "."),
-    optional_arguments_039 => ("Mae", "Solid", "Liquid", "!"),
-    optional_arguments_040 => ("Noe", "Plain", "Fancy", "?"),
-}
+    Sub Main()
+        Console.WriteLine(Decorate("Bea", "Hi"))
+    End Sub
+End Module
+"#, ["Hi:Bea:!"]);
+
+vb_case!(optional_arguments_override_both_optional_values, r#"
+Module M
+    Function Decorate(name As String, Optional prefix As String = "Hello", Optional suffix As String = "!") As String
+        Return prefix & ":" & name & ":" & suffix
+    End Function
+
+    Sub Main()
+        Console.WriteLine(Decorate("Cora", "Welcome", "?"))
+    End Sub
+End Module
+"#, ["Welcome:Cora:?"]);
+
+vb_case!(optional_arguments_support_integer_defaults, r#"
+Module M
+    Function AddBonus(value As Integer, Optional bonus As Integer = 5) As Integer
+        Return value + bonus
+    End Function
+
+    Sub Main()
+        Console.WriteLine(AddBonus(7))
+    End Sub
+End Module
+"#, ["12"]);
+
+vb_case!(optional_arguments_support_integer_override, r#"
+Module M
+    Function AddBonus(value As Integer, Optional bonus As Integer = 5) As Integer
+        Return value + bonus
+    End Function
+
+    Sub Main()
+        Console.WriteLine(AddBonus(7, 11))
+    End Sub
+End Module
+"#, ["18"]);
+
+vb_case!(optional_arguments_drive_boolean_default_branch, r#"
+Module M
+    Function Render(label As String, Optional loud As Boolean = False) As String
+        If loud Then
+            Return label & "!"
+        End If
+        Return label & "."
+    End Function
+
+    Sub Main()
+        Console.WriteLine(Render("calm"))
+    End Sub
+End Module
+"#, ["calm."]);
+
+vb_case!(optional_arguments_can_override_boolean_branch, r#"
+Module M
+    Function Render(label As String, Optional loud As Boolean = False) As String
+        If loud Then
+            Return label & "!"
+        End If
+        Return label & "."
+    End Function
+
+    Sub Main()
+        Console.WriteLine(Render("loud", True))
+    End Sub
+End Module
+"#, ["loud!"]);
+
+vb_case!(optional_arguments_work_in_shared_methods, r#"
+Class Formatter
+    Public Shared Function Wrap(value As String, Optional prefix As String = "[", Optional suffix As String = "]") As String
+        Return prefix & value & suffix
+    End Function
+End Class
+
+Module M
+    Sub Main()
+        Console.WriteLine(Formatter.Wrap("core"))
+        Console.WriteLine(Formatter.Wrap("value", "<", ">"))
+    End Sub
+End Module
+"#, ["[core]", "<value>"]);
+
+vb_case!(optional_arguments_work_in_instance_methods, r#"
+Class Greeter
+    Public Function Build(name As String, Optional prefix As String = "Hi") As String
+        Return prefix & " " & name
+    End Function
+End Class
+
+Module M
+    Sub Main()
+        Dim greeter As New Greeter()
+        Console.WriteLine(greeter.Build("Dana"))
+        Console.WriteLine(greeter.Build("Eli", "Hello"))
+    End Sub
+End Module
+"#, ["Hi Dana", "Hello Eli"]);
+
+vb_case!(optional_arguments_drive_sub_side_effects, r#"
+Module M
+    Sub AppendLine(label As String, Optional suffix As String = ".")
+        Console.WriteLine(label & suffix)
+    End Sub
+
+    Sub Main()
+        AppendLine("first")
+        AppendLine("second", "!")
+    End Sub
+End Module
+"#, ["first.", "second!"]);
+
+vb_case!(optional_arguments_can_chain_through_helper_functions, r#"
+Module M
+    Function Decorate(name As String, Optional prefix As String = "base", Optional suffix As String = ".") As String
+        Return prefix & ":" & name & ":" & suffix
+    End Function
+
+    Function Outer(name As String, Optional prefix As String = "outer") As String
+        Return Decorate(name, prefix)
+    End Function
+
+    Sub Main()
+        Console.WriteLine(Outer("Faye"))
+        Console.WriteLine(Outer("Gus", "inner"))
+    End Sub
+End Module
+"#, ["outer:Faye:.", "inner:Gus:."]);
+
+vb_case!(optional_arguments_allow_empty_string_defaults, r#"
+Module M
+    Function Wrap(value As String, Optional prefix As String = "", Optional suffix As String = "") As String
+        Return prefix & value & suffix
+    End Function
+
+    Sub Main()
+        Console.WriteLine(Wrap("plain"))
+        Console.WriteLine(Wrap("tag", "<", ">"))
+    End Sub
+End Module
+"#, ["plain", "<tag>"]);
+
+vb_case!(optional_arguments_can_control_loop_iterations, r#"
+Module M
+    Function CountUp(Optional repeatCount As Integer = 3) As Integer
+        Dim total As Integer = 0
+        For i As Integer = 1 To repeatCount
+            total = total + i
+        Next
+        Return total
+    End Function
+
+    Sub Main()
+        Console.WriteLine(CountUp())
+        Console.WriteLine(CountUp(4))
+    End Sub
+End Module
+"#, ["6", "10"]);
+
+vb_case!(optional_arguments_support_multiple_types_in_single_signature, r#"
+Module M
+    Function Describe(name As String, Optional level As Integer = 1, Optional suffix As String = "ok") As String
+        Return name & ":" & level & ":" & suffix
+    End Function
+
+    Sub Main()
+        Console.WriteLine(Describe("Hope"))
+        Console.WriteLine(Describe("Ivy", 3, "done"))
+    End Sub
+End Module
+"#, ["Hope:1:ok", "Ivy:3:done"]);
+
+vb_case!(optional_arguments_can_use_second_default_after_first_override, r#"
+Module M
+    Function Build(name As String, Optional prefix As String = "start", Optional suffix As String = "end") As String
+        Return prefix & ":" & name & ":" & suffix
+    End Function
+
+    Sub Main()
+        Console.WriteLine(Build("Jade", "custom"))
+    End Sub
+End Module
+"#, ["custom:Jade:end"]);

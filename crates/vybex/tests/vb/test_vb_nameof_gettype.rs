@@ -1,55 +1,128 @@
 use super::helpers::run_vb;
 
-fn assert_vb_output_owned(src: String, expected: Vec<String>) {
-    let out = run_vb(&src);
-    assert_eq!(out, expected);
+macro_rules! vb_case {
+    ($name:ident, $src:expr, [$($expected:expr),* $(,)?]) => {
+        #[test]
+        fn $name() {
+            let out = run_vb($src);
+            assert_eq!(out, vec![$($expected),*]);
+        }
+    };
 }
 
-fn assert_nameof(expression: &str, expected: &str) {
-    let src = format!(r#"
+vb_case!(nameof_returns_local_variable_name, r#"
+Module M
+    Sub Main()
+        Dim total As Integer = 5
+        Console.WriteLine(NameOf(total))
+    End Sub
+End Module
+"#, ["total"]);
+
+vb_case!(nameof_returns_function_name, r#"
 Module M
     Function ComputeTotal() As Integer
         Return 10
     End Function
 
     Sub Main()
-        Dim total As Integer = 5
-        Console.WriteLine(NameOf({expression}))
+        Console.WriteLine(NameOf(ComputeTotal))
     End Sub
 End Module
-"#, expression = expression);
-    assert_vb_output_owned(src, vec![expected.to_string()]);
-}
+"#, ["ComputeTotal"]);
 
-fn assert_gettype(type_name: &str) {
-    let src = format!(r#"
+vb_case!(nameof_returns_module_method_name, r#"
 Module M
     Sub Main()
-        Dim t As Object = GetType({type_name})
-        Console.WriteLine(IsNothing(t))
+        Console.WriteLine(NameOf(Main))
     End Sub
 End Module
-"#, type_name = type_name);
-    assert_vb_output_owned(src, vec!["False".to_string()]);
-}
+"#, ["Main"]);
 
-macro_rules! nameof_gettype_cases {
-    ($($name:ident => nameof($expression:expr, $expected:expr)),* ; $($name2:ident => gettype($type_name:expr)),* $(,)?) => {
-        $(#[test] fn $name() { assert_nameof($expression, $expected); })*
-        $(#[test] fn $name2() { assert_gettype($type_name); })*
-    };
-}
+vb_case!(nameof_returns_type_name_for_builtin_type, r#"
+Module M
+    Sub Main()
+        Console.WriteLine(NameOf(Integer))
+    End Sub
+End Module
+"#, ["Integer"]);
 
-nameof_gettype_cases! {
-    nameof_gettype_001 => nameof("total", "total"),
-    nameof_gettype_002 => nameof("ComputeTotal", "ComputeTotal"),
-    nameof_gettype_003 => nameof("Console", "Console"),
-    nameof_gettype_004 => nameof("Main", "Main"),
-    nameof_gettype_005 => nameof("Integer", "Integer")
-    ;
-    nameof_gettype_006 => gettype("Integer"),
-    nameof_gettype_007 => gettype("String"),
-    nameof_gettype_008 => gettype("Double"),
-    nameof_gettype_009 => gettype("Boolean"),
-    nameof_gettype_010 => gettype("Object"),
-}
+vb_case!(nameof_returns_parameter_name_inside_function, r#"
+Module M
+    Function ShowName(value As Integer) As String
+        Return NameOf(value)
+    End Function
+
+    Sub Main()
+        Console.WriteLine(ShowName(5))
+    End Sub
+End Module
+"#, ["value"]);
+
+vb_case!(gettype_returns_non_nothing_for_integer, r#"
+Module M
+    Sub Main()
+        Dim t As Object = GetType(Integer)
+        If IsNothing(t) Then
+            Console.WriteLine("missing")
+        Else
+            Console.WriteLine("present")
+        End If
+    End Sub
+End Module
+"#, ["present"]);
+
+vb_case!(gettype_returns_non_nothing_for_string, r#"
+Module M
+    Sub Main()
+        Dim t As Object = GetType(String)
+        If IsNothing(t) Then
+            Console.WriteLine("missing")
+        Else
+            Console.WriteLine("present")
+        End If
+    End Sub
+End Module
+"#, ["present"]);
+
+vb_case!(gettype_returns_non_nothing_for_boolean, r#"
+Module M
+    Sub Main()
+        Dim t As Object = GetType(Boolean)
+        If IsNothing(t) Then
+            Console.WriteLine("missing")
+        Else
+            Console.WriteLine("present")
+        End If
+    End Sub
+End Module
+"#, ["present"]);
+
+vb_case!(gettype_returns_non_nothing_for_object, r#"
+Module M
+    Sub Main()
+        Dim t As Object = GetType(Object)
+        If IsNothing(t) Then
+            Console.WriteLine("missing")
+        Else
+            Console.WriteLine("present")
+        End If
+    End Sub
+End Module
+"#, ["present"]);
+
+vb_case!(gettype_returns_non_nothing_for_custom_class, r#"
+Module M
+    Class Greeter
+    End Class
+
+    Sub Main()
+        Dim t As Object = GetType(Greeter)
+        If IsNothing(t) Then
+            Console.WriteLine("missing")
+        Else
+            Console.WriteLine("present")
+        End If
+    End Sub
+End Module
+"#, ["present"]);

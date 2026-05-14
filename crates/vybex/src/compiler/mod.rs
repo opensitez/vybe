@@ -88,6 +88,21 @@ struct PendingMethodOverload {
     chunk_idx: usize,
 }
 
+#[derive(Debug, Clone)]
+struct CallSignature {
+    param_names: Vec<String>,
+    min_arity: usize,
+}
+
+impl CallSignature {
+    fn from_params(params: &[Param]) -> Self {
+        Self {
+            param_names: params.iter().map(|param| param.name.clone()).collect(),
+            min_arity: params.iter().take_while(|param| param.default.is_none() && !param.is_rest).count(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AttributeUsageMetadata {
     pub allow_multiple: bool,
@@ -151,6 +166,13 @@ pub(crate) enum ReflectionBinding {
     Parameter { type_name: String, method_name: String, index: usize },
 }
 
+#[derive(Debug, Clone)]
+struct StaticLocalBinding {
+    global_name: String,
+    init_flag_name: String,
+    type_hint: Option<String>,
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Compiler
 // ════════════════════════════════════════════════════════════════════════════
@@ -175,6 +197,8 @@ pub struct Compiler {
     defined_functions: HashSet<String>,
     function_param_modes: HashMap<String, Vec<PassBy>>,
     function_min_arity: HashMap<String, usize>,
+    function_signatures: HashMap<String, Vec<CallSignature>>,
+    constructor_signatures: HashMap<String, Vec<CallSignature>>,
     defined_classes: HashSet<String>,
     /// Names of methods defined on any user class — used to avoid value method
     /// hijacking (e.g. user class `Calc.Add()` shouldn't match array `add`).
@@ -207,6 +231,7 @@ pub struct Compiler {
     /// semantics.
     pub(crate) current_class_implicit_self: bool,
     pub(crate) current_member_is_static: bool,
+    static_local_bindings: Vec<HashMap<String, StaticLocalBinding>>,
     /// Label for the next loop to be pushed (set by StmtKind::Labeled).
     pending_label: Option<String>,
     with_targets: Vec<u16>,
@@ -419,6 +444,8 @@ impl Compiler {
             defined_functions: HashSet::new(),
             function_param_modes: HashMap::new(),
             function_min_arity: HashMap::new(),
+            function_signatures: HashMap::new(),
+            constructor_signatures: HashMap::new(),
             defined_classes: HashSet::new(),
             defined_class_methods: HashSet::new(),
             global_type_hints: HashMap::new(),
@@ -437,6 +464,7 @@ impl Compiler {
             current_class: None,
             current_class_implicit_self: false,
             current_member_is_static: false,
+            static_local_bindings: Vec::new(),
             pending_label: None,
             with_targets: Vec::new(),
 
@@ -1948,9 +1976,19 @@ impl Compiler {
 
     pub(super) fn is_callable_type_hint(type_hint: &str) -> bool {
         let normalized = Self::normalize_type_hint(type_hint);
+        if normalized.ends_with("()") {
+            return false;
+        }
         let lower = normalized.to_ascii_lowercase();
         let leaf = lower.rsplit('.').next().unwrap_or(lower.as_str());
-        let bare = leaf.split('<').next().unwrap_or(leaf).trim();
+        let bare = leaf
+            .split('<')
+            .next()
+            .unwrap_or(leaf)
+            .split('(')
+            .next()
+            .unwrap_or(leaf)
+            .trim();
         matches!(bare, "func" | "action" | "eventhandler" | "predicate" | "comparison" | "converter")
             || lower.contains(" delegate")
     }
@@ -1960,6 +1998,11 @@ impl Compiler {
     }
 
     fn lookup_var_type_hint(&self, name: &str) -> Option<&str> {
+        if let Some(binding) = self.static_local_binding(name) {
+            if let Some(type_hint) = binding.type_hint.as_deref() {
+                return Some(type_hint);
+            }
+        }
         if let Some(type_hint) = self.scope().resolve_type(name) {
             return Some(type_hint);
         }
@@ -1973,6 +2016,84 @@ impl Compiler {
         }
         let cname = self.canon(name);
         self.global_type_hints.get(&cname).map(|s| s.as_str())
+    }
+
+    fn static_local_binding(&self, name: &str) -> Option<&StaticLocalBinding> {
+        let canon_name = self.canon(name);
+        self.static_local_bindings
+            .iter()
+            .rev()
+            .find_map(|bindings| bindings.get(&canon_name))
+    }
+
+    fn has_static_local_binding(&self, name: &str) -> bool {
+        self.static_local_binding(name).is_some()
+    }
+
+    fn ensure_static_local_binding(
+        &mut self,
+        name: &str,
+        type_hint: Option<String>,
+    ) -> Result<StaticLocalBinding, String> {
+        let canon_name = self.canon(name);
+        let normalized_type_hint = type_hint
+            .as_deref()
+            .map(Self::normalize_type_hint);
+
+        if let Some(existing) = self
+            .static_local_bindings
+            .last_mut()
+            .and_then(|bindings| bindings.get_mut(&canon_name))
+        {
+            if existing.type_hint.is_none() {
+                existing.type_hint = normalized_type_hint;
+            }
+            return Ok(existing.clone());
+        }
+
+        let func_name = self
+            .current_func_name
+            .as_deref()
+            .map(|name| self.canon(name))
+            .unwrap_or_else(|| "anon".to_string());
+        let Some(bindings) = self.static_local_bindings.last_mut() else {
+            return Err(format!("static local `{name}` declared outside a function"));
+        };
+        let global_name = format!("__staticlocal_{}_{}_{}", self.current, func_name, canon_name);
+        let binding = StaticLocalBinding {
+            init_flag_name: format!("{}__init", global_name),
+            global_name,
+            type_hint: normalized_type_hint,
+        };
+        bindings.insert(canon_name, binding.clone());
+        Ok(binding)
+    }
+
+    fn emit_var_decl_initializer_value(&mut self, decl: &VarDeclarator) -> Result<(), String> {
+        if let Some(ref init_expr) = decl.init {
+            self.compile_expr_with_value_copy(init_expr)?;
+            self.maybe_promote_pascal_array_literal_to_set(decl.type_hint.as_deref(), init_expr);
+        } else if let Some(ref bounds) = decl.array_bounds {
+            if let Some(size_expr) = bounds.first() {
+                let line = self.line;
+                self.compile_expr(size_expr)?;
+                self.emit_const(Value::F64(1.0));
+                self.emit(Op::DYN_ADD);
+                common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
+            } else {
+                self.emit(Op::NULL);
+            }
+        } else {
+            match decl.type_hint.as_deref().map(|s| s.to_lowercase()).as_deref() {
+                Some("integer") | Some("int") | Some("longint") | Some("real") | Some("double") | Some("float") => {
+                    self.emit(Op::F64_CONST_0);
+                }
+                Some("boolean") | Some("bool") => self.emit(Op::FALSE),
+                Some("string") => self.emit_const(Value::String(Arc::from(""))),
+                _ => self.emit(Op::NULL),
+            }
+        }
+        Ok(())
     }
 
     fn lookup_implicit_self_field_type_hint(&self, name: &str) -> Option<&str> {
@@ -2192,6 +2313,12 @@ impl Compiler {
                 return;
             }
         }
+        if let Some(binding) = self.static_local_binding(name) {
+            let global_name = binding.global_name.clone();
+            let idx = self.str_const(&global_name);
+            self.emit_u16(Op::GLOBAL_GET, idx);
+            return;
+        }
         // Implicit self field — when inside a class method and the name is a
         // field of the current class, read from `me.<name>`. This is what
         // languages like VB do for unqualified field access. Without this,
@@ -2270,6 +2397,13 @@ impl Compiler {
                 self.emit(Op::DROP);
                 return;
             }
+        }
+        if let Some(binding) = self.static_local_binding(name) {
+            let global_name = binding.global_name.clone();
+            let idx = self.str_const(&global_name);
+            self.emit_u16(Op::GLOBAL_SET, idx);
+            self.emit(Op::DROP);
+            return;
         }
         if self.current_class_implicit_self && self.is_class_field(name) {
             let value_slot = self.define_local("__implicit_self_value");
@@ -4744,9 +4878,16 @@ impl Compiler {
                     .init
                     .as_ref()
                     .and_then(|expr| self.resolve_reflection_binding_expr(expr));
-                let inferred_type_hint = decl.type_hint.clone().or_else(|| {
+                let mut inferred_type_hint = decl.type_hint.clone().or_else(|| {
                     decl.init.as_ref().and_then(|expr| self.infer_expr_type_hint(expr))
                 });
+                if decl.array_bounds.is_some() {
+                    if let Some(type_hint) = inferred_type_hint.as_mut() {
+                        if !type_hint.trim_end().ends_with("()") {
+                            type_hint.push_str("()");
+                        }
+                    }
+                }
                 // Top-level vars → globals.
                 // `let`/`const` inside a block scope (depth > 0) are locals
                 // even at the top level — they respect block scoping.
@@ -4756,6 +4897,31 @@ impl Compiler {
                 let is_hoisted = *kind == VarDeclKind::Var
                     && self.profile.hoist_var
                     && self.scopes.len() == 1;
+
+                if *kind == VarDeclKind::Static {
+                    let binding = self.ensure_static_local_binding(name, inferred_type_hint.clone())?;
+                    let flag_idx = self.str_const(&binding.init_flag_name);
+                    self.emit_u16(Op::GLOBAL_GET, flag_idx);
+                    self.emit(Op::DYN_TO_BOOL);
+                    let skip_init = self.emit_jump(Op::BR_IF_TRUE);
+
+                    self.emit_var_decl_initializer_value(decl)?;
+                    let value_idx = self.str_const(&binding.global_name);
+                    self.emit_u16(Op::GLOBAL_SET, value_idx);
+                    self.emit(Op::DROP);
+                    self.emit(Op::TRUE);
+                    self.emit_u16(Op::GLOBAL_SET, flag_idx);
+                    self.emit(Op::DROP);
+                    self.patch_jump(skip_init);
+
+                    let binding_key = self.canon(name);
+                    if let Some(binding) = reflection_binding {
+                        self.reflection_bindings.insert(binding_key, binding);
+                    } else {
+                        self.reflection_bindings.remove(&binding_key);
+                    }
+                    return Ok(());
+                }
 
                 // Recursive local lambdas need their binding slot defined
                 // before compiling the initializer so captures resolve to the
@@ -4803,30 +4969,10 @@ impl Compiler {
                             self.emit(Op::DROP);
                         }
                     }
-                } else if let Some(ref bounds) = decl.array_bounds {
-                    // Array with bounds: Dim arr(N) — N is the UPPER bound,
-                    // so the array length is N+1. Emit through
-                    // `common::collections` so the provider is swappable
-                    // in one place (Phase D2).
-                    if let Some(size_expr) = bounds.first() {
-                        let line = self.line;
-                        self.compile_expr(size_expr)?;
-                        self.emit_const(Value::F64(1.0));
-                        self.emit(Op::DYN_ADD);
-                        common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
-                    } else {
-                        self.emit(Op::NULL);
-                    }
+                } else if decl.array_bounds.is_some() || decl.type_hint.is_some() {
+                    self.emit_var_decl_initializer_value(decl)?;
                 } else {
-                    // Default values based on type hint
-                    match decl.type_hint.as_deref().map(|s| s.to_lowercase()).as_deref() {
-                        Some("integer") | Some("int") | Some("longint") | Some("real") | Some("double") | Some("float") => {
-                            self.emit(Op::F64_CONST_0);
-                        }
-                        Some("boolean") | Some("bool") => self.emit(Op::FALSE),
-                        Some("string") => self.emit_const(Value::String(Arc::from(""))),
-                        _ => self.emit(Op::NULL),
-                    }
+                    self.emit(Op::NULL);
                 }
 
                 if is_toplevel || is_hoisted {
@@ -5020,7 +5166,8 @@ impl Compiler {
                 }
                 // Local variable / parameter takes priority over implicit self field
                 let is_local = self.scope().resolve(name).is_some()
-                    || (!self.case_sensitive && self.scope().resolve_ci(name).is_some());
+                    || (!self.case_sensitive && self.scope().resolve_ci(name).is_some())
+                    || self.has_static_local_binding(name);
 
                 // Implicit self field write (only if NOT a local)
                 if !is_local && self.is_class_field(name) {

@@ -1,37 +1,91 @@
 use super::helpers::run_vb;
 
-fn assert_vb_output_owned(src: String, expected: Vec<String>) {
-    let out = run_vb(&src);
-    assert_eq!(out, expected);
-}
-
-fn assert_date_literal(month: i32, day: i32, year: i32) {
-    let src = format!(r#"
-Module M
-    Sub Main()
-        Dim d As Date = #{month}/{day}/{year}#
-        Console.WriteLine(CStr(d))
-    End Sub
-End Module
-"#, month = month, day = day, year = year);
-    assert_vb_output_owned(src, vec![format!("{}/{}/{}", month, day, year)]);
-}
-
-macro_rules! date_literal_cases {
-    ($($name:ident => ($month:expr, $day:expr, $year:expr)),* $(,)?) => {
-        $(#[test] fn $name() { assert_date_literal($month, $day, $year); })*
+macro_rules! vb_case {
+    ($name:ident, $src:expr, [$($expected:expr),* $(,)?]) => {
+        #[test]
+        fn $name() {
+            let out = run_vb($src);
+            assert_eq!(out, vec![$($expected),*]);
+        }
     };
 }
 
-date_literal_cases! {
-    date_literals_001 => (1, 1, 2024),
-    date_literals_002 => (1, 15, 2024),
-    date_literals_003 => (2, 1, 2024),
-    date_literals_004 => (2, 14, 2024),
-    date_literals_005 => (3, 1, 2024),
-    date_literals_006 => (3, 20, 2024),
-    date_literals_007 => (4, 5, 2024),
-    date_literals_008 => (4, 30, 2024),
-    date_literals_009 => (5, 10, 2024),
-    date_literals_010 => (5, 25, 2024),
+vb_case!(date_literal_supports_new_years_day, r#"
+Module M
+    Sub Main()
+        Dim d As Date = #1/1/2024#
+        Console.WriteLine(CStr(d))
+    End Sub
+End Module
+"#, ["1/1/2024"]);
+
+vb_case!(date_literal_supports_mid_month_value, r#"
+Module M
+    Sub Main()
+        Dim d As Date = #1/15/2024#
+        Console.WriteLine(CStr(d))
+    End Sub
+End Module
+"#, ["1/15/2024"]);
+
+vb_case!(date_literal_supports_leap_day, r#"
+Module M
+    Sub Main()
+        Dim d As Date = #2/29/2024#
+        Console.WriteLine(CStr(d))
+    End Sub
+End Module
+"#, ["2/29/2024"]);
+
+vb_case!(date_literal_supports_summer_holiday_date, r#"
+Module M
+    Sub Main()
+        Dim d As Date = #7/4/2024#
+        Console.WriteLine(CStr(d))
+    End Sub
+End Module
+"#, ["7/4/2024"]);
+
+vb_case!(date_literal_supports_end_of_month_value, r#"
+Module M
+    Sub Main()
+        Dim d As Date = #4/30/2024#
+        Console.WriteLine(CStr(d))
+    End Sub
+End Module
+"#, ["4/30/2024"]);
+
+vb_case!(date_literal_supports_end_of_year_value, r#"
+Module M
+    Sub Main()
+        Dim d As Date = #12/31/2024#
+        Console.WriteLine(CStr(d))
+    End Sub
+End Module
+"#, ["12/31/2024"]);
+
+#[test]
+fn date_literal_can_include_time_of_day_spec() {
+    let out = run_vb(r#"
+Module M
+    Sub Main()
+        Dim d As Date = #5/14/2024 3:45 PM#
+        Console.WriteLine(CStr(d))
+    End Sub
+End Module
+"#);
+    assert_eq!(out, vec!["5/14/2024 3:45 PM"]);
+}
+
+#[test]
+fn date_literal_can_include_seconds_precision() {
+    let out = run_vb(r#"
+Module M
+    Sub Main()
+        Dim d As Date = #5/14/2024 11:59:58 PM#
+        Console.WriteLine(CStr(d))
+    End Sub
+End Module
+"#);
+    assert_eq!(out, vec!["5/14/2024 11:59:58 PM"]);
 }

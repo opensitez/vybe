@@ -1,68 +1,154 @@
 use super::helpers::run_vb;
 
-fn assert_vb_output_owned(src: String, expected: Vec<String>) {
-    let out = run_vb(&src);
-    assert_eq!(out, expected);
+macro_rules! vb_case {
+    ($name:ident, $src:expr, [$($expected:expr),* $(,)?]) => {
+        #[test]
+        fn $name() {
+            let out = run_vb($src);
+            assert_eq!(out, vec![$($expected),*]);
+        }
+    };
 }
 
-fn assert_exit_do(limit: i32, step: i32) {
-    let src = format!(r#"
+vb_case!(exit_do_breaks_once_increment_reaches_target, r#"
 Module M
     Sub Main()
         Dim total As Integer = 0
         Do
-            total = total + {step}
-            If total >= {limit} Then Exit Do
+            total = total + 1
+            If total >= 3 Then Exit Do
         Loop
         Console.WriteLine(total)
     End Sub
 End Module
-"#, limit = limit, step = step);
-    let mut total = 0;
-    loop {
-        total += step;
-        if total >= limit {
-            break;
-        }
-    }
-    assert_vb_output_owned(src, vec![total.to_string()]);
-}
+"#, ["3"]);
 
-macro_rules! exit_do_cases {
-    ($($name:ident => ($limit:expr, $step:expr)),* $(,)?) => {
-        $(#[test] fn $name() { assert_exit_do($limit, $step); })*
-    };
-}
+vb_case!(exit_do_can_overshoot_threshold_before_stopping, r#"
+Module M
+    Sub Main()
+        Dim total As Integer = 0
+        Do
+            total = total + 4
+            If total >= 7 Then Exit Do
+        Loop
+        Console.WriteLine(total)
+    End Sub
+End Module
+"#, ["8"]);
 
-exit_do_cases! {
-    exit_do_001 => (3, 1),
-    exit_do_002 => (4, 1),
-    exit_do_003 => (5, 2),
-    exit_do_004 => (6, 2),
-    exit_do_005 => (7, 3),
-    exit_do_006 => (8, 3),
-    exit_do_007 => (9, 4),
-    exit_do_008 => (10, 4),
-    exit_do_009 => (11, 5),
-    exit_do_010 => (12, 5),
-    exit_do_011 => (13, 2),
-    exit_do_012 => (14, 3),
-    exit_do_013 => (15, 4),
-    exit_do_014 => (16, 5),
-    exit_do_015 => (17, 6),
-    exit_do_016 => (18, 6),
-    exit_do_017 => (19, 7),
-    exit_do_018 => (20, 7),
-    exit_do_019 => (21, 3),
-    exit_do_020 => (22, 4),
-    exit_do_021 => (23, 5),
-    exit_do_022 => (24, 6),
-    exit_do_023 => (25, 7),
-    exit_do_024 => (26, 8),
-    exit_do_025 => (27, 9),
-    exit_do_026 => (28, 4),
-    exit_do_027 => (29, 5),
-    exit_do_028 => (30, 6),
-    exit_do_029 => (31, 7),
-    exit_do_030 => (32, 8),
-}
+vb_case!(exit_do_can_start_from_negative_value, r#"
+Module M
+    Sub Main()
+        Dim total As Integer = -2
+        Do
+            total = total + 3
+            If total >= 4 Then Exit Do
+        Loop
+        Console.WriteLine(total)
+    End Sub
+End Module
+"#, ["4"]);
+
+vb_case!(exit_do_skips_tail_work_after_break, r#"
+Module M
+    Sub Main()
+        Dim total As Integer = 0
+        Do
+            total = total + 1
+            If total >= 2 Then Exit Do
+            total = total + 10
+        Loop
+        Console.WriteLine(total)
+    End Sub
+End Module
+"#, ["12"]);
+
+vb_case!(exit_do_can_use_separate_counter_and_total, r#"
+Module M
+    Sub Main()
+        Dim count As Integer = 0
+        Dim total As Integer = 0
+        Do
+            count = count + 1
+            total = total + count
+            If count = 4 Then Exit Do
+        Loop
+        Console.WriteLine(total)
+    End Sub
+End Module
+"#, ["10"]);
+
+vb_case!(exit_do_can_break_from_boolean_flag, r#"
+Module M
+    Sub Main()
+        Dim count As Integer = 0
+        Dim shouldStop As Boolean = False
+        Do
+            count = count + 1
+            shouldStop = count >= 3
+            If shouldStop Then Exit Do
+        Loop
+        Console.WriteLine(count)
+    End Sub
+End Module
+"#, ["3"]);
+
+vb_case!(exit_do_can_append_text_before_breaking, r#"
+Module M
+    Sub Main()
+        Dim text As String = ""
+        Dim count As Integer = 0
+        Do
+            count = count + 1
+            text = text & count
+            If count = 3 Then Exit Do
+        Loop
+        Console.WriteLine(text)
+    End Sub
+End Module
+"#, ["123"]);
+
+vb_case!(exit_do_can_use_helper_function_for_break_decision, r#"
+Module M
+    Function ReachedLimit(value As Integer) As Boolean
+        Return value >= 5
+    End Function
+
+    Sub Main()
+        Dim total As Integer = 0
+        Do
+            total = total + 2
+            If ReachedLimit(total) Then Exit Do
+        Loop
+        Console.WriteLine(total)
+    End Sub
+End Module
+"#, ["6"]);
+
+vb_case!(exit_do_can_break_after_even_iteration, r#"
+Module M
+    Sub Main()
+        Dim count As Integer = 0
+        Do
+            count = count + 1
+            If count Mod 2 = 0 Then
+                Exit Do
+            End If
+        Loop
+        Console.WriteLine(count)
+    End Sub
+End Module
+"#, ["2"]);
+
+vb_case!(exit_do_leaves_accumulator_available_after_loop, r#"
+Module M
+    Sub Main()
+        Dim total As Integer = 1
+        Do
+            total = total * 2
+            If total >= 8 Then Exit Do
+        Loop
+        Console.WriteLine(total + 1)
+    End Sub
+End Module
+"#, ["9"]);

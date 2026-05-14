@@ -30,6 +30,10 @@ impl Compiler {
             cname.clone(),
             params.iter().take_while(|param| param.default.is_none() && !param.is_rest).count(),
         );
+        self.function_signatures
+            .entry(cname.clone())
+            .or_default()
+            .push(CallSignature::from_params(params));
         let name = &cname;
 
         let has_rest = params.last().map_or(false, |p| p.is_rest);
@@ -58,6 +62,7 @@ impl Compiler {
         }
         self.chunks.push(chunk);
         self.scopes.push(Scope::new_function());
+        self.static_local_bindings.push(HashMap::new());
         let saved = self.current;
         self.current = func_idx;
         // Function body opens fresh wrt the runtime label_stack —
@@ -230,6 +235,7 @@ impl Compiler {
         self.chunks[func_idx].local_count = locals;
         let uvs = self.scopes.last().unwrap().upvalues.clone();
         self.scopes.pop();
+        self.static_local_bindings.pop();
         self.current = saved;
         self.function_label_base = saved_label_base;
 
@@ -510,6 +516,12 @@ impl Compiler {
                 bound_name.clone(),
                 user_params.iter().map(|param| param.pass_by).collect(),
             );
+            cc.function_signatures
+                .entry(bound_name.clone())
+                .or_default()
+                .push(CallSignature::from_params(
+                    &user_params.iter().map(|param| (*param).clone()).collect::<Vec<_>>()
+                ));
             let uses_js_this = cc.is_js_profile();
             let has_rest = user_params.last().map_or(false, |p| p.is_rest);
             let arity = if has_rest {
@@ -536,6 +548,7 @@ impl Compiler {
             }
             cc.chunks.push(chunk);
             cc.scopes.push(Scope::new_function());
+            cc.static_local_bindings.push(HashMap::new());
             let saved = cc.current;
             cc.current = ci;
 
@@ -667,6 +680,7 @@ impl Compiler {
             let locals = cc.scope().next_slot.max(cc.chunks[ci].local_count);
             cc.chunks[ci].local_count = locals;
             cc.scopes.pop();
+            cc.static_local_bindings.pop();
             cc.current = saved;
             if let Some(pending) = cc.pending_classes.get_mut(name) {
                 let overloads = if is_static {
@@ -863,6 +877,14 @@ impl Compiler {
             });
             let ctor_body: Option<(&Vec<Statement>, &Vec<Param>, Option<&Vec<Expression>>)> = ctor_variant
                 .map(|c| (&c.body, &c.params, ctor_base_args_from_nc.as_ref()));
+            if let Some((_, params, _)) = ctor_body {
+                let skip = if class.explicit_self_param { 1 } else { 0 };
+                let ctor_params: Vec<Param> = params.iter().skip(skip).cloned().collect();
+                self.constructor_signatures
+                    .entry(self.canon(name))
+                    .or_default()
+                    .push(CallSignature::from_params(&ctor_params));
+            }
             let user_params: Vec<String> = ctor_body.map(|(_, params, _)| {
                 if class.explicit_self_param {
                     params.iter().skip(1).map(|p| p.name.clone()).collect()

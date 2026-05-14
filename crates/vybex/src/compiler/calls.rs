@@ -455,11 +455,101 @@ impl Compiler {
         Ok(())
     }
 
+    pub(crate) fn reorder_named_args_with_signatures(
+        &self,
+        args: &[Argument],
+        signatures: &[CallSignature],
+    ) -> Vec<Argument> {
+        if !args.iter().any(|arg| arg.name.is_some()) {
+            return args.to_vec();
+        }
+
+        for signature in signatures {
+            let mut slots: Vec<Option<Argument>> = vec![None; signature.param_names.len()];
+            let mut next_positional = 0usize;
+            let mut valid = true;
+
+            for arg in args {
+                if arg.spread {
+                    valid = false;
+                    break;
+                }
+
+                let target_index = if let Some(name) = arg.name.as_deref() {
+                    signature
+                        .param_names
+                        .iter()
+                        .position(|param_name| param_name.eq_ignore_ascii_case(name))
+                } else {
+                    while next_positional < slots.len() && slots[next_positional].is_some() {
+                        next_positional += 1;
+                    }
+                    Some(next_positional)
+                };
+
+                let Some(index) = target_index else {
+                    valid = false;
+                    break;
+                };
+                if index >= slots.len() || slots[index].is_some() {
+                    valid = false;
+                    break;
+                }
+
+                let mut ordered = arg.clone();
+                ordered.name = None;
+                slots[index] = Some(ordered);
+
+                if arg.name.is_none() {
+                    next_positional = index + 1;
+                }
+            }
+
+            if !valid {
+                continue;
+            }
+
+            if slots.iter().take(signature.min_arity).any(Option::is_none) {
+                continue;
+            }
+
+            return slots
+                .into_iter()
+                .map(|arg| arg.unwrap_or_else(|| Argument::positional(Expression::null())))
+                .collect();
+        }
+
+        args.to_vec()
+    }
+
+    fn reorder_named_call_args(&self, callee: &Expression, args: &[Argument]) -> Vec<Argument> {
+        if !args.iter().any(|arg| arg.name.is_some()) {
+            return args.to_vec();
+        }
+
+        let signatures = match &callee.kind {
+            ExprKind::Ident(name) => self.function_signatures.get(&self.canon(name)),
+            ExprKind::Member { field, .. } => self.function_signatures.get(&self.canon(field)),
+            _ => None,
+        };
+
+        signatures
+            .map(|signatures| self.reorder_named_args_with_signatures(args, signatures))
+            .unwrap_or_else(|| args.to_vec())
+    }
+
     // ════════════════════════════════════════════════════════════════════════
     // Call compilation
     // ════════════════════════════════════════════════════════════════════════
 
     pub(super) fn compile_call(&mut self, callee: &Expression, args: &[Argument]) -> Result<(), String> {
+        let reordered_args;
+        let args = if args.iter().any(|arg| arg.name.is_some()) {
+            reordered_args = self.reorder_named_call_args(callee, args);
+            reordered_args.as_slice()
+        } else {
+            args
+        };
         let arg_exprs: Vec<&Expression> = args.iter().map(|a| &a.value).collect();
 
         if let ExprKind::Member { object, field, null_safe } = &callee.kind {
@@ -498,6 +588,9 @@ impl Compiler {
         }
 
         if self.try_compile_dotnet_case_insensitive_collection_call(callee, args)? {
+            return Ok(());
+        }
+        if self.try_compile_dotnet_delegate_call(callee, args)? {
             return Ok(());
         }
         if self.try_compile_dotnet_numeric_try_parse(callee, args)? {
@@ -4436,6 +4529,42 @@ impl Compiler {
             }
             _ => Ok(false),
         }
+    }
+
+    fn try_compile_dotnet_delegate_call(&mut self, callee: &Expression, args: &[Argument]) -> Result<bool, String> {
+        if args.len() != 2 {
+            return Ok(false);
+        }
+
+        let ExprKind::Member { object, field, .. } = &callee.kind else {
+            return Ok(false);
+        };
+
+        let receiver_parts = self.flatten_member_chain(object);
+        let Some(receiver_leaf) = receiver_parts.last() else {
+            return Ok(false);
+        };
+        if !receiver_leaf.eq_ignore_ascii_case("Delegate") {
+            return Ok(false);
+        }
+
+        let emit = if field.eq_ignore_ascii_case("Combine") {
+            Some("delegates.combine")
+        } else if field.eq_ignore_ascii_case("Remove") {
+            Some("delegates.remove")
+        } else {
+            None
+        };
+        let Some(emit) = emit else {
+            return Ok(false);
+        };
+
+        for arg in args {
+            self.compile_expr(&arg.value)?;
+        }
+        let line = self.line;
+        self.emit_common(emit, 2, line);
+        Ok(true)
     }
 
     fn try_compile_dotnet_formatted_tostring(&mut self, callee: &Expression, args: &[Argument]) -> Result<bool, String> {

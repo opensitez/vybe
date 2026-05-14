@@ -1,67 +1,105 @@
 use super::helpers::run_vb;
 
-fn assert_vb_output_owned(src: String, expected: Vec<String>) {
-    let out = run_vb(&src);
-    assert_eq!(out, expected);
-}
-
-fn assert_if_ternary(condition: bool, when_true: i32, when_false: i32) {
-    let condition_literal = if condition { "True" } else { "False" };
-    let src = format!(r#"
-Module M
-    Sub Main()
-        Console.WriteLine(If({condition}, {when_true}, {when_false}))
-    End Sub
-End Module
-"#, condition = condition_literal, when_true = when_true, when_false = when_false);
-    let expected = if condition { when_true } else { when_false };
-    assert_vb_output_owned(src, vec![expected.to_string()]);
-}
-
-fn assert_if_coalesce(primary: Option<&str>, fallback: &str) {
-    let primary_expr = match primary {
-        Some(value) => format!("\"{}\"", value),
-        None => "Nothing".to_string(),
-    };
-    let src = format!(r#"
-Module M
-    Sub Main()
-        Dim value As String = {primary}
-        Console.WriteLine(If(value, "{fallback}"))
-    End Sub
-End Module
-"#, primary = primary_expr, fallback = fallback);
-    let expected = primary.unwrap_or(fallback).to_string();
-    assert_vb_output_owned(src, vec![expected]);
-}
-
-macro_rules! if_operator_cases {
-    ($($name:ident => ternary($condition:expr, $when_true:expr, $when_false:expr)),* ; $($name2:ident => coalesce($primary:expr, $fallback:expr)),* $(,)?) => {
-        $(#[test] fn $name() { assert_if_ternary($condition, $when_true, $when_false); })*
-        $(#[test] fn $name2() { assert_if_coalesce($primary, $fallback); })*
+macro_rules! vb_case {
+    ($name:ident, $src:expr, [$($expected:expr),* $(,)?]) => {
+        #[test]
+        fn $name() {
+            let out = run_vb($src);
+            assert_eq!(out, vec![$($expected),*]);
+        }
     };
 }
 
-if_operator_cases! {
-    if_operator_001 => ternary(true, 1, 9),
-    if_operator_002 => ternary(false, 1, 9),
-    if_operator_003 => ternary(true, 2, 8),
-    if_operator_004 => ternary(false, 2, 8),
-    if_operator_005 => ternary(true, 5, 15),
-    if_operator_006 => ternary(false, 5, 15),
-    if_operator_007 => ternary(true, 10, 20),
-    if_operator_008 => ternary(false, 10, 20),
-    if_operator_009 => ternary(true, 42, 24),
-    if_operator_010 => ternary(false, 42, 24)
-    ;
-    if_operator_011 => coalesce(Some("alpha"), "fallback"),
-    if_operator_012 => coalesce(None, "fallback"),
-    if_operator_013 => coalesce(Some("vb"), "lang"),
-    if_operator_014 => coalesce(None, "lang"),
-    if_operator_015 => coalesce(Some("left"), "right"),
-    if_operator_016 => coalesce(None, "right"),
-    if_operator_017 => coalesce(Some("hello"), "world"),
-    if_operator_018 => coalesce(None, "world"),
-    if_operator_019 => coalesce(Some("primary"), "secondary"),
-    if_operator_020 => coalesce(None, "secondary"),
-}
+vb_case!(if_operator_returns_true_branch_for_boolean_condition, r#"
+Module M
+    Sub Main()
+        Console.WriteLine(If(True, 1, 9))
+    End Sub
+End Module
+"#, ["1"]);
+
+vb_case!(if_operator_returns_false_branch_for_boolean_condition, r#"
+Module M
+    Sub Main()
+        Console.WriteLine(If(False, 1, 9))
+    End Sub
+End Module
+"#, ["9"]);
+
+vb_case!(if_operator_can_use_comparison_expression_as_condition, r#"
+Module M
+    Sub Main()
+        Console.WriteLine(If(3 < 5, 10, 20))
+    End Sub
+End Module
+"#, ["10"]);
+
+vb_case!(if_operator_can_choose_between_string_values, r#"
+Module M
+    Sub Main()
+        Console.WriteLine(If(2 > 4, "left", "right"))
+    End Sub
+End Module
+"#, ["right"]);
+
+vb_case!(if_operator_can_select_function_call_result, r#"
+Module M
+    Function AddOne(value As Integer) As Integer
+        Return value + 1
+    End Function
+
+    Sub Main()
+        Console.WriteLine(If(True, AddOne(4), AddOne(9)))
+    End Sub
+End Module
+"#, ["5"]);
+
+vb_case!(if_operator_can_nest_inside_false_branch, r#"
+Module M
+    Sub Main()
+        Console.WriteLine(If(False, 1, If(True, 2, 3)))
+    End Sub
+End Module
+"#, ["2"]);
+
+vb_case!(if_operator_coalesces_nothing_to_fallback_string, r#"
+Module M
+    Sub Main()
+        Dim value As String = Nothing
+        Console.WriteLine(If(value, "fallback"))
+    End Sub
+End Module
+"#, ["fallback"]);
+
+vb_case!(if_operator_preserves_existing_string_value, r#"
+Module M
+    Sub Main()
+        Dim value As String = "alpha"
+        Console.WriteLine(If(value, "fallback"))
+    End Sub
+End Module
+"#, ["alpha"]);
+
+vb_case!(if_operator_treats_empty_string_as_non_nothing_value, r#"
+Module M
+    Sub Main()
+        Dim value As String = ""
+        Console.WriteLine("[" & If(value, "fallback") & "]")
+    End Sub
+End Module
+"#, ["[]"]);
+
+vb_case!(if_operator_can_coalesce_function_result_that_returns_nothing, r#"
+Module M
+    Function MaybeText(flag As Boolean) As String
+        If flag Then
+            Return "present"
+        End If
+        Return Nothing
+    End Function
+
+    Sub Main()
+        Console.WriteLine(If(MaybeText(False), "missing"))
+    End Sub
+End Module
+"#, ["missing"]);

@@ -93,6 +93,12 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method("Print", 1, MethodBody::Common("dotnet.console_writeline".into())))
                 .with_method(MethodDef::static_method("Assert", 1, MethodBody::HostCall(HostTarget::new("wasi:cli", "log")))),
         ),
+        DotnetClassExport::new(
+            "dotnet.System",
+            ClassType::new("Delegate")
+                .with_method(MethodDef::static_method("Combine", 2, MethodBody::Common("delegates.combine".into())))
+                .with_method(MethodDef::static_method("Remove", 2, MethodBody::Common("delegates.remove".into()))),
+        ),
         static_only_class(
             "dotnet.System",
             "Convert",
