@@ -328,7 +328,7 @@ fn host_cstr() {
 #[test]
 fn host_cbool() {
     let out = run_vb(r#"Console.WriteLine(CBool(1))"#);
-    assert_eq!(out, vec!["true"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true"]));
 }
 
 // ============================================================

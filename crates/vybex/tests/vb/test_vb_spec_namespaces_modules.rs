@@ -5,7 +5,7 @@ macro_rules! vb_full_spec {
         #[test]
         fn $name() {
             let out = run_vb($src);
-            assert_eq!(out, vec![$($expected),*]);
+            assert_eq!(out, super::helpers::dotnet_expected_lines(&[$($expected),*]));
         }
     };
 }
@@ -214,7 +214,7 @@ Module M
     Sub Main()
         Console.WriteLine(Data.Tone.High)
     End Sub
-End Module"#, ["1"]);
+End Module"#, ["High"]);
 vb_full_spec!(namespace_spec_module_can_contain_structure, r#"Module Data
     Public Structure Point
         Public X As Integer
@@ -445,7 +445,7 @@ Module M
     Sub Main()
         Console.WriteLine(Demo.Core.Tone.High)
     End Sub
-End Module"#, ["1"]);
+End Module"#, ["High"]);
 vb_full_spec!(namespace_spec_imports_alias_can_shorten_nested_namespace_chain, r#"Namespace Demo.Core.Tools
     Public Class Box
         Public Function Name() As String
@@ -503,7 +503,7 @@ Module M
     Sub Main()
         Console.WriteLine(Demo.Size.Large)
     End Sub
-End Module"#, ["2"]);
+End Module"#, ["Large"]);
 vb_full_spec!(namespace_spec_namespace_qualified_structure_value_can_be_used, r#"Namespace Demo
     Public Structure Point
         Public X As Integer

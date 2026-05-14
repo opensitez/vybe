@@ -126,7 +126,7 @@ Module M
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["true", "false"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false"]));
 }
 
 #[test]
@@ -176,7 +176,7 @@ Module M
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["true", "false", "false", "true", "false"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false", "false", "true", "false"]));
 }
 
 #[test]
@@ -208,5 +208,5 @@ Module M
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["42", "true"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["42", "true"]));
 }

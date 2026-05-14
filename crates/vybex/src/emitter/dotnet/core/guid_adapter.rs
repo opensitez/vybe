@@ -8,6 +8,8 @@
 use std::sync::Arc;
 use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+use crate::emitter::classes::emit_bind_method_with_aliases;
+use crate::emitter::functions::create_function_chunk;
 
 const TYPE_KEY: &str = "__type";
 const VALUE_KEY: &str = "__value";
@@ -33,11 +35,28 @@ fn emit_throw_guid_format_exception(chunk: &mut Chunk, line: u32) {
     crate::emitter::errors::emit_throw(chunk, line);
 }
 
-fn emit_wrap_guid_from_slot(chunk: &mut Chunk, text_slot: u16, line: u32) {
+fn bind_guid_to_string(chunks: &mut Vec<Chunk>, current: usize, this_slot: u16, line: u32) {
+    let mut method = create_function_chunk("__guid_tostring", 1);
+    let value_key = method.add_constant(Value::String(Arc::from(VALUE_KEY)));
+    method.emit_op_u16(Op::LOCAL_GET, 0, line);
+    method.emit_op_u16(Op::STRUCT_GET, value_key, line);
+    method.emit_op(Op::RETURN, line);
+    method.local_count = 1;
+    chunks.push(method);
+    let method_idx = chunks.len() - 1;
+    emit_bind_method_with_aliases(&mut chunks[current], this_slot, "tostring", method_idx, line);
+}
+
+fn emit_wrap_guid_from_slot(chunks: &mut Vec<Chunk>, current: usize, text_slot: u16, line: u32) {
+    let chunk = &mut chunks[current];
     let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
     let value_key = chunk.add_constant(Value::String(Arc::from(VALUE_KEY)));
+    let obj_slot = reserve_slot(chunk);
 
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_op(Op::DUP, line);
     push_const(chunk, Value::String(Arc::from("Guid")), line);
     chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
@@ -46,6 +65,10 @@ fn emit_wrap_guid_from_slot(chunk: &mut Chunk, text_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
     chunk.emit_op_u16(Op::STRUCT_SET, value_key, line);
     chunk.emit_op(Op::DROP, line);
+    chunk.emit_op(Op::DROP, line);
+
+    bind_guid_to_string(chunks, current, obj_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
 
 fn emit_validate_guid_text(chunk: &mut Chunk, test_idx: u16, text_slot: u16, line: u32) {
@@ -61,7 +84,7 @@ fn emit_validate_guid_text(chunk: &mut Chunk, test_idx: u16, text_slot: u16, lin
 }
 
 fn emit_build_guid_from_stack(
-    chunks: &mut [Chunk],
+    chunks: &mut Vec<Chunk>,
     current: usize,
     normalize: bool,
     validate: bool,
@@ -91,19 +114,19 @@ fn emit_build_guid_from_stack(
         chunk.emit_op(Op::DROP, line);
     }
 
-    emit_wrap_guid_from_slot(chunk, text_slot, line);
+    emit_wrap_guid_from_slot(chunks, current, text_slot, line);
 }
 
-pub fn emit_guid_empty(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_guid_empty(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let text_slot = reserve_slot(chunk);
     push_const(chunk, Value::String(Arc::from(EMPTY_GUID)), line);
     chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
     chunk.emit_op(Op::DROP, line);
-    emit_wrap_guid_from_slot(chunk, text_slot, line);
+    emit_wrap_guid_from_slot(chunks, current, text_slot, line);
 }
 
-pub fn emit_guid_new_guid(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_guid_new_guid(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let random_uuid_idx = chunks[0].add_import("web:crypto", "randomUUID");
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::CALL_IMPORT, random_uuid_idx, line);
@@ -111,11 +134,11 @@ pub fn emit_guid_new_guid(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_build_guid_from_stack(chunks, current, true, true, line);
 }
 
-pub fn emit_guid_parse(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_guid_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     emit_build_guid_from_stack(chunks, current, true, true, line);
 }
 
-pub fn emit_guid_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_guid_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     match argc {
         0 => emit_guid_empty(chunks, current, line),
         1 => emit_guid_parse(chunks, current, line),
@@ -129,7 +152,7 @@ pub fn emit_guid_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     }
 }
 
-pub fn emit_guid_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_guid_to_string(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let obj_slot = reserve_slot(chunk);
     let value_key = chunk.add_constant(Value::String(Arc::from(VALUE_KEY)));
@@ -139,37 +162,41 @@ pub fn emit_guid_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::STRUCT_GET, value_key, line);
 }
 
-pub fn emit_guid_try_parse(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+pub fn emit_guid_try_parse(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     let to_str_idx = chunks[0].add_import("ecma:string", "String");
     let lower_idx = chunks[0].add_import("ecma:string", "toLowerCase");
     let test_idx = chunks[0].add_import("ecma:regexp", "test");
 
-    let chunk = &mut chunks[current];
-    for _ in 1..argc {
+    let text_slot;
+    let invalid;
+    {
+        let chunk = &mut chunks[current];
+        for _ in 1..argc {
+            chunk.emit_op(Op::DROP, line);
+        }
+
+        text_slot = reserve_slot(chunk);
+        chunk.emit_op_u16(Op::CALL_IMPORT, to_str_idx, line);
+        chunk.emit(1, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
+        chunk.emit_op(Op::DROP, line);
+
+        push_const(chunk, Value::String(Arc::from(GUID_PATTERN)), line);
+        chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+        chunk.emit_op_u16(Op::CALL_IMPORT, test_idx, line);
+        chunk.emit(2, line);
+        invalid = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+        chunk.emit_op_u16(Op::CALL_IMPORT, lower_idx, line);
+        chunk.emit(1, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
         chunk.emit_op(Op::DROP, line);
     }
+    emit_wrap_guid_from_slot(chunks, current, text_slot, line);
+    let done = chunks[current].emit_jump(Op::BR, line);
 
-    let text_slot = reserve_slot(chunk);
-    chunk.emit_op_u16(Op::CALL_IMPORT, to_str_idx, line);
-    chunk.emit(1, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
-    chunk.emit_op(Op::DROP, line);
-
-    push_const(chunk, Value::String(Arc::from(GUID_PATTERN)), line);
-    chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, test_idx, line);
-    chunk.emit(2, line);
-    let invalid = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, lower_idx, line);
-    chunk.emit(1, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
-    chunk.emit_op(Op::DROP, line);
-    emit_wrap_guid_from_slot(chunk, text_slot, line);
-    let done = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(invalid);
-    chunk.emit_op(Op::NULL, line);
-    chunk.patch_jump(done);
+    chunks[current].patch_jump(invalid);
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].patch_jump(done);
 }

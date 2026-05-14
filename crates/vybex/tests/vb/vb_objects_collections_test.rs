@@ -143,7 +143,7 @@ Console.WriteLine(IsNothing(h.Item))
 h.Item = "something"
 Console.WriteLine(h.Item)
 "#);
-    assert_eq!(out, vec!["true", "something"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "something"]));
 }
 
 #[test]
@@ -229,7 +229,7 @@ list.Add("banana")
 Console.WriteLine(list.Contains("apple"))
 Console.WriteLine(list.Contains("cherry"))
 "#);
-    assert_eq!(out, vec!["true", "false"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false"]));
 }
 
 #[test]
@@ -345,7 +345,7 @@ dict.Add("key1", "val1")
 Console.WriteLine(dict.ContainsKey("key1"))
 Console.WriteLine(dict.ContainsKey("key2"))
 "#);
-    assert_eq!(out, vec!["true", "false"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false"]));
 }
 
 #[test]
@@ -358,7 +358,7 @@ dict.Remove("a")
 Console.WriteLine(dict.ContainsKey("a"))
 Console.WriteLine(dict.ContainsKey("b"))
 "#);
-    assert_eq!(out, vec!["false", "true"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["false", "true"]));
 }
 
 #[test]
@@ -571,9 +571,9 @@ ReDim arr(5)
 Console.WriteLine(arr(0))
 Console.WriteLine(UBound(arr))
 "#);
-    // ReDim without Preserve clears the array (null values)
+    // ReDim without Preserve clears the array; Console.WriteLine(Nothing) prints blank.
     // Dim arr(5) → 6 elements, UBound = 5
-    assert_eq!(out, vec!["null", "5"]);
+    assert_eq!(out, vec!["", "5"]);
 }
 
 #[test]

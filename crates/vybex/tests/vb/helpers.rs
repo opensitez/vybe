@@ -74,6 +74,21 @@ pub fn load_vb_profile() -> vybex::profile::LanguageProfile {
         .expect("Failed to parse VB profile")
 }
 
+pub fn dotnet_expected_one(expected: &str) -> String {
+    match expected {
+        "true" => "True".to_string(),
+        "false" => "False".to_string(),
+        other => other.to_string(),
+    }
+}
+
+pub fn dotnet_expected_lines(expected: &[&str]) -> Vec<String> {
+    expected
+        .iter()
+        .map(|item| dotnet_expected_one(item))
+        .collect()
+}
+
 /// Run VB source and capture every `MsgBox(...)` invocation as a
 /// `(text, title)` tuple. Returns `(VM, GuiState, msgbox_log)`.
 ///

@@ -31,7 +31,7 @@ Module Program
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["false"], "IsCompleted should be false initially");
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["false"]), "IsCompleted should be false initially");
 }
 
 #[test]
@@ -64,7 +64,7 @@ Module Program
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["true"], "IsCompleted should be true after Result");
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true"]), "IsCompleted should be true after Result");
 }
 
 #[test]
@@ -79,7 +79,7 @@ Module Program
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["false", "true"], "Task.Delay should complete asynchronously");
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["false", "true"]), "Task.Delay should complete asynchronously");
 }
 
 #[test]
@@ -115,7 +115,7 @@ Module Program
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["true", "false"], "IsAlive should be true then false");
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false"]), "IsAlive should be true then false");
 }
 
 #[test]
@@ -170,7 +170,7 @@ Module Program
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["true"], "Process.Start should return a completed process: {:?}", out);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true"]), "Process.Start should return a completed process: {:?}", out);
 }
 
 #[test]
@@ -199,7 +199,7 @@ Module Program
     End Sub
 End Module
 "#);
-    assert!(out.contains(&"true".to_string()), "HasExited should be true after WaitForExit: {:?}", out);
+    assert!(out.contains(&super::helpers::dotnet_expected_one("true")), "HasExited should be true after WaitForExit: {:?}", out);
     assert!(out.contains(&"0".to_string()), "ExitCode should be 0: {:?}", out);
 }
 

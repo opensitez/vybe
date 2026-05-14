@@ -396,7 +396,7 @@ Console.WriteLine(3.14)
 Console.WriteLine(True)
 Console.WriteLine(False)
 "#);
-    assert_eq!(out, vec!["hello", "42", "3.14", "true", "false"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["hello", "42", "3.14", "true", "false"]));
 }
 
 /// C21. New System.Windows.Forms.Button()
@@ -441,7 +441,7 @@ fn c24_string_is_null_or_empty() {
 Console.WriteLine(String.IsNullOrEmpty(""))
 Console.WriteLine(String.IsNullOrEmpty("hello"))
 "#);
-    assert_eq!(out, vec!["true", "false"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false"]));
 }
 
 /// C25. Convert.ToString, Convert.ToInt32
@@ -1267,7 +1267,7 @@ Console.WriteLine(CStr(42))
 Console.WriteLine(CStr(3.14))
 Console.WriteLine(CStr(True))
 "#);
-    assert_eq!(out, vec!["42", "3.14", "true"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["42", "3.14", "true"]));
 }
 
 /// H61. CInt("42"), CDbl("3.14")
@@ -1291,7 +1291,7 @@ Console.WriteLine("b" >= "a")
 Console.WriteLine("abc" <= "abc")
 Console.WriteLine("z" <= "a")
 "#);
-    assert_eq!(out, vec!["true", "true", "true", "false"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "true", "true", "false"]));
 }
 
 /// H63. Boolean And, Or, Not
@@ -1305,7 +1305,7 @@ Console.WriteLine(False Or False)
 Console.WriteLine(Not True)
 Console.WriteLine(Not False)
 "#);
-    assert_eq!(out, vec!["true", "false", "true", "false", "false", "true"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false", "true", "false", "false", "true"]));
 }
 
 /// H64. AndAlso short-circuit (second not evaluated)
@@ -1322,7 +1322,7 @@ Dim result As Boolean = False AndAlso SideEffect()
 Console.WriteLine(called)
 Console.WriteLine(result)
 "#);
-    assert_eq!(out, vec!["false", "false"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["false", "false"]));
 }
 
 /// H65. String concatenation & with mixed types
@@ -1574,7 +1574,7 @@ Console.WriteLine(5 <= 5)
 Console.WriteLine(5 = 5)
 Console.WriteLine(5 <> 3)
 "#);
-    assert_eq!(out, vec!["true", "false", "true", "true", "false", "true", "true", "true"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false", "true", "true", "false", "true", "true", "true"]));
 }
 
 /// B80. String equality
@@ -1585,5 +1585,5 @@ Console.WriteLine("hello" = "hello")
 Console.WriteLine("hello" = "world")
 Console.WriteLine("hello" <> "world")
 "#);
-    assert_eq!(out, vec!["true", "false", "true"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false", "true"]));
 }

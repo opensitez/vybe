@@ -248,7 +248,7 @@ Console.WriteLine(f.GetActive())
 f.Toggle()
 Console.WriteLine(f.GetActive())
 "#);
-    assert_eq!(out, vec!["false", "true", "false"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["false", "true", "false"]));
 }
 
 /// B10. Handler stores value in field, another handler reads it.

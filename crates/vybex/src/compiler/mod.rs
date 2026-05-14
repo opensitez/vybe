@@ -3174,9 +3174,16 @@ impl Compiler {
             let class_idx = self.str_const(&class_name);
             self.emit_u16(Op::GLOBAL_GET, class_idx);
             self.emit_u16(Op::LOCAL_GET, value_slot);
-            let field_idx = self.str_const(&self.canon(name));
+            let bare_name = self.canon(name);
+            let field_idx = self.str_const(&bare_name);
             self.emit_u16(Op::STRUCT_SET, field_idx);
             self.emit(Op::DROP);
+            if self.defined_globals.contains(&bare_name) {
+                let global_idx = self.str_const(&bare_name);
+                self.emit_u16(Op::LOCAL_GET, value_slot);
+                self.emit_u16(Op::GLOBAL_SET, global_idx);
+                self.emit(Op::DROP);
+            }
             return;
         }
         let cname = self.canon(name);
@@ -7939,6 +7946,33 @@ impl Compiler {
     fn emit_intrinsic(&mut self, name: &str, args: &[&Expression]) -> Result<(), String> {
         let line = self.line;
         match name {
+            "cstr" => {
+                self.compile_expr(args[0])?;
+                let value_slot = self.define_local("__vb_cstr_value");
+                self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, value_slot);
+                self.emit(Op::REF_TYPEOF);
+                self.emit_const(Value::String(Arc::from("boolean")));
+                self.emit(Op::DYN_EQ);
+                let not_bool = self.emit_jump(Op::BR_IF_FALSE);
+
+                self.emit_u16(Op::LOCAL_GET, value_slot);
+                self.emit(Op::DYN_TO_BOOL);
+                let false_path = self.emit_jump(Op::BR_IF_FALSE);
+                self.emit_const(Value::String(Arc::from("True")));
+                let done = self.emit_jump(Op::BR);
+                self.patch_jump(false_path);
+                self.emit_const(Value::String(Arc::from("False")));
+                self.patch_jump(done);
+
+                let end = self.emit_jump(Op::BR);
+                self.patch_jump(not_bool);
+                self.emit_u16(Op::LOCAL_GET, value_slot);
+                let string_idx = self.import("ecma:string", "String");
+                self.emit_host_call(string_idx, 1);
+                self.patch_jump(end);
+            }
             "cbyte" => {
                 self.compile_expr(args[0])?;
                 common::convert::emit_to_int(self.chunk(), line);
@@ -9306,7 +9340,63 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, value_slot);
                     let num = self.import("ecma:number", "Number");
                     self.emit_host_call(num, 1);
-                    common::math::emit_round(self.chunk(), line);
+                    let rounded_value_slot = self.define_local("__cint_rounded_value");
+                    let floor_slot = self.define_local("__cint_floor");
+                    let ceil_slot = self.define_local("__cint_ceil");
+                    let frac_slot = self.define_local("__cint_frac");
+
+                    self.emit_u16(Op::LOCAL_SET, rounded_value_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, rounded_value_slot);
+                    self.emit(Op::F64_FLOOR);
+                    self.emit_u16(Op::LOCAL_SET, floor_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, rounded_value_slot);
+                    self.emit(Op::F64_CEIL);
+                    self.emit_u16(Op::LOCAL_SET, ceil_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, rounded_value_slot);
+                    self.emit_u16(Op::LOCAL_GET, floor_slot);
+                    self.emit(Op::F64_SUB);
+                    self.emit_u16(Op::LOCAL_SET, frac_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, frac_slot);
+                    self.emit_const(Value::F64(0.5));
+                    self.emit(Op::DYN_LT);
+                    let not_less_than_half = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit_u16(Op::LOCAL_GET, floor_slot);
+                    let rounded_done = self.emit_jump(Op::BR);
+
+                    self.patch_jump(not_less_than_half);
+                    self.emit_u16(Op::LOCAL_GET, frac_slot);
+                    self.emit_const(Value::F64(0.5));
+                    self.emit(Op::DYN_GT);
+                    let not_greater_than_half = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit_u16(Op::LOCAL_GET, ceil_slot);
+                    let ceil_done = self.emit_jump(Op::BR);
+
+                    self.patch_jump(not_greater_than_half);
+                    self.emit_u16(Op::LOCAL_GET, floor_slot);
+                    common::convert::emit_to_int(self.chunk(), line);
+                    self.emit_const(Value::I32(1));
+                    self.emit(Op::I32_AND);
+                    self.emit_const(Value::I32(0));
+                    self.emit(Op::DYN_EQ);
+                    let floor_is_odd = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit_u16(Op::LOCAL_GET, floor_slot);
+                    let tie_done = self.emit_jump(Op::BR);
+
+                    self.patch_jump(floor_is_odd);
+                    self.emit_u16(Op::LOCAL_GET, ceil_slot);
+                    self.patch_jump(tie_done);
+                    self.patch_jump(ceil_done);
+                    self.patch_jump(rounded_done);
+
+                    common::convert::emit_to_int(self.chunk(), line);
                     self.patch_jump(done);
                 } else {
                     self.emit_const(Value::F64(0.0));

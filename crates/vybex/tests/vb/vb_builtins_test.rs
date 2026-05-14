@@ -142,7 +142,7 @@ Module Program
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["3"]);
+    assert_eq!(out, vec!["4"]);
 }
 
 #[test]
@@ -169,7 +169,7 @@ Module Program
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["true", "false"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false"]));
 }
 
 #[test]
@@ -183,7 +183,7 @@ Module Program
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["true", "false", "true"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false", "true"]));
 }
 
 // ============================================================

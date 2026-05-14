@@ -14,7 +14,7 @@ End Module
                 $expr
             );
             let out = run_vb(&src);
-            assert_eq!(out, vec![$expected]);
+            assert_eq!(out, vec![super::helpers::dotnet_expected_one($expected)]);
         }
     };
 }

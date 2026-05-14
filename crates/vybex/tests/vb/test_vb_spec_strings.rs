@@ -14,7 +14,7 @@ End Module
                 $expr
             );
             let out = run_vb(&src);
-            assert_eq!(out, vec![$expected]);
+            assert_eq!(out, vec![super::helpers::dotnet_expected_one($expected)]);
         }
     };
 }
@@ -24,7 +24,7 @@ macro_rules! vb_full_spec {
         #[test]
         fn $name() {
             let out = run_vb($src);
-            assert_eq!(out, vec![$($expected),*]);
+            assert_eq!(out, super::helpers::dotnet_expected_lines(&[$($expected),*]));
         }
     };
 }

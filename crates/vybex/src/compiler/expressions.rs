@@ -2149,6 +2149,128 @@ impl Compiler {
                         }
                     }
 
+                    if self.profile.name == "vb" {
+                        if let Some((cast_kind, target_type)) = type_name.split_once(':') {
+                            if cast_kind.eq_ignore_ascii_case("TryCast") {
+                                let resolved_target = self.resolve_source_type_alias(target_type);
+                                let trimmed_target = resolved_target.trim().trim_end_matches('?').trim().to_string();
+                                if self.vb_is_reference_type_hint(&trimmed_target) {
+                                    let line = self.line;
+                                    self.compile_expr(inner)?;
+                                    let value_slot = self.define_local("__vb_trycast_value");
+                                    self.emit_u16(Op::LOCAL_SET, value_slot);
+                                    self.emit(Op::DROP);
+
+                                    self.emit_u16(Op::LOCAL_GET, value_slot);
+                                    self.emit(Op::REF_IS_NULL);
+                                    let non_null = self.emit_jump(Op::BR_IF_FALSE);
+                                    self.emit(Op::NULL);
+                                    let done = self.emit_jump(Op::BR);
+                                    self.patch_jump(non_null);
+
+                                    if Self::is_string_type_hint(&trimmed_target) {
+                                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                                        self.emit(Op::REF_IS_STRING);
+                                        let not_match = self.emit_jump(Op::BR_IF_FALSE);
+                                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                                        let end = self.emit_jump(Op::BR);
+                                        self.patch_jump(not_match);
+                                        self.emit(Op::NULL);
+                                        self.patch_jump(end);
+                                    } else if trimmed_target.ends_with("()") {
+                                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                                        self.emit(Op::REF_IS_ARRAY);
+                                        let not_match = self.emit_jump(Op::BR_IF_FALSE);
+                                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                                        let end = self.emit_jump(Op::BR);
+                                        self.patch_jump(not_match);
+                                        self.emit(Op::NULL);
+                                        self.patch_jump(end);
+                                    } else if self.vb_is_object_type_hint(&trimmed_target) {
+                                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                                        self.emit(Op::REF_IS_STRING);
+                                        let is_string = self.emit_jump(Op::BR_IF_TRUE);
+                                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                                        self.emit(Op::REF_IS_ARRAY);
+                                        let is_array = self.emit_jump(Op::BR_IF_TRUE);
+                                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                                        self.emit(Op::REF_IS_OBJECT);
+                                        let not_match = self.emit_jump(Op::BR_IF_FALSE);
+                                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                                        let end = self.emit_jump(Op::BR);
+                                        self.patch_jump(is_string);
+                                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                                        let end_string = self.emit_jump(Op::BR);
+                                        self.patch_jump(is_array);
+                                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                                        self.patch_jump(end_string);
+                                        self.patch_jump(not_match);
+                                        self.emit(Op::NULL);
+                                        self.patch_jump(end);
+                                    } else {
+                                        let mut expected_names = vec![trimmed_target.clone()];
+                                        if let Some(class_name) = self.resolve_pending_class_name_for_type_hint(&trimmed_target) {
+                                            if !expected_names.iter().any(|candidate| candidate.eq_ignore_ascii_case(&class_name)) {
+                                                expected_names.push(class_name.clone());
+                                            }
+                                            let short_name = class_name.rsplit('.').next().unwrap_or(class_name.as_str()).to_string();
+                                            if !expected_names.iter().any(|candidate| candidate.eq_ignore_ascii_case(&short_name)) {
+                                                expected_names.push(short_name);
+                                            }
+                                        } else if let Some(short_name) = trimmed_target.rsplit('.').next() {
+                                            if !expected_names.iter().any(|candidate| candidate.eq_ignore_ascii_case(short_name)) {
+                                                expected_names.push(short_name.to_string());
+                                            }
+                                        }
+
+                                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                                        self.emit(Op::REF_IS_OBJECT);
+                                        let not_object = self.emit_jump(Op::BR_IF_FALSE);
+                                        let mut matches = Vec::new();
+                                        for expected in &expected_names {
+                                            self.emit_u16(Op::LOCAL_GET, value_slot);
+                                            let type_key = self.str_const("__type");
+                                            self.emit_u16(Op::STRUCT_GET, type_key);
+                                            self.emit_const(Value::String(Arc::from(expected.as_str())));
+                                            self.emit(Op::DYN_EQ);
+                                            matches.push(self.emit_jump(Op::BR_IF_TRUE));
+                                        }
+                                        for expected in &expected_names {
+                                            self.emit_u16(Op::LOCAL_GET, value_slot);
+                                            let types_key = self.str_const("__types");
+                                            self.emit_u16(Op::STRUCT_GET, types_key);
+                                            self.emit(Op::DUP);
+                                            self.emit(Op::REF_IS_NULL);
+                                            let has_types = self.emit_jump(Op::BR_IF_FALSE);
+                                            self.emit(Op::DROP);
+                                            self.emit(Op::FALSE);
+                                            let contains_done = self.emit_jump(Op::BR);
+                                            self.patch_jump(has_types);
+                                            self.emit_const(Value::String(Arc::from(expected.as_str())));
+                                            common::collections::emit_contains(&mut self.chunks, self.current, line);
+                                            self.patch_jump(contains_done);
+                                            matches.push(self.emit_jump(Op::BR_IF_TRUE));
+                                        }
+                                        self.emit(Op::NULL);
+                                        let end = self.emit_jump(Op::BR);
+                                        for matched in matches {
+                                            self.patch_jump(matched);
+                                        }
+                                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                                        self.patch_jump(end);
+                                        let after_object = self.emit_jump(Op::BR);
+                                        self.patch_jump(not_object);
+                                        self.emit(Op::NULL);
+                                        self.patch_jump(after_object);
+                                    }
+
+                                    self.patch_jump(done);
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+
                     let shadows_cast = self.defined_functions.contains(&canon_type)
                         || (!self.case_sensitive
                             && self.defined_functions.iter().any(|name| name.eq_ignore_ascii_case(type_name)));

@@ -5,7 +5,7 @@ macro_rules! vb_case {
         #[test]
         fn $name() {
             let out = run_vb($src);
-            assert_eq!(out, vec![$($expected),*]);
+            assert_eq!(out, super::helpers::dotnet_expected_lines(&[$($expected),*]));
         }
     };
 }
@@ -35,7 +35,7 @@ Module M
         Console.WriteLine(DirectCast(boxed, Boolean))
     End Sub
 End Module
-"#, ["True"]);
+"#, ["true"]);
 
 vb_case!(trycast_returns_same_string_reference_when_types_match, r#"
 Module M
@@ -58,7 +58,7 @@ Module M
         Console.WriteLine(IsNothing(value))
     End Sub
 End Module
-"#, ["True"]);
+"#, ["true"]);
 
 vb_case!(directcast_supports_custom_reference_type, r#"
 Module M
@@ -126,7 +126,7 @@ Module M
         Console.WriteLine(CStr(False))
     End Sub
 End Module
-"#, ["False"]);
+"#, ["false"]);
 
 vb_case!(cbool_converts_boolean_literal, r#"
 Module M
@@ -134,7 +134,7 @@ Module M
         Console.WriteLine(CBool(True))
     End Sub
 End Module
-"#, ["True"]);
+"#, ["true"]);
 
 vb_case!(directcast_can_be_used_inside_expression, r#"
 Module M
@@ -202,4 +202,4 @@ Module M
         Console.WriteLine(IsNothing(value))
     End Sub
 End Module
-"#, ["True"]);
+"#, ["true"]);

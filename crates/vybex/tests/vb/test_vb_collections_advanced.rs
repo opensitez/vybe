@@ -19,7 +19,7 @@ Module M
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["3", "banana", "true"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["3", "banana", "true"]));
 }
 
 #[test]
@@ -76,7 +76,7 @@ Module M
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["10", "true", "false", "2"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["10", "true", "false", "2"]));
 }
 
 #[test]
@@ -93,7 +93,7 @@ Module M
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["1", "false"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["1", "false"]));
 }
 
 #[test]
@@ -259,7 +259,7 @@ Module M
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["3", "A", "C", "true", "false", "1", "2", "X", "A", "X"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["3", "A", "C", "true", "false", "1", "2", "X", "A", "X"]));
 }
 
 #[test]
@@ -401,7 +401,7 @@ Module M
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["2", "30", "true", "false", "true", "false", "5", "20", "2", "3"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["2", "30", "true", "false", "true", "false", "5", "20", "2", "3"]));
 }
 
 #[test]
@@ -426,5 +426,5 @@ Sub Main()
     Console.WriteLine(s.Count)
 End Sub
 "#);
-    assert_eq!(out, vec!["true", "false", "2", "2"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false", "2", "2"]));
 }

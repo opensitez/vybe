@@ -3822,11 +3822,31 @@ impl Compiler {
             }
         }
 
+        let mut runtime_index_done: Option<usize> = None;
+
         // ── Fallback: general expression call ───────────────────────
         self.compile_expr(callee)?;
         let callee_slot = self.define_local("__call_ref_callee");
         self.emit_u16(Op::LOCAL_SET, callee_slot);
         self.emit(Op::DROP);
+
+        if self.profile.parens_for_index
+            && !arg_exprs.is_empty()
+            && matches!(&callee.kind, ExprKind::Call { .. } | ExprKind::Index { .. })
+        {
+            self.emit_u16(Op::LOCAL_GET, callee_slot);
+            self.emit(Op::REF_IS_ARRAY);
+            let not_runtime_array = self.emit_jump(Op::BR_IF_FALSE);
+
+            self.emit_u16(Op::LOCAL_GET, callee_slot);
+            for arg in &arg_exprs {
+                self.compile_expr(arg)?;
+                let line = self.line;
+                common::collections::emit_get(&mut self.chunks, self.current, line);
+            }
+            runtime_index_done = Some(self.emit_jump(Op::BR));
+            self.patch_jump(not_runtime_array);
+        }
 
         let receiver_key = self.str_const("__vybe_method_receiver");
         self.emit_u16(Op::LOCAL_GET, callee_slot);
@@ -3863,6 +3883,9 @@ impl Compiler {
         }
         self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
         self.patch_jump(done);
+        if let Some(index_done) = runtime_index_done {
+            self.patch_jump(index_done);
+        }
         Ok(())
     }
 
@@ -4999,16 +5022,28 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, fn_slot);
         self.emit(Op::REF_IS_UNDEFINED);
         let no_method = self.emit_jump(Op::BR_IF_FALSE);
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        let type_key = self.str_const("__type");
+        self.emit_u16(Op::STRUCT_GET, type_key);
+        self.emit_const(Value::String(Arc::from("Guid")));
+        self.emit(Op::DYN_EQ);
+        let not_guid = self.emit_jump(Op::BR_IF_FALSE);
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        let value_key = self.str_const("__value");
+        self.emit_u16(Op::STRUCT_GET, value_key);
+        let object_done = self.emit_jump(Op::BR);
+        self.patch_jump(not_guid);
         self.emit_u16(Op::GLOBAL_GET, tostring_global);
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_u8(Op::CALL_REF, 1);
-        let object_done = self.emit_jump(Op::BR);
+        let fallback_done = self.emit_jump(Op::BR);
 
         self.patch_jump(no_method);
         self.emit_u16(Op::LOCAL_GET, fn_slot);
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_u8(Op::CALL_REF, 1);
         self.patch_jump(object_done);
+        self.patch_jump(fallback_done);
         self.patch_jump(done);
         Ok(true)
     }

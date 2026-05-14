@@ -10,7 +10,7 @@ fn run_vb_one(source: &str) -> String {
 
 #[test]
 fn math_floor_intrinsic() {
-    // Fix/Int use f64_floor opcode (VB function-call syntax)
+    // `Fix` truncates toward zero; `Int` floors toward negative infinity.
     assert_eq!(run_vb_one(r#"
 Module M
     Sub Main()
@@ -216,7 +216,7 @@ Module M
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["true", "false"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false"]));
 }
 
 // ============================================================
@@ -231,7 +231,7 @@ Module M
         Console.WriteLine(CInt(3.7))
     End Sub
 End Module
-"#), "3");
+"#), "4");
 }
 
 #[test]
@@ -266,7 +266,7 @@ Module M
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["true", "false"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false"]));
 }
 
 #[test]
@@ -1012,7 +1012,7 @@ Module M
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["true", "false"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false"]));
 }
 
 #[test]
@@ -1025,7 +1025,7 @@ Module M
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["true", "false"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false"]));
 }
 
 #[test]
@@ -1042,7 +1042,7 @@ Module M
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["true", "true", "true", "true", "false", "false"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "true", "true", "true", "false", "false"]));
 }
 
 #[test]
@@ -1055,7 +1055,7 @@ Module M
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["true", "true"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "true"]));
 }
 
 // ============================================================
@@ -1073,7 +1073,7 @@ Module M
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["true", "false", "false"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false", "false"]));
 }
 
 #[test]
@@ -1087,7 +1087,7 @@ Module M
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["true", "false", "true"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false", "true"]));
 }
 
 #[test]
@@ -1100,7 +1100,7 @@ Module M
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["false", "true"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["false", "true"]));
 }
 
 #[test]
@@ -1178,7 +1178,7 @@ Module M
         Console.WriteLine(Abs(Fix(-3.7)))
     End Sub
 End Module
-"#), "4");
+"#), "3");
 }
 
 #[test]
@@ -1443,7 +1443,7 @@ Module M
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["true", "false"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false"]));
 }
 
 #[test]
@@ -1457,7 +1457,7 @@ Module M
     End Sub
 End Module
 "#);
-    assert_eq!(out, vec!["true", "false", "true"]);
+    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false", "true"]));
 }
 
 #[test]

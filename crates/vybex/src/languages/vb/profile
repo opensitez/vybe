@@ -53,8 +53,8 @@ uses_normalize_class = true
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
-"console.writeline"   = { emit = "host:wasi:cli:log",        min_args = 0, max_args = 255 }
-"console.write"       = { emit = "host:wasi:cli:log",        min_args = 0, max_args = 255 }
+"console.writeline"   = { emit = "common:dotnet.console_writeline", min_args = 0, max_args = 255 }
+"console.write"       = { emit = "common:dotnet.console_writeline", min_args = 0, max_args = 255 }
 "console.error.writeline" = { emit = "host:wasi:cli:error",  min_args = 0, max_args = 255 }
 "console.error"       = { emit = "host:wasi:cli:error",      min_args = 0, max_args = 255 }
 "console.readline"    = { emit = "host:wasi:cli:readLine",   min_args = 0, max_args = 0 }
@@ -71,7 +71,7 @@ uses_normalize_class = true
 
 # ── Type Conversions ─────────────────────────────────────────────────────────
 
-cstr    = { emit = "host:ecma:string:String",   min_args = 1, max_args = 1 }
+cstr    = { emit = "intrinsic:cstr",               min_args = 1, max_args = 1 }
 cint    = { emit = "intrinsic:cint",               min_args = 1, max_args = 1 }
 cdbl    = { emit = "host:ecma:number:Number",      min_args = 1, max_args = 1 }
 cbool   = { emit = "opcode:dyn_to_bool",           min_args = 1, max_args = 1 }
@@ -120,7 +120,7 @@ vartype    = { emit = "stdlib:vartype",                min_args = 1, max_args = 
 abs           = { emit = "opcode:f64_abs",     min_args = 1, max_args = 1 }
 "math.abs"    = { emit = "opcode:f64_abs",     min_args = 1, max_args = 1 }
 "system.math.abs" = { emit = "opcode:f64_abs", min_args = 1, max_args = 1 }
-fix           = { emit = "opcode:f64_floor",   min_args = 1, max_args = 1 }
+fix           = { emit = "opcode:f64_trunc",   min_args = 1, max_args = 1 }
 int           = { emit = "opcode:f64_floor",   min_args = 1, max_args = 1 }
 "math.floor"  = { emit = "opcode:f64_floor",   min_args = 1, max_args = 1 }
 "system.math.floor" = { emit = "opcode:f64_floor", min_args = 1, max_args = 1 }

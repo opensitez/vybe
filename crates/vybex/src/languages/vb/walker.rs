@@ -661,7 +661,6 @@ fn canonicalize_special_identifier(name: &str) -> Option<Expression> {
 fn canonicalize_call(name: &str, arguments: &[Argument]) -> Option<Expression> {
     match name.to_ascii_lowercase().as_str() {
         "fix" if arguments.len() == 1 => Some(call_expr(build_dotted_expr("System.Math.Truncate"), arguments.to_vec())),
-        "cint" | "clng" if arguments.len() == 1 => Some(build_vb_bankers_round_expr(arguments[0].value.clone())),
         "round" if arguments.len() == 1 => Some(build_vb_bankers_round_expr(arguments[0].value.clone())),
         "round" if arguments.len() >= 2 => Some(build_vb_precision_round_expr(
             arguments[0].value.clone(),
@@ -3426,7 +3425,7 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         Rule::addhandler_statement => {
             let mut inner = pair.into_inner();
             let event_target_str = inner.next().unwrap().as_str().to_string();
-            let handler = parse_expression(inner.next().unwrap())?;
+            let handler = parse_expression(unwrap_argument_expr_pair(inner.next().unwrap())?)?;
             let (control, event) = split_event_target(&event_target_str);
             crate::common::events::add_handler_stmt(
                 control,
@@ -3437,7 +3436,7 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         Rule::removehandler_statement => {
             let mut inner = pair.into_inner();
             let event_target_str = inner.next().unwrap().as_str().to_string();
-            let handler = parse_expression(inner.next().unwrap())?;
+            let handler = parse_expression(unwrap_argument_expr_pair(inner.next().unwrap())?)?;
             let (control, event) = split_event_target(&event_target_str);
             crate::common::events::remove_handler_stmt(
                 control,
@@ -3776,7 +3775,7 @@ fn parse_expression(pair: Pair<Rule>) -> Result<Expression, String> {
     loop {
         let span = to_span(&pair);
         let kind = match pair.as_rule() {
-            Rule::argument => {
+            Rule::argument | Rule::first_argument | Rule::trailing_argument => {
                 let inner = pair.into_inner().next().unwrap();
                 pair = inner;
                 continue;
@@ -5160,6 +5159,16 @@ fn parse_argument_list(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
             _ => parse_expression(p).map(Argument::positional),
         })
         .collect()
+}
+
+fn unwrap_argument_expr_pair(pair: Pair<Rule>) -> Result<Pair<Rule>, String> {
+    match pair.as_rule() {
+        Rule::first_argument | Rule::trailing_argument => pair
+            .into_inner()
+            .next()
+            .ok_or_else(|| "Missing argument expression".to_string()),
+        _ => Ok(pair),
+    }
 }
 
 fn parse_try_statement(pair: Pair<Rule>) -> Result<Statement, String> {
