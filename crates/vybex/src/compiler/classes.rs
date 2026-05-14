@@ -560,8 +560,13 @@ impl Compiler {
             } else {
                 cc.canon(mname)
             };
+            let qualified_name = cc.canon(&format!("{}.{}", class.name, mname));
             cc.function_param_modes.insert(
                 bound_name.clone(),
+                user_params.iter().map(|param| param.pass_by).collect(),
+            );
+            cc.function_param_modes.insert(
+                qualified_name.clone(),
                 user_params.iter().map(|param| param.pass_by).collect(),
             );
             cc.function_signatures
@@ -572,6 +577,7 @@ impl Compiler {
                 ));
             if let Some(return_type) = m.return_type.as_ref() {
                 cc.function_return_types.insert(bound_name.clone(), return_type.clone());
+                cc.function_return_types.insert(qualified_name, return_type.clone());
                 cc.function_return_types.insert(
                     cc.canon(&format!("{}.{}", class.name, mname)),
                     return_type.clone(),

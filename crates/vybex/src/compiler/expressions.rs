@@ -49,9 +49,7 @@ impl Compiler {
 
                 // Implicit self field access (only if NOT a local)
                 if !is_local && self.is_class_field(name) {
-                    let self_kw = self.profile.self_keyword.clone();
-                    if let Some(slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
-                        self.emit_u16(Op::LOCAL_GET, slot);
+                    if self.emit_self_ref() {
                         let field_name = self.canon(name);
                         let idx = self.str_const(&field_name);
                         self.emit_u16(Op::STRUCT_GET, idx);
@@ -1377,11 +1375,7 @@ impl Compiler {
                     }
                     // Dotnet component descriptor constructors — fallback after
                     // GUI so .NET-only types like Dictionary still work.
-                    let dotnet_constructor = if !dotnet_ctor_registered {
-                        common::dotnet::surface().lookup_constructor(bare_str)
-                    } else {
-                        None
-                    };
+                    let dotnet_constructor = common::dotnet::surface().lookup_constructor(bare_str);
                     if let Some(target) = dotnet_constructor.clone() {
                         for a in args { self.compile_expr(&a.value)?; }
                         // Proper-case class name (preserve from source) for
@@ -2135,6 +2129,30 @@ impl Compiler {
                         self.emit(Op::F64_FLOOR);
                         self.emit(Op::STR_FROM_CHAR_CODE);
                         return Ok(());
+                    }
+
+                    if self.profile.name == "csharp" {
+                        match canon_type.as_str() {
+                            "int" | "long" | "short" | "byte"
+                            | "uint" | "ulong" | "ushort" | "sbyte" => {
+                                let is_char_like = matches!(&inner.kind, ExprKind::Lit(Literal::Char(_)))
+                                    || self
+                                        .infer_expr_type_hint(inner)
+                                        .is_some_and(|hint| Self::normalize_type_hint(&hint) == "char");
+                                if is_char_like {
+                                    self.compile_expr(inner)?;
+                                    self.emit(Op::I32_CONST_0);
+                                    self.emit(Op::STR_CHAR_CODE_AT);
+                                    return Ok(());
+                                }
+                                self.compile_expr(inner)?;
+                                let num = self.import("ecma:number", "Number");
+                                self.emit_host_call(num, 1);
+                                self.emit(Op::F64_TRUNC);
+                                return Ok(());
+                            }
+                            _ => {}
+                        }
                     }
 
                     if self.profile.name == "pascal" {

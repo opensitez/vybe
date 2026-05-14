@@ -2635,6 +2635,21 @@ impl Compiler {
                 self.function_return_types.get(&self.canon(name)).cloned()
             }
             ExprKind::Member { object, field, .. } => {
+                if let Some(receiver_type) = self.infer_expr_type_hint(object) {
+                    let receiver_trimmed = receiver_type.trim().trim_end_matches('?').trim();
+                    let receiver_base = receiver_trimmed
+                        .split('<')
+                        .next()
+                        .unwrap_or(receiver_trimmed)
+                        .trim();
+                    let receiver_key = self
+                        .resolve_pending_class_name_for_type_hint(&receiver_type)
+                        .unwrap_or_else(|| self.canon(receiver_base));
+                    let qualified = self.canon(&format!("{}.{}", receiver_key, field));
+                    if let Some(return_type) = self.function_return_types.get(&qualified) {
+                        return Some(return_type.clone());
+                    }
+                }
                 if let ExprKind::Ident(object_name) = &object.kind {
                     let qualified = self.canon(&format!("{}.{}", object_name, field));
                     if let Some(return_type) = self.function_return_types.get(&qualified) {

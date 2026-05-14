@@ -7396,8 +7396,6 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let type_name = normalize_runtime_type_name(cast_type_pair.as_str());
             let operand = walk_expression(inner.remove(0))?;
             let convert_method = match type_name.as_str() {
-                "int" | "uint" | "short" | "ushort" | "sbyte" | "byte" => Some("cint"),
-                "long" | "ulong" => Some("clng"),
                 "float" | "double" | "decimal" => Some("float"),
                 "string" => Some("tostring"),
                 "char" => None,
