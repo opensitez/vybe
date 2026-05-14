@@ -865,6 +865,7 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                                 params,
                                 body,
                                 base_args: None,
+                                initializer_target: crate::ast::ConstructorInitializerTarget::Base,
                                 visibility: modifiers.visibility,
                             });
                         }
@@ -1028,6 +1029,7 @@ fn inject_implicit_mybase_new(members: &mut Vec<ClassMember>, class_name: &str) 
             params: Vec::new(),
             body: vec![mybase_new(), stamp_control_name()],
             base_args: None,
+            initializer_target: crate::ast::ConstructorInitializerTarget::Base,
             visibility: Visibility::Public,
         });
         return;
@@ -1105,6 +1107,7 @@ fn inject_handles_into_constructor(members: &mut Vec<ClassMember>) {
             params: Vec::new(),
             body: new_stmts,
             base_args: None,  // VB walker injects MyBase.New() into the body; no base_args needed here
+            initializer_target: crate::ast::ConstructorInitializerTarget::Base,
             visibility: Visibility::Public,
         });
     } else {

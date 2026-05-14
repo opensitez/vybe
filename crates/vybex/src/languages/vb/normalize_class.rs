@@ -180,6 +180,7 @@ pub fn normalize_class(
         instance_methods,
         static_methods,
         properties,
+        constructors: Vec::new(),
         constructor,
         destructor: None, // VB `Finalize` is conventionally handled as a regular override; no first-class destructor here
         auto_init_methods,

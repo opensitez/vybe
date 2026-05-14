@@ -163,7 +163,218 @@ fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression) -> Option<
     }
 }
 
+fn is_numeric_overload_type(type_hint: &str) -> bool {
+    matches!(
+        type_hint,
+        "integer"
+            | "int"
+            | "int32"
+            | "longint"
+            | "long"
+            | "int64"
+            | "short"
+            | "int16"
+            | "uint"
+            | "uint32"
+            | "ulong"
+            | "uint64"
+            | "ushort"
+            | "uint16"
+            | "byte"
+            | "sbyte"
+            | "real"
+            | "double"
+            | "float"
+            | "single"
+            | "decimal"
+    )
+}
+
 impl Compiler {
+    fn overload_type_matches(&self, param_type: &str, arg_type: &str) -> bool {
+        let normalized_param = Self::normalize_type_hint(strip_generic_suffix(param_type).trim_end_matches('?'));
+        let normalized_arg = Self::normalize_type_hint(strip_generic_suffix(arg_type).trim_end_matches('?'));
+        normalized_param == normalized_arg
+            || (Self::is_string_type_hint(&normalized_param) && Self::is_string_type_hint(&normalized_arg))
+            || (matches!(normalized_param.as_str(), "bool" | "boolean")
+                && matches!(normalized_arg.as_str(), "bool" | "boolean"))
+            || (is_numeric_overload_type(&normalized_param) && is_numeric_overload_type(&normalized_arg))
+    }
+
+    fn match_method_overload_chunk(
+        &self,
+        overloads: &[PendingMethodOverload],
+        arg_exprs: &[&Expression],
+        require_multiple: bool,
+    ) -> Option<usize> {
+        if require_multiple && overloads.len() < 2 {
+            return None;
+        }
+
+        let same_arity: Vec<&PendingMethodOverload> = overloads
+            .iter()
+            .filter(|overload| overload.param_types.len() == arg_exprs.len())
+            .collect();
+        if same_arity.len() == 1 {
+            return Some(same_arity[0].chunk_idx);
+        }
+
+        let arg_types: Vec<Option<String>> = arg_exprs
+            .iter()
+            .map(|expr| self.infer_expr_type_hint(expr).map(|hint| Self::normalize_type_hint(&hint)))
+            .collect();
+        if arg_types.iter().any(|hint| hint.is_none()) {
+            return None;
+        }
+
+        let matching: Vec<&PendingMethodOverload> = same_arity
+            .into_iter()
+            .filter(|overload| {
+                overload
+                    .param_types
+                    .iter()
+                    .zip(arg_types.iter())
+                    .all(|(param_type, arg_type)| {
+                        arg_type
+                            .as_deref()
+                            .is_some_and(|arg_type| self.overload_type_matches(param_type, arg_type))
+                    })
+            })
+            .collect();
+        if matching.len() == 1 {
+            Some(matching[0].chunk_idx)
+        } else {
+            None
+        }
+    }
+
+    fn resolve_instance_method_overload_chunk(
+        &self,
+        object: &Expression,
+        field: &str,
+        arg_exprs: &[&Expression],
+    ) -> Option<usize> {
+        let receiver_type = resolve_receiver_type_hint(self, object)?;
+        let receiver_canon = self.canon(strip_generic_suffix(receiver_type.trim().trim_end_matches('?')));
+        let pending = self.pending_classes.get(&receiver_canon).or_else(|| {
+            self.pending_classes
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(&receiver_type) || name.eq_ignore_ascii_case(&receiver_canon))
+                .map(|(_, pending)| pending)
+        })?;
+        let method_key = self.canon(field);
+        let overloads = pending.instance_method_overloads.get(&method_key)?;
+        self.match_method_overload_chunk(overloads, arg_exprs, true)
+    }
+
+    pub(super) fn resolve_pending_class_name_for_type_hint(&self, type_hint: &str) -> Option<String> {
+        let receiver_type = type_hint.trim().trim_end_matches('?');
+        let receiver_canon = self.canon(strip_generic_suffix(receiver_type));
+        if self.pending_classes.contains_key(&receiver_canon) {
+            return Some(receiver_canon);
+        }
+        self.pending_classes
+            .keys()
+            .find(|name| name.eq_ignore_ascii_case(receiver_type) || name.eq_ignore_ascii_case(&receiver_canon))
+            .cloned()
+    }
+
+    pub(super) fn pending_class_has_method_name_for_type(&self, type_hint: &str, method_name: &str) -> bool {
+        let Some(class_name) = self.resolve_pending_class_name_for_type_hint(type_hint) else {
+            return false;
+        };
+        let Some(pending) = self.pending_classes.get(&class_name) else {
+            return false;
+        };
+        let method_key = self.canon(method_name);
+        pending.static_method_overloads.contains_key(&method_key)
+            || pending.instance_method_overloads.contains_key(&method_key)
+            || pending.static_method_names.iter().any(|name| self.canon(name) == method_key)
+            || pending.instance_member_names.iter().any(|name| self.canon(name) == method_key)
+    }
+
+    pub(super) fn resolve_static_method_overload_chunk_for_type(
+        &self,
+        type_hint: &str,
+        method_name: &str,
+        arg_exprs: &[&Expression],
+    ) -> Option<usize> {
+        let receiver_type = type_hint.trim().trim_end_matches('?');
+        let receiver_canon = self.canon(strip_generic_suffix(receiver_type));
+        let pending = self.pending_classes.get(&receiver_canon).or_else(|| {
+            self.pending_classes
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(receiver_type) || name.eq_ignore_ascii_case(&receiver_canon))
+                .map(|(_, pending)| pending)
+        })?;
+        let method_key = self.canon(method_name);
+        let overloads = pending
+            .static_method_overloads
+            .get(&method_key)
+            .or_else(|| pending.instance_method_overloads.get(&method_key))?;
+        self.match_method_overload_chunk(overloads, arg_exprs, false)
+    }
+
+    fn emit_direct_instance_method_call(
+        &mut self,
+        chunk_idx: usize,
+        obj_tmp: u16,
+        arg_exprs: &[&Expression],
+    ) -> Result<(), String> {
+        let line = self.line;
+        self.emit_u16(Op::REF_FUNC, chunk_idx as u16);
+        self.chunk().emit(0, line);
+        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+        for arg in arg_exprs {
+            self.compile_expr(arg)?;
+        }
+        self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+        Ok(())
+    }
+
+    pub(super) fn emit_direct_static_method_call(
+        &mut self,
+        chunk_idx: usize,
+        arg_exprs: &[&Expression],
+    ) -> Result<(), String> {
+        let line = self.line;
+        self.emit_u16(Op::REF_FUNC, chunk_idx as u16);
+        self.chunk().emit(0, line);
+        for arg in arg_exprs {
+            self.compile_expr(arg)?;
+        }
+        self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+        Ok(())
+    }
+
+    fn emit_variadic_array_call_from_local(
+        &mut self,
+        callee_slot: u16,
+        array_expr: &Expression,
+    ) -> Result<(), String> {
+        let line = self.line;
+        self.compile_expr(array_expr)?;
+        let args_slot = self.define_local("__params_array_args");
+        self.emit_u16(Op::LOCAL_SET, args_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, args_slot);
+        self.emit_const(Value::I32(16));
+        common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
+        common::collections::emit_concat(&mut self.chunks, self.current, line);
+        self.emit_const(Value::F64(0.0));
+        self.emit_const(Value::F64(16.0));
+        common::collections::emit_slice(&mut self.chunks, self.current, line);
+        self.emit_u16(Op::LOCAL_SET, args_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, callee_slot);
+        self.emit_u16(Op::LOCAL_GET, args_slot);
+        self.emit(Op::SPREAD);
+        self.emit_u8(Op::CALL_REF, 16);
+        Ok(())
+    }
+
     pub(super) fn js_error_instanceof_chain(type_name: &str) -> &'static [&'static str] {
         match type_name.trim() {
             "Error" => &["Error"],
@@ -259,6 +470,30 @@ impl Compiler {
                     null_safe: *null_safe,
                 });
                 return self.compile_call(&rewritten, args);
+            }
+
+            if !null_safe
+                && field.eq_ignore_ascii_case("Deconstruct")
+                && args.iter().all(|arg| arg.by_ref)
+            {
+                if let ExprKind::Call { callee: inner_callee, args: inner_args, .. } = &object.kind {
+                    if let Some(arity) = self.multi_return_arity_for_callee(inner_callee) {
+                        if arity as usize == args.len() {
+                            self.compile_call(inner_callee, inner_args)?;
+                            for out_arg in args.iter().rev() {
+                                if let ExprKind::Ident(name) = &out_arg.value.kind {
+                                    if name.starts_with("__discard_") {
+                                        self.emit(Op::DROP);
+                                        continue;
+                                    }
+                                }
+                                self.compile_assign_target(&out_arg.value)?;
+                            }
+                            self.emit(Op::NULL);
+                            return Ok(());
+                        }
+                    }
+                }
             }
         }
 
@@ -577,6 +812,20 @@ impl Compiler {
                         return Ok(());
                     }
 
+                    if matches!(&target, common::dotnet::InstanceMethodTarget::Common { emit, .. } if emit == "dotnet.array_sort")
+                        && arg_exprs.len() == 1
+                        && !self.is_js_profile()
+                        && class_name.rsplit('.').next().is_some_and(|name| name.eq_ignore_ascii_case("List") || name.eq_ignore_ascii_case("ArrayList"))
+                        && matches!(&arg_exprs[0].kind, ExprKind::Lambda { params, .. } if params.len() == 2)
+                    {
+                        let sort_global = self.str_const("__vybe_sort_with_comparator");
+                        self.emit_u16(Op::GLOBAL_GET, sort_global);
+                        self.compile_expr(object)?;
+                        self.compile_expr(&arg_exprs[0])?;
+                        self.emit_u8(Op::CALL_REF, 2);
+                        return Ok(());
+                    }
+
                     self.compile_expr(object)?;
                     for a in &arg_exprs { self.compile_expr(a)?; }
                     let total_argc = (arg_exprs.len() + 1) as u8;
@@ -661,6 +910,16 @@ impl Compiler {
             }
         }
 
+        if let ExprKind::Member { .. } = &callee.kind {
+            let parts = self.flatten_member_chain(callee);
+            if parts.len() >= 2 {
+                let compound = parts.join(".");
+                if self.try_compile_builtin(&compound, &arg_exprs)? {
+                    return Ok(());
+                }
+            }
+        }
+
         // ── Two-level host prefix: `vybe.gui.setProperty(...)` ──────
         //
         // VB / languages without ESM imports reach host functions via
@@ -696,6 +955,102 @@ impl Compiler {
             let parts = self.flatten_member_chain(callee);
             if parts.len() >= 2 {
                 let lower_parts: Vec<String> = parts.iter().map(|s| self.canon(s)).collect();
+                let class_parts = &parts[..parts.len() - 1];
+                let method_name = parts.last().cloned().unwrap_or_default();
+
+                let mut early_static_class_canon = None;
+                if !class_parts.is_empty() {
+                    let class_path = class_parts.join(".");
+                    let head_name = class_parts.first().map(String::as_str).unwrap_or("");
+                    let full_canon = self.canon(&class_path);
+                    if self.defined_classes.contains(&full_canon)
+                        && self.scope().resolve(head_name).is_none()
+                        && self.scope().resolve_ci(head_name).is_none()
+                        && self.lookup_var_type_hint(head_name).is_none()
+                    {
+                        early_static_class_canon = Some(full_canon);
+                    }
+
+                    if early_static_class_canon.is_none() && class_parts.len() > 1 {
+                        let short_name = class_parts.last().map(String::as_str).unwrap_or("");
+                        let short_canon = self.canon(short_name);
+                        if self.defined_classes.contains(&short_canon)
+                            && self.scope().resolve(short_name).is_none()
+                            && self.scope().resolve_ci(short_name).is_none()
+                            && self.lookup_var_type_hint(short_name).is_none()
+                        {
+                            early_static_class_canon = Some(short_canon);
+                        }
+                    }
+                }
+
+                if let Some(class_canon) = early_static_class_canon {
+                    let cls_idx = self.str_const(&class_canon);
+                    self.emit_u16(Op::GLOBAL_GET, cls_idx);
+                    let method_canon = self.canon(&method_name);
+                    let method_idx = self.str_const(&method_canon);
+                    self.emit_u16(Op::STRUCT_GET, method_idx);
+                    let fn_tmp = self.scope().resolve("__early_static_fn")
+                        .unwrap_or_else(|| self.define_local("__early_static_fn"));
+                    self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
+
+                    if let Some(param_modes) = self.function_param_modes.get(&method_canon).cloned() {
+                        if param_modes.iter().any(|mode| matches!(mode, PassBy::Ref | PassBy::Out)) {
+                            let mut arg_slots = Vec::with_capacity(args.len());
+                            for (index, arg) in args.iter().enumerate() {
+                                match param_modes.get(index).copied().unwrap_or(PassBy::Value) {
+                                    PassBy::Out => self.emit(Op::NULL),
+                                    PassBy::Ref | PassBy::Const | PassBy::Value => {
+                                        self.compile_expr_with_value_copy(&arg.value)?;
+                                    }
+                                }
+                                let arg_slot = self.define_local(&format!("__early_static_call_arg_{}", index));
+                                self.emit_u16(Op::LOCAL_SET, arg_slot);
+                                self.emit(Op::DROP);
+                                arg_slots.push(arg_slot);
+                            }
+
+                            self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                            for slot in &arg_slots {
+                                self.emit_u16(Op::LOCAL_GET, *slot);
+                            }
+                            self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+
+                            let pack_slot = self.define_local("__early_static_ref_call_pack");
+                            self.emit_u16(Op::LOCAL_SET, pack_slot);
+                            self.emit(Op::DROP);
+                            let mut ref_out_index = 1usize;
+                            for (index, arg) in args.iter().enumerate() {
+                                if !matches!(param_modes.get(index), Some(PassBy::Ref | PassBy::Out)) {
+                                    continue;
+                                }
+                                self.emit_u16(Op::LOCAL_GET, pack_slot);
+                                self.emit_const(Value::F64(ref_out_index as f64));
+                                common::collections::emit_get(&mut self.chunks, self.current, self.line);
+                                self.compile_assign_target(&arg.value)?;
+                                ref_out_index += 1;
+                            }
+                            self.emit_u16(Op::LOCAL_GET, pack_slot);
+                            self.emit_const(Value::F64(0.0));
+                            common::collections::emit_get(&mut self.chunks, self.current, self.line);
+                            return Ok(());
+                        }
+                    }
+
+                    if self.profile.name == "csharp" && args.len() == 1 && !args[0].spread {
+                        if let Some(chunk_idx) = self.resolve_static_method_overload_chunk_for_type(&class_canon, &method_name, &arg_exprs) {
+                            if self.chunks[chunk_idx].arity == 255 {
+                                self.emit_variadic_array_call_from_local(fn_tmp, &args[0].value)?;
+                                return Ok(());
+                            }
+                        }
+                    }
+
+                    self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                    for a in &arg_exprs { self.compile_expr(a)?; }
+                    self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                    return Ok(());
+                }
 
                 // Use dotnet resolver when enabled
                 if self.profile.namespaces.use_dotnet_resolver {
@@ -763,12 +1118,25 @@ impl Compiler {
 
                     match resolution {
                         common::dotnet::DottedResolution::CommonCall { emit } => {
+                            if emit.eq_ignore_ascii_case("dotnet.array_resize")
+                                && args.len() == 2
+                                && args[0].by_ref
+                            {
+                                self.compile_expr(&args[0].value)?;
+                                self.compile_expr(&args[1].value)?;
+                                let line = self.line;
+                                self.emit_common(&emit, 2, line);
+                                let resized_slot = self.define_local("__array_resize_value");
+                                self.emit_u16(Op::LOCAL_SET, resized_slot);
+                                self.emit(Op::DROP);
+                                self.emit_u16(Op::LOCAL_GET, resized_slot);
+                                self.compile_assign_target(&args[0].value)?;
+                                self.emit(Op::NULL);
+                                return Ok(());
+                            }
+
                             if emit.eq_ignore_ascii_case("dotnet.console_writeline") && arg_exprs.len() == 1 {
-                                if let Some(enum_type) = self.console_enum_type_from_expr(arg_exprs[0]) {
-                                    self.emit_enum_value_to_string(&enum_type, arg_exprs[0])?;
-                                } else {
-                                    self.compile_expr(arg_exprs[0])?;
-                                }
+                                self.emit_dotnet_console_arg(arg_exprs[0])?;
                             } else {
                                 for a in &arg_exprs { self.compile_expr(a)?; }
                             }
@@ -1004,11 +1372,34 @@ impl Compiler {
         // Must run BEFORE value methods so user class names like MathUtils.Add
         // don't get hijacked by the array Add value method.
         if let ExprKind::Member { object, field, .. } = &callee.kind {
-            if let ExprKind::Ident(obj_name) = &object.kind {
-                let canon = self.canon(obj_name);
-                let is_class = self.defined_classes.contains(&canon)
-                    && self.scope().resolve(obj_name).is_none();
-                if is_class {
+            let class_parts = self.flatten_member_chain(object);
+            if !class_parts.is_empty() {
+                let class_path = class_parts.join(".");
+                let mut static_class_canon = None;
+                let head_name = class_parts.first().map(String::as_str).unwrap_or("");
+
+                let full_canon = self.canon(&class_path);
+                if self.defined_classes.contains(&full_canon)
+                    && self.scope().resolve(head_name).is_none()
+                    && self.scope().resolve_ci(head_name).is_none()
+                    && self.lookup_var_type_hint(head_name).is_none()
+                {
+                    static_class_canon = Some(full_canon);
+                }
+
+                if static_class_canon.is_none() && class_parts.len() > 1 {
+                    let short_name = class_parts.last().map(String::as_str).unwrap_or("");
+                    let short_canon = self.canon(short_name);
+                    if self.defined_classes.contains(&short_canon)
+                        && self.scope().resolve(short_name).is_none()
+                        && self.scope().resolve_ci(short_name).is_none()
+                        && self.lookup_var_type_hint(short_name).is_none()
+                    {
+                        static_class_canon = Some(short_canon);
+                    }
+                }
+
+                if let Some(canon) = static_class_canon {
                     if self.is_js_profile() {
                         let cls_idx = self.str_const(&canon);
                         self.emit_u16(Op::GLOBAL_GET, cls_idx);
@@ -1034,8 +1425,6 @@ impl Compiler {
                         return Ok(());
                     }
 
-                    // Push class, dup, struct_get(method) → [class, fn]
-                    // Then swap so fn is first, class is second (as this)
                     let cls_idx = self.str_const(&canon);
                     self.emit_u16(Op::GLOBAL_GET, cls_idx);
                     self.emit(Op::DUP);
@@ -1049,10 +1438,63 @@ impl Compiler {
                     let cls_tmp = self.scope().resolve("__static_cls")
                         .unwrap_or_else(|| self.define_local("__static_cls"));
                     self.emit_u16(Op::LOCAL_SET, cls_tmp); self.emit(Op::DROP);
+                    if let Some(param_modes) = self.function_param_modes.get(&m).cloned() {
+                        if param_modes.iter().any(|mode| matches!(mode, PassBy::Ref | PassBy::Out)) {
+                            let mut arg_slots = Vec::with_capacity(args.len());
+                            for (index, arg) in args.iter().enumerate() {
+                                match param_modes.get(index).copied().unwrap_or(PassBy::Value) {
+                                    PassBy::Out => self.emit(Op::NULL),
+                                    PassBy::Ref | PassBy::Const | PassBy::Value => {
+                                        if !matches!(param_modes.get(index), Some(PassBy::Out)) {
+                                            self.compile_expr_with_value_copy(&arg.value)?;
+                                        }
+                                    }
+                                }
+                                let arg_slot = self.define_local(&format!("__static_call_arg_{}", index));
+                                self.emit_u16(Op::LOCAL_SET, arg_slot);
+                                self.emit(Op::DROP);
+                                arg_slots.push(arg_slot);
+                            }
+
+                            self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                            for slot in &arg_slots {
+                                self.emit_u16(Op::LOCAL_GET, *slot);
+                            }
+                            self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+
+                            let pack_slot = self.define_local("__static_ref_call_pack");
+                            self.emit_u16(Op::LOCAL_SET, pack_slot);
+                            self.emit(Op::DROP);
+                            let mut ref_out_index = 1usize;
+                            for (index, arg) in args.iter().enumerate() {
+                                if !matches!(param_modes.get(index), Some(PassBy::Ref | PassBy::Out)) {
+                                    continue;
+                                }
+                                self.emit_u16(Op::LOCAL_GET, pack_slot);
+                                self.emit_const(Value::F64(ref_out_index as f64));
+                                common::collections::emit_get(&mut self.chunks, self.current, self.line);
+                                self.compile_assign_target(&arg.value)?;
+                                ref_out_index += 1;
+                            }
+                            self.emit_u16(Op::LOCAL_GET, pack_slot);
+                            self.emit_const(Value::F64(0.0));
+                            common::collections::emit_get(&mut self.chunks, self.current, self.line);
+                            return Ok(());
+                        }
+                    }
+
+                    if self.profile.name == "csharp" && args.len() == 1 && !args[0].spread {
+                        if let Some(chunk_idx) = self.resolve_static_method_overload_chunk_for_type(&canon, field, &arg_exprs) {
+                            if self.chunks[chunk_idx].arity == 255 {
+                                self.emit_variadic_array_call_from_local(fn_tmp, &args[0].value)?;
+                                return Ok(());
+                            }
+                        }
+                    }
+
                     self.emit_u16(Op::LOCAL_GET, fn_tmp);
-                    self.emit_u16(Op::LOCAL_GET, cls_tmp);
                     for a in &arg_exprs { self.compile_expr(a)?; }
-                    self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                    self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
                     return Ok(());
                 }
             }
@@ -1086,9 +1528,8 @@ impl Compiler {
                                 .unwrap_or_else(|| self.define_local("__nested_static_fn"));
                             self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
                             self.emit_u16(Op::LOCAL_GET, fn_tmp);
-                            self.emit_u16(Op::LOCAL_GET, cls_tmp);
                             for a in &arg_exprs { self.compile_expr(a)?; }
-                            self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                            self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
                             return Ok(());
                         }
                     }
@@ -1224,6 +1665,20 @@ impl Compiler {
                                 })),
                             }))),
                         )?;
+                        self.emit_u8(Op::CALL_REF, 2);
+                        return Ok(());
+                    }
+
+                    if matches!(&target, common::dotnet::InstanceMethodTarget::Common { emit, .. } if emit == "dotnet.array_sort")
+                        && arg_exprs.len() == 1
+                        && !self.is_js_profile()
+                        && class_name.rsplit('.').next().is_some_and(|name| name.eq_ignore_ascii_case("List") || name.eq_ignore_ascii_case("ArrayList"))
+                        && matches!(&arg_exprs[0].kind, ExprKind::Lambda { params, .. } if params.len() == 2)
+                    {
+                        let sort_global = self.str_const("__vybe_sort_with_comparator");
+                        self.emit_u16(Op::GLOBAL_GET, sort_global);
+                        self.compile_expr(object)?;
+                        self.compile_expr(&arg_exprs[0])?;
                         self.emit_u8(Op::CALL_REF, 2);
                         return Ok(());
                     }
@@ -2586,6 +3041,11 @@ impl Compiler {
                 return Ok(());
             }
 
+            if let Some(chunk_idx) = self.resolve_instance_method_overload_chunk(object, field, &arg_exprs) {
+                self.emit_direct_instance_method_call(chunk_idx, obj_tmp, &arg_exprs)?;
+                return Ok(());
+            }
+
             self.emit_u16(Op::LOCAL_GET, obj_tmp);
             self.emit_u16(Op::STRUCT_GET, prop);
             let fn_tmp = self.define_local("__fn");
@@ -2623,7 +3083,9 @@ impl Compiler {
             // the class object before any generic function lookup. Static
             // methods are also registered as ordinary functions, so this
             // must run ahead of `is_known_func`.
-            if self.current_class.is_some() && self.current_class_implicit_self {
+            if self.current_class.is_some()
+                && (self.current_member_is_static || self.current_class_implicit_self)
+            {
                 let is_local = self.scope().resolve(name).is_some()
                     || (!self.case_sensitive && self.scope().resolve_ci(name).is_some());
                 if !is_local {
@@ -2634,12 +3096,63 @@ impl Compiler {
                         self.emit_u16(Op::STRUCT_GET, method_idx);
                         let fn_tmp = self.define_local("__bare_static_fn");
                         self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
-                        let cls_tmp = self.define_local("__bare_static_cls");
-                        self.emit_u16(Op::LOCAL_SET, cls_tmp); self.emit(Op::DROP);
+
+                        let method_canon = self.canon(name);
+                        if let Some(param_modes) = self.function_param_modes.get(&method_canon).cloned() {
+                            if param_modes.iter().any(|mode| matches!(mode, PassBy::Ref | PassBy::Out)) {
+                                let mut arg_slots = Vec::with_capacity(args.len());
+                                for (index, arg) in args.iter().enumerate() {
+                                    match param_modes.get(index).copied().unwrap_or(PassBy::Value) {
+                                        PassBy::Out => self.emit(Op::NULL),
+                                        PassBy::Ref | PassBy::Const | PassBy::Value => {
+                                            self.compile_expr_with_value_copy(&arg.value)?;
+                                        }
+                                    }
+                                    let arg_slot = self.define_local(&format!("__bare_static_call_arg_{}", index));
+                                    self.emit_u16(Op::LOCAL_SET, arg_slot);
+                                    self.emit(Op::DROP);
+                                    arg_slots.push(arg_slot);
+                                }
+
+                                self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                                for slot in &arg_slots {
+                                    self.emit_u16(Op::LOCAL_GET, *slot);
+                                }
+                                self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+
+                                let pack_slot = self.define_local("__bare_static_ref_call_pack");
+                                self.emit_u16(Op::LOCAL_SET, pack_slot);
+                                self.emit(Op::DROP);
+                                let mut ref_out_index = 1usize;
+                                for (index, arg) in args.iter().enumerate() {
+                                    if !matches!(param_modes.get(index), Some(PassBy::Ref | PassBy::Out)) {
+                                        continue;
+                                    }
+                                    self.emit_u16(Op::LOCAL_GET, pack_slot);
+                                    self.emit_const(Value::F64(ref_out_index as f64));
+                                    common::collections::emit_get(&mut self.chunks, self.current, self.line);
+                                    self.compile_assign_target(&arg.value)?;
+                                    ref_out_index += 1;
+                                }
+                                self.emit_u16(Op::LOCAL_GET, pack_slot);
+                                self.emit_const(Value::F64(0.0));
+                                common::collections::emit_get(&mut self.chunks, self.current, self.line);
+                                return Ok(());
+                            }
+                        }
+
+                        if self.profile.name == "csharp" && args.len() == 1 && !args[0].spread {
+                            if let Some(chunk_idx) = self.resolve_static_method_overload_chunk_for_type(&class_name, name, &arg_exprs) {
+                                if self.chunks[chunk_idx].arity == 255 {
+                                    self.emit_variadic_array_call_from_local(fn_tmp, &args[0].value)?;
+                                    return Ok(());
+                                }
+                            }
+                        }
+
                         self.emit_u16(Op::LOCAL_GET, fn_tmp);
-                        self.emit_u16(Op::LOCAL_GET, cls_tmp);
                         for a in &arg_exprs { self.compile_expr(a)?; }
-                        self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                        self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
                         return Ok(());
                     }
                 }
@@ -2680,7 +3193,10 @@ impl Compiler {
             // Inside a class: bare method call → Me.method(args)
             // If name isn't a local variable and we're inside a class body,
             // resolve as Me.name() (implicit self for method calls).
-            if self.current_class.is_some() && self.current_class_implicit_self {
+            if self.current_class.is_some()
+                && self.current_class_implicit_self
+                && !self.current_member_is_static
+            {
                 let is_local = self.scope().resolve(name).is_some()
                     || (!self.case_sensitive && self.scope().resolve_ci(name).is_some());
                 if !is_local && !is_known_func {
@@ -2698,7 +3214,9 @@ impl Compiler {
                         let obj_tmp = self.define_local("__bare_obj");
                         self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
 
-                        if self.profile.name == "pascal" && self.is_class_field(name) {
+                        let is_callable_field = self.lookup_implicit_self_field_type_hint(name)
+                            .is_some_and(Self::is_callable_type_hint);
+                        if (self.profile.name == "pascal" && self.is_class_field(name)) || is_callable_field {
                             self.emit_u16(Op::LOCAL_GET, fn_tmp);
                             for a in &arg_exprs { self.compile_expr(a)?; }
                             self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
@@ -2839,8 +3357,12 @@ impl Compiler {
             }
 
             self.emit_var_get(name);
+            let callee_slot = self.define_local("__direct_call_callee");
+            self.emit_u16(Op::LOCAL_SET, callee_slot);
+            self.emit(Op::DROP);
             if let Some(param_modes) = self.function_param_modes.get(&self.canon(name)).cloned() {
                 if param_modes.iter().any(|mode| matches!(mode, PassBy::Ref | PassBy::Out)) {
+                    let mut arg_slots = Vec::with_capacity(args.len());
                     for (index, arg) in args.iter().enumerate() {
                         match param_modes.get(index).copied().unwrap_or(PassBy::Value) {
                             PassBy::Out => self.emit(Op::NULL),
@@ -2850,6 +3372,16 @@ impl Compiler {
                                 }
                             }
                         }
+
+                        let arg_slot = self.define_local(&format!("__direct_call_arg_{}", index));
+                        self.emit_u16(Op::LOCAL_SET, arg_slot);
+                        self.emit(Op::DROP);
+                        arg_slots.push(arg_slot);
+                    }
+
+                    self.emit_u16(Op::LOCAL_GET, callee_slot);
+                    for slot in &arg_slots {
+                        self.emit_u16(Op::LOCAL_GET, *slot);
                     }
                     self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
 
@@ -2873,7 +3405,20 @@ impl Compiler {
                     return Ok(());
                 }
             }
-            for a in &arg_exprs { self.compile_expr_with_value_copy(a)?; }
+
+            let mut arg_slots = Vec::with_capacity(arg_exprs.len());
+            for (index, arg) in arg_exprs.iter().enumerate() {
+                self.compile_expr_with_value_copy(arg)?;
+                let arg_slot = self.define_local(&format!("__direct_call_arg_{}", index));
+                self.emit_u16(Op::LOCAL_SET, arg_slot);
+                self.emit(Op::DROP);
+                arg_slots.push(arg_slot);
+            }
+
+            self.emit_u16(Op::LOCAL_GET, callee_slot);
+            for slot in arg_slots {
+                self.emit_u16(Op::LOCAL_GET, slot);
+            }
             self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
             return Ok(());
         }
@@ -2907,7 +3452,23 @@ impl Compiler {
 
         // ── Fallback: general expression call ───────────────────────
         self.compile_expr(callee)?;
-        for a in &arg_exprs { self.compile_expr(a)?; }
+        let callee_slot = self.define_local("__call_ref_callee");
+        self.emit_u16(Op::LOCAL_SET, callee_slot);
+        self.emit(Op::DROP);
+
+        let mut arg_slots = Vec::with_capacity(arg_exprs.len());
+        for (index, arg) in arg_exprs.iter().enumerate() {
+            self.compile_expr(arg)?;
+            let arg_slot = self.define_local(&format!("__call_ref_arg_{}", index));
+            self.emit_u16(Op::LOCAL_SET, arg_slot);
+            self.emit(Op::DROP);
+            arg_slots.push(arg_slot);
+        }
+
+        self.emit_u16(Op::LOCAL_GET, callee_slot);
+        for slot in arg_slots {
+            self.emit_u16(Op::LOCAL_GET, slot);
+        }
         self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
         Ok(())
     }
@@ -4102,6 +4663,44 @@ impl Compiler {
         Ok(())
     }
 
+    pub(super) fn emit_dotnet_console_arg(&mut self, expr: &Expression) -> Result<(), String> {
+        if let Some(enum_type) = self.console_enum_type_from_expr(expr) {
+            self.emit_enum_value_to_string(&enum_type, expr)?;
+            return Ok(());
+        }
+
+        if self.profile.name != "csharp" {
+            self.compile_expr(expr)?;
+            return Ok(());
+        }
+
+        self.compile_expr(expr)?;
+        let value_slot = self.define_local("__dotnet_console_value");
+        self.emit_u16(Op::LOCAL_SET, value_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.emit(Op::REF_TYPEOF);
+        self.emit_const(Value::String(Arc::from("number")));
+        self.emit(Op::DYN_EQ);
+        let not_number = self.emit_jump(Op::BR_IF_FALSE);
+
+        let helper = self.str_const("__vybe_dotnet_numeric_format");
+        self.emit_u16(Op::GLOBAL_GET, helper);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.emit_const(Value::String(Arc::from("F12")));
+        self.emit_const(Value::F64(0.0));
+        self.emit_u8(Op::CALL_REF, 3);
+        let parse_float = self.import("ecma:number", "parseFloat");
+        self.emit_host_call(parse_float, 1);
+        let done = self.emit_jump(Op::BR);
+
+        self.patch_jump(not_number);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.patch_jump(done);
+        Ok(())
+    }
+
     fn emit_enum_has_flag(&mut self, value_expr: &Expression, flag_expr: &Expression) -> Result<(), String> {
         let flag_slot = self.define_local("__enum_flag_value");
         let value_slot = self.define_local("__enum_flag_source");
@@ -4207,17 +4806,23 @@ impl Compiler {
                     self.emit_host_call(to_str_idx, 1);
                     return Ok(true);
                 }
-                "TryParse" if args.len() == 2 || args.len() == 3 => {
+                "TryParse" if matches!(args.len(), 2 | 3 | 4 | 5) => {
+                    let visible_args = if args.len() >= 4 { &args[..args.len() - 2] } else { args };
                     let enum_type = extract_generic_type_name(field)
                         .map(|name| self.canon(&name))
-                        .filter(|canon| self.enum_value_names.contains_key(canon));
+                        .filter(|canon| self.enum_value_names.contains_key(canon))
+                        .or_else(|| {
+                            (args.len() >= 4)
+                                .then(|| self.canonical_enum_type_from_expr(&args[args.len() - 2].value))
+                                .flatten()
+                        });
                     let Some(enum_type) = enum_type else {
                         return Ok(false);
                     };
-                    let (value_arg, ignore_case, out_arg) = if args.len() == 3 {
-                        (&args[0].value, matches!(args[1].value.kind, ExprKind::Lit(Literal::Bool(true))), &args[2].value)
+                    let (value_arg, ignore_case, out_arg) = if visible_args.len() == 3 {
+                        (&visible_args[0].value, matches!(visible_args[1].value.kind, ExprKind::Lit(Literal::Bool(true))), &visible_args[2].value)
                     } else {
-                        (&args[0].value, false, &args[1].value)
+                        (&visible_args[0].value, false, &visible_args[1].value)
                     };
                     self.emit_enum_name_lookup(&enum_type, value_arg, ignore_case)?;
                     let parsed_slot = self.define_local("__enum_try_parse_value");

@@ -44,19 +44,30 @@ multi_value_tuple_returns = true
 # ── Math — WASM opcodes ─────────────────────────────────────────────────────
 
 "Math.Abs"          = { emit = "opcode:f64_abs",      min_args = 1, max_args = 1 }
+"System.Math.Abs"   = { emit = "opcode:f64_abs",      min_args = 1, max_args = 1 }
 "Math.Floor"        = { emit = "opcode:f64_floor",    min_args = 1, max_args = 1 }
+"System.Math.Floor" = { emit = "opcode:f64_floor",    min_args = 1, max_args = 1 }
 "Math.Ceiling"      = { emit = "opcode:f64_ceil",     min_args = 1, max_args = 1 }
+"System.Math.Ceiling" = { emit = "opcode:f64_ceil",   min_args = 1, max_args = 1 }
 "Math.Ceil"         = { emit = "opcode:f64_ceil",     min_args = 1, max_args = 1 }
+"System.Math.Ceil"  = { emit = "opcode:f64_ceil",     min_args = 1, max_args = 1 }
 "Math.Sqrt"         = { emit = "opcode:f64_sqrt",     min_args = 1, max_args = 1 }
+"System.Math.Sqrt"  = { emit = "opcode:f64_sqrt",     min_args = 1, max_args = 1 }
 "Math.Truncate"     = { emit = "opcode:f64_trunc",    min_args = 1, max_args = 1 }
+"System.Math.Truncate" = { emit = "opcode:f64_trunc", min_args = 1, max_args = 1 }
 "Math.Trunc"        = { emit = "opcode:f64_trunc",    min_args = 1, max_args = 1 }
+"System.Math.Trunc" = { emit = "opcode:f64_trunc",    min_args = 1, max_args = 1 }
 "Math.Round"        = { emit = "opcode:f64_nearest",  min_args = 1, max_args = 1 }
+"System.Math.Round" = { emit = "opcode:f64_nearest",  min_args = 1, max_args = 1 }
 "Math.Min"          = { emit = "opcode:f64_min",      min_args = 2, max_args = 2 }
+"System.Math.Min"   = { emit = "opcode:f64_min",      min_args = 2, max_args = 2 }
 "Math.Max"          = { emit = "opcode:f64_max",      min_args = 2, max_args = 2 }
+"System.Math.Max"   = { emit = "opcode:f64_max",      min_args = 2, max_args = 2 }
 
 # ── Math — host calls ───────────────────────────────────────────────────────
 
 "Math.Pow"          = { emit = "stdlib:pow",      min_args = 2, max_args = 2 }
+"System.Math.Pow"   = { emit = "stdlib:pow",      min_args = 2, max_args = 2 }
 "Math.Sin"          = { emit = "stdlib:sin",      min_args = 1, max_args = 1 }
 "Math.Cos"          = { emit = "stdlib:cos",      min_args = 1, max_args = 1 }
 "Math.Tan"          = { emit = "stdlib:tan",      min_args = 1, max_args = 1 }
@@ -115,6 +126,7 @@ multi_value_tuple_returns = true
 "String.IsNullOrWhiteSpace" = { emit = "stdlib:string_is_null_or_whitespace", min_args = 1, max_args = 1 }
 "String.Format"       = { emit = "common:dotnet.string_format",   min_args = 1, max_args = 255 }
 "String.Concat"       = { emit = "opcode:str_concat",             min_args = 2, max_args = 255 }
+"str_repeat"          = { emit = "opcode:str_repeat",             min_args = 2, max_args = 2 }
 "string.IsNullOrEmpty" = { emit = "stdlib:string_is_null_or_empty", min_args = 1, max_args = 1 }
 "string.IsNullOrWhiteSpace" = { emit = "stdlib:string_is_null_or_whitespace", min_args = 1, max_args = 1 }
 "string.Join"         = { emit = "common:collections.join_sep_first", min_args = 2, max_args = 2 }

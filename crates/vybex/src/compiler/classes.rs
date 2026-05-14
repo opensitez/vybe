@@ -6,7 +6,8 @@
 //! crate-private for the `dotnet_register` bridge.
 
 use super::*;
-use crate::common::classes::{BaseCall, NormalMethod};
+use crate::common::classes::{BaseCall, NormalConstructor, NormalMethod};
+use crate::scope::UpvalueDesc;
 
 impl Compiler {
     // ════════════════════════════════════════════════════════════════════════
@@ -98,6 +99,19 @@ impl Compiler {
         if has_rest {
             let rest_name = &params.last().unwrap().name;
             let rest_slot = self.scope().resolve(rest_name).unwrap();
+            let mut direct_array_passthrough = None;
+            if self.profile.name == "csharp" {
+                self.emit_u16(Op::LOCAL_GET, rest_slot + 1);
+                self.emit(Op::REF_IS_NULL);
+                let not_single_arg = self.emit_jump(Op::BR_IF_FALSE);
+                self.emit_u16(Op::LOCAL_GET, rest_slot);
+                let is_array_idx = self.import("ecma:array", "isArray");
+                self.emit_host_call(is_array_idx, 1);
+                let not_array = self.emit_jump(Op::BR_IF_FALSE);
+                direct_array_passthrough = Some(self.emit_jump(Op::BR));
+                self.patch_jump(not_single_arg);
+                self.patch_jump(not_array);
+            }
             // Build array from slots rest_slot..rest_slot+16, stopping at null.
             // Pattern per slot: if local[N] is null → jump to done; else arr.push(local[N])
             // Build rest array via `common::collections` so the provider
@@ -133,6 +147,9 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, rest_arr);
             self.emit_u16(Op::LOCAL_SET, rest_slot);
             self.emit(Op::DROP);
+            if let Some(skip) = direct_array_passthrough {
+                self.patch_jump(skip);
+            }
         }
 
         // Result slot for functions with return type (Pascal/VB Function).
@@ -361,8 +378,26 @@ impl Compiler {
             .iter()
             .map(|(n, _)| n.clone())
             .collect();
+        let mut instance_field_types: HashMap<String, String> = class.instance_fields.iter().filter_map(|f| {
+            f.type_hint.as_ref().map(|t| (self.canon(&f.name), Self::normalize_type_hint(t)))
+        }).collect();
+        for member in &class.raw_extra_members {
+            if let ClassMember::Event { name, type_hint: Some(type_hint), .. } = member {
+                instance_field_types
+                    .entry(self.canon(name))
+                    .or_insert_with(|| Self::normalize_type_hint(type_hint));
+            }
+        }
+        let mut static_member_names = static_field_names;
+        for member in &class.raw_extra_members {
+            if let ClassMember::Const { name, .. } = member {
+                static_member_names.push(name.clone());
+            }
+        }
+
         self.pending_classes.insert(name.to_string(), PendingClass {
             parent: parent.clone(),
+            enclosing_class: self.current_class.clone(),
             fields: fields.clone(),
             is_value_type: class.is_value_type,
             instance_member_names: class
@@ -370,10 +405,8 @@ impl Compiler {
                 .iter()
                 .map(|method| method.canonical_name.clone())
                 .collect(),
-            instance_field_types: class.instance_fields.iter().filter_map(|f| {
-                f.type_hint.as_ref().map(|t| (self.canon(&f.name), Self::normalize_type_hint(t)))
-            }).collect(),
-            static_fields: static_field_names,
+            instance_field_types,
+            static_fields: static_member_names,
             static_field_types: class.static_fields.iter().filter_map(|f| {
                 f.type_hint.as_ref().map(|t| (self.canon(&f.name), Self::normalize_type_hint(t)))
             }).collect(),
@@ -382,6 +415,8 @@ impl Compiler {
                 .iter()
                 .map(|m| m.source_name.clone())
                 .collect(),
+            instance_method_overloads: HashMap::new(),
+            static_method_overloads: HashMap::new(),
             nested_types: class.raw_extra_members.iter().filter_map(|m| {
                 if let ClassMember::NestedType(stmt) = m {
                     match &stmt.kind {
@@ -417,6 +452,18 @@ impl Compiler {
             // call-site compilation) still hit. Canonical-name-only
             // lookups are a Phase 2b.3 concern.
             self.defined_class_methods.insert(self.canon(&m.source_name));
+            if let Some(arity) = uniform_tuple_return_arity(&m.body) {
+                let bound_name = if m.source_name.starts_with("Symbol.") && !m.canonical_name.is_empty() {
+                    m.canonical_name.clone()
+                } else {
+                    self.canon(&m.source_name)
+                };
+                self.multi_return_functions.insert(bound_name, arity);
+                self.multi_return_functions.insert(
+                    self.canon(&format!("{}.{}", class.name, m.source_name)),
+                    arity,
+                );
+            }
         }
         for p in &class.properties {
             self.defined_class_methods.insert(self.canon(&p.source_name));
@@ -450,11 +497,26 @@ impl Compiler {
             } else {
                 m.params.iter().collect()
             };
+            let param_types: Vec<String> = user_params
+                .iter()
+                .map(|param| Compiler::normalize_type_hint(param.type_hint.as_deref().unwrap_or("object")))
+                .collect();
+            let bound_name = if mname.starts_with("Symbol.") && !m.canonical_name.is_empty() {
+                m.canonical_name.clone()
+            } else {
+                cc.canon(mname)
+            };
+            cc.function_param_modes.insert(
+                bound_name.clone(),
+                user_params.iter().map(|param| param.pass_by).collect(),
+            );
             let uses_js_this = cc.is_js_profile();
             let has_rest = user_params.last().map_or(false, |p| p.is_rest);
             let arity = if has_rest {
                 255u8
             } else if is_static_init {
+                user_params.len() as u8
+            } else if is_static {
                 user_params.len() as u8
             } else if uses_js_this {
                 user_params.len() as u8
@@ -469,15 +531,32 @@ impl Compiler {
                 let cname_canon = cc.canon(mname);
                 cc.generator_functions.insert(cname_canon);
             }
+            if let Some(&n) = cc.multi_return_functions.get(&bound_name) {
+                chunk.result_arity = n;
+            }
             cc.chunks.push(chunk);
             cc.scopes.push(Scope::new_function());
             let saved = cc.current;
             cc.current = ci;
 
-            if !uses_js_this && !is_static_init {
+            if !uses_js_this && !is_static_init && !is_static {
                 cc.define_local(&self_kw);
             }
-            for p in &user_params { cc.define_local(&p.name); }
+            for p in &user_params {
+                cc.define_local_typed(&p.name, p.type_hint.clone());
+            }
+            let ref_out_slots: Vec<u16> = user_params.iter()
+                .filter(|param| matches!(param.pass_by, PassBy::Ref | PassBy::Out))
+                .filter_map(|param| cc.scope().resolve(&param.name))
+                .collect();
+            let saved_fn = cc.current_func_name.take();
+            let saved_rs = cc.current_result_slot.take();
+            let saved_ref_out = cc.current_ref_out_params.take();
+            let saved_member_static = cc.current_member_is_static;
+            cc.current_func_name = Some(bound_name.clone());
+            cc.current_result_slot = None;
+            cc.current_ref_out_params = (!ref_out_slots.is_empty()).then_some(ref_out_slots);
+            cc.current_member_is_static = is_static;
 
             // Rest param preamble: collect excess args into an array.
             // Mirrors `compile_function_decl` so methods with `params T[] xs`
@@ -486,6 +565,19 @@ impl Compiler {
                 let rest_name = &user_params.last().unwrap().name;
                 let rest_slot = cc.scope().resolve(rest_name).unwrap();
                 let line = cc.line;
+                let mut direct_array_passthrough = None;
+                if cc.profile.name == "csharp" {
+                    cc.emit_u16(Op::LOCAL_GET, rest_slot + 1);
+                    cc.emit(Op::REF_IS_NULL);
+                    let not_single_arg = cc.emit_jump(Op::BR_IF_FALSE);
+                    cc.emit_u16(Op::LOCAL_GET, rest_slot);
+                    let is_array_idx = cc.import("ecma:array", "isArray");
+                    cc.emit_host_call(is_array_idx, 1);
+                    let not_array = cc.emit_jump(Op::BR_IF_FALSE);
+                    direct_array_passthrough = Some(cc.emit_jump(Op::BR));
+                    cc.patch_jump(not_single_arg);
+                    cc.patch_jump(not_array);
+                }
                 let max_rest = 16u16;
                 for i in 1..max_rest {
                     cc.define_local(&format!("__rest_reserved_{}", i));
@@ -508,6 +600,9 @@ impl Compiler {
                 cc.emit_u16(Op::LOCAL_GET, rest_arr);
                 cc.emit_u16(Op::LOCAL_SET, rest_slot);
                 cc.emit(Op::DROP);
+                if let Some(skip) = direct_array_passthrough {
+                    cc.patch_jump(skip);
+                }
             }
 
             // Default parameters (C# `string greeting = "Hello"`): if
@@ -535,7 +630,7 @@ impl Compiler {
                 for s in &m.body { cc.compile_stmt(s)?; }
                 if let Some(slot) = cc.scope().resolve(&self_kw).or_else(|| cc.scope().resolve_ci(&self_kw)) {
                     cc.emit_u16(Op::LOCAL_GET, slot);
-                    cc.emit(Op::RETURN);
+                    cc.emit_return_through_finally(1)?;
                 }
             } else if m.return_type.is_some() && result_style == ReturnStyle::ResultSlot {
                 let slot_name = cc.profile.result_slot_name.clone();
@@ -549,38 +644,41 @@ impl Compiler {
                     cc.emit(Op::NULL);
                 }
                 cc.emit_u16(Op::LOCAL_SET, rs); cc.emit(Op::DROP);
-                let saved_fn = cc.current_func_name.take();
-                let saved_rs = cc.current_result_slot.take();
-                cc.current_func_name = Some(mname.clone());
                 cc.current_result_slot = Some(rs);
                 for s in &m.body { cc.compile_stmt(s)?; }
-                cc.current_func_name = saved_fn;
-                cc.current_result_slot = saved_rs;
                 cc.emit_u16(Op::LOCAL_GET, rs);
-                cc.emit(Op::RETURN);
+                cc.emit_return_through_finally(1)?;
             } else {
                 for s in &m.body { cc.compile_stmt(s)?; }
-                let line = cc.line;
-                common::functions::emit_function_epilogue(&mut cc.chunks[ci], line);
+                if cc.current_ref_out_params.is_some() {
+                    cc.emit(Op::NULL);
+                    cc.emit_return_through_finally(1)?;
+                } else {
+                    let line = cc.line;
+                    common::functions::emit_function_epilogue(&mut cc.chunks[ci], line);
+                }
             }
+
+            cc.current_func_name = saved_fn;
+            cc.current_result_slot = saved_rs;
+            cc.current_ref_out_params = saved_ref_out;
+            cc.current_member_is_static = saved_member_static;
 
             let locals = cc.scope().next_slot.max(cc.chunks[ci].local_count);
             cc.chunks[ci].local_count = locals;
             cc.scopes.pop();
             cc.current = saved;
-
-            // `[Symbol.iterator]()` lands as source_name="Symbol.iterator"
-            // but must be reachable under canonical `iterator`. For
-            // ordinary names, keep source-derived binding so language
-            // dunders (PHP `__toString`, Python `__str__`) bind under
-            // their literal name + cross-lang aliases via
-            // `emit_bind_method_with_aliases`. Only the Symbol.* pseudo-
-            // names need the canonical rewrite.
-            let bound_name = if mname.starts_with("Symbol.") && !m.canonical_name.is_empty() {
-                m.canonical_name.clone()
-            } else {
-                cc.canon(mname)
-            };
+            if let Some(pending) = cc.pending_classes.get_mut(name) {
+                let overloads = if is_static {
+                    &mut pending.static_method_overloads
+                } else {
+                    &mut pending.instance_method_overloads
+                };
+                overloads.entry(bound_name.clone()).or_default().push(PendingMethodOverload {
+                    param_types,
+                    chunk_idx: ci,
+                });
+            }
             method_chunks.push((bound_name, ci, is_ctor, is_static));
             Ok(())
         };
@@ -708,139 +806,7 @@ impl Compiler {
         self.current_class = saved_class;
         self.current_class_implicit_self = saved_implicit;
 
-        // Pass 4 (ported to NormalClass): find the constructor's body,
-        // params, and base-call args for the orchestration below.
-        //
-        // Priority order matches the former `members` iteration:
-        // Constructor (reconstruction placed it first) wins over any
-        // Method named `New` / `constructor` / etc. Languages that use
-        // a conventional method-name constructor (VB `Sub New`, C#
-        // `ClassName(...)`) already land in `NormalClass.constructor`
-        // through the walker's normalize_class, so the secondary
-        // method-scan is only a safety net for languages that haven't
-        // categorized a ctor-shaped method into the Constructor slot.
-        let _ctor = method_chunks.iter().find(|(_, _, is_ctor, _)| *is_ctor);
-
-        // Convert NormalConstructor.base_call → Option<Vec<Expression>>
-        // for the downstream orchestration (which still expects the AST
-        // shape). Only `BaseCall::Explicit(args)` carries arguments;
-        // `BaseCall::Auto` signals "auto-insert a zero-arg parent call"
-        // (C#/Pascal style) and is handled separately from base_args.
-        // Walker already turned explicit super() / MyBase.New(...) into
-        // `BaseCall::Explicit(args)`.
-        let ctor_base_args_from_nc: Option<Vec<Expression>> = class.constructor.as_ref().and_then(|c| {
-            if let BaseCall::Explicit(args) = &c.base_call {
-                Some(args.iter().map(|a| a.value.clone()).collect())
-            } else {
-                None
-            }
-        });
-        let ctor_auto_base = class.constructor.as_ref()
-            .map(|c| matches!(c.base_call, BaseCall::Auto))
-            .unwrap_or(false);
-
-        let ctor_body: Option<(&Vec<Statement>, &Vec<Param>, Option<&Vec<Expression>>)> = {
-            if let Some(c) = &class.constructor {
-                Some((&c.body, &c.params, ctor_base_args_from_nc.as_ref()))
-            } else {
-                // Safety-net scan of instance + static methods for a
-                // method-name constructor (e.g. a language walker that
-                // left a `New` method in the methods vec instead of
-                // promoting it to NormalClass.constructor).
-                class.instance_methods.iter()
-                    .chain(class.static_methods.iter())
-                    .find_map(|m| {
-                        let is_static = class.static_methods.iter()
-                            .any(|sm| sm.source_name == m.source_name);
-                        let is_ctor = if self.case_sensitive {
-                            m.source_name == ctor_name || (is_static && m.source_name == "new")
-                        } else {
-                            m.source_name.eq_ignore_ascii_case(&ctor_name)
-                            || is_static && m.source_name.eq_ignore_ascii_case("new")
-                        };
-                        if is_ctor && !m.body.is_empty() {
-                            Some((&m.body, &m.params, None))
-                        } else {
-                            None
-                        }
-                    })
-            }
-        };
-
-        let user_params: Vec<String> = ctor_body.map(|(_, params, _)| {
-            if class.explicit_self_param {
-                params.iter().skip(1).map(|p| p.name.clone()).collect()
-            } else {
-                params.iter().map(|p| p.name.clone()).collect()
-            }
-        }).unwrap_or_default();
-        // ECMA-262 §15.7.10: a derived class without an explicit constructor
-        // gets the implicit `constructor(...args) { super(...args); }`. We
-        // model that by synthesizing 16 forwarding slots — the same
-        // MAX_VARIADIC convention the spread-call path uses. The parent
-        // ctor truncates to its own arity (Undefined-padded for the rest),
-        // so the chain composes correctly through any depth of mixins.
         const IMPLICIT_CTOR_FORWARD_ARGS: u8 = 16;
-        let synthesized_forward_args = ctor_body.is_none() && parent.is_some();
-        let user_arity = if synthesized_forward_args {
-            IMPLICIT_CTOR_FORWARD_ARGS
-        } else {
-            user_params.len() as u8
-        };
-
-        // ── Single constructor function (not split wrapper + body) ──────
-        // This is the ONLY function that `new ClassName(args)` calls.
-        // It creates the object, initializes fields, binds methods, runs
-        // user constructor body, and returns this.
-        let ctor_idx = self.chunks.len();
-        let ctor_chunk = common::functions::create_function_chunk(name, user_arity);
-        self.chunks.push(ctor_chunk);
-        self.scopes.push(Scope::new_function());
-        let saved_cur = self.current;
-        let saved_class2 = self.current_class.take();
-        let saved_implicit2 = self.current_class_implicit_self;
-        self.current = ctor_idx;
-        self.current_class = Some(name.to_string());
-        self.current_class_implicit_self = class.implicit_self_fields;
-
-        // Define user params (slot 1..N), then this (slot N+1)
-        // Also handle default parameter values from the Param structs.
-        let ctor_param_defaults: Vec<Option<Expression>> = ctor_body.map(|(_, params, _)| {
-            let skip = if class.explicit_self_param { 1 } else { 0 };
-            params.iter().skip(skip).map(|p| p.default.clone()).collect()
-        }).unwrap_or_default();
-        for (i, p) in user_params.iter().enumerate() {
-            self.define_local(p);
-            if let Some(Some(default)) = ctor_param_defaults.get(i) {
-                let slot = self.scope().resolve(p).unwrap();
-                self.emit_u16(Op::LOCAL_GET, slot);
-                self.emit(Op::REF_IS_NULL);
-                let has_val = self.emit_jump(Op::BR_IF_FALSE);
-                self.compile_expr(default)?;
-                self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
-                self.patch_jump(has_val);
-            }
-        }
-        // Synthesized implicit ctor — reserve the forwarding slots so
-        // `this_slot` lands above them, matching `user_arity`.
-        if synthesized_forward_args {
-            for i in 0..IMPLICIT_CTOR_FORWARD_ARGS {
-                self.define_local(&format!("__implicit_arg_{}", i));
-            }
-        }
-        self.define_local(&self_kw); // this_slot = user_arity
-        let this_slot = user_arity as u16;
-        if self.is_js_profile() {
-            let js_this = self.str_const("__js_this");
-            self.emit_u16(Op::GLOBAL_GET, js_this);
-            self.emit_u16(Op::LOCAL_SET, this_slot);
-            self.emit(Op::DROP);
-        }
-
-        let is_child = parent.is_some();
-        let line = self.line;
-
-        // Separate instance methods from static methods
         let instance_methods: Vec<&(String, usize, bool, bool)> = method_chunks.iter()
             .filter(|(_, _, ic, is_static)| !*ic && !*is_static)
             .collect();
@@ -851,138 +817,125 @@ impl Compiler {
             .map(|(n, _, _, _)| n.clone())
             .collect();
 
-        if is_child {
-            // ── Child class ─────────────────────────────────────────────
-            // For child classes, the constructor body calls super() which
-            // creates the object. We run the body FIRST, then bind methods.
-            // This works for both explicit super (JS) and implicit (VB/C#)
-            // because super() stores the result in this_slot.
+        let ctor_variants: Vec<Option<&NormalConstructor>> = if !class.constructors.is_empty() {
+            class.constructors.iter().map(Some).collect()
+        } else if let Some(ctor) = class.constructor.as_ref() {
+            vec![Some(ctor)]
+        } else {
+            vec![None]
+        };
+        let ctor_global_prefix = self.canon(name);
+        for ctor_variant in &ctor_variants {
+            let explicit_arity = ctor_variant.map(|ctor| {
+                let skip = if class.explicit_self_param { 1 } else { 0 };
+                ctor.params.len().saturating_sub(skip)
+            }).unwrap_or_else(|| if parent.is_some() { IMPLICIT_CTOR_FORWARD_ARGS as usize } else { 0 });
+            self.defined_globals.insert(format!("{}$arity{}", ctor_global_prefix, explicit_arity));
+        }
 
-            // ── Step 1: Call parent constructor to get the object ────────
-            self.emit(Op::NULL);
-            self.emit_u16(Op::LOCAL_SET, this_slot);
-            self.emit(Op::DROP);
+        let emit_helper_ref = |cc: &mut Compiler, helper_idx: usize, helper_upvalues: &[UpvalueDesc], line: u32| {
+            common::functions::emit_ref_func(&mut cc.chunks[cc.current], helper_idx, helper_upvalues.len() as u8, line);
+            for uv in helper_upvalues {
+                cc.chunks[cc.current].emit(if uv.is_local { 1 } else { 0 }, line);
+                cc.chunks[cc.current].emit(uv.index, line);
+            }
+        };
 
-            // Determine if auto base call should kick in: walker flagged
-            // `BaseCall::Auto` on the ctor (C#/Pascal) + parent exists +
-            // body doesn't already contain a super call (VB's walker
-            // injects `MyBase.New()` into the body, so this check short-
-            // circuits there without a profile flag).
-            let has_explicit_base = ctor_body.as_ref().map_or(false, |(_, _, ba)| ba.is_some());
-            let auto_base_needed = !has_explicit_base
-                && ctor_body.is_some()
-                && ctor_auto_base
-                && parent.is_some()
-                && {
-                    let stmts = ctor_body.as_ref().map(|(b, _, _)| b.as_slice()).unwrap_or(&[]);
-                    !body_has_super_call(stmts)
-                };
-
-            if let Some((_, _, base_args)) = &ctor_body {
-                if let Some(bargs) = base_args {
-                    // Explicit base_args provided (C#-style `: base(args)`)
-                    if let Some(parent_name) = parent {
-                        let pname = self.canon(parent_name);
-                        // Walk local/upvalue scope first so parent
-                        // resolved from a closure capture (e.g.
-                        // `(Base) => class extends Base`) works.
-                        // Falls through to global_get for normal
-                        // top-level classes.
-                        self.emit_var_get(&pname);
-                        for a in *bargs { self.compile_expr(a)?; }
-                        self.emit_u8(Op::CALL, bargs.len() as u8);
-                        self.emit_u16(Op::LOCAL_SET, this_slot);
-                        self.emit(Op::DROP);
-                    }
-                } else if auto_base_needed {
-                    // Profile-driven auto base call (VB/C#/Pascal):
-                    // body has no super() → auto-call parent() with 0 args.
-                    if let Some(parent_name) = parent {
-                        let pname = self.canon(parent_name);
-                        self.emit_var_get(&pname);
-                        self.emit_u8(Op::CALL, 0);
-                        self.emit_u16(Op::LOCAL_SET, this_slot);
-                        self.emit(Op::DROP);
-                    }
+        let mut ctor_helpers: Vec<(usize, usize, usize, Vec<UpvalueDesc>)> = Vec::new();
+        for (ctor_index, ctor_variant) in ctor_variants.iter().enumerate() {
+            let helper_name = format!("__{}_ctor_{}", name, ctor_index);
+            let ctor_base_args_from_nc: Option<Vec<Expression>> = ctor_variant.and_then(|c| {
+                if let BaseCall::Explicit(args) = &c.base_call {
+                    Some(args.iter().map(|a| a.value.clone()).collect())
+                } else {
+                    None
                 }
-                // else: JS pattern — body calls super() itself, sets this_slot
+            });
+            let ctor_auto_base = ctor_variant
+                .map(|c| matches!(c.base_call, BaseCall::Auto))
+                .unwrap_or(false);
+            let ctor_this_args: Option<Vec<Expression>> = ctor_variant.and_then(|c| {
+                if let BaseCall::This(args) = &c.base_call {
+                    Some(args.iter().map(|a| a.value.clone()).collect())
+                } else {
+                    None
+                }
+            });
+            let ctor_body: Option<(&Vec<Statement>, &Vec<Param>, Option<&Vec<Expression>>)> = ctor_variant
+                .map(|c| (&c.body, &c.params, ctor_base_args_from_nc.as_ref()));
+            let user_params: Vec<String> = ctor_body.map(|(_, params, _)| {
+                if class.explicit_self_param {
+                    params.iter().skip(1).map(|p| p.name.clone()).collect()
+                } else {
+                    params.iter().map(|p| p.name.clone()).collect()
+                }
+            }).unwrap_or_default();
+            let ctor_min_arity = ctor_body.map(|(_, params, _)| {
+                let skip = if class.explicit_self_param { 1 } else { 0 };
+                params.iter().skip(skip).take_while(|p| p.default.is_none() && !p.is_rest).count()
+            }).unwrap_or(0);
+            let synthesized_forward_args = ctor_body.is_none() && parent.is_some();
+            let user_arity = if synthesized_forward_args {
+                IMPLICIT_CTOR_FORWARD_ARGS
             } else {
-                // No explicit constructor — auto-call parent with all
-                // received args (per ECMA-262 §15.7.10 implicit ctor:
-                // `constructor(...args) { super(...args); }`). The
-                // synthesized arity is IMPLICIT_CTOR_FORWARD_ARGS; the
-                // parent ctor truncates to its own arity.
-                if let Some(parent_name) = parent {
-                    let pname = self.canon(parent_name);
-                    self.emit_var_get(&pname);
-                    for i in 0..user_arity {
-                        self.emit_u16(Op::LOCAL_GET, i as u16);
-                    }
-                    self.emit_u8(Op::CALL_REF, user_arity);
-                    self.emit_u16(Op::LOCAL_SET, this_slot);
-                    self.emit(Op::DROP);
+                user_params.len() as u8
+            };
+
+            let helper_idx = self.chunks.len();
+            self.chunks.push(common::functions::create_function_chunk(&helper_name, user_arity));
+            self.scopes.push(Scope::new_function());
+            let saved_cur = self.current;
+            let saved_class2 = self.current_class.take();
+            let saved_implicit2 = self.current_class_implicit_self;
+            self.current = helper_idx;
+            self.current_class = Some(name.to_string());
+            self.current_class_implicit_self = class.implicit_self_fields;
+
+            let ctor_param_defaults: Vec<Option<Expression>> = ctor_body.map(|(_, params, _)| {
+                let skip = if class.explicit_self_param { 1 } else { 0 };
+                params.iter().skip(skip).map(|p| p.default.clone()).collect()
+            }).unwrap_or_default();
+            for (i, p) in user_params.iter().enumerate() {
+                self.define_local(p);
+                if let Some(Some(default)) = ctor_param_defaults.get(i) {
+                    let slot = self.scope().resolve(p).unwrap();
+                    self.emit_u16(Op::LOCAL_GET, slot);
+                    self.emit(Op::REF_IS_NULL);
+                    let has_val = self.emit_jump(Op::BR_IF_FALSE);
+                    self.compile_expr(default)?;
+                    self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+                    self.patch_jump(has_val);
                 }
             }
-
-            if has_explicit_base || auto_base_needed || ctor_body.is_none() {
-                // C#-style: base call already done above, or no-ctor auto-call done above.
-                // Order: re-stamp __type → fields → save base → bind methods → body
-                //
-                // The parent ctor stamped __type with the parent name. Re-stamp with
-                // the child name so `obj is ChildType` returns true.
-                self.emit_u16(Op::LOCAL_GET, this_slot);
-                self.emit_const(Value::String(Arc::from(name)));
-                let type_key = self.str_const("__type");
-                self.emit_u16(Op::STRUCT_SET, type_key);
+            if synthesized_forward_args {
+                for i in 0..IMPLICIT_CTOR_FORWARD_ARGS {
+                    self.define_local(&format!("__implicit_arg_{}", i));
+                }
+            }
+            self.define_local(&self_kw);
+            let this_slot = user_arity as u16;
+            if self.is_js_profile() {
+                let js_this = self.str_const("__js_this");
+                self.emit_u16(Op::GLOBAL_GET, js_this);
+                self.emit_u16(Op::LOCAL_SET, this_slot);
                 self.emit(Op::DROP);
+            }
 
-                // JS prototype link: `this.__proto__ = ClassName.prototype`.
-                // Lets `Object.getPrototypeOf(d) === Dog.prototype` and
-                // prototype-chain walks (`hasIn`, `to_primitive`'s
-                // proto traversal) reach methods declared on the class.
-                // Skip if the global isn't bound yet (some component
-                // types stamp __type without going through class decl).
-                if self.is_js_profile() {
-                    let class_global = self.str_const(name);
-                    let prototype_key = self.str_const("prototype");
-                    let proto_link_key = self.str_const("__proto__");
-                    let proto_local = self.define_local(&format!("__{}_link_proto", name));
-                    self.emit_u16(Op::GLOBAL_GET, class_global);
-                    self.emit_u16(Op::STRUCT_GET, prototype_key);
-                    self.emit_u16(Op::LOCAL_SET, proto_local);
-                    self.emit(Op::DROP);
-                    self.emit_u16(Op::LOCAL_GET, proto_local);
-                    self.emit(Op::REF_IS_NULL);
-                    let skip = self.emit_jump(Op::BR_IF_TRUE);
-                    self.emit_u16(Op::LOCAL_GET, this_slot);
-                    self.emit_u16(Op::LOCAL_GET, proto_local);
-                    self.emit_u16(Op::STRUCT_SET, proto_link_key);
-                    self.emit(Op::DROP);
-                    self.patch_jump(skip);
+            let line = self.line;
+            if let Some(this_args) = ctor_this_args {
+                let ctor_global = format!("{}$arity{}", ctor_global_prefix, this_args.len());
+                self.emit_var_get(&ctor_global);
+                for expr in &this_args {
+                    self.compile_expr(expr)?;
                 }
-
-                for (fname, type_hint, init) in &field_inits {
-                    if let Some(init_expr) = init {
-                        common::classes::emit_init_field_start(self.chunk(), this_slot, line);
-                        self.compile_expr(init_expr)?;
-                        common::classes::emit_init_field_end(self.chunk(), fname, line);
-                    } else if class.is_value_type {
-                        common::classes::emit_init_field_start(self.chunk(), this_slot, line);
-                        self.emit_default_value_for_type_hint(type_hint.as_deref());
-                        common::classes::emit_init_field_end(self.chunk(), fname, line);
-                    } else {
-                        common::classes::emit_init_field_null(self.chunk(), this_slot, fname, line);
+                self.emit_u8(Op::CALL_REF, this_args.len() as u8);
+                self.emit_u16(Op::LOCAL_SET, this_slot);
+                self.emit(Op::DROP);
+                if let Some((body, _, _)) = ctor_body {
+                    for stmt in body {
+                        self.compile_stmt(stmt)?;
                     }
                 }
-
-                if let Some(parent_name) = parent {
-                    let pname = self.canon(parent_name);
-                    for method_name in &instance_method_names {
-                        common::classes::emit_save_base_method(self.chunk(), this_slot, method_name, line);
-                    }
-                    common::classes::emit_store_super(self.chunk(), this_slot, &pname, line);
-                }
-
                 for (mname, mci, _, _) in &instance_methods {
                     if mname.starts_with("__get_") {
                         let prop = mname.strip_prefix("__get_").unwrap_or(mname);
@@ -994,298 +947,352 @@ impl Compiler {
                         common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
                     }
                 }
+                common::classes::emit_constructor_return(self.chunk(), this_slot, line);
+            } else {
+                let is_child = parent.is_some();
+                let parent_ctor_is_bound = parent.as_ref().is_some_and(|parent_name| {
+                    let pname = self.canon(parent_name);
+                    self.defined_globals.contains(&pname) || self.defined_classes.contains(&pname)
+                });
+                if is_child {
+                    self.emit(Op::NULL);
+                    self.emit_u16(Op::LOCAL_SET, this_slot);
+                    self.emit(Op::DROP);
 
-                // Auto-init methods declared on the class (e.g. InitializeComponent
-                // for .NET forms). Walker-populated via normalize_class.
-                // Emitted after method binding but before user body.
-                {
+                    let has_explicit_base = ctor_body.as_ref().map_or(false, |(_, _, ba)| ba.is_some());
+                    let auto_base_needed = !has_explicit_base
+                        && ctor_body.is_some()
+                        && ctor_auto_base
+                        && parent.is_some()
+                        && {
+                            let stmts = ctor_body.as_ref().map(|(b, _, _)| b.as_slice()).unwrap_or(&[]);
+                            !body_has_super_call(stmts)
+                        };
+
+                    if let Some((_, _, base_args)) = &ctor_body {
+                        if let Some(bargs) = base_args {
+                            if let Some(parent_name) = parent {
+                                if parent_ctor_is_bound {
+                                    let pname = self.canon(parent_name);
+                                    self.emit_var_get(&pname);
+                                    for a in *bargs { self.compile_expr(a)?; }
+                                    self.emit_u8(Op::CALL, bargs.len() as u8);
+                                    self.emit_u16(Op::LOCAL_SET, this_slot);
+                                    self.emit(Op::DROP);
+                                } else {
+                                    let canon_name = self.canon(name);
+                                    common::classes::emit_new_typed_object(self.chunk(), this_slot, &canon_name, line);
+                                }
+                            }
+                        } else if auto_base_needed {
+                            if let Some(parent_name) = parent {
+                                if parent_ctor_is_bound {
+                                    let pname = self.canon(parent_name);
+                                    self.emit_var_get(&pname);
+                                    self.emit_u8(Op::CALL, 0);
+                                    self.emit_u16(Op::LOCAL_SET, this_slot);
+                                    self.emit(Op::DROP);
+                                } else {
+                                    let canon_name = self.canon(name);
+                                    common::classes::emit_new_typed_object(self.chunk(), this_slot, &canon_name, line);
+                                }
+                            }
+                        }
+                    } else if let Some(parent_name) = parent {
+                        if parent_ctor_is_bound {
+                            let pname = self.canon(parent_name);
+                            self.emit_var_get(&pname);
+                            for i in 0..user_arity {
+                                self.emit_u16(Op::LOCAL_GET, i as u16);
+                            }
+                            self.emit_u8(Op::CALL_REF, user_arity);
+                            self.emit_u16(Op::LOCAL_SET, this_slot);
+                            self.emit(Op::DROP);
+                        } else {
+                            let canon_name = self.canon(name);
+                            common::classes::emit_new_typed_object(self.chunk(), this_slot, &canon_name, line);
+                        }
+                    }
+
+                    if has_explicit_base || auto_base_needed || ctor_body.is_none() {
+                        self.emit_u16(Op::LOCAL_GET, this_slot);
+                        self.emit_const(Value::String(Arc::from(name)));
+                        let type_key = self.str_const("__type");
+                        self.emit_u16(Op::STRUCT_SET, type_key);
+                        self.emit(Op::DROP);
+
+                        if self.is_js_profile() {
+                            let class_global = self.str_const(name);
+                            let prototype_key = self.str_const("prototype");
+                            let proto_link_key = self.str_const("__proto__");
+                            let proto_local = self.define_local(&format!("__{}_link_proto", helper_name));
+                            self.emit_u16(Op::GLOBAL_GET, class_global);
+                            self.emit_u16(Op::STRUCT_GET, prototype_key);
+                            self.emit_u16(Op::LOCAL_SET, proto_local);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, proto_local);
+                            self.emit(Op::REF_IS_NULL);
+                            let skip = self.emit_jump(Op::BR_IF_TRUE);
+                            self.emit_u16(Op::LOCAL_GET, this_slot);
+                            self.emit_u16(Op::LOCAL_GET, proto_local);
+                            self.emit_u16(Op::STRUCT_SET, proto_link_key);
+                            self.emit(Op::DROP);
+                            self.patch_jump(skip);
+                        }
+
+                        for (fname, type_hint, init) in &field_inits {
+                            if let Some(init_expr) = init {
+                                common::classes::emit_init_field_start(self.chunk(), this_slot, line);
+                                self.compile_expr(init_expr)?;
+                                common::classes::emit_init_field_end(self.chunk(), fname, line);
+                            } else if class.is_value_type {
+                                common::classes::emit_init_field_start(self.chunk(), this_slot, line);
+                                self.emit_default_value_for_type_hint(type_hint.as_deref());
+                                common::classes::emit_init_field_end(self.chunk(), fname, line);
+                            } else {
+                                common::classes::emit_init_field_null(self.chunk(), this_slot, fname, line);
+                            }
+                        }
+
+                        if let Some(parent_name) = parent {
+                            let pname = self.canon(parent_name);
+                            for method_name in &instance_method_names {
+                                common::classes::emit_save_base_method(self.chunk(), this_slot, method_name, line);
+                            }
+                            common::classes::emit_store_super(self.chunk(), this_slot, &pname, line);
+                        }
+
+                        for (mname, mci, _, _) in &instance_methods {
+                            if mname.starts_with("__get_") {
+                                let prop = mname.strip_prefix("__get_").unwrap_or(mname);
+                                common::classes::emit_bind_getter(self.chunk(), this_slot, prop, *mci, line);
+                            } else if mname.starts_with("__set_") {
+                                let prop = mname.strip_prefix("__set_").unwrap_or(mname);
+                                common::classes::emit_bind_setter(self.chunk(), this_slot, prop, *mci, line);
+                            } else {
+                                common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                            }
+                        }
+
+                        let ctor_stmts: &[Statement] = ctor_body
+                            .as_ref().map(|(b, _, _)| b.as_slice()).unwrap_or(&[]);
+                        for aim in &class.auto_init_methods {
+                            let has_method = instance_methods.iter().any(|(n, _, _, _)| n.eq_ignore_ascii_case(aim));
+                            if has_method && !body_calls_method(ctor_stmts, aim) {
+                                common::classes::emit_auto_init_call(self.chunk(), this_slot, aim, line);
+                            }
+                        }
+
+                        if let Some((body, _, _)) = ctor_body {
+                            for stmt in body {
+                                self.compile_stmt(stmt)?;
+                            }
+                        }
+                    } else {
+                        let body_stmts: &[Statement] = ctor_body
+                            .as_ref()
+                            .map(|(b, _, _)| b.as_slice())
+                            .unwrap_or(&[]);
+                        let is_super_call = |stmt: &Statement| {
+                            if let StmtKind::Expr(expr) = &stmt.kind {
+                                matches!(&expr.kind, ExprKind::SuperCall { .. })
+                                    || matches!(&expr.kind, ExprKind::Call { callee, .. } if matches!(callee.kind, ExprKind::Super))
+                            } else {
+                                false
+                            }
+                        };
+                        let super_idx = body_stmts.iter().position(is_super_call);
+                        let preamble_end = match super_idx {
+                            Some(index) => {
+                                let mut end = index + 1;
+                                while end < body_stmts.len() && is_identity_stamp(&body_stmts[end]) {
+                                    end += 1;
+                                }
+                                end
+                            }
+                            None => 0,
+                        };
+                        for stmt in &body_stmts[..preamble_end] {
+                            self.compile_stmt(stmt)?;
+                        }
+                        self.emit_u16(Op::LOCAL_GET, this_slot);
+                        self.emit_const(Value::String(Arc::from(name)));
+                        let type_key2 = self.str_const("__type");
+                        self.emit_u16(Op::STRUCT_SET, type_key2);
+                        self.emit(Op::DROP);
+                        let tid_key = self.str_const(&format!("__tid_{}", self.canon(name)));
+                        self.emit_u16(Op::LOCAL_GET, this_slot);
+                        self.emit_u16(Op::GLOBAL_GET, tid_key);
+                        self.emit(Op::SET_TYPE_ID);
+                        self.emit(Op::DROP);
+                        if let Some(parent_name) = parent {
+                            let pname = self.canon(parent_name);
+                            for method_name in &instance_method_names {
+                                common::classes::emit_save_base_method(self.chunk(), this_slot, method_name, line);
+                            }
+                            common::classes::emit_store_super(self.chunk(), this_slot, &pname, line);
+                        }
+                        for (fname, type_hint, init) in &field_inits {
+                            if let Some(init_expr) = init {
+                                common::classes::emit_init_field_start(self.chunk(), this_slot, line);
+                                self.compile_expr(init_expr)?;
+                                common::classes::emit_init_field_end(self.chunk(), fname, line);
+                            } else if class.is_value_type {
+                                common::classes::emit_init_field_start(self.chunk(), this_slot, line);
+                                self.emit_default_value_for_type_hint(type_hint.as_deref());
+                                common::classes::emit_init_field_end(self.chunk(), fname, line);
+                            }
+                        }
+                        for (mname, mci, _, _) in &instance_methods {
+                            if mname.starts_with("__get_") {
+                                let prop = mname.strip_prefix("__get_").unwrap_or(mname);
+                                common::classes::emit_bind_getter(self.chunk(), this_slot, prop, *mci, line);
+                            } else if mname.starts_with("__set_") {
+                                let prop = mname.strip_prefix("__set_").unwrap_or(mname);
+                                common::classes::emit_bind_setter(self.chunk(), this_slot, prop, *mci, line);
+                            } else {
+                                common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                            }
+                        }
+                        let user_body = &body_stmts[preamble_end..];
+                        for aim in &class.auto_init_methods {
+                            let has_method = instance_methods.iter().any(|(n, _, _, _)| n.eq_ignore_ascii_case(aim));
+                            if has_method && !body_calls_method(user_body, aim) {
+                                common::classes::emit_auto_init_call(self.chunk(), this_slot, aim, line);
+                            }
+                        }
+                        for stmt in user_body {
+                            self.compile_stmt(stmt)?;
+                        }
+                    }
+                } else {
+                    let canon_name = self.canon(name);
+                    common::classes::emit_new_typed_object(self.chunk(), this_slot, &canon_name, line);
+                    for (fname, type_hint, init) in &field_inits {
+                        if let Some(init_expr) = init {
+                            common::classes::emit_init_field_start(self.chunk(), this_slot, line);
+                            self.compile_expr(init_expr)?;
+                            common::classes::emit_init_field_end(self.chunk(), fname, line);
+                        } else if class.is_value_type {
+                            common::classes::emit_init_field_start(self.chunk(), this_slot, line);
+                            self.emit_default_value_for_type_hint(type_hint.as_deref());
+                            common::classes::emit_init_field_end(self.chunk(), fname, line);
+                        } else {
+                            common::classes::emit_init_field_null(self.chunk(), this_slot, fname, line);
+                        }
+                    }
+                    for (mname, mci, _, _) in &instance_methods {
+                        if mname.starts_with("__get_") {
+                            let prop = mname.strip_prefix("__get_").unwrap_or(mname);
+                            common::classes::emit_bind_getter(self.chunk(), this_slot, prop, *mci, line);
+                        } else if mname.starts_with("__set_") {
+                            let prop = mname.strip_prefix("__set_").unwrap_or(mname);
+                            common::classes::emit_bind_setter(self.chunk(), this_slot, prop, *mci, line);
+                        } else {
+                            common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                        }
+                    }
+                    if self.is_js_profile() {
+                        let class_global = self.str_const(name);
+                        let prototype_key = self.str_const("prototype");
+                        let proto_link_key = self.str_const("__proto__");
+                        let proto_local = self.define_local(&format!("__{}_link_proto_base", helper_name));
+                        self.emit_u16(Op::GLOBAL_GET, class_global);
+                        self.emit_u16(Op::STRUCT_GET, prototype_key);
+                        self.emit_u16(Op::LOCAL_SET, proto_local);
+                        self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, proto_local);
+                        self.emit(Op::REF_IS_NULL);
+                        let skip = self.emit_jump(Op::BR_IF_TRUE);
+                        self.emit_u16(Op::LOCAL_GET, this_slot);
+                        self.emit_u16(Op::LOCAL_GET, proto_local);
+                        self.emit_u16(Op::STRUCT_SET, proto_link_key);
+                        self.emit(Op::DROP);
+                        self.patch_jump(skip);
+                    }
                     let ctor_stmts: &[Statement] = ctor_body
                         .as_ref().map(|(b, _, _)| b.as_slice()).unwrap_or(&[]);
                     for aim in &class.auto_init_methods {
-                        let has_method = instance_methods.iter()
-                            .any(|(n, _, _, _)| n.eq_ignore_ascii_case(aim));
+                        let has_method = instance_methods.iter().any(|(n, _, _, _)| n.eq_ignore_ascii_case(aim));
                         if has_method && !body_calls_method(ctor_stmts, aim) {
                             common::classes::emit_auto_init_call(self.chunk(), this_slot, aim, line);
                         }
                     }
-                }
-
-                if let Some((body, _, _)) = ctor_body {
-                    for s in body { self.compile_stmt(s)?; }
-                }
-            } else {
-                // JS/VB/Pascal-style: constructor body contains the super() call which
-                // sets this_slot.
-                //
-                // Order matters for VB.NET / Pascal correctness: real .NET binds the
-                // class's instance methods on `this` BEFORE the user-visible body
-                // runs, so that user body code can call its own methods (e.g.
-                // `InitializeComponent()` inside `New()`). The catch is that
-                // method binding can only happen AFTER `this` exists, which in
-                // this branch means after the super/inherited call.
-                //
-                // We split the body at the super call:
-                //   body[..=super_idx]   — "preamble": runs to set up `this`
-                //   bind methods + save base + field inits + re-stamp __type
-                //   body[super_idx+1..]  — "main": user code that can now call
-                //                          methods on `this`
-                //
-                // The walker normalization for each language is responsible for
-                // putting a super call in the body for `Inherits` classes:
-                //   - VB: walker injects `MyBase.New()` (and an
-                //     `Me.__control_name = "<lower class name>"` stamp) at the
-                //     top of every ctor body for `Inherits` classes — real
-                //     VB.NET semantics where the runtime implicitly calls the
-                //     parameterless parent ctor.
-                //   - C#: walker sets `base_args = Some(_)` (handled by the
-                //     C#-style branch above, not this one).
-                //   - Pascal: user writes `inherited Create(...)`.
-                //   - JS: user writes `super(...)`.
-                //
-                // We skip null-init for fields with no explicit initializer because
-                // the body may have already assigned them (Pascal pattern:
-                // `inherited Create(X); FY := Y;`) — and a no-op null-init would
-                // clobber that assignment. Fields default to null on dynamic
-                // structs anyway, so this is safe.
-
-                let body_stmts: &[Statement] = ctor_body
-                    .as_ref()
-                    .map(|(b, _, _)| b.as_slice())
-                    .unwrap_or(&[]);
-
-                // Find the index of the first super-call statement in the body.
-                // This is the "this exists" boundary. Different walkers emit
-                // the super call as different node shapes:
-                //   - VB walker: `Expr(SuperCall { method: Some("New"), args })`
-                //   - C# walker (when not using : base): same shape
-                //   - JS walker: `Expr(Call { callee: Super, args })`
-                //   - Pascal walker: `Expr(SuperCall { method: Some("Create"), args })`
-                //     OR an `inherited Create(...)` that lowers to a Super call.
-                // We match all of them to keep this branch language-agnostic.
-                //
-                // The walker normalization for VB also injects
-                // `Me.__control_name = "..."` immediately after; we include it
-                // in the preamble so methods bind onto a fully-stamped `this`.
-                let is_super_call = |s: &Statement| -> bool {
-                    if let StmtKind::Expr(e) = &s.kind {
-                        match &e.kind {
-                            ExprKind::SuperCall { .. } => true,
-                            ExprKind::Call { callee, .. } => matches!(callee.kind, ExprKind::Super),
-                            _ => false,
+                    if let Some((body, _, _)) = ctor_body {
+                        for stmt in body {
+                            self.compile_stmt(stmt)?;
                         }
-                    } else {
-                        false
-                    }
-                };
-                let super_idx = body_stmts.iter().position(is_super_call);
-                let preamble_end = match super_idx {
-                    Some(i) => {
-                        // Extend through any immediately-following identity stamps
-                        // (Me.__control_name = ..., Me.__type = ..., etc.) so the
-                        // method binding sees the canonical control name.
-                        let mut end = i + 1;
-                        while end < body_stmts.len() && is_identity_stamp(&body_stmts[end]) {
-                            end += 1;
-                        }
-                        end
-                    }
-                    None => 0,
-                };
-
-                // Compile preamble (super call + any identity stamps).
-                for s in &body_stmts[..preamble_end] {
-                    self.compile_stmt(s)?;
-                }
-
-                // Re-stamp __type with the child name (the body's super call
-                // stamped it with the parent name).
-                self.emit_u16(Op::LOCAL_GET, this_slot);
-                self.emit_const(Value::String(Arc::from(name)));
-                let type_key2 = self.str_const("__type");
-                self.emit_u16(Op::STRUCT_SET, type_key2);
-                self.emit(Op::DROP);
-
-                // Re-stamp WASM GC type_id with the child's id. Each
-                // ancestor's super-call stamped its own type_id, so by
-                // the time we land here `this.type_id` reflects the
-                // direct parent — overwrite with this class's id so
-                // multi-level chains (`C extends B extends A`) end up
-                // with `c.type_id == C_id`. `is_subtype` then walks the
-                // parent pointers to confirm `C` is a subtype of both
-                // `B` and `A`. Use `self.canon(name)` so the __tid_
-                // global key matches what the VM populated at type-
-                // table load time.
-                let tid_key = self.str_const(&format!("__tid_{}", self.canon(name)));
-                self.emit_u16(Op::LOCAL_GET, this_slot);
-                self.emit_u16(Op::GLOBAL_GET, tid_key);
-                self.emit(Op::SET_TYPE_ID);
-                self.emit(Op::DROP);
-
-                if let Some(parent_name) = parent {
-                    let pname = self.canon(parent_name);
-                    for method_name in &instance_method_names {
-                        common::classes::emit_save_base_method(self.chunk(), this_slot, method_name, line);
-                    }
-                    common::classes::emit_store_super(self.chunk(), this_slot, &pname, line);
-                }
-
-                for (fname, type_hint, init) in &field_inits {
-                    if let Some(init_expr) = init {
-                        common::classes::emit_init_field_start(self.chunk(), this_slot, line);
-                        self.compile_expr(init_expr)?;
-                        common::classes::emit_init_field_end(self.chunk(), fname, line);
-                    } else if class.is_value_type {
-                        common::classes::emit_init_field_start(self.chunk(), this_slot, line);
-                        self.emit_default_value_for_type_hint(type_hint.as_deref());
-                        common::classes::emit_init_field_end(self.chunk(), fname, line);
                     }
                 }
 
-                for (mname, mci, _, _) in &instance_methods {
-                    if mname.starts_with("__get_") {
-                        let prop = mname.strip_prefix("__get_").unwrap_or(mname);
-                        common::classes::emit_bind_getter(self.chunk(), this_slot, prop, *mci, line);
-                    } else if mname.starts_with("__set_") {
-                        let prop = mname.strip_prefix("__set_").unwrap_or(mname);
-                        common::classes::emit_bind_setter(self.chunk(), this_slot, prop, *mci, line);
-                    } else {
-                        common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
-                    }
+                common::classes::emit_instanceof_chain(&mut self.chunks, self.current, this_slot, name, line);
+                for interface_name in self.reflection_interfaces(name) {
+                    common::classes::emit_instanceof_chain(&mut self.chunks, self.current, this_slot, &interface_name, line);
                 }
-
-                // Auto-init methods declared on the class (e.g. InitializeComponent
-                // for .NET forms). Walker-populated via normalize_class.
-                // Emitted after method binding so struct_get finds the method,
-                // but before user body so controls exist for AddHandler etc.
-                let user_body = &body_stmts[preamble_end..];
-                for aim in &class.auto_init_methods {
-                    let has_method = instance_methods.iter()
-                        .any(|(n, _, _, _)| n.eq_ignore_ascii_case(aim));
-                    if has_method && !body_calls_method(user_body, aim) {
-                        common::classes::emit_auto_init_call(self.chunk(), this_slot, aim, line);
-                    }
-                }
-
-                // Compile the main body (everything after the preamble).
-                for s in user_body {
-                    self.compile_stmt(s)?;
-                }
+                common::classes::emit_constructor_return(self.chunk(), this_slot, line);
             }
+
+            let locals = self.scope().next_slot.max(self.chunks[helper_idx].local_count);
+            self.chunks[helper_idx].local_count = locals;
+            let helper_upvalues = self.scope().upvalues.clone();
+            self.scopes.pop();
+            self.current = saved_cur;
+            self.current_class = saved_class2;
+            self.current_class_implicit_self = saved_implicit2;
+            ctor_helpers.push((user_arity as usize, ctor_min_arity, helper_idx, helper_upvalues));
+        }
+
+        let ctor_idx = self.chunks.len();
+        let ctor_arity = ctor_helpers.iter().map(|(arity, _, _, _)| *arity).max().unwrap_or(0) as u8;
+        self.chunks.push(common::functions::create_function_chunk(name, ctor_arity));
+        self.scopes.push(Scope::new_function());
+        let saved_cur = self.current;
+        self.current = ctor_idx;
+        for i in 0..ctor_arity {
+            self.define_local(&format!("__ctor_arg_{}", i));
+        }
+        let line = self.line;
+        let helper_for_count = |count: usize| {
+            ctor_helpers.iter()
+                .filter(|(arity, min_arity, _, _)| count >= *min_arity && count <= *arity)
+                .min_by_key(|(arity, _, _, _)| *arity)
+        };
+        for count in (1..=ctor_arity as usize).rev() {
+            self.emit_u16(Op::LOCAL_GET, (count - 1) as u16);
+            self.emit(Op::REF_IS_NULL);
+            let next = self.emit_jump(Op::BR_IF_TRUE);
+            if let Some((_, _, helper_idx, helper_upvalues)) = helper_for_count(count) {
+                emit_helper_ref(self, *helper_idx, helper_upvalues, line);
+                for arg_index in 0..count {
+                    self.emit_u16(Op::LOCAL_GET, arg_index as u16);
+                }
+                self.emit_u8(Op::CALL_REF, count as u8);
+                self.emit_return_through_finally(1)?;
+            }
+            self.patch_jump(next);
+        }
+        if let Some((_, _, helper_idx, helper_upvalues)) = helper_for_count(0) {
+            emit_helper_ref(self, *helper_idx, helper_upvalues, line);
+            self.emit_u8(Op::CALL_REF, 0);
         } else {
-            // ── Base class ──────────────────────────────────────────────
-            // Pass canon'd name so __type stamping and the __tid_<canon>
-            // global lookup match what `register_type` stored above.
-            let canon_name = self.canon(name);
-            common::classes::emit_new_typed_object(self.chunk(), this_slot, &canon_name, line);
-
-            // Initialize fields
-            for (fname, type_hint, init) in &field_inits {
-                if let Some(init_expr) = init {
-                    common::classes::emit_init_field_start(self.chunk(), this_slot, line);
-                    self.compile_expr(init_expr)?;
-                    common::classes::emit_init_field_end(self.chunk(), fname, line);
-                } else if class.is_value_type {
-                    common::classes::emit_init_field_start(self.chunk(), this_slot, line);
-                    self.emit_default_value_for_type_hint(type_hint.as_deref());
-                    common::classes::emit_init_field_end(self.chunk(), fname, line);
-                } else {
-                    common::classes::emit_init_field_null(self.chunk(), this_slot, fname, line);
-                }
-            }
-
-            // Bind instance methods
-            for (mname, mci, _, _) in &instance_methods {
-                if mname.starts_with("__get_") {
-                    let prop = mname.strip_prefix("__get_").unwrap_or(mname);
-                    common::classes::emit_bind_getter(self.chunk(), this_slot, prop, *mci, line);
-                } else if mname.starts_with("__set_") {
-                    let prop = mname.strip_prefix("__set_").unwrap_or(mname);
-                    common::classes::emit_bind_setter(self.chunk(), this_slot, prop, *mci, line);
-                } else {
-                    common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
-                }
-            }
-
-            // JS prototype link: `this.__proto__ = ClassName.prototype`.
-            // Mirrors the wiring in the child-class branch (line ~740);
-            // base classes need the same link so prototype-chain walks
-            // (`hasIn`, `to_primitive`'s ToPrimitive proto traversal,
-            // `Object.getPrototypeOf`) reach methods declared on the
-            // class. Skip if the global isn't bound yet.
-            if self.is_js_profile() {
-                let class_global = self.str_const(name);
-                let prototype_key = self.str_const("prototype");
-                let proto_link_key = self.str_const("__proto__");
-                let proto_local = self.define_local(&format!("__{}_link_proto_base", name));
-                self.emit_u16(Op::GLOBAL_GET, class_global);
-                self.emit_u16(Op::STRUCT_GET, prototype_key);
-                self.emit_u16(Op::LOCAL_SET, proto_local);
-                self.emit(Op::DROP);
-                self.emit_u16(Op::LOCAL_GET, proto_local);
-                self.emit(Op::REF_IS_NULL);
-                let skip = self.emit_jump(Op::BR_IF_TRUE);
-                self.emit_u16(Op::LOCAL_GET, this_slot);
-                self.emit_u16(Op::LOCAL_GET, proto_local);
-                self.emit_u16(Op::STRUCT_SET, proto_link_key);
-                self.emit(Op::DROP);
-                self.patch_jump(skip);
-            }
-
-            // Auto-init methods declared on the class (e.g. InitializeComponent
-            // for .NET forms). Walker-populated via normalize_class.
-            let ctor_stmts: &[Statement] = ctor_body
-                .as_ref().map(|(b, _, _)| b.as_slice()).unwrap_or(&[]);
-            for aim in &class.auto_init_methods {
-                let has_method = instance_methods.iter()
-                    .any(|(n, _, _, _)| n.eq_ignore_ascii_case(aim));
-                if has_method && !body_calls_method(ctor_stmts, aim) {
-                    common::classes::emit_auto_init_call(self.chunk(), this_slot, aim, line);
-                }
-            }
-
-            // Run user constructor body
-            if let Some((body, _, _)) = ctor_body {
-                for s in body { self.compile_stmt(s)?; }
-            }
+            self.emit(Op::NULL);
         }
-
-        // Finalize: instanceof chain
-        common::classes::emit_instanceof_chain(&mut self.chunks, self.current, this_slot, name, line);
-        for interface_name in self.reflection_interfaces(name) {
-            common::classes::emit_instanceof_chain(
-                &mut self.chunks,
-                self.current,
-                this_slot,
-                &interface_name,
-                line,
-            );
-        }
-        common::classes::emit_constructor_return(self.chunk(), this_slot, line);
-
+        self.emit_return_through_finally(1)?;
         let locals = self.scope().next_slot.max(self.chunks[ctor_idx].local_count);
         self.chunks[ctor_idx].local_count = locals;
-        // Capture the ctor's upvalues before popping the scope —
-        // mixin / closure-captured parents (`(Base) => class extends
-        // Base`) materialize as upvalue references on the ctor body
-        // and must be threaded into the runtime function ref.
         let ctor_upvalues = self.scope().upvalues.clone();
         self.scopes.pop();
         self.current = saved_cur;
-        self.current_class = saved_class2;
-        self.current_class_implicit_self = saved_implicit2;
 
-        // Store constructor globally and register type. Emit upvalue
-        // captures inline with REF_FUNC so closure-bound parents
-        // resolve at runtime (mirrors `compile_function_decl`'s
-        // `emit_ref_func` pattern).
         let ctor_local = self.define_local(&format!("__{}_ctor", name));
-        let uv_pairs: Vec<(bool, u8)> = ctor_upvalues
-            .iter()
-            .map(|uv| (uv.is_local, uv.index))
-            .collect();
-        common::classes::emit_store_constructor_with_upvalues(
-            self.chunk(), name, ctor_idx, ctor_local, &uv_pairs, line,
-        );
+        let uv_pairs: Vec<(bool, u8)> = ctor_upvalues.iter().map(|uv| (uv.is_local, uv.index)).collect();
+        common::classes::emit_store_constructor_with_upvalues(self.chunk(), name, ctor_idx, ctor_local, &uv_pairs, line);
+        for (arity, _, helper_idx, helper_upvalues) in &ctor_helpers {
+            emit_helper_ref(self, *helper_idx, helper_upvalues, line);
+            let helper_global = format!("{}$arity{}", ctor_global_prefix, arity);
+            let helper_idx_const = self.str_const(&helper_global);
+            self.emit_u16(Op::GLOBAL_SET, helper_idx_const);
+        }
 
         if self.is_js_profile() {
             self.emit_common("object.new", 0, line);
@@ -1426,7 +1433,7 @@ impl Compiler {
         // languages (VB/Pascal/COBOL/PHP) lowercase here, case-sensitive
         // (JS/TS/Python/C#) preserve. Registry stores whatever the walker
         // produced; runtime `Op::REF_TEST` looks up by the same canon.
-        let canon_name = self.canon(name);
+        let canon_name = ctor_global_prefix;
         let canon_parent = parent.as_ref().map(|p| self.canon(p)).unwrap_or_default();
         common::classes::register_type(&mut self.chunks, &canon_name, &canon_parent, fields, all_methods, false, Vec::new(), Some(ctor_idx));
 

@@ -1490,6 +1490,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
                     params,
                     body,
                     base_args: None,
+                    initializer_target: crate::ast::ConstructorInitializerTarget::Base,
                     visibility: modifiers.visibility,
                 }));
             }

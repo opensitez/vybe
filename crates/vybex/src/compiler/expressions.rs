@@ -235,6 +235,9 @@ impl Compiler {
                 if self.try_compile_python_set_binary_operator(op, left, right)? {
                     return Ok(());
                 }
+                if self.try_compile_csharp_binary_operator(op, left, right)? {
+                    return Ok(());
+                }
                 if self.try_compile_dotnet_datetime_timespan_binary_operator(op, left, right)? {
                     return Ok(());
                 }
@@ -344,11 +347,8 @@ impl Compiler {
                     // compiler/mod.rs, which bypasses this branch); every
                     // other use site — `r = f()`, `print(f())`, `f() + g()`
                     // — expects a single value, so we re-pack here.
-                    if let ExprKind::Ident(name) = &callee.kind {
-                        let cname = self.canon(name);
-                        if let Some(&n) = self.multi_return_functions.get(&cname) {
-                            self.pack_multi_value_result(n);
-                        }
+                    if let Some(n) = self.multi_return_arity_for_callee(callee) {
+                        self.pack_multi_value_result(n);
                     }
                 }
             }
@@ -660,6 +660,21 @@ impl Compiler {
                     .as_deref()
                     .is_some_and(|type_hint| type_hint.trim().ends_with('?'));
 
+                let receiver_array_rank = if matches!(self.profile.name.as_str(), "csharp" | "vb")
+                    && field == "Rank"
+                {
+                    let inferred = receiver_type_hint.as_deref().and_then(|type_hint| {
+                        let normalized = Self::normalize_type_hint(type_hint);
+                        let start = normalized.find('[')?;
+                        let rest = &normalized[start + 1..];
+                        let end = rest.find(']')?;
+                        Some(rest[..end].chars().filter(|ch| *ch == ',').count() + 1)
+                    });
+                    Some(inferred.unwrap_or(1))
+                } else {
+                    None
+                };
+
                 if matches!(self.profile.name.as_str(), "csharp" | "vb") && receiver_is_nullable {
                     match field.as_str() {
                         "HasValue" => {
@@ -674,6 +689,11 @@ impl Compiler {
                         }
                         _ => {}
                     }
+                }
+
+                if let Some(rank) = receiver_array_rank {
+                    self.emit_const(Value::I32(rank as i32));
+                    return Ok(());
                 }
 
                 let receiver_is_collection_like = if matches!(self.profile.name.as_str(), "csharp" | "vb")
@@ -730,6 +750,16 @@ impl Compiler {
                         ExprKind::Ident(name)
                             if name.chars().next().map_or(false, |c| c.is_ascii_uppercase())
                     );
+                let is_csharp_runtime_count_accessor = matches!(self.profile.name.as_str(), "csharp" | "vb")
+                    && self.profile.namespaces.use_dotnet
+                    && field == "Count"
+                    && !is_csharp_len_accessor
+                    && !*null_safe
+                    && !matches!(
+                        &object.kind,
+                        ExprKind::Ident(name)
+                            if name.chars().next().map_or(false, |c| c.is_ascii_uppercase())
+                    );
 
                 if *null_safe && is_csharp_len_accessor {
                     self.compile_expr(object)?;
@@ -749,6 +779,36 @@ impl Compiler {
 
                 if is_csharp_len_accessor {
                     common::collections::emit_len(&mut self.chunks, self.current, self.line);
+                    return Ok(());
+                }
+
+                if is_csharp_runtime_count_accessor {
+                    let obj_slot = self.define_local("__count_obj");
+                    self.emit_u16(Op::LOCAL_SET, obj_slot);
+                    self.emit(Op::DROP);
+
+                    let field_name = self.canon(field);
+                    let idx = self.str_const(&field_name);
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.emit_u16(Op::STRUCT_GET, idx);
+                    let value_slot = self.define_local("__count_value");
+                    self.emit_u16(Op::LOCAL_SET, value_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, value_slot);
+                    self.emit(Op::REF_TYPEOF);
+                    self.emit_const(Value::String(Arc::from("function")));
+                    self.emit(Op::DYN_EQ);
+                    let return_value = self.emit_jump(Op::BR_IF_FALSE);
+
+                    self.emit_u16(Op::LOCAL_GET, value_slot);
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.emit_u8(Op::CALL_REF, 1);
+                    let done = self.emit_jump(Op::BR);
+
+                    self.patch_jump(return_value);
+                    self.emit_u16(Op::LOCAL_GET, value_slot);
+                    self.patch_jump(done);
                     return Ok(());
                 }
 
@@ -1056,13 +1116,19 @@ impl Compiler {
                     // the user constructor, not vybe:drawing::pointNew.
                     let canon_type = self.canon(type_name);
                     if self.defined_classes.contains(&canon_type) {
+                        let overload_global = format!("{}$arity{}", canon_type, args.len());
+                        let ctor_global = if self.defined_globals.contains(&overload_global) {
+                            overload_global
+                        } else {
+                            canon_type.clone()
+                        };
                         // Bypass compile_expr to avoid the implicit-self-field
                         // shadowing path: in case-insensitive languages a field
                         // named `inner` and a class named `Inner` both
                         // canonicalize to "inner", and the implicit-self-field
                         // check would mis-route to `me.inner` instead of the
                         // class global. Type names always come from globals.
-                        let idx = self.str_const(&canon_type);
+                        let idx = self.str_const(&ctor_global);
                         self.emit_u16(Op::GLOBAL_GET, idx);
                         for a in args { self.compile_expr(&a.value)?; }
                         self.emit_u8(Op::CALL_REF, args.len() as u8);
@@ -1648,7 +1714,13 @@ impl Compiler {
                 // then `"" + primitive` produces the final string.
                 let use_to_primitive = self.is_js_profile();
                 let tostring_global = self.str_const("__vybe_tostring");
-                for (i, part) in parts.iter().enumerate() {
+                self.emit_const(Value::String(Arc::from("")));
+                let acc_slot = self.define_local("__interp_acc");
+                self.emit_u16(Op::LOCAL_SET, acc_slot);
+                self.emit(Op::DROP);
+                let part_slot = self.define_local("__interp_part");
+
+                for part in parts.iter() {
                     match part {
                         InterpolPart::Text(s) => self.emit_const(Value::String(Arc::from(s.as_str()))),
                         InterpolPart::Expr(e) | InterpolPart::Formatted(e, _) => {
@@ -1662,17 +1734,28 @@ impl Compiler {
                                 let line = self.line;
                                 common::strings::emit_str_concat(self.chunk(), line);
                             } else {
-                                self.emit_u16(Op::GLOBAL_GET, tostring_global);
                                 self.compile_expr(e)?;
+                                let value_slot = self.define_local("__interp_value");
+                                self.emit_u16(Op::LOCAL_SET, value_slot);
+                                self.emit(Op::DROP);
+                                self.emit_u16(Op::GLOBAL_GET, tostring_global);
+                                self.emit_u16(Op::LOCAL_GET, value_slot);
                                 self.emit_u8(Op::CALL_REF, 1);
                             }
                         }
                     }
-                    if i > 0 {
-                        let line = self.line;
-                        common::strings::emit_str_concat(self.chunk(), line);
-                    }
+
+                    self.emit_u16(Op::LOCAL_SET, part_slot);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, acc_slot);
+                    self.emit_u16(Op::LOCAL_GET, part_slot);
+                    let line = self.line;
+                    common::strings::emit_str_concat(self.chunk(), line);
+                    self.emit_u16(Op::LOCAL_SET, acc_slot);
+                    self.emit(Op::DROP);
                 }
+
+                self.emit_u16(Op::LOCAL_GET, acc_slot);
             }
 
             // ── Type operations ─────────────────────────────────────────
@@ -2454,6 +2537,66 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, rhs_slot);
         self.compile_binop(op);
         self.patch_jump(end);
+        Ok(true)
+    }
+
+    fn try_compile_csharp_binary_operator(
+        &mut self,
+        op: &BinOp,
+        left: &Expression,
+        right: &Expression,
+    ) -> Result<bool, String> {
+        if self.profile.name != "csharp" {
+            return Ok(false);
+        }
+
+        let left_type = self.infer_expr_type_hint(left);
+        let right_type = self.infer_expr_type_hint(right);
+        let (Some(left_type), Some(right_type)) = (left_type, right_type) else {
+            return Ok(false);
+        };
+        if Self::normalize_type_hint(&left_type) != Self::normalize_type_hint(&right_type) {
+            return Ok(false);
+        }
+
+        let arg_exprs = [left, right];
+        let (method_name, negate_result) = match op {
+            BinOp::Add => ("op_Addition", false),
+            BinOp::Eq => ("op_Equality", false),
+            BinOp::NotEq if self.pending_class_has_method_name_for_type(&left_type, "op_Inequality") => {
+                ("op_Inequality", false)
+            }
+            BinOp::NotEq if self.pending_class_has_method_name_for_type(&left_type, "op_Equality") => {
+                ("op_Equality", true)
+            }
+            _ => return Ok(false),
+        };
+
+        if let Some(chunk_idx) = self.resolve_static_method_overload_chunk_for_type(&left_type, method_name, &arg_exprs) {
+            self.emit_direct_static_method_call(chunk_idx, &arg_exprs)?;
+            if negate_result {
+                self.emit(Op::DYN_NOT);
+            }
+            return Ok(true);
+        }
+
+        let Some(class_name) = self.resolve_pending_class_name_for_type_hint(&left_type) else {
+            return Ok(false);
+        };
+
+        let callee = Expression::new(ExprKind::Member {
+            object: Box::new(Expression::ident(&class_name)),
+            field: method_name.to_string(),
+            null_safe: false,
+        });
+        let args = vec![
+            Argument::positional(left.clone()),
+            Argument::positional(right.clone()),
+        ];
+        self.compile_call(&callee, &args)?;
+        if negate_result {
+            self.emit(Op::DYN_NOT);
+        }
         Ok(true)
     }
 

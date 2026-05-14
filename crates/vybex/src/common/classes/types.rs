@@ -59,6 +59,7 @@ pub struct NormalClass {
     pub instance_methods: Vec<NormalMethod>,
     pub static_methods: Vec<NormalMethod>,
     pub properties: Vec<NormalProperty>,
+    pub constructors: Vec<NormalConstructor>,
     pub constructor: Option<NormalConstructor>,
     pub destructor: Option<NormalMethod>,
 
@@ -162,6 +163,9 @@ pub struct NormalConstructor {
 pub enum BaseCall {
     /// User wrote `super(args)` / `MyBase.New(args)` / `: base(args)`.
     Explicit(Vec<Argument>),
+    /// User wrote `: this(args)` / `this(args)` to chain to a sibling
+    /// constructor on the same class.
+    This(Vec<Argument>),
     /// Profile says auto-call parent ctor with no args (C# default,
     /// VB when no `MyBase.New` in source). Walker promotes to this;
     /// compiler emits `super()` preamble.

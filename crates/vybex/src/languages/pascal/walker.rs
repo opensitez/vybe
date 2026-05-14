@@ -481,6 +481,7 @@ fn synthesize_exception_class() -> Statement {
                     params: vec![msg_param],
                     body: vec![assign_msg],
                     base_args: None,
+                    initializer_target: crate::ast::ConstructorInitializerTarget::Base,
                     visibility: Visibility::Public,
                 },
             ],
@@ -1486,6 +1487,7 @@ fn walk_class_constructor_sig(pair: Pair<Rule>) -> Result<ClassMember, String> {
         params,
         body: Vec::new(), // Body comes from method_impl
         base_args: None,
+        initializer_target: crate::ast::ConstructorInitializerTarget::Base,
         visibility: Visibility::Public,
     })
 }
@@ -1734,6 +1736,7 @@ fn walk_record_method_sig(pair: Pair<Rule>) -> Result<ClassMember, String> {
             params,
             body: Vec::new(),
             base_args: None,
+            initializer_target: crate::ast::ConstructorInitializerTarget::Base,
             visibility: Visibility::Public,
         })
     } else {

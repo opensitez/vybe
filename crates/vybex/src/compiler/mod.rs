@@ -49,6 +49,7 @@ struct LoopCtx {
 // ════════════════════════════════════════════════════════════════════════════
 struct PendingClass {
     parent: Option<String>,
+    enclosing_class: Option<String>,
     fields: Vec<String>,
     is_value_type: bool,
     instance_member_names: Vec<String>,
@@ -67,10 +68,24 @@ struct PendingClass {
     /// in-class resolution (`Double(x)` inside `Converter`) so the
     /// call resolves through the class object.
     static_method_names: Vec<String>,
+    /// Compiled instance-method overloads keyed by canonical source
+    /// name. Used by the call compiler to choose the right overload
+    /// when the receiver type and argument types are known.
+    instance_method_overloads: HashMap<String, Vec<PendingMethodOverload>>,
+    /// Compiled static-method overloads keyed by canonical source
+    /// name. Kept alongside instance overloads for future shared
+    /// overload resolution paths.
+    static_method_overloads: HashMap<String, Vec<PendingMethodOverload>>,
     /// Nested type names attached to this class constructor object.
     nested_types: Vec<String>,
     /// Static methods: (name, chunk_idx) — tracked for inheritance
     statics: Vec<(String, usize)>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingMethodOverload {
+    param_types: Vec<String>,
+    chunk_idx: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -191,6 +206,7 @@ pub struct Compiler {
     /// walker stays the single source of truth for per-language class
     /// semantics.
     pub(crate) current_class_implicit_self: bool,
+    pub(crate) current_member_is_static: bool,
     /// Label for the next loop to be pushed (set by StmtKind::Labeled).
     pending_label: Option<String>,
     with_targets: Vec<u16>,
@@ -420,6 +436,7 @@ impl Compiler {
             pending_classes: HashMap::new(),
             current_class: None,
             current_class_implicit_self: false,
+            current_member_is_static: false,
             pending_label: None,
             with_targets: Vec::new(),
 
@@ -524,6 +541,8 @@ impl Compiler {
             self.collect_multi_return_functions(&merged_body);
         }
 
+        self.predeclare_type_names(&merged_body, None);
+
         for stmt in &merged_body {
             if matches!(&stmt.kind, StmtKind::FunctionDecl { .. }) {
                 self.compile_stmt(stmt)?;
@@ -591,6 +610,31 @@ impl Compiler {
             .collect();
         wildcard.sort_by(|a, b| a.alias.cmp(&b.alias));
         HostImportMetadata { named, wildcard }
+    }
+
+    fn predeclare_type_names(&mut self, body: &[Statement], namespace: Option<&str>) {
+        for stmt in body {
+            match &stmt.kind {
+                StmtKind::NamespaceDecl { name, body } => {
+                    let member = self.canon(name);
+                    let qualified = namespace
+                        .map(|prefix| format!("{prefix}.{member}"))
+                        .unwrap_or(member);
+                    self.predeclare_type_names(body, Some(&qualified));
+                }
+                StmtKind::ClassDecl { name, .. } | StmtKind::StructDecl { name, .. } => {
+                    let member = self.canon(name);
+                    self.defined_globals.insert(member.clone());
+                    self.defined_classes.insert(member.clone());
+                    if let Some(prefix) = namespace {
+                        let qualified = format!("{prefix}.{member}");
+                        self.defined_globals.insert(qualified.clone());
+                        self.defined_classes.insert(qualified);
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     /// The Linker phase — ECMA-262 §16.2.1.5 Link adapted for Vybe.
@@ -1384,6 +1428,23 @@ impl Compiler {
         self.multi_return_functions.get(name).copied()
     }
 
+    pub(super) fn multi_return_arity_for_callee(&self, callee: &Expression) -> Option<u8> {
+        match &callee.kind {
+            ExprKind::Ident(name) => self.multi_return_functions.get(&self.canon(name)).copied(),
+            ExprKind::Member { object, field, .. } => {
+                if let ExprKind::Ident(object_name) = &object.kind {
+                    let qualified = self.canon(&format!("{}.{}", object_name, field));
+                    if let Some(&arity) = self.multi_return_functions.get(&qualified) {
+                        return Some(arity);
+                    }
+                }
+
+                self.multi_return_functions.get(&self.canon(field)).copied()
+            }
+            _ => None,
+        }
+    }
+
     /// Emit the CALL for a multi-value receive context *without* the
     /// trailing repack that `compile_expr` would normally add. The
     /// destructure path consumes the N raw stack values directly.
@@ -1438,18 +1499,15 @@ impl Compiler {
             }
             _ => return None,
         };
-        let (callee_name, _args) = match &value.kind {
+        let multi_n = match &value.kind {
             ExprKind::Call { callee, args, .. } => {
-                match &callee.kind {
-                    ExprKind::Ident(n) => (self.canon(n), args),
-                    _ => return None,
-                }
+                let _ = args;
+                self.multi_return_arity_for_callee(callee)?
             }
             _ => return None,
         };
-        let n = *self.multi_return_functions.get(&callee_name)?;
-        if n as usize != idents.len() { return None; }
-        Some((n, idents))
+        if multi_n as usize != idents.len() { return None; }
+        Some((multi_n, idents))
     }
 
     /// Walk top-level function declarations and record every function
@@ -1744,6 +1802,7 @@ impl Compiler {
     pub(crate) fn note_pending_class(&mut self, name: &str, parent: Option<String>) {
         self.pending_classes.insert(name.to_string(), PendingClass {
             parent,
+            enclosing_class: self.current_class.clone(),
             fields: Vec::new(),
             is_value_type: false,
             instance_member_names: Vec::new(),
@@ -1751,6 +1810,8 @@ impl Compiler {
             static_fields: Vec::new(),
             static_field_types: HashMap::new(),
             static_method_names: Vec::new(),
+            instance_method_overloads: HashMap::new(),
+            static_method_overloads: HashMap::new(),
             nested_types: Vec::new(),
             statics: Vec::new(),
         });
@@ -1887,11 +1948,11 @@ impl Compiler {
 
     pub(super) fn is_callable_type_hint(type_hint: &str) -> bool {
         let normalized = Self::normalize_type_hint(type_hint);
-        normalized.starts_with("func")
-            || normalized.starts_with("action")
-            || normalized.contains(".func")
-            || normalized.contains(".action")
-            || normalized.contains(" delegate")
+        let lower = normalized.to_ascii_lowercase();
+        let leaf = lower.rsplit('.').next().unwrap_or(lower.as_str());
+        let bare = leaf.split('<').next().unwrap_or(leaf).trim();
+        matches!(bare, "func" | "action" | "eventhandler" | "predicate" | "comparison" | "converter")
+            || lower.contains(" delegate")
     }
 
     pub(super) fn is_pascal_set_type_hint(type_hint: &str) -> bool {
@@ -1973,6 +2034,11 @@ impl Compiler {
     fn infer_expr_type_hint(&self, expr: &Expression) -> Option<String> {
         match &expr.kind {
             ExprKind::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
+            ExprKind::Lit(Literal::Int(_)) => Some("int".into()),
+            ExprKind::Lit(Literal::Float(_)) => Some("double".into()),
+            ExprKind::Lit(Literal::Str(_)) => Some("string".into()),
+            ExprKind::Lit(Literal::Bool(_)) => Some("bool".into()),
+            ExprKind::Lit(Literal::Char(_)) => Some("char".into()),
             ExprKind::New { class, .. } => Self::expr_terminal_type_name(class),
             ExprKind::Call { callee, .. } => self.infer_dotnet_factory_return_type(callee),
             ExprKind::Member { object, .. } => {
@@ -2274,18 +2340,22 @@ impl Compiler {
     /// `ClassName.name` so static state lives on the class struct.
     fn is_class_static_field(&self, name: &str) -> Option<String> {
         if let Some(ref class_name) = self.current_class {
-            let mut current = Some(class_name.as_str());
-            while let Some(cn) = current {
-                if let Some(pc) = self.pending_classes.get(cn) {
-                    if pc.static_fields.iter().any(|f| {
-                        if self.case_sensitive { f == name } else { f.eq_ignore_ascii_case(name) }
-                    }) {
-                        return Some(cn.to_string());
+            let mut owner = Some(class_name.clone());
+            while let Some(start) = owner {
+                let mut current = Some(start.as_str());
+                while let Some(cn) = current {
+                    if let Some(pc) = self.pending_classes.get(cn) {
+                        if pc.static_fields.iter().any(|f| {
+                            if self.case_sensitive { f == name } else { f.eq_ignore_ascii_case(name) }
+                        }) {
+                            return Some(cn.to_string());
+                        }
+                        current = pc.parent.as_deref();
+                    } else {
+                        break;
                     }
-                    current = pc.parent.as_deref();
-                } else {
-                    break;
                 }
+                owner = self.next_enclosing_class_name(&start);
             }
         }
         None
@@ -2293,17 +2363,21 @@ impl Compiler {
 
     fn is_class_static_field_type_hint(&self, name: &str) -> Option<String> {
         if let Some(ref class_name) = self.current_class {
-            let mut current = Some(class_name.as_str());
-            while let Some(cn) = current {
-                if let Some(pc) = self.pending_classes.get(cn) {
-                    let canon = self.canon(name);
-                    if let Some(type_hint) = pc.static_field_types.get(&canon) {
-                        return Some(type_hint.clone());
+            let mut owner = Some(class_name.clone());
+            while let Some(start) = owner {
+                let mut current = Some(start.as_str());
+                while let Some(cn) = current {
+                    if let Some(pc) = self.pending_classes.get(cn) {
+                        let canon = self.canon(name);
+                        if let Some(type_hint) = pc.static_field_types.get(&canon) {
+                            return Some(type_hint.clone());
+                        }
+                        current = pc.parent.as_deref();
+                    } else {
+                        break;
                     }
-                    current = pc.parent.as_deref();
-                } else {
-                    break;
                 }
+                owner = self.next_enclosing_class_name(&start);
             }
         }
         None
@@ -2311,18 +2385,22 @@ impl Compiler {
 
     fn is_class_nested_type(&self, name: &str) -> Option<String> {
         if let Some(ref class_name) = self.current_class {
-            let mut current = Some(class_name.as_str());
-            while let Some(cn) = current {
-                if let Some(pc) = self.pending_classes.get(cn) {
-                    if pc.nested_types.iter().any(|n| {
-                        if self.case_sensitive { n == name } else { n.eq_ignore_ascii_case(name) }
-                    }) {
-                        return Some(cn.to_string());
+            let mut owner = Some(class_name.clone());
+            while let Some(start) = owner {
+                let mut current = Some(start.as_str());
+                while let Some(cn) = current {
+                    if let Some(pc) = self.pending_classes.get(cn) {
+                        if pc.nested_types.iter().any(|n| {
+                            if self.case_sensitive { n == name } else { n.eq_ignore_ascii_case(name) }
+                        }) {
+                            return Some(cn.to_string());
+                        }
+                        current = pc.parent.as_deref();
+                    } else {
+                        break;
                     }
-                    current = pc.parent.as_deref();
-                } else {
-                    break;
                 }
+                owner = self.next_enclosing_class_name(&start);
             }
         }
         None
@@ -2358,21 +2436,32 @@ impl Compiler {
     /// currently compiling class (or one of its ancestors).
     fn is_class_static_method(&self, name: &str) -> Option<String> {
         if let Some(ref class_name) = self.current_class {
-            let mut current = Some(class_name.as_str());
-            while let Some(cn) = current {
-                if let Some(pc) = self.pending_classes.get(cn) {
-                    if pc.static_method_names.iter().any(|m| {
-                        if self.case_sensitive { m == name } else { m.eq_ignore_ascii_case(name) }
-                    }) {
-                        return Some(cn.to_string());
+            let mut owner = Some(class_name.clone());
+            while let Some(start) = owner {
+                let mut current = Some(start.as_str());
+                while let Some(cn) = current {
+                    if let Some(pc) = self.pending_classes.get(cn) {
+                        if pc.static_method_names.iter().any(|m| {
+                            if self.case_sensitive { m == name } else { m.eq_ignore_ascii_case(name) }
+                        }) {
+                            return Some(cn.to_string());
+                        }
+                        current = pc.parent.as_deref();
+                    } else {
+                        break;
                     }
-                    current = pc.parent.as_deref();
-                } else {
-                    break;
                 }
+                owner = self.next_enclosing_class_name(&start);
             }
         }
         None
+    }
+
+    fn next_enclosing_class_name(&self, class_name: &str) -> Option<String> {
+        self.pending_classes
+            .get(class_name)
+            .and_then(|pc| pc.enclosing_class.clone())
+            .or_else(|| class_name.rsplit_once('.').map(|(outer, _)| outer.to_string()))
     }
 
     /// Check if a name is a field of the current class (for implicit self resolution).
@@ -2591,9 +2680,10 @@ impl Compiler {
                     StmtKind::VarDecl { .. } | StmtKind::FunctionDecl { .. } |
                     StmtKind::ClassDecl { .. } | StmtKind::EnumDecl { .. }
                 ));
-                if !all_decls { self.scope_mut().begin_scope(); }
+                let hoisted_deconstruction = is_hoisted_deconstruction_block(stmts);
+                if !all_decls && !hoisted_deconstruction { self.scope_mut().begin_scope(); }
                 for s in stmts { self.compile_stmt(s)?; }
-                if !all_decls { self.scope_mut().end_scope(); }
+                if !all_decls && !hoisted_deconstruction { self.scope_mut().end_scope(); }
             }
 
             // ── Variable declarations ───────────────────────────────────
@@ -3831,6 +3921,9 @@ impl Compiler {
                         let new_slot = self.define_local("__redim_new");
                         let new_len_slot = self.define_local("__redim_nlen");
                         let idx_slot = self.define_local("__redim_idx");
+                        let old_len_slot = self.define_local("__redim_olen");
+                        let fill_idx_slot = self.define_local("__redim_fill_idx");
+                        let default_slot = self.define_local("__redim_default");
 
                         // old = arr
                         self.emit_var_get(array);
@@ -3840,6 +3933,9 @@ impl Compiler {
                         self.emit_const(Value::F64(1.0));
                         self.emit(Op::DYN_ADD);
                         self.emit_u16(Op::LOCAL_SET, new_len_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, old_slot);
+                        common::collections::emit_len(&mut self.chunks, self.current, line);
+                        self.emit_u16(Op::LOCAL_SET, old_len_slot); self.emit(Op::DROP);
                         // new = newWithLength(new_len) via common::collections
                         self.emit_u16(Op::LOCAL_GET, new_len_slot);
                         common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
@@ -3875,6 +3971,72 @@ impl Compiler {
 
                         common::loops::emit_for_in_end(
                             &mut self.chunks, self.current, idx_slot, lp, line);
+
+                        // Fill any grown tail with the array's default value.
+                        // Until arrays carry static element metadata, infer the
+                        // default from the first existing element's runtime
+                        // category: numbers -> 0, bools -> false, refs -> null.
+                        self.emit(Op::NULL);
+                        self.emit_u16(Op::LOCAL_SET, default_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, old_len_slot);
+                        self.emit_const(Value::F64(0.0));
+                        self.emit(Op::DYN_GT);
+                        let no_default_seed = self.emit_jump(Op::BR_IF_FALSE);
+
+                        self.emit_u16(Op::LOCAL_GET, old_slot);
+                        self.emit(Op::I32_CONST_0);
+                        common::collections::emit_get(&mut self.chunks, self.current, line);
+                        let seed_slot = self.define_local("__redim_seed");
+                        self.emit_u16(Op::LOCAL_SET, seed_slot); self.emit(Op::DROP);
+
+                        self.emit_u16(Op::LOCAL_GET, seed_slot);
+                        self.emit(Op::REF_IS_BOOL);
+                        let bool_default = self.emit_jump(Op::BR_IF_TRUE);
+                        self.emit_u16(Op::LOCAL_GET, seed_slot);
+                        self.emit(Op::REF_IS_NUMBER);
+                        let number_default = self.emit_jump(Op::BR_IF_TRUE);
+                        self.emit(Op::NULL);
+                        self.emit_u16(Op::LOCAL_SET, default_slot); self.emit(Op::DROP);
+                        let default_done = self.emit_jump(Op::BR);
+
+                        self.patch_jump(bool_default);
+                        self.emit(Op::FALSE);
+                        self.emit_u16(Op::LOCAL_SET, default_slot); self.emit(Op::DROP);
+                        let bool_done = self.emit_jump(Op::BR);
+
+                        self.patch_jump(number_default);
+                        self.emit(Op::I32_CONST_0);
+                        self.emit_u16(Op::LOCAL_SET, default_slot); self.emit(Op::DROP);
+
+                        self.patch_jump(bool_done);
+                        self.patch_jump(default_done);
+                        self.patch_jump(no_default_seed);
+
+                        self.emit_u16(Op::LOCAL_GET, old_len_slot);
+                        self.emit_u16(Op::LOCAL_SET, fill_idx_slot); self.emit(Op::DROP);
+                        let fill_block = self.chunk().emit_block(line);
+                        let (fill_loop, _) = self.chunk().emit_loop_s(line);
+                        self.emit_u16(Op::LOCAL_GET, fill_idx_slot);
+                        self.emit_u16(Op::LOCAL_GET, new_len_slot);
+                        self.emit(Op::DYN_LT);
+                        self.emit(Op::DYN_NOT);
+                        self.chunk().emit_br_if(1, line);
+
+                        self.emit_u16(Op::LOCAL_GET, new_slot);
+                        self.emit_u16(Op::LOCAL_GET, fill_idx_slot);
+                        self.emit_u16(Op::LOCAL_GET, default_slot);
+                        common::collections::emit_set(&mut self.chunks, self.current, line);
+                        self.emit(Op::DROP);
+
+                        self.emit_u16(Op::LOCAL_GET, fill_idx_slot);
+                        self.emit_const(Value::F64(1.0));
+                        self.emit(Op::DYN_ADD);
+                        self.emit_u16(Op::LOCAL_SET, fill_idx_slot); self.emit(Op::DROP);
+                        self.chunk().emit_br(0, line);
+                        self.chunk().emit_end(line);
+                        self.chunk().patch_loop(fill_loop);
+                        self.chunk().emit_end(line);
+                        self.chunk().patch_block(fill_block);
 
                         // arr = new
                         self.emit_u16(Op::LOCAL_GET, new_slot);
@@ -5830,6 +5992,12 @@ impl Compiler {
         match &expr.kind {
             ExprKind::Lambda { .. } | ExprKind::AddressOf(_) => true,
             ExprKind::Ident(name) => {
+                if self
+                    .lookup_var_type_hint(name)
+                    .is_some_and(Self::is_callable_type_hint)
+                {
+                    return true;
+                }
                 if self.scope().resolve(name).is_some()
                     || (!self.case_sensitive && self.scope().resolve_ci(name).is_some())
                 {
@@ -6081,6 +6249,44 @@ impl Compiler {
             if init_is_null {
                 return Ok(true);
             }
+            let init_is_nested_array_factory = matches!(
+                &args[1].kind,
+                ExprKind::Call { callee, .. }
+                    if matches!(callee.kind, ExprKind::Ident(ref name) if name == "Array")
+            );
+            if init_is_nested_array_factory {
+                let arr_slot = self.define_local("__array_ctor_result");
+                self.emit_u16(Op::LOCAL_SET, arr_slot);
+                self.emit(Op::DROP);
+
+                let idx_slot = self.define_local("__array_ctor_idx");
+                self.emit_const(Value::I32(0));
+                self.emit_u16(Op::LOCAL_SET, idx_slot);
+                self.emit(Op::DROP);
+
+                let loop_start = self.chunks[self.current].current_offset();
+                self.emit_u16(Op::LOCAL_GET, idx_slot);
+                self.emit_u16(Op::LOCAL_GET, arr_slot);
+                common::collections::emit_len(&mut self.chunks, self.current, line);
+                self.emit(Op::DYN_LT);
+                let done = self.emit_jump(Op::BR_IF_FALSE);
+
+                self.emit_u16(Op::LOCAL_GET, arr_slot);
+                self.emit_u16(Op::LOCAL_GET, idx_slot);
+                self.compile_expr(args[1])?;
+                self.emit(Op::ARRAY_SET);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, idx_slot);
+                self.emit_const(Value::I32(1));
+                self.emit(Op::DYN_ADD);
+                self.emit_u16(Op::LOCAL_SET, idx_slot);
+                self.emit(Op::DROP);
+                self.emit_loop(loop_start);
+                self.patch_jump(done);
+                self.emit_u16(Op::LOCAL_GET, arr_slot);
+                return Ok(true);
+            }
             // Stack: [arr]. Dup first so we still have the result.
             self.emit(Op::DUP);
             self.compile_expr(args[1])?;
@@ -6220,11 +6426,7 @@ impl Compiler {
                     // Console.WriteLine/Write should preserve enum names instead
                     // of logging raw ordinals.
                     if name.eq_ignore_ascii_case("dotnet.console_writeline") && args.len() == 1 {
-                        if let Some(enum_type) = self.console_enum_type_from_expr(args[0]) {
-                            self.emit_enum_value_to_string(&enum_type, args[0])?;
-                        } else {
-                            self.compile_expr(args[0])?;
-                        }
+                        self.emit_dotnet_console_arg(args[0])?;
                     } else {
                         for a in args { self.compile_expr(a)?; }
                     }
@@ -7440,6 +7642,23 @@ fn uniform_tuple_return_arity(body: &[Statement]) -> Option<u8> {
     }
     if !walk(body, &mut arity, &mut saw_any) { return None; }
     if saw_any { arity } else { None }
+}
+
+fn is_hoisted_deconstruction_block(stmts: &[Statement]) -> bool {
+    let call_stmt = match stmts {
+        [Statement { kind: StmtKind::Expr(expr), .. }] => expr,
+        [Statement { kind: StmtKind::VarDecl { .. }, .. }, Statement { kind: StmtKind::Expr(expr), .. }] => expr,
+        _ => return false,
+    };
+
+    let ExprKind::Call { callee, args, .. } = &call_stmt.kind else {
+        return false;
+    };
+    let ExprKind::Member { field, .. } = &callee.kind else {
+        return false;
+    };
+
+    field.eq_ignore_ascii_case("Deconstruct") && args.iter().all(|arg| arg.by_ref)
 }
 
 fn is_identity_stamp(stmt: &Statement) -> bool {

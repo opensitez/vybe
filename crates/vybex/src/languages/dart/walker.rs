@@ -1211,6 +1211,7 @@ fn walk_constructor(pair: Pair<Rule>, class_name: &str) -> Result<ClassMember, S
             params,
             body: full_body,
             base_args,
+            initializer_target: crate::ast::ConstructorInitializerTarget::Base,
             visibility: Visibility::Public,
         })
     }

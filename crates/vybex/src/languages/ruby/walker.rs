@@ -319,6 +319,7 @@ fn walk_class_body(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                             params: params.clone(),
                             body: body.clone(),
                             base_args: None,
+                            initializer_target: crate::ast::ConstructorInitializerTarget::Base,
                             visibility: current_visibility,
                         });
                     } else {

@@ -406,6 +406,7 @@ pub enum ClassMember {
         params: Vec<Param>,
         body: Vec<Statement>,
         base_args: Option<Vec<Expression>>,
+        initializer_target: ConstructorInitializerTarget,
         visibility: Visibility,
     },
 
@@ -434,6 +435,12 @@ pub enum ClassMember {
     },
 
     NestedType(Box<Statement>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConstructorInitializerTarget {
+    Base,
+    This,
 }
 
 #[derive(Debug, Clone)]

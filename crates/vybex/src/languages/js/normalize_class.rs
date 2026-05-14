@@ -164,6 +164,7 @@ pub fn normalize_class(
         instance_methods,
         static_methods,
         properties,
+        constructors: Vec::new(),
         constructor,
         destructor: None,   // JS has no destructor syntax
         auto_init_methods: Vec::new(),

@@ -27,7 +27,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 ("ToArray", 0, "collections.clone"),
                 ("Item", 1, "collections.get"),
                 ("Insert", 2, "collections.insert"),
-                ("AddRange", 1, "collections.concat"),
+                ("AddRange", 1, "dotnet.list_add_range"),
             ],
         ),
         // .NET `Dictionary<K,V>` is shape-identical to ECMA-262 §24.1

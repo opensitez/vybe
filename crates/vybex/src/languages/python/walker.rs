@@ -538,6 +538,7 @@ fn stmts_to_class_members(stmts: Vec<Statement>) -> Vec<ClassMember> {
                         params: params.clone(),
                         body: body.clone(),
                         base_args: None,
+                        initializer_target: crate::ast::ConstructorInitializerTarget::Base,
                         visibility: Visibility::Public,
                     });
                 } else {

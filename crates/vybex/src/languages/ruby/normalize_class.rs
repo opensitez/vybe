@@ -85,7 +85,7 @@ pub fn normalize_class(
                     instance_methods.push(method);
                 }
             }
-            ClassMember::Constructor { params, body, base_args, visibility } => {
+            ClassMember::Constructor { params, body, base_args, visibility, .. } => {
                 constructor = Some(NormalConstructor {
                     span: span.clone(),
                     params: params.clone(),
@@ -155,6 +155,7 @@ pub fn normalize_class(
         instance_methods,
         static_methods,
         properties,
+        constructors: Vec::new(),
         constructor,
         destructor: None, // Ruby has no destructor; GC-finalised
         auto_init_methods: Vec::new(),

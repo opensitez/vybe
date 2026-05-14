@@ -726,6 +726,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
                     params,
                     body,
                     base_args: None,
+                    initializer_target: crate::ast::ConstructorInitializerTarget::Base,
                     visibility: Visibility::Public,
                 })
             } else {

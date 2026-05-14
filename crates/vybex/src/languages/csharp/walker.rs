@@ -67,6 +67,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // resolves T to the synthesized class and reads `e.Message`.
     let mut synthesized = synthesize_exception_classes();
     synthesized.extend(synthesize_attribute_classes());
+    synthesized.extend(synthesize_checked_numeric_helpers());
     body.splice(0..0, synthesized);
 
     let mut module = Module {
@@ -79,6 +80,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     rewrite_using_declarations(&mut module);
     rewrite_explicit_interface_accesses(&mut module);
     rewrite_record_uses(&mut module);
+    rewrite_tuple_uses(&mut module);
     rewrite_extension_calls(&mut module);
     Ok(module)
 }
@@ -1180,6 +1182,33 @@ fn build_record_field_equality(left: &Expression, right: &Expression, fields: &[
     combined
 }
 
+fn build_tuple_structural_equality(left: &Expression, right: &Expression) -> Option<Expression> {
+    let (ExprKind::Tuple(left_items), ExprKind::Tuple(right_items)) = (&left.kind, &right.kind) else {
+        return None;
+    };
+    if left_items.len() != right_items.len() {
+        return Some(Expression::bool(false));
+    }
+
+    let mut combined = Expression::bool(true);
+    for (left_item, right_item) in left_items.iter().zip(right_items.iter()) {
+        let cmp = build_tuple_structural_equality(left_item, right_item).unwrap_or_else(|| {
+            Expression::new(ExprKind::Binary {
+                op: BinOp::Eq,
+                left: Box::new(left_item.clone()),
+                right: Box::new(right_item.clone()),
+            })
+        });
+        combined = Expression::new(ExprKind::Binary {
+            op: BinOp::And,
+            left: Box::new(combined),
+            right: Box::new(cmp),
+        });
+    }
+
+    Some(combined)
+}
+
 fn rewrite_record_deconstruction_stmt(
     body: &mut Vec<Statement>,
     record_shapes: &HashMap<String, RecordShape>,
@@ -1248,6 +1277,730 @@ fn infer_record_type(
             _ => None,
         },
         ExprKind::Cast { type_name, .. } if record_shapes.contains_key(type_name) => Some(type_name.clone()),
+        _ => None,
+    }
+}
+
+fn rewrite_tuple_uses(module: &mut Module) {
+    let mut scopes = vec![HashMap::new()];
+    rewrite_tuple_uses_in_statements(&mut module.body, &mut scopes);
+}
+
+fn rewrite_tuple_uses_in_statements(
+    body: &mut [Statement],
+    scopes: &mut Vec<HashMap<String, usize>>,
+) {
+    for stmt in body {
+        rewrite_tuple_uses_in_statement(stmt, scopes);
+    }
+}
+
+fn rewrite_tuple_uses_in_statement(
+    stmt: &mut Statement,
+    scopes: &mut Vec<HashMap<String, usize>>,
+) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_tuple_uses_in_expr(expr, scopes);
+        }
+        StmtKind::Throw { expr, cause } => {
+            if let Some(expr) = expr {
+                rewrite_tuple_uses_in_expr(expr, scopes);
+            }
+            if let Some(cause) = cause {
+                rewrite_tuple_uses_in_expr(cause, scopes);
+            }
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_tuple_uses_in_expr(init, scopes);
+                }
+                let BindingPattern::Ident(name) = &decl.pattern else {
+                    continue;
+                };
+                if let Some(arity) = decl.init.as_ref().and_then(|init| infer_tuple_arity(init, scopes)) {
+                    scopes.last_mut().unwrap().insert(name.clone(), arity);
+                } else {
+                    scopes.last_mut().unwrap().remove(name);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            rewrite_tuple_uses_in_expr(value, scopes);
+            for target in targets {
+                rewrite_tuple_uses_in_expr(target, scopes);
+                let ExprKind::Ident(name) = &target.kind else {
+                    continue;
+                };
+                if let Some(arity) = infer_tuple_arity(value, scopes) {
+                    scopes.last_mut().unwrap().insert(name.clone(), arity);
+                } else {
+                    scopes.last_mut().unwrap().remove(name);
+                }
+            }
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_tuple_uses_in_expr(target, scopes);
+            rewrite_tuple_uses_in_expr(value, scopes);
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            scopes.push(HashMap::new());
+            rewrite_tuple_uses_in_statements(body, scopes);
+            scopes.pop();
+        }
+        StmtKind::FunctionDecl { body, .. } => {
+            scopes.push(HashMap::new());
+            rewrite_tuple_uses_in_statements(body, scopes);
+            scopes.pop();
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                match member {
+                    ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+                        rewrite_tuple_uses_in_statement(stmt, scopes);
+                    }
+                    ClassMember::Constructor { body, .. } => {
+                        scopes.push(HashMap::new());
+                        rewrite_tuple_uses_in_statements(body, scopes);
+                        scopes.pop();
+                    }
+                    ClassMember::Property { getter, setter, .. } => {
+                        if let Some(getter) = getter {
+                            scopes.push(HashMap::new());
+                            rewrite_tuple_uses_in_statements(getter, scopes);
+                            scopes.pop();
+                        }
+                        if let Some(setter) = setter {
+                            scopes.push(HashMap::new());
+                            rewrite_tuple_uses_in_statements(&mut setter.body, scopes);
+                            scopes.pop();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        StmtKind::If { cond, then_body, elifs, else_body } => {
+            rewrite_tuple_uses_in_expr(cond, scopes);
+            scopes.push(HashMap::new());
+            rewrite_tuple_uses_in_statements(then_body, scopes);
+            scopes.pop();
+            for (elif_cond, elif_body) in elifs {
+                rewrite_tuple_uses_in_expr(elif_cond, scopes);
+                scopes.push(HashMap::new());
+                rewrite_tuple_uses_in_statements(elif_body, scopes);
+                scopes.pop();
+            }
+            if let Some(else_body) = else_body {
+                scopes.push(HashMap::new());
+                rewrite_tuple_uses_in_statements(else_body, scopes);
+                scopes.pop();
+            }
+        }
+        StmtKind::For { init, cond, update, body } => {
+            scopes.push(HashMap::new());
+            if let Some(init) = init {
+                rewrite_tuple_uses_in_statement(init, scopes);
+            }
+            if let Some(cond) = cond {
+                rewrite_tuple_uses_in_expr(cond, scopes);
+            }
+            if let Some(update) = update {
+                rewrite_tuple_uses_in_expr(update, scopes);
+            }
+            rewrite_tuple_uses_in_statements(body, scopes);
+            scopes.pop();
+        }
+        StmtKind::ForIn { iter, body, else_body, .. } => {
+            rewrite_tuple_uses_in_expr(iter, scopes);
+            scopes.push(HashMap::new());
+            rewrite_tuple_uses_in_statements(body, scopes);
+            if let Some(else_body) = else_body {
+                rewrite_tuple_uses_in_statements(else_body, scopes);
+            }
+            scopes.pop();
+        }
+        StmtKind::While { cond, body, else_body } => {
+            rewrite_tuple_uses_in_expr(cond, scopes);
+            scopes.push(HashMap::new());
+            rewrite_tuple_uses_in_statements(body, scopes);
+            if let Some(else_body) = else_body {
+                rewrite_tuple_uses_in_statements(else_body, scopes);
+            }
+            scopes.pop();
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            scopes.push(HashMap::new());
+            rewrite_tuple_uses_in_statements(body, scopes);
+            scopes.pop();
+            rewrite_tuple_uses_in_expr(cond, scopes);
+        }
+        StmtKind::Switch { expr, cases, default } => {
+            rewrite_tuple_uses_in_expr(expr, scopes);
+            for case in cases {
+                for condition in &mut case.conditions {
+                    match condition {
+                        CaseCondition::Value(expr) => rewrite_tuple_uses_in_expr(expr, scopes),
+                        CaseCondition::Range { from, to } => {
+                            rewrite_tuple_uses_in_expr(from, scopes);
+                            rewrite_tuple_uses_in_expr(to, scopes);
+                        }
+                        CaseCondition::Comparison { expr, .. } => {
+                            rewrite_tuple_uses_in_expr(expr, scopes);
+                        }
+                    }
+                }
+                scopes.push(HashMap::new());
+                rewrite_tuple_uses_in_statements(&mut case.body, scopes);
+                scopes.pop();
+            }
+            if let Some(default) = default {
+                scopes.push(HashMap::new());
+                rewrite_tuple_uses_in_statements(default, scopes);
+                scopes.pop();
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_tuple_uses_in_expr(
+    expr: &mut Expression,
+    scopes: &mut Vec<HashMap<String, usize>>,
+) {
+    match &mut expr.kind {
+        ExprKind::Binary { op, left, right } => {
+            rewrite_tuple_uses_in_expr(left, scopes);
+            rewrite_tuple_uses_in_expr(right, scopes);
+            if matches!(op, BinOp::Eq | BinOp::NotEq) {
+                let left_arity = infer_tuple_arity(left, scopes);
+                let right_arity = infer_tuple_arity(right, scopes);
+                if let Some(arity) = left_arity.filter(|arity| Some(*arity) == right_arity) {
+                    let equals_expr = match (&left.kind, &right.kind) {
+                        (ExprKind::Tuple(_), ExprKind::Tuple(_)) => {
+                            build_tuple_structural_equality(left, right)
+                                .unwrap_or_else(|| build_tuple_runtime_equality(left, right, arity))
+                        }
+                        _ => build_tuple_runtime_equality(left, right, arity),
+                    };
+                    *expr = if matches!(op, BinOp::NotEq) {
+                        Expression::new(ExprKind::Unary {
+                            op: UnaryOp::Not,
+                            expr: Box::new(equals_expr),
+                        })
+                    } else {
+                        equals_expr
+                    };
+                }
+            }
+        }
+        ExprKind::NullCoalesce { left, right }
+        | ExprKind::Assign { target: left, value: right }
+        | ExprKind::Walrus { target: left, value: right } => {
+            rewrite_tuple_uses_in_expr(left, scopes);
+            rewrite_tuple_uses_in_expr(right, scopes);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::IsType { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::Spread(expr)
+        | ExprKind::Yield(Some(expr)) => rewrite_tuple_uses_in_expr(expr, scopes),
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_tuple_uses_in_expr(cond, scopes);
+            rewrite_tuple_uses_in_expr(then, scopes);
+            rewrite_tuple_uses_in_expr(else_, scopes);
+        }
+        ExprKind::Member { object, .. } => rewrite_tuple_uses_in_expr(object, scopes),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_tuple_uses_in_expr(object, scopes);
+            rewrite_tuple_uses_in_expr(index, scopes);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_tuple_uses_in_expr(callee, scopes);
+            for arg in args {
+                rewrite_tuple_uses_in_expr(&mut arg.value, scopes);
+            }
+        }
+        ExprKind::New { class, args } => {
+            rewrite_tuple_uses_in_expr(class, scopes);
+            for arg in args {
+                rewrite_tuple_uses_in_expr(&mut arg.value, scopes);
+            }
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(expr) => rewrite_tuple_uses_in_expr(expr, scopes),
+            LambdaBody::Block(body) => {
+                scopes.push(HashMap::new());
+                rewrite_tuple_uses_in_statements(body, scopes);
+                scopes.pop();
+            }
+        },
+        ExprKind::Array(items) => {
+            for item in items {
+                rewrite_tuple_uses_in_expr(&mut item.value, scopes);
+                if let Some(key) = &mut item.key {
+                    rewrite_tuple_uses_in_expr(key, scopes);
+                }
+            }
+        }
+        ExprKind::Tuple(items)
+        | ExprKind::Set(items)
+        | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_tuple_uses_in_expr(item, scopes);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        rewrite_tuple_uses_in_expr(key, scopes);
+                        rewrite_tuple_uses_in_expr(value, scopes);
+                    }
+                    ObjectProperty::Spread(expr) => rewrite_tuple_uses_in_expr(expr, scopes),
+                    ObjectProperty::Method { value, .. }
+                    | ObjectProperty::Accessor { value, .. } => {
+                        rewrite_tuple_uses_in_statement(value, scopes);
+                    }
+                    ObjectProperty::Shorthand(_) => {}
+                }
+            }
+        }
+        ExprKind::Interpolation(parts) => {
+            for part in parts {
+                match part {
+                    InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
+                        rewrite_tuple_uses_in_expr(expr, scopes);
+                    }
+                    InterpolPart::Text(_) => {}
+                }
+            }
+        }
+        ExprKind::Comprehension { element, generators, .. } => {
+            rewrite_tuple_uses_in_expr(element, scopes);
+            for generator in generators {
+                rewrite_tuple_uses_in_expr(&mut generator.target, scopes);
+                rewrite_tuple_uses_in_expr(&mut generator.iter, scopes);
+                for condition in &mut generator.conditions {
+                    rewrite_tuple_uses_in_expr(condition, scopes);
+                }
+            }
+        }
+        ExprKind::Slice { lower, upper, step } => {
+            if let Some(lower) = lower {
+                rewrite_tuple_uses_in_expr(lower, scopes);
+            }
+            if let Some(upper) = upper {
+                rewrite_tuple_uses_in_expr(upper, scopes);
+            }
+            if let Some(step) = step {
+                rewrite_tuple_uses_in_expr(step, scopes);
+            }
+        }
+        ExprKind::ClassExpr { parent, members, .. } => {
+            if let Some(parent) = parent {
+                rewrite_tuple_uses_in_expr(parent, scopes);
+            }
+            for member in members {
+                match member {
+                    ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+                        rewrite_tuple_uses_in_statement(stmt, scopes);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::FunctionExpr(stmt) => rewrite_tuple_uses_in_statement(stmt, scopes),
+        _ => {}
+    }
+}
+
+fn infer_tuple_arity(
+    expr: &Expression,
+    scopes: &[HashMap<String, usize>],
+) -> Option<usize> {
+    match &expr.kind {
+        ExprKind::Ident(name) => scopes.iter().rev().find_map(|scope| scope.get(name).copied()),
+        ExprKind::Tuple(items) => Some(items.len()),
+        ExprKind::Cast { expr, .. } => infer_tuple_arity(expr, scopes),
+        _ => None,
+    }
+}
+
+fn build_tuple_runtime_equality(left: &Expression, right: &Expression, arity: usize) -> Expression {
+    let mut combined = Expression::bool(true);
+    for index in 0..arity {
+        let cmp = Expression::new(ExprKind::Binary {
+            op: BinOp::Eq,
+            left: Box::new(Expression::new(ExprKind::Index {
+                object: Box::new(left.clone()),
+                index: Box::new(Expression::int(index as i64)),
+                null_safe: false,
+            })),
+            right: Box::new(Expression::new(ExprKind::Index {
+                object: Box::new(right.clone()),
+                index: Box::new(Expression::int(index as i64)),
+                null_safe: false,
+            })),
+        });
+        combined = Expression::new(ExprKind::Binary {
+            op: BinOp::And,
+            left: Box::new(combined),
+            right: Box::new(cmp),
+        });
+    }
+    combined
+}
+
+fn rewrite_checked_numeric_statements(
+    body: &mut [Statement],
+    scopes: &mut Vec<HashMap<String, ()>>,
+    is_checked: bool,
+) {
+    for stmt in body {
+        rewrite_checked_numeric_statement(stmt, scopes, is_checked);
+    }
+}
+
+fn is_tracked_checked_byte_local(target: &Expression, scopes: &[HashMap<String, ()>]) -> bool {
+    let ExprKind::Ident(name) = &target.kind else {
+        return false;
+    };
+    scopes.iter().rev().any(|scope| scope.contains_key(name))
+}
+
+fn is_csharp_byte_type_hint(type_hint: Option<&str>) -> bool {
+    type_hint
+        .map(normalize_runtime_type_name)
+        .map(|name| name.eq_ignore_ascii_case("byte") || name.eq_ignore_ascii_case("system.byte"))
+        .unwrap_or(false)
+}
+
+fn wrap_checked_byte_value(value: Expression, is_checked: bool) -> Expression {
+    if is_checked {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__vybe_csharp_checked_byte_cast")),
+            args: vec![Argument::positional(value)],
+            optional: false,
+        })
+    } else {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(build_dotted_expr("Convert.ToByte")),
+            args: vec![Argument::positional(value)],
+            optional: false,
+        })
+    }
+}
+
+fn is_checked_byte_wrapper_call(expr: &Expression, is_checked: bool) -> bool {
+    let ExprKind::Call { callee, args, optional: false } = &expr.kind else {
+        return false;
+    };
+    if args.len() != 1 {
+        return false;
+    }
+    if is_checked {
+        matches!(&callee.kind, ExprKind::Ident(name) if name == "__vybe_csharp_checked_byte_cast")
+    } else {
+        expr_dotted_name(callee).as_deref() == Some("Convert.ToByte")
+    }
+}
+
+fn rewrite_checked_numeric_statement(
+    stmt: &mut Statement,
+    scopes: &mut Vec<HashMap<String, ()>>,
+    is_checked: bool,
+) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_checked_numeric_expr(init, scopes, is_checked);
+                }
+                if is_csharp_byte_type_hint(decl.type_hint.as_deref()) {
+                    if let BindingPattern::Ident(name) = &decl.pattern {
+                        scopes.last_mut().unwrap().insert(name.clone(), ());
+                    }
+                }
+            }
+        }
+        StmtKind::CompoundAssign { target, op, value } => {
+            rewrite_checked_numeric_expr(target, scopes, is_checked);
+            rewrite_checked_numeric_expr(value, scopes, is_checked);
+
+            if !is_tracked_checked_byte_local(target, scopes) {
+                return;
+            }
+
+            let Some(bin_op) = checked_numeric_compound_binop(op) else {
+                return;
+            };
+            let result_expr = Expression::new(ExprKind::Binary {
+                op: bin_op,
+                left: Box::new(target.clone()),
+                right: Box::new(value.clone()),
+            });
+            stmt.kind = StmtKind::Assign {
+                targets: vec![target.clone()],
+                value: wrap_checked_byte_value(result_expr, is_checked),
+            };
+        }
+        StmtKind::Assign { targets, value } => {
+            rewrite_checked_numeric_expr(value, scopes, is_checked);
+            for target in &mut *targets {
+                rewrite_checked_numeric_expr(target, scopes, is_checked);
+            }
+            if targets.len() != 1 {
+                return;
+            }
+            if !is_tracked_checked_byte_local(&targets[0], scopes) {
+                return;
+            }
+            if is_checked_byte_wrapper_call(value, is_checked) {
+                return;
+            }
+            *value = wrap_checked_byte_value(value.clone(), is_checked);
+        }
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_checked_numeric_expr(expr, scopes, is_checked);
+        }
+        StmtKind::Throw { expr, cause } => {
+            if let Some(expr) = expr {
+                rewrite_checked_numeric_expr(expr, scopes, is_checked);
+            }
+            if let Some(cause) = cause {
+                rewrite_checked_numeric_expr(cause, scopes, is_checked);
+            }
+        }
+        StmtKind::Block(body)
+        | StmtKind::NamespaceDecl { body, .. }
+        | StmtKind::FunctionDecl { body, .. } => {
+            scopes.push(HashMap::new());
+            rewrite_checked_numeric_statements(body, scopes, is_checked);
+            scopes.pop();
+        }
+        StmtKind::If { cond, then_body, elifs, else_body } => {
+            rewrite_checked_numeric_expr(cond, scopes, is_checked);
+            scopes.push(HashMap::new());
+            rewrite_checked_numeric_statements(then_body, scopes, is_checked);
+            scopes.pop();
+            for (elif_cond, elif_body) in elifs {
+                rewrite_checked_numeric_expr(elif_cond, scopes, is_checked);
+                scopes.push(HashMap::new());
+                rewrite_checked_numeric_statements(elif_body, scopes, is_checked);
+                scopes.pop();
+            }
+            if let Some(else_body) = else_body {
+                scopes.push(HashMap::new());
+                rewrite_checked_numeric_statements(else_body, scopes, is_checked);
+                scopes.pop();
+            }
+        }
+        StmtKind::For { init, cond, update, body } => {
+            scopes.push(HashMap::new());
+            if let Some(init) = init {
+                rewrite_checked_numeric_statement(init, scopes, is_checked);
+            }
+            if let Some(cond) = cond {
+                rewrite_checked_numeric_expr(cond, scopes, is_checked);
+            }
+            if let Some(update) = update {
+                rewrite_checked_numeric_expr(update, scopes, is_checked);
+            }
+            rewrite_checked_numeric_statements(body, scopes, is_checked);
+            scopes.pop();
+        }
+        StmtKind::ForIn { iter, body, else_body, .. } => {
+            rewrite_checked_numeric_expr(iter, scopes, is_checked);
+            scopes.push(HashMap::new());
+            rewrite_checked_numeric_statements(body, scopes, is_checked);
+            if let Some(else_body) = else_body {
+                rewrite_checked_numeric_statements(else_body, scopes, is_checked);
+            }
+            scopes.pop();
+        }
+        StmtKind::While { cond, body, else_body } => {
+            rewrite_checked_numeric_expr(cond, scopes, is_checked);
+            scopes.push(HashMap::new());
+            rewrite_checked_numeric_statements(body, scopes, is_checked);
+            if let Some(else_body) = else_body {
+                rewrite_checked_numeric_statements(else_body, scopes, is_checked);
+            }
+            scopes.pop();
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            scopes.push(HashMap::new());
+            rewrite_checked_numeric_statements(body, scopes, is_checked);
+            scopes.pop();
+            rewrite_checked_numeric_expr(cond, scopes, is_checked);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_checked_numeric_expr(
+    expr: &mut Expression,
+    scopes: &mut Vec<HashMap<String, ()>>,
+    is_checked: bool,
+) {
+    match &mut expr.kind {
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::NullCoalesce { left, right } => {
+            rewrite_checked_numeric_expr(left, scopes, is_checked);
+            rewrite_checked_numeric_expr(right, scopes, is_checked);
+        }
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            rewrite_checked_numeric_expr(target, scopes, is_checked);
+            rewrite_checked_numeric_expr(value, scopes, is_checked);
+            if is_tracked_checked_byte_local(target, scopes)
+                && !is_checked_byte_wrapper_call(value, is_checked)
+            {
+                **value = wrap_checked_byte_value((**value).clone(), is_checked);
+            }
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::IsType { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::Spread(expr)
+        | ExprKind::Yield(Some(expr)) => rewrite_checked_numeric_expr(expr, scopes, is_checked),
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_checked_numeric_expr(cond, scopes, is_checked);
+            rewrite_checked_numeric_expr(then, scopes, is_checked);
+            rewrite_checked_numeric_expr(else_, scopes, is_checked);
+        }
+        ExprKind::Member { object, .. } => rewrite_checked_numeric_expr(object, scopes, is_checked),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_checked_numeric_expr(object, scopes, is_checked);
+            rewrite_checked_numeric_expr(index, scopes, is_checked);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_checked_numeric_expr(callee, scopes, is_checked);
+            for arg in args {
+                rewrite_checked_numeric_expr(&mut arg.value, scopes, is_checked);
+            }
+        }
+        ExprKind::New { class, args } => {
+            rewrite_checked_numeric_expr(class, scopes, is_checked);
+            for arg in args {
+                rewrite_checked_numeric_expr(&mut arg.value, scopes, is_checked);
+            }
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(expr) => rewrite_checked_numeric_expr(expr, scopes, is_checked),
+            LambdaBody::Block(body) => {
+                scopes.push(HashMap::new());
+                rewrite_checked_numeric_statements(body, scopes, is_checked);
+                scopes.pop();
+            }
+        },
+        ExprKind::Array(items) => {
+            for item in items {
+                rewrite_checked_numeric_expr(&mut item.value, scopes, is_checked);
+                if let Some(key) = &mut item.key {
+                    rewrite_checked_numeric_expr(key, scopes, is_checked);
+                }
+            }
+        }
+        ExprKind::Tuple(items)
+        | ExprKind::Set(items)
+        | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_checked_numeric_expr(item, scopes, is_checked);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        rewrite_checked_numeric_expr(key, scopes, is_checked);
+                        rewrite_checked_numeric_expr(value, scopes, is_checked);
+                    }
+                    ObjectProperty::Spread(expr) => rewrite_checked_numeric_expr(expr, scopes, is_checked),
+                    ObjectProperty::Method { value, .. }
+                    | ObjectProperty::Accessor { value, .. } => {
+                        rewrite_checked_numeric_statement(value, scopes, is_checked);
+                    }
+                    ObjectProperty::Shorthand(_) => {}
+                }
+            }
+        }
+        ExprKind::Interpolation(parts) => {
+            for part in parts {
+                match part {
+                    InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
+                        rewrite_checked_numeric_expr(expr, scopes, is_checked);
+                    }
+                    InterpolPart::Text(_) => {}
+                }
+            }
+        }
+        ExprKind::Comprehension { element, generators, .. } => {
+            rewrite_checked_numeric_expr(element, scopes, is_checked);
+            for generator in generators {
+                rewrite_checked_numeric_expr(&mut generator.target, scopes, is_checked);
+                rewrite_checked_numeric_expr(&mut generator.iter, scopes, is_checked);
+                for condition in &mut generator.conditions {
+                    rewrite_checked_numeric_expr(condition, scopes, is_checked);
+                }
+            }
+        }
+        ExprKind::Slice { lower, upper, step } => {
+            if let Some(lower) = lower {
+                rewrite_checked_numeric_expr(lower, scopes, is_checked);
+            }
+            if let Some(upper) = upper {
+                rewrite_checked_numeric_expr(upper, scopes, is_checked);
+            }
+            if let Some(step) = step {
+                rewrite_checked_numeric_expr(step, scopes, is_checked);
+            }
+        }
+        ExprKind::ClassExpr { parent, members, .. } => {
+            if let Some(parent) = parent {
+                rewrite_checked_numeric_expr(parent, scopes, is_checked);
+            }
+            for member in members {
+                match member {
+                    ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+                        rewrite_checked_numeric_statement(stmt, scopes, is_checked);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::FunctionExpr(stmt) => rewrite_checked_numeric_statement(stmt, scopes, is_checked),
+        _ => {}
+    }
+}
+
+fn checked_numeric_compound_binop(op: &CompoundOp) -> Option<BinOp> {
+    match op {
+        CompoundOp::Add => Some(BinOp::Add),
+        CompoundOp::Sub => Some(BinOp::Sub),
+        CompoundOp::Mul => Some(BinOp::Mul),
+        CompoundOp::Div => Some(BinOp::Div),
+        CompoundOp::Mod => Some(BinOp::Mod),
+        CompoundOp::BitAnd => Some(BinOp::BitAnd),
+        CompoundOp::BitOr => Some(BinOp::BitOr),
+        CompoundOp::BitXor => Some(BinOp::BitXor),
+        CompoundOp::Shl => Some(BinOp::Shl),
+        CompoundOp::Shr => Some(BinOp::Shr),
+        CompoundOp::UShr => Some(BinOp::UShr),
         _ => None,
     }
 }
@@ -2229,40 +2982,109 @@ fn synthesize_exception_classes() -> Vec<Statement> {
         "ArgumentOutOfRangeException",
         "DivideByZeroException",
         "FormatException",
-        "NullReferenceException",
-        "IndexOutOfRangeException",
         "NotImplementedException",
         "NotSupportedException",
+        "NullReferenceException",
         "OverflowException",
-        "KeyNotFoundException",
-        "FileNotFoundException",
-        "IOException",
-        "TypeError",
+        "IndexOutOfRangeException",
     ];
-    names.iter().map(|n| synthesize_exception_class(n)).collect()
+    names.into_iter().map(synthesize_exception_class).collect()
 }
 
 fn synthesize_attribute_classes() -> Vec<Statement> {
-    vec![
-        synthesize_attribute_class("Attribute"),
-        synthesize_attribute_class("System.Attribute"),
-    ]
+    let names = [
+        "Attribute",
+        "FlagsAttribute",
+        "STAThreadAttribute",
+        "SerializableAttribute",
+        "ObsoleteAttribute",
+    ];
+    names.into_iter().map(synthesize_attribute_class).collect()
 }
 
 fn synthesize_attribute_class(name: &str) -> Statement {
     Statement::with_span(
         StmtKind::ClassDecl {
             name: name.into(),
-            parents: Vec::new(),
+            parents: if name == "Attribute" {
+                Vec::new()
+            } else {
+                vec!["Attribute".into()]
+            },
             interfaces: Vec::new(),
             members: vec![ClassMember::Constructor {
                 params: Vec::new(),
                 body: Vec::new(),
                 base_args: None,
+                initializer_target: crate::ast::ConstructorInitializerTarget::Base,
                 visibility: Visibility::Public,
             }],
             modifiers: ClassModifiers::default(),
             decorators: Vec::new(),
+        },
+        Span::default(),
+    )
+}
+
+fn synthesize_checked_numeric_helpers() -> Vec<Statement> {
+    vec![synthesize_checked_byte_cast_helper()]
+}
+
+fn synthesize_checked_byte_cast_helper() -> Statement {
+    let overflow_cond = Expression::new(ExprKind::Binary {
+        op: BinOp::Or,
+        left: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::Lt,
+            left: Box::new(Expression::ident("value")),
+            right: Box::new(Expression::int(0)),
+        })),
+        right: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::Gt,
+            left: Box::new(Expression::ident("value")),
+            right: Box::new(Expression::int(255)),
+        })),
+    });
+
+    Statement::with_span(
+        StmtKind::FunctionDecl {
+            name: "__vybe_csharp_checked_byte_cast".into(),
+            params: vec![Param {
+                name: "value".into(),
+                type_hint: Some("int".into()),
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            }],
+            return_type: Some("byte".into()),
+            body: vec![
+                Statement::new(StmtKind::If {
+                    cond: overflow_cond,
+                    then_body: vec![Statement::new(StmtKind::Throw {
+                        expr: Some(Expression::new(ExprKind::New {
+                            class: Box::new(Expression::ident("OverflowException")),
+                            args: vec![Argument::positional(Expression::new(ExprKind::Lit(
+                                Literal::Str("Arithmetic operation resulted in an overflow.".into()),
+                            )))],
+                        })),
+                        cause: None,
+                    })],
+                    elifs: vec![],
+                    else_body: None,
+                }),
+                Statement::new(StmtKind::Return(Some(Expression::new(ExprKind::Call {
+                    callee: Box::new(build_dotted_expr("Convert.ToByte")),
+                    args: vec![Argument::positional(Expression::ident("value"))],
+                    optional: false,
+                })))),
+            ],
+            modifiers: Modifiers::default(),
+            handles: Vec::new(),
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
         },
         Span::default(),
     )
@@ -2333,20 +3155,20 @@ fn synthesize_exception_class(name: &str) -> Statement {
         match name {
             "ArgumentException" => (
                 vec![mk_param("msg"), mk_param("paramName")],
-                vec![assign("Message", "msg"), assign("ParamName", "paramName"), assign_extype],
+                vec![assign("Message", "msg"), assign("ParamName", "paramName"), assign_extype.clone()],
             ),
             "ArgumentNullException" => (
                 vec![mk_param("paramName")],
-                vec![assign("ParamName", "paramName"), assign_extype],
+                vec![assign("ParamName", "paramName"), assign_extype.clone()],
             ),
             "ArgumentOutOfRangeException" => (
                 vec![mk_param("paramName"), mk_param("msg")],
-                vec![assign("ParamName", "paramName"), assign("Message", "msg"), assign_extype],
+                vec![assign("ParamName", "paramName"), assign("Message", "msg"), assign_extype.clone()],
             ),
             _ => unreachable!(),
         }
     } else {
-        (vec![mk_param("msg")], vec![assign("Message", "msg"), assign_extype])
+        (vec![mk_param("msg")], vec![assign("Message", "msg"), assign_extype.clone()])
     };
 
     let mut members = vec![
@@ -2373,8 +3195,18 @@ fn synthesize_exception_class(name: &str) -> Statement {
         params,
         body,
         base_args: None,
+        initializer_target: crate::ast::ConstructorInitializerTarget::Base,
         visibility: Visibility::Public,
     });
+    if name == "ArgumentException" {
+        members.push(ClassMember::Constructor {
+            params: vec![mk_param("msg")],
+            body: vec![assign("Message", "msg"), assign_extype.clone()],
+            base_args: None,
+            initializer_target: crate::ast::ConstructorInitializerTarget::Base,
+            visibility: Visibility::Public,
+        });
+    }
 
     Statement::with_span(
         StmtKind::ClassDecl {
@@ -2418,6 +3250,18 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
                 .collect::<Result<Vec<_>, _>>()?;
             StmtKind::Block(stmts)
         }
+        Rule::checked_statement => {
+            let is_checked = pair.as_str().trim_start().starts_with("checked");
+            let block = pair.into_inner()
+                .find(|p| p.as_rule() == Rule::block_statement)
+                .ok_or("Empty checked statement")?;
+            let mut stmt = walk_statement(block)?;
+            if let StmtKind::Block(body) = &mut stmt.kind {
+                let mut scopes = vec![HashMap::new()];
+                rewrite_checked_numeric_statements(body, &mut scopes, is_checked);
+            }
+            return Ok(stmt);
+        }
         Rule::local_var_declaration => walk_local_var(pair)?,
         Rule::local_function_decl => walk_local_function(pair)?,
         Rule::using_declaration => walk_using_declaration(pair)?,
@@ -2454,16 +3298,13 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     Ok(Statement::with_span(kind, span))
 }
 
-/// Classify an expression statement — detect assignment, compound assignment,
-/// and event `+=` / `-=` patterns. Event subscription becomes the canonical
-/// `AddHandler` / `RemoveHandler` AST node so the compiler routes it through
-/// `compiler_common::gui::emit_bind_event` (the same path VB `Handles`,
-/// JS `addEventListener`, Python `bind`, etc. resolve to).
+/// Classify an expression statement — detect assignment and compound
+/// assignment shapes. C# event/delegate `+=` and `-=` stay as ordinary
+/// compound assignment here; the compiler decides how to lower them from
+/// member/value semantics instead of guessing from naming conventions.
 fn classify_expr_stmt(expr: Expression) -> StmtKind {
-    if should_lower_gui_event_assignment(&expr) {
-        if let Some(kind) = crate::common::events::lower_event_compound_assignment(&expr) {
-            return kind;
-        }
+    if let Some(kind) = lower_array_resize_expr_stmt(&expr) {
+        return kind;
     }
 
     match expr.kind {
@@ -2508,22 +3349,44 @@ fn classify_expr_stmt(expr: Expression) -> StmtKind {
     }
 }
 
-fn should_lower_gui_event_assignment(expr: &Expression) -> bool {
-    let ExprKind::Assign { target, .. } = &expr.kind else {
-        return false;
+fn lower_array_resize_expr_stmt(expr: &Expression) -> Option<StmtKind> {
+    let ExprKind::Call { callee, args, optional: false } = &expr.kind else {
+        return None;
     };
-    let ExprKind::Member { object, .. } = &target.kind else {
-        return false;
-    };
-    is_this_rooted_member(object)
-}
-
-fn is_this_rooted_member(expr: &Expression) -> bool {
-    match &expr.kind {
-        ExprKind::This => true,
-        ExprKind::Member { object, .. } => is_this_rooted_member(object),
-        _ => false,
+    if args.len() != 2 || !args[0].by_ref {
+        return None;
     }
+
+    let array_name = match &args[0].value.kind {
+        ExprKind::Ident(name) => name.clone(),
+        _ => return None,
+    };
+
+    let is_array_resize = match &callee.kind {
+        ExprKind::Member { object, field, null_safe: false } if field.eq_ignore_ascii_case("Resize") => {
+            matches!(&object.kind,
+                ExprKind::Ident(name) if name.eq_ignore_ascii_case("Array")
+            ) || matches!(&object.kind,
+                ExprKind::Member { object: system, field: array, null_safe: false }
+                    if matches!(&system.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("System"))
+                    && array.eq_ignore_ascii_case("Array")
+            )
+        }
+        _ => false,
+    };
+    if !is_array_resize {
+        return None;
+    }
+
+    Some(StmtKind::ReDim {
+        preserve: true,
+        array: array_name,
+        bounds: vec![Expression::new(ExprKind::Binary {
+            op: BinOp::Sub,
+            left: Box::new(args[1].value.clone()),
+            right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(1)))),
+        })],
+    })
 }
 
 fn member_target_eq(obj_a: &Expression, field_a: &str, obj_b: &Expression, field_b: &str) -> bool {
@@ -2824,7 +3687,11 @@ fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
     // Skip type name (var or explicit type)
     let type_hint = match first.as_rule() {
         Rule::var_kw => None,
-        Rule::type_name => Some(first.as_str().to_string()),
+        Rule::type_name
+        | Rule::generic_type_expr
+        | Rule::base_type
+        | Rule::dotted_name
+        | Rule::global_qualified_name => Some(first.as_str().to_string()),
         _ => None,
     };
 
@@ -3802,6 +4669,7 @@ fn walk_constructor(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, St
     let mut params = Vec::new();
     let mut body = Vec::new();
     let mut base_args = None;
+    let mut initializer_target = crate::ast::ConstructorInitializerTarget::Base;
 
     for p in pair.into_inner() {
         match p.as_rule() {
@@ -3810,6 +4678,9 @@ fn walk_constructor(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, St
             Rule::constructor_initializer => {
                 let mut args = Vec::new();
                 for cp in p.into_inner() {
+                    if cp.as_rule() == Rule::this_kw {
+                        initializer_target = crate::ast::ConstructorInitializerTarget::This;
+                    }
                     if cp.as_rule() == Rule::argument_list {
                         args = walk_arguments(cp)?;
                     }
@@ -3850,6 +4721,7 @@ fn walk_constructor(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, St
         params,
         body,
         base_args,
+        initializer_target,
         visibility: Visibility::Public,
     })
 }
@@ -4082,6 +4954,203 @@ fn rewrite_bare_throws_in_stmt(stmt: &mut Statement, var_name: &str) {
     }
 }
 
+fn build_named_tuple_object_expr(span: Span, tuple_names: &[Option<String>], elems: &[Expression]) -> Expression {
+    let mut props = Vec::new();
+    for (index, value) in elems.iter().enumerate() {
+        let item_key = format!("Item{}", index + 1);
+        props.push(ObjectProperty::KeyValue {
+            key: Expression::string(&item_key),
+            value: value.clone(),
+        });
+        if let Some(name) = tuple_names.get(index).and_then(|name| name.as_ref()) {
+            props.push(ObjectProperty::KeyValue {
+                key: Expression::string(name),
+                value: value.clone(),
+            });
+        }
+    }
+    Expression::with_span(ExprKind::Object(props), span)
+}
+
+fn parse_csharp_named_tuple_return_slots(raw_type: &str) -> Option<Vec<Option<String>>> {
+    let trimmed = raw_type.trim();
+    if !trimmed.starts_with('(') || !trimmed.ends_with(')') {
+        return None;
+    }
+
+    let inner = &trimmed[1..trimmed.len().saturating_sub(1)];
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut angle = 0usize;
+    let mut paren = 0usize;
+    let mut bracket = 0usize;
+    for ch in inner.chars() {
+        match ch {
+            '<' => angle += 1,
+            '>' => angle = angle.saturating_sub(1),
+            '(' => paren += 1,
+            ')' => paren = paren.saturating_sub(1),
+            '[' => bracket += 1,
+            ']' => bracket = bracket.saturating_sub(1),
+            ',' if angle == 0 && paren == 0 && bracket == 0 => {
+                parts.push(current.trim().to_string());
+                current.clear();
+                continue;
+            }
+            _ => {}
+        }
+        current.push(ch);
+    }
+    if !current.trim().is_empty() {
+        parts.push(current.trim().to_string());
+    }
+    if parts.len() < 2 {
+        return None;
+    }
+
+    let mut has_named = false;
+    let mut names = Vec::with_capacity(parts.len());
+    for part in parts {
+        let tokens: Vec<&str> = part.split_whitespace().collect();
+        let name = tokens.last().and_then(|candidate| {
+            let candidate = candidate.trim();
+            (tokens.len() >= 2
+                && !candidate.is_empty()
+                && candidate.chars().next().is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
+                && candidate.chars().all(|ch| ch == '_' || ch.is_ascii_alphanumeric()))
+                .then(|| candidate.to_string())
+        });
+        has_named |= name.is_some();
+        names.push(name);
+    }
+
+    has_named.then_some(names)
+}
+
+fn rewrite_named_tuple_returns_in_stmt(stmt: &mut Statement, tuple_names: &[Option<String>]) {
+    match &mut stmt.kind {
+        StmtKind::Return(Some(expr)) => {
+            if let ExprKind::Tuple(elems) = &expr.kind {
+                if elems.len() == tuple_names.len() {
+                    *expr = build_named_tuple_object_expr(expr.span.clone(), tuple_names, elems);
+                }
+            }
+        }
+        StmtKind::Block(body)
+        | StmtKind::For { body, .. }
+        | StmtKind::While { body, .. }
+        | StmtKind::DoWhile { body, .. }
+        | StmtKind::With { body, .. }
+        | StmtKind::Using { body, .. } => {
+            rewrite_named_tuple_returns_in_stmts(body, tuple_names);
+        }
+        StmtKind::ForIn { body, else_body, .. } => {
+            rewrite_named_tuple_returns_in_stmts(body, tuple_names);
+            if let Some(body) = else_body {
+                rewrite_named_tuple_returns_in_stmts(body, tuple_names);
+            }
+        }
+        StmtKind::If { then_body, elifs, else_body, .. } => {
+            rewrite_named_tuple_returns_in_stmts(then_body, tuple_names);
+            for (_, body) in elifs {
+                rewrite_named_tuple_returns_in_stmts(body, tuple_names);
+            }
+            if let Some(body) = else_body {
+                rewrite_named_tuple_returns_in_stmts(body, tuple_names);
+            }
+        }
+        StmtKind::Try { body, catches, else_body, finally } => {
+            rewrite_named_tuple_returns_in_stmts(body, tuple_names);
+            for catch in catches {
+                rewrite_named_tuple_returns_in_stmts(&mut catch.body, tuple_names);
+            }
+            if let Some(body) = else_body {
+                rewrite_named_tuple_returns_in_stmts(body, tuple_names);
+            }
+            if let Some(body) = finally {
+                rewrite_named_tuple_returns_in_stmts(body, tuple_names);
+            }
+        }
+        StmtKind::Switch { cases, default, .. } => {
+            for case in cases {
+                rewrite_named_tuple_returns_in_stmts(&mut case.body, tuple_names);
+            }
+            if let Some(body) = default {
+                rewrite_named_tuple_returns_in_stmts(body, tuple_names);
+            }
+        }
+        StmtKind::Labeled { body, .. } => rewrite_named_tuple_returns_in_stmt(body, tuple_names),
+        StmtKind::FunctionDecl { .. } | StmtKind::ClassDecl { .. } => {}
+        _ => {}
+    }
+}
+
+fn rewrite_named_tuple_returns_in_stmts(stmts: &mut [Statement], tuple_names: &[Option<String>]) {
+    for stmt in stmts {
+        rewrite_named_tuple_returns_in_stmt(stmt, tuple_names);
+    }
+}
+
+fn apply_named_tuple_return_normalization(body: &mut Vec<Statement>, return_type: Option<&str>) {
+    let Some(tuple_names) = return_type.and_then(parse_csharp_named_tuple_return_slots) else {
+        return;
+    };
+    rewrite_named_tuple_returns_in_stmts(body, &tuple_names);
+}
+
+fn apply_initialize_component_event_normalization(body: &mut [Statement]) {
+    for stmt in body {
+        let Some(kind) = lower_initialize_component_event_stmt(stmt) else {
+            continue;
+        };
+        stmt.kind = kind;
+    }
+}
+
+fn lower_initialize_component_event_stmt(stmt: &Statement) -> Option<StmtKind> {
+    let StmtKind::CompoundAssign { target, op, value } = &stmt.kind else {
+        return None;
+    };
+
+    let bin_op = match op {
+        CompoundOp::Add => BinOp::Add,
+        CompoundOp::Sub => BinOp::Sub,
+        _ => return None,
+    };
+
+    if !is_this_rooted_member_target(target) {
+        return None;
+    }
+
+    let expr = Expression::with_span(
+        ExprKind::Assign {
+            target: Box::new(target.clone()),
+            value: Box::new(Expression::with_span(
+                ExprKind::Binary {
+                    op: bin_op,
+                    left: Box::new(target.clone()),
+                    right: Box::new(value.clone()),
+                },
+                stmt.span,
+            )),
+        },
+        stmt.span,
+    );
+
+    crate::common::events::lower_event_compound_assignment(&expr)
+}
+
+fn is_this_rooted_member_target(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Member { object, .. } => match &object.kind {
+            ExprKind::This => true,
+            ExprKind::Member { .. } => is_this_rooted_member_target(object),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Walk a top-level / local function declaration. Same shape as a
 /// class method but lives at statement scope. Lowers to
 /// `StmtKind::FunctionDecl` so the compiler treats it like any other
@@ -4135,6 +5204,7 @@ fn walk_local_function(pair: Pair<Rule>) -> Result<StmtKind, String> {
         inject_csharp_generic_binding_params(&mut params, generic_params.len());
         rewrite_generic_bindings_in_statements(&mut body, &generic_params);
     }
+    apply_named_tuple_return_normalization(&mut body, return_type.as_deref());
     let is_sub = return_type.as_deref() == Some("void");
     let is_generator = body_has_yield(&body);
     Ok(StmtKind::FunctionDecl {
@@ -4406,6 +5476,10 @@ fn walk_method(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String>
     if !generic_params.is_empty() {
         inject_csharp_generic_binding_params(&mut params, generic_params.len());
         rewrite_generic_bindings_in_statements(&mut body, &generic_params);
+    }
+    apply_named_tuple_return_normalization(&mut body, return_type.as_deref());
+    if name.eq_ignore_ascii_case("InitializeComponent") {
+        apply_initialize_component_event_normalization(&mut body);
     }
 
     let is_sub = return_type.as_deref() == Some("void");
@@ -4778,6 +5852,7 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
             params: params.clone(),
             body: ctor_body,
             base_args,
+            initializer_target: crate::ast::ConstructorInitializerTarget::Base,
             visibility: Visibility::Public,
         });
     }
@@ -5711,11 +6786,12 @@ fn walk_param_with_decorators(pair: Pair<Rule>) -> Result<(Param, Vec<Expression
                     _ => {}
                 }
             }
-            Rule::type_name => type_hint = Some(p.as_str().to_string()),
+            Rule::type_name => type_hint = Some(p.as_str().trim().to_string()),
             Rule::ident_name => name = p.as_str().to_string(),
             _ => default = Some(walk_expression(p)?),
         }
     }
+    let is_nullable = type_hint.as_deref().is_some_and(|hint| hint.trim().ends_with('?'));
 
     Ok((
         Param {
@@ -5726,7 +6802,7 @@ fn walk_param_with_decorators(pair: Pair<Rule>) -> Result<(Param, Vec<Expression
             is_rest,
             is_kwargs: false,
             is_optional: false,
-            is_nullable: false,
+            is_nullable,
         },
         decorators,
     ))
@@ -6267,9 +7343,13 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             if inner.len() == 1 {
                 walk_expr_kind(inner.remove(0))
             } else if inner.len() == 3 {
-                let cond = walk_expression(inner.remove(0))?;
-                let then = walk_expression(inner.remove(0))?;
+                let cond_pair = inner.remove(0);
+                let cond = walk_expression(cond_pair.clone())?;
+                let mut then = walk_expression(inner.remove(0))?;
                 let else_ = walk_expression(inner.remove(0))?;
+                if let Some(binding_stmt) = extract_if_is_pattern_binding(cond_pair)? {
+                    then = build_scoped_then_expr(binding_stmt, then);
+                }
                 Ok(ExprKind::Ternary { cond: Box::new(cond), then: Box::new(then), else_: Box::new(else_) })
             } else {
                 walk_expr_kind(inner.remove(0))
@@ -6668,6 +7748,21 @@ fn walk_binary_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
             continue;
         }
 
+        if matches!(bin_op, BinOp::Eq | BinOp::NotEq) {
+            if let Some(tuple_eq) = build_tuple_structural_equality(&left, &right) {
+                left = if matches!(bin_op, BinOp::NotEq) {
+                    Expression::new(ExprKind::Unary {
+                        op: UnaryOp::Not,
+                        expr: Box::new(tuple_eq),
+                    })
+                } else {
+                    tuple_eq
+                };
+                i += 2;
+                continue;
+            }
+        }
+
         left = Expression::new(ExprKind::Binary {
             op: bin_op,
             left: Box::new(left),
@@ -6866,10 +7961,9 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::type_name_for_new => {
-                // Strip generic params: "List<string>" → "List"
                 let raw = p.as_str();
                 raw_type_name = raw.trim().to_string();
-                type_name = raw.split('<').next().unwrap_or(raw).trim().to_string();
+                type_name = strip_csharp_type_path_generic_args(raw);
             }
             Rule::argument_list => args = walk_arguments(p)?,
             Rule::array_initializer => {
@@ -6905,11 +7999,7 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     if !is_array {
                         is_array = true;
                     }
-                    // Capture the size as the first arg so the array
-                    // expression below can preallocate length-N slots.
-                    if args.is_empty() {
-                        args.push(Argument::positional(expr));
-                    }
+                    args.push(Argument::positional(expr));
                 }
             }
         }
@@ -6988,17 +8078,32 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
         });
     }
 
+    // .NET `new string(ch, count)` repeats the single-character string.
+    if type_name == "string" && args.len() == 2 && array_init.is_empty() && obj_init.is_empty() {
+        return Ok(ExprKind::Call {
+            callee: Box::new(Expression::ident("str_repeat")),
+            args: vec![args[0].clone(), args[1].clone()],
+            optional: false,
+        });
+    }
+
     // Build class expression — dotted names become Member chains
     // (e.g. "MyApp.Foo" → Member { Ident("MyApp"), "Foo" })
     let class_expr = build_dotted_expr(&type_name);
 
     if is_array {
-        // `new int[N]` → `Array.from({length: N}, () => 0)` style
-        // pre-fill. We don't have JS Array.from in scope here, so we
-        // synthesize an empty literal — the test exercises plain
-        // indexed assignment, and our VM grows dynamic arrays on
-        // out-of-range writes the same way ECMA-262 §10.4.2 specs.
-        return Ok(ExprKind::Array(Vec::new()));
+        let dimensions: Vec<Expression> = args.iter().map(|arg| arg.value.clone()).collect();
+        if dimensions.is_empty() {
+            return Ok(ExprKind::Array(Vec::new()));
+        }
+
+        let trailing_unspecified_ranks = csharp_array_rank_group_count(&type_name)
+            .saturating_sub(dimensions.len());
+        return Ok(build_csharp_sized_array_expr(
+            &dimensions,
+            &csharp_array_element_type_name(&type_name),
+            trailing_unspecified_ranks,
+        ).kind);
     }
 
     // Object initializer: `new Point { X = 10, Y = 20 }`. The
@@ -7031,6 +8136,166 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
     Ok(ExprKind::New {
         class: Box::new(class_expr),
         args,
+    })
+}
+
+fn csharp_array_rank_group_count(type_name: &str) -> usize {
+    type_name.chars().filter(|ch| *ch == '[').count()
+}
+
+fn csharp_array_element_type_name(type_name: &str) -> String {
+    let mut current = type_name.trim().to_string();
+    loop {
+        let trimmed = current.trim_end();
+        let Some(open_idx) = trimmed.rfind('[') else {
+            break;
+        };
+        let suffix = &trimmed[open_idx..];
+        if suffix.chars().all(|ch| matches!(ch, '[' | ']' | ',' | ' ')) {
+            current = trimmed[..open_idx].trim_end().to_string();
+            continue;
+        }
+        break;
+    }
+    normalize_runtime_type_name(&current)
+}
+
+fn csharp_array_default_expr(type_name: &str) -> Expression {
+    match normalize_runtime_type_name(type_name).to_ascii_lowercase().as_str() {
+        "int" | "int32" | "long" | "int64" | "short" | "int16" | "byte" | "uint"
+        | "uint32" | "ulong" | "uint64" | "ushort" | "uint16" | "sbyte"
+        | "double" | "float" | "single" | "decimal" => Expression::int(0),
+        "bool" | "boolean" => Expression::bool(false),
+        "char" => Expression::new(ExprKind::Lit(Literal::Char('\0'))),
+        _ => Expression::null(),
+    }
+}
+
+fn build_csharp_sized_array_expr(
+    dimensions: &[Expression],
+    element_type: &str,
+    trailing_unspecified_ranks: usize,
+) -> Expression {
+    let init = if dimensions.len() == 1 {
+        if trailing_unspecified_ranks > 0 {
+            Expression::null()
+        } else {
+            csharp_array_default_expr(element_type)
+        }
+    } else {
+        build_csharp_sized_array_expr(&dimensions[1..], element_type, trailing_unspecified_ranks)
+    };
+
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("Array")),
+        args: vec![
+            Argument::positional(dimensions[0].clone()),
+            Argument::positional(init),
+        ],
+        optional: false,
+    })
+}
+
+fn try_csharp_type_name(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(name)) => Some(name.clone()),
+        ExprKind::Ident(name) => Some(name.clone()),
+        ExprKind::Member { .. } => expr_dotted_name(expr),
+        _ => None,
+    }
+}
+
+fn try_csharp_usize_literal(expr: &Expression) -> Option<usize> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(value)) if *value >= 0 => Some(*value as usize),
+        _ => None,
+    }
+}
+
+fn is_csharp_zero_literal(expr: &Expression) -> bool {
+    matches!(expr.kind, ExprKind::Lit(Literal::Int(0)))
+}
+
+fn build_csharp_array_create_instance_expr(args: &[Argument]) -> Option<Expression> {
+    if args.len() < 2 {
+        return None;
+    }
+
+    let type_name = try_csharp_type_name(&args[0].value).unwrap_or_else(|| "object".into());
+    let dimensions: Vec<Expression> = args.iter().skip(1).map(|arg| arg.value.clone()).collect();
+    Some(build_csharp_sized_array_expr(
+        &dimensions,
+        &csharp_array_element_type_name(&type_name),
+        0,
+    ))
+}
+
+fn build_csharp_get_length_expr(receiver: Expression, dimension: usize) -> Expression {
+    let mut target = receiver;
+    for _ in 0..dimension {
+        target = Expression::new(ExprKind::Index {
+            object: Box::new(target),
+            index: Box::new(Expression::int(0)),
+            null_safe: false,
+        });
+    }
+    canonicalize_member_access(target, "Length")
+}
+
+fn build_csharp_math_call(name: &str, arg: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(build_dotted_expr("System.Math")),
+            field: name.to_string(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(arg)],
+        optional: false,
+    })
+}
+
+fn build_csharp_bankers_round_expr(value: Expression) -> Expression {
+    let floor = build_csharp_math_call("Floor", value.clone());
+    let ceil = build_csharp_math_call("Ceiling", value.clone());
+    let frac = Expression::new(ExprKind::Binary {
+        op: BinOp::Sub,
+        left: Box::new(value),
+        right: Box::new(floor.clone()),
+    });
+    let half = Expression::new(ExprKind::Lit(Literal::Float(0.5)));
+    let floor_is_even = Expression::new(ExprKind::Binary {
+        op: BinOp::Eq,
+        left: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::BitAnd,
+            left: Box::new(Expression::new(ExprKind::Cast {
+                expr: Box::new(floor.clone()),
+                type_name: "int".into(),
+            })),
+            right: Box::new(Expression::int(1)),
+        })),
+        right: Box::new(Expression::int(0)),
+    });
+
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::Lt,
+            left: Box::new(frac.clone()),
+            right: Box::new(half.clone()),
+        })),
+        then: Box::new(floor.clone()),
+        else_: Box::new(Expression::new(ExprKind::Ternary {
+            cond: Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::Gt,
+                left: Box::new(frac),
+                right: Box::new(half),
+            })),
+            then: Box::new(ceil.clone()),
+            else_: Box::new(Expression::new(ExprKind::Ternary {
+                cond: Box::new(floor_is_even),
+                then: Box::new(floor),
+                else_: Box::new(ceil),
+            })),
+        })),
     })
 }
 
@@ -7275,6 +8540,20 @@ fn strip_csharp_terminal_type_args(name: &str) -> String {
     };
 
     trimmed[..start_idx].trim_end().to_string()
+}
+
+fn strip_csharp_type_path_generic_args(name: &str) -> String {
+    let mut stripped = String::with_capacity(name.len());
+    let mut depth = 0usize;
+    for ch in strip_global_namespace_qualifier(name.trim()).chars() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => stripped.push(ch),
+            _ => {}
+        }
+    }
+    stripped.trim().to_string()
 }
 
 fn extract_csharp_terminal_type_args(name: &str) -> Vec<String> {
@@ -7912,6 +9191,23 @@ fn build_scoped_guard_expr(cond: Expression, binding_stmt: Statement, guard: Exp
         cond: Box::new(cond),
         then: Box::new(scoped_guard),
         else_: Box::new(Expression::bool(false)),
+    })
+}
+
+fn build_scoped_then_expr(binding_stmt: Statement, then_expr: Expression) -> Expression {
+    let then_lambda = Expression::new(ExprKind::Lambda {
+        params: vec![],
+        body: LambdaBody::Block(vec![
+            binding_stmt,
+            Statement::new(StmtKind::Return(Some(then_expr))),
+        ]),
+        is_async: false,
+        captures: Vec::new(),
+    });
+    Expression::new(ExprKind::Call {
+        callee: Box::new(then_lambda),
+        args: vec![],
+        optional: false,
     })
 }
 
@@ -8600,6 +9896,26 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
     // Instance-method rewrite: `a.CompareTo(b)` → `a < b ? -1 : a > b ? 1 : 0`
     // (works for strings AND numbers — same JS comparison semantics).
     if let ExprKind::Member { object, field, .. } = &callee.kind {
+        if field.eq_ignore_ascii_case("GetLength") && args.len() == 1 {
+            if let Some(dimension) = try_csharp_usize_literal(&args[0].value) {
+                return build_csharp_get_length_expr((**object).clone(), dimension);
+            }
+        }
+        if field.eq_ignore_ascii_case("CopyTo") && args.len() == 2 && is_csharp_zero_literal(&args[1].value) {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(build_dotted_expr("System.Array")),
+                    field: "Copy".into(),
+                    null_safe: false,
+                })),
+                args: vec![
+                    Argument::positional((**object).clone()),
+                    Argument::positional(args[0].value.clone()),
+                    Argument::positional(canonicalize_member_access((**object).clone(), "Length")),
+                ],
+                optional: false,
+            });
+        }
         if field.eq_ignore_ascii_case("ThenBy") && args.len() == 1 {
             if let ExprKind::Call { callee: prior_callee, args: prior_args, .. } = &object.kind {
                 if let ExprKind::Member { field: prior_field, .. } = &prior_callee.kind {
@@ -8663,6 +9979,19 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
             }
         }
         if let Some(path) = expr_dotted_name(object) {
+            if (path.eq_ignore_ascii_case("Math") || path.eq_ignore_ascii_case("System.Math"))
+                && field.eq_ignore_ascii_case("Round")
+                && args.len() == 1
+            {
+                return build_csharp_bankers_round_expr(args[0].value.clone());
+            }
+            if (path.eq_ignore_ascii_case("Array") || path.eq_ignore_ascii_case("System.Array"))
+                && field.eq_ignore_ascii_case("CreateInstance")
+            {
+                if let Some(rewritten) = build_csharp_array_create_instance_expr(&args) {
+                    return rewritten;
+                }
+            }
             if (path.eq_ignore_ascii_case("Array") || path.eq_ignore_ascii_case("System.Array"))
                 && field.eq_ignore_ascii_case("Sort")
                 && args.len() == 2
@@ -9277,11 +10606,7 @@ fn parse_interpolated_parts(s: &str) -> Result<Vec<InterpolPart>, String> {
                 if depth > 0 { i += 1; }
             }
             let expr_str: String = chars[start..i].iter().collect();
-            // Parse the expression
-            let module = super::CSharpParser::parse(super::Rule::expression, &expr_str)
-                .map_err(|e| format!("Interpolation parse error: {}", e))?;
-            let expr_pair = module.into_iter().next().ok_or("Empty interpolation expression")?;
-            let expr = walk_expression(expr_pair)?;
+            let expr = parse_interpolated_expr_text(&expr_str)?;
             parts.push(InterpolPart::Expr(expr));
             i += 1; // skip }
         } else {
@@ -9295,6 +10620,132 @@ fn parse_interpolated_parts(s: &str) -> Result<Vec<InterpolPart>, String> {
     }
 
     Ok(parts)
+}
+
+fn parse_interpolated_expr_text(text: &str) -> Result<Expression, String> {
+    let trimmed = strip_wrapping_parens(text.trim());
+    if let Some((cond_src, then_src, else_src)) = split_top_level_ternary(trimmed) {
+        return Ok(Expression::new(ExprKind::Ternary {
+            cond: Box::new(parse_interpolated_expr_text(cond_src)?),
+            then: Box::new(parse_interpolated_expr_text(then_src)?),
+            else_: Box::new(parse_interpolated_expr_text(else_src)?),
+        }));
+    }
+
+    let mut parsed = CSharpParser::parse(Rule::expression, trimmed)
+        .map_err(|e| format!("Interpolation parse error: {}", e))?;
+    let pair = parsed.next().ok_or("Empty interpolation expression")?;
+    walk_expression(pair)
+}
+
+fn strip_wrapping_parens(mut text: &str) -> &str {
+    loop {
+        let trimmed = text.trim();
+        if !(trimmed.starts_with('(') && trimmed.ends_with(')')) {
+            return trimmed;
+        }
+        let mut depth = 0usize;
+        let mut in_string = false;
+        let mut string_delim = '\0';
+        let mut escaped = false;
+        let mut wraps = true;
+        for (idx, ch) in trimmed.char_indices() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                if ch == '\\' {
+                    escaped = true;
+                    continue;
+                }
+                if ch == string_delim {
+                    in_string = false;
+                    string_delim = '\0';
+                }
+                continue;
+            }
+            match ch {
+                '"' | '\'' => {
+                    in_string = true;
+                    string_delim = ch;
+                }
+                '(' => depth += 1,
+                ')' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 && idx + ch.len_utf8() < trimmed.len() {
+                        wraps = false;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !wraps {
+            return trimmed;
+        }
+        text = &trimmed[1..trimmed.len() - 1];
+    }
+}
+
+fn split_top_level_ternary(text: &str) -> Option<(&str, &str, &str)> {
+    let mut paren = 0usize;
+    let mut bracket = 0usize;
+    let mut brace = 0usize;
+    let mut in_string = false;
+    let mut string_delim = '\0';
+    let mut escaped = false;
+    let mut question_idx = None;
+    let mut ternary_depth = 0usize;
+
+    for (idx, ch) in text.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == string_delim {
+                in_string = false;
+                string_delim = '\0';
+            }
+            continue;
+        }
+
+        match ch {
+            '"' | '\'' => {
+                in_string = true;
+                string_delim = ch;
+            }
+            '(' => paren += 1,
+            ')' => paren = paren.saturating_sub(1),
+            '[' => bracket += 1,
+            ']' => bracket = bracket.saturating_sub(1),
+            '{' => brace += 1,
+            '}' => brace = brace.saturating_sub(1),
+            '?' if paren == 0 && bracket == 0 && brace == 0 => {
+                question_idx.get_or_insert(idx);
+                ternary_depth += 1;
+            }
+            ':' if paren == 0 && bracket == 0 && brace == 0 && ternary_depth > 0 => {
+                ternary_depth -= 1;
+                if ternary_depth == 0 {
+                    let q = question_idx?;
+                    return Some((
+                        text[..q].trim(),
+                        text[q + 1..idx].trim(),
+                        text[idx + 1..].trim(),
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
 }
 
 fn compound_to_binop(op: CompoundOp) -> BinOp {

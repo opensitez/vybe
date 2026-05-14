@@ -262,6 +262,7 @@ delegate_declaration = {
 statement = _{
     empty_statement
     | block_statement
+    | checked_statement
     // `var (a, b) = f();` — tuple deconstruction declaration. Listed
     // before `local_var_declaration` so the `(` token is committed to
     // the deconstruction parse before the general `var name = expr;`
@@ -301,6 +302,8 @@ local_function_decl = {
 empty_statement = { ";" }
 
 block_statement = { "{" ~ statement* ~ "}" }
+
+checked_statement = { ("checked" | "unchecked") ~ block_statement }
 
 // ── Variable declaration ────────────────────────────────────────────────────
 
@@ -605,22 +608,8 @@ unary = {
 // alternative doesn't fit.
 cast_expression = { "(" ~ cast_type ~ ")" ~ unary }
 cast_type = {
-    "int" ~ !(ASCII_ALPHANUMERIC | "_")
-    | "long" ~ !(ASCII_ALPHANUMERIC | "_")
-    | "short" ~ !(ASCII_ALPHANUMERIC | "_")
-    | "byte" ~ !(ASCII_ALPHANUMERIC | "_")
-    | "float" ~ !(ASCII_ALPHANUMERIC | "_")
-    | "double" ~ !(ASCII_ALPHANUMERIC | "_")
-    | "decimal" ~ !(ASCII_ALPHANUMERIC | "_")
-    | "char" ~ !(ASCII_ALPHANUMERIC | "_")
-    | "string" ~ !(ASCII_ALPHANUMERIC | "_")
-    | "bool" ~ !(ASCII_ALPHANUMERIC | "_")
-    | "uint" ~ !(ASCII_ALPHANUMERIC | "_")
-    | "ulong" ~ !(ASCII_ALPHANUMERIC | "_")
-    | "ushort" ~ !(ASCII_ALPHANUMERIC | "_")
-    | "sbyte" ~ !(ASCII_ALPHANUMERIC | "_")
-    | "object" ~ !(ASCII_ALPHANUMERIC | "_")
-    | type_name
+    base_type ~ generic_type_args? ~ nullable_marker? ~ array_rank*
+    | tuple_type
 }
 
 // Keyword operators — atomic for word boundaries
@@ -676,7 +665,8 @@ new_expression = {
     )?
 }
 
-type_name_for_new = { base_type ~ generic_type_args? }
+type_name_for_new = { type_name_for_new_segment ~ ("." ~ type_name_for_new_segment)* }
+type_name_for_new_segment = { ident_or_keyword ~ generic_type_args? }
 
 generic_type_args = _{ "<" ~ type_name ~ ("," ~ type_name)* ~ ">" }
 

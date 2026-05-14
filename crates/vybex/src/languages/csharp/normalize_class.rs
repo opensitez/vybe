@@ -23,7 +23,7 @@
 //!   - Populates `auto_init_methods` for `InitializeComponent` (the
 //!     WinForms convention — C# ctors implicitly call it).
 
-use crate::ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind, Visibility};
+use crate::ast::{ClassMember, ClassModifiers, ConstructorInitializerTarget, Modifiers, PropertySetter, Span, StmtKind, Visibility};
 use crate::common::classes::{
     build_normal_method,
     canonical::{canonicalize_method, ClassLang},
@@ -45,6 +45,7 @@ pub fn normalize_class(
     let mut instance_methods: Vec<NormalMethod> = Vec::new();
     let mut static_methods: Vec<NormalMethod> = Vec::new();
     let mut properties: Vec<NormalProperty> = Vec::new();
+    let mut constructors: Vec<NormalConstructor> = Vec::new();
     let mut constructor: Option<NormalConstructor> = None;
     let mut destructor: Option<NormalMethod> = None;
     let mut special_methods: Vec<SpecialMethod> = Vec::new();
@@ -109,22 +110,29 @@ pub fn normalize_class(
                     instance_methods.push(method);
                 }
             }
-            ClassMember::Constructor { params, body, base_args, .. } => {
-                constructor = Some(NormalConstructor {
+            ClassMember::Constructor { params, body, base_args, initializer_target, .. } => {
+                let normalized = NormalConstructor {
                     span: span.clone(),
                     params: params.clone(),
                     body: body.clone(),
                     base_call: match base_args {
-                        Some(args) => BaseCall::Explicit(
-                            args.iter().map(|e| crate::ast::Argument::positional(e.clone())).collect(),
-                        ),
+                        Some(args) => match initializer_target {
+                            ConstructorInitializerTarget::Base => BaseCall::Explicit(
+                                args.iter().map(|e| crate::ast::Argument::positional(e.clone())).collect(),
+                            ),
+                            ConstructorInitializerTarget::This => BaseCall::This(
+                                args.iter().map(|e| crate::ast::Argument::positional(e.clone())).collect(),
+                            ),
+                        },
                         // C#: if no `: base(...)` clause and there IS a
                         // parent class, C# auto-invokes the parameterless
                         // parent ctor. Mirror with Auto.
                         None => if parents.is_empty() { BaseCall::None } else { BaseCall::Auto },
                     },
                     named_name: None,
-                });
+                };
+                constructor = Some(normalized.clone());
+                constructors.push(normalized);
             }
             ClassMember::Property { name: pname, getter, setter, is_auto, modifiers: m, .. } => {
                 let (canonical, _) = canonicalize_method(ClassLang::CSharp, pname);
@@ -171,6 +179,7 @@ pub fn normalize_class(
         instance_methods,
         static_methods,
         properties,
+        constructors,
         constructor,
         destructor,
         auto_init_methods,
