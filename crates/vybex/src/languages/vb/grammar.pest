@@ -68,6 +68,7 @@ statement = _{
     | continue_statement
     | exit_statement
     | throw_statement
+    | yield_statement
     | return_statement
     | on_error_statement
     | resume_statement
@@ -114,6 +115,7 @@ preserve_keyword = { ^"Preserve" }
 redim_statement = { ^"ReDim" ~ preserve_keyword? ~ identifier ~ "(" ~ array_bounds ~ ")" }
 erase_statement = { ^"Erase" ~ identifier }
 raiseevent_statement = { ^"RaiseEvent" ~ identifier ~ ("(" ~ argument_list? ~ ")")? }
+yield_statement = { ^"Yield" ~ expression? }
 
 // Array support
 array_bounds = { expression ~ ("," ~ expression)* }
@@ -124,7 +126,8 @@ single_line_if_statement = {
     ^"If" ~ expression ~ ^"Then" ~ single_line_stmt ~ (^"Else" ~ single_line_stmt)?
 }
 single_line_stmt = _{
-    return_statement
+    yield_statement
+    | return_statement
     | exit_statement
     | continue_statement
     | erase_statement
@@ -627,7 +630,7 @@ member_identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
 // Keywords
 keyword = _{
-    (^"Me" | ^"If" | ^"Then" | ^"Else" | ^"End" | ^"Sub" | ^"Function" | ^"Dim" | ^"ReDim" | ^"Preserve" | ^"Const" | ^"As" | ^"Set" | ^"For" | ^"To" | ^"Step" | ^"Next" | ^"While" | ^"Wend" | ^"Do" | ^"Loop" | ^"Until" | ^"Exit" | ^"Return" | ^"Call" | ^"True" | ^"False" | ^"Nothing" | ^"Not" | ^"Or" | ^"And" | ^"Xor" | ^"Eqv" | ^"Imp" | ^"Mod" | ^"Module" | ^"Class" | ^"Private" | ^"Public" | ^"ByVal" | ^"ByRef" | ^"Select" | ^"Case" | ^"Try" | ^"Catch" | ^"Finally" | ^"Continue" | ^"New" | ^"When" | ^"Partial" | ^"Friend" | ^"Protected" | ^"Overrides" | ^"Overloads" | ^"Shared" | ^"WithEvents" | ^"Handles" | ^"Imports" | ^"Is" | ^"IsNot" | ^"AndAlso" | ^"OrElse" | ^"Optional" | ^"ParamArray" | ^"MyBase" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" | ^"With" | ^"Each" | ^"In" | ^"Enum" | ^"Open" | ^"Close" | ^"Print" | ^"Line" | ^"Input" | ^"Write" | ^"Append" | ^"Output" | ^"Binary" | ^"Random" | ^"RaiseEvent" | ^"TypeOf" | ^"Throw" | ^"AddHandler" | ^"RemoveHandler" | ^"GoTo" | ^"Static" | ^"Interface" | ^"Structure" | ^"Delegate" | ^"Event" | ^"Resume" | ^"Namespace" | ^"Using" | ^"SyncLock")
+    (^"Me" | ^"If" | ^"Then" | ^"Else" | ^"End" | ^"Sub" | ^"Function" | ^"Dim" | ^"ReDim" | ^"Preserve" | ^"Const" | ^"As" | ^"Set" | ^"For" | ^"To" | ^"Step" | ^"Next" | ^"While" | ^"Wend" | ^"Do" | ^"Loop" | ^"Until" | ^"Exit" | ^"Return" | ^"Yield" | ^"Call" | ^"True" | ^"False" | ^"Nothing" | ^"Not" | ^"Or" | ^"And" | ^"Xor" | ^"Eqv" | ^"Imp" | ^"Mod" | ^"Module" | ^"Class" | ^"Private" | ^"Public" | ^"ByVal" | ^"ByRef" | ^"Select" | ^"Case" | ^"Try" | ^"Catch" | ^"Finally" | ^"Continue" | ^"New" | ^"When" | ^"Partial" | ^"Friend" | ^"Protected" | ^"Overrides" | ^"Overloads" | ^"Shared" | ^"WithEvents" | ^"Handles" | ^"Imports" | ^"Is" | ^"IsNot" | ^"AndAlso" | ^"OrElse" | ^"Optional" | ^"ParamArray" | ^"MyBase" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" | ^"With" | ^"Each" | ^"In" | ^"Enum" | ^"Open" | ^"Close" | ^"Print" | ^"Line" | ^"Input" | ^"Write" | ^"Append" | ^"Output" | ^"Binary" | ^"Random" | ^"RaiseEvent" | ^"TypeOf" | ^"Throw" | ^"AddHandler" | ^"RemoveHandler" | ^"GoTo" | ^"Static" | ^"Interface" | ^"Structure" | ^"Delegate" | ^"Event" | ^"Resume" | ^"Namespace" | ^"Using" | ^"SyncLock")
     ~ !(ASCII_ALPHANUMERIC | "_")
 }
 

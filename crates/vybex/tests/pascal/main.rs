@@ -20,6 +20,7 @@ mod test_programs_extended;
 mod test_oop_patterns;
 mod test_records_types;
 mod test_exceptions;
+mod test_generators;
 mod test_string_ops;
 mod test_closures;
 mod test_idioms;

@@ -44,7 +44,7 @@ fn bind_guid_to_string(chunks: &mut Vec<Chunk>, current: usize, this_slot: u16, 
     method.local_count = 1;
     chunks.push(method);
     let method_idx = chunks.len() - 1;
-    emit_bind_method_with_aliases(&mut chunks[current], this_slot, "tostring", method_idx, line);
+    emit_bind_method_with_aliases(&mut chunks[current], this_slot, "tostring", method_idx, None, line);
 }
 
 fn emit_wrap_guid_from_slot(chunks: &mut Vec<Chunk>, current: usize, text_slot: u16, line: u32) {

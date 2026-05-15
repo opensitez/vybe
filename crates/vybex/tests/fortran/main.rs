@@ -5,6 +5,7 @@ mod test_control_flow;
 mod test_do_loops;
 mod test_full_programs;
 mod test_functions;
+mod test_generators;
 mod test_if_blocks;
 mod test_intrinsic_math;
 mod test_intrinsic_string;

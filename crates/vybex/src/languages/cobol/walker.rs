@@ -833,6 +833,8 @@ fn walk_paragraph(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), Str
         return Ok(());
     }
 
+    let is_generator = body_has_yield(&para_body);
+
     body.push(Statement::with_span(
         StmtKind::FunctionDecl {
             name,
@@ -842,7 +844,7 @@ fn walk_paragraph(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), Str
             modifiers: Modifiers::default(),
             handles: Vec::new(),
             is_async: false,
-            is_generator: false,
+            is_generator,
             is_sub: true,
         },
         span,
@@ -876,6 +878,8 @@ fn walk_section(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), Strin
         return Ok(());
     }
 
+    let is_generator = body_has_yield(&section_body);
+
     body.push(Statement::with_span(
         StmtKind::FunctionDecl {
             name,
@@ -885,7 +889,7 @@ fn walk_section(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), Strin
             modifiers: Modifiers::default(),
             handles: Vec::new(),
             is_async: false,
-            is_generator: false,
+            is_generator,
             is_sub: true,
         },
         span,
@@ -3314,6 +3318,7 @@ fn walk_method_def(pair: Pair<Rule>) -> Result<Statement, String> {
     modifiers.is_override = is_override;
 
     let is_sub = return_type.is_none();
+    let is_generator = body_has_yield(&body);
 
     Ok(Statement::with_span(
         StmtKind::FunctionDecl {
@@ -3324,7 +3329,7 @@ fn walk_method_def(pair: Pair<Rule>) -> Result<Statement, String> {
             modifiers,
             handles: Vec::new(),
             is_async: false,
-            is_generator: false,
+            is_generator,
             is_sub,
         },
         span,

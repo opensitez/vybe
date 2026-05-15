@@ -27,6 +27,7 @@ compile_case!(iter_custom_iter_compile, "class Counter:\n    def __iter__(self):
 compile_case!(iter_custom_for_compile, "class Counter:\n    def __iter__(self):\n        return self\n    def __next__(self):\n        raise StopIteration\nfor item in Counter():\n    print(item)\n");
 compile_case!(generator_send_compile, "def gen():\n    value = yield 1\n    yield value\n\ng = gen()\ng.send(None)\n");
 compile_case!(generator_send_value_compile, "def gen():\n    x = yield 1\n    yield x\n\ng = gen()\nnext(g)\ng.send(42)\n");
+compile_case!(generator_throw_before_start_compile, "def gen():\n    try:\n        yield 1\n    except ValueError:\n        yield 2\n\ng = gen()\ng.throw(ValueError())\n");
 compile_case!(generator_throw_compile, "def gen():\n    try:\n        yield 1\n    except ValueError:\n        yield 2\n\ng = gen()\nnext(g)\ng.throw(ValueError())\n");
 compile_case!(generator_close_compile, "def gen():\n    yield 1\n\ng = gen()\ng.close()\n");
 compile_case!(generator_return_value_compile, "def gen():\n    yield 1\n    return 99\n");

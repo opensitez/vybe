@@ -787,6 +787,10 @@ fn merge_separated_methods(body: &mut Vec<Statement>) {
                             *mr = ret.clone();
                             *mm = mods.clone();
                             *ms = is_sub;
+                            let is_generator = body_has_yield(mb);
+                            if let StmtKind::FunctionDecl { is_generator: flag, .. } = &mut stmt.kind {
+                                *flag = is_generator;
+                            }
                             attached = true;
                             break;
                         }
@@ -921,7 +925,7 @@ fn lower_pascal_builtin_helper_members(target_name: &str, members: &[ClassMember
                 modifiers: modifiers.clone(),
                 handles: Vec::new(),
                 is_async: false,
-                is_generator: false,
+                is_generator: body_has_yield(body),
                 is_sub: *is_sub,
             },
             stmt.span.clone(),
@@ -1881,6 +1885,8 @@ fn walk_method_impl_proc(pair: Pair<Rule>, span: Span) -> Result<Statement, Stri
         }
     }
 
+    let is_generator = body_has_yield(&body);
+
     Ok(Statement::with_span(StmtKind::FunctionDecl {
         name: format!("{}.{}", class_name, method_name),
         params,
@@ -1889,7 +1895,7 @@ fn walk_method_impl_proc(pair: Pair<Rule>, span: Span) -> Result<Statement, Stri
         modifiers: Modifiers::default(),
         handles: Vec::new(),
         is_async: false,
-        is_generator: false,
+        is_generator,
         is_sub: true,
     }, span))
 }
@@ -1917,6 +1923,8 @@ fn walk_method_impl_func(pair: Pair<Rule>, span: Span) -> Result<Statement, Stri
         }
     }
 
+    let is_generator = body_has_yield(&body);
+
     Ok(Statement::with_span(StmtKind::FunctionDecl {
         name: format!("{}.{}", class_name, method_name),
         params,
@@ -1925,7 +1933,7 @@ fn walk_method_impl_func(pair: Pair<Rule>, span: Span) -> Result<Statement, Stri
         modifiers: Modifiers::default(),
         handles: Vec::new(),
         is_async: false,
-        is_generator: false,
+        is_generator,
         is_sub: false,
     }, span))
 }
@@ -1972,6 +1980,8 @@ fn walk_method_impl_body_proc(pair: Pair<Rule>, span: Span, _is_constructor: boo
         }
     }
 
+    let is_generator = body_has_yield(&body);
+
     Ok(Statement::with_span(StmtKind::FunctionDecl {
         name: format!("{}.{}", class_name, method_name),
         params,
@@ -1980,7 +1990,7 @@ fn walk_method_impl_body_proc(pair: Pair<Rule>, span: Span, _is_constructor: boo
         modifiers: Modifiers::default(),
         handles: Vec::new(),
         is_async: false,
-        is_generator: false,
+        is_generator,
         is_sub: true,
     }, span))
 }
@@ -2016,6 +2026,8 @@ fn walk_standalone_procedure(pair: Pair<Rule>, span: Span) -> Result<Statement, 
         return Ok(Statement::with_span(StmtKind::Empty, span));
     }
 
+    let is_generator = body_has_yield(&body);
+
     Ok(Statement::with_span(StmtKind::FunctionDecl {
         name,
         params,
@@ -2024,7 +2036,7 @@ fn walk_standalone_procedure(pair: Pair<Rule>, span: Span) -> Result<Statement, 
         modifiers,
         handles: Vec::new(),
         is_async: false,
-        is_generator: false,
+        is_generator,
         is_sub: true,
     }, span))
 }
@@ -2061,6 +2073,8 @@ fn walk_standalone_function(pair: Pair<Rule>, span: Span) -> Result<Statement, S
         return Ok(Statement::with_span(StmtKind::Empty, span));
     }
 
+    let is_generator = body_has_yield(&body);
+
     Ok(Statement::with_span(StmtKind::FunctionDecl {
         name,
         params,
@@ -2069,7 +2083,7 @@ fn walk_standalone_function(pair: Pair<Rule>, span: Span) -> Result<Statement, S
         modifiers,
         handles: Vec::new(),
         is_async: false,
-        is_generator: false,
+        is_generator,
         is_sub: false,
     }, span))
 }
@@ -2193,6 +2207,10 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         Rule::with_statement => walk_with_statement(inner)?,
         Rule::try_statement => walk_try_statement(inner)?,
         Rule::raise_statement => walk_raise_statement(inner)?,
+        Rule::yield_statement => {
+            let value = inner.into_inner().next().map(walk_expression).transpose()?.map(Box::new);
+            StmtKind::Expr(Expression::new(ExprKind::Yield(value)))
+        }
         Rule::exit_statement => walk_exit_statement(inner)?,
         Rule::halt_statement => walk_halt_statement(inner)?,
         Rule::break_statement => StmtKind::Break(BreakTarget::Implicit),

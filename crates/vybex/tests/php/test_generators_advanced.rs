@@ -149,6 +149,24 @@ foreach (csvRows($csv) as $idx => $row) {
 "#), &["0: Alice is 30", "1: Bob is 25"]);
 }
 
+#[test]
+fn generator_yields_map_values() {
+    assert_eq!(run_prints(r#"<?php
+function csvRows(string $csv) {
+    $lines = explode("\n", trim($csv));
+    $headers = str_getcsv(array_shift($lines));
+    foreach ($lines as $line) {
+        $values = str_getcsv($line);
+        yield array_combine($headers, $values);
+    }
+}
+$csv = "name,age\nAlice,30\nBob,25";
+foreach (csvRows($csv) as $row) {
+    echo "{$row['name']} is {$row['age']}";
+}
+"#), &["Alice is 30", "Bob is 25"]);
+}
+
 // ── Generator valid/rewind ───────────────────────────────────────
 #[test]
 fn generator_valid_check() {
@@ -249,6 +267,38 @@ $gen->next();
 echo $gen->current();
 $gen->throw(new Exception("stop"));
 "#), &["1", "2", "caught: stop"]);
+}
+
+#[test]
+fn generator_throw_before_first_yield() {
+    assert_eq!(run_prints(r#"<?php
+function handled() {
+    try {
+        yield "ready";
+    } catch (Exception $e) {
+        echo "caught";
+        yield "handled";
+    }
+}
+$gen = handled();
+echo $gen->throw(new Exception("stop"));
+"#), &["caught", "handled"]);
+}
+
+#[test]
+fn generator_variadic_throw_before_first_yield() {
+    assert_eq!(run_prints(r#"<?php
+function handled($head, ...$rest) {
+    try {
+        yield count($rest);
+    } catch (Exception $e) {
+        echo implode(',', $rest);
+        yield $e->getMessage();
+    }
+}
+$gen = handled('a', 'b', 'c');
+echo $gen->throw(new Exception('stop'));
+"#), &["b,c", "stop"]);
 }
 
 // ── Coroutine pattern ────────────────────────────────────────────

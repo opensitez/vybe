@@ -69,7 +69,11 @@ impl Compiler {
         let name = &cname;
 
         let has_rest = params.last().map_or(false, |p| p.is_rest);
-        let arity: u8 = if has_rest { 255 } else { params.len() as u8 };
+        let generator_control_arity = usize::from(is_generator && !has_rest);
+        let arity: u8 = (params.len() + generator_control_arity) as u8;
+        if has_rest {
+            self.rest_fixed_arities.insert(params.len().saturating_sub(1) as u8);
+        }
         let func_idx = self.chunks.len();
         let mut chunk = common::functions::create_function_chunk(name, arity);
         // Mark the chunk so the WASM emitter can list it in the
@@ -128,65 +132,10 @@ impl Compiler {
             }
         }
 
-        // Rest param preamble: collect excess args into an array.
-        // With arity=255 the VM doesn't truncate excess args. They land in
-        // sequential slots after the non-rest params. We scan those slots
-        // with unrolled local_get + null-check (local_get is static u16).
-        // Caps at 16 rest args which covers all realistic use cases.
-        if has_rest {
-            let rest_name = &params.last().unwrap().name;
-            let rest_slot = self.scope().resolve(rest_name).unwrap();
-            let mut direct_array_passthrough = None;
-            if self.profile.name == "csharp" {
-                self.emit_u16(Op::LOCAL_GET, rest_slot + 1);
-                self.emit(Op::REF_IS_NULL);
-                let not_single_arg = self.emit_jump(Op::BR_IF_FALSE);
-                self.emit_u16(Op::LOCAL_GET, rest_slot);
-                let is_array_idx = self.import("ecma:array", "isArray");
-                self.emit_host_call(is_array_idx, 1);
-                let not_array = self.emit_jump(Op::BR_IF_FALSE);
-                direct_array_passthrough = Some(self.emit_jump(Op::BR));
-                self.patch_jump(not_single_arg);
-                self.patch_jump(not_array);
-            }
-            // Build array from slots rest_slot..rest_slot+16, stopping at null.
-            // Pattern per slot: if local[N] is null → jump to done; else arr.push(local[N])
-            // Build rest array via `common::collections` so the provider
-            // is swappable in one place. `ecma:array.push` returns
-            // new_length (ECMA-262), not arr, so we stash arr in a
-            // scope-local and reload each iteration.
-            let line = self.line;
-            // Reserve the 16 rest-arg slots before allocating `__rest_arr` so
-            // the accumulator doesn't overwrite an incoming rest argument.
-            // (The VM parks overflow args in slots rest_slot..rest_slot+argc-arity;
-            // without this reservation, `__rest_arr` landed on the second rest arg,
-            // triggering a self-referential push loop.)
-            let max_rest = 16u16;
-            for i in 1..max_rest {
-                self.define_local(&format!("__rest_reserved_{}", i));
-            }
-            common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
-            let rest_arr = self.define_local("__rest_arr");
-            self.emit_u16(Op::LOCAL_SET, rest_arr); self.emit(Op::DROP);
-            let mut done_patches: Vec<usize> = Vec::new();
-            for i in 0..max_rest {
-                let slot = rest_slot + i;
-                self.emit_u16(Op::LOCAL_GET, slot);
-                self.emit(Op::REF_IS_NULL);
-                done_patches.push(self.emit_jump(Op::BR_IF_TRUE)); // null → done
-                self.emit_u16(Op::LOCAL_GET, rest_arr);
-                self.emit_u16(Op::LOCAL_GET, slot);
-                common::collections::emit_push(&mut self.chunks, self.current, line);
-                self.emit(Op::DROP); // drop new_length
-            }
-            for p in done_patches { self.patch_jump(p); }
-            // Store rest array back into the rest_slot param position.
-            self.emit_u16(Op::LOCAL_GET, rest_arr);
-            self.emit_u16(Op::LOCAL_SET, rest_slot);
-            self.emit(Op::DROP);
-            if let Some(skip) = direct_array_passthrough {
-                self.patch_jump(skip);
-            }
+        let generator_control_slot = is_generator.then(|| self.define_local("__generator_entry_control"));
+
+        if let Some(control_slot) = generator_control_slot {
+            self.emit_generator_entry_control(control_slot)?;
         }
 
         // Result slot for functions with return type (Pascal/VB Function).
@@ -276,6 +225,9 @@ impl Compiler {
         for uv in &uvs {
             self.chunks[self.current].emit(if uv.is_local { 1 } else { 0 }, line);
             self.chunks[self.current].emit(uv.index, line);
+        }
+        if has_rest {
+            self.emit_stamp_rest_metadata_on_stack(params.len().saturating_sub(1));
         }
         let idx = self.str_const(name);
         self.emit_u16(Op::GLOBAL_SET, idx);
@@ -585,16 +537,22 @@ impl Compiler {
             }
             let uses_js_this = cc.is_js_profile();
             let has_rest = user_params.last().map_or(false, |p| p.is_rest);
-            let arity = if has_rest {
-                255u8
-            } else if is_static_init {
-                user_params.len() as u8
+            let generator_control_arity = usize::from(m.is_generator && !has_rest);
+            if has_rest {
+                cc.rest_fixed_arities.insert(user_params.len().saturating_sub(1) as u8);
+            }
+            let arity = if is_static_init {
+                (user_params.len() + generator_control_arity) as u8
             } else if is_static {
-                user_params.len() as u8
+                if cc.profile.name == "php" {
+                    (user_params.len() + 1 + generator_control_arity) as u8
+                } else {
+                    (user_params.len() + generator_control_arity) as u8
+                }
             } else if uses_js_this {
-                user_params.len() as u8
+                (user_params.len() + generator_control_arity) as u8
             } else {
-                (user_params.len() + 1) as u8
+                (user_params.len() + 1 + generator_control_arity) as u8
             };
 
             let ci = cc.chunks.len();
@@ -613,12 +571,13 @@ impl Compiler {
             let saved = cc.current;
             cc.current = ci;
 
-            if !uses_js_this && !is_static_init && !is_static {
+            if !uses_js_this && !is_static_init && (!is_static || cc.profile.name == "php") {
                 cc.define_local(&self_kw);
             }
             for p in &user_params {
                 cc.define_local_typed(&p.name, p.type_hint.clone());
             }
+            let generator_control_slot = m.is_generator.then(|| cc.define_local("__generator_entry_control"));
             let ref_out_slots: Vec<u16> = user_params.iter()
                 .filter(|param| matches!(param.pass_by, PassBy::Ref | PassBy::Out))
                 .filter_map(|param| cc.scope().resolve(&param.name))
@@ -632,51 +591,8 @@ impl Compiler {
             cc.current_ref_out_params = (!ref_out_slots.is_empty()).then_some(ref_out_slots);
             cc.current_member_is_static = is_static;
 
-            // Rest param preamble: collect excess args into an array.
-            // Mirrors `compile_function_decl` so methods with `params T[] xs`
-            // get the same variadic semantics as free functions.
-            if has_rest {
-                let rest_name = &user_params.last().unwrap().name;
-                let rest_slot = cc.scope().resolve(rest_name).unwrap();
-                let line = cc.line;
-                let mut direct_array_passthrough = None;
-                if cc.profile.name == "csharp" {
-                    cc.emit_u16(Op::LOCAL_GET, rest_slot + 1);
-                    cc.emit(Op::REF_IS_NULL);
-                    let not_single_arg = cc.emit_jump(Op::BR_IF_FALSE);
-                    cc.emit_u16(Op::LOCAL_GET, rest_slot);
-                    let is_array_idx = cc.import("ecma:array", "isArray");
-                    cc.emit_host_call(is_array_idx, 1);
-                    let not_array = cc.emit_jump(Op::BR_IF_FALSE);
-                    direct_array_passthrough = Some(cc.emit_jump(Op::BR));
-                    cc.patch_jump(not_single_arg);
-                    cc.patch_jump(not_array);
-                }
-                let max_rest = 16u16;
-                for i in 1..max_rest {
-                    cc.define_local(&format!("__rest_reserved_{}", i));
-                }
-                common::collections::emit_array_new(&mut cc.chunks, cc.current, 0, line);
-                let rest_arr = cc.define_local("__rest_arr");
-                cc.emit_u16(Op::LOCAL_SET, rest_arr); cc.emit(Op::DROP);
-                let mut done_patches: Vec<usize> = Vec::new();
-                for i in 0..max_rest {
-                    let slot = rest_slot + i;
-                    cc.emit_u16(Op::LOCAL_GET, slot);
-                    cc.emit(Op::REF_IS_NULL);
-                    done_patches.push(cc.emit_jump(Op::BR_IF_TRUE));
-                    cc.emit_u16(Op::LOCAL_GET, rest_arr);
-                    cc.emit_u16(Op::LOCAL_GET, slot);
-                    common::collections::emit_push(&mut cc.chunks, cc.current, line);
-                    cc.emit(Op::DROP);
-                }
-                for p in done_patches { cc.patch_jump(p); }
-                cc.emit_u16(Op::LOCAL_GET, rest_arr);
-                cc.emit_u16(Op::LOCAL_SET, rest_slot);
-                cc.emit(Op::DROP);
-                if let Some(skip) = direct_array_passthrough {
-                    cc.patch_jump(skip);
-                }
+            if let Some(control_slot) = generator_control_slot {
+                cc.emit_generator_entry_control(control_slot)?;
             }
 
             // Default parameters (C# `string greeting = "Hello"`): if
@@ -752,6 +668,9 @@ impl Compiler {
                 overloads.entry(bound_name.clone()).or_default().push(PendingMethodOverload {
                     param_types,
                     chunk_idx: ci,
+                    signature: CallSignature::from_params(
+                        &user_params.iter().map(|param| (*param).clone()).collect::<Vec<_>>()
+                    ),
                 });
             }
             method_chunks.push((bound_name, ci, is_ctor, is_static));
@@ -891,6 +810,15 @@ impl Compiler {
         let instance_method_names: Vec<String> = instance_methods.iter()
             .map(|(n, _, _, _)| n.clone())
             .collect();
+        let method_rest_fixed_counts: HashMap<usize, u8> = self.pending_classes.values()
+            .flat_map(|pc| pc.instance_method_overloads.values().chain(pc.static_method_overloads.values()))
+            .flat_map(|overloads| overloads.iter())
+            .filter(|overload| overload.signature.has_rest)
+            .map(|overload| (overload.chunk_idx, overload.signature.param_names.len().saturating_sub(1) as u8))
+            .collect();
+        let method_rest_fixed_count = |chunk_idx: usize| {
+            method_rest_fixed_counts.get(&chunk_idx).copied()
+        };
 
         let ctor_variants: Vec<Option<&NormalConstructor>> = if !class.constructors.is_empty() {
             class.constructors.iter().map(Some).collect()
@@ -1029,9 +957,9 @@ impl Compiler {
                         common::classes::emit_bind_setter(self.chunk(), this_slot, prop, *mci, line);
                     } else {
                         if self.is_js_profile() {
-                            common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                            common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, method_rest_fixed_count(*mci), line);
                         } else {
-                            common::classes::emit_bind_bound_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                            common::classes::emit_bind_bound_method_with_aliases(self.chunk(), this_slot, mname, *mci, method_rest_fixed_count(*mci), line);
                         }
                     }
                 }
@@ -1159,9 +1087,9 @@ impl Compiler {
                                 common::classes::emit_bind_setter(self.chunk(), this_slot, prop, *mci, line);
                             } else {
                                 if self.is_js_profile() {
-                                    common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                                    common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, method_rest_fixed_count(*mci), line);
                                 } else {
-                                    common::classes::emit_bind_bound_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                                    common::classes::emit_bind_bound_method_with_aliases(self.chunk(), this_slot, mname, *mci, method_rest_fixed_count(*mci), line);
                                 }
                             }
                         }
@@ -1247,9 +1175,9 @@ impl Compiler {
                                 common::classes::emit_bind_setter(self.chunk(), this_slot, prop, *mci, line);
                             } else {
                                 if self.is_js_profile() {
-                                    common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                                    common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, method_rest_fixed_count(*mci), line);
                                 } else {
-                                    common::classes::emit_bind_bound_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                                    common::classes::emit_bind_bound_method_with_aliases(self.chunk(), this_slot, mname, *mci, method_rest_fixed_count(*mci), line);
                                 }
                             }
                         }
@@ -1292,9 +1220,9 @@ impl Compiler {
                             common::classes::emit_bind_setter(self.chunk(), this_slot, prop, *mci, line);
                         } else {
                             if self.is_js_profile() {
-                                common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                                common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, method_rest_fixed_count(*mci), line);
                             } else {
-                                common::classes::emit_bind_bound_method_with_aliases(self.chunk(), this_slot, mname, *mci, line);
+                                common::classes::emit_bind_bound_method_with_aliases(self.chunk(), this_slot, mname, *mci, method_rest_fixed_count(*mci), line);
                             }
                         }
                     }
@@ -1465,6 +1393,38 @@ impl Compiler {
             self.emit(Op::DROP);
         }
 
+        let own_static_member_names: Vec<String> = static_field_inits.iter()
+            .map(|(fname, _)| fname.clone())
+            .chain(static_const_names.iter().cloned())
+            .collect();
+
+        // Inherit static fields/constants onto the child class object so
+        // PHP late static binding (`static::$x`, `static::NAME`) resolves
+        // against the called class instead of stopping at the declaring class.
+        if let Some(parent_name) = parent {
+            let mut current_parent = Some(self.canon(parent_name));
+            while let Some(ref pname) = current_parent {
+                let parent_static_fields = self.pending_classes.get(pname.as_str())
+                    .map(|pc| pc.static_fields.clone())
+                    .unwrap_or_default();
+                let next_parent = self.pending_classes.get(pname.as_str())
+                    .and_then(|pc| pc.parent.clone());
+                for field_name in &parent_static_fields {
+                    if own_static_member_names.iter().any(|name| name == field_name) {
+                        continue;
+                    }
+                    self.emit_u16(Op::LOCAL_GET, ctor_local);
+                    let parent_idx = self.str_const(pname);
+                    self.emit_u16(Op::GLOBAL_GET, parent_idx);
+                    let field_idx = self.str_const(field_name);
+                    self.emit_u16(Op::STRUCT_GET, field_idx);
+                    self.emit_u16(Op::STRUCT_SET, field_idx);
+                    self.emit(Op::DROP);
+                }
+                current_parent = next_parent;
+            }
+        }
+
         // Attach nested types onto the constructor object so `Outer.Inner`
         // resolves to the nested class constructor through the same shared
         // class-object path as static methods.
@@ -1483,8 +1443,17 @@ impl Compiler {
 
         // Attach static methods to the constructor object
         let mut all_statics: Vec<(String, usize)> = Vec::new();
+        let php_static_receiver = if self.profile.name == "php" { Some(ctor_local) } else { None };
         for (mname, mci, _, _) in &static_methods {
-            common::classes::emit_attach_static_method(self.chunk(), ctor_local, mname, *mci, line);
+            common::classes::emit_attach_static_method(
+                self.chunk(),
+                ctor_local,
+                mname,
+                *mci,
+                php_static_receiver,
+                method_rest_fixed_count(*mci),
+                line,
+            );
             all_statics.push((mname.clone(), *mci));
         }
 
@@ -1512,7 +1481,15 @@ impl Compiler {
                 for (sname, sci) in &parent_statics {
                     // Only inherit if child doesn't already define it
                     if !all_statics.iter().any(|(n, _)| n == sname) {
-                        common::classes::emit_attach_static_method(self.chunk(), ctor_local, sname, *sci, line);
+                        common::classes::emit_attach_static_method(
+                            self.chunk(),
+                            ctor_local,
+                            sname,
+                            *sci,
+                            php_static_receiver,
+                            method_rest_fixed_count(*sci),
+                            line,
+                        );
                         all_statics.push((sname.clone(), *sci));
                     }
                 }
@@ -1541,7 +1518,15 @@ impl Compiler {
             if mname.starts_with("__get_") || mname.starts_with("__set_") {
                 continue;
             }
-            common::classes::emit_attach_static_method(self.chunk(), ctor_local, mname, *mci, line);
+            common::classes::emit_attach_static_method(
+                self.chunk(),
+                ctor_local,
+                mname,
+                *mci,
+                None,
+                method_rest_fixed_count(*mci),
+                line,
+            );
         }
 
         let all_methods: Vec<(String, usize)> = method_chunks.iter().map(|(n, c, _, _)| (n.clone(), *c)).collect();

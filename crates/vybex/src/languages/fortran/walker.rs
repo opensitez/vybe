@@ -185,6 +185,12 @@ fn walk_stmt(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
             let e = pair.into_inner().filter(|p| meaningful(p)).next().map(walk_expr).transpose()?;
             Ok(Some(Statement::new(StmtKind::Return(e))))
         }
+        Rule::yield_statement => {
+            let value = pair.into_inner().filter(|p| meaningful(p)).next().map(walk_expr).transpose()?;
+            Ok(Some(Statement::new(StmtKind::Expr(Expression::new(
+                ExprKind::Yield(value.map(Box::new)),
+            )))))
+        }
         Rule::cycle_statement => Ok(Some(Statement::new(StmtKind::Continue(ContinueTarget::Implicit)))),
         Rule::exit_statement => Ok(Some(Statement::new(StmtKind::Break(BreakTarget::Implicit)))),
         Rule::stop_statement => Ok(Some(Statement::new(StmtKind::Return(None)))),
@@ -632,9 +638,10 @@ fn walk_sub(pair: Pair<Rule>) -> Result<Statement, String> {
         } else { rest.push(p); }
     }
     let body = walk_body(rest.into_iter())?;
+    let is_generator = body_has_yield(&body);
     Ok(Statement::new(StmtKind::FunctionDecl {
         name: nm, params, return_type: None, body, modifiers: Modifiers::default(),
-        handles: vec![], is_async: false, is_generator: false, is_sub: true,
+        handles: vec![], is_async: false, is_generator, is_sub: true,
     }))
 }
 
@@ -660,9 +667,10 @@ fn walk_func(pair: Pair<Rule>) -> Result<Statement, String> {
         }
     }
     let body = walk_body(rest.into_iter())?;
+    let is_generator = body_has_yield(&body);
     Ok(Statement::new(StmtKind::FunctionDecl {
         name: nm, params, return_type: rt, body, modifiers: Modifiers::default(),
-        handles: vec![], is_async: false, is_generator: false, is_sub: false,
+        handles: vec![], is_async: false, is_generator, is_sub: false,
     }))
 }
 
@@ -789,7 +797,6 @@ fn walk_expr(pair: Pair<Rule>) -> Result<Expression, String> {
             // builds a flat `ExprKind::Array`. Implied-do `(i, i=1,n)`
             // is collapsed to its trip-count expression for now (the
             // proper expansion is a comprehension, pending a
-            // walker-level rewrite to a generated loop).
             let mut elems: Vec<crate::ast::ArrayElement> = Vec::new();
             for p in pair.into_inner() {
                 if matches!(p.as_rule(), Rule::array_constructor_body) {

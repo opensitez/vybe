@@ -2076,6 +2076,8 @@ fn parse_sub_decl(pair: Pair<Rule>) -> Result<Statement, String> {
 
     normalize_vb_legacy_error_body(&mut body);
 
+    let is_generator = body_has_yield(&body);
+
     Ok(Statement::with_span(StmtKind::FunctionDecl {
         name,
         params: parameters,
@@ -2096,7 +2098,7 @@ fn parse_sub_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         },
         handles,
         is_async,
-        is_generator: false,
+        is_generator,
         is_sub: true,
     }, span))
 }
@@ -2173,6 +2175,8 @@ fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
 
     normalize_vb_legacy_error_body(&mut body);
 
+    let is_generator = body_has_yield(&body);
+
     Ok(Statement::with_span(StmtKind::FunctionDecl {
         name,
         params: parameters,
@@ -2193,7 +2197,7 @@ fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         },
         handles,
         is_async,
-        is_generator: false,
+        is_generator,
         is_sub: false,
     }, span))
 }
@@ -3358,6 +3362,11 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             let mut inner = pair.into_inner();
             let expr = inner.next().map(parse_expression).transpose()?;
             StmtKind::Throw { expr, cause: None }
+        }
+        Rule::yield_statement => {
+            let mut inner = pair.into_inner();
+            let value = inner.next().map(parse_expression).transpose()?.map(Box::new);
+            StmtKind::Expr(Expression::new(ExprKind::Yield(value)))
         }
         Rule::continue_statement => return parse_continue_statement(pair),
         Rule::open_statement => return parse_open_statement(pair),

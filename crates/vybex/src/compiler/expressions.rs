@@ -10,6 +10,278 @@ impl Compiler {
     // Expression compilation
     // ════════════════════════════════════════════════════════════════════════
 
+    pub(super) fn emit_generator_entry_control(&mut self, control_slot: u16) -> Result<(), String> {
+        self.emit_u16(Op::LOCAL_GET, control_slot);
+        self.emit(Op::REF_IS_OBJECT);
+        let not_object = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, control_slot);
+        let marker_key = self.str_const("__vybe_generator_control");
+        self.emit_u16(Op::STRUCT_GET, marker_key);
+        self.emit(Op::DYN_TO_BOOL);
+        let not_control = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, control_slot);
+        let op_key = self.str_const("op");
+        self.emit_u16(Op::STRUCT_GET, op_key);
+        self.emit_const(Value::String(Arc::from("throw")));
+        self.emit(Op::STR_EQUALS);
+        let not_throw = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, control_slot);
+        let value_key = self.str_const("value");
+        self.emit_u16(Op::STRUCT_GET, value_key);
+        self.emit(Op::THROW);
+
+        self.patch_jump(not_throw);
+        self.emit_u16(Op::LOCAL_GET, control_slot);
+        self.emit_u16(Op::STRUCT_GET, op_key);
+        self.emit_const(Value::String(Arc::from("return")));
+        self.emit(Op::STR_EQUALS);
+        let not_return = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, control_slot);
+        self.emit_u16(Op::STRUCT_GET, value_key);
+        self.emit_return_through_finally(1)?;
+
+        self.patch_jump(not_return);
+        self.patch_jump(not_control);
+        self.patch_jump(not_object);
+        Ok(())
+    }
+
+    fn emit_generator_return_from_resume_slot(&mut self, resume_slot: u16) -> Result<(), String> {
+        self.emit_u16(Op::LOCAL_GET, resume_slot);
+        let value_key = self.str_const("value");
+        self.emit_u16(Op::STRUCT_GET, value_key);
+        self.emit_return_through_finally(1)
+    }
+
+    fn emit_php_generator_close_ident_if_needed(&mut self, name: &str) {
+        if !self.is_php_profile() {
+            return;
+        }
+
+        self.emit_var_get(name);
+        let gen_slot = self.define_local("__php_generator_overwrite");
+        self.emit_u16(Op::LOCAL_SET, gen_slot); self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, gen_slot);
+        let is_generator = self.import("ecma:value", "isGenerator");
+        self.emit_host_call(is_generator, 1);
+        let skip = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, gen_slot);
+        let started_key = self.str_const("__php_gen_started");
+        self.emit_u16(Op::STRUCT_GET, started_key);
+        self.emit(Op::DYN_TO_BOOL);
+        let not_started = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, gen_slot);
+        let done_key = self.str_const("__php_gen_done");
+        self.emit_u16(Op::STRUCT_GET, done_key);
+        self.emit(Op::DYN_TO_BOOL);
+        let already_done = self.emit_jump(Op::BR_IF_TRUE);
+
+        self.emit_u16(Op::LOCAL_GET, gen_slot);
+        self.emit(Op::NULL);
+        self.emit_generator_control_packet_from_stack("return");
+        self.emit_u16(Op::RESUME, 0);
+        self.emit(Op::DROP);
+
+        self.patch_jump(already_done);
+        self.patch_jump(not_started);
+        self.patch_jump(skip);
+    }
+
+    pub(super) fn emit_generator_resume_value(&mut self) -> Result<(), String> {
+        let resume_slot = self.define_local("__yield_resume");
+        self.emit_u16(Op::LOCAL_SET, resume_slot); self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, resume_slot);
+        self.emit(Op::REF_IS_OBJECT);
+        let not_object = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, resume_slot);
+        let marker_key = self.str_const("__vybe_generator_control");
+        self.emit_u16(Op::STRUCT_GET, marker_key);
+        self.emit(Op::DYN_TO_BOOL);
+        let not_control = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, resume_slot);
+        let op_key = self.str_const("op");
+        self.emit_u16(Op::STRUCT_GET, op_key);
+        self.emit_const(Value::String(Arc::from("throw")));
+        self.emit(Op::STR_EQUALS);
+        let not_throw = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, resume_slot);
+        let value_key = self.str_const("value");
+        self.emit_u16(Op::STRUCT_GET, value_key);
+        self.emit(Op::THROW);
+
+        self.patch_jump(not_throw);
+        self.emit_u16(Op::LOCAL_GET, resume_slot);
+        self.emit_u16(Op::STRUCT_GET, op_key);
+        self.emit_const(Value::String(Arc::from("return")));
+        self.emit(Op::STR_EQUALS);
+        let not_return = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_generator_return_from_resume_slot(resume_slot)?;
+
+        self.patch_jump(not_return);
+        self.emit_u16(Op::LOCAL_GET, resume_slot);
+        self.emit_u16(Op::STRUCT_GET, value_key);
+        let handled = self.emit_jump(Op::BR);
+
+        self.patch_jump(not_control);
+        self.patch_jump(not_object);
+        self.emit_u16(Op::LOCAL_GET, resume_slot);
+        self.patch_jump(handled);
+        Ok(())
+    }
+
+    fn generator_keyed_yield_parts<'a>(&self, expr: &'a Expression) -> Option<(&'a Expression, &'a Expression)> {
+        let ExprKind::Object(props) = &expr.kind else {
+            return None;
+        };
+
+        let mut has_marker = false;
+        let mut key_expr = None;
+        let mut value_expr = None;
+        for prop in props {
+            if let ObjectProperty::KeyValue { key, value } = prop {
+                match &key.kind {
+                    ExprKind::Lit(Literal::Str(name)) if name == "__vybe_generator_yield" => {
+                        has_marker = matches!(value.kind, ExprKind::Lit(Literal::Bool(true)));
+                    }
+                    ExprKind::Lit(Literal::Str(name)) if name == "key" => {
+                        key_expr = Some(value);
+                    }
+                    ExprKind::Lit(Literal::Str(name)) if name == "value" => {
+                        value_expr = Some(value);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if has_marker {
+            key_expr.zip(value_expr)
+        } else {
+            None
+        }
+    }
+
+    fn emit_generator_payload_store(&mut self) {
+        let store_global = self.str_const("__vybe_generator_payloads");
+        self.emit_u16(Op::GLOBAL_GET, store_global);
+        let store_slot = self.define_local("__gen_payload_store");
+        self.emit_u16(Op::LOCAL_SET, store_slot); self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, store_slot);
+        self.emit(Op::REF_IS_NULL);
+        let have_store = self.emit_jump(Op::BR_IF_FALSE);
+
+        let line = self.line;
+        common::dict::emit_new(&mut self.chunks, self.current, line);
+        self.emit(Op::DUP);
+        self.emit_u16(Op::LOCAL_SET, store_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::GLOBAL_SET, store_global);
+        self.emit(Op::DROP);
+
+        self.patch_jump(have_store);
+        self.emit_u16(Op::LOCAL_GET, store_slot);
+    }
+
+    fn emit_next_generator_payload_id(&mut self) {
+        let next_global = self.str_const("__vybe_generator_payload_next_id");
+        self.emit_u16(Op::GLOBAL_GET, next_global);
+        let id_slot = self.define_local("__gen_payload_id_current");
+        self.emit_u16(Op::LOCAL_SET, id_slot); self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, id_slot);
+        self.emit(Op::REF_IS_NULL);
+        let has_id = self.emit_jump(Op::BR_IF_FALSE);
+        self.emit_const(Value::F64(0.0));
+        self.emit_u16(Op::LOCAL_SET, id_slot); self.emit(Op::DROP);
+        self.patch_jump(has_id);
+
+        self.emit_u16(Op::LOCAL_GET, id_slot);
+        self.emit_const(Value::F64(1.0));
+        self.emit(Op::DYN_ADD);
+        self.emit_u16(Op::GLOBAL_SET, next_global);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, id_slot);
+    }
+
+    pub(super) fn emit_generator_yield_value(&mut self, yielded_slot: u16) {
+        self.emit_u16(Op::LOCAL_GET, yielded_slot);
+        self.emit(Op::REF_IS_OBJECT);
+        let not_object = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, yielded_slot);
+        let marker_key = self.str_const("__vybe_generator_yield");
+        self.emit_u16(Op::STRUCT_GET, marker_key);
+        self.emit(Op::DYN_TO_BOOL);
+        let not_packet = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, yielded_slot);
+        let payload_id_key = self.str_const("payload_id");
+        self.emit_u16(Op::STRUCT_GET, payload_id_key);
+        let payload_id_slot = self.define_local("__yield_payload_id");
+        self.emit_u16(Op::LOCAL_SET, payload_id_slot); self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, payload_id_slot);
+        self.emit(Op::REF_IS_NULL);
+        let use_inline_value = self.emit_jump(Op::BR_IF_TRUE);
+
+        self.emit_generator_payload_store();
+        self.emit_u16(Op::LOCAL_GET, payload_id_slot);
+        let line = self.line;
+        common::collections::emit_get(&mut self.chunks, self.current, line);
+        let done = self.emit_jump(Op::BR);
+
+        self.patch_jump(use_inline_value);
+        self.emit_u16(Op::LOCAL_GET, yielded_slot);
+        let value_key = self.str_const("value");
+        self.emit_u16(Op::STRUCT_GET, value_key);
+        let inline_done = self.emit_jump(Op::BR);
+
+        self.patch_jump(not_packet);
+        self.patch_jump(not_object);
+        self.emit_u16(Op::LOCAL_GET, yielded_slot);
+        self.patch_jump(done);
+        self.patch_jump(inline_done);
+    }
+
+    pub(super) fn emit_generator_yield_key_or_fallback(&mut self, yielded_slot: u16, fallback_slot: Option<u16>) {
+        self.emit_u16(Op::LOCAL_GET, yielded_slot);
+        self.emit(Op::REF_IS_OBJECT);
+        let not_object = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, yielded_slot);
+        let marker_key = self.str_const("__vybe_generator_yield");
+        self.emit_u16(Op::STRUCT_GET, marker_key);
+        self.emit(Op::DYN_TO_BOOL);
+        let not_packet = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, yielded_slot);
+        let key_key = self.str_const("key");
+        self.emit_u16(Op::STRUCT_GET, key_key);
+        let done = self.emit_jump(Op::BR);
+
+        self.patch_jump(not_packet);
+        self.patch_jump(not_object);
+        if let Some(slot) = fallback_slot {
+            self.emit_u16(Op::LOCAL_GET, slot);
+        } else {
+            self.emit(Op::NULL);
+        }
+        self.patch_jump(done);
+    }
+
     pub(super) fn compile_expr(&mut self, expr: &Expression) -> Result<(), String> {
         match &expr.kind {
             // ── Literals ────────────────────────────────────────────────
@@ -1533,6 +1805,11 @@ impl Compiler {
 
             // ── Assignment as expression ────────────────────────────────
             ExprKind::Assign { target, value } => {
+                if matches!(value.kind, ExprKind::Lit(Literal::Null)) {
+                    if let ExprKind::Ident(name) = &target.kind {
+                        self.emit_php_generator_close_ident_if_needed(name);
+                    }
+                }
                 self.compile_expr(value)?;
                 self.emit(Op::DUP);
                 self.compile_assign_target(target)?;
@@ -2418,8 +2695,51 @@ impl Compiler {
 
             // ── Yield ───────────────────────────────────────────────────
             ExprKind::Yield(val) => {
-                if let Some(v) = val { self.compile_expr(v)?; } else { self.emit(Op::NULL); }
+                if let Some(v) = val {
+                    if let Some((key_expr, value_expr)) = self.generator_keyed_yield_parts(v) {
+                        self.compile_expr(key_expr)?;
+                        let key_slot = self.define_local("__yield_key");
+                        self.emit_u16(Op::LOCAL_SET, key_slot); self.emit(Op::DROP);
+
+                        self.compile_expr(value_expr)?;
+                        let payload_value_slot = self.define_local("__yield_payload_value");
+                        self.emit_u16(Op::LOCAL_SET, payload_value_slot); self.emit(Op::DROP);
+
+                        self.emit_next_generator_payload_id();
+                        let payload_id_slot = self.define_local("__yield_payload_id");
+                        self.emit_u16(Op::LOCAL_SET, payload_id_slot); self.emit(Op::DROP);
+
+                        self.emit_generator_payload_store();
+                        self.emit_u16(Op::LOCAL_GET, payload_id_slot);
+                        self.emit_u16(Op::LOCAL_GET, payload_value_slot);
+                        let line = self.line;
+                        common::collections::emit_set(&mut self.chunks, self.current, line);
+                        self.emit(Op::DROP);
+
+                        common::dict::emit_new(&mut self.chunks, self.current, line);
+                        self.emit(Op::DUP);
+                        self.emit_const(Value::Bool(true));
+                        let marker_key = self.str_const("__vybe_generator_yield");
+                        self.emit_u16(Op::STRUCT_SET, marker_key);
+                        self.emit(Op::DROP);
+                        self.emit(Op::DUP);
+                        self.emit_u16(Op::LOCAL_GET, key_slot);
+                        let key_key = self.str_const("key");
+                        self.emit_u16(Op::STRUCT_SET, key_key);
+                        self.emit(Op::DROP);
+                        self.emit(Op::DUP);
+                        self.emit_u16(Op::LOCAL_GET, payload_id_slot);
+                        let payload_id_key = self.str_const("payload_id");
+                        self.emit_u16(Op::STRUCT_SET, payload_id_key);
+                        self.emit(Op::DROP);
+                    } else {
+                        self.compile_expr(v)?;
+                    }
+                } else {
+                    self.emit(Op::NULL);
+                }
                 self.emit_u16(Op::SUSPEND, 0);
+                self.emit_generator_resume_value()?;
             }
 
             ExprKind::YieldFrom(inner) => {
@@ -2448,10 +2768,10 @@ impl Compiler {
                 let line = self.line;
                 self.chunks[self.current].emit_loop(loop_start, line);
                 self.patch_jump(exit);
-                // yield* expression evaluates to the inner generator's
-                // return value (final return statement). We don't track
-                // that yet — push `undefined` per ECMA spec default.
-                self.emit(Op::UNDEFINED);
+                // `yield from` / `yield*` evaluates to the delegated
+                // generator's completion value. `GEN_NEXT` leaves that
+                // final value in `val_slot` on the terminating step.
+                self.emit_u16(Op::LOCAL_GET, val_slot);
             }
 
             // ── AddressOf (VB) ──────────────────────────────────────────

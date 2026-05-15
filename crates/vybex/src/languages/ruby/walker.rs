@@ -128,6 +128,8 @@ fn walk_method_def(pair: Pair<Rule>) -> Result<StmtKind, String> {
         modifiers.is_static = true;
     }
 
+    let is_generator = body_has_yield(&body);
+
     Ok(StmtKind::FunctionDecl {
         name,
         params,
@@ -136,7 +138,7 @@ fn walk_method_def(pair: Pair<Rule>) -> Result<StmtKind, String> {
         modifiers,
         handles: Vec::new(),
         is_async: false,
-        is_generator: false,
+        is_generator,
         is_sub: false,
     })
 }

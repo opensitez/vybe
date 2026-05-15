@@ -2,6 +2,7 @@ mod helpers;
 mod test_basics;
 mod test_control_flow;
 mod test_functions;
+mod test_generators;
 mod test_classes;
 mod test_builtins;
 mod test_programs;

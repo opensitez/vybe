@@ -103,3 +103,71 @@ fn variadic_args_through_method_chain() {
     "#);
     assert_eq!(out, "2 1 hi");
 }
+
+#[test]
+fn variadic_instance_method_call_packs_rest() {
+    let out = run_one(r#"
+        class Greeter {
+            call(prefix, ...parts) {
+                return prefix + ":" + parts.join(",");
+            }
+        }
+        const g = new Greeter();
+        console.log(g.call("head", "a", "b", "c"));
+    "#);
+    assert_eq!(out, "head:a,b,c");
+}
+
+#[test]
+fn variadic_static_method_call_packs_rest() {
+    let out = run_one(r#"
+        class Greeter {
+            static call(prefix, ...parts) {
+                return prefix + ":" + parts.join(",");
+            }
+        }
+        console.log(Greeter.call("head", "a", "b", "c"));
+    "#);
+    assert_eq!(out, "head:a,b,c");
+}
+
+#[test]
+fn variadic_instance_method_alias_packs_rest() {
+    let out = run_one(r#"
+        class Greeter {
+            call(prefix, ...parts) {
+                return prefix + ":" + parts.join(",");
+            }
+        }
+        const g = new Greeter();
+        const alias = g.call;
+        console.log(alias("head", "a", "b", "c"));
+    "#);
+    assert_eq!(out, "head:a,b,c");
+}
+
+#[test]
+fn variadic_static_method_alias_packs_rest() {
+    let out = run_one(r#"
+        class Greeter {
+            static call(prefix, ...parts) {
+                return prefix + ":" + parts.join(",");
+            }
+        }
+        const alias = Greeter.call;
+        console.log(alias("head", "a", "b", "c"));
+    "#);
+    assert_eq!(out, "head:a,b,c");
+}
+
+#[test]
+fn variadic_function_alias_packs_rest() {
+    let out = run_one(r#"
+        function joinWith(prefix, ...parts) {
+            return prefix + ":" + parts.join(",");
+        }
+        const alias = joinWith;
+        console.log(alias("head", "a", "b", "c"));
+    "#);
+    assert_eq!(out, "head:a,b,c");
+}

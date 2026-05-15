@@ -64,6 +64,72 @@ console.log(g.next().done);
 "#), &["1", "stopped", "true"]);
 }
 
+#[test] fn generator_return_runs_finally() {
+    assert_eq!(run_js(r#"
+function* gen() {
+    try {
+        yield 1;
+        yield 2;
+    } finally {
+        console.log("cleanup");
+    }
+}
+let g = gen();
+console.log(g.next().value);
+let result = g.return("stopped");
+console.log(result.value);
+console.log(result.done);
+"#), &["1", "cleanup", "stopped", "true"]);
+}
+
+#[test] fn generator_return_before_first_yield() {
+    assert_eq!(run_js(r#"
+function* gen() {
+    yield 1;
+    return 99;
+}
+let g = gen();
+let result = g.return("stopped");
+console.log(result.value);
+console.log(result.done);
+console.log(g.next().done);
+"#), &["stopped", "true", "true"]);
+}
+
+#[test] fn generator_throw_before_first_yield_caught() {
+    assert_eq!(run_js(r#"
+function* guarded() {
+    try {
+        yield "ready";
+    } catch (err) {
+        console.log("caught: " + err.message);
+        yield "handled";
+    }
+}
+let g = guarded();
+let result = g.throw(new Error("stop"));
+console.log(result.value);
+console.log(result.done);
+"#), &["caught: stop", "handled", "false"]);
+}
+
+#[test] fn generator_rest_args_survive_fresh_throw() {
+    assert_eq!(run_js(r#"
+function* guarded(head, ...rest) {
+    try {
+        yield rest.length;
+    } catch (err) {
+        console.log(rest.join(","));
+        yield err.message;
+    }
+}
+let g = guarded("a", "b", "c");
+let result = g.throw(new Error("stop"));
+console.log(result.value);
+console.log(result.done);
+"#), &["b,c", "stop", "false"]);
+}
+
 #[test] fn generator_yield_receive_value() {
     assert_eq!(run_js(r#"
 function* echo() {
@@ -75,6 +141,23 @@ let g = echo();
 console.log(g.next().value);
 console.log(g.next("hello").value);
 "#), &["ready", "received: hello", "done"]);
+}
+
+#[test] fn generator_throw_caught_in_generator() {
+    assert_eq!(run_js(r#"
+function* guarded() {
+    try {
+        yield "ready";
+        yield "after";
+    } catch (err) {
+        console.log("caught: " + err.message);
+    }
+}
+let g = guarded();
+console.log(g.next().value);
+let result = g.throw(new Error("stop"));
+console.log(result.done);
+"#), &["ready", "caught: stop", "true"]);
 }
 
 #[test] fn generator_infinite_sequence() {

@@ -348,6 +348,7 @@ statement = {
     | with_statement
     | try_statement
     | raise_statement
+    | yield_statement
     | exit_statement
     | halt_statement
     | break_statement
@@ -433,6 +434,8 @@ finally_handler = { ^"finally" ~ statement_list ~ ^"end" }
 // ── Raise ──────────────────────────────────────────────────────────────────────
 
 raise_statement = { ^"raise" ~ expression? }
+
+yield_statement = { ^"yield" ~ expression? }
 
 // ── Exit / Break / Continue / Halt ─────────────────────────────────────────────
 
@@ -639,7 +642,7 @@ keyword = _{
         | ^"byte" | ^"word" | ^"longint" | ^"shortint" | ^"cardinal" | ^"int64"
         | ^"single" | ^"double" | ^"extended"
         | ^"pointer"
-        | ^"exit" | ^"break" | ^"continue" | ^"halt"
+        | ^"exit" | ^"yield" | ^"break" | ^"continue" | ^"halt"
         | ^"new" | ^"dispose"
         | ^"constructor" | ^"destructor"
         | ^"public" | ^"private" | ^"protected" | ^"published"

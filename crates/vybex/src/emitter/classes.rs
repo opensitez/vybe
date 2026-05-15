@@ -142,7 +142,23 @@ pub fn emit_bind_method(chunk: &mut Chunk, this_slot: u16, method_name: &str, me
     chunk.emit_op(Op::DROP, line);
 }
 
-pub fn emit_bind_bound_method(chunk: &mut Chunk, this_slot: u16, method_name: &str, method_chunk_idx: usize, line: u32) {
+fn emit_stamp_rest_metadata(chunk: &mut Chunk, fixed_count: u8, line: u32) {
+    chunk.emit_op(Op::DUP, line);
+    let value = chunk.add_constant(Value::F64(fixed_count as f64));
+    let key = chunk.add_constant(Value::String(Arc::from("__vybe_rest_fixed_arity")));
+    chunk.emit_op_u16(Op::CONST, value, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
+pub fn emit_bind_bound_method(
+    chunk: &mut Chunk,
+    this_slot: u16,
+    method_name: &str,
+    method_chunk_idx: usize,
+    rest_fixed_count: Option<u8>,
+    line: u32,
+) {
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::REF_FUNC, method_chunk_idx as u16, line);
     chunk.emit(0, line); // 0 upvalues (upvalue capture is compiler-specific)
@@ -151,6 +167,9 @@ pub fn emit_bind_bound_method(chunk: &mut Chunk, this_slot: u16, method_name: &s
     let receiver_key = chunk.add_constant(Value::String(Arc::from("__vybe_method_receiver")));
     chunk.emit_op_u16(Op::STRUCT_SET, receiver_key, line);
     chunk.emit_op(Op::DROP, line);
+    if let Some(fixed_count) = rest_fixed_count {
+        emit_stamp_rest_metadata(chunk, fixed_count, line);
+    }
     let key = chunk.add_constant(Value::String(Arc::from(method_name)));
     chunk.emit_op_u16(Op::STRUCT_SET, key, line);
     chunk.emit_op(Op::DROP, line);
@@ -163,20 +182,41 @@ pub fn emit_bind_bound_method(chunk: &mut Chunk, this_slot: u16, method_name: &s
 /// Example: Python defines `__str__`, this also binds `toString` and `tostring`
 /// so JS/VB/C# code can call it transparently.
 /// Stack: unchanged
-pub fn emit_bind_method_with_aliases(chunk: &mut Chunk, this_slot: u16, method_name: &str, method_chunk_idx: usize, line: u32) {
+pub fn emit_bind_method_with_aliases(
+    chunk: &mut Chunk,
+    this_slot: u16,
+    method_name: &str,
+    method_chunk_idx: usize,
+    rest_fixed_count: Option<u8>,
+    line: u32,
+) {
     // Bind under the original name
     emit_bind_method(chunk, this_slot, method_name, method_chunk_idx, line);
+    if let Some(fixed_count) = rest_fixed_count {
+        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+        let key = chunk.add_constant(Value::String(Arc::from(method_name)));
+        chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+        emit_stamp_rest_metadata(chunk, fixed_count, line);
+        chunk.emit_op(Op::DROP, line);
+    }
     // Bind under all cross-language aliases
-    emit_cross_language_aliases(chunk, this_slot, method_name, method_chunk_idx, line);
+    emit_cross_language_aliases(chunk, this_slot, method_name, method_chunk_idx, rest_fixed_count, line);
 }
 
-pub fn emit_bind_bound_method_with_aliases(chunk: &mut Chunk, this_slot: u16, method_name: &str, method_chunk_idx: usize, line: u32) {
-    emit_bind_bound_method(chunk, this_slot, method_name, method_chunk_idx, line);
+pub fn emit_bind_bound_method_with_aliases(
+    chunk: &mut Chunk,
+    this_slot: u16,
+    method_name: &str,
+    method_chunk_idx: usize,
+    rest_fixed_count: Option<u8>,
+    line: u32,
+) {
+    emit_bind_bound_method(chunk, this_slot, method_name, method_chunk_idx, rest_fixed_count, line);
     for &alias in cross_language_aliases(method_name) {
         if alias == method_name {
             continue;
         }
-        emit_bind_bound_method(chunk, this_slot, alias, method_chunk_idx, line);
+        emit_bind_bound_method(chunk, this_slot, alias, method_chunk_idx, rest_fixed_count, line);
     }
 }
 
@@ -255,10 +295,24 @@ pub fn cross_language_aliases(method_name: &str) -> &'static [&'static str] {
 /// The alias table is the single source of truth for cross-language method resolution.
 /// All compilers MUST use this when binding methods so that objects are interoperable.
 /// Stack: unchanged
-pub fn emit_cross_language_aliases(chunk: &mut Chunk, this_slot: u16, method_name: &str, method_chunk_idx: usize, line: u32) {
+pub fn emit_cross_language_aliases(
+    chunk: &mut Chunk,
+    this_slot: u16,
+    method_name: &str,
+    method_chunk_idx: usize,
+    rest_fixed_count: Option<u8>,
+    line: u32,
+) {
     for alias in cross_language_aliases(method_name) {
         if *alias != method_name {
             emit_bind_method(chunk, this_slot, alias, method_chunk_idx, line);
+            if let Some(fixed_count) = rest_fixed_count {
+                chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+                let key = chunk.add_constant(Value::String(Arc::from(*alias)));
+                chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+                emit_stamp_rest_metadata(chunk, fixed_count, line);
+                chunk.emit_op(Op::DROP, line);
+            }
         }
     }
 }
@@ -334,10 +388,28 @@ pub fn emit_inherit_statics(chunk: &mut Chunk, parent_name: &str, line: u32) {
 /// Attach a static method to the constructor function object.
 /// Same pattern as VB Shared, JS static, C# static, Python @staticmethod.
 /// Stack: unchanged (reads constructor from local)
-pub fn emit_attach_static_method(chunk: &mut Chunk, ctor_local: u16, method_name: &str, method_chunk_idx: usize, line: u32) {
+pub fn emit_attach_static_method(
+    chunk: &mut Chunk,
+    ctor_local: u16,
+    method_name: &str,
+    method_chunk_idx: usize,
+    receiver_slot: Option<u16>,
+    rest_fixed_count: Option<u8>,
+    line: u32,
+) {
     chunk.emit_op_u16(Op::LOCAL_GET, ctor_local, line);
     chunk.emit_op_u16(Op::REF_FUNC, method_chunk_idx as u16, line);
     chunk.emit(0, line);
+    if let Some(receiver_slot) = receiver_slot {
+        chunk.emit_op(Op::DUP, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+        let receiver_key = chunk.add_constant(Value::String(Arc::from("__vybe_method_receiver")));
+        chunk.emit_op_u16(Op::STRUCT_SET, receiver_key, line);
+        chunk.emit_op(Op::DROP, line);
+    }
+    if let Some(fixed_count) = rest_fixed_count {
+        emit_stamp_rest_metadata(chunk, fixed_count, line);
+    }
     let key = chunk.add_constant(Value::String(Arc::from(method_name)));
     chunk.emit_op_u16(Op::STRUCT_SET, key, line);
     chunk.emit_op(Op::DROP, line);

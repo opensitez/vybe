@@ -18,7 +18,7 @@ mod calls;
 mod events;
 
 use std::sync::Arc;
-use std::collections::{HashSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
 use crate::profile::*;
@@ -87,19 +87,25 @@ struct PendingClass {
 struct PendingMethodOverload {
     param_types: Vec<String>,
     chunk_idx: usize,
+    signature: CallSignature,
 }
 
 #[derive(Debug, Clone)]
 struct CallSignature {
     param_names: Vec<String>,
     min_arity: usize,
+    has_rest: bool,
 }
 
 impl CallSignature {
     fn from_params(params: &[Param]) -> Self {
         Self {
-            param_names: params.iter().map(|param| param.name.clone()).collect(),
+            param_names: params
+                .iter()
+                .map(|param| param.name.trim_start_matches('$').to_string())
+                .collect(),
             min_arity: params.iter().take_while(|param| param.default.is_none() && !param.is_rest).count(),
+            has_rest: params.last().is_some_and(|param| param.is_rest),
         }
     }
 }
@@ -205,6 +211,7 @@ pub struct Compiler {
     function_param_modes: HashMap<String, Vec<PassBy>>,
     function_min_arity: HashMap<String, usize>,
     function_signatures: HashMap<String, Vec<CallSignature>>,
+    rest_fixed_arities: BTreeSet<u8>,
     function_return_types: HashMap<String, String>,
     constructor_signatures: HashMap<String, Vec<CallSignature>>,
     defined_classes: HashSet<String>,
@@ -480,6 +487,7 @@ impl Compiler {
             function_param_modes: HashMap::new(),
             function_min_arity: HashMap::new(),
             function_signatures: HashMap::new(),
+            rest_fixed_arities: BTreeSet::new(),
             function_return_types: HashMap::new(),
             constructor_signatures: HashMap::new(),
             defined_classes: HashSet::new(),
@@ -1489,6 +1497,7 @@ impl Compiler {
     fn compile_generator_for_in(
         &mut self,
         var: &str,
+        key: Option<&str>,
         iter: &Expression,
         body: &[Statement],
         else_body: Option<&[Statement]>,
@@ -1503,16 +1512,26 @@ impl Compiler {
         let cont_slot = self.define_local("__gen_cont");
         self.emit_u16(Op::LOCAL_SET, cont_slot); self.emit(Op::DROP);
 
-        self.compile_generator_for_in_cont(var, cont_slot, body, else_body)
+        self.compile_generator_for_in_cont(var, key, cont_slot, body, else_body)
     }
 
     fn compile_generator_for_in_cont(
         &mut self,
         var: &str,
+        key: Option<&str>,
         cont_slot: u16,
         body: &[Statement],
         else_body: Option<&[Statement]>,
     ) -> Result<(), String> {
+
+        let key_index_slot = if self.is_php_profile() && key.is_some() {
+            let slot = self.define_local("__php_gen_loop_index");
+            self.emit_const(Value::F64(0.0));
+            self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+            Some(slot)
+        } else {
+            None
+        };
 
         let line = self.line;
         let block_patch = self.chunk().emit_block(line);
@@ -1547,7 +1566,7 @@ impl Compiler {
             self.emit_u16(Op::STRUCT_SET, done_key);
             self.emit(Op::DROP);
             self.emit_u16(Op::LOCAL_GET, cont_slot);
-            self.emit_u16(Op::LOCAL_GET, value_slot);
+            self.emit_generator_yield_value(value_slot);
             self.emit_u16(Op::STRUCT_SET, current_key);
             self.emit(Op::DROP);
             let loop_ready = self.emit_jump(Op::BR);
@@ -1576,10 +1595,30 @@ impl Compiler {
             self.emit_u8(Op::BR_IF_LABEL, 1);
         }
 
-        // Pop the value into `var`.
+        if let Some(key_name) = key {
+            let key_slot = self.define_local(key_name);
+            if self.is_php_profile() {
+                self.emit_generator_yield_key_or_fallback(value_slot, key_index_slot);
+            } else {
+                self.emit(Op::NULL);
+            }
+            self.emit_u16(Op::LOCAL_SET, key_slot); self.emit(Op::DROP);
+        }
+
         let var_slot = self.define_local(var);
-        self.emit_u16(Op::LOCAL_GET, value_slot);
+        if self.is_php_profile() {
+            self.emit_generator_yield_value(value_slot);
+        } else {
+            self.emit_u16(Op::LOCAL_GET, value_slot);
+        }
         self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
+
+        if let Some(key_index_slot) = key_index_slot {
+            self.emit_u16(Op::LOCAL_GET, key_index_slot);
+            self.emit_const(Value::F64(1.0));
+            self.emit(Op::DYN_ADD);
+            self.emit_u16(Op::LOCAL_SET, key_index_slot); self.emit(Op::DROP);
+        }
 
         // Compile loop body inside a `$body` block so `continue` can
         // target it without rerunning the advance.
@@ -3917,7 +3956,7 @@ impl Compiler {
                 // `for v in @generator_fn()` iterate lazily via the
                 // WASM stack-switching coroutine machinery.
                 if self.is_direct_generator_call(iter) {
-                    self.compile_generator_for_in(var, iter, body, else_body.as_deref())?;
+                    self.compile_generator_for_in(var, key.as_deref(), iter, body, else_body.as_deref())?;
                 } else {
                     let line = self.line;
                     self.compile_expr(iter)?;
@@ -3929,7 +3968,7 @@ impl Compiler {
                         let is_gen_idx = self.import("ecma:value", "isGenerator");
                         self.emit_host_call(is_gen_idx, 1);
                         let not_gen = self.emit_jump(Op::BR_IF_FALSE);
-                        self.compile_generator_for_in_cont(var, iter_slot, body, else_body.as_deref())?;
+                        self.compile_generator_for_in_cont(var, key.as_deref(), iter_slot, body, else_body.as_deref())?;
                         Some((not_gen, self.emit_jump(Op::BR)))
                     } else {
                         None
@@ -5599,37 +5638,37 @@ impl Compiler {
                 body
             };
 
-            let try_from_lambda = Expression::new(ExprKind::Lambda {
-                params: vec![mk_param("_self"), mk_param("v")],
-                body: LambdaBody::Block(build_match_chain(Statement::new(StmtKind::Return(Some(Expression::null()))))),
-                is_async: false,
-                captures: vec![],
-            });
-            synthetic_members.push(ClassMember::Const {
+            let try_from_method = Statement::new(StmtKind::FunctionDecl {
                 name: "tryFrom".to_string(),
-                type_hint: None,
-                value: try_from_lambda,
-                visibility: Visibility::Public,
+                params: vec![mk_param("v")],
+                return_type: None,
+                body: build_match_chain(Statement::new(StmtKind::Return(Some(Expression::null())))),
+                modifiers: Modifiers { is_static: true, ..Modifiers::default() },
+                handles: Vec::new(),
+                is_async: false,
+                is_generator: false,
+                is_sub: false,
             });
+            synthetic_members.push(ClassMember::Method(Box::new(try_from_method)));
 
-            let from_lambda = Expression::new(ExprKind::Lambda {
-                params: vec![mk_param("_self"), mk_param("v")],
-                body: LambdaBody::Block(build_match_chain(Statement::new(StmtKind::Throw {
+            let from_method = Statement::new(StmtKind::FunctionDecl {
+                name: "from".to_string(),
+                params: vec![mk_param("v")],
+                return_type: None,
+                body: build_match_chain(Statement::new(StmtKind::Throw {
                     expr: Some(Expression::new(ExprKind::New {
                         class: Box::new(Expression::ident("Error")),
                         args: vec![Argument::positional(Expression::string(&format!("Invalid backing value for enum \"{}\"", name)))],
                     })),
                     cause: None,
-                }))),
+                })),
+                modifiers: Modifiers { is_static: true, ..Modifiers::default() },
+                handles: Vec::new(),
                 is_async: false,
-                captures: vec![],
+                is_generator: false,
+                is_sub: false,
             });
-            synthetic_members.push(ClassMember::Const {
-                name: "from".to_string(),
-                type_hint: None,
-                value: from_lambda,
-                visibility: Visibility::Public,
-            });
+            synthetic_members.push(ClassMember::Method(Box::new(from_method)));
         }
 
         self.compile_enum_decl_as_class(name, None, interfaces, synthetic_members, span)?;

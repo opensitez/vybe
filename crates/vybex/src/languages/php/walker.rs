@@ -1031,11 +1031,13 @@ fn walk_params_with_promotion(pair: Pair<Rule>) -> Result<Vec<(Param, Option<Vis
 }
 
 fn walk_param(pair: Pair<Rule>) -> Result<(Param, Option<Visibility>), String> {
+    let raw = pair.as_str();
     let mut name = String::new();
     let mut type_hint: Option<String> = None;
     let mut default: Option<Expression> = None;
     let mut promotion: Option<Visibility> = None;
-    let pass_by = PassBy::Value; // We don't track by-ref yet — PHP `&` is rare in modern code.
+    let pass_by = if raw.contains('&') { PassBy::Ref } else { PassBy::Value };
+    let is_rest = raw.contains("...");
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::param_modifier => {
@@ -1063,7 +1065,7 @@ fn walk_param(pair: Pair<Rule>) -> Result<(Param, Option<Visibility>), String> {
         type_hint,
         default,
         pass_by,
-        is_rest: false,
+        is_rest,
         is_kwargs: false,
         is_optional,
         is_nullable: false,
@@ -2828,7 +2830,29 @@ fn walk_yield(pair: Pair<Rule>) -> Result<Expression, String> {
         ));
     }
     // bare `yield`, `yield expr`, or `yield key => value`
-    let val = inner.next().map(walk_expression).transpose()?;
+    let remaining: Vec<Pair<Rule>> = inner.collect();
+    let val = match remaining.as_slice() {
+        [] => None,
+        [value] => Some(walk_expression(value.clone())?),
+        [key, value] => Some(Expression::with_span(
+            ExprKind::Object(vec![
+                ObjectProperty::KeyValue {
+                    key: Expression::string("__vybe_generator_yield"),
+                    value: Expression::bool(true),
+                },
+                ObjectProperty::KeyValue {
+                    key: Expression::string("key"),
+                    value: walk_expression(key.clone())?,
+                },
+                ObjectProperty::KeyValue {
+                    key: Expression::string("value"),
+                    value: walk_expression(value.clone())?,
+                },
+            ]),
+            span,
+        )),
+        _ => return Err("unsupported yield expression shape".to_string()),
+    };
     Ok(Expression::with_span(
         ExprKind::Yield(val.map(Box::new)),
         span,
@@ -3590,6 +3614,47 @@ fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span, from_variabl
                                     args,
                                     optional: false,
                                 },
+                                span.clone(),
+                            ));
+                        }
+                    }
+                    // PHP `Closure::bind($closure, $obj, $scope?)` — bind a
+                    // closure to an object by rewriting `$this` inside the
+                    // closure body to a captured temp holding the target
+                    // object. This keeps the fix in the PHP frontend and
+                    // avoids relying on method-style lambda binding in the
+                    // shared runtime.
+                    if class_name.trim_start_matches('\\') == "Closure"
+                        && member_name == "bind"
+                        && args.len() >= 2
+                    {
+                        if let ExprKind::Lambda { params, body, is_async, captures } = &args[0].value.kind {
+                            let bound_obj_name = format!(
+                                "__php_closure_bind_obj_{}_{}",
+                                span.start_line,
+                                span.start_col,
+                            );
+                            let save_obj = Expression::with_span(
+                                ExprKind::Assign {
+                                    target: Box::new(Expression::with_span(
+                                        ExprKind::Ident(bound_obj_name.clone()),
+                                        span.clone(),
+                                    )),
+                                    value: Box::new(args[1].value.clone()),
+                                },
+                                span.clone(),
+                            );
+                            let rebound_lambda = Expression::with_span(
+                                ExprKind::Lambda {
+                                    params: params.clone(),
+                                    body: bind_this_in_lambda_body(body, &bound_obj_name),
+                                    is_async: *is_async,
+                                    captures: captures.clone(),
+                                },
+                                span.clone(),
+                            );
+                            return Ok(Expression::with_span(
+                                ExprKind::Sequence(vec![save_obj, rebound_lambda]),
                                 span.clone(),
                             ));
                         }
@@ -4611,6 +4676,276 @@ fn canonicalize_php_call_args(callee: &Expression, args: Vec<Argument>) -> Vec<A
         }
     }
     out
+}
+
+fn bind_this_in_lambda_body(body: &LambdaBody, bound_obj_name: &str) -> LambdaBody {
+    match body {
+        LambdaBody::Expr(expr) => LambdaBody::Expr(Box::new(bind_this_in_expr(expr, bound_obj_name))),
+        LambdaBody::Block(stmts) => LambdaBody::Block(
+            stmts.iter().map(|stmt| bind_this_in_stmt(stmt, bound_obj_name)).collect(),
+        ),
+    }
+}
+
+fn bind_this_in_stmt(stmt: &Statement, bound_obj_name: &str) -> Statement {
+    let kind = match &stmt.kind {
+        StmtKind::Expr(expr) => StmtKind::Expr(bind_this_in_expr(expr, bound_obj_name)),
+        StmtKind::Block(body) => StmtKind::Block(
+            body.iter().map(|inner| bind_this_in_stmt(inner, bound_obj_name)).collect(),
+        ),
+        StmtKind::If { cond, then_body, elifs, else_body } => StmtKind::If {
+            cond: bind_this_in_expr(cond, bound_obj_name),
+            then_body: then_body.iter().map(|inner| bind_this_in_stmt(inner, bound_obj_name)).collect(),
+            elifs: elifs.iter().map(|(cond, body)| (
+                bind_this_in_expr(cond, bound_obj_name),
+                body.iter().map(|inner| bind_this_in_stmt(inner, bound_obj_name)).collect(),
+            )).collect(),
+            else_body: else_body.as_ref().map(|body| {
+                body.iter().map(|inner| bind_this_in_stmt(inner, bound_obj_name)).collect()
+            }),
+        },
+        StmtKind::For { init, cond, update, body } => StmtKind::For {
+            init: init.as_ref().map(|inner| Box::new(bind_this_in_stmt(inner, bound_obj_name))),
+            cond: cond.as_ref().map(|expr| bind_this_in_expr(expr, bound_obj_name)),
+            update: update.as_ref().map(|expr| bind_this_in_expr(expr, bound_obj_name)),
+            body: body.iter().map(|inner| bind_this_in_stmt(inner, bound_obj_name)).collect(),
+        },
+        StmtKind::ForIn { var, key, iter, body, of, else_body, is_async } => StmtKind::ForIn {
+            var: var.clone(),
+            key: key.clone(),
+            iter: bind_this_in_expr(iter, bound_obj_name),
+            body: body.iter().map(|inner| bind_this_in_stmt(inner, bound_obj_name)).collect(),
+            of: *of,
+            else_body: else_body.as_ref().map(|body| {
+                body.iter().map(|inner| bind_this_in_stmt(inner, bound_obj_name)).collect()
+            }),
+            is_async: *is_async,
+        },
+        StmtKind::While { cond, body, else_body } => StmtKind::While {
+            cond: bind_this_in_expr(cond, bound_obj_name),
+            body: body.iter().map(|inner| bind_this_in_stmt(inner, bound_obj_name)).collect(),
+            else_body: else_body.as_ref().map(|body| {
+                body.iter().map(|inner| bind_this_in_stmt(inner, bound_obj_name)).collect()
+            }),
+        },
+        StmtKind::DoWhile { body, cond, until } => StmtKind::DoWhile {
+            body: body.iter().map(|inner| bind_this_in_stmt(inner, bound_obj_name)).collect(),
+            cond: bind_this_in_expr(cond, bound_obj_name),
+            until: *until,
+        },
+        StmtKind::Switch { expr, cases, default } => StmtKind::Switch {
+            expr: bind_this_in_expr(expr, bound_obj_name),
+            cases: cases.iter().map(|case| SwitchCase {
+                conditions: case.conditions.iter().map(|condition| match condition {
+                    CaseCondition::Value(expr) => CaseCondition::Value(bind_this_in_expr(expr, bound_obj_name)),
+                    CaseCondition::Range { from, to } => CaseCondition::Range {
+                        from: bind_this_in_expr(from, bound_obj_name),
+                        to: bind_this_in_expr(to, bound_obj_name),
+                    },
+                    CaseCondition::Comparison { op, expr } => CaseCondition::Comparison {
+                        op: *op,
+                        expr: bind_this_in_expr(expr, bound_obj_name),
+                    },
+                }).collect(),
+                body: case.body.iter().map(|inner| bind_this_in_stmt(inner, bound_obj_name)).collect(),
+            }).collect(),
+            default: default.as_ref().map(|body| {
+                body.iter().map(|inner| bind_this_in_stmt(inner, bound_obj_name)).collect()
+            }),
+        },
+        StmtKind::Try { body, catches, else_body, finally } => StmtKind::Try {
+            body: body.iter().map(|inner| bind_this_in_stmt(inner, bound_obj_name)).collect(),
+            catches: catches.iter().map(|catch| CatchClause {
+                types: catch.types.clone(),
+                var_name: catch.var_name.clone(),
+                stack_var: catch.stack_var.clone(),
+                body: catch.body.iter().map(|inner| bind_this_in_stmt(inner, bound_obj_name)).collect(),
+                when_clause: catch.when_clause.as_ref().map(|expr| bind_this_in_expr(expr, bound_obj_name)),
+            }).collect(),
+            else_body: else_body.as_ref().map(|body| {
+                body.iter().map(|inner| bind_this_in_stmt(inner, bound_obj_name)).collect()
+            }),
+            finally: finally.as_ref().map(|body| {
+                body.iter().map(|inner| bind_this_in_stmt(inner, bound_obj_name)).collect()
+            }),
+        },
+        StmtKind::With { items, body, is_async } => StmtKind::With {
+            items: items.iter().map(|item| WithItem {
+                expr: bind_this_in_expr(&item.expr, bound_obj_name),
+                var: item.var.clone(),
+            }).collect(),
+            body: body.iter().map(|inner| bind_this_in_stmt(inner, bound_obj_name)).collect(),
+            is_async: *is_async,
+        },
+        StmtKind::Using { var, resource, body } => StmtKind::Using {
+            var: var.clone(),
+            resource: bind_this_in_expr(resource, bound_obj_name),
+            body: body.iter().map(|inner| bind_this_in_stmt(inner, bound_obj_name)).collect(),
+        },
+        StmtKind::Lock { expr, body } => StmtKind::Lock {
+            expr: bind_this_in_expr(expr, bound_obj_name),
+            body: body.iter().map(|inner| bind_this_in_stmt(inner, bound_obj_name)).collect(),
+        },
+        StmtKind::Return(expr) => StmtKind::Return(
+            expr.as_ref().map(|inner| bind_this_in_expr(inner, bound_obj_name)),
+        ),
+        StmtKind::Throw { expr, cause } => StmtKind::Throw {
+            expr: expr.as_ref().map(|inner| bind_this_in_expr(inner, bound_obj_name)),
+            cause: cause.as_ref().map(|inner| bind_this_in_expr(inner, bound_obj_name)),
+        },
+        StmtKind::Assign { targets, value } => StmtKind::Assign {
+            targets: targets.iter().map(|target| bind_this_in_expr(target, bound_obj_name)).collect(),
+            value: bind_this_in_expr(value, bound_obj_name),
+        },
+        StmtKind::CompoundAssign { target, op, value } => StmtKind::CompoundAssign {
+            target: bind_this_in_expr(target, bound_obj_name),
+            op: *op,
+            value: bind_this_in_expr(value, bound_obj_name),
+        },
+        _ => stmt.kind.clone(),
+    };
+    Statement::with_span(kind, stmt.span)
+}
+
+fn bind_this_in_expr(expr: &Expression, bound_obj_name: &str) -> Expression {
+    let span = expr.span;
+    let kind = match &expr.kind {
+        ExprKind::This => ExprKind::Ident(bound_obj_name.to_string()),
+        ExprKind::Binary { op, left, right } => ExprKind::Binary {
+            op: *op,
+            left: Box::new(bind_this_in_expr(left, bound_obj_name)),
+            right: Box::new(bind_this_in_expr(right, bound_obj_name)),
+        },
+        ExprKind::Unary { op, expr } => ExprKind::Unary {
+            op: *op,
+            expr: Box::new(bind_this_in_expr(expr, bound_obj_name)),
+        },
+        ExprKind::Ternary { cond, then, else_ } => ExprKind::Ternary {
+            cond: Box::new(bind_this_in_expr(cond, bound_obj_name)),
+            then: Box::new(bind_this_in_expr(then, bound_obj_name)),
+            else_: Box::new(bind_this_in_expr(else_, bound_obj_name)),
+        },
+        ExprKind::Member { object, field, null_safe } => ExprKind::Member {
+            object: Box::new(bind_this_in_expr(object, bound_obj_name)),
+            field: field.clone(),
+            null_safe: *null_safe,
+        },
+        ExprKind::Index { object, index, null_safe } => ExprKind::Index {
+            object: Box::new(bind_this_in_expr(object, bound_obj_name)),
+            index: Box::new(bind_this_in_expr(index, bound_obj_name)),
+            null_safe: *null_safe,
+        },
+        ExprKind::Call { callee, args, optional } => ExprKind::Call {
+            callee: Box::new(bind_this_in_expr(callee, bound_obj_name)),
+            args: args.iter().map(|arg| Argument {
+                value: bind_this_in_expr(&arg.value, bound_obj_name),
+                name: arg.name.clone(),
+                by_ref: arg.by_ref,
+                spread: arg.spread,
+            }).collect(),
+            optional: *optional,
+        },
+        ExprKind::New { class, args } => ExprKind::New {
+            class: Box::new(bind_this_in_expr(class, bound_obj_name)),
+            args: args.iter().map(|arg| Argument {
+                value: bind_this_in_expr(&arg.value, bound_obj_name),
+                name: arg.name.clone(),
+                by_ref: arg.by_ref,
+                spread: arg.spread,
+            }).collect(),
+        },
+        ExprKind::Assign { target, value } => ExprKind::Assign {
+            target: Box::new(bind_this_in_expr(target, bound_obj_name)),
+            value: Box::new(bind_this_in_expr(value, bound_obj_name)),
+        },
+        ExprKind::Array(elements) => ExprKind::Array(elements.iter().map(|element| ArrayElement {
+            key: element.key.as_ref().map(|key| bind_this_in_expr(key, bound_obj_name)),
+            value: bind_this_in_expr(&element.value, bound_obj_name),
+            spread: element.spread,
+            by_ref: element.by_ref,
+        }).collect()),
+        ExprKind::Tuple(items) => ExprKind::Tuple(
+            items.iter().map(|item| bind_this_in_expr(item, bound_obj_name)).collect(),
+        ),
+        ExprKind::Set(items) => ExprKind::Set(
+            items.iter().map(|item| bind_this_in_expr(item, bound_obj_name)).collect(),
+        ),
+        ExprKind::Object(props) => ExprKind::Object(props.iter().map(|prop| match prop {
+            ObjectProperty::KeyValue { key, value } => ObjectProperty::KeyValue {
+                key: bind_this_in_expr(key, bound_obj_name),
+                value: bind_this_in_expr(value, bound_obj_name),
+            },
+            ObjectProperty::Spread(expr) => ObjectProperty::Spread(bind_this_in_expr(expr, bound_obj_name)),
+            ObjectProperty::Computed { key, value } => ObjectProperty::Computed {
+                key: bind_this_in_expr(key, bound_obj_name),
+                value: bind_this_in_expr(value, bound_obj_name),
+            },
+            other => other.clone(),
+        }).collect()),
+        ExprKind::Interpolation(parts) => ExprKind::Interpolation(parts.iter().map(|part| match part {
+            InterpolPart::Expr(expr) => InterpolPart::Expr(bind_this_in_expr(expr, bound_obj_name)),
+            InterpolPart::Formatted(expr, fmt) => InterpolPart::Formatted(bind_this_in_expr(expr, bound_obj_name), fmt.clone()),
+            other => other.clone(),
+        }).collect()),
+        ExprKind::IsType { expr, type_name } => ExprKind::IsType {
+            expr: Box::new(bind_this_in_expr(expr, bound_obj_name)),
+            type_name: type_name.clone(),
+        },
+        ExprKind::Cast { expr, type_name } => ExprKind::Cast {
+            expr: Box::new(bind_this_in_expr(expr, bound_obj_name)),
+            type_name: type_name.clone(),
+        },
+        ExprKind::TypeOf(expr) => ExprKind::TypeOf(Box::new(bind_this_in_expr(expr, bound_obj_name))),
+        ExprKind::NullCoalesce { left, right } => ExprKind::NullCoalesce {
+            left: Box::new(bind_this_in_expr(left, bound_obj_name)),
+            right: Box::new(bind_this_in_expr(right, bound_obj_name)),
+        },
+        ExprKind::Spread(expr) => ExprKind::Spread(Box::new(bind_this_in_expr(expr, bound_obj_name))),
+        ExprKind::Await(expr) => ExprKind::Await(Box::new(bind_this_in_expr(expr, bound_obj_name))),
+        ExprKind::Yield(expr) => ExprKind::Yield(
+            expr.as_ref().map(|inner| Box::new(bind_this_in_expr(inner, bound_obj_name))),
+        ),
+        ExprKind::YieldFrom(expr) => ExprKind::YieldFrom(Box::new(bind_this_in_expr(expr, bound_obj_name))),
+        ExprKind::Comprehension { kind, element, generators } => ExprKind::Comprehension {
+            kind: *kind,
+            element: Box::new(bind_this_in_expr(element, bound_obj_name)),
+            generators: generators.clone(),
+        },
+        ExprKind::Slice { lower, upper, step } => ExprKind::Slice {
+            lower: lower.as_ref().map(|inner| Box::new(bind_this_in_expr(inner, bound_obj_name))),
+            upper: upper.as_ref().map(|inner| Box::new(bind_this_in_expr(inner, bound_obj_name))),
+            step: step.as_ref().map(|inner| Box::new(bind_this_in_expr(inner, bound_obj_name))),
+        },
+        ExprKind::Walrus { target, value } => ExprKind::Walrus {
+            target: Box::new(bind_this_in_expr(target, bound_obj_name)),
+            value: Box::new(bind_this_in_expr(value, bound_obj_name)),
+        },
+        ExprKind::Void(expr) => ExprKind::Void(Box::new(bind_this_in_expr(expr, bound_obj_name))),
+        ExprKind::Delete(expr) => ExprKind::Delete(Box::new(bind_this_in_expr(expr, bound_obj_name))),
+        ExprKind::Sequence(exprs) => ExprKind::Sequence(
+            exprs.iter().map(|inner| bind_this_in_expr(inner, bound_obj_name)).collect(),
+        ),
+        ExprKind::Range { start, end, inclusive } => ExprKind::Range {
+            start: Box::new(bind_this_in_expr(start, bound_obj_name)),
+            end: Box::new(bind_this_in_expr(end, bound_obj_name)),
+            inclusive: *inclusive,
+        },
+        ExprKind::StaticAccess { class, member } => ExprKind::StaticAccess {
+            class: Box::new(bind_this_in_expr(class, bound_obj_name)),
+            member: Box::new(bind_this_in_expr(member, bound_obj_name)),
+        },
+        ExprKind::Match { subject, arms } => ExprKind::Match {
+            subject: Box::new(bind_this_in_expr(subject, bound_obj_name)),
+            arms: arms.iter().map(|arm| MatchArm {
+                conditions: arm.conditions.as_ref().map(|conditions| {
+                    conditions.iter().map(|expr| bind_this_in_expr(expr, bound_obj_name)).collect()
+                }),
+                body: bind_this_in_expr(&arm.body, bound_obj_name),
+            }).collect(),
+        },
+        _ => expr.kind.clone(),
+    };
+    Expression::with_span(kind, span)
 }
 
 /// Variable identifier passthrough.

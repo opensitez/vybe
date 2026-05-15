@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── Basic classes ───────────────────────────────────────────
 #[test] fn class_empty() { compile_ok("<?php class Foo {} $f = new Foo();"); }
@@ -107,3 +107,14 @@ echo $b->add('a')->add('b')->add('c')->build();
 #[test] fn func_ref() { compile_ok("<?php $fn = strlen(...); echo $fn('hello');"); }
 #[test] fn method_ref() { compile_ok("<?php class A { public function foo() { return 42; } } $a = new A(); $fn = $a->foo(...);"); }
 #[test] fn static_ref() { compile_ok("<?php class M { public static function sq($n) { return $n * $n; } } $fn = M::sq(...);"); }
+
+#[test] fn variadic_static_method_runtime() {
+    assert_eq!(run_prints(r#"<?php
+class Greeter {
+    public static function call($prefix, ...$parts) {
+        echo $prefix . ':' . implode(',', $parts);
+    }
+}
+Greeter::call('head', 'a', 'b', 'c');
+"#), &["head:a,b,c"]);
+}

@@ -306,6 +306,8 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
             StmtKind::Throw { expr: Some(expr), cause: None }
         }
 
+        Rule::yield_statement => walk_yield_statement(pair)?,
+
         Rule::rethrow_statement => {
             StmtKind::Throw { expr: None, cause: None }
         }
@@ -457,6 +459,8 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             _ => {}
         }
     }
+
+    is_generator = is_generator || body_has_yield(&body);
 
     Ok(StmtKind::FunctionDecl {
         name,
@@ -1244,6 +1248,8 @@ fn walk_method(pair: Pair<Rule>) -> Result<ClassMember, String> {
         }
     }
 
+    is_generator = is_generator || body_has_yield(&body);
+
     Ok(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
         name,
         params,
@@ -1969,6 +1975,23 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 
     Ok(StmtKind::Try { body, catches, else_body: None, finally })
+}
+
+fn walk_yield_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
+    let is_yield_from = pair.as_str().trim_start().starts_with("yield*");
+    let mut value = None;
+    for part in pair.into_inner() {
+        if !is_kw(part.as_rule()) {
+            value = Some(walk_expression(part)?);
+        }
+    }
+
+    let expr = if is_yield_from {
+        ExprKind::YieldFrom(Box::new(value.unwrap_or_else(Expression::null)))
+    } else {
+        ExprKind::Yield(value.map(Box::new))
+    };
+    Ok(StmtKind::Expr(Expression::new(expr)))
 }
 
 // ════════════════════════════════════════════════════════════════════════════

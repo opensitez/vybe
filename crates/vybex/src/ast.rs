@@ -983,3 +983,195 @@ pub struct EnumMember {
     pub value: Option<Expression>,
     pub constructor_args: Vec<Expression>,
 }
+
+pub fn body_has_yield(stmts: &[Statement]) -> bool {
+    stmts.iter().any(statement_has_yield)
+}
+
+fn statement_has_yield(stmt: &Statement) -> bool {
+    match &stmt.kind {
+        StmtKind::FunctionDecl { .. }
+        | StmtKind::ClassDecl { .. }
+        | StmtKind::InterfaceDecl { .. }
+        | StmtKind::EnumDecl { .. }
+        | StmtKind::StructDecl { .. }
+        | StmtKind::ModuleDecl { .. }
+        | StmtKind::NamespaceDecl { .. }
+        | StmtKind::DelegateDecl { .. } => false,
+        StmtKind::Expr(expr) => expr_has_yield(expr),
+        StmtKind::Block(body) => body_has_yield(body),
+        StmtKind::VarDecl { declarations, .. } => declarations
+            .iter()
+            .any(|decl| decl.init.as_ref().map_or(false, expr_has_yield)),
+        StmtKind::If { cond, then_body, elifs, else_body } => {
+            expr_has_yield(cond)
+                || body_has_yield(then_body)
+                || elifs.iter().any(|(cond, body)| expr_has_yield(cond) || body_has_yield(body))
+                || else_body.as_ref().map_or(false, |body| body_has_yield(body))
+        }
+        StmtKind::For { init, cond, update, body } => {
+            init.as_ref().map_or(false, |stmt| statement_has_yield(stmt))
+                || cond.as_ref().map_or(false, expr_has_yield)
+                || update.as_ref().map_or(false, expr_has_yield)
+                || body_has_yield(body)
+        }
+        StmtKind::ForIn { iter, body, else_body, .. } => {
+            expr_has_yield(iter)
+                || body_has_yield(body)
+                || else_body.as_ref().map_or(false, |body| body_has_yield(body))
+        }
+        StmtKind::While { cond, body, else_body } => {
+            expr_has_yield(cond)
+                || body_has_yield(body)
+                || else_body.as_ref().map_or(false, |body| body_has_yield(body))
+        }
+        StmtKind::DoWhile { body, cond, .. } => body_has_yield(body) || expr_has_yield(cond),
+        StmtKind::Switch { expr, cases, default } => {
+            expr_has_yield(expr)
+                || cases.iter().any(|case| {
+                    case.conditions.iter().any(case_condition_has_yield) || body_has_yield(&case.body)
+                })
+                || default.as_ref().map_or(false, |body| body_has_yield(body))
+        }
+        StmtKind::Try { body, catches, else_body, finally } => {
+            body_has_yield(body)
+                || catches.iter().any(|catch| {
+                    catch.when_clause.as_ref().map_or(false, expr_has_yield)
+                        || body_has_yield(&catch.body)
+                })
+                || else_body.as_ref().map_or(false, |body| body_has_yield(body))
+                || finally.as_ref().map_or(false, |body| body_has_yield(body))
+        }
+        StmtKind::With { items, body, .. } => {
+            items.iter().any(|item| expr_has_yield(&item.expr)) || body_has_yield(body)
+        }
+        StmtKind::Using { resource, body, .. } => expr_has_yield(resource) || body_has_yield(body),
+        StmtKind::Lock { expr, body } => expr_has_yield(expr) || body_has_yield(body),
+        StmtKind::Return(expr) => expr.as_ref().map_or(false, expr_has_yield),
+        StmtKind::Throw { expr, cause } => {
+            expr.as_ref().map_or(false, expr_has_yield)
+                || cause.as_ref().map_or(false, expr_has_yield)
+        }
+        StmtKind::Assign { targets, value } => {
+            targets.iter().any(expr_has_yield) || expr_has_yield(value)
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            expr_has_yield(target) || expr_has_yield(value)
+        }
+        StmtKind::AddHandler { control, handler, .. }
+        | StmtKind::RemoveHandler { control, handler, .. } => {
+            expr_has_yield(control) || expr_has_yield(handler)
+        }
+        StmtKind::RaiseEvent { args, .. }
+        | StmtKind::Delete(args)
+        | StmtKind::Echo(args) => args.iter().any(expr_has_yield),
+        StmtKind::OpenFile { path, file_number, .. } => {
+            expr_has_yield(path) || expr_has_yield(file_number)
+        }
+        StmtKind::CloseFile(expr) => expr.as_ref().map_or(false, expr_has_yield),
+        StmtKind::PrintFile { file_number, items }
+        | StmtKind::WriteFile { file_number, items } => {
+            expr_has_yield(file_number) || items.iter().any(expr_has_yield)
+        }
+        StmtKind::ReDim { bounds, .. } => bounds.iter().any(expr_has_yield),
+        StmtKind::Export { declaration, default, .. } => {
+            declaration.as_ref().map_or(false, |stmt| statement_has_yield(stmt))
+                || default.as_ref().map_or(false, |expr| expr_has_yield(expr))
+        }
+        StmtKind::Labeled { body, .. } => statement_has_yield(body),
+        StmtKind::Assert { test, msg } => {
+            expr_has_yield(test) || msg.as_ref().map_or(false, expr_has_yield)
+        }
+        StmtKind::MatchStatement { subject, cases } => {
+            expr_has_yield(subject)
+                || cases.iter().any(|case| {
+                    case.guard.as_ref().map_or(false, expr_has_yield) || body_has_yield(&case.body)
+                })
+        }
+        _ => false,
+    }
+}
+
+fn expr_has_yield(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Yield(_) | ExprKind::YieldFrom(_) => true,
+        ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_) | ExprKind::ClassExpr { .. } => false,
+        ExprKind::Unary { expr, .. }
+        | ExprKind::IsType { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Spread(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr) => expr_has_yield(expr),
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::NullCoalesce { left, right }
+        | ExprKind::Assign { target: left, value: right }
+        | ExprKind::Walrus { target: left, value: right }
+        | ExprKind::Range { start: left, end: right, .. } => {
+            expr_has_yield(left) || expr_has_yield(right)
+        }
+        ExprKind::StaticAccess { class, member } => {
+            expr_has_yield(class) || expr_has_yield(member)
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            expr_has_yield(cond) || expr_has_yield(then) || expr_has_yield(else_)
+        }
+        ExprKind::Member { object, .. } => expr_has_yield(object),
+        ExprKind::Index { object, index, .. } => expr_has_yield(object) || expr_has_yield(index),
+        ExprKind::Call { callee, args, .. } => {
+            expr_has_yield(callee) || args.iter().any(|arg| expr_has_yield(&arg.value))
+        }
+        ExprKind::New { class, args } => {
+            expr_has_yield(class) || args.iter().any(|arg| expr_has_yield(&arg.value))
+        }
+        ExprKind::SuperCall { args, .. } => args.iter().any(|arg| expr_has_yield(&arg.value)),
+        ExprKind::Array(items) => items.iter().any(|item| {
+            item.key.as_ref().map_or(false, expr_has_yield) || expr_has_yield(&item.value)
+        }),
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            items.iter().any(expr_has_yield)
+        }
+        ExprKind::Object(props) => props.iter().any(|prop| match prop {
+            ObjectProperty::KeyValue { key, value }
+            | ObjectProperty::Computed { key, value } => {
+                expr_has_yield(key) || expr_has_yield(value)
+            }
+            ObjectProperty::Spread(expr) => expr_has_yield(expr),
+            _ => false,
+        }),
+        ExprKind::Interpolation(parts) => parts.iter().any(|part| match part {
+            InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => expr_has_yield(expr),
+            InterpolPart::Text(_) => false,
+        }),
+        ExprKind::Match { subject, arms } => {
+            expr_has_yield(subject)
+                || arms.iter().any(|arm| {
+                    arm.conditions.as_ref().map_or(false, |conditions| {
+                        conditions.iter().any(expr_has_yield)
+                    }) || expr_has_yield(&arm.body)
+                })
+        }
+        ExprKind::Comprehension { element, generators, .. } => {
+            expr_has_yield(element)
+                || generators.iter().any(|generator| {
+                    expr_has_yield(&generator.target)
+                        || expr_has_yield(&generator.iter)
+                        || generator.conditions.iter().any(expr_has_yield)
+                })
+        }
+        ExprKind::Slice { lower, upper, step } => {
+            lower.as_ref().map_or(false, |expr| expr_has_yield(expr))
+                || upper.as_ref().map_or(false, |expr| expr_has_yield(expr))
+                || step.as_ref().map_or(false, |expr| expr_has_yield(expr))
+        }
+        _ => false,
+    }
+}
+
+fn case_condition_has_yield(condition: &CaseCondition) -> bool {
+    match condition {
+        CaseCondition::Value(expr) | CaseCondition::Comparison { expr, .. } => expr_has_yield(expr),
+        CaseCondition::Range { from, to } => expr_has_yield(from) || expr_has_yield(to),
+    }
+}

@@ -86,6 +86,7 @@ statement = _{
   | deallocate_statement
   | call_statement
   | return_statement
+    | yield_statement
   | cycle_statement
   | exit_statement
   | stop_statement
@@ -695,6 +696,8 @@ call_statement = {
 
 return_statement = { kw_return ~ expression? }
 
+yield_statement = { kw_yield ~ expression? }
+
 cycle_statement = { kw_cycle ~ identifier? }
 
 exit_statement = { kw_exit ~ identifier? }
@@ -879,7 +882,7 @@ strict_keyword = _{
     | ^"subroutine" | ^"function"
     | ^"if" | ^"then" | ^"else" | ^"elseif" | ^"endif" | ^"enddo" | ^"do" | ^"while"
     | ^"select" | ^"case"
-    | ^"print" | ^"write" | ^"read" | ^"call" | ^"return"
+    | ^"print" | ^"write" | ^"read" | ^"call" | ^"return" | ^"yield"
     | ^"cycle" | ^"exit" | ^"stop"
     | ^"interface" | ^"type"
     ) ~ !(ASCII_ALPHANUMERIC | "_")
@@ -1011,6 +1014,7 @@ kw_read       = @{ ^"read"       ~ !(ASCII_ALPHANUMERIC | "_") }
 // Statements
 kw_call       = @{ ^"call"       ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_return     = @{ ^"return"     ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_yield      = @{ ^"yield"      ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_cycle      = @{ ^"cycle"      ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_exit       = @{ ^"exit"       ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_stop       = @{ ^"stop"       ~ !(ASCII_ALPHANUMERIC | "_") }

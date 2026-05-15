@@ -14,4 +14,5 @@ mod test_enums_advanced;
 mod test_generics;
 mod test_classes_advanced;
 mod test_async_generators;
+mod test_generators_lazy;
 mod test_null_safety_advanced;
