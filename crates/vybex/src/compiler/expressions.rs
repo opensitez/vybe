@@ -1816,8 +1816,8 @@ impl Compiler {
             }
 
             // ── Lambda ──────────────────────────────────────────────────
-            ExprKind::Lambda { params, body, .. } => {
-                self.compile_lambda(params, body)?;
+            ExprKind::Lambda { params, body, captures, .. } => {
+                self.compile_lambda(params, body, captures)?;
             }
 
             // ── Array literal ───────────────────────────────────────────
@@ -2061,7 +2061,7 @@ impl Compiler {
                             self.emit(Op::DUP);
                             if let StmtKind::FunctionDecl { params, body, .. } = &value.kind {
                                 if self.is_js_profile() {
-                                    self.compile_lambda(params, &LambdaBody::Block(body.clone()))?;
+                                    self.compile_lambda(params, &LambdaBody::Block(body.clone()), &[])?;
                                 } else {
                                     // Object methods receive `this` as implicit first arg
                                     let mut method_params = vec![Param {
@@ -2071,7 +2071,7 @@ impl Compiler {
                                         is_kwargs: false, is_optional: false, is_nullable: false,
                                     }];
                                     method_params.extend(params.iter().cloned());
-                                    self.compile_lambda(&method_params, &LambdaBody::Block(body.clone()))?;
+                                    self.compile_lambda(&method_params, &LambdaBody::Block(body.clone()), &[])?;
                                 }
                             } else {
                                 self.emit(Op::NULL);
@@ -2084,7 +2084,7 @@ impl Compiler {
                             self.emit(Op::DUP);
                             if let StmtKind::FunctionDecl { params, body, .. } = &value.kind {
                                 if self.is_js_profile() {
-                                    self.compile_lambda(params, &LambdaBody::Block(body.clone()))?;
+                                    self.compile_lambda(params, &LambdaBody::Block(body.clone()), &[])?;
                                 } else {
                                     // Accessors receive `this` as first arg
                                     let mut accessor_params = vec![Param {
@@ -2094,7 +2094,7 @@ impl Compiler {
                                         is_kwargs: false, is_optional: false, is_nullable: false,
                                     }];
                                     accessor_params.extend(params.iter().cloned());
-                                    self.compile_lambda(&accessor_params, &LambdaBody::Block(body.clone()))?;
+                                    self.compile_lambda(&accessor_params, &LambdaBody::Block(body.clone()), &[])?;
                                 }
                             } else {
                                 self.emit(Op::NULL);

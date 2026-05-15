@@ -1430,6 +1430,7 @@ impl Compiler {
                                     else_: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
                                 })),
                             }))),
+                            &[],
                         )?;
                         self.emit_u8(Op::CALL_REF, 2);
                         return Ok(());
@@ -2546,6 +2547,7 @@ impl Compiler {
                                     else_: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
                                 })),
                             }))),
+                            &[],
                         )?;
                         self.emit_u8(Op::CALL_REF, 2);
                         return Ok(());
@@ -3032,6 +3034,7 @@ impl Compiler {
                                         else_: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
                                     })),
                                 }))),
+                                &[],
                             )?;
                             self.emit_u8(Op::CALL_REF, 2);
                         }
@@ -6934,7 +6937,103 @@ impl Compiler {
     // Lambda compilation
     // ════════════════════════════════════════════════════════════════════════
 
-    pub(super) fn compile_lambda(&mut self, params: &[Param], body: &LambdaBody) -> Result<(), String> {
+    fn split_explicit_capture(capture: &str) -> (bool, &str) {
+        if let Some(name) = capture.strip_prefix('&') {
+            (true, name)
+        } else {
+            (false, capture)
+        }
+    }
+
+    fn normalize_explicit_capture(&self, capture: &str) -> String {
+        let (by_ref, raw_name) = Self::split_explicit_capture(capture);
+        let normalized_name = if self.is_php_profile() && !raw_name.starts_with('$') {
+            format!("${raw_name}")
+        } else {
+            raw_name.to_string()
+        };
+
+        if by_ref {
+            format!("&{normalized_name}")
+        } else {
+            normalized_name
+        }
+    }
+
+    pub(super) fn compile_lambda(&mut self, params: &[Param], body: &LambdaBody, captures: &[String]) -> Result<(), String> {
+        let normalized_captures: Vec<String> = captures
+            .iter()
+            .map(|capture| self.normalize_explicit_capture(capture))
+            .collect();
+
+        if normalized_captures
+            .iter()
+            .any(|capture| !Self::split_explicit_capture(capture).0)
+        {
+            return self.compile_lambda_with_explicit_captures(params, body, &normalized_captures);
+        }
+
+        self.compile_lambda_direct(params, body)
+    }
+
+    fn compile_lambda_with_explicit_captures(
+        &mut self,
+        params: &[Param],
+        body: &LambdaBody,
+        captures: &[String],
+    ) -> Result<(), String> {
+        let capture_bindings: Vec<(String, Option<String>)> = captures
+            .iter()
+            .filter_map(|capture| {
+                let (by_ref, capture_name) = Self::split_explicit_capture(capture);
+                if by_ref {
+                    None
+                } else {
+                    Some((
+                        capture_name.to_string(),
+                        self.lookup_var_type_hint(capture_name).map(str::to_string),
+                    ))
+                }
+            })
+            .collect();
+
+        let factory_idx = self.chunks.len();
+        let factory = common::functions::create_function_chunk("<lambda_factory>", capture_bindings.len() as u8);
+        self.chunks.push(factory);
+        self.scopes.push(Scope::new_function());
+        let saved = self.current;
+        self.current = factory_idx;
+
+        for (capture_name, capture_type) in &capture_bindings {
+            self.define_local_typed(capture_name, capture_type.clone());
+        }
+
+        self.compile_lambda_direct(params, body)?;
+        self.emit(Op::RETURN);
+
+        let locals = self.scope().next_slot.max(self.chunks[factory_idx].local_count);
+        self.chunks[factory_idx].local_count = locals;
+        let uvs = self.scopes.last().unwrap().upvalues.clone();
+        self.scopes.pop();
+        self.current = saved;
+
+        let line = self.line;
+        common::functions::emit_ref_func(&mut self.chunks[self.current], factory_idx, uvs.len() as u8, line);
+        for uv in &uvs {
+            self.chunks[self.current].emit(if uv.is_local { 1 } else { 0 }, line);
+            self.chunks[self.current].emit(uv.index, line);
+        }
+        for capture in captures {
+            let (by_ref, capture_name) = Self::split_explicit_capture(capture);
+            if !by_ref {
+                self.emit_var_get(capture_name);
+            }
+        }
+        self.emit_u8(Op::CALL_REF, capture_bindings.len() as u8);
+        Ok(())
+    }
+
+    fn compile_lambda_direct(&mut self, params: &[Param], body: &LambdaBody) -> Result<(), String> {
         let has_rest = params.last().map_or(false, |p| p.is_rest);
         if has_rest {
             self.rest_fixed_arities.insert(params.len().saturating_sub(1) as u8);
@@ -6958,7 +7057,6 @@ impl Compiler {
                 self.patch_jump(has_val);
             }
         }
-        // Result slot for ResultSlot languages
         let result_slot = if self.profile.function_return == ReturnStyle::ResultSlot {
             let rs = self.define_local("Result");
             self.emit(Op::NULL); self.emit_u16(Op::LOCAL_SET, rs); self.emit(Op::DROP);
@@ -7018,11 +7116,11 @@ impl Compiler {
             }
             emitted_uvs.push(emitted);
         }
-        let l = self.line;
-        common::functions::emit_ref_func(&mut self.chunks[self.current], ci, emitted_uvs.len() as u8, l);
+        let line = self.line;
+        common::functions::emit_ref_func(&mut self.chunks[self.current], ci, emitted_uvs.len() as u8, line);
         for uv in &emitted_uvs {
-            self.chunks[self.current].emit(if uv.is_local { 1 } else { 0 }, l);
-            self.chunks[self.current].emit(uv.index, l);
+            self.chunks[self.current].emit(if uv.is_local { 1 } else { 0 }, line);
+            self.chunks[self.current].emit(uv.index, line);
         }
         if has_rest {
             self.emit_stamp_rest_metadata_on_stack(params.len().saturating_sub(1));

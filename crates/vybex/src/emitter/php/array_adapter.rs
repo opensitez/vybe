@@ -361,15 +361,6 @@ pub fn emit_array_walk_recursive(chunks: &mut [Chunk], current: usize, argc: u8,
     lget(chunk, cur_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     let non_null = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    lget(chunk, fn_slot, line);
-    lget(chunk, cur_slot, line);
-    if argc >= 3 {
-        lget(chunk, userdata_slot, line);
-        chunk.emit_op_u8(Op::CALL_REF, 2, line);
-    } else {
-        chunk.emit_op_u8(Op::CALL_REF, 1, line);
-    }
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_loop(loop_top, line);
     chunk.patch_jump(non_null);
 
@@ -461,14 +452,15 @@ pub fn emit_array_walk_recursive(chunks: &mut [Chunk], current: usize, argc: u8,
     chunk.emit_loop(loop_top, line);
     chunk.patch_jump(not_object);
 
-    lget(chunk, fn_slot, line);
-    lget(chunk, cur_slot, line);
-    if argc >= 3 {
-        lget(chunk, userdata_slot, line);
-        chunk.emit_op_u8(Op::CALL_REF, 2, line);
-    } else {
-        chunk.emit_op_u8(Op::CALL_REF, 1, line);
-    }
+    let callback_arity = if argc >= 3 { 2 } else { 1 };
+    emit_call_via_invoke_dispatch(chunks, current, fn_slot, callback_arity, line, |cs, c| {
+        let ch = &mut cs[c];
+        lget(ch, cur_slot, line);
+        if argc >= 3 {
+            lget(ch, userdata_slot, line);
+        }
+    });
+    let chunk = &mut chunks[current];
     chunk.emit_op(Op::DROP, line);
     chunk.emit_loop(loop_top, line);
     chunk.patch_jump(done);

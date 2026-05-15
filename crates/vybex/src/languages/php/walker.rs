@@ -88,6 +88,24 @@ fn next_tmp_name(prefix: &str) -> String {
     })
 }
 
+fn walk_expression_as_assign_target(pair: Pair<Rule>) -> Result<Expression, String> {
+    ASSIGN_LHS_DEPTH.with(|d| *d.borrow_mut() += 1);
+    let walked = walk_expression(pair);
+    ASSIGN_LHS_DEPTH.with(|d| {
+        let mut bd = d.borrow_mut();
+        *bd = bd.saturating_sub(1);
+    });
+    walked
+}
+
+fn postfix_rule_kind(pair: &Pair<Rule>) -> Option<Rule> {
+    if matches!(pair.as_rule(), Rule::postfix_op) {
+        pair.clone().into_inner().next().map(|inner| inner.as_rule())
+    } else {
+        Some(pair.as_rule())
+    }
+}
+
 fn push_class_context(name: &str) {
     CLASS_STACK.with(|s| s.borrow_mut().push(name.to_string()));
 }
@@ -2906,12 +2924,12 @@ fn walk_unary(pair: Pair<Rule>) -> Result<Expression, String> {
     let first = inner.next().unwrap();
     if matches!(first.as_rule(), Rule::unary_op) {
         let op_str = first.as_str();
-        let expr = walk_expression(inner.next().unwrap())?;
         // Normalise PHP `++` / `--` to a language-neutral call + assign
         // so the compiler never sees PHP-specific increment semantics.
         // Mirrors the postfix rewrite in `apply_postfix` — see that
         // comment for the full rationale.
         if op_str == "++" || op_str == "--" {
+            let expr = walk_expression_as_assign_target(inner.next().unwrap())?;
             let helper = if op_str == "++" { "__php_increment" } else { "__php_decrement" };
             let callee = Expression::with_span(
                 ExprKind::Ident(helper.to_string()),
@@ -2933,6 +2951,7 @@ fn walk_unary(pair: Pair<Rule>) -> Result<Expression, String> {
                 span,
             ));
         }
+        let expr = walk_expression(inner.next().unwrap())?;
         let op = parse_unary_op(op_str);
         Ok(Expression::with_span(
             ExprKind::Unary { op, expr: Box::new(expr) },
@@ -3049,9 +3068,13 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<Expression, String> {
     let mut from_variable = is_var_primary;
     let ops: Vec<_> = inner.collect();
     let n = ops.len();
-    for (i, op_pair) in ops.into_iter().enumerate() {
+    for (i, op_pair) in ops.iter().cloned().enumerate() {
         let is_last_op = i == n - 1;
-        let is_assign_target = lhs_depth_was > 0 && is_last_op;
+        let next_is_inc_dec = ops
+            .get(i + 1)
+            .and_then(postfix_rule_kind)
+            .is_some_and(|rule| matches!(rule, Rule::inc_dec_op));
+        let is_assign_target = (lhs_depth_was > 0 && is_last_op) || next_is_inc_dec;
         expr = apply_postfix(expr, op_pair, &span, from_variable, is_assign_target)?;
         // After the first postfix is applied, the chain is a
         // computed value (member access, call result, etc.), not the
@@ -3630,10 +3653,14 @@ fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span, from_variabl
                     {
                         if let ExprKind::Lambda { params, body, is_async, captures } = &args[0].value.kind {
                             let bound_obj_name = format!(
-                                "__php_closure_bind_obj_{}_{}",
+                                "$__php_closure_bind_obj_{}_{}",
                                 span.start_line,
                                 span.start_col,
                             );
+                            let mut rebound_captures = captures.clone();
+                            if !rebound_captures.iter().any(|capture| capture == &bound_obj_name) {
+                                rebound_captures.push(bound_obj_name.clone());
+                            }
                             let save_obj = Expression::with_span(
                                 ExprKind::Assign {
                                     target: Box::new(Expression::with_span(
@@ -3649,7 +3676,7 @@ fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span, from_variabl
                                     params: params.clone(),
                                     body: bind_this_in_lambda_body(body, &bound_obj_name),
                                     is_async: *is_async,
-                                    captures: captures.clone(),
+                                    captures: rebound_captures,
                                 },
                                 span.clone(),
                             );
@@ -4339,8 +4366,14 @@ fn walk_closure(pair: Pair<Rule>) -> Result<Expression, String> {
             Rule::closure_use => {
                 for v in p.into_inner() {
                     if matches!(v.as_rule(), Rule::closure_use_var) {
+                        let by_ref = v.as_str().trim_start().starts_with('&');
                         if let Some(var) = v.into_inner().find(|q| matches!(q.as_rule(), Rule::variable)) {
-                            captures.push(strip_dollar(var.as_str()).to_string());
+                            let capture_name = strip_dollar(var.as_str()).to_string();
+                            if by_ref {
+                                captures.push(format!("&{capture_name}"));
+                            } else {
+                                captures.push(capture_name);
+                            }
                         }
                     }
                 }
@@ -4811,6 +4844,7 @@ fn bind_this_in_expr(expr: &Expression, bound_obj_name: &str) -> Expression {
     let span = expr.span;
     let kind = match &expr.kind {
         ExprKind::This => ExprKind::Ident(bound_obj_name.to_string()),
+        ExprKind::Ident(name) if name == "$this" => ExprKind::Ident(bound_obj_name.to_string()),
         ExprKind::Binary { op, left, right } => ExprKind::Binary {
             op: *op,
             left: Box::new(bind_this_in_expr(left, bound_obj_name)),
