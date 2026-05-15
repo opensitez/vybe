@@ -47,6 +47,7 @@ mod test_spl;
 mod test_iterators;
 mod test_weak_references;
 mod test_output_buffering;
+mod test_templates;
 mod test_serialization_advanced;
 mod test_traits_deep;
 mod test_reflection;

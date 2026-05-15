@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── Convert / Math extras ───────────────────────────────────
 #[test] fn dechex() { compile_ok("<?php echo dechex(255);"); }
@@ -24,6 +24,89 @@ use super::helpers::compile_ok;
 // ── Filesystem extras ───────────────────────────────────────
 #[test] fn stat_file() { compile_ok("<?php $info = stat('/tmp/test.txt');"); }
 #[test] fn readdir() { compile_ok("<?php $entries = readdir('/tmp');"); }
+#[test] fn directory_iterator_read_and_close() {
+    let out = run_prints(r#"<?php
+$dir = dir('.');
+$entry = $dir->read();
+if ($entry !== false) echo 'ok';
+$dir->close();
+"#);
+    assert_eq!(out, vec!["ok"]);
+}
+
+#[test] fn define_and_defined_runtime() {
+    let out = run_prints(r#"<?php
+echo defined('SIZESTEP') ? 'f0' : 't0';
+define('SIZESTEP', 1024.0);
+echo defined('SIZESTEP') ? 't1' : 'f1';
+echo SIZESTEP;
+"#);
+    assert_eq!(out, vec!["t0", "t1", "1024"]);
+}
+
+#[test] fn mixed_case_php_builtin_lookup_runtime() {
+    let out = run_prints(r#"<?php
+echo urlEncode('a b') === urlencode('a b') ? 'ok' : 'bad';
+echo rawUrlEncode('c d') === rawurlencode('c d') ? 'ok' : 'bad';
+"#);
+    assert_eq!(out, vec!["ok", "ok"]);
+}
+
+#[test] fn url_decode_variants_runtime() {
+    let out = run_prints(r#"<?php
+echo urldecode('a+b');
+echo rawurldecode('a+b');
+"#);
+    assert_eq!(out, vec!["a b", "a+b"]);
+}
+
+#[test] fn symlink_helpers_and_pathinfo_runtime() {
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("vybex_php_symlink_{unique}"));
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("target.txt");
+        fs::write(&target, "ok").unwrap();
+        let link = root.join("link.txt");
+        symlink(&target, &link).unwrap();
+
+        let link_path = link.to_string_lossy().replace('\\', "\\\\").replace('\'', "\\'");
+        let target_path = target.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+        let out = run_prints(&format!(r#"<?php
+    $link = '{link_path}';
+echo is_link($link) ? 't' : 'f';
+echo readlink($link);
+$info = pathinfo(readlink($link));
+    echo $info['dirname'];
+    echo $info['basename'];
+    echo $info['filename'];
+    echo $info['extension'];
+"#));
+
+        assert_eq!(
+            out,
+            vec![
+                "t".to_string(),
+                target_path,
+                root.to_string_lossy().to_string(),
+                "target.txt".to_string(),
+                "target".to_string(),
+                "txt".to_string(),
+            ]
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+}
 
 // ── HTTP extended ───────────────────────────────────────────
 #[test] fn fetch_api() { compile_ok("<?php $resp = fetch('https://api.example.com/data');"); }

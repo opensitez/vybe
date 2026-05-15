@@ -17,8 +17,134 @@
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use vybex::ast::{ExprKind, Literal, Module, StmtKind};
 use vybe_bytecode::chunk::Chunk;
 use vybe_bytecode::VM;
+
+#[derive(Default)]
+struct AstSummary {
+    top_level_statements: usize,
+    top_level_functions: usize,
+    top_level_classes: usize,
+    top_level_echoes: usize,
+    string_bytes: usize,
+    inline_html_echoes: usize,
+}
+
+fn summarize_module(module: &Module) -> AstSummary {
+    let mut summary = AstSummary::default();
+    for stmt in &module.body {
+        summary.top_level_statements += 1;
+        match &stmt.kind {
+            StmtKind::FunctionDecl { .. } => summary.top_level_functions += 1,
+            StmtKind::ClassDecl { .. }
+            | StmtKind::StructDecl { .. }
+            | StmtKind::ModuleDecl { .. }
+            | StmtKind::InterfaceDecl { .. }
+            | StmtKind::EnumDecl { .. } => summary.top_level_classes += 1,
+            StmtKind::Echo(exprs) => {
+                summary.top_level_echoes += 1;
+                if exprs.len() == 1 {
+                    if let ExprKind::Lit(Literal::Str(text)) = &exprs[0].kind {
+                        summary.string_bytes += text.len();
+                        if text.contains('<') || text.contains('>') || text.contains('\n') {
+                            summary.inline_html_echoes += 1;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    summary
+}
+
+fn print_ast_summary(module: &Module) {
+    let summary = summarize_module(module);
+    eprintln!(
+        "[vybex] AST summary: top_level_stmts={}, top_level_funcs={}, top_level_classes={}, top_level_echoes={}, inline_html_echoes={}, inline_html_bytes={}",
+        summary.top_level_statements,
+        summary.top_level_functions,
+        summary.top_level_classes,
+        summary.top_level_echoes,
+        summary.inline_html_echoes,
+        summary.string_bytes,
+    );
+}
+
+fn should_emit_full_ast(module: &Module) -> bool {
+    if std::env::var_os("VYBEX_DUMP_AST_FULL").is_some() {
+        return true;
+    }
+    let summary = summarize_module(module);
+    summary.top_level_statements <= 250
+        && summary.inline_html_echoes <= 16
+        && summary.string_bytes <= 16000
+}
+
+fn print_ast_outline(module: &Module) {
+    for (index, stmt) in module.body.iter().enumerate() {
+        let label = match &stmt.kind {
+            StmtKind::Expr(_) => "Expr",
+            StmtKind::Block(_) => "Block",
+            StmtKind::VarDecl { .. } => "VarDecl",
+            StmtKind::FunctionDecl { name, .. } => {
+                println!("[{index}] FunctionDecl {name}");
+                continue;
+            }
+            StmtKind::ClassDecl { name, .. } => {
+                println!("[{index}] ClassDecl {name}");
+                continue;
+            }
+            StmtKind::InterfaceDecl { name, .. } => {
+                println!("[{index}] InterfaceDecl {name}");
+                continue;
+            }
+            StmtKind::EnumDecl { name, .. } => {
+                println!("[{index}] EnumDecl {name}");
+                continue;
+            }
+            StmtKind::StructDecl { name, .. } => {
+                println!("[{index}] StructDecl {name}");
+                continue;
+            }
+            StmtKind::NamespaceDecl { name, .. } => {
+                println!("[{index}] NamespaceDecl {name}");
+                continue;
+            }
+            StmtKind::If { .. } => "If",
+            StmtKind::For { .. } => "For",
+            StmtKind::ForIn { .. } => "ForIn",
+            StmtKind::While { .. } => "While",
+            StmtKind::DoWhile { .. } => "DoWhile",
+            StmtKind::Switch { .. } => "Switch",
+            StmtKind::Return(_) => "Return",
+            StmtKind::Throw { .. } => "Throw",
+            StmtKind::Echo(_) => "Echo",
+            StmtKind::Try { .. } => "Try",
+            StmtKind::Empty => "Empty",
+            _ => "Other",
+        };
+        println!("[{index}] {label}");
+    }
+}
+
+fn print_chunk_summary(chunks: &[Chunk], filter: Option<&str>) {
+    let filtered = filter_chunks(chunks, filter);
+    let total_instructions: usize = filtered.iter().map(|chunk| chunk.code.len()).sum();
+    eprintln!(
+        "[vybex] Chunk summary: total={}, selected={}, instructions={}",
+        chunks.len(),
+        filtered.len(),
+        total_instructions,
+    );
+    for chunk in filtered.iter().take(20) {
+        eprintln!("  → chunk '{}' (arity={}, instructions={})", chunk.name, chunk.arity, chunk.code.len());
+    }
+    if filtered.len() > 20 {
+        eprintln!("  … {} more chunks omitted from summary", filtered.len() - 20);
+    }
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -118,11 +244,19 @@ fn main() {
     }
 
     if dump_ast {
+        eprintln!("[vybex] Preparing AST...");
         let module = match bundle.prepared_module() {
             Ok(module) => module,
             Err(e) => { eprintln!("Parse error: {e}"); std::process::exit(1); }
         };
-        println!("{:#?}", module);
+        print_ast_summary(&module);
+        if should_emit_full_ast(&module) {
+            eprintln!("[vybex] Printing full AST...");
+            println!("{:#?}", module);
+        } else {
+            eprintln!("[vybex] AST is large; printing top-level outline. Set VYBEX_DUMP_AST_FULL=1 for full debug output.");
+            print_ast_outline(&module);
+        }
         return;
     }
 
@@ -173,6 +307,7 @@ fn main() {
     }
 
     // ── Compile ─────────────────────────────────────────────────────────────
+    eprintln!("[vybex] Preparing and compiling module...");
     let compiled = match bundle.compile_full_with_modules(&vm.modules) {
         Ok(c) => c,
         Err(e) => { eprintln!("Compile error: {e}"); std::process::exit(1); }
@@ -182,6 +317,7 @@ fn main() {
 
     // ── --dump: disassemble and exit ────────────────────────────────────────
     if dump {
+        print_chunk_summary(&chunks, chunk_filter.as_deref());
         for chunk in filter_chunks(&chunks, chunk_filter.as_deref()) {
             println!("{}", vybe_bytecode::debug::disassemble(chunk));
         }

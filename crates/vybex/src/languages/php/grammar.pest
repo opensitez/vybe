@@ -40,14 +40,36 @@ program = {
     ~ EOI
 }
 
-program_html_first = _{ inline_html ~ (php_segment ~ inline_html?)* }
-program_php_first  = _{ php_segment ~ (inline_html ~ php_segment)* ~ inline_html? }
+program_pure = {
+    SOI
+    ~ pure_top_level_statement*
+    ~ EOI
+}
+
+pure_top_level_statement = { statement }
+
+program_html_first = _{ inline_html ~ &"<?" ~ mixed_php_segments }
+program_php_first  = _{ mixed_php_segments }
 program_bare       = _{ statement* }
 
-// One `<?php … ?>` or `<?= expr ?>` region.
-php_segment = _{ php_echo_segment | php_code_segment }
-php_code_segment = { open_tag_code ~ statement* ~ close_tag? }
-php_echo_segment = { open_tag_echo ~ expression ~ (";")? ~ close_tag? }
+// One `<?php … ?>` or `<?= expr ?>` region. In mixed PHP/HTML files,
+// closed segments must end at a real `?>`; only the final segment may
+// omit the close tag at EOF.
+mixed_php_segments = _{
+    php_segment_closed
+    ~ (inline_html? ~ php_segment_closed)*
+    ~ inline_html?
+    ~ php_segment_eof?
+    ~ inline_html?
+    | php_segment_eof
+}
+
+php_segment_closed = _{ php_echo_segment_closed | php_code_segment_closed }
+php_segment_eof    = _{ php_echo_segment_eof | php_code_segment_eof }
+php_code_segment_closed = { open_tag_code ~ statement* ~ close_tag }
+php_echo_segment_closed = { open_tag_echo ~ expression ~ (";")? ~ close_tag }
+php_code_segment_eof = { open_tag_code ~ statement* ~ close_tag? }
+php_echo_segment_eof = { open_tag_echo ~ expression ~ (";")? ~ close_tag? }
 
 // Inline HTML is any run of characters that doesn't contain a PHP
 // open tag. Atomic so internal whitespace is preserved verbatim.
@@ -281,6 +303,7 @@ static_variable_decl = { variable ~ ("=" ~ expression)? }
 template_break_stmt = { close_tag ~ template_text ~ open_tag_code }
 template_echo_stmt  = { close_tag ~ template_text ~ open_tag_echo }
 template_text = @{ (!"<?" ~ ANY)* }
+stmt_terminator = _{ ";" | &close_tag }
 
 // ── Attributes (PHP 8.0+) ────────────────────────────────────────────────────
 //
@@ -523,10 +546,10 @@ catch_type = {
 
 finally_clause = { kw_finally ~ block_statement }
 
-echo_statement  = { kw_echo ~ expression ~ ("," ~ expression)* ~ ";" }
-print_statement = { kw_print ~ expression ~ ";" }
+echo_statement  = { kw_echo ~ expression ~ ("," ~ expression)* ~ stmt_terminator }
+print_statement = { kw_print ~ expression ~ stmt_terminator }
 
-expression_statement = { expression ~ ";" }
+expression_statement = { expression ~ stmt_terminator }
 
 // ── Expression precedence (flat ~12 levels) ──────────────────────────────────
 //

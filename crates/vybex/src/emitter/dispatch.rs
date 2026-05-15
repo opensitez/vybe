@@ -495,6 +495,12 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::php::string_adapter::emit_rawurlencode(chunks, current, argc, line),
         "php.urldecode"
             => crate::emitter::php::string_adapter::emit_urldecode(chunks, current, argc, line),
+        "php.rawurldecode"
+            => crate::emitter::php::string_adapter::emit_rawurldecode(chunks, current, argc, line),
+        "php.htmlspecialchars"
+            => crate::emitter::php::string_adapter::emit_htmlspecialchars(chunks, current, argc, line),
+        "php.htmlentities"
+            => crate::emitter::php::string_adapter::emit_htmlentities(chunks, current, argc, line),
         "php.bin2hex"
             => crate::emitter::php::string_adapter::emit_bin2hex(chunks, current, argc, line),
         "php.hex2bin"
@@ -617,10 +623,16 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::php::filesystem_adapter::emit_is_file(chunks, current, argc, line),
         "php.is_dir"
             => crate::emitter::php::filesystem_adapter::emit_is_dir(chunks, current, argc, line),
+        "php.is_link"
+            => crate::emitter::php::filesystem_adapter::emit_is_link(chunks, current, argc, line),
         "php.filesize"
             => crate::emitter::php::filesystem_adapter::emit_filesize(chunks, current, argc, line),
         "php.filemtime"
             => crate::emitter::php::filesystem_adapter::emit_filemtime(chunks, current, argc, line),
+        "php.readlink"
+            => crate::emitter::php::filesystem_adapter::emit_readlink(chunks, current, argc, line),
+        "php.pathinfo"
+            => crate::emitter::php::filesystem_adapter::emit_pathinfo(chunks, current, argc, line),
         "php.unlink"
             => crate::emitter::php::filesystem_adapter::emit_unlink(chunks, current, argc, line),
         "php.file"

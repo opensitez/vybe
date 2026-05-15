@@ -297,6 +297,7 @@ mod tests {
             params: vec![],
             body: vec![],
             base_args: Some(vec![base_arg]),
+            initializer_target: crate::ast::ConstructorInitializerTarget::Base,
             visibility: crate::ast::Visibility::Public,
         };
         let nc = normalize_class(
@@ -317,6 +318,7 @@ mod tests {
             params: vec![],
             body: vec![],
             base_args: None,
+            initializer_target: crate::ast::ConstructorInitializerTarget::Base,
             visibility: crate::ast::Visibility::Public,
         };
         let nc = normalize_class(
@@ -332,6 +334,7 @@ mod tests {
             params: vec![],
             body: vec![],
             base_args: None,
+            initializer_target: crate::ast::ConstructorInitializerTarget::Base,
             visibility: crate::ast::Visibility::Public,
         };
         let nc = normalize_class(

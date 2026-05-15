@@ -70,6 +70,7 @@ stripos             = { emit = "opcode:str_index_of",        min_args = 2, max_a
 # `path.basename`/`path.dirname` in the JS profile). Same semantics.
 basename            = { emit = "host:wasi:filesystem:pathGetFileName",  min_args = 1, max_args = 2 }
 dirname             = { emit = "host:wasi:filesystem:pathGetDirectory", min_args = 1, max_args = 2 }
+pathinfo            = { emit = "common:php.pathinfo",           min_args = 1, max_args = 2 }
 # Substring replace — direct STR_REPLACE opcode (ECMA replaceAll-equivalent).
 str_replace         = { emit = "common:php.str_replace",     min_args = 3, max_args = 4 }
 ctype_alpha         = { emit = "common:php.ctype_alpha",     min_args = 1, max_args = 1 }
@@ -102,6 +103,14 @@ str_ireplace        = { emit = "common:php.str_ireplace",    min_args = 3, max_a
 str_word_count      = { emit = "common:php.str_word_count",  min_args = 1, max_args = 3 }
 strstr              = { emit = "common:php.strstr",          min_args = 2, max_args = 3 }
 stristr             = { emit = "common:php.stristr",         min_args = 2, max_args = 3 }
+htmlspecialchars    = { emit = "common:php.htmlspecialchars", min_args = 1, max_args = 4 }
+htmlentities        = { emit = "common:php.htmlentities",    min_args = 1, max_args = 4 }
+urlencode           = { emit = "common:php.urlencode",       min_args = 1, max_args = 1 }
+rawurlencode        = { emit = "common:php.rawurlencode",    min_args = 1, max_args = 1 }
+urldecode           = { emit = "common:php.urldecode",       min_args = 1, max_args = 1 }
+rawurldecode        = { emit = "common:php.rawurldecode",    min_args = 1, max_args = 1 }
+__php_urldecode     = { emit = "common:php.urldecode",       min_args = 1, max_args = 1 }
+__php_rawurldecode  = { emit = "common:php.rawurldecode",    min_args = 1, max_args = 1 }
 bin2hex             = { emit = "common:php.bin2hex",         min_args = 1, max_args = 1 }
 hex2bin             = { emit = "common:php.hex2bin",         min_args = 1, max_args = 1 }
 chunk_split         = { emit = "common:php.chunk_split",     min_args = 1, max_args = 3 }
@@ -125,6 +134,8 @@ strtr               = { emit = "intrinsic:strtr",            min_args = 2, max_a
 # `dir($path)` returns a Directory iterator with `read()`/`close()`
 # methods. Backed by an stdlib chunk that wraps wasi:filesystem:listDir.
 dir                 = { emit = "common:php.dir",            min_args = 1, max_args = 1 }
+__php_dir_read      = { emit = "common:php.dir_read",       min_args = 1, max_args = 1 }
+__php_dir_close     = { emit = "common:php.dir_close",      min_args = 1, max_args = 1 }
 # String split — direct STR_SPLIT opcode.
 explode             = { emit = "opcode:str_split",           min_args = 2, max_args = 3 }
 # `file($path)` returns the file as an array of lines. stdlib chunk
@@ -410,8 +421,10 @@ file_put_contents   = { emit = "host:wasi:filesystem:writeFile", min_args = 2, m
 file_exists         = { emit = "common:php.file_exists",        min_args = 1, max_args = 1 }
 is_file             = { emit = "common:php.is_file",            min_args = 1, max_args = 1 }
 is_dir              = { emit = "common:php.is_dir",             min_args = 1, max_args = 1 }
+is_link             = { emit = "common:php.is_link",            min_args = 1, max_args = 1 }
 filesize            = { emit = "common:php.filesize",           min_args = 1, max_args = 1 }
 filemtime           = { emit = "common:php.filemtime",          min_args = 1, max_args = 1 }
+readlink            = { emit = "common:php.readlink",           min_args = 1, max_args = 1 }
 mkdir               = { emit = "host:wasi:filesystem:mkdir",     min_args = 1, max_args = 4 }
 unlink              = { emit = "common:php.unlink",             min_args = 1, max_args = 2 }
 
@@ -444,9 +457,10 @@ header_remove       = { emit = "host:node:http:remove_header",     min_args = 0,
 
 # ── Miscellaneous ───────────────────────────────────────────────────────────
 
-# `defined` / `define` are runtime queries; for now define returns true
-# and defined returns whether the global is set.
-defined             = { emit = "noop",                        min_args = 1, max_args = 1 }
+# `define("NAME", value)` lowers to a global write when the constant
+# name is a string literal; `defined("NAME")` probes that same global.
+defined             = { emit = "intrinsic:php_defined",      min_args = 1, max_args = 1 }
+define              = { emit = "intrinsic:php_define",       min_args = 2, max_args = 3 }
 
 # isset / empty / unset — polymorphic primitives shared with the rest of
 # the runtime (every language's "is this value defined?" check uses the

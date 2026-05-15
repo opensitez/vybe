@@ -648,6 +648,40 @@ pub fn emit_urldecode(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     call_import(chunks, current, "ecma:string", "decodeURIComponent", 1, line);
 }
 
+/// PHP `rawurldecode` — strict `decodeURIComponent` with no `+` → space
+/// translation.
+pub fn emit_rawurldecode(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    coerce_to_str(&mut chunks[current], line);
+    call_import(chunks, current, "ecma:string", "decodeURIComponent", 1, line);
+}
+
+/// PHP `htmlspecialchars` / `htmlentities` — escape the basic HTML-special
+/// characters. This covers the common text-node/title use-cases exercised by
+/// the PHP suite and webroot renderer.
+pub fn emit_htmlspecialchars(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 1..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+    coerce_to_str(chunk, line);
+
+    for (from, to) in [
+        ("&", "&amp;"),
+        ("<", "&lt;"),
+        (">", "&gt;"),
+        ("\"", "&quot;"),
+        ("'", "&#039;"),
+    ] {
+        push_str(chunk, from, line);
+        push_str(chunk, to, line);
+        chunk.emit_op(Op::STR_REPLACE, line);
+    }
+}
+
+pub fn emit_htmlentities(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_htmlspecialchars(chunks, current, argc, line);
+}
+
 // ── bin2hex / hex2bin ──────────────────────────────────────────────
 
 /// PHP `bin2hex(str)` — char loop, two hex digits per byte.

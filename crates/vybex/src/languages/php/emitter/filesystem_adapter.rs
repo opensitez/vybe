@@ -90,6 +90,22 @@ pub fn emit_is_dir(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     emit_stat_type_match(chunks, current, "directory", line);
 }
 
+/// PHP `is_link($path)` — `node:fs.lstatSync(path)` then
+/// `_statIsSymbolicLink(stats)` so symlinks are not followed.
+pub fn emit_is_link(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let path_slot = {
+        let chunk = &mut chunks[current];
+        let s = alloc_local(chunk);
+        lset(chunk, s, line);
+        s
+    };
+    let chunk = &mut chunks[current];
+    lget(chunk, path_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "node:fs", "lstatSync", 1, line);
+    call_import(chunks, current, "node:fs", "_statIsSymbolicLink", 1, line);
+}
+
 fn emit_stat_type_match(chunks: &mut [Chunk], current: usize, expected: &str, line: u32) {
     emit_stat_at(chunks, current, line);
     let chunk = &mut chunks[current];
@@ -133,6 +149,86 @@ pub fn emit_unlink(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     lget(chunk, path_slot, line);
     let _ = chunk;
     call_import(chunks, current, "wasi:filesystem/types", "[method]descriptor.unlink-file-at", 2, line);
+}
+
+/// PHP `readlink($path)` — `[method]descriptor.readlink-at(parent, path)`.
+pub fn emit_readlink(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let path_slot = {
+        let chunk = &mut chunks[current];
+        let s = alloc_local(chunk);
+        lset(chunk, s, line);
+        s
+    };
+    emit_preopen_descriptor(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, path_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "wasi:filesystem/types", "[method]descriptor.readlink-at", 2, line);
+}
+
+/// PHP `pathinfo($path)` — returns a PHP-shaped record with
+/// `dirname`, `basename`, `extension`, and `filename`.
+pub fn emit_pathinfo(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    if argc >= 2 {
+        chunk.emit_op(Op::DROP, line);
+    }
+    let path_slot = alloc_local(chunk);
+    lset(chunk, path_slot, line);
+
+    let dirname_slot = alloc_local(chunk);
+    let basename_slot = alloc_local(chunk);
+    let extension_slot = alloc_local(chunk);
+    let filename_slot = alloc_local(chunk);
+
+    lget(chunk, path_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "wasi:filesystem", "pathGetDirectory", 1, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, dirname_slot, line);
+
+    lget(chunk, path_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "wasi:filesystem", "pathGetFileName", 1, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, basename_slot, line);
+
+    lget(chunk, path_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "wasi:filesystem", "pathGetExtension", 1, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, extension_slot, line);
+
+    lget(chunk, path_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "wasi:filesystem", "pathGetFileNameWithoutExt", 1, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, filename_slot, line);
+
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_op(Op::DUP, line);
+    lget(chunk, dirname_slot, line);
+    let dirname_key = chunk.add_constant(Value::String(Arc::from("dirname")));
+    chunk.emit_op_u16(Op::STRUCT_SET, dirname_key, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op(Op::DUP, line);
+    lget(chunk, basename_slot, line);
+    let basename_key = chunk.add_constant(Value::String(Arc::from("basename")));
+    chunk.emit_op_u16(Op::STRUCT_SET, basename_key, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op(Op::DUP, line);
+    lget(chunk, extension_slot, line);
+    let extension_key = chunk.add_constant(Value::String(Arc::from("extension")));
+    chunk.emit_op_u16(Op::STRUCT_SET, extension_key, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op(Op::DUP, line);
+    lget(chunk, filename_slot, line);
+    let filename_key = chunk.add_constant(Value::String(Arc::from("filename")));
+    chunk.emit_op_u16(Op::STRUCT_SET, filename_key, line);
+    chunk.emit_op(Op::DROP, line);
 }
 
 /// PHP `file($path)` — read whole file, split on `"\n"`, return

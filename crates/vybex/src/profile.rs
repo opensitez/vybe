@@ -272,7 +272,14 @@ impl LanguageProfile {
     /// Look up a builtin by name (case-insensitive for case-insensitive languages).
     pub fn lookup_builtin(&self, name: &str) -> Option<&BuiltinDef> {
         if self.case_sensitive {
-            self.builtins.get(name)
+            self.builtins.get(name).or_else(|| {
+                if self.name == "php" {
+                    let lower = name.to_lowercase();
+                    self.builtins.get(&lower)
+                } else {
+                    None
+                }
+            })
         } else {
             let lower = name.to_lowercase();
             self.builtins.get(&lower)

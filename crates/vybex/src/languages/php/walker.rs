@@ -78,6 +78,29 @@ thread_local! {
     // the LHS and decrements after; `apply_postfix` peeks at the
     // depth to decide whether to skip the wrap on the LAST chain op.
     static ASSIGN_LHS_DEPTH: RefCell<u32> = const { RefCell::new(0) };
+    static LINE_STARTS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+}
+
+fn build_line_starts(source: &str) -> Vec<usize> {
+    let mut starts = Vec::with_capacity(source.len() / 32 + 2);
+    starts.push(0);
+    for (idx, byte) in source.bytes().enumerate() {
+        if byte == b'\n' {
+            starts.push(idx + 1);
+        }
+    }
+    starts
+}
+
+fn offset_to_line_col(offset: usize, line_starts: &[usize]) -> (u32, u32) {
+    let line_index = match line_starts.binary_search(&offset) {
+        Ok(index) => index,
+        Err(next_index) => next_index.saturating_sub(1),
+    };
+    let line_start = line_starts.get(line_index).copied().unwrap_or(0);
+    let line = (line_index + 1) as u32;
+    let col = (offset.saturating_sub(line_start) + 1) as u32;
+    (line, col)
 }
 
 fn next_tmp_name(prefix: &str) -> String {
@@ -118,6 +141,168 @@ fn current_class_name() -> Option<String> {
     CLASS_STACK.with(|s| s.borrow().last().cloned())
 }
 
+enum MixedPhpSegment<'a> {
+    Html(&'a str),
+    Code { code: &'a str, has_close_tag: bool },
+    Echo { expr: &'a str, has_close_tag: bool },
+}
+
+fn append_html_echo(out: &mut String, html: &str) {
+    if html.is_empty() {
+        return;
+    }
+    out.push_str("echo '");
+    for ch in html.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            _ => out.push(ch),
+        }
+    }
+    out.push_str("';\n");
+}
+
+fn code_block_needs_terminator(code: &str) -> bool {
+    let trimmed = code.trim_end();
+    let Some(last) = trimmed.chars().last() else {
+        return false;
+    };
+    !matches!(last, ';' | '{' | '}' | ':')
+}
+
+fn normalize_mixed_php_source(source: &str) -> String {
+    let mut out = String::new();
+    for segment in split_mixed_php_source(source) {
+        match segment {
+            MixedPhpSegment::Html(text) => append_html_echo(&mut out, text),
+            MixedPhpSegment::Echo { expr, .. } => {
+                let expr = expr.trim();
+                if !expr.is_empty() {
+                    out.push_str("echo ");
+                    out.push_str(expr);
+                    out.push_str(";\n");
+                }
+            }
+            MixedPhpSegment::Code { code, has_close_tag } => {
+                out.push_str(code);
+                if has_close_tag && code_block_needs_terminator(code) {
+                    out.push(';');
+                }
+                if !out.ends_with('\n') {
+                    out.push('\n');
+                }
+            }
+        }
+    }
+    out
+}
+
+fn split_mixed_php_source(source: &str) -> Vec<MixedPhpSegment<'_>> {
+    let mut segments = Vec::new();
+    let mut cursor = 0usize;
+
+    while let Some(open_rel) = source[cursor..].find("<?") {
+        let open = cursor + open_rel;
+        if open > cursor {
+            segments.push(MixedPhpSegment::Html(&source[cursor..open]));
+        }
+
+        let is_echo = source[open..].starts_with("<?=");
+        let code_start = if is_echo {
+            open + 3
+        } else if source[open..].starts_with("<?php") {
+            open + 5
+        } else {
+            open + 2
+        };
+        let close = find_php_close_tag(source, code_start).unwrap_or(source.len());
+        let has_close_tag = close < source.len();
+        let code = &source[code_start..close];
+        if is_echo {
+            segments.push(MixedPhpSegment::Echo { expr: code, has_close_tag });
+        } else {
+            segments.push(MixedPhpSegment::Code { code, has_close_tag });
+        }
+        cursor = if has_close_tag {
+            (close + 2).min(source.len())
+        } else {
+            close
+        };
+    }
+
+    if cursor < source.len() {
+        segments.push(MixedPhpSegment::Html(&source[cursor..]));
+    }
+
+    segments
+}
+
+fn find_php_close_tag(source: &str, start: usize) -> Option<usize> {
+    #[derive(Copy, Clone, Eq, PartialEq)]
+    enum ScanState {
+        Normal,
+        SingleQuote,
+        DoubleQuote,
+        LineComment,
+        BlockComment,
+    }
+
+    let bytes = source.as_bytes();
+    let mut index = start;
+    let mut state = ScanState::Normal;
+
+    while index + 1 < bytes.len() {
+        match state {
+            ScanState::Normal => {
+                if bytes[index] == b'?' && bytes[index + 1] == b'>' {
+                    return Some(index);
+                }
+                if bytes[index] == b'\'' {
+                    state = ScanState::SingleQuote;
+                } else if bytes[index] == b'"' {
+                    state = ScanState::DoubleQuote;
+                } else if bytes[index] == b'#' {
+                    state = ScanState::LineComment;
+                } else if bytes[index] == b'/' && bytes[index + 1] == b'/' {
+                    state = ScanState::LineComment;
+                    index += 1;
+                } else if bytes[index] == b'/' && bytes[index + 1] == b'*' {
+                    state = ScanState::BlockComment;
+                    index += 1;
+                }
+            }
+            ScanState::SingleQuote => {
+                if bytes[index] == b'\\' {
+                    index += 1;
+                } else if bytes[index] == b'\'' {
+                    state = ScanState::Normal;
+                }
+            }
+            ScanState::DoubleQuote => {
+                if bytes[index] == b'\\' {
+                    index += 1;
+                } else if bytes[index] == b'"' {
+                    state = ScanState::Normal;
+                }
+            }
+            ScanState::LineComment => {
+                if bytes[index] == b'\n' {
+                    state = ScanState::Normal;
+                }
+            }
+            ScanState::BlockComment => {
+                if bytes[index] == b'*' && bytes[index + 1] == b'/' {
+                    state = ScanState::Normal;
+                    index += 1;
+                }
+            }
+        }
+        index += 1;
+    }
+
+    None
+}
+
 /// Returns true for `kw_*` token rules. Pest preserves atomic rule
 /// nodes as siblings inside their parent rule's parse tree, so without
 /// this filter the keyword tokens leak into walker positional indexing
@@ -153,31 +338,15 @@ fn inner_nokw(pair: Pair<Rule>) -> std::vec::IntoIter<Pair<Rule>> {
     kept.into_iter()
 }
 
-pub fn parse(source: &str) -> Result<Module, String> {
-    let mut pairs = PhpParser::parse(Rule::program, source)
-        .map_err(|e| format!("PHP parse error: {}", e))?;
-    let program = pairs.next().ok_or("empty parse")?;
-
-    // Reset the per-parse trait-usage maps so prior `parse()` calls
-    // don't leak state. CLASS_STACK should already be empty here (push
-    // and pop are paired inside walk_class_decl/walk_trait_decl/etc).
-    TRAIT_USAGES.with(|t| t.borrow_mut().clear());
-    TRAIT_ALIASES.with(|t| t.borrow_mut().clear());
-
-    // Collect interfaces by name as they're walked so a later
-    // post-pass can fold their `const` members into implementing
-    // classes. PHP interface constants are inherited by implementers
-    // — `class User implements Status { return self::ACTIVE; }`
-    // resolves `ACTIVE` against `Status`.
-    let mut body = Vec::new();
-    let mut interface_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut trait_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+fn collect_program_body(
+    program: Pair<Rule>,
+    body: &mut Vec<Statement>,
+    interface_names: &mut std::collections::HashSet<String>,
+    trait_names: &mut std::collections::HashSet<String>,
+) -> Result<(), String> {
     for pair in program.into_inner() {
         match pair.as_rule() {
             Rule::EOI => continue,
-            // Mixed-mode: literal text between PHP blocks becomes an
-            // implicit `echo "…";` so the compiled bytecode reproduces
-            // PHP's default "output everything outside <?php … ?>".
             Rule::inline_html => {
                 let text = pair.as_str();
                 if !text.is_empty() {
@@ -186,8 +355,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
                     ])));
                 }
             }
-            // `<?php … ?>` — walk the contained statements.
-            Rule::php_code_segment => {
+            Rule::php_code_segment_closed | Rule::php_code_segment_eof => {
                 for inner in pair.into_inner() {
                     let was_interface = matches!(inner.as_rule(), Rule::interface_declaration);
                     let was_trait = matches!(inner.as_rule(), Rule::trait_declaration);
@@ -206,14 +374,14 @@ pub fn parse(source: &str) -> Result<Module, String> {
                     }
                 }
             }
-            // `<?= expr ?>` — compiles to a one-arg echo.
-            Rule::php_echo_segment => {
-                let expr_pair = pair.into_inner().next().ok_or("php_echo_segment missing expression")?;
+            Rule::php_echo_segment_closed | Rule::php_echo_segment_eof => {
+                let expr_pair = pair
+                    .into_inner()
+                    .next()
+                    .ok_or("php_echo_segment missing expression")?;
                 let expr = walk_expression(expr_pair)?;
                 body.push(Statement::new(StmtKind::Echo(vec![expr])));
             }
-            // Tag-less convenience: statement at program top level
-            // (program_bare branch).
             _ => {
                 let was_interface = matches!(pair.as_rule(), Rule::interface_declaration);
                 let was_trait = matches!(pair.as_rule(), Rule::trait_declaration);
@@ -233,6 +401,110 @@ pub fn parse(source: &str) -> Result<Module, String> {
             }
         }
     }
+
+    Ok(())
+}
+
+fn collect_bare_body(
+    bare: Pair<Rule>,
+    body: &mut Vec<Statement>,
+    interface_names: &mut std::collections::HashSet<String>,
+    trait_names: &mut std::collections::HashSet<String>,
+) -> Result<(), String> {
+    for pair in bare.into_inner() {
+        if matches!(pair.as_rule(), Rule::EOI) {
+            continue;
+        }
+        let pair = if matches!(pair.as_rule(), Rule::pure_top_level_statement) {
+            match pair.into_inner().next() {
+                Some(inner) => inner,
+                None => continue,
+            }
+        } else {
+            pair
+        };
+        let pair_rule = pair.as_rule();
+        let pair_span = to_span(&pair);
+        let pair_started = std::time::Instant::now();
+        let was_interface = matches!(pair.as_rule(), Rule::interface_declaration);
+        let was_trait = matches!(pair.as_rule(), Rule::trait_declaration);
+        if let Some(stmt) = walk_statement(pair)? {
+            if was_interface {
+                if let StmtKind::ClassDecl { ref name, .. } = stmt.kind {
+                    interface_names.insert(name.clone());
+                }
+            }
+            if was_trait {
+                if let StmtKind::ClassDecl { ref name, .. } = stmt.kind {
+                    trait_names.insert(name.clone());
+                }
+            }
+            body.push(stmt);
+        }
+        let elapsed = pair_started.elapsed();
+        if elapsed.as_millis() >= 250 {
+            eprintln!(
+                "[php] slow pure top-level item: rule={pair_rule:?} line={}..{} took {:.3}s",
+                pair_span.start_line,
+                pair_span.end_line,
+                elapsed.as_secs_f64(),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+pub fn parse(source: &str) -> Result<Module, String> {
+    let normalize_started = std::time::Instant::now();
+    let normalized_source;
+    let trimmed = source.trim_start();
+    let should_normalize_mixed = trimmed.starts_with("<?")
+        || (trimmed.starts_with('<') && source.contains("<?"));
+    let source = if should_normalize_mixed {
+        normalized_source = normalize_mixed_php_source(source);
+        if std::env::var_os("VYBEX_DEBUG_WRITE_NORMALIZED_PHP").is_some() {
+            let _ = std::fs::write("/tmp/vybex_normalized.php", &normalized_source);
+        }
+        normalized_source.as_str()
+    } else {
+        source
+    };
+    eprintln!("[php] normalize: {:.3}s", normalize_started.elapsed().as_secs_f64());
+
+    let mut body = Vec::new();
+    let mut interface_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut trait_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Reset the per-parse trait-usage maps so prior `parse()` calls
+    // don't leak state. CLASS_STACK should already be empty here (push
+    // and pop are paired inside walk_class_decl/walk_trait_decl/etc).
+    TRAIT_USAGES.with(|t| t.borrow_mut().clear());
+    TRAIT_ALIASES.with(|t| t.borrow_mut().clear());
+    LINE_STARTS.with(|starts| {
+        *starts.borrow_mut() = build_line_starts(source);
+    });
+
+    let pest_started = std::time::Instant::now();
+    if should_normalize_mixed {
+        let mut pairs = PhpParser::parse(Rule::program_pure, source)
+            .map_err(|e| format!("PHP parse error: {}", e))?;
+        let bare = pairs.next().ok_or("empty parse")?;
+        eprintln!("[php] pest parse: {:.3}s", pest_started.elapsed().as_secs_f64());
+        let walk_started = std::time::Instant::now();
+        collect_bare_body(bare, &mut body, &mut interface_names, &mut trait_names)?;
+        eprintln!("[php] ast walk: {:.3}s", walk_started.elapsed().as_secs_f64());
+    } else {
+        let mut pairs = PhpParser::parse(Rule::program_pure, source)
+            .map_err(|e| format!("PHP parse error: {}", e))?;
+        let bare = pairs.next().ok_or("empty parse")?;
+        eprintln!("[php] pest parse: {:.3}s", pest_started.elapsed().as_secs_f64());
+        let walk_started = std::time::Instant::now();
+        collect_bare_body(bare, &mut body, &mut interface_names, &mut trait_names)?;
+        eprintln!("[php] ast walk: {:.3}s", walk_started.elapsed().as_secs_f64());
+    }
+
+    let post_started = std::time::Instant::now();
 
     // Build a registry of interface const members (interface_name →
     // [const_member_clones]). Walk the body once, find each ClassDecl
@@ -400,6 +672,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
     }
     hoisted.append(&mut rest);
     let body = hoisted;
+    eprintln!("[php] ast post-pass: {:.3}s", post_started.elapsed().as_secs_f64());
+
+    LINE_STARTS.with(|starts| starts.borrow_mut().clear());
 
     Ok(Module {
         name: String::new(),
@@ -1851,7 +2126,10 @@ fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
             // PHP `$a . $b` invokes `__toString` on objects. Wrap each
             // operand in an IIFE that calls `__toString` when present:
             //   ((v) => v && v.__toString ? v.__toString() : v)($x)
-            (php_tostring_coerce(left, &span), php_tostring_coerce(right, &span))
+            (
+                php_concat_operand_coerce(left, &span),
+                php_concat_operand_coerce(right, &span),
+            )
         } else {
             (left, right)
         };
@@ -1865,6 +2143,16 @@ fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
         );
     }
     Ok(left)
+}
+
+fn php_concat_operand_coerce(expr: Expression, span: &Span) -> Expression {
+    match &expr.kind {
+        // The result of a prior concat is already a stringy value. Re-wrapping
+        // the whole left subtree on every `.` step causes AST growth to explode
+        // on long concat chains.
+        ExprKind::Binary { op: BinOp::Concat, .. } => expr,
+        _ => php_tostring_coerce(expr, span),
+    }
 }
 
 /// Wrap `expr` in an IIFE that invokes `__toString()` when `expr` is an
@@ -3392,6 +3680,66 @@ fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span, from_variabl
                     ));
                 }
             };
+            let directory_adapter: Option<&str> = match method_name.as_str() {
+                "read" => Some("__php_dir_read"),
+                "close" => Some("__php_dir_close"),
+                _ => None,
+            };
+            if let Some(adapter_name) = directory_adapter {
+                let mut adapter_args = vec![Argument::positional(member_object.clone())];
+                adapter_args.extend(args.clone());
+                let directory_type = Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(member_object.clone()),
+                        field: "__type".to_string(),
+                        null_safe: false,
+                    },
+                    span.clone(),
+                );
+                let is_directory = Expression::with_span(
+                    ExprKind::Binary {
+                        op: BinOp::StrictEq,
+                        left: Box::new(directory_type),
+                        right: Box::new(Expression::string("Directory")),
+                    },
+                    span.clone(),
+                );
+                let adapter_call = Expression::with_span(
+                    ExprKind::Call {
+                        callee: Box::new(Expression::with_span(
+                            ExprKind::Ident(adapter_name.to_string()),
+                            span.clone(),
+                        )),
+                        args: adapter_args,
+                        optional: false,
+                    },
+                    span.clone(),
+                );
+                let direct_member = Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(member_object.clone()),
+                        field: method_name.clone(),
+                        null_safe,
+                    },
+                    span.clone(),
+                );
+                let direct_call = Expression::with_span(
+                    ExprKind::Call {
+                        callee: Box::new(direct_member),
+                        args: args.clone(),
+                        optional: false,
+                    },
+                    span.clone(),
+                );
+                return Ok(Expression::with_span(
+                    ExprKind::Ternary {
+                        cond: Box::new(is_directory),
+                        then: Box::new(adapter_call),
+                        else_: Box::new(direct_call),
+                    },
+                    span.clone(),
+                ));
+            }
             // Skip the magic-`__call` wrap for receivers that are
             // already heavyweight expressions (Calls, Lambdas, Arrays,
             // etc.) — wrapping them again multiplies the AST depth
@@ -4487,6 +4835,12 @@ fn walk_string(pair: &Pair<Rule>) -> Expression {
         return Expression::new(ExprKind::Lit(Literal::Str(out)));
     }
 
+    if !body.contains('$') {
+        return Expression::new(ExprKind::Lit(Literal::Str(
+            decode_php_double_quoted_literal(body),
+        )));
+    }
+
     // Double-quoted: PHP interpolation. Scan for `$var`, `$var[key]`,
     // `$var->prop`, `{$expr}` and split the body into InterpolParts.
     // Empty or interp-free strings collapse back to a plain literal so
@@ -4501,6 +4855,41 @@ fn walk_string(pair: &Pair<Rule>) -> Expression {
         return Expression::new(ExprKind::Lit(Literal::Str(String::new())));
     }
     Expression::new(ExprKind::Interpolation(parts))
+}
+
+fn decode_php_double_quoted_literal(body: &str) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut chars = body.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+
+        let Some(next) = chars.next() else {
+            out.push('\\');
+            break;
+        };
+
+        match next {
+            'n' => out.push('\n'),
+            'r' => out.push('\r'),
+            't' => out.push('\t'),
+            'v' => out.push('\u{000B}'),
+            'e' => out.push('\u{001B}'),
+            'f' => out.push('\u{000C}'),
+            '\\' => out.push('\\'),
+            '$' => out.push('$'),
+            '"' => out.push('"'),
+            other => {
+                out.push('\\');
+                out.push(other);
+            }
+        }
+    }
+
+    out
 }
 
 /// Scan a double-quoted PHP string body into `InterpolPart`s, handling:
@@ -5430,51 +5819,16 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span)
                 )],
             )
         }
-        // PHP `urldecode($s)` ≡ `decodeURIComponent($s.split("+").join("%20"))`.
-        // Same split/join idiom — `+` is a regex metacharacter so the
-        // runtime's replaceAll wouldn't strip it correctly.
-        "urldecode" | "rawurldecode" => {
-            let s = arg(0)?;
-            let split_call = Expression::with_span(
-                mk_call(
-                    Expression::with_span(
-                        ExprKind::Member {
-                            object: Box::new(s),
-                            field: "split".to_string(),
-                            null_safe: false,
-                        },
-                        span.clone(),
-                    ),
-                    vec![Expression::with_span(
-                        ExprKind::Lit(Literal::Str("+".to_string())), span.clone(),
-                    )],
-                ),
-                span.clone(),
-            );
-            let joined = Expression::with_span(
-                mk_call(
-                    Expression::with_span(
-                        ExprKind::Member {
-                            object: Box::new(split_call),
-                            field: "join".to_string(),
-                            null_safe: false,
-                        },
-                        span.clone(),
-                    ),
-                    vec![Expression::with_span(
-                        ExprKind::Lit(Literal::Str("%20".to_string())), span.clone(),
-                    )],
-                ),
-                span.clone(),
-            );
-            mk_call(
-                Expression::with_span(
-                    ExprKind::Ident("decodeURIComponent".to_string()),
-                    span.clone(),
-                ),
-                vec![joined],
-            )
-        }
+        // Lower to PHP-specific helpers so runtime coercion stays in the
+        // string adapter and `rawurldecode` preserves literal '+' bytes.
+        "urldecode" => mk_call(
+            Expression::with_span(ExprKind::Ident("__php_urldecode".to_string()), span.clone()),
+            vec![arg(0)?],
+        ),
+        "rawurldecode" => mk_call(
+            Expression::with_span(ExprKind::Ident("__php_rawurldecode".to_string()), span.clone()),
+            vec![arg(0)?],
+        ),
         // ── Precision-aware rounding ────────────────────────────────────
         // PHP `round($n)` ≡ `Math.round($n)`.
         "round" if args.len() == 1 => mk_call(
@@ -6158,12 +6512,26 @@ fn php_constant_expr(name: &str, span: &Span) -> Option<ExprKind> {
 
 fn to_span(pair: &Pair<Rule>) -> Span {
     let s = pair.as_span();
-    let (start_line, start_col) = s.start_pos().line_col();
-    let (end_line, end_col) = s.end_pos().line_col();
-    Span {
-        start_line: start_line as u32,
-        start_col: start_col as u32,
-        end_line: end_line as u32,
-        end_col: end_col as u32,
-    }
+    LINE_STARTS.with(|starts| {
+        let starts = starts.borrow();
+        if starts.is_empty() {
+            let (start_line, start_col) = s.start_pos().line_col();
+            let (end_line, end_col) = s.end_pos().line_col();
+            Span {
+                start_line: start_line as u32,
+                start_col: start_col as u32,
+                end_line: end_line as u32,
+                end_col: end_col as u32,
+            }
+        } else {
+            let (start_line, start_col) = offset_to_line_col(s.start(), &starts);
+            let (end_line, end_col) = offset_to_line_col(s.end(), &starts);
+            Span {
+                start_line,
+                start_col,
+                end_line,
+                end_col,
+            }
+        }
+    })
 }

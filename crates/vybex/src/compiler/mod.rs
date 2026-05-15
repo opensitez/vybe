@@ -8476,6 +8476,50 @@ impl Compiler {
                     self.emit_const(Value::Bool(false));
                 }
             }
+            "php_defined" => {
+                if let Some(Expression { kind: ExprKind::Lit(Literal::Str(name)), .. }) = args.first() {
+                    let global_name = self.canon(name);
+                    let idx = self.str_const(&global_name);
+                    self.emit_u16(Op::GLOBAL_GET, idx);
+                    self.emit(Op::REF_TYPEOF);
+                    self.emit_const(Value::String(Arc::from("undefined")));
+                    self.emit(Op::DYN_EQ);
+                    self.emit(Op::DYN_NOT);
+                } else {
+                    if let Some(arg) = args.first() {
+                        self.compile_expr(arg)?;
+                        self.emit(Op::DROP);
+                    }
+                    self.emit_const(Value::Bool(false));
+                }
+            }
+            "php_define" => {
+                if args.len() < 2 {
+                    self.emit_const(Value::Bool(false));
+                } else if let ExprKind::Lit(Literal::Str(name)) = &args[0].kind {
+                    if let Some(ignore_case) = args.get(2) {
+                        self.compile_expr(ignore_case)?;
+                        self.emit(Op::DROP);
+                    }
+                    self.compile_expr(args[1])?;
+                    let global_name = self.canon(name);
+                    let idx = self.str_const(&global_name);
+                    self.emit_u16(Op::GLOBAL_SET, idx);
+                    self.emit(Op::DROP);
+                    self.defined_globals.insert(global_name);
+                    self.emit_const(Value::Bool(true));
+                } else {
+                    self.compile_expr(args[0])?;
+                    self.emit(Op::DROP);
+                    self.compile_expr(args[1])?;
+                    self.emit(Op::DROP);
+                    if let Some(ignore_case) = args.get(2) {
+                        self.compile_expr(ignore_case)?;
+                        self.emit(Op::DROP);
+                    }
+                    self.emit_const(Value::Bool(false));
+                }
+            }
             "php_is_callable" => {
                 // PHP `is_callable` matches functions and Closure
                 // instances. ref_typeof on Function / HostFunction
