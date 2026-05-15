@@ -45,6 +45,208 @@ fn emit_is_array(chunks: &mut [Chunk], current: usize, arr_slot: u16, line: u32)
     chunks[current].emit_op(Op::DYN_TO_BOOL, line);
 }
 
+fn emit_json_stringify_slots(
+    chunks: &mut [Chunk],
+    current: usize,
+    value_slot: u16,
+    flags_slot: Option<u16>,
+    depth_slot: Option<u16>,
+    argc: u8,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    lget(chunk, value_slot, line);
+    if let Some(slot) = flags_slot {
+        lget(chunk, slot, line);
+    }
+    if let Some(slot) = depth_slot {
+        lget(chunk, slot, line);
+    }
+    let _ = chunk;
+    call_import(chunks, current, "ecma:json", "stringify", argc, line);
+}
+
+fn emit_object_from_keys(chunks: &mut [Chunk], current: usize, source_slot: u16, keys_slot: u16, line: u32) {
+    let chunk = &mut chunks[current];
+    let out_slot = alloc_local(chunk);
+    let i_slot = alloc_local(chunk);
+    let n_slot = alloc_local(chunk);
+    let key_slot = alloc_local(chunk);
+
+    let _ = chunk;
+    call_import(chunks, current, "ecma:object", "new", 0, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, out_slot, line);
+
+    lget(chunk, keys_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, n_slot, line);
+
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, i_slot, line);
+
+    let loop_top = chunk.current_offset();
+    lget(chunk, i_slot, line);
+    lget(chunk, n_slot, line);
+    chunk.emit_op(Op::DYN_LT, line);
+    let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    lget(chunk, keys_slot, line);
+    lget(chunk, i_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    lset(chunk, key_slot, line);
+
+    lget(chunk, out_slot, line);
+    lget(chunk, key_slot, line);
+    lget(chunk, source_slot, line);
+    lget(chunk, key_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_op(Op::ARRAY_SET, line);
+    chunk.emit_op(Op::DROP, line);
+
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, i_slot, line);
+    chunk.emit_loop(loop_top, line);
+    chunk.patch_jump(exit);
+
+    lget(chunk, out_slot, line);
+}
+
+pub fn emit_php_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let mode_slot = if argc >= 2 { Some(alloc_local(chunk)) } else { None };
+    let value_slot = alloc_local(chunk);
+    let base_len_slot = alloc_local(chunk);
+    let extra_len_slot = alloc_local(chunk);
+
+    if let Some(slot) = mode_slot {
+        lset(chunk, slot, line);
+    }
+    lset(chunk, value_slot, line);
+
+    emit_is_array(chunks, current, value_slot, line);
+    let chunk = &mut chunks[current];
+    let not_array = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    lget(chunk, value_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, base_len_slot, line);
+
+    lget(chunk, value_slot, line);
+    push_str(chunk, "vybe$assoc_keys_csv", line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    let no_keys = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    push_str(chunk, "\x1F", line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:string", "split", 2, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, extra_len_slot, line);
+    lget(chunk, base_len_slot, line);
+    lget(chunk, extra_len_slot, line);
+    chunk.emit_op(Op::DYN_ADD, line);
+    let done = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(no_keys);
+    chunk.emit_op(Op::DROP, line);
+    lget(chunk, base_len_slot, line);
+    let done_no_keys = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(not_array);
+    lget(chunk, value_slot, line);
+    crate::emitter::collections::emit_len(chunks, current, line);
+
+    chunks[current].patch_jump(done);
+    chunks[current].patch_jump(done_no_keys);
+}
+
+pub fn emit_php_json_encode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let depth_slot = if argc >= 3 { Some(alloc_local(chunk)) } else { None };
+    let flags_slot = if argc >= 2 { Some(alloc_local(chunk)) } else { None };
+    let value_slot = alloc_local(chunk);
+    let render_slot = alloc_local(chunk);
+    let assoc_keys_slot = alloc_local(chunk);
+    let object_keys_slot = alloc_local(chunk);
+
+    if let Some(slot) = depth_slot {
+        lset(chunk, slot, line);
+    }
+    if let Some(slot) = flags_slot {
+        lset(chunk, slot, line);
+    }
+    lset(chunk, value_slot, line);
+
+    emit_is_array(chunks, current, value_slot, line);
+    let chunk = &mut chunks[current];
+    let not_array = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    lget(chunk, value_slot, line);
+    push_str(chunk, "vybe$assoc_keys_csv", line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    let no_assoc = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    push_str(chunk, "\x1F", line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:string", "split", 2, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, assoc_keys_slot, line);
+    lget(chunk, assoc_keys_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    chunk.emit_op(Op::I32_CONST_0, line);
+    chunk.emit_op(Op::DYN_GT, line);
+    let has_assoc = chunk.emit_jump(Op::BR_IF_TRUE, line);
+
+    lget(chunk, value_slot, line);
+    lset(chunk, render_slot, line);
+    let after_array = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(no_assoc);
+    chunk.emit_op(Op::DROP, line);
+    lget(chunk, value_slot, line);
+    lset(chunk, render_slot, line);
+    let after_no_assoc = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(has_assoc);
+    emit_object_from_keys(chunks, current, value_slot, assoc_keys_slot, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, render_slot, line);
+    let after_assoc = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(not_array);
+    lget(chunk, value_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:object", "keys", 1, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, object_keys_slot, line);
+    lget(chunk, object_keys_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    chunk.emit_op(Op::I32_CONST_0, line);
+    chunk.emit_op(Op::DYN_GT, line);
+    let has_object_keys = chunk.emit_jump(Op::BR_IF_TRUE, line);
+
+    lget(chunk, value_slot, line);
+    lset(chunk, render_slot, line);
+    let after_object = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(has_object_keys);
+    emit_object_from_keys(chunks, current, value_slot, object_keys_slot, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, render_slot, line);
+
+    chunks[current].patch_jump(after_array);
+    chunks[current].patch_jump(after_no_assoc);
+    chunks[current].patch_jump(after_assoc);
+    chunks[current].patch_jump(after_object);
+
+    emit_json_stringify_slots(chunks, current, render_slot, flags_slot, depth_slot, argc, line);
+}
+
 /// Emit a callable-aware dispatch: call `fn_slot` as a function, or as
 /// an object's `__invoke` method if the value is a class instance with
 /// that magic method (PHP 8 callable-object pattern). The user-supplied

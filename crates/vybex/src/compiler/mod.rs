@@ -16,6 +16,8 @@ mod classes;
 mod expressions;
 mod calls;
 mod events;
+#[path = "../php/compiler.rs"]
+mod php;
 
 use std::sync::Arc;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -1485,14 +1487,11 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, value_slot);
         let idx = self.str_const(&self.canon(name));
         self.emit_u16(Op::STRUCT_SET, idx);
-        self.emit(Op::DROP);
         true
     }
 
 
     /// Emit a `for v in gen():` loop that drives the generator via
-    /// `GEN_NEXT`. Layout:
-    ///   <cont> = compile(iter)
     ///   block $exit
     ///     loop $loop
     ///       local.get $cont
@@ -1533,14 +1532,7 @@ impl Compiler {
         else_body: Option<&[Statement]>,
     ) -> Result<(), String> {
 
-        let key_index_slot = if self.is_php_profile() && key.is_some() {
-            let slot = self.define_local("__php_gen_loop_index");
-            self.emit_const(Value::F64(0.0));
-            self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
-            Some(slot)
-        } else {
-            None
-        };
+        let key_index_slot = self.maybe_define_php_generator_key_index_slot(key);
 
         let line = self.line;
         let block_patch = self.chunk().emit_block(line);
@@ -1556,46 +1548,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
 
         if self.is_php_profile() {
-            let started_key = self.str_const("__php_gen_started");
-            let current_key = self.str_const("__php_gen_current");
-            let done_key = self.str_const("__php_gen_done");
-            let return_key = self.str_const("__php_gen_return");
-
-            self.emit_u16(Op::LOCAL_GET, cont_slot);
-            self.emit_const(Value::Bool(true));
-            self.emit_u16(Op::STRUCT_SET, started_key);
-            self.emit(Op::DROP);
-
-            self.emit_u16(Op::LOCAL_GET, has_more_slot);
-            self.emit(Op::DYN_TO_BOOL);
-            let exhausted = self.emit_jump(Op::BR_IF_FALSE);
-
-            self.emit_u16(Op::LOCAL_GET, cont_slot);
-            self.emit_const(Value::Bool(false));
-            self.emit_u16(Op::STRUCT_SET, done_key);
-            self.emit(Op::DROP);
-            self.emit_u16(Op::LOCAL_GET, cont_slot);
-            self.emit_generator_yield_value(value_slot);
-            self.emit_u16(Op::STRUCT_SET, current_key);
-            self.emit(Op::DROP);
-            let loop_ready = self.emit_jump(Op::BR);
-
-            self.patch_jump(exhausted);
-            self.emit_u16(Op::LOCAL_GET, cont_slot);
-            self.emit_const(Value::Bool(true));
-            self.emit_u16(Op::STRUCT_SET, done_key);
-            self.emit(Op::DROP);
-            self.emit_u16(Op::LOCAL_GET, cont_slot);
-            self.emit_u16(Op::LOCAL_GET, value_slot);
-            self.emit_u16(Op::STRUCT_SET, return_key);
-            self.emit(Op::DROP);
-            self.emit_u16(Op::LOCAL_GET, cont_slot);
-            self.emit_const(Value::Bool(false));
-            self.emit_u16(Op::STRUCT_SET, current_key);
-            self.emit(Op::DROP);
-            self.emit_u8(Op::BR_LABEL, 1);
-
-            self.patch_jump(loop_ready);
+            self.emit_php_generator_foreach_state(cont_slot, has_more_slot, value_slot);
         } else {
             self.emit_u16(Op::LOCAL_GET, has_more_slot);
             self.emit(Op::DYN_TO_BOOL);
@@ -1607,20 +1560,20 @@ impl Compiler {
         if let Some(key_name) = key {
             let key_slot = self.define_local(key_name);
             if self.is_php_profile() {
-                self.emit_generator_yield_key_or_fallback(value_slot, key_index_slot);
+                self.emit_php_generator_key_binding(key_slot, value_slot, key_index_slot);
             } else {
                 self.emit(Op::NULL);
+                self.emit_u16(Op::LOCAL_SET, key_slot); self.emit(Op::DROP);
             }
-            self.emit_u16(Op::LOCAL_SET, key_slot); self.emit(Op::DROP);
         }
 
         let var_slot = self.define_local(var);
         if self.is_php_profile() {
-            self.emit_generator_yield_value(value_slot);
+            self.emit_php_generator_value_binding(var_slot, value_slot);
         } else {
             self.emit_u16(Op::LOCAL_GET, value_slot);
+            self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
         }
-        self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
 
         if let Some(key_index_slot) = key_index_slot {
             self.emit_u16(Op::LOCAL_GET, key_index_slot);
@@ -2325,6 +2278,10 @@ impl Compiler {
         Self::normalize_type_hint(type_hint).contains("sortedset")
     }
 
+    pub(super) fn is_pascal_set_type_hint(type_hint: &str) -> bool {
+        Self::normalize_type_hint(type_hint).starts_with("set of ")
+    }
+
     fn is_case_insensitive_string_key_type_hint(type_hint: &str) -> bool {
         Self::normalize_type_hint(type_hint).contains("#ordinalignorecase")
     }
@@ -2350,6 +2307,116 @@ impl Compiler {
         Ok(())
     }
 
+    fn emit_php_array_assoc_key_tracking(&mut self, obj_slot: u16, key_slot: u16, line: u32) {
+        let missing_slot = self.emit_php_array_assoc_key_is_missing(obj_slot, key_slot, line);
+        self.emit_php_array_assoc_key_tracking_when_missing(obj_slot, key_slot, missing_slot, line);
+    }
+
+    fn emit_php_array_assoc_key_is_missing(&mut self, obj_slot: u16, key_slot: u16, line: u32) -> u16 {
+        let is_array_idx = self.import("ecma:array", "isArray");
+        let missing_tmp = self.define_local("__php_assoc_key_missing");
+
+        self.emit_const(Value::Bool(false));
+        self.emit_u16(Op::LOCAL_SET, missing_tmp);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.chunk().emit_op_u16(Op::CALL_IMPORT, is_array_idx, line);
+        self.chunk().emit(1, line);
+        let not_array = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, key_slot);
+        self.emit(Op::REF_IS_STRING);
+        let not_string = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_u16(Op::LOCAL_GET, key_slot);
+        common::collections::emit_get(&mut self.chunks, self.current, line);
+        self.emit(Op::REF_IS_NULL);
+        self.emit_u16(Op::LOCAL_SET, missing_tmp);
+        self.emit(Op::DROP);
+
+        self.patch_jump(not_string);
+        self.patch_jump(not_array);
+        missing_tmp
+    }
+
+    fn emit_php_array_assoc_key_tracking_when_missing(
+        &mut self,
+        obj_slot: u16,
+        key_slot: u16,
+        missing_slot: u16,
+        line: u32,
+    ) {
+        self.emit_u16(Op::LOCAL_GET, missing_slot);
+        let already_present = self.emit_jump(Op::BR_IF_FALSE);
+
+        let tracker_tmp = self.define_local("__php_assoc_keys_csv");
+
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_const(Value::String(Arc::from("vybe$assoc_keys_csv")));
+        common::collections::emit_get(&mut self.chunks, self.current, line);
+        self.emit(Op::DUP);
+        self.emit(Op::REF_IS_NULL);
+        let no_tracker = self.emit_jump(Op::BR_IF_TRUE);
+
+        self.emit_const(Value::String(Arc::from("\x1F")));
+        common::strings::emit_str_concat(self.chunk(), line);
+        self.emit_u16(Op::LOCAL_GET, key_slot);
+        common::strings::emit_str_concat(self.chunk(), line);
+        self.emit_u16(Op::LOCAL_SET, tracker_tmp);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_const(Value::String(Arc::from("vybe$assoc_keys_csv")));
+        self.emit_u16(Op::LOCAL_GET, tracker_tmp);
+        common::collections::emit_set(&mut self.chunks, self.current, line);
+        self.emit(Op::DROP);
+        let after_track = self.emit_jump(Op::BR);
+
+        self.patch_jump(no_tracker);
+        self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_GET, key_slot);
+        self.emit_u16(Op::LOCAL_SET, tracker_tmp);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_const(Value::String(Arc::from("vybe$assoc_keys_csv")));
+        self.emit_u16(Op::LOCAL_GET, tracker_tmp);
+        common::collections::emit_set(&mut self.chunks, self.current, line);
+        self.emit(Op::DROP);
+
+        self.patch_jump(already_present);
+        self.patch_jump(after_track);
+    }
+
+    fn emit_php_promote_empty_array_for_string_key(&mut self, obj_slot: u16, key_slot: u16, line: u32) {
+        let is_array_idx = self.import("ecma:array", "isArray");
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.chunk().emit_op_u16(Op::CALL_IMPORT, is_array_idx, line);
+        self.chunk().emit(1, line);
+        let done = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, key_slot);
+        self.emit(Op::REF_IS_STRING);
+        let not_string = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit(Op::ARRAY_LENGTH);
+        self.emit(Op::I32_CONST_0);
+        self.emit(Op::DYN_NE);
+        let not_empty = self.emit_jump(Op::BR_IF_TRUE);
+        let map_new_idx = self.import("ecma:map", "new");
+        self.chunk().emit_op_u16(Op::CALL_IMPORT, map_new_idx, line);
+        self.chunk().emit(0, line);
+        self.emit_u16(Op::LOCAL_SET, obj_slot);
+        self.emit(Op::DROP);
+
+        self.patch_jump(not_empty);
+        self.patch_jump(not_string);
+        self.patch_jump(done);
+    }
+
     pub(super) fn is_callable_type_hint(type_hint: &str) -> bool {
         let normalized = Self::normalize_type_hint(type_hint);
         if normalized.ends_with("()") {
@@ -2367,10 +2434,6 @@ impl Compiler {
             .trim();
         matches!(bare, "func" | "action" | "eventhandler" | "predicate" | "comparison" | "converter")
             || lower.contains(" delegate")
-    }
-
-    pub(super) fn is_pascal_set_type_hint(type_hint: &str) -> bool {
-        Self::normalize_type_hint(type_hint).starts_with("set of ")
     }
 
     fn lookup_var_type_hint(&self, name: &str) -> Option<&str> {
@@ -2509,7 +2572,6 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, len_slot);
         common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
         let array_slot = self.define_local("__vb_md_array");
-        self.emit_u16(Op::LOCAL_SET, array_slot);
         self.emit(Op::DROP);
 
         let index_slot = self.define_local("__vb_md_index");
@@ -2572,7 +2634,6 @@ impl Compiler {
             {
                 let idx = self.str_const(&type_name);
                 self.emit_u16(Op::GLOBAL_GET, idx);
-                self.emit_u8(Op::CALL_REF, 0);
                 return Ok(());
             } else {
                 match decl.type_hint.as_deref().map(|s| s.to_lowercase()).as_deref() {
@@ -6370,6 +6431,58 @@ impl Compiler {
                 let line = self.line;
                 let tmp = self.define_local("__tmp");
                 self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
+                if self.is_php_profile() {
+                    if let ExprKind::Member { object: recv, field, null_safe } = &object.kind {
+                        if !*null_safe {
+                            let recv_tmp = self.define_local("__php_index_member_recv");
+                            let coll_tmp = self.define_local("__php_index_member_coll");
+                            let field_name = self.canon(field);
+
+                            self.compile_expr(recv)?;
+                            self.emit_u16(Op::LOCAL_SET, recv_tmp); self.emit(Op::DROP);
+
+                            self.emit_u16(Op::LOCAL_GET, recv_tmp);
+                            let field_idx = self.str_const(&field_name);
+                            self.emit_u16(Op::STRUCT_GET, field_idx);
+                            self.emit_u16(Op::LOCAL_SET, coll_tmp); self.emit(Op::DROP);
+
+                            if is_append {
+                                self.emit_u16(Op::LOCAL_GET, coll_tmp);
+                                self.emit_u16(Op::LOCAL_GET, tmp);
+                                common::collections::emit_push(&mut self.chunks, self.current, line);
+                                self.emit(Op::DROP);
+                            } else {
+                                self.compile_expr(index)?;
+                                let key_tmp = self.define_local("__php_index_member_key");
+                                self.emit_u16(Op::LOCAL_SET, key_tmp); self.emit(Op::DROP);
+                                let needs_track_tmp = self.emit_php_array_assoc_key_is_missing(coll_tmp, key_tmp, line);
+                                self.emit_u16(Op::LOCAL_GET, coll_tmp);
+                                self.emit_u16(Op::LOCAL_GET, key_tmp);
+                                self.emit_u16(Op::LOCAL_GET, tmp);
+                                common::collections::emit_set(&mut self.chunks, self.current, line);
+                                self.emit(Op::DROP);
+
+                                self.emit_u16(Op::LOCAL_GET, recv_tmp);
+                                self.emit_u16(Op::LOCAL_GET, coll_tmp);
+                                self.emit_u16(Op::STRUCT_SET, field_idx);
+                                self.emit(Op::DROP);
+
+                                self.emit_u16(Op::LOCAL_GET, recv_tmp);
+                                self.emit_u16(Op::STRUCT_GET, field_idx);
+                                self.emit_u16(Op::LOCAL_SET, coll_tmp);
+                                self.emit(Op::DROP);
+
+                                self.emit_php_array_assoc_key_tracking_when_missing(coll_tmp, key_tmp, needs_track_tmp, line);
+                            }
+
+                            self.emit_u16(Op::LOCAL_GET, recv_tmp);
+                            self.emit_u16(Op::LOCAL_GET, coll_tmp);
+                            self.emit_u16(Op::STRUCT_SET, field_idx);
+                            self.emit(Op::DROP);
+                            return Ok(());
+                        }
+                    }
+                }
                 if is_append {
                     self.compile_expr(object)?;
                     self.emit_u16(Op::LOCAL_GET, tmp);
@@ -6409,6 +6522,21 @@ impl Compiler {
                 } else {
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
+                    if self.is_php_profile() {
+                        let key_tmp = self.define_local("__php_idx_key");
+                        let obj_tmp = self.define_local("__php_idx_obj");
+                        self.emit_u16(Op::LOCAL_SET, key_tmp); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+                        let needs_track_tmp = self.emit_php_array_assoc_key_is_missing(obj_tmp, key_tmp, line);
+
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit_u16(Op::LOCAL_GET, key_tmp);
+                        self.emit_u16(Op::LOCAL_GET, tmp);
+                        common::collections::emit_set(&mut self.chunks, self.current, line);
+                        self.emit(Op::DROP);
+                        self.emit_php_array_assoc_key_tracking_when_missing(obj_tmp, key_tmp, needs_track_tmp, line);
+                        return Ok(());
+                    }
                     if self.is_python_profile() {
                         let key_tmp = self.define_local("__py_idx_key");
                         let obj_tmp = self.define_local("__py_idx_obj");

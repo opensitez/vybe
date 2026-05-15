@@ -567,6 +567,10 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::php::array_adapter::emit_array_filter(chunks, current, argc, line),
         "php.array_walk_recursive"
             => crate::emitter::php::array_adapter::emit_array_walk_recursive(chunks, current, argc, line),
+        "php.count"
+            => crate::emitter::php::array_adapter::emit_php_count(chunks, current, argc, line),
+        "php.json_encode"
+            => crate::emitter::php::array_adapter::emit_php_json_encode(chunks, current, argc, line),
         "php.array_chunk"
             => crate::emitter::php::array_adapter::emit_array_chunk(chunks, current, argc, line),
         "php.array_combine"

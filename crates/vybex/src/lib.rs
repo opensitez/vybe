@@ -12,6 +12,7 @@
 //! * [`languages`] — per-language walkers + profiles.
 
 pub mod emitter;
+pub mod php;
 pub mod ast;
 pub mod common;     // cross-language compile-time helpers (class normalisation, etc.)
 pub mod compiler;

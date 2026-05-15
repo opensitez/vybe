@@ -276,8 +276,8 @@ is_object           = { emit = "intrinsic:php_is_object",        min_args = 1, m
 
 # ── Array functions ─────────────────────────────────────────────────────────
 
-count               = { emit = "opcode:array_length",              min_args = 1, max_args = 2 }
-sizeof              = { emit = "opcode:array_length",              min_args = 1, max_args = 2 }
+count               = { emit = "common:php.count",                min_args = 1, max_args = 2 }
+sizeof              = { emit = "common:php.count",                min_args = 1, max_args = 2 }
 array_push          = { emit = "opcode:array_push",                min_args = 2, max_args = 255 }
 array_pop           = { emit = "opcode:array_pop",                 min_args = 1, max_args = 1 }
 array_shift         = { emit = "opcode:array_shift",               min_args = 1, max_args = 1 }
@@ -366,7 +366,7 @@ uksort              = { emit = "common:php.uksort",               min_args = 2, 
 
 # ── JSON ────────────────────────────────────────────────────────────────────
 
-json_encode         = { emit = "host:ecma:json:stringify",   min_args = 1, max_args = 3 }
+json_encode         = { emit = "common:php.json_encode",     min_args = 1, max_args = 3 }
 json_decode         = { emit = "host:ecma:json:parse",       min_args = 1, max_args = 4 }
 
 # ── Date / Time ─────────────────────────────────────────────────────────────

@@ -885,7 +885,7 @@ fn body_contains_yield(stmts: &[Statement]) -> bool {
             // Scope boundaries — separate generator context
             ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_) | ExprKind::ClassExpr { .. } => false,
             // Leaves
-            ExprKind::Lit(_) | ExprKind::Ident(_) | ExprKind::DefaultOf(_) | ExprKind::This | ExprKind::Super
+                ExprKind::Lit(_) | ExprKind::Ident(_) | ExprKind::DefaultOf(_) | ExprKind::This | ExprKind::Super
             | ExprKind::AddressOf(_) | ExprKind::Destructure(_) => false,
             // Unary wrappers
             ExprKind::Unary { expr: i, .. } | ExprKind::IsType { expr: i, .. }
@@ -2124,13 +2124,17 @@ fn build_magic_isset_rewrite(
         },
         span.clone(),
     );
-    let prop_undef = Expression::with_span(
-        ExprKind::Binary {
-            op: BinOp::StrictEq,
-            left: Box::new(Expression::with_span(
-                ExprKind::TypeOf(Box::new(direct_member.clone())), span.clone(),
+    let prop_missing = Expression::with_span(
+        ExprKind::Unary {
+            op: UnaryOp::Not,
+            expr: Box::new(Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::In,
+                    left: Box::new(Expression::string(&field)),
+                    right: Box::new(tmp_ident()),
+                },
+                span.clone(),
             )),
-            right: Box::new(Expression::string("undefined")),
         },
         span.clone(),
     );
@@ -2147,7 +2151,7 @@ fn build_magic_isset_rewrite(
     let cond = Expression::with_span(
         ExprKind::Binary {
             op: BinOp::And,
-            left: Box::new(prop_undef),
+            left: Box::new(prop_missing),
             right: Box::new(has_isset),
         },
         span.clone(),
@@ -2390,13 +2394,17 @@ fn build_magic_get_rewrite(
         },
         span.clone(),
     );
-    let prop_undefined = Expression::with_span(
-        ExprKind::Binary {
-            op: BinOp::StrictEq,
-            left: Box::new(Expression::with_span(
-                ExprKind::TypeOf(Box::new(direct_member.clone())), span.clone(),
+    let prop_missing = Expression::with_span(
+        ExprKind::Unary {
+            op: UnaryOp::Not,
+            expr: Box::new(Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::In,
+                    left: Box::new(Expression::string(&name)),
+                    right: Box::new(tmp_ident()),
+                },
+                span.clone(),
             )),
-            right: Box::new(Expression::string("undefined")),
         },
         span.clone(),
     );
@@ -2413,7 +2421,7 @@ fn build_magic_get_rewrite(
     let cond = Expression::with_span(
         ExprKind::Binary {
             op: BinOp::And,
-            left: Box::new(prop_undefined),
+            left: Box::new(prop_missing),
             right: Box::new(has_get),
         },
         span.clone(),
@@ -2622,13 +2630,17 @@ fn build_magic_set_rewrite(
         },
         span.clone(),
     );
-    let prop_undef = Expression::with_span(
-        ExprKind::Binary {
-            op: BinOp::StrictEq,
-            left: Box::new(Expression::with_span(
-                ExprKind::TypeOf(Box::new(direct_member.clone())), span.clone(),
+    let prop_missing = Expression::with_span(
+        ExprKind::Unary {
+            op: UnaryOp::Not,
+            expr: Box::new(Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::In,
+                    left: Box::new(Expression::string(&field)),
+                    right: Box::new(recv_ident()),
+                },
+                span.clone(),
             )),
-            right: Box::new(Expression::string("undefined")),
         },
         span.clone(),
     );
@@ -2645,7 +2657,7 @@ fn build_magic_set_rewrite(
     let cond = Expression::with_span(
         ExprKind::Binary {
             op: BinOp::And,
-            left: Box::new(prop_undef),
+            left: Box::new(prop_missing),
             right: Box::new(has_set),
         },
         span.clone(),
@@ -2755,7 +2767,7 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
         // via `__get` already), and non-Member targets.
         if op == "=" {
             if let ExprKind::Member { object, field, null_safe } = &lhs.kind {
-                if !null_safe && !field.starts_with("__") {
+                if !null_safe && !field.starts_with("__") && !is_php_this_expr(object) {
                     let obj = (**object).clone();
                     let field = field.clone();
                     return Ok(build_magic_set_rewrite(obj, field, rhs.clone(), &span));
@@ -3463,7 +3475,7 @@ fn apply_postfix(receiver: Expression, op: Pair<Rule>, span: &Span, from_variabl
             // assign target — the inner Sequence return value isn't
             // tracked as an l-value through the indexed write).
             if let ExprKind::Member { object, .. } = &member.kind {
-                if matches!(&object.kind, ExprKind::This) {
+                if is_php_this_expr(object) {
                     return Ok(member);
                 }
             }
@@ -4353,6 +4365,11 @@ fn literal_key_name(expr: &Expression) -> Option<String> {
         ExprKind::Lit(Literal::Int(n)) => Some(n.to_string()),
         _ => None,
     }
+}
+
+fn is_php_this_expr(expr: &Expression) -> bool {
+    matches!(&expr.kind, ExprKind::This)
+        || matches!(&expr.kind, ExprKind::Ident(name) if name == "$this")
 }
 
 fn walk_closure(pair: Pair<Rule>) -> Result<Expression, String> {

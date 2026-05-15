@@ -29,15 +29,16 @@ pub mod bundle;
 pub mod imports;
 pub mod gui;
 pub mod dotnet;
-pub mod php;
-pub mod python;
-pub mod fortran;
-pub mod dart;
-pub mod js;
 pub mod dispatch;
 pub mod type_registry;
 pub mod canonical;
 pub mod invoke;
+
+pub use crate::languages::php::emitter as php;
+pub use crate::languages::python::emitter as python;
+pub use crate::languages::fortran::emitter as fortran;
+pub use crate::languages::dart::emitter as dart;
+pub use crate::languages::js::emitter as js;
 
 pub use target::Target;
 pub use type_registry::CompileTimeTypes;

@@ -3775,464 +3775,111 @@ impl Compiler {
                 return Ok(());
             }
 
-            if self.is_php_profile() {
-                let is_php_generator_method = (field_name == "current" && arg_exprs.is_empty())
-                    || (field_name == "send" && arg_exprs.len() == 1)
-                    || (field_name == "next" && arg_exprs.is_empty())
+            let php_generator_end = if self.is_php_profile() {
+                self.emit_php_generator_method_dispatch(obj_tmp, &field_name, &arg_exprs)?
+            } else {
+                None
+            };
+
+            if self.is_python_profile() {
+                let is_python_generator_method = (field_name == "send" && arg_exprs.len() == 1)
                     || (field_name == "throw" && arg_exprs.len() == 1)
-                    || (field_name == "valid" && arg_exprs.is_empty())
-                    || (field_name == "getReturn" && arg_exprs.is_empty());
+                    || (field_name == "close" && arg_exprs.is_empty());
 
-                if is_php_generator_method {
-                let started_key = self.str_const("__php_gen_started");
-                let current_key = self.str_const("__php_gen_current");
-                let done_key = self.str_const("__php_gen_done");
-                let return_key = self.str_const("__php_gen_return");
+                if is_python_generator_method {
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    let is_gen_idx = self.import("ecma:value", "isGenerator");
+                    self.emit_host_call(is_gen_idx, 1);
+                    let not_gen = self.emit_jump(Op::BR_IF_FALSE);
 
-                self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                let is_gen_idx = self.import("ecma:value", "isGenerator");
-                self.emit_host_call(is_gen_idx, 1);
-                let not_gen = self.emit_jump(Op::BR_IF_FALSE);
-
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     match field_name.as_str() {
-                        "getReturn" => {
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_u16(Op::STRUCT_GET, return_key);
-                        }
-                        "valid" => {
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_u16(Op::STRUCT_GET, started_key);
-                            self.emit(Op::DYN_TO_BOOL);
-                            let need_start = self.emit_jump(Op::BR_IF_FALSE);
-
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_u16(Op::STRUCT_GET, done_key);
-                            self.emit(Op::DYN_TO_BOOL);
-                            self.emit(Op::DYN_NOT);
-                            let handled = self.emit_jump(Op::BR);
-
-                            self.patch_jump(need_start);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit(Op::GEN_NEXT);
-                            let has_more_slot = self.define_local("__php_gen_has_more");
-                            self.emit_u16(Op::LOCAL_SET, has_more_slot); self.emit(Op::DROP);
-                            let value_slot = self.define_local("__php_gen_value");
-                            self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
-
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_const(Value::Bool(true));
-                            self.emit_u16(Op::STRUCT_SET, started_key);
-                            self.emit(Op::DROP);
-
-                            self.emit_u16(Op::LOCAL_GET, has_more_slot);
-                            self.emit(Op::DYN_TO_BOOL);
-                            let no_more = self.emit_jump(Op::BR_IF_FALSE);
-
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_const(Value::Bool(false));
-                            self.emit_u16(Op::STRUCT_SET, done_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_generator_yield_value(value_slot);
-                            self.emit_u16(Op::STRUCT_SET, current_key);
-                            self.emit(Op::DROP);
-                            self.emit_const(Value::Bool(true));
-                            let start_done = self.emit_jump(Op::BR);
-
-                            self.patch_jump(no_more);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_const(Value::Bool(true));
-                            self.emit_u16(Op::STRUCT_SET, done_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_u16(Op::LOCAL_GET, value_slot);
-                            self.emit_u16(Op::STRUCT_SET, return_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_const(Value::Bool(false));
-                            self.emit_u16(Op::STRUCT_SET, current_key);
-                            self.emit(Op::DROP);
-                            self.emit_const(Value::Bool(false));
-
-                            self.patch_jump(handled);
-                            self.patch_jump(start_done);
-                        }
-                        "current" => {
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_u16(Op::STRUCT_GET, started_key);
-                            self.emit(Op::DYN_TO_BOOL);
-                            let need_start = self.emit_jump(Op::BR_IF_FALSE);
-
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_u16(Op::STRUCT_GET, done_key);
-                            self.emit(Op::DYN_TO_BOOL);
-                            let not_done = self.emit_jump(Op::BR_IF_FALSE);
-                            self.emit_const(Value::Bool(false));
-                            let current_done = self.emit_jump(Op::BR);
-
-                            self.patch_jump(not_done);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_u16(Op::STRUCT_GET, current_key);
-                            let handled = self.emit_jump(Op::BR);
-
-                            self.patch_jump(need_start);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit(Op::GEN_NEXT);
-                            let has_more_slot = self.define_local("__php_gen_has_more");
-                            self.emit_u16(Op::LOCAL_SET, has_more_slot); self.emit(Op::DROP);
-                            let value_slot = self.define_local("__php_gen_value");
-                            self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
-
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_const(Value::Bool(true));
-                            self.emit_u16(Op::STRUCT_SET, started_key);
-                            self.emit(Op::DROP);
-
-                            self.emit_u16(Op::LOCAL_GET, has_more_slot);
-                            self.emit(Op::DYN_TO_BOOL);
-                            let no_more = self.emit_jump(Op::BR_IF_FALSE);
-
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_const(Value::Bool(false));
-                            self.emit_u16(Op::STRUCT_SET, done_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_generator_yield_value(value_slot);
-                            self.emit_u16(Op::STRUCT_SET, current_key);
-                            self.emit(Op::DROP);
-                            self.emit_generator_yield_value(value_slot);
-                            let start_done = self.emit_jump(Op::BR);
-
-                            self.patch_jump(no_more);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_const(Value::Bool(true));
-                            self.emit_u16(Op::STRUCT_SET, done_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_u16(Op::LOCAL_GET, value_slot);
-                            self.emit_u16(Op::STRUCT_SET, return_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_const(Value::Bool(false));
-                            self.emit_u16(Op::STRUCT_SET, current_key);
-                            self.emit(Op::DROP);
-                            self.emit_const(Value::Bool(false));
-
-                            self.patch_jump(current_done);
-                            self.patch_jump(handled);
-                            self.patch_jump(start_done);
-                        }
-                        "send" | "next" => {
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_u16(Op::STRUCT_GET, started_key);
-                            self.emit(Op::DYN_TO_BOOL);
-                            let need_start = self.emit_jump(Op::BR_IF_FALSE);
-
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_u16(Op::STRUCT_GET, done_key);
-                            self.emit(Op::DYN_TO_BOOL);
-                            let can_resume = self.emit_jump(Op::BR_IF_FALSE);
-                            self.emit_const(Value::Bool(false));
-                            let done_already = self.emit_jump(Op::BR);
-
-                            self.patch_jump(can_resume);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            if field_name == "send" {
-                                self.compile_expr(arg_exprs[0])?;
-                            } else {
-                                self.emit(Op::NULL);
-                            }
-                            self.emit_u16(Op::RESUME, 0);
-                            let value_slot = self.define_local("__php_gen_resume_value");
-                            self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
-
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            let is_done_idx = self.import("ecma:value", "isGeneratorDone");
-                            self.emit_host_call(is_done_idx, 1);
-                            let yielded = self.emit_jump(Op::BR_IF_FALSE);
-
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_const(Value::Bool(true));
-                            self.emit_u16(Op::STRUCT_SET, done_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_u16(Op::LOCAL_GET, value_slot);
-                            self.emit_u16(Op::STRUCT_SET, return_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_const(Value::Bool(false));
-                            self.emit_u16(Op::STRUCT_SET, current_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, value_slot);
-                            let handled = self.emit_jump(Op::BR);
-
-                            self.patch_jump(yielded);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_const(Value::Bool(false));
-                            self.emit_u16(Op::STRUCT_SET, done_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_generator_yield_value(value_slot);
-                            self.emit_u16(Op::STRUCT_SET, current_key);
-                            self.emit(Op::DROP);
-                            self.emit_generator_yield_value(value_slot);
-                            let resume_done = self.emit_jump(Op::BR);
-
-                            self.patch_jump(need_start);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit(Op::GEN_NEXT);
-                            let has_more_slot = self.define_local("__php_gen_has_more");
-                            self.emit_u16(Op::LOCAL_SET, has_more_slot); self.emit(Op::DROP);
-                            let start_value_slot = self.define_local("__php_gen_value");
-                            self.emit_u16(Op::LOCAL_SET, start_value_slot); self.emit(Op::DROP);
-
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_const(Value::Bool(true));
-                            self.emit_u16(Op::STRUCT_SET, started_key);
-                            self.emit(Op::DROP);
-
-                            self.emit_u16(Op::LOCAL_GET, has_more_slot);
-                            self.emit(Op::DYN_TO_BOOL);
-                            let start_no_more = self.emit_jump(Op::BR_IF_FALSE);
-
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_const(Value::Bool(false));
-                            self.emit_u16(Op::STRUCT_SET, done_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_generator_yield_value(start_value_slot);
-                            self.emit_u16(Op::STRUCT_SET, current_key);
-                            self.emit(Op::DROP);
-                            self.emit_generator_yield_value(start_value_slot);
-                            let start_done = self.emit_jump(Op::BR);
-
-                            self.patch_jump(start_no_more);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_const(Value::Bool(true));
-                            self.emit_u16(Op::STRUCT_SET, done_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_u16(Op::LOCAL_GET, start_value_slot);
-                            self.emit_u16(Op::STRUCT_SET, return_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_const(Value::Bool(false));
-                            self.emit_u16(Op::STRUCT_SET, current_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, start_value_slot);
-
-                            self.patch_jump(done_already);
-                            self.patch_jump(handled);
-                            self.patch_jump(resume_done);
-                            self.patch_jump(start_done);
+                        "send" => {
+                            self.compile_expr(&arg_exprs[0])?;
                         }
                         "throw" => {
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_u16(Op::STRUCT_GET, started_key);
-                            self.emit(Op::DYN_TO_BOOL);
-                            let need_start = self.emit_jump(Op::BR_IF_FALSE);
-
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_u16(Op::STRUCT_GET, done_key);
-                            self.emit(Op::DYN_TO_BOOL);
-                            let can_resume = self.emit_jump(Op::BR_IF_FALSE);
-                            self.emit_const(Value::Bool(false));
-                            let done_already = self.emit_jump(Op::BR);
-
-                            self.patch_jump(can_resume);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
                             self.compile_expr(&arg_exprs[0])?;
                             self.emit_generator_control_packet_from_stack("throw");
-                            self.emit_u16(Op::RESUME, 0);
-                            let value_slot = self.define_local("__php_gen_throw_value");
-                            self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
-
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            let is_done_idx = self.import("ecma:value", "isGeneratorDone");
-                            self.emit_host_call(is_done_idx, 1);
-                            let yielded = self.emit_jump(Op::BR_IF_FALSE);
-
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_const(Value::Bool(true));
-                            self.emit_u16(Op::STRUCT_SET, done_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_u16(Op::LOCAL_GET, value_slot);
-                            self.emit_u16(Op::STRUCT_SET, return_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_const(Value::Bool(false));
-                            self.emit_u16(Op::STRUCT_SET, current_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, value_slot);
-                            let handled = self.emit_jump(Op::BR);
-
-                            self.patch_jump(yielded);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_const(Value::Bool(false));
-                            self.emit_u16(Op::STRUCT_SET, done_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_generator_yield_value(value_slot);
-                            self.emit_u16(Op::STRUCT_SET, current_key);
-                            self.emit(Op::DROP);
-                            self.emit_generator_yield_value(value_slot);
-                            let resume_done = self.emit_jump(Op::BR);
-
-                            self.patch_jump(need_start);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit(Op::GEN_NEXT);
-                            let has_more_slot = self.define_local("__php_gen_throw_has_more");
-                            self.emit_u16(Op::LOCAL_SET, has_more_slot); self.emit(Op::DROP);
-                            let start_value_slot = self.define_local("__php_gen_throw_start_value");
-                            self.emit_u16(Op::LOCAL_SET, start_value_slot); self.emit(Op::DROP);
-
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_const(Value::Bool(true));
-                            self.emit_u16(Op::STRUCT_SET, started_key);
-                            self.emit(Op::DROP);
-
-                            self.emit_u16(Op::LOCAL_GET, has_more_slot);
-                            self.emit(Op::DYN_TO_BOOL);
-                            let start_no_more = self.emit_jump(Op::BR_IF_FALSE);
-
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.compile_expr(&arg_exprs[0])?;
-                            self.emit_generator_control_packet_from_stack("throw");
-                            self.emit_u16(Op::RESUME, 0);
-                            let start_resume_slot = self.define_local("__php_gen_throw_resume_value");
-                            self.emit_u16(Op::LOCAL_SET, start_resume_slot); self.emit(Op::DROP);
-
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            let is_done_idx = self.import("ecma:value", "isGeneratorDone");
-                            self.emit_host_call(is_done_idx, 1);
-                            let start_yielded = self.emit_jump(Op::BR_IF_FALSE);
-
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_const(Value::Bool(true));
-                            self.emit_u16(Op::STRUCT_SET, done_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_u16(Op::LOCAL_GET, start_resume_slot);
-                            self.emit_u16(Op::STRUCT_SET, return_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_const(Value::Bool(false));
-                            self.emit_u16(Op::STRUCT_SET, current_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, start_resume_slot);
-                            let start_handled = self.emit_jump(Op::BR);
-
-                            self.patch_jump(start_yielded);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_const(Value::Bool(false));
-                            self.emit_u16(Op::STRUCT_SET, done_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_generator_yield_value(start_resume_slot);
-                            self.emit_u16(Op::STRUCT_SET, current_key);
-                            self.emit(Op::DROP);
-                            self.emit_generator_yield_value(start_resume_slot);
-                            let start_resume_done = self.emit_jump(Op::BR);
-
-                            self.patch_jump(start_no_more);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_const(Value::Bool(true));
-                            self.emit_u16(Op::STRUCT_SET, done_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_u16(Op::LOCAL_GET, start_value_slot);
-                            self.emit_u16(Op::STRUCT_SET, return_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                            self.emit_const(Value::Bool(false));
-                            self.emit_u16(Op::STRUCT_SET, current_key);
-                            self.emit(Op::DROP);
-                            self.emit_u16(Op::LOCAL_GET, start_value_slot);
-
-                            self.patch_jump(done_already);
-                            self.patch_jump(handled);
-                            self.patch_jump(resume_done);
-                            self.patch_jump(start_handled);
-                            self.patch_jump(start_resume_done);
+                        }
+                        "close" => {
+                            self.emit(Op::NULL);
+                            self.emit_generator_control_packet_from_stack("return");
                         }
                         _ => unreachable!(),
                     }
-
+                    self.emit_u16(Op::RESUME, 0);
                     let end = self.emit_jump(Op::BR);
                     self.patch_jump(not_gen);
-                    if self.profile.namespaces.use_dotnet
-                        && arg_exprs.is_empty()
-                        && field.eq_ignore_ascii_case("sort")
-                        && common::dotnet::uses_runtime_collection_dispatch_arity(field, 0)
-                    {
-                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.patch_jump(end);
+                }
+            }
 
-                if self.is_python_profile() {
-                    let is_python_generator_method = (field_name == "send" && arg_exprs.len() == 1)
-                        || (field_name == "throw" && arg_exprs.len() == 1)
-                        || (field_name == "close" && arg_exprs.is_empty());
+            if let Some(end) = php_generator_end {
+                if self.profile.namespaces.use_dotnet
+                    && arg_exprs.is_empty()
+                    && field.eq_ignore_ascii_case("sort")
+                    && common::dotnet::uses_runtime_collection_dispatch_arity(field, 0)
+                {
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    let line = self.line;
+                    self.emit_common("dotnet.array_sort", 1, line);
+                    let generic_done = self.emit_jump(Op::BR);
+                    self.patch_jump(end);
+                    self.patch_jump(generic_done);
+                    return Ok(());
+                }
 
-                    if is_python_generator_method {
-                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                        let is_gen_idx = self.import("ecma:value", "isGenerator");
-                        self.emit_host_call(is_gen_idx, 1);
-                        let not_gen = self.emit_jump(Op::BR_IF_FALSE);
+                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                self.emit_u16(Op::STRUCT_GET, prop);
+                let fn_tmp = self.define_local("__fn");
+                self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
+                if self.is_js_profile() {
+                    let mut arg_slots = Vec::with_capacity(arg_exprs.len());
+                    for (index, arg) in arg_exprs.iter().enumerate() {
+                        self.compile_expr(arg)?;
+                        let arg_slot = self.define_local(&format!("__js_member_bound_arg_{}", index));
+                        self.emit_u16(Op::LOCAL_SET, arg_slot);
+                        self.emit(Op::DROP);
+                        arg_slots.push(arg_slot);
+                    }
+                    self.emit_call_ref_with_arg_slots(fn_tmp, None, &arg_slots);
+                    let generic_done = self.emit_jump(Op::BR);
 
-                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                        match field_name.as_str() {
-                            "send" => {
-                                self.compile_expr(&arg_exprs[0])?;
-                            }
-                            "throw" => {
-                                self.compile_expr(&arg_exprs[0])?;
-                                self.emit_generator_control_packet_from_stack("throw");
-                            }
-                            "close" => {
-                                self.emit(Op::NULL);
-                                self.emit_generator_control_packet_from_stack("return");
-                            }
-                            _ => unreachable!(),
+                    self.patch_jump(end);
+                    self.patch_jump(generic_done);
+                    return Ok(());
+                }
+                if self.profile.name == "php" {
+                    if let Some(overload) = self.resolve_instance_method_overload(object, field, &arg_exprs, false) {
+                        let line = self.line;
+                        self.emit_u16(Op::REF_FUNC, overload.chunk_idx as u16);
+                        self.chunk().emit(0, line);
+                        let direct_fn_tmp = self.define_local("__php_direct_instance_fn");
+                        self.emit_u16(Op::LOCAL_SET, direct_fn_tmp);
+                        self.emit(Op::DROP);
+                        if overload.signature.has_rest {
+                            self.emit_known_rest_call_from_local(direct_fn_tmp, Some(obj_tmp), args, &overload.signature)?;
+                        } else {
+                            self.emit_u16(Op::LOCAL_GET, direct_fn_tmp);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            for a in &arg_exprs { self.compile_expr(a)?; }
+                            self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
                         }
-                        self.emit_u16(Op::RESUME, 0);
-                        let end = self.emit_jump(Op::BR);
-                        self.patch_jump(not_gen);
+                        let generic_done = self.emit_jump(Op::BR);
+
                         self.patch_jump(end);
+                        self.patch_jump(generic_done);
+                        return Ok(());
                     }
                 }
-                        let line = self.line;
-                        self.emit_common("dotnet.array_sort", 1, line);
-                        let generic_done = self.emit_jump(Op::BR);
-                        self.patch_jump(end);
-                        self.patch_jump(generic_done);
-                        return Ok(());
-                    }
-                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.emit_u16(Op::STRUCT_GET, prop);
-                    let fn_tmp = self.define_local("__fn");
-                    self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
-                    if self.is_js_profile() {
-                        let mut arg_slots = Vec::with_capacity(arg_exprs.len());
-                        for (index, arg) in arg_exprs.iter().enumerate() {
-                            self.compile_expr(arg)?;
-                            let arg_slot = self.define_local(&format!("__js_member_bound_arg_{}", index));
-                            self.emit_u16(Op::LOCAL_SET, arg_slot);
-                            self.emit(Op::DROP);
-                            arg_slots.push(arg_slot);
-                        }
-                        self.emit_call_ref_with_arg_slots(fn_tmp, None, &arg_slots);
-                        let generic_done = self.emit_jump(Op::BR);
-
-                        self.patch_jump(end);
-                        self.patch_jump(generic_done);
-                        return Ok(());
-                    }
+                if resolves_to_static_container_method(self, object, field) {
                     if self.profile.name == "php" {
-                        if let Some(overload) = self.resolve_instance_method_overload(object, field, &arg_exprs, false) {
+                        let class_canon = self.canon(&self.flatten_member_chain(object).join("."));
+                        if let Some(overload) = self.resolve_static_method_overload_for_type(&class_canon, field, &arg_exprs) {
                             let line = self.line;
                             self.emit_u16(Op::REF_FUNC, overload.chunk_idx as u16);
                             self.chunk().emit(0, line);
-                            let direct_fn_tmp = self.define_local("__php_direct_instance_fn");
+                            let direct_fn_tmp = self.define_local("__php_direct_static_fn");
                             self.emit_u16(Op::LOCAL_SET, direct_fn_tmp);
                             self.emit(Op::DROP);
                             if overload.signature.has_rest {
@@ -4250,190 +3897,62 @@ impl Compiler {
                             return Ok(());
                         }
                     }
-                    if resolves_to_static_container_method(self, object, field) {
-                        if self.profile.name == "php" {
-                            let class_canon = self.canon(&self.flatten_member_chain(object).join("."));
-                            if let Some(overload) = self.resolve_static_method_overload_for_type(&class_canon, field, &arg_exprs) {
-                                let line = self.line;
-                                self.emit_u16(Op::REF_FUNC, overload.chunk_idx as u16);
-                                self.chunk().emit(0, line);
-                                let direct_fn_tmp = self.define_local("__php_direct_static_fn");
-                                self.emit_u16(Op::LOCAL_SET, direct_fn_tmp);
-                                self.emit(Op::DROP);
-                                if overload.signature.has_rest {
-                                    self.emit_known_rest_call_from_local(direct_fn_tmp, Some(obj_tmp), args, &overload.signature)?;
-                                } else {
-                                    self.emit_u16(Op::LOCAL_GET, direct_fn_tmp);
-                                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                                    for a in &arg_exprs { self.compile_expr(a)?; }
-                                    self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
-                                }
-                                let generic_done = self.emit_jump(Op::BR);
-
-                                self.patch_jump(end);
-                                self.patch_jump(generic_done);
-                                return Ok(());
-                            }
-                        }
-                        if self.profile.name == "csharp" && args.len() == 1 && !args[0].spread {
-                            let class_canon = self.canon(&self.flatten_member_chain(object).join("."));
-                            if self.resolve_static_method_overload_for_type(&class_canon, field, &arg_exprs)
-                                .is_some_and(|overload| overload.signature.has_rest)
-                            {
-                                self.emit_variadic_array_call_from_local(fn_tmp, &args[0].value)?;
-                                let generic_done = self.emit_jump(Op::BR);
-
-                                self.patch_jump(end);
-                                self.patch_jump(generic_done);
-                                return Ok(());
-                            }
-                        }
-                        if let Some(overload) = self
-                            .flatten_member_chain(object)
-                            .last()
-                            .and_then(|class_name| self.resolve_static_method_overload_for_type(class_name, field, &arg_exprs))
-                            .filter(|overload| overload.signature.has_rest)
+                    if self.profile.name == "csharp" && args.len() == 1 && !args[0].spread {
+                        let class_canon = self.canon(&self.flatten_member_chain(object).join("."));
+                        if self.resolve_static_method_overload_for_type(&class_canon, field, &arg_exprs)
+                            .is_some_and(|overload| overload.signature.has_rest)
                         {
-                            self.emit_known_rest_call_from_local(
-                                fn_tmp,
-                                if self.profile.name == "php" { Some(obj_tmp) } else { None },
-                                args,
-                                &overload.signature,
-                            )?;
+                            self.emit_variadic_array_call_from_local(fn_tmp, &args[0].value)?;
                             let generic_done = self.emit_jump(Op::BR);
 
                             self.patch_jump(end);
                             self.patch_jump(generic_done);
                             return Ok(());
                         }
-                        let rest_signature = self
-                            .flatten_member_chain(object)
-                            .last()
-                            .and_then(|class_name| self.resolve_static_method_overload_for_type(class_name, field, &arg_exprs))
-                            .map(|overload| overload.signature.clone())
-                            .filter(|signature| signature.has_rest)
-                            .or_else(|| {
-                                self.function_signatures
-                                    .get(&self.canon(field))
-                                    .and_then(|signatures| self.select_call_signature(signatures, args))
-                                    .filter(|signature| signature.has_rest)
-                                    .cloned()
-                            });
-                        if let Some(signature) = rest_signature.as_ref() {
-                            self.emit_known_rest_call_from_local(
-                                fn_tmp,
-                                if self.profile.name == "php" { Some(obj_tmp) } else { None },
-                                args,
-                                signature,
-                            )?;
-                        } else if self.is_js_profile() {
-                            let mut arg_slots = Vec::with_capacity(arg_exprs.len());
-                            for (index, arg) in arg_exprs.iter().enumerate() {
-                                self.compile_expr(arg)?;
-                                let arg_slot = self.define_local(&format!("__js_static_member_arg_{}", index));
-                                self.emit_u16(Op::LOCAL_SET, arg_slot);
-                                self.emit(Op::DROP);
-                                arg_slots.push(arg_slot);
-                            }
-                            self.emit_call_ref_with_arg_slots(fn_tmp, None, &arg_slots);
-                        } else {
-                            let mut arg_slots = Vec::with_capacity(arg_exprs.len());
-                            for (index, arg) in arg_exprs.iter().enumerate() {
-                                self.compile_expr(arg)?;
-                                let arg_slot = self.define_local(&format!("__static_member_arg_{}", index));
-                                self.emit_u16(Op::LOCAL_SET, arg_slot);
-                                self.emit(Op::DROP);
-                                arg_slots.push(arg_slot);
-                            }
-                            self.emit_call_ref_with_arg_slots(
-                                fn_tmp,
-                                if self.profile.name == "php" { Some(obj_tmp) } else { None },
-                                &arg_slots,
-                            );
-                        }
-                        if args.iter().any(|arg| arg.by_ref) {
-                            let pack_slot = self.define_local("__member_static_container_by_ref_pack");
-                            self.emit_u16(Op::LOCAL_SET, pack_slot);
-                            self.emit(Op::DROP);
-                            let mut ref_out_index = 1usize;
-                            for arg in args {
-                                if !arg.by_ref {
-                                    continue;
-                                }
-                                self.emit_u16(Op::LOCAL_GET, pack_slot);
-                                self.emit_const(Value::F64(ref_out_index as f64));
-                                common::collections::emit_get(&mut self.chunks, self.current, self.line);
-                                self.compile_assign_target(&arg.value)?;
-                                ref_out_index += 1;
-                            }
-                            self.emit_u16(Op::LOCAL_GET, pack_slot);
-                            self.emit_const(Value::F64(0.0));
-                            common::collections::emit_get(&mut self.chunks, self.current, self.line);
-                        }
+                    }
+                    if let Some(overload) = self
+                        .flatten_member_chain(object)
+                        .last()
+                        .and_then(|class_name| self.resolve_static_method_overload_for_type(class_name, field, &arg_exprs))
+                        .filter(|overload| overload.signature.has_rest)
+                    {
+                        self.emit_known_rest_call_from_local(
+                            fn_tmp,
+                            if self.profile.name == "php" { Some(obj_tmp) } else { None },
+                            args,
+                            &overload.signature,
+                        )?;
                         let generic_done = self.emit_jump(Op::BR);
 
                         self.patch_jump(end);
                         self.patch_jump(generic_done);
                         return Ok(());
                     }
-                    let primitive_tostring_done = if self.profile.namespaces.use_dotnet
-                        && arg_exprs.is_empty()
-                        && field.eq_ignore_ascii_case("ToString")
-                    {
-                        let type_tmp = self.define_local("__dotnet_tostring_type");
-                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                        self.emit(Op::REF_TYPEOF);
-                        self.emit_u16(Op::LOCAL_SET, type_tmp);
-                        self.emit(Op::DROP);
-
-                        let mut primitive_matches = Vec::new();
-                        for type_name in ["number", "i32", "i64", "string", "boolean"] {
-                            self.emit_u16(Op::LOCAL_GET, type_tmp);
-                            self.emit_const(Value::String(Arc::from(type_name)));
-                            self.emit(Op::DYN_EQ);
-                            primitive_matches.push(self.emit_jump(Op::BR_IF_TRUE));
-                        }
-                        let not_primitive = self.emit_jump(Op::BR);
-
-                        for patch in primitive_matches {
-                            self.patch_jump(patch);
-                        }
-                        let tostring_global = self.str_const("__vybe_tostring");
-                        self.emit_u16(Op::GLOBAL_GET, tostring_global);
-                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                        self.emit_u8(Op::CALL_REF, 1);
-                        let done = self.emit_jump(Op::BR);
-
-                        self.patch_jump(not_primitive);
-                        Some(done)
-                    } else {
-                        None
-                    };
-                    if self.profile.namespaces.use_dotnet
-                        && arg_exprs.is_empty()
-                        && field.eq_ignore_ascii_case("Count")
-                    {
-                        self.emit_u16(Op::LOCAL_GET, fn_tmp);
-                        self.emit(Op::REF_TYPEOF);
-                        self.emit_const(Value::String(Arc::from("function")));
-                        self.emit(Op::DYN_EQ);
-                        let return_value = self.emit_jump(Op::BR_IF_FALSE);
-
-                        self.emit_u16(Op::LOCAL_GET, fn_tmp);
-                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                        self.emit_u8(Op::CALL_REF, 1);
-                        let generic_done = self.emit_jump(Op::BR);
-
-                        self.patch_jump(return_value);
-                        self.emit_u16(Op::LOCAL_GET, fn_tmp);
-                        self.patch_jump(generic_done);
-                        return Ok(());
-                    }
-                    if self.is_js_profile() {
+                    let rest_signature = self
+                        .flatten_member_chain(object)
+                        .last()
+                        .and_then(|class_name| self.resolve_static_method_overload_for_type(class_name, field, &arg_exprs))
+                        .map(|overload| overload.signature.clone())
+                        .filter(|signature| signature.has_rest)
+                        .or_else(|| {
+                            self.function_signatures
+                                .get(&self.canon(field))
+                                .and_then(|signatures| self.select_call_signature(signatures, args))
+                                .filter(|signature| signature.has_rest)
+                                .cloned()
+                        });
+                    if let Some(signature) = rest_signature.as_ref() {
+                        self.emit_known_rest_call_from_local(
+                            fn_tmp,
+                            if self.profile.name == "php" { Some(obj_tmp) } else { None },
+                            args,
+                            signature,
+                        )?;
+                    } else if self.is_js_profile() {
                         let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                         for (index, arg) in arg_exprs.iter().enumerate() {
                             self.compile_expr(arg)?;
-                            let arg_slot = self.define_local(&format!("__js_member_fast_arg_{}", index));
+                            let arg_slot = self.define_local(&format!("__js_static_member_arg_{}", index));
                             self.emit_u16(Op::LOCAL_SET, arg_slot);
                             self.emit(Op::DROP);
                             arg_slots.push(arg_slot);
@@ -4443,15 +3962,35 @@ impl Compiler {
                         let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                         for (index, arg) in arg_exprs.iter().enumerate() {
                             self.compile_expr(arg)?;
-                            let arg_slot = self.define_local(&format!("__member_fast_arg_{}", index));
+                            let arg_slot = self.define_local(&format!("__static_member_arg_{}", index));
                             self.emit_u16(Op::LOCAL_SET, arg_slot);
                             self.emit(Op::DROP);
                             arg_slots.push(arg_slot);
                         }
-                        self.emit_call_ref_with_arg_slots(fn_tmp, Some(obj_tmp), &arg_slots);
+                        self.emit_call_ref_with_arg_slots(
+                            fn_tmp,
+                            if self.profile.name == "php" { Some(obj_tmp) } else { None },
+                            &arg_slots,
+                        );
                     }
-                    if let Some(done) = primitive_tostring_done {
-                        self.patch_jump(done);
+                    if args.iter().any(|arg| arg.by_ref) {
+                        let pack_slot = self.define_local("__member_static_container_by_ref_pack");
+                        self.emit_u16(Op::LOCAL_SET, pack_slot);
+                        self.emit(Op::DROP);
+                        let mut ref_out_index = 1usize;
+                        for arg in args {
+                            if !arg.by_ref {
+                                continue;
+                            }
+                            self.emit_u16(Op::LOCAL_GET, pack_slot);
+                            self.emit_const(Value::F64(ref_out_index as f64));
+                            common::collections::emit_get(&mut self.chunks, self.current, self.line);
+                            self.compile_assign_target(&arg.value)?;
+                            ref_out_index += 1;
+                        }
+                        self.emit_u16(Op::LOCAL_GET, pack_slot);
+                        self.emit_const(Value::F64(0.0));
+                        common::collections::emit_get(&mut self.chunks, self.current, self.line);
                     }
                     let generic_done = self.emit_jump(Op::BR);
 
@@ -4459,6 +3998,88 @@ impl Compiler {
                     self.patch_jump(generic_done);
                     return Ok(());
                 }
+                let primitive_tostring_done = if self.profile.namespaces.use_dotnet
+                    && arg_exprs.is_empty()
+                    && field.eq_ignore_ascii_case("ToString")
+                {
+                    let type_tmp = self.define_local("__dotnet_tostring_type");
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit(Op::REF_TYPEOF);
+                    self.emit_u16(Op::LOCAL_SET, type_tmp);
+                    self.emit(Op::DROP);
+
+                    let mut primitive_matches = Vec::new();
+                    for type_name in ["number", "i32", "i64", "string", "boolean"] {
+                        self.emit_u16(Op::LOCAL_GET, type_tmp);
+                        self.emit_const(Value::String(Arc::from(type_name)));
+                        self.emit(Op::DYN_EQ);
+                        primitive_matches.push(self.emit_jump(Op::BR_IF_TRUE));
+                    }
+                    let not_primitive = self.emit_jump(Op::BR);
+
+                    for patch in primitive_matches {
+                        self.patch_jump(patch);
+                    }
+                    let tostring_global = self.str_const("__vybe_tostring");
+                    self.emit_u16(Op::GLOBAL_GET, tostring_global);
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_u8(Op::CALL_REF, 1);
+                    let done = self.emit_jump(Op::BR);
+
+                    self.patch_jump(not_primitive);
+                    Some(done)
+                } else {
+                    None
+                };
+                if self.profile.namespaces.use_dotnet
+                    && arg_exprs.is_empty()
+                    && field.eq_ignore_ascii_case("Count")
+                {
+                    self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                    self.emit(Op::REF_TYPEOF);
+                    self.emit_const(Value::String(Arc::from("function")));
+                    self.emit(Op::DYN_EQ);
+                    let return_value = self.emit_jump(Op::BR_IF_FALSE);
+
+                    self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_u8(Op::CALL_REF, 1);
+                    let generic_done = self.emit_jump(Op::BR);
+
+                    self.patch_jump(return_value);
+                    self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                    self.patch_jump(generic_done);
+                    return Ok(());
+                }
+                if self.is_js_profile() {
+                    let mut arg_slots = Vec::with_capacity(arg_exprs.len());
+                    for (index, arg) in arg_exprs.iter().enumerate() {
+                        self.compile_expr(arg)?;
+                        let arg_slot = self.define_local(&format!("__js_member_fast_arg_{}", index));
+                        self.emit_u16(Op::LOCAL_SET, arg_slot);
+                        self.emit(Op::DROP);
+                        arg_slots.push(arg_slot);
+                    }
+                    self.emit_call_ref_with_arg_slots(fn_tmp, None, &arg_slots);
+                } else {
+                    let mut arg_slots = Vec::with_capacity(arg_exprs.len());
+                    for (index, arg) in arg_exprs.iter().enumerate() {
+                        self.compile_expr(arg)?;
+                        let arg_slot = self.define_local(&format!("__member_fast_arg_{}", index));
+                        self.emit_u16(Op::LOCAL_SET, arg_slot);
+                        self.emit(Op::DROP);
+                        arg_slots.push(arg_slot);
+                    }
+                    self.emit_call_ref_with_arg_slots(fn_tmp, Some(obj_tmp), &arg_slots);
+                }
+                if let Some(done) = primitive_tostring_done {
+                    self.patch_jump(done);
+                }
+                let generic_done = self.emit_jump(Op::BR);
+
+                self.patch_jump(end);
+                self.patch_jump(generic_done);
+                return Ok(());
             }
 
             if self.profile.namespaces.use_dotnet

@@ -6,6 +6,7 @@
 //! shared compiler — no PHP-specific code in `compiler.rs`.
 
 mod walker;
+pub mod emitter;
 pub mod normalize_class;
 
 use pest_derive::Parser;

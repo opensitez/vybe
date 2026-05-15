@@ -21,6 +21,11 @@ use super::helpers::{compile_ok, run_prints};
     assert_eq!(out, vec!["3"]);
 }
 
+#[test] fn array_length_sizeof_runtime() {
+    let out = run_prints("<?php\n$a = ['x' => 1, 'y' => 2];\necho sizeof($a);\n");
+    assert_eq!(out, vec!["2"]);
+}
+
 // ── Array creation ──────────────────────────────────────────
 #[test] fn array_indexed() { compile_ok("<?php $a = [1, 2, 3]; echo $a[0];"); }
 #[test] fn array_assoc() { compile_ok("<?php $a = ['name' => 'John', 'age' => 30]; echo $a['name'];"); }
