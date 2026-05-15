@@ -749,6 +749,9 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         // ── PHP `isset(...)` — variadic null check, returns true iff
         // ALL args are non-null. Inline emit folds an AND chain.
         "php.isset_all" => emit_isset_all(&mut chunks[current], argc, line),
+        "php.empty" => crate::emitter::php::misc_adapter::emit_php_empty(chunks, current, argc, line),
+        "php.serialize" => crate::emitter::php::misc_adapter::emit_php_serialize(chunks, current, argc, line),
+        "php.unserialize" => crate::emitter::php::misc_adapter::emit_php_unserialize(chunks, current, argc, line),
 
         // ── Fortran `max(a, b, c, ...)` / `min(a, b, c, ...)` — variadic.
         // Pure WASM (chained f64.max / f64.min); no host calls.

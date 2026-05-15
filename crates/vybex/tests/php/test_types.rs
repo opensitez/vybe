@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── Type coercion / juggling ────────────────────────────────
 #[test] fn string_to_int_add() { compile_ok("<?php $x = '5' + 3; echo $x;"); }
@@ -35,5 +35,7 @@ use super::helpers::compile_ok;
 #[test] fn isset_defined() { compile_ok("<?php $x = 1; echo isset($x);"); }
 #[test] fn isset_null() { compile_ok("<?php $x = null; echo isset($x);"); }
 #[test] fn isset_multi() { compile_ok("<?php $a = 1; $b = 2; echo isset($a, $b);"); }
-#[test] fn empty_values() { compile_ok("<?php echo empty(''); echo empty(0); echo empty(null); echo empty('x'); echo empty([]);"); }
+#[test] fn empty_values() {
+	assert_eq!(run_prints("<?php echo empty('') ? 't' : 'f'; echo empty(0) ? 't' : 'f'; echo empty(null) ? 't' : 'f'; echo empty('0') ? 't' : 'f'; echo empty('x') ? 't' : 'f'; echo empty([]) ? 't' : 'f';"), &["t", "t", "t", "t", "f", "t"]);
+}
 #[test] fn unset_var() { compile_ok("<?php $x = 1; unset($x);"); }

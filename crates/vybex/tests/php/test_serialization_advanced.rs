@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── serialize / unserialize primitives ───────────────────────
 
@@ -101,7 +101,7 @@ echo $s2->getPassword();
 // ── __sleep / __wakeup ────────────────────────────────────────
 
 #[test] fn sleep_wakeup_basic() {
-    compile_ok(r#"<?php
+    assert_eq!(run_prints(r#"<?php
 class Cached {
     public string $data;
     private bool $loaded = false;
@@ -114,11 +114,11 @@ $c = new Cached("important");
 $s = serialize($c);
 $c2 = unserialize($s);
 echo $c2->data . ':' . ($c2->isLoaded() ? 'ready' : 'not');
-"#);
+"#), &["important:ready"]);
 }
 
 #[test] fn sleep_selective_properties() {
-    compile_ok(r#"<?php
+    assert_eq!(run_prints(r#"<?php
 class DBConnection {
     private string $host;
     private int $port;
@@ -134,13 +134,13 @@ $db = new DBConnection('localhost', 5432);
 $s = serialize($db);
 $db2 = unserialize($s);
 echo $db2->getHost();
-"#);
+"#), &["localhost"]);
 }
 
 // ── __serialize / __unserialize (PHP 7.4+) ────────────────────
 
 #[test] fn serialize_unserialize_magic() {
-    compile_ok(r#"<?php
+    assert_eq!(run_prints(r#"<?php
 class DateRange {
     public function __construct(
         private \DateTimeImmutable $start,
@@ -161,11 +161,11 @@ $range = new DateRange(new \DateTimeImmutable('2024-01-01'), new \DateTimeImmuta
 $s = serialize($range);
 $r2 = unserialize($s);
 echo $r2->days();
-"#);
+"#), &["30"]);
 }
 
 #[test] fn serialize_custom_representation() {
-    compile_ok(r#"<?php
+    assert_eq!(run_prints(r#"<?php
 class Vector {
     public function __construct(public float $x, public float $y, public float $z) {}
     public function __serialize(): array { return [$this->x, $this->y, $this->z]; }
@@ -178,7 +178,7 @@ $v = new Vector(1.0, 0.0, 0.0);
 $s = serialize($v);
 $v2 = unserialize($s);
 echo round($v2->length(), 4);
-"#);
+"#), &["1"]);
 }
 
 // ── JSON encode options ───────────────────────────────────────

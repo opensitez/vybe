@@ -20,6 +20,11 @@
 
 use super::{DotnetClass, DotnetMethod, MethodTarget, MethodOp};
 
+const CONTROL_NOOP: &[MethodOp] = &[
+    MethodOp::PushConstNull,
+    MethodOp::Return,
+];
+
 /// `Control.CreateGraphics()` body.
 ///
 /// Translation:
@@ -131,6 +136,9 @@ const CONTROL_METHODS: &[DotnetMethod] = &[
     DotnetMethod { name: "SendToBack",     arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_send_to_back") },
     DotnetMethod { name: "Select",         arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_focus") },
     DotnetMethod { name: "Dispose",        arity: 1, target: MethodTarget::host("vybe:gui", "__ctrl_dispose") },
+    DotnetMethod { name: "SuspendLayout",  arity: 1, target: MethodTarget::body(CONTROL_NOOP) },
+    DotnetMethod { name: "ResumeLayout",   arity: 2, target: MethodTarget::body(CONTROL_NOOP) },
+    DotnetMethod { name: "PerformLayout",  arity: 1, target: MethodTarget::body(CONTROL_NOOP) },
     DotnetMethod { name: "CreateGraphics", arity: 1, target: MethodTarget::body(CONTROL_CREATE_GRAPHICS) },
 ];
 

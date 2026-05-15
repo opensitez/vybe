@@ -839,6 +839,33 @@ impl Compiler {
                                     self.emit_host_call(idx, 0);
                                     return Ok(());
                                 }
+                                common::dotnet::DottedResolution::NamespaceAccess { parts: ns_parts } => {
+                                    if ns_parts.len() >= 2 {
+                                        let mut found_window: Option<(usize, usize)> = None;
+                                        'outer: for start in 0..ns_parts.len().saturating_sub(1) {
+                                            for end in ((start + 2)..=ns_parts.len()).rev() {
+                                                let key = ns_parts[start..end].join(".");
+                                                if self.profile.lookup_constant(&key).is_some() {
+                                                    found_window = Some((start, end));
+                                                    break 'outer;
+                                                }
+                                            }
+                                        }
+                                        if let Some((_const_start, const_end)) = found_window {
+                                            let key = ns_parts[_const_start..const_end].join(".");
+                                            let cv = self.profile.lookup_constant(&key).cloned().unwrap();
+                                            match cv {
+                                                ConstantValue::Float(f) => self.emit_const(Value::F64(f)),
+                                                ConstantValue::Str(s) => self.emit_const(Value::String(Arc::from(s.as_str()))),
+                                            }
+                                            for part in &ns_parts[const_end..] {
+                                                let idx = self.str_const(part);
+                                                self.emit_u16(Op::STRUCT_GET, idx);
+                                            }
+                                            return Ok(());
+                                        }
+                                    }
+                                }
                                 _ => {}
                             }
                         }

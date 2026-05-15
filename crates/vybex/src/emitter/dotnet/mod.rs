@@ -344,6 +344,10 @@ pub fn capitalize_data_type(name: &str) -> String {
     types::capitalize_data_type(name)
 }
 
+pub fn namespace_constant_mappings() -> &'static [(&'static str, f64)] {
+    winforms::types::namespace_constants()
+}
+
 /// Build the typed `.NET` core library descriptor.
 ///
 /// This covers the shared non-WinForms surface that can be reused by multiple

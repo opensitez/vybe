@@ -1,52 +1,56 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
+
+fn assert_outputs(src: &str, expected: &[&str]) {
+	assert_eq!(run_prints(src), expected);
+}
 
 // ── String builtins ─────────────────────────────────────────
-#[test] fn strlen() { compile_ok("<?php $x = strlen('hello');"); }
-#[test] fn strtolower() { compile_ok("<?php $x = strtolower('HELLO');"); }
-#[test] fn strtoupper() { compile_ok("<?php $x = strtoupper('hello');"); }
-#[test] fn trim() { compile_ok("<?php $x = trim('  hello  ');"); }
-#[test] fn ltrim() { compile_ok("<?php $x = ltrim('  hello');"); }
-#[test] fn rtrim() { compile_ok("<?php $x = rtrim('hello  ');"); }
-#[test] fn substr() { compile_ok("<?php $x = substr('hello', 1, 3);"); }
-#[test] fn str_replace() { compile_ok("<?php $x = str_replace('o', '0', 'hello');"); }
-#[test] fn explode() { compile_ok("<?php $x = explode(',', 'a,b,c');"); }
-#[test] fn implode() { compile_ok("<?php $x = implode(',', ['a','b','c']);"); }
-#[test] fn strpos() { compile_ok("<?php $x = strpos('hello', 'lo');"); }
-#[test] fn str_contains() { compile_ok("<?php $x = str_contains('hello', 'ell');"); }
-#[test] fn str_starts_with() { compile_ok("<?php $x = str_starts_with('hello', 'he');"); }
-#[test] fn str_ends_with() { compile_ok("<?php $x = str_ends_with('hello', 'lo');"); }
-#[test] fn str_repeat() { compile_ok("<?php $x = str_repeat('ab', 3);"); }
-#[test] fn str_pad() { compile_ok("<?php $x = str_pad('42', 5, '0');"); }
-#[test] fn chr_ord() { compile_ok("<?php $x = chr(65); $y = ord('A');"); }
-#[test] fn ucfirst() { compile_ok("<?php $x = ucfirst('hello');"); }
-#[test] fn lcfirst() { compile_ok("<?php $x = lcfirst('Hello');"); }
+#[test] fn strlen() { assert_outputs("<?php echo strlen('hello');", &["5"]); }
+#[test] fn strtolower() { assert_outputs("<?php echo strtolower('HELLO');", &["hello"]); }
+#[test] fn strtoupper() { assert_outputs("<?php echo strtoupper('hello');", &["HELLO"]); }
+#[test] fn trim() { assert_outputs("<?php echo trim('  hello  ');", &["hello"]); }
+#[test] fn ltrim() { assert_outputs("<?php echo ltrim('  hello');", &["hello"]); }
+#[test] fn rtrim() { assert_outputs("<?php echo rtrim('hello  ');", &["hello"]); }
+#[test] fn substr() { assert_outputs("<?php echo substr('hello', 1, 3);", &["ell"]); }
+#[test] fn str_replace() { assert_outputs("<?php echo str_replace('o', '0', 'hello');", &["hell0"]); }
+#[test] fn explode() { assert_outputs("<?php echo json_encode(explode(',', 'a,b,c'));", &["[\"a\",\"b\",\"c\"]"]); }
+#[test] fn implode() { assert_outputs("<?php echo implode(',', ['a','b','c']);", &["a,b,c"]); }
+#[test] fn strpos() { assert_outputs("<?php echo strpos('hello', 'lo');", &["3"]); }
+#[test] fn str_contains() { assert_outputs("<?php echo str_contains('hello', 'ell') ? 'yes' : 'no';", &["yes"]); }
+#[test] fn str_starts_with() { assert_outputs("<?php echo str_starts_with('hello', 'he') ? 'yes' : 'no';", &["yes"]); }
+#[test] fn str_ends_with() { assert_outputs("<?php echo str_ends_with('hello', 'lo') ? 'yes' : 'no';", &["yes"]); }
+#[test] fn str_repeat() { assert_outputs("<?php echo str_repeat('ab', 3);", &["ababab"]); }
+#[test] fn str_pad() { assert_outputs("<?php echo str_pad('42', 5, '0');", &["42000"]); }
+#[test] fn chr_ord() { assert_outputs("<?php echo chr(65); echo ord('A');", &["A", "65"]); }
+#[test] fn ucfirst() { assert_outputs("<?php echo ucfirst('hello');", &["Hello"]); }
+#[test] fn lcfirst() { assert_outputs("<?php echo lcfirst('Hello');", &["hello"]); }
 #[test] fn nl2br() { compile_ok("<?php $x = nl2br(\"hello\\nworld\");"); }
-#[test] fn htmlspecialchars() { compile_ok("<?php $x = htmlspecialchars('<b>hi</b>');"); }
+#[test] fn htmlspecialchars() { assert_outputs("<?php echo htmlspecialchars('<b>hi</b>');", &["&lt;b&gt;hi&lt;/b&gt;"]); }
 #[test] fn sprintf() { compile_ok("<?php $x = sprintf('Hello %s, age %d', 'John', 30);"); }
 
 // ── Array builtins ──────────────────────────────────────────
-#[test] fn count() { compile_ok("<?php $x = count([1,2,3]);"); }
-#[test] fn array_push() { compile_ok("<?php $a = [1]; array_push($a, 2);"); }
-#[test] fn array_pop() { compile_ok("<?php $a = [1,2]; $v = array_pop($a);"); }
-#[test] fn array_shift() { compile_ok("<?php $a = [1,2]; $v = array_shift($a);"); }
-#[test] fn array_reverse() { compile_ok("<?php $x = array_reverse([1,2,3]);"); }
-#[test] fn array_slice() { compile_ok("<?php $x = array_slice([1,2,3,4], 1, 2);"); }
-#[test] fn array_merge() { compile_ok("<?php $x = array_merge([1,2], [3,4]);"); }
-#[test] fn array_search() { compile_ok("<?php $x = array_search(2, [1,2,3]);"); }
-#[test] fn in_array() { compile_ok("<?php $x = in_array(2, [1,2,3]);"); }
+#[test] fn count() { assert_outputs("<?php echo count([1,2,3]);", &["3"]); }
+#[test] fn array_push() { assert_outputs("<?php $a = [1]; array_push($a, 2); echo json_encode($a);", &["[1,2]"]); }
+#[test] fn array_pop() { assert_outputs("<?php $a = [1,2]; $v = array_pop($a); echo $v; echo json_encode($a);", &["2", "[1]"]); }
+#[test] fn array_shift() { assert_outputs("<?php $a = [1,2]; $v = array_shift($a); echo $v; echo json_encode($a);", &["1", "[2]"]); }
+#[test] fn array_reverse() { assert_outputs("<?php echo json_encode(array_reverse([1,2,3]));", &["[3,2,1]"]); }
+#[test] fn array_slice() { assert_outputs("<?php echo json_encode(array_slice([1,2,3,4], 1, 2));", &["[2,3]"]); }
+#[test] fn array_merge() { assert_outputs("<?php echo json_encode(array_merge([1,2], [3,4]));", &["[1,2,3,4]"]); }
+#[test] fn array_search() { assert_outputs("<?php echo array_search(2, [1,2,3]);", &["1"]); }
+#[test] fn in_array() { assert_outputs("<?php echo in_array(2, [1,2,3]) ? 'yes' : 'no';", &["yes"]); }
 #[test] fn array_keys() { compile_ok("<?php $x = array_keys(['a'=>1,'b'=>2]);"); }
 #[test] fn array_values() { compile_ok("<?php $x = array_values(['a'=>1,'b'=>2]);"); }
-#[test] fn sort() { compile_ok("<?php $a = [3,1,2]; sort($a);"); }
-#[test] fn range() { compile_ok("<?php $x = range(1, 10);"); }
-#[test] fn array_sum() { compile_ok("<?php $x = array_sum([1,2,3]);"); }
+#[test] fn sort() { assert_outputs("<?php $a = [3,1,2]; sort($a); echo json_encode($a);", &["[1,2,3]"]); }
+#[test] fn range() { assert_outputs("<?php echo json_encode(range(1, 4));", &["[1,2,3,4]"]); }
+#[test] fn array_sum() { assert_outputs("<?php echo array_sum([1,2,3]);", &["6"]); }
 #[test] fn compact() { compile_ok("<?php $a = 1; $b = 2; $x = compact('a', 'b');"); }
-#[test] fn array_key_exists() { compile_ok("<?php $x = array_key_exists('a', ['a'=>1]);"); }
+#[test] fn array_key_exists() { assert_outputs("<?php echo array_key_exists('a', ['a'=>1]) ? 'yes' : 'no';", &["yes"]); }
 
 // ── Callback array ops ──────────────────────────────────────
-#[test] fn array_map() { compile_ok("<?php $x = array_map(fn($n) => $n * 2, [1,2,3]);"); }
-#[test] fn array_filter_no_cb() { compile_ok("<?php $x = array_filter([1,0,2,null,3]);"); }
-#[test] fn array_filter_cb() { compile_ok("<?php $x = array_filter([1,2,3,4], fn($n) => $n > 2);"); }
-#[test] fn array_reduce() { compile_ok("<?php $x = array_reduce([1,2,3], fn($c,$i) => $c + $i, 0);"); }
+#[test] fn array_map() { assert_outputs("<?php echo json_encode(array_map(fn($n) => $n * 2, [1,2,3]));", &["[2,4,6]"]); }
+#[test] fn array_filter_no_cb() { assert_outputs("<?php $x = array_filter([1,0,2,null,3]); echo count($x);", &["3"]); }
+#[test] fn array_filter_cb() { assert_outputs("<?php $x = array_filter([1,2,3,4], fn($n) => $n > 2); echo count($x);", &["2"]); }
+#[test] fn array_reduce() { assert_outputs("<?php echo array_reduce([1,2,3], fn($c,$i) => $c + $i, 0);", &["6"]); }
 #[test] fn array_walk() { compile_ok("<?php $a = [1,2,3]; array_walk($a, fn($v,$k) => $v);"); }
 #[test] fn usort() { compile_ok("<?php $a = [3,1,2]; usort($a);"); }
 
@@ -63,37 +67,37 @@ use super::helpers::compile_ok;
 #[test] fn rand() { compile_ok("<?php $x = rand();"); }
 
 // ── Type builtins ───────────────────────────────────────────
-#[test] fn intval() { compile_ok("<?php $x = intval('42');"); }
-#[test] fn floatval() { compile_ok("<?php $x = floatval('3.14');"); }
-#[test] fn strval() { compile_ok("<?php $x = strval(42);"); }
-#[test] fn boolval() { compile_ok("<?php $x = boolval(1);"); }
-#[test] fn is_null() { compile_ok("<?php $x = is_null(null);"); }
-#[test] fn is_numeric() { compile_ok("<?php $x = is_numeric('42');"); }
-#[test] fn is_array() { compile_ok("<?php $x = is_array([]);"); }
-#[test] fn is_string() { compile_ok("<?php $x = is_string('hi');"); }
-#[test] fn is_int() { compile_ok("<?php $x = is_int(42);"); }
-#[test] fn is_bool() { compile_ok("<?php $x = is_bool(true);"); }
-#[test] fn isset() { compile_ok("<?php $x = isset($a);"); }
+#[test] fn intval() { assert_outputs("<?php echo intval('42');", &["42"]); }
+#[test] fn floatval() { assert_outputs("<?php echo floatval('3.14');", &["3.14"]); }
+#[test] fn strval() { assert_outputs("<?php echo strval(42);", &["42"]); }
+#[test] fn boolval() { assert_outputs("<?php echo boolval(1) ? 'yes' : 'no';", &["yes"]); }
+#[test] fn is_null() { assert_outputs("<?php echo is_null(null) ? 'yes' : 'no';", &["yes"]); }
+#[test] fn is_numeric() { assert_outputs("<?php echo is_numeric('42') ? 'yes' : 'no';", &["yes"]); }
+#[test] fn is_array() { assert_outputs("<?php echo is_array([]) ? 'yes' : 'no';", &["yes"]); }
+#[test] fn is_string() { assert_outputs("<?php echo is_string('hi') ? 'yes' : 'no';", &["yes"]); }
+#[test] fn is_int() { assert_outputs("<?php echo is_int(42) ? 'yes' : 'no';", &["yes"]); }
+#[test] fn is_bool() { assert_outputs("<?php echo is_bool(true) ? 'yes' : 'no';", &["yes"]); }
+#[test] fn isset() { assert_outputs("<?php echo isset($a) ? 'yes' : 'no';", &["no"]); }
 #[test] fn empty() { compile_ok("<?php $x = empty($a);"); }
-#[test] fn gettype() { compile_ok("<?php $x = gettype(42);"); }
+#[test] fn gettype() { assert_outputs("<?php echo gettype(42);", &["integer"]); }
 #[test] fn define_defined() { compile_ok("<?php define('FOO', 42); $x = defined('FOO');"); }
 #[test] fn function_exists() { compile_ok("<?php $x = function_exists('strlen');"); }
 #[test] fn class_exists() { compile_ok("<?php $x = class_exists('stdClass');"); }
 
 // ── Encoding / JSON / Crypto ────────────────────────────────
-#[test] fn json_encode() { compile_ok("<?php $x = json_encode(['a'=>1]);"); }
-#[test] fn json_decode() { compile_ok("<?php $x = json_decode('{\"a\":1}');"); }
+#[test] fn json_encode() { assert_outputs("<?php echo json_encode(['a'=>1]);", &["{\"a\":1}"]); }
+#[test] fn json_decode() { assert_outputs("<?php $x = json_decode('{\"a\":1}'); echo json_encode($x);", &["{\"a\":1}"]); }
 #[test] fn urlencode() { compile_ok("<?php $x = urlencode('hello world');"); }
 #[test] fn urldecode() { compile_ok("<?php $x = urldecode('hello%20world');"); }
-#[test] fn base64_encode() { compile_ok("<?php $x = base64_encode('hello');"); }
-#[test] fn base64_decode() { compile_ok("<?php $x = base64_decode('aGVsbG8=');"); }
+#[test] fn base64_encode() { assert_outputs("<?php echo base64_encode('hello');", &["aGVsbG8="]); }
+#[test] fn base64_decode() { assert_outputs("<?php echo base64_decode('aGVsbG8=');", &["hello"]); }
 #[test] fn md5() { compile_ok("<?php $x = md5('hello');"); }
 #[test] fn sha1() { compile_ok("<?php $x = sha1('hello');"); }
 
 // ── Regex ───────────────────────────────────────────────────
-#[test] fn preg_match() { compile_ok("<?php $x = preg_match('/\\d+/', 'abc123');"); }
-#[test] fn preg_replace() { compile_ok("<?php $x = preg_replace('/\\d/', 'X', 'a1b2');"); }
-#[test] fn preg_split() { compile_ok("<?php $x = preg_split('/,/', 'a,b,c');"); }
+#[test] fn preg_match() { assert_outputs("<?php echo preg_match('/\\d+/', 'abc123');", &["1"]); }
+#[test] fn preg_replace() { assert_outputs("<?php echo preg_replace('/\\d/', 'X', 'a1b2');", &["aXbX"]); }
+#[test] fn preg_split() { assert_outputs("<?php echo json_encode(preg_split('/,/', 'a,b,c'));", &["[\"a\",\"b\",\"c\"]"]); }
 
 // ── Filesystem / IO ─────────────────────────────────────────
 #[test] fn file_exists() { compile_ok("<?php $x = file_exists('/tmp/test');"); }

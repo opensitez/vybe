@@ -12,6 +12,7 @@ pub fn namespace_roots() -> HashSet<String> {
     for name in &[
         "application", "window", "messagebox",
         "borderstyle", "formborderstyle", "contentalignment",
+        "autoscalemode", "autosizemode",
         "dialogresult", "messageboxbuttons", "messageboxicon",
         "keys", "dockstyle", "anchorstyles", "formstartposition",
         "formwindowstate",

@@ -288,6 +288,12 @@ fn try_resolve_via_imports_refs(lower_parts: &[&str], imports: &[String]) -> Opt
                 });
             }
 
+            if is_namespace_root(suffix[0]) {
+                return Some(DottedResolution::NamespaceAccess {
+                    parts: lower_parts.iter().map(|part| (*part).to_string()).collect(),
+                });
+            }
+
             let func = suffix.join(".");
             let module = namespace_to_host_module(&prefix);
             let mapped_func = map_host_func(module, &func);
@@ -415,6 +421,24 @@ mod tests {
             res,
             DottedResolution::CommonCall {
                 emit: "dotnet.process_start".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn keeps_imported_winforms_enum_type_as_namespace_access() {
+        let imports = vec!["system.windows.forms".to_string()];
+        let ctx = test_ctx(&imports);
+        let res = resolve_dotted_name(&["System", "Windows", "Forms", "AutoScaleMode"], &ctx);
+        assert_eq!(
+            res,
+            DottedResolution::NamespaceAccess {
+                parts: vec![
+                    "system".to_string(),
+                    "windows".to_string(),
+                    "forms".to_string(),
+                    "autoscalemode".to_string(),
+                ],
             }
         );
     }

@@ -68,15 +68,17 @@ fn emit_json_stringify_slots(
 
 fn emit_object_from_keys(chunks: &mut [Chunk], current: usize, source_slot: u16, keys_slot: u16, line: u32) {
     let chunk = &mut chunks[current];
-    let out_slot = alloc_local(chunk);
+    let entries_slot = alloc_local(chunk);
     let i_slot = alloc_local(chunk);
     let n_slot = alloc_local(chunk);
     let key_slot = alloc_local(chunk);
+    let value_slot = alloc_local(chunk);
+    let pair_slot = alloc_local(chunk);
 
     let _ = chunk;
-    call_import(chunks, current, "ecma:object", "new", 0, line);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
     let chunk = &mut chunks[current];
-    lset(chunk, out_slot, line);
+    lset(chunk, entries_slot, line);
 
     lget(chunk, keys_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
@@ -96,12 +98,31 @@ fn emit_object_from_keys(chunks: &mut [Chunk], current: usize, source_slot: u16,
     chunk.emit_op(Op::ARRAY_GET, line);
     lset(chunk, key_slot, line);
 
-    lget(chunk, out_slot, line);
-    lget(chunk, key_slot, line);
     lget(chunk, source_slot, line);
     lget(chunk, key_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    chunk.emit_op(Op::ARRAY_SET, line);
+    lset(chunk, value_slot, line);
+
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    lset(chunk, pair_slot, line);
+    lget(chunk, pair_slot, line);
+    lget(chunk, key_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:array", "push", 2, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::DROP, line);
+    lget(chunk, pair_slot, line);
+    lget(chunk, value_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:array", "push", 2, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::DROP, line);
+
+    lget(chunk, entries_slot, line);
+    lget(chunk, pair_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:array", "push", 2, line);
+    let chunk = &mut chunks[current];
     chunk.emit_op(Op::DROP, line);
 
     lget(chunk, i_slot, line);
@@ -111,7 +132,9 @@ fn emit_object_from_keys(chunks: &mut [Chunk], current: usize, source_slot: u16,
     chunk.emit_loop(loop_top, line);
     chunk.patch_jump(exit);
 
-    lget(chunk, out_slot, line);
+    lget(chunk, entries_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:object", "fromEntries", 1, line);
 }
 
 pub fn emit_php_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -135,8 +158,8 @@ pub fn emit_php_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     lset(chunk, base_len_slot, line);
 
     lget(chunk, value_slot, line);
-    push_str(chunk, "vybe$assoc_keys_csv", line);
-    chunk.emit_op(Op::ARRAY_GET, line);
+    let assoc_key = chunk.add_constant(Value::String(Arc::from("vybe$assoc_keys_csv")));
+    chunk.emit_op_u16(Op::STRUCT_GET, assoc_key, line);
     chunk.emit_op(Op::DUP, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     let no_keys = chunk.emit_jump(Op::BR_IF_TRUE, line);
@@ -186,8 +209,8 @@ pub fn emit_php_json_encode(chunks: &mut [Chunk], current: usize, argc: u8, line
     let not_array = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     lget(chunk, value_slot, line);
-    push_str(chunk, "vybe$assoc_keys_csv", line);
-    chunk.emit_op(Op::ARRAY_GET, line);
+    let assoc_key = chunk.add_constant(Value::String(Arc::from("vybe$assoc_keys_csv")));
+    chunk.emit_op_u16(Op::STRUCT_GET, assoc_key, line);
     chunk.emit_op(Op::DUP, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     let no_assoc = chunk.emit_jump(Op::BR_IF_TRUE, line);

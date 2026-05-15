@@ -537,6 +537,13 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
             }
         }
     }
+    if namespaces.use_dotnet {
+        for (name, value) in crate::emitter::dotnet::namespace_constant_mappings() {
+            namespace_constants
+                .entry((*name).to_string())
+                .or_insert(ConstantValue::Float(*value));
+        }
+    }
 
     // Ambient-import defaults declared via `[[esm_default]]` TOML
     // entries (Phase 4 schema). Three variants:

@@ -8,6 +8,43 @@ const NOOP_METHODS: &[&str] = &[
     "createcontrol", "show", "hide",
 ];
 
+const NAMESPACE_CONSTANTS: &[(&str, f64)] = &[
+    ("autoscalemode.none", 0.0),
+    ("autoscalemode.font", 1.0),
+    ("autoscalemode.dpi", 2.0),
+    ("autoscalemode.inherit", 3.0),
+    ("autosizemode.growonly", 0.0),
+    ("autosizemode.growandshrink", 1.0),
+    ("formstartposition.manual", 0.0),
+    ("formstartposition.centerscreen", 1.0),
+    ("formstartposition.windowsdefaultlocation", 2.0),
+    ("formstartposition.windowsdefaultbounds", 3.0),
+    ("formstartposition.centerparent", 4.0),
+    ("formwindowstate.normal", 0.0),
+    ("formwindowstate.minimized", 1.0),
+    ("formwindowstate.maximized", 2.0),
+    ("dialogresult.none", 0.0),
+    ("dialogresult.ok", 1.0),
+    ("dialogresult.cancel", 2.0),
+    ("dialogresult.abort", 3.0),
+    ("dialogresult.retry", 4.0),
+    ("dialogresult.ignore", 5.0),
+    ("dialogresult.yes", 6.0),
+    ("dialogresult.no", 7.0),
+    ("messageboxbuttons.ok", 0.0),
+    ("messageboxbuttons.okcancel", 1.0),
+    ("messageboxbuttons.abortretryignore", 2.0),
+    ("messageboxbuttons.yesnocancel", 3.0),
+    ("messageboxbuttons.yesno", 4.0),
+    ("messageboxbuttons.retrycancel", 5.0),
+    ("messageboxbuttons.canceltrycontinue", 6.0),
+    ("messageboxicon.none", 0.0),
+    ("messageboxicon.error", 16.0),
+    ("messageboxicon.question", 32.0),
+    ("messageboxicon.warning", 48.0),
+    ("messageboxicon.information", 64.0),
+];
+
 use std::sync::LazyLock;
 
 static KNOWN_TYPE_MAPPINGS: LazyLock<Vec<KnownTypeMapping>> = LazyLock::new(|| {
@@ -50,6 +87,10 @@ pub fn is_noop_method(name: &str) -> bool {
 
 pub fn noop_methods() -> &'static [&'static str] {
     NOOP_METHODS
+}
+
+pub fn namespace_constants() -> &'static [(&'static str, f64)] {
+    NAMESPACE_CONSTANTS
 }
 
 pub fn capitalize_control_name(name: &str) -> String {

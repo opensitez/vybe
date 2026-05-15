@@ -38,5 +38,6 @@ mod tests {
         assert!(roots.contains("console"));
         assert!(roots.contains("application"));
         assert!(roots.contains("formborderstyle"));
+        assert!(roots.contains("autoscalemode"));
     }
 }

@@ -1,0 +1,781 @@
+use std::sync::Arc;
+
+use vybe_bytecode::{Chunk, Value};
+use vybe_bytecode::opcode::Op;
+
+use crate::emitter::classes::{emit_bind_bound_method_with_aliases, emit_bind_getter, emit_bind_setter};
+use crate::emitter::functions::create_function_chunk;
+
+const SERIAL_KIND_KEY: &str = "vybe$php_ser_kind";
+
+fn alloc_local(chunk: &mut Chunk) -> u16 {
+    let slot = chunk.local_count;
+    chunk.local_count = slot + 1;
+    slot
+}
+
+fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
+    let idx = chunk.add_constant(val);
+    chunk.emit_op_u16(Op::CONST, idx, line);
+}
+
+fn push_str(chunk: &mut Chunk, value: &str, line: u32) {
+    push_const(chunk, Value::String(Arc::from(value)), line);
+}
+
+fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
+fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+}
+
+fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
+    let idx = chunks[0].add_import(module.to_string(), name.to_string());
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
+    chunk.emit(argc, line);
+}
+
+fn call_import_into(imports: &mut Chunk, code: &mut Chunk, module: &str, name: &str, argc: u8, line: u32) {
+    let idx = imports.add_import(module.to_string(), name.to_string());
+    code.emit_op_u16(Op::CALL_IMPORT, idx, line);
+    code.emit(argc, line);
+}
+
+fn call_ref(chunk: &mut Chunk, argc: u8, line: u32) {
+    chunk.emit_op(Op::CALL_REF, line);
+    chunk.emit(argc, line);
+}
+
+fn ref_func(chunk: &mut Chunk, func_idx: usize, line: u32) {
+    chunk.emit_op_u16(Op::REF_FUNC, func_idx as u16, line);
+    chunk.emit(0, line);
+}
+
+fn struct_get_key(chunk: &mut Chunk, key: &str, line: u32) {
+    let idx = chunk.add_constant(Value::String(Arc::from(key)));
+    chunk.emit_op_u16(Op::STRUCT_GET, idx, line);
+}
+
+fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
+    let idx = chunk.add_constant(Value::String(Arc::from(key)));
+    chunk.emit_op_u16(Op::STRUCT_SET, idx, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
+fn dynamic_get_from_slots(chunk: &mut Chunk, obj_slot: u16, key_slot: u16, line: u32) {
+    lget(chunk, obj_slot, line);
+    lget(chunk, key_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+}
+
+fn dynamic_set_from_slots(chunk: &mut Chunk, obj_slot: u16, key_slot: u16, value_slot: u16, line: u32) {
+    lget(chunk, obj_slot, line);
+    lget(chunk, key_slot, line);
+    lget(chunk, value_slot, line);
+    chunk.emit_op(Op::ARRAY_SET, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
+fn set_struct_from_slot(chunk: &mut Chunk, obj_slot: u16, key: &str, value_slot: u16, line: u32) {
+    lget(chunk, obj_slot, line);
+    lget(chunk, value_slot, line);
+    struct_set_key(chunk, key, line);
+}
+
+fn emit_nullish_return(chunk: &mut Chunk, value_slot: u16, line: u32) -> usize {
+    lget(chunk, value_slot, line);
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    let value_is_null = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    chunk.emit_op(Op::REF_IS_UNDEFINED, line);
+    let not_nullish = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::NULL, line);
+    chunk.emit_op(Op::RETURN, line);
+    chunk.patch_jump(value_is_null);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op(Op::NULL, line);
+    chunk.emit_op(Op::RETURN, line);
+    not_nullish
+}
+
+fn emit_is_array_into(imports: &mut Chunk, code: &mut Chunk, value_slot: u16, line: u32) {
+    lget(code, value_slot, line);
+    call_import_into(imports, code, "ecma:array", "isArray", 1, line);
+    code.emit_op(Op::DYN_TO_BOOL, line);
+}
+
+fn bump_loop_index(chunk: &mut Chunk, i_slot: u16, loop_top: usize, line: u32) {
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, i_slot, line);
+    chunk.emit_loop(loop_top, line);
+}
+
+fn build_php_alloc_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let helper_idx = chunks.len();
+    let types = chunks[0].types.clone();
+
+    let mut helper = create_function_chunk("__php_unserialize_alloc", 1);
+    helper.local_count = 1;
+    let class_slot = 0;
+    let obj_slot = alloc_local(&mut helper);
+
+    {
+        let imports = &mut chunks[0];
+        let not_nullish = emit_nullish_return(&mut helper, class_slot, line);
+        helper.patch_jump(not_nullish);
+
+        for ty in types.iter().filter(|ty| !ty.is_interface) {
+            lget(&mut helper, class_slot, line);
+            push_str(&mut helper, &ty.name, line);
+            helper.emit_op(Op::DYN_EQ, line);
+            let next = helper.emit_jump(Op::BR_IF_FALSE, line);
+
+            helper.emit_op_u16(Op::STRUCT_NEW, 0, line);
+            lset(&mut helper, obj_slot, line);
+
+            lget(&mut helper, obj_slot, line);
+            push_str(&mut helper, &ty.name, line);
+            struct_set_key(&mut helper, "__type", line);
+
+            lget(&mut helper, obj_slot, line);
+            push_str(&mut helper, &ty.name.to_lowercase(), line);
+            struct_set_key(&mut helper, "__control_name", line);
+
+            let tid_name = helper.add_constant(Value::String(Arc::from(format!("__tid_{}", ty.name))));
+            lget(&mut helper, obj_slot, line);
+            helper.emit_op_u16(Op::GLOBAL_GET, tid_name, line);
+            helper.emit_op(Op::SET_TYPE_ID, line);
+            helper.emit_op(Op::DROP, line);
+
+            for field in &ty.fields {
+                lget(&mut helper, obj_slot, line);
+                helper.emit_op(Op::NULL, line);
+                struct_set_key(&mut helper, field, line);
+            }
+
+            for (method_name, method_chunk_idx) in &ty.methods {
+                if method_name.starts_with("__get_") {
+                    let prop = method_name.strip_prefix("__get_").unwrap_or(method_name.as_str());
+                    emit_bind_getter(&mut helper, obj_slot, prop, *method_chunk_idx, line);
+                } else if method_name.starts_with("__set_") {
+                    let prop = method_name.strip_prefix("__set_").unwrap_or(method_name.as_str());
+                    emit_bind_setter(&mut helper, obj_slot, prop, *method_chunk_idx, line);
+                } else {
+                    emit_bind_bound_method_with_aliases(&mut helper, obj_slot, method_name, *method_chunk_idx, None, line);
+                }
+            }
+
+            lget(&mut helper, obj_slot, line);
+            helper.emit_op(Op::RETURN, line);
+            helper.patch_jump(next);
+        }
+
+        call_import_into(imports, &mut helper, "ecma:object", "new", 0, line);
+        helper.emit_op(Op::RETURN, line);
+    }
+
+    chunks.push(helper);
+    helper_idx
+}
+
+fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let helper_idx = chunks.len();
+    let mut helper = create_function_chunk("__php_serialize_value", 1);
+    helper.local_count = 1;
+
+    let value_slot = 0;
+    let type_slot = alloc_local(&mut helper);
+    let out_slot = alloc_local(&mut helper);
+    let items_slot = alloc_local(&mut helper);
+    let assoc_slot = alloc_local(&mut helper);
+    let names_slot = alloc_local(&mut helper);
+    let key_slot = alloc_local(&mut helper);
+    let tmp_slot = alloc_local(&mut helper);
+    let i_slot = alloc_local(&mut helper);
+    let n_slot = alloc_local(&mut helper);
+    let method_slot = alloc_local(&mut helper);
+
+    {
+        let imports = &mut chunks[0];
+        let not_nullish = emit_nullish_return(&mut helper, value_slot, line);
+        helper.patch_jump(not_nullish);
+
+        lget(&mut helper, value_slot, line);
+        helper.emit_op(Op::REF_TYPEOF, line);
+        lset(&mut helper, type_slot, line);
+
+        for primitive in ["boolean", "number", "string"] {
+            lget(&mut helper, type_slot, line);
+            push_str(&mut helper, primitive, line);
+            helper.emit_op(Op::DYN_EQ, line);
+            let next = helper.emit_jump(Op::BR_IF_FALSE, line);
+            lget(&mut helper, value_slot, line);
+            helper.emit_op(Op::RETURN, line);
+            helper.patch_jump(next);
+        }
+
+        emit_is_array_into(imports, &mut helper, value_slot, line);
+        let not_array = helper.emit_jump(Op::BR_IF_FALSE, line);
+
+        call_import_into(imports, &mut helper, "ecma:object", "new", 0, line);
+        lset(&mut helper, out_slot, line);
+        lget(&mut helper, out_slot, line);
+        push_str(&mut helper, "array", line);
+        struct_set_key(&mut helper, SERIAL_KIND_KEY, line);
+
+        helper.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        lset(&mut helper, items_slot, line);
+        lget(&mut helper, value_slot, line);
+        helper.emit_op(Op::ARRAY_LENGTH, line);
+        lset(&mut helper, n_slot, line);
+        push_const(&mut helper, Value::F64(0.0), line);
+        lset(&mut helper, i_slot, line);
+        let items_loop = helper.current_offset();
+        lget(&mut helper, i_slot, line);
+        lget(&mut helper, n_slot, line);
+        helper.emit_op(Op::DYN_LT, line);
+        let items_exit = helper.emit_jump(Op::BR_IF_FALSE, line);
+        lget(&mut helper, items_slot, line);
+        ref_func(&mut helper, helper_idx, line);
+        lget(&mut helper, value_slot, line);
+        lget(&mut helper, i_slot, line);
+        helper.emit_op(Op::ARRAY_GET, line);
+        call_ref(&mut helper, 1, line);
+        call_import_into(imports, &mut helper, "ecma:array", "push", 2, line);
+        helper.emit_op(Op::DROP, line);
+        bump_loop_index(&mut helper, i_slot, items_loop, line);
+        helper.patch_jump(items_exit);
+        set_struct_from_slot(&mut helper, out_slot, "items", items_slot, line);
+
+        lget(&mut helper, value_slot, line);
+        struct_get_key(&mut helper, "vybe$assoc_keys_csv", line);
+        lset(&mut helper, tmp_slot, line);
+        lget(&mut helper, tmp_slot, line);
+        helper.emit_op(Op::DUP, line);
+        helper.emit_op(Op::REF_IS_NULL, line);
+        let assoc_null = helper.emit_jump(Op::BR_IF_TRUE, line);
+        helper.emit_op(Op::REF_IS_UNDEFINED, line);
+        let no_assoc = helper.emit_jump(Op::BR_IF_TRUE, line);
+        lget(&mut helper, tmp_slot, line);
+        push_str(&mut helper, "\x1F", line);
+        call_import_into(imports, &mut helper, "ecma:string", "split", 2, line);
+        lset(&mut helper, names_slot, line);
+        call_import_into(imports, &mut helper, "ecma:object", "new", 0, line);
+        lset(&mut helper, assoc_slot, line);
+        lget(&mut helper, names_slot, line);
+        helper.emit_op(Op::ARRAY_LENGTH, line);
+        lset(&mut helper, n_slot, line);
+        push_const(&mut helper, Value::F64(0.0), line);
+        lset(&mut helper, i_slot, line);
+        let assoc_loop = helper.current_offset();
+        lget(&mut helper, i_slot, line);
+        lget(&mut helper, n_slot, line);
+        helper.emit_op(Op::DYN_LT, line);
+        let assoc_exit = helper.emit_jump(Op::BR_IF_FALSE, line);
+        lget(&mut helper, names_slot, line);
+        lget(&mut helper, i_slot, line);
+        helper.emit_op(Op::ARRAY_GET, line);
+        lset(&mut helper, key_slot, line);
+        ref_func(&mut helper, helper_idx, line);
+        dynamic_get_from_slots(&mut helper, value_slot, key_slot, line);
+        call_ref(&mut helper, 1, line);
+        lset(&mut helper, tmp_slot, line);
+        dynamic_set_from_slots(&mut helper, assoc_slot, key_slot, tmp_slot, line);
+        bump_loop_index(&mut helper, i_slot, assoc_loop, line);
+        helper.patch_jump(assoc_exit);
+        set_struct_from_slot(&mut helper, out_slot, "assoc", assoc_slot, line);
+        let after_assoc = helper.emit_jump(Op::BR, line);
+        helper.patch_jump(assoc_null);
+        helper.emit_op(Op::DROP, line);
+        helper.patch_jump(no_assoc);
+        helper.patch_jump(after_assoc);
+        lget(&mut helper, out_slot, line);
+        helper.emit_op(Op::RETURN, line);
+
+        helper.patch_jump(not_array);
+
+        lget(&mut helper, value_slot, line);
+        struct_get_key(&mut helper, "__serialize", line);
+        lset(&mut helper, method_slot, line);
+        lget(&mut helper, method_slot, line);
+        helper.emit_op(Op::REF_TYPEOF, line);
+        push_str(&mut helper, "function", line);
+        helper.emit_op(Op::DYN_EQ, line);
+        let no_custom = helper.emit_jump(Op::BR_IF_FALSE, line);
+        call_import_into(imports, &mut helper, "ecma:object", "new", 0, line);
+        lset(&mut helper, out_slot, line);
+        lget(&mut helper, out_slot, line);
+        push_str(&mut helper, "custom_object", line);
+        struct_set_key(&mut helper, SERIAL_KIND_KEY, line);
+        lget(&mut helper, value_slot, line);
+        struct_get_key(&mut helper, "__type", line);
+        lset(&mut helper, tmp_slot, line);
+        set_struct_from_slot(&mut helper, out_slot, "class", tmp_slot, line);
+        lget(&mut helper, method_slot, line);
+        lget(&mut helper, value_slot, line);
+        call_ref(&mut helper, 1, line);
+        lset(&mut helper, tmp_slot, line);
+        ref_func(&mut helper, helper_idx, line);
+        lget(&mut helper, tmp_slot, line);
+        call_ref(&mut helper, 1, line);
+        lset(&mut helper, tmp_slot, line);
+        set_struct_from_slot(&mut helper, out_slot, "payload", tmp_slot, line);
+        lget(&mut helper, out_slot, line);
+        helper.emit_op(Op::RETURN, line);
+        helper.patch_jump(no_custom);
+
+        lget(&mut helper, value_slot, line);
+        struct_get_key(&mut helper, "__sleep", line);
+        lset(&mut helper, method_slot, line);
+        lget(&mut helper, method_slot, line);
+        helper.emit_op(Op::REF_TYPEOF, line);
+        push_str(&mut helper, "function", line);
+        helper.emit_op(Op::DYN_EQ, line);
+        let no_sleep = helper.emit_jump(Op::BR_IF_FALSE, line);
+        call_import_into(imports, &mut helper, "ecma:object", "new", 0, line);
+        lset(&mut helper, out_slot, line);
+        lget(&mut helper, out_slot, line);
+        push_str(&mut helper, "sleep_object", line);
+        struct_set_key(&mut helper, SERIAL_KIND_KEY, line);
+        lget(&mut helper, value_slot, line);
+        struct_get_key(&mut helper, "__type", line);
+        lset(&mut helper, tmp_slot, line);
+        set_struct_from_slot(&mut helper, out_slot, "class", tmp_slot, line);
+        call_import_into(imports, &mut helper, "ecma:object", "new", 0, line);
+        lset(&mut helper, assoc_slot, line);
+        lget(&mut helper, method_slot, line);
+        lget(&mut helper, value_slot, line);
+        call_ref(&mut helper, 1, line);
+        lset(&mut helper, names_slot, line);
+        lget(&mut helper, names_slot, line);
+        helper.emit_op(Op::ARRAY_LENGTH, line);
+        lset(&mut helper, n_slot, line);
+        push_const(&mut helper, Value::F64(0.0), line);
+        lset(&mut helper, i_slot, line);
+        let sleep_loop = helper.current_offset();
+        lget(&mut helper, i_slot, line);
+        lget(&mut helper, n_slot, line);
+        helper.emit_op(Op::DYN_LT, line);
+        let sleep_exit = helper.emit_jump(Op::BR_IF_FALSE, line);
+        lget(&mut helper, names_slot, line);
+        lget(&mut helper, i_slot, line);
+        helper.emit_op(Op::ARRAY_GET, line);
+        lset(&mut helper, key_slot, line);
+        dynamic_get_from_slots(&mut helper, value_slot, key_slot, line);
+        lset(&mut helper, tmp_slot, line);
+        ref_func(&mut helper, helper_idx, line);
+        lget(&mut helper, tmp_slot, line);
+        call_ref(&mut helper, 1, line);
+        lset(&mut helper, tmp_slot, line);
+        dynamic_set_from_slots(&mut helper, assoc_slot, key_slot, tmp_slot, line);
+        bump_loop_index(&mut helper, i_slot, sleep_loop, line);
+        helper.patch_jump(sleep_exit);
+        set_struct_from_slot(&mut helper, out_slot, "fields", assoc_slot, line);
+        lget(&mut helper, out_slot, line);
+        helper.emit_op(Op::RETURN, line);
+        helper.patch_jump(no_sleep);
+
+        call_import_into(imports, &mut helper, "ecma:object", "new", 0, line);
+        lset(&mut helper, out_slot, line);
+        lget(&mut helper, out_slot, line);
+        push_str(&mut helper, "object", line);
+        struct_set_key(&mut helper, SERIAL_KIND_KEY, line);
+        lget(&mut helper, value_slot, line);
+        struct_get_key(&mut helper, "__type", line);
+        lset(&mut helper, tmp_slot, line);
+        set_struct_from_slot(&mut helper, out_slot, "class", tmp_slot, line);
+        call_import_into(imports, &mut helper, "ecma:object", "new", 0, line);
+        lset(&mut helper, assoc_slot, line);
+        lget(&mut helper, value_slot, line);
+        call_import_into(imports, &mut helper, "ecma:object", "keys", 1, line);
+        lset(&mut helper, names_slot, line);
+        lget(&mut helper, names_slot, line);
+        helper.emit_op(Op::ARRAY_LENGTH, line);
+        lset(&mut helper, n_slot, line);
+        push_const(&mut helper, Value::F64(0.0), line);
+        lset(&mut helper, i_slot, line);
+        let object_loop = helper.current_offset();
+        lget(&mut helper, i_slot, line);
+        lget(&mut helper, n_slot, line);
+        helper.emit_op(Op::DYN_LT, line);
+        let object_exit = helper.emit_jump(Op::BR_IF_FALSE, line);
+        lget(&mut helper, names_slot, line);
+        lget(&mut helper, i_slot, line);
+        helper.emit_op(Op::ARRAY_GET, line);
+        lset(&mut helper, key_slot, line);
+
+        for internal_key in ["__type", "__types", "__control_name", "__super", "vybe$assoc_keys_csv"] {
+            lget(&mut helper, key_slot, line);
+            push_str(&mut helper, internal_key, line);
+            helper.emit_op(Op::DYN_EQ, line);
+            let next = helper.emit_jump(Op::BR_IF_FALSE, line);
+            bump_loop_index(&mut helper, i_slot, object_loop, line);
+            helper.patch_jump(next);
+        }
+
+        dynamic_get_from_slots(&mut helper, value_slot, key_slot, line);
+        lset(&mut helper, tmp_slot, line);
+        lget(&mut helper, tmp_slot, line);
+        helper.emit_op(Op::REF_TYPEOF, line);
+        push_str(&mut helper, "function", line);
+        helper.emit_op(Op::DYN_EQ, line);
+        let keep_field = helper.emit_jump(Op::BR_IF_FALSE, line);
+        bump_loop_index(&mut helper, i_slot, object_loop, line);
+        helper.patch_jump(keep_field);
+
+        ref_func(&mut helper, helper_idx, line);
+        lget(&mut helper, tmp_slot, line);
+        call_ref(&mut helper, 1, line);
+        lset(&mut helper, tmp_slot, line);
+        dynamic_set_from_slots(&mut helper, assoc_slot, key_slot, tmp_slot, line);
+        bump_loop_index(&mut helper, i_slot, object_loop, line);
+        helper.patch_jump(object_exit);
+        set_struct_from_slot(&mut helper, out_slot, "fields", assoc_slot, line);
+        lget(&mut helper, out_slot, line);
+        helper.emit_op(Op::RETURN, line);
+    }
+
+    chunks.push(helper);
+    helper_idx
+}
+
+fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line: u32) -> usize {
+    let helper_idx = chunks.len();
+    let mut helper = create_function_chunk("__php_unserialize_value", 1);
+    helper.local_count = 1;
+
+    let node_slot = 0;
+    let type_slot = alloc_local(&mut helper);
+    let kind_slot = alloc_local(&mut helper);
+    let out_slot = alloc_local(&mut helper);
+    let items_slot = alloc_local(&mut helper);
+    let assoc_slot = alloc_local(&mut helper);
+    let fields_slot = alloc_local(&mut helper);
+    let names_slot = alloc_local(&mut helper);
+    let key_slot = alloc_local(&mut helper);
+    let tmp_slot = alloc_local(&mut helper);
+    let i_slot = alloc_local(&mut helper);
+    let n_slot = alloc_local(&mut helper);
+    let method_slot = alloc_local(&mut helper);
+
+    {
+        let imports = &mut chunks[0];
+        let not_nullish = emit_nullish_return(&mut helper, node_slot, line);
+        helper.patch_jump(not_nullish);
+
+        lget(&mut helper, node_slot, line);
+        helper.emit_op(Op::REF_TYPEOF, line);
+        lset(&mut helper, type_slot, line);
+        for primitive in ["boolean", "number", "string"] {
+            lget(&mut helper, type_slot, line);
+            push_str(&mut helper, primitive, line);
+            helper.emit_op(Op::DYN_EQ, line);
+            let next = helper.emit_jump(Op::BR_IF_FALSE, line);
+            lget(&mut helper, node_slot, line);
+            helper.emit_op(Op::RETURN, line);
+            helper.patch_jump(next);
+        }
+
+        lget(&mut helper, node_slot, line);
+        struct_get_key(&mut helper, SERIAL_KIND_KEY, line);
+        lset(&mut helper, kind_slot, line);
+        lget(&mut helper, kind_slot, line);
+        helper.emit_op(Op::DUP, line);
+        helper.emit_op(Op::REF_IS_NULL, line);
+        let kind_null = helper.emit_jump(Op::BR_IF_TRUE, line);
+        helper.emit_op(Op::REF_IS_UNDEFINED, line);
+        let no_kind = helper.emit_jump(Op::BR_IF_TRUE, line);
+
+        lget(&mut helper, kind_slot, line);
+        push_str(&mut helper, "array", line);
+        helper.emit_op(Op::DYN_EQ, line);
+        let not_array = helper.emit_jump(Op::BR_IF_FALSE, line);
+        helper.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        lset(&mut helper, out_slot, line);
+        lget(&mut helper, node_slot, line);
+        struct_get_key(&mut helper, "items", line);
+        lset(&mut helper, items_slot, line);
+        lget(&mut helper, items_slot, line);
+        helper.emit_op(Op::ARRAY_LENGTH, line);
+        lset(&mut helper, n_slot, line);
+        push_const(&mut helper, Value::F64(0.0), line);
+        lset(&mut helper, i_slot, line);
+        let items_loop = helper.current_offset();
+        lget(&mut helper, i_slot, line);
+        lget(&mut helper, n_slot, line);
+        helper.emit_op(Op::DYN_LT, line);
+        let items_exit = helper.emit_jump(Op::BR_IF_FALSE, line);
+        ref_func(&mut helper, helper_idx, line);
+        lget(&mut helper, items_slot, line);
+        lget(&mut helper, i_slot, line);
+        helper.emit_op(Op::ARRAY_GET, line);
+        call_ref(&mut helper, 1, line);
+        lset(&mut helper, tmp_slot, line);
+        lget(&mut helper, out_slot, line);
+        lget(&mut helper, tmp_slot, line);
+        call_import_into(imports, &mut helper, "ecma:array", "push", 2, line);
+        helper.emit_op(Op::DROP, line);
+        bump_loop_index(&mut helper, i_slot, items_loop, line);
+        helper.patch_jump(items_exit);
+
+        lget(&mut helper, node_slot, line);
+        struct_get_key(&mut helper, "assoc", line);
+        lset(&mut helper, assoc_slot, line);
+        lget(&mut helper, assoc_slot, line);
+        helper.emit_op(Op::DUP, line);
+        helper.emit_op(Op::REF_IS_NULL, line);
+        let assoc_null = helper.emit_jump(Op::BR_IF_TRUE, line);
+        helper.emit_op(Op::REF_IS_UNDEFINED, line);
+        let no_assoc = helper.emit_jump(Op::BR_IF_TRUE, line);
+        lget(&mut helper, assoc_slot, line);
+        call_import_into(imports, &mut helper, "ecma:object", "keys", 1, line);
+        lset(&mut helper, names_slot, line);
+        lget(&mut helper, names_slot, line);
+        helper.emit_op(Op::ARRAY_LENGTH, line);
+        lset(&mut helper, n_slot, line);
+        push_const(&mut helper, Value::F64(0.0), line);
+        lset(&mut helper, i_slot, line);
+        let assoc_loop = helper.current_offset();
+        lget(&mut helper, i_slot, line);
+        lget(&mut helper, n_slot, line);
+        helper.emit_op(Op::DYN_LT, line);
+        let assoc_exit = helper.emit_jump(Op::BR_IF_FALSE, line);
+        lget(&mut helper, names_slot, line);
+        lget(&mut helper, i_slot, line);
+        helper.emit_op(Op::ARRAY_GET, line);
+        lset(&mut helper, key_slot, line);
+        ref_func(&mut helper, helper_idx, line);
+        dynamic_get_from_slots(&mut helper, assoc_slot, key_slot, line);
+        call_ref(&mut helper, 1, line);
+        lset(&mut helper, tmp_slot, line);
+        dynamic_set_from_slots(&mut helper, out_slot, key_slot, tmp_slot, line);
+        bump_loop_index(&mut helper, i_slot, assoc_loop, line);
+        helper.patch_jump(assoc_exit);
+        lget(&mut helper, names_slot, line);
+        push_str(&mut helper, "\x1F", line);
+        call_import_into(imports, &mut helper, "ecma:array", "join", 2, line);
+        lset(&mut helper, tmp_slot, line);
+        set_struct_from_slot(&mut helper, out_slot, "vybe$assoc_keys_csv", tmp_slot, line);
+        let after_assoc = helper.emit_jump(Op::BR, line);
+        helper.patch_jump(assoc_null);
+        helper.emit_op(Op::DROP, line);
+        helper.patch_jump(no_assoc);
+        helper.patch_jump(after_assoc);
+        lget(&mut helper, out_slot, line);
+        helper.emit_op(Op::RETURN, line);
+
+        helper.patch_jump(not_array);
+
+        ref_func(&mut helper, alloc_idx, line);
+        lget(&mut helper, node_slot, line);
+        struct_get_key(&mut helper, "class", line);
+        call_ref(&mut helper, 1, line);
+        lset(&mut helper, out_slot, line);
+
+        lget(&mut helper, kind_slot, line);
+        push_str(&mut helper, "custom_object", line);
+        helper.emit_op(Op::DYN_EQ, line);
+        let not_custom = helper.emit_jump(Op::BR_IF_FALSE, line);
+        lget(&mut helper, out_slot, line);
+        struct_get_key(&mut helper, "__unserialize", line);
+        lset(&mut helper, method_slot, line);
+        lget(&mut helper, method_slot, line);
+        helper.emit_op(Op::REF_TYPEOF, line);
+        push_str(&mut helper, "function", line);
+        helper.emit_op(Op::DYN_EQ, line);
+        let no_unserialize = helper.emit_jump(Op::BR_IF_FALSE, line);
+        lget(&mut helper, method_slot, line);
+        lget(&mut helper, out_slot, line);
+        ref_func(&mut helper, helper_idx, line);
+        lget(&mut helper, node_slot, line);
+        struct_get_key(&mut helper, "payload", line);
+        call_ref(&mut helper, 1, line);
+        call_ref(&mut helper, 2, line);
+        helper.emit_op(Op::DROP, line);
+        helper.patch_jump(no_unserialize);
+        lget(&mut helper, out_slot, line);
+        helper.emit_op(Op::RETURN, line);
+        helper.patch_jump(not_custom);
+
+        lget(&mut helper, node_slot, line);
+        struct_get_key(&mut helper, "fields", line);
+        lset(&mut helper, fields_slot, line);
+        lget(&mut helper, fields_slot, line);
+        call_import_into(imports, &mut helper, "ecma:object", "keys", 1, line);
+        lset(&mut helper, names_slot, line);
+        lget(&mut helper, names_slot, line);
+        helper.emit_op(Op::ARRAY_LENGTH, line);
+        lset(&mut helper, n_slot, line);
+        push_const(&mut helper, Value::F64(0.0), line);
+        lset(&mut helper, i_slot, line);
+        let fields_loop = helper.current_offset();
+        lget(&mut helper, i_slot, line);
+        lget(&mut helper, n_slot, line);
+        helper.emit_op(Op::DYN_LT, line);
+        let fields_exit = helper.emit_jump(Op::BR_IF_FALSE, line);
+        lget(&mut helper, names_slot, line);
+        lget(&mut helper, i_slot, line);
+        helper.emit_op(Op::ARRAY_GET, line);
+        lset(&mut helper, key_slot, line);
+        ref_func(&mut helper, helper_idx, line);
+        dynamic_get_from_slots(&mut helper, fields_slot, key_slot, line);
+        call_ref(&mut helper, 1, line);
+        lset(&mut helper, tmp_slot, line);
+        dynamic_set_from_slots(&mut helper, out_slot, key_slot, tmp_slot, line);
+        bump_loop_index(&mut helper, i_slot, fields_loop, line);
+        helper.patch_jump(fields_exit);
+
+        lget(&mut helper, kind_slot, line);
+        push_str(&mut helper, "sleep_object", line);
+        helper.emit_op(Op::DYN_EQ, line);
+        let no_wakeup = helper.emit_jump(Op::BR_IF_FALSE, line);
+        lget(&mut helper, out_slot, line);
+        struct_get_key(&mut helper, "__wakeup", line);
+        lset(&mut helper, method_slot, line);
+        lget(&mut helper, method_slot, line);
+        helper.emit_op(Op::REF_TYPEOF, line);
+        push_str(&mut helper, "function", line);
+        helper.emit_op(Op::DYN_EQ, line);
+        let wakeup_missing = helper.emit_jump(Op::BR_IF_FALSE, line);
+        lget(&mut helper, method_slot, line);
+        lget(&mut helper, out_slot, line);
+        call_ref(&mut helper, 1, line);
+        helper.emit_op(Op::DROP, line);
+        helper.patch_jump(wakeup_missing);
+        helper.patch_jump(no_wakeup);
+        lget(&mut helper, out_slot, line);
+        helper.emit_op(Op::RETURN, line);
+
+        helper.patch_jump(kind_null);
+        helper.emit_op(Op::DROP, line);
+        helper.patch_jump(no_kind);
+        lget(&mut helper, node_slot, line);
+        helper.emit_op(Op::RETURN, line);
+    }
+
+    chunks.push(helper);
+    helper_idx
+}
+
+pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let value_slot = alloc_local(chunk);
+    let type_slot = alloc_local(chunk);
+
+    lset(chunk, value_slot, line);
+
+    lget(chunk, value_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    let not_null = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::TRUE, line);
+    let done = chunk.emit_jump(Op::BR, line);
+    chunk.patch_jump(not_null);
+
+    lget(chunk, value_slot, line);
+    chunk.emit_op(Op::REF_IS_UNDEFINED, line);
+    let not_undefined = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::TRUE, line);
+    let done_undefined = chunk.emit_jump(Op::BR, line);
+    chunk.patch_jump(not_undefined);
+
+    lget(chunk, value_slot, line);
+    chunk.emit_op(Op::REF_TYPEOF, line);
+    lset(chunk, type_slot, line);
+
+    lget(chunk, type_slot, line);
+    push_str(chunk, "boolean", line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let not_bool = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    lget(chunk, value_slot, line);
+    chunk.emit_op(Op::DYN_TO_BOOL, line);
+    chunk.emit_op(Op::DYN_NOT, line);
+    let done_bool = chunk.emit_jump(Op::BR, line);
+    chunk.patch_jump(not_bool);
+
+    lget(chunk, type_slot, line);
+    push_str(chunk, "number", line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let not_number = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    lget(chunk, value_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let done_number = chunk.emit_jump(Op::BR, line);
+    chunk.patch_jump(not_number);
+
+    lget(chunk, type_slot, line);
+    push_str(chunk, "string", line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let not_string = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    lget(chunk, value_slot, line);
+    push_str(chunk, "", line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let empty_string = chunk.emit_jump(Op::BR_IF_TRUE, line);
+
+    lget(chunk, value_slot, line);
+    push_str(chunk, "0", line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let done_string = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(empty_string);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op(Op::TRUE, line);
+    let done_string_empty = chunk.emit_jump(Op::BR, line);
+    chunk.patch_jump(not_string);
+
+    lget(chunk, type_slot, line);
+    push_str(chunk, "array", line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let not_array = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    lget(chunk, value_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    chunk.emit_op(Op::I32_CONST_0, line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let done_array = chunk.emit_jump(Op::BR, line);
+    chunk.patch_jump(not_array);
+
+    chunk.emit_op(Op::FALSE, line);
+
+    chunk.patch_jump(done);
+    chunk.patch_jump(done_undefined);
+    chunk.patch_jump(done_bool);
+    chunk.patch_jump(done_number);
+    chunk.patch_jump(done_string);
+    chunk.patch_jump(done_string_empty);
+    chunk.patch_jump(done_array);
+}
+
+pub fn emit_php_serialize(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let helper_idx = build_php_serialize_helper(chunks, line);
+    let chunk = &mut chunks[current];
+    let value_slot = alloc_local(chunk);
+    lset(chunk, value_slot, line);
+    ref_func(chunk, helper_idx, line);
+    lget(chunk, value_slot, line);
+    call_ref(chunk, 1, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:json", "stringify", 1, line);
+}
+
+pub fn emit_php_unserialize(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let alloc_idx = build_php_alloc_helper(chunks, line);
+    let helper_idx = build_php_unserialize_helper(chunks, alloc_idx, line);
+    let chunk = &mut chunks[current];
+    let value_slot = alloc_local(chunk);
+    lset(chunk, value_slot, line);
+    lget(chunk, value_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:json", "parse", 1, line);
+    let chunk = &mut chunks[current];
+    let parsed_slot = alloc_local(chunk);
+    lset(chunk, parsed_slot, line);
+    ref_func(chunk, helper_idx, line);
+    lget(chunk, parsed_slot, line);
+    call_ref(chunk, 1, line);
+}

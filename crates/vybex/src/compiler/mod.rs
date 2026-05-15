@@ -2332,7 +2332,15 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_u16(Op::LOCAL_GET, key_slot);
         common::collections::emit_get(&mut self.chunks, self.current, line);
+        self.emit(Op::DUP);
         self.emit(Op::REF_IS_NULL);
+        let value_is_null = self.emit_jump(Op::BR_IF_TRUE);
+        self.emit(Op::REF_IS_UNDEFINED);
+        let after_missing_check = self.emit_jump(Op::BR);
+        self.patch_jump(value_is_null);
+        self.emit(Op::DROP);
+        self.emit_const(Value::Bool(true));
+        self.patch_jump(after_missing_check);
         self.emit_u16(Op::LOCAL_SET, missing_tmp);
         self.emit(Op::DROP);
 
@@ -2348,18 +2356,29 @@ impl Compiler {
         missing_slot: u16,
         line: u32,
     ) {
-        self.emit_u16(Op::LOCAL_GET, missing_slot);
-        let already_present = self.emit_jump(Op::BR_IF_FALSE);
+        let _ = missing_slot;
 
         let tracker_tmp = self.define_local("__php_assoc_keys_csv");
 
         self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_const(Value::String(Arc::from("vybe$assoc_keys_csv")));
-        common::collections::emit_get(&mut self.chunks, self.current, line);
+        let tracker_key = self.str_const("vybe$assoc_keys_csv");
+        self.emit_u16(Op::STRUCT_GET, tracker_key);
+        self.emit_u16(Op::LOCAL_SET, tracker_tmp);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, tracker_tmp);
         self.emit(Op::DUP);
         self.emit(Op::REF_IS_NULL);
+        let tracker_is_null = self.emit_jump(Op::BR_IF_TRUE);
+        self.emit(Op::REF_IS_UNDEFINED);
+        let tracker_presence_done = self.emit_jump(Op::BR);
+        self.patch_jump(tracker_is_null);
+        self.emit(Op::DROP);
+        self.emit_const(Value::Bool(true));
+        self.patch_jump(tracker_presence_done);
         let no_tracker = self.emit_jump(Op::BR_IF_TRUE);
 
+        self.emit_u16(Op::LOCAL_GET, tracker_tmp);
         self.emit_const(Value::String(Arc::from("\x1F")));
         common::strings::emit_str_concat(self.chunk(), line);
         self.emit_u16(Op::LOCAL_GET, key_slot);
@@ -2368,10 +2387,9 @@ impl Compiler {
         self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_const(Value::String(Arc::from("vybe$assoc_keys_csv")));
         self.emit_u16(Op::LOCAL_GET, tracker_tmp);
-        common::collections::emit_set(&mut self.chunks, self.current, line);
-        self.emit(Op::DROP);
+    self.emit_u16(Op::STRUCT_SET, tracker_key);
+    self.emit(Op::DROP);
         let after_track = self.emit_jump(Op::BR);
 
         self.patch_jump(no_tracker);
@@ -2381,12 +2399,10 @@ impl Compiler {
         self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_const(Value::String(Arc::from("vybe$assoc_keys_csv")));
         self.emit_u16(Op::LOCAL_GET, tracker_tmp);
-        common::collections::emit_set(&mut self.chunks, self.current, line);
-        self.emit(Op::DROP);
+    self.emit_u16(Op::STRUCT_SET, tracker_key);
+    self.emit(Op::DROP);
 
-        self.patch_jump(already_present);
         self.patch_jump(after_track);
     }
 
@@ -2572,6 +2588,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, len_slot);
         common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
         let array_slot = self.define_local("__vb_md_array");
+        self.emit_u16(Op::LOCAL_SET, array_slot);
         self.emit(Op::DROP);
 
         let index_slot = self.define_local("__vb_md_index");

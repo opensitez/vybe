@@ -455,7 +455,9 @@ defined             = { emit = "noop",                        min_args = 1, max_
 # isset_all which checks not-null-not-undefined. Works uniformly across
 # Array, Map, and Ordinary backings.
 isset               = { emit = "common:php.isset_all",       min_args = 1, max_args = 255 }
-empty               = { emit = "stdlib:isempty",             min_args = 1, max_args = 1 }
+empty               = { emit = "common:php.empty",          min_args = 1, max_args = 1 }
+serialize           = { emit = "common:php.serialize",      min_args = 1, max_args = 1 }
+unserialize         = { emit = "common:php.unserialize",    min_args = 1, max_args = 1 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # PHP DateTime / DateInterval — bytecode adapters at
