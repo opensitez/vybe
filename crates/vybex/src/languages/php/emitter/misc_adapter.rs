@@ -86,6 +86,37 @@ fn set_struct_from_slot(chunk: &mut Chunk, obj_slot: u16, key: &str, value_slot:
     struct_set_key(chunk, key, line);
 }
 
+pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let set_cookie_import = chunks[0].add_import("node:http".to_string(), "set_cookie".to_string());
+    let chunk = &mut chunks[current];
+    let needs_cookie = chunk.add_constant(Value::String(Arc::from("__php_session_needs_cookie")));
+    let session_id = chunk.add_constant(Value::String(Arc::from("__php_session_id")));
+    let started = chunk.add_constant(Value::String(Arc::from("__php_session_started")));
+
+    chunk.emit_op(Op::TRUE, line);
+    chunk.emit_op_u16(Op::GLOBAL_SET, started, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op_u16(Op::GLOBAL_GET, needs_cookie, line);
+    chunk.emit_op(Op::DYN_TO_BOOL, line);
+    let no_cookie = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    push_str(chunk, "PHPSESSID", line);
+    chunk.emit_op_u16(Op::GLOBAL_GET, session_id, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, set_cookie_import, line);
+    chunk.emit(2, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op(Op::FALSE, line);
+    chunk.emit_op_u16(Op::GLOBAL_SET, needs_cookie, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op(Op::TRUE, line);
+    let done = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(no_cookie);
+    chunk.emit_op(Op::TRUE, line);
+    chunk.patch_jump(done);
+}
+
 fn emit_nullish_return(chunk: &mut Chunk, value_slot: u16, line: u32) -> usize {
     lget(chunk, value_slot, line);
     chunk.emit_op(Op::DUP, line);

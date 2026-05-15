@@ -772,6 +772,7 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         // ALL args are non-null. Inline emit folds an AND chain.
         "php.isset_all" => emit_isset_all(&mut chunks[current], argc, line),
         "php.empty" => crate::emitter::php::misc_adapter::emit_php_empty(chunks, current, argc, line),
+        "php.session_start" => crate::emitter::php::misc_adapter::emit_php_session_start(chunks, current, argc, line),
         "php.serialize" => crate::emitter::php::misc_adapter::emit_php_serialize(chunks, current, argc, line),
         "php.unserialize" => crate::emitter::php::misc_adapter::emit_php_unserialize(chunks, current, argc, line),
 

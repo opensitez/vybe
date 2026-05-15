@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use http::Request;
@@ -120,6 +121,9 @@ fn build_cgi_env(
     body_len: usize,
 ) -> HashMap<String, String> {
     let mut env = HashMap::new();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     env.insert("SERVER_SOFTWARE".into(), format!("vybex/{}", env!("CARGO_PKG_VERSION")));
     env.insert("SERVER_NAME".into(), host.into());
     env.insert("SERVER_PORT".into(), port.to_string());
@@ -132,12 +136,18 @@ fn build_cgi_env(
     env.insert("DOCUMENT_ROOT".into(), document_root.display().to_string());
     env.insert("REMOTE_ADDR".into(), remote.ip().to_string());
     env.insert("REMOTE_PORT".into(), remote.port().to_string());
+    env.insert("REQUEST_TIME".into(), now.as_secs().to_string());
+    env.insert(
+        "REQUEST_TIME_FLOAT".into(),
+        format!("{}.{:06}", now.as_secs(), now.subsec_micros()),
+    );
     if scheme == "https" {
         env.insert("HTTPS".into(), "on".into());
     }
     if let Some(sf) = script_filename {
         env.insert("SCRIPT_FILENAME".into(), sf.into());
         env.insert("SCRIPT_NAME".into(), path.into());
+        env.insert("PHP_SELF".into(), path.into());
     }
     if body_len > 0 {
         env.insert("CONTENT_LENGTH".into(), body_len.to_string());

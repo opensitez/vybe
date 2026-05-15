@@ -450,6 +450,7 @@ gethostname         = { emit = "host:wasi:cli:machineName",  min_args = 0, max_a
 # ── HTTP / web (vybex --serve) ──────────────────────────────────────────────
 header              = { emit = "host:node:http:send_header_raw",   min_args = 1, max_args = 3 }
 http_response_code  = { emit = "host:node:http:http_response_code", min_args = 0, max_args = 1 }
+session_start       = { emit = "common:php.session_start",         min_args = 0, max_args = 0 }
 setcookie           = { emit = "host:node:http:set_cookie",         min_args = 1, max_args = 3 }
 setrawcookie        = { emit = "host:node:http:set_cookie",         min_args = 1, max_args = 3 }
 headers_sent        = { emit = "host:node:http:headers_sent",      min_args = 0, max_args = 2 }
