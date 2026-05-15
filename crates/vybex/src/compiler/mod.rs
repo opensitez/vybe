@@ -472,6 +472,15 @@ impl Compiler {
         trimmed.to_string()
     }
 
+    fn stdlib_global_name(stdlib_name: &str) -> String {
+        match stdlib_name {
+            "regex_replace_pat_first" => "__ecma_regexp_replace_pat_first".to_string(),
+            "regex_split_pat_first" => "__ecma_regexp_split_pat_first".to_string(),
+            "regex_match_all_pat_first" => "__ecma_regexp_match_all_pat_first".to_string(),
+            _ => format!("__vybe_{}", stdlib_name),
+        }
+    }
+
     pub fn with_profile(profile: LanguageProfile) -> Self {
         Self {
             chunks: vec![Chunk::new("<script>")],
@@ -7626,7 +7635,7 @@ impl Compiler {
                     self.emit_common(name.as_str(), args.len() as u8, line);
                 }
                 BuiltinEmit::Stdlib(stdlib_name) => {
-                    let global_name = format!("__vybe_{}", stdlib_name);
+                    let global_name = Self::stdlib_global_name(stdlib_name);
                     let name_idx = self.str_const(&global_name);
                     let synthetic_args: Vec<Argument> = args
                         .iter()

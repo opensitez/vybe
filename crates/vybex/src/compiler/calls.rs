@@ -1969,7 +1969,7 @@ impl Compiler {
                                                     // But object is already on stack. Save it to a temp.
                                                     let tmp = self.define_local("__const_val");
                                                     self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
-                                                    let global_name = format!("__vybe_{}", name);
+                                                    let global_name = Self::stdlib_global_name(name);
                                                     let name_idx = self.str_const(&global_name);
                                                     self.emit_u16(Op::GLOBAL_GET, name_idx);
                                                     self.emit_u16(Op::LOCAL_GET, tmp);
@@ -2674,7 +2674,7 @@ impl Compiler {
             } else if let Some(def) = matched_value_method {
                 // For Stdlib calls, push func ref BEFORE args (call_ref expects [func, args...])
                 if let BuiltinEmit::Stdlib(stdlib_name) = &def.emit {
-                    let global_name = format!("__vybe_{}", stdlib_name);
+                    let global_name = Self::stdlib_global_name(stdlib_name);
                     let name_idx = self.str_const(&global_name);
                     self.emit_u16(Op::GLOBAL_GET, name_idx);
                     self.compile_expr(object)?;

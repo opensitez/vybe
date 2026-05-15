@@ -346,18 +346,15 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
         "split" => {
             // ECMA-262 §22.1.3.20 — first arg can be a String OR a RegExp.
             // Detect the RegExp shape (object stamped __type=RegExp) and
-            // dispatch through the regex crate.
+            // dispatch through `ecma:regexp` for shared regex semantics.
             if let Some((pat, flags)) = regex_pattern(args.first()) {
-                if let Some(re) = compile_js_regex(&pat, &flags) {
-                    let limit = args.get(1).and_then(|v| {
-                        let n = v.as_i32();
-                        if n > 0 { Some(n as usize) } else { None }
-                    });
-                    let parts: Vec<Value> = match limit {
-                        Some(n) => re.splitn(&s, n).map(|p| Value::String(Arc::from(p))).collect(),
-                        None => re.split(&s).map(|p| Value::String(Arc::from(p))).collect(),
-                    };
-                    return make_array(parts);
+                let mut call_args = Vec::with_capacity(args.len() + 1);
+                call_args.push(Value::String(s.clone()));
+                let _ = (pat, flags);
+                call_args.push(args.first().cloned().unwrap_or(Value::Undefined));
+                call_args.extend_from_slice(&args[1..]);
+                if let Some(result) = crate::ecma::regexp::dispatch_regexp_string_method(ctx, "split", &call_args) {
+                    return result;
                 }
             }
             let sep = args.first().map(to_str).unwrap_or_default();
@@ -389,26 +386,20 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             // spec the function is called with (match, ...captures, offset, input)
             // and its return value is the substitution.
             let replacement = args.get(1).cloned().unwrap_or(Value::Undefined);
+            if let Some((pat, flags)) = regex_pattern(args.first()) {
+                let mut call_args = Vec::with_capacity(3);
+                call_args.push(Value::String(s.clone()));
+                let _ = (pat, flags);
+                call_args.push(args.first().cloned().unwrap_or(Value::Undefined));
+                call_args.push(replacement.clone());
+                if let Some(result) = crate::ecma::regexp::dispatch_regexp_string_method(ctx, "replace", &call_args) {
+                    return result;
+                }
+            }
             let is_callable = matches!(&replacement, Value::Object(o)
                 if matches!(o.lock().unwrap().kind,
                     vybe_bytecode::value::ObjectKind::Function(_)
                     | vybe_bytecode::value::ObjectKind::HostFunction(_)));
-            if let Some((pat, flags)) = regex_pattern(args.first()) {
-                if let Some(re) = compile_js_regex(&pat, &flags) {
-                    if is_callable {
-                        let global = flags.contains('g');
-                        let result = replace_with_callback(ctx, &s, &re, &replacement, global);
-                        return Value::String(Arc::from(result.as_str()));
-                    }
-                    let with = to_str(&replacement);
-                    let result = if flags.contains('g') {
-                        re.replace_all(&s, with.as_str()).into_owned()
-                    } else {
-                        re.replace(&s, with.as_str()).into_owned()
-                    };
-                    return Value::String(Arc::from(result.as_str()));
-                }
-            }
             let find = args.first().map(to_str).unwrap_or_default();
             if is_callable {
                 // Plain-string find with callable replacement: replace
@@ -436,9 +427,13 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
         }
         "replaceAll" => {
             if let Some((pat, flags)) = regex_pattern(args.first()) {
-                if let Some(re) = compile_js_regex(&pat, &flags) {
-                    let with = args.get(1).map(to_str).unwrap_or_default();
-                    return Value::String(Arc::from(re.replace_all(&s, with.as_str()).as_ref()));
+                let mut call_args = Vec::with_capacity(3);
+                call_args.push(Value::String(s.clone()));
+                let _ = (pat, flags);
+                call_args.push(args.first().cloned().unwrap_or(Value::Undefined));
+                call_args.push(args.get(1).cloned().unwrap_or(Value::Undefined));
+                if let Some(result) = crate::ecma::regexp::dispatch_regexp_string_method(ctx, "replaceAll", &call_args) {
+                    return result;
                 }
             }
             let find = args.first().map(to_str).unwrap_or_default();
@@ -448,44 +443,21 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
         "match" => {
             // ECMA-262 §22.1.3.13 — receiver=string, arg=regex (or string,
             // which is treated as a regex source).
-            let (pat, flags) = regex_pattern(args.first())
-                .unwrap_or_else(|| (args.first().map(to_str).unwrap_or_default(), String::new()));
-            let re = match compile_js_regex(&pat, &flags) {
-                Some(r) => r,
-                None => return Value::Null,
-            };
-            if flags.contains('g') {
-                let matches: Vec<Value> = re.find_iter(&s)
-                    .map(|m| Value::String(Arc::from(m.as_str())))
-                    .collect();
-                if matches.is_empty() { Value::Null } else { make_array(matches) }
+            let mut call_args = Vec::with_capacity(2);
+            call_args.push(Value::String(s.clone()));
+            call_args.push(args.first().cloned().unwrap_or(Value::Undefined));
+            if let Some(result) = crate::ecma::regexp::dispatch_regexp_string_method(ctx, "match", &call_args) {
+                result
             } else {
-                let caps = match re.captures(&s) {
-                    Some(c) => c,
-                    None => return Value::Null,
-                };
-                let mut elems: Vec<Value> = Vec::with_capacity(caps.len());
-                for i in 0..caps.len() {
-                    elems.push(match caps.get(i) {
-                        Some(m) => Value::String(Arc::from(m.as_str())),
-                        None => Value::Undefined,
-                    });
-                }
-                let mut match_obj = Object::new_array(elems);
-                let index = caps.get(0).map(|m| m.start() as i32).unwrap_or(0);
-                match_obj.properties.insert("index".into(), Value::I32(index));
-                match_obj.properties.insert("input".into(), Value::String(s.clone()));
-                Value::Object(Arc::new(Mutex::new(match_obj)))
+                Value::Null
             }
         }
         "search" => {
-            let (pat, flags) = regex_pattern(args.first())
-                .unwrap_or_else(|| (args.first().map(to_str).unwrap_or_default(), String::new()));
-            match compile_js_regex(&pat, &flags) {
-                Some(re) => match re.find(&s) {
-                    Some(m) => Value::I32(m.start() as i32),
-                    None => Value::I32(-1),
-                },
+            let mut call_args = Vec::with_capacity(2);
+            call_args.push(Value::String(s.clone()));
+            call_args.push(args.first().cloned().unwrap_or(Value::Undefined));
+            match crate::ecma::regexp::dispatch_regexp_string_method(ctx, "search", &call_args) {
+                Some(result) => result,
                 None => Value::I32(-1),
             }
         }
@@ -1573,46 +1545,6 @@ fn to_primitive(ctx: &mut HostContext, v: &Value, hint: &str) -> Value {
     }
 }
 
-/// String.prototype.replace with a callable replacement — ECMA-262
-/// §22.1.3.18 step 8.b.iii. Iterate matches, invoke the callback with
-/// (match, ...captures, offset, input) per match, splice in returns.
-fn replace_with_callback(
-    ctx: &mut HostContext,
-    input: &str,
-    re: &regex::Regex,
-    callback: &Value,
-    global: bool,
-) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut last_end = 0;
-    let captures_iter: Box<dyn Iterator<Item = regex::Captures>> = if global {
-        Box::new(re.captures_iter(input))
-    } else {
-        Box::new(re.captures(input).into_iter())
-    };
-    for caps in captures_iter {
-        let m = match caps.get(0) { Some(m) => m, None => continue };
-        out.push_str(&input[last_end..m.start()]);
-        let mut cb_args: Vec<Value> = Vec::with_capacity(caps.len() + 2);
-        for i in 0..caps.len() {
-            cb_args.push(match caps.get(i) {
-                Some(c) => Value::String(Arc::from(c.as_str())),
-                None => Value::Undefined,
-            });
-        }
-        cb_args.push(Value::I32(m.start() as i32));
-        cb_args.push(Value::String(Arc::from(input)));
-        let ret = ctx.invoke(callback, &cb_args);
-        match ret {
-            Value::String(s) => out.push_str(s.as_ref()),
-            other => out.push_str(&format!("{}", other)),
-        }
-        last_end = m.end();
-        if !global { break; }
-    }
-    out.push_str(&input[last_end..]);
-    out
-}
 
 /// If `arg` is a RegExp object (Object stamped with `__type=RegExp`),
 /// extract its `(source, flags)` strings. Otherwise return None so the
@@ -1637,24 +1569,3 @@ fn regex_pattern(arg: Option<&Value>) -> Option<(String, String)> {
     Some((src, flags))
 }
 
-/// Compile a JS regex (pattern + JS flag string) using the Rust `regex`
-/// crate. JS flags `i`/`m`/`s` map to Rust inline modifiers; `g`/`y`/`d`/`u`
-/// have no inline equivalent — `g` is handled by the caller (find_iter
-/// vs find), the rest are ignored. Same flag handling as `ecma:regexp`.
-fn compile_js_regex(pattern: &str, flags: &str) -> Option<regex::Regex> {
-    let mut inline = String::new();
-    for c in flags.chars() {
-        match c {
-            'i' => inline.push('i'),
-            'm' => inline.push('m'),
-            's' => inline.push('s'),
-            _ => {}
-        }
-    }
-    let full = if inline.is_empty() {
-        pattern.to_string()
-    } else {
-        format!("(?{}){}", inline, pattern)
-    };
-    regex::Regex::new(&full).ok()
-}

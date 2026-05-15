@@ -13,6 +13,7 @@ gui_forms = ["gui"]
 vybe_bytecode = { workspace = true }
 vybe_widgets = { workspace = true, optional = true }
 regex = { workspace = true }
+regress = { workspace = true }
 chrono = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }

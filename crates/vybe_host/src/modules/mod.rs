@@ -480,11 +480,11 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
     // callers migrate to `ecma:*`.
     // `vybe:json` retired — JSON.parse / JSON.stringify both flow through
     // `ecma:json` (registered via `crate::ecma::register` below).
-    // `vybe:regex` retired — RegExp + String.prototype regex methods now
-    // flow through `ecma:regexp` (registered via `crate::ecma::register`
-    // below). Pattern-first language conventions (PHP preg_*, Python re.*,
-    // VB Regex.*, .NET System.Text.RegularExpressions.Regex) are bridged
-    // via stdlib adapter chunks (`__stdlib_regex_*_pat_first`).
+        // RegExp + String.prototype regex methods flow through `ecma:regexp`
+        // (registered via `crate::ecma::register` below). Pattern-first
+        // language conventions (PHP preg_*, Python re.*, VB Regex.*, .NET
+        // System.Text.RegularExpressions.Regex) are bridged via stdlib adapter
+        // chunks (`__stdlib_regex_*_pat_first`).
     // `vybe:collections` retired — JS Map/Set/WeakMap/WeakSet now flow
     // through `ecma:map` / `ecma:set` / `ecma:weakmap` / `ecma:weakset`
     // (registered via `crate::ecma::register` below). TypeRegistry

@@ -142,9 +142,9 @@ const MAPPINGS: &[(&str, &str)] = &[
     // `emitter/php/filesystem_adapter.rs`. Reached via `common:php.*`
     // dispatch arms; no `__vybe_*` global indirection.
     // Regex pattern-first adapters (PHP preg_*, Python re.*, VB Regex.*)
-    ("__stdlib_regex_replace_pat_first",   "__vybe_regex_replace_pat_first"),
-    ("__stdlib_regex_split_pat_first",     "__vybe_regex_split_pat_first"),
-    ("__stdlib_regex_match_all_pat_first", "__vybe_regex_match_all_pat_first"),
+    ("__stdlib_regex_replace_pat_first",   "__ecma_regexp_replace_pat_first"),
+    ("__stdlib_regex_split_pat_first",     "__ecma_regexp_split_pat_first"),
+    ("__stdlib_regex_match_all_pat_first", "__ecma_regexp_match_all_pat_first"),
 ];
 
 /// Emit the stdlib preamble at the START of a script chunk.
