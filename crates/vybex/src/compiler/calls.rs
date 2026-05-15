@@ -485,7 +485,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn select_call_signature<'a>(
+    pub(super) fn select_call_signature<'a>(
         &self,
         signatures: &'a [CallSignature],
         args: &[Argument],
@@ -812,7 +812,7 @@ impl Compiler {
         Ok(args_slot)
     }
 
-    fn emit_known_rest_call_from_local(
+    pub(super) fn emit_known_rest_call_from_local(
         &mut self,
         callee_slot: u16,
         receiver_slot: Option<u16>,

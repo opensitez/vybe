@@ -427,6 +427,13 @@ impl StdLib {
     }
 }
 
+pub fn rest_fixed_arity(name: &str) -> Option<u8> {
+    match name {
+        "sprintf" => Some(1),
+        _ => None,
+    }
+}
+
 // ── range(start, stop, step) → array ────────────────────────
 // Every dynamic-array op routes through `common::collections::emit_*`
 // so the emitted bytecode imports `ecma:array.*` — works natively on

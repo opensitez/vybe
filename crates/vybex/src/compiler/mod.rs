@@ -7626,12 +7626,31 @@ impl Compiler {
                     self.emit_common(name.as_str(), args.len() as u8, line);
                 }
                 BuiltinEmit::Stdlib(stdlib_name) => {
-                    // Push func ref FIRST, then args, then call_ref
                     let global_name = format!("__vybe_{}", stdlib_name);
                     let name_idx = self.str_const(&global_name);
-                    self.emit_u16(Op::GLOBAL_GET, name_idx);
-                    for a in args { self.compile_expr(a)?; }
-                    self.emit_u8(Op::CALL_REF, args.len() as u8);
+                    let synthetic_args: Vec<Argument> = args
+                        .iter()
+                        .map(|arg| Argument::positional((**arg).clone()))
+                        .collect();
+                    let rest_signature = crate::emitter::stdlib::rest_fixed_arity(stdlib_name)
+                        .map(|fixed_count| CallSignature {
+                            param_names: vec![String::new(); fixed_count as usize + 1],
+                            min_arity: fixed_count as usize,
+                            has_rest: true,
+                        });
+
+                    if let Some(signature) = rest_signature.as_ref() {
+                        let callee_slot = self.define_local("__stdlib_fn");
+                        self.emit_u16(Op::GLOBAL_GET, name_idx);
+                        self.emit_u16(Op::LOCAL_SET, callee_slot);
+                        self.emit(Op::DROP);
+                        self.emit_known_rest_call_from_local(callee_slot, None, &synthetic_args, signature)?;
+                    } else {
+                        // Push func ref FIRST, then args, then call_ref.
+                        self.emit_u16(Op::GLOBAL_GET, name_idx);
+                        for a in args { self.compile_expr(a)?; }
+                        self.emit_u8(Op::CALL_REF, args.len() as u8);
+                    }
                 }
                 BuiltinEmit::Noop => {
                     self.emit(Op::NULL);
