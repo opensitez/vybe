@@ -24,6 +24,36 @@ use super::helpers::{compile_ok, run_prints};
 // ── Filesystem extras ───────────────────────────────────────
 #[test] fn stat_file() { compile_ok("<?php $info = stat('/tmp/test.txt');"); }
 #[test] fn readdir() { compile_ok("<?php $entries = readdir('/tmp');"); }
+#[test] fn filesystem_stat_helpers_runtime() {
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("vybex_php_fs_{unique}"));
+    fs::create_dir_all(&root).unwrap();
+    let file = root.join("sample.txt");
+    fs::write(&file, "hello").unwrap();
+
+    let file_path = file.to_string_lossy().replace('\\', "\\\\").replace('\'', "\\'");
+    let dir_path = root.to_string_lossy().replace('\\', "\\\\").replace('\'', "\\'");
+    let out = run_prints(&format!(r#"<?php
+$file = '{file_path}';
+$dir = '{dir_path}';
+echo file_exists($file) ? 't' : 'f';
+echo is_file($file) ? 't' : 'f';
+echo is_dir($dir) ? 't' : 'f';
+echo filesize($file);
+echo filemtime($file) > 0 ? 't' : 'f';
+"#));
+
+    assert_eq!(out, vec!["t", "t", "t", "5", "t"]);
+
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test] fn directory_iterator_read_and_close() {
     let out = run_prints(r#"<?php
 $dir = dir('.');

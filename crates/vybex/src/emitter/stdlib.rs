@@ -339,10 +339,8 @@ pub fn build_stdlib(imports: &mut Chunk) -> StdLib {
     chunks.push(build_dotnet_numeric_format(imports)); exports.push("__stdlib_dotnet_numeric_format");
     chunks.push(build_transform_values(imports));  exports.push("__stdlib_transform_values");
     chunks.push(build_transform_keys(imports));    exports.push("__stdlib_transform_keys");
-    // PHP `$x++` / `$x--` migrated to inline opcode emitter in
-    // `emitter/php/numeric_adapter.rs` — see common:php.{inc,dec}
-    // dispatch entries. The legacy chunk builders are no longer
-    // built into the bundle.
+    // PHP `$x++` / `$x--` stay in the PHP emitter path (`common:php.{inc,dec}`)
+    // rather than going through bundled stdlib/polyfill helpers.
     chunks.push(build_format_map(imports));        exports.push("__stdlib_format_map");
     chunks.push(build_pyradix(imports, "__stdlib_pyhex", "0x", 16)); exports.push("__stdlib_pyhex");
     chunks.push(build_pyradix(imports, "__stdlib_pyoct", "0o", 8));  exports.push("__stdlib_pyoct");

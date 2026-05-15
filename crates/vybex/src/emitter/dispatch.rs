@@ -615,8 +615,18 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::php::array_adapter::emit_php_uksort(chunks, current, argc, line),
 
         // ── PHP filesystem helpers ─────────────────────────────────
-        // Inline opcode emitters compose `wasi:filesystem/preopens` +
-        // `wasi:filesystem/types` host fns into PHP-shaped surfaces.
+        // Inline opcode emitters compose the underlying host surfaces
+        // into the PHP-facing filesystem API boundary.
+        "php.basename"
+            => crate::emitter::php::filesystem_adapter::emit_basename(chunks, current, argc, line),
+        "php.dirname"
+            => crate::emitter::php::filesystem_adapter::emit_dirname(chunks, current, argc, line),
+        "php.file_get_contents"
+            => crate::emitter::php::filesystem_adapter::emit_file_get_contents(chunks, current, argc, line),
+        "php.file_put_contents"
+            => crate::emitter::php::filesystem_adapter::emit_file_put_contents(chunks, current, argc, line),
+        "php.mkdir"
+            => crate::emitter::php::filesystem_adapter::emit_mkdir(chunks, current, argc, line),
         "php.file_exists"
             => crate::emitter::php::filesystem_adapter::emit_file_exists(chunks, current, argc, line),
         "php.is_file"

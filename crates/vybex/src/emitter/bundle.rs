@@ -97,9 +97,6 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_dotnet_numeric_format", "__vybe_dotnet_numeric_format"),
     ("__stdlib_transform_values", "__vybe_transform_values"),
     ("__stdlib_transform_keys",   "__vybe_transform_keys"),
-    // PHP `$x++` / `$x--` migrated to inline opcode emitter in
-    // `emitter/php/numeric_adapter.rs`. Profile entries for
-    // `__php_increment` / `__php_decrement` use `common:php.{inc,dec}`.
     ("__stdlib_format_map", "__vybe_format_map"),
     ("__stdlib_pyhex",      "__vybe_pyhex"),
     ("__stdlib_pyoct",      "__vybe_pyoct"),

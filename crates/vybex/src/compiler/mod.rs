@@ -7845,13 +7845,28 @@ impl Compiler {
                 line,
                 |module, fname| unsafe { (*self_ptr).import(module, fname) },
             );
-            if handled { return; }
+            if handled {
+                self.sync_scope_slots_with_chunk();
+                return;
+            }
         }
         // Then the pure (chunk + line) common ops.
         let line2 = line;
         let handled = common::dispatch::emit_common(name, &mut self.chunks, self.current, argc, line2);
+        if handled {
+            self.sync_scope_slots_with_chunk();
+        }
         if !handled {
             eprintln!("Unknown common emit: {}", name);
+        }
+    }
+
+    fn sync_scope_slots_with_chunk(&mut self) {
+        let chunk_slots = self.chunks[self.current].local_count;
+        if let Some(scope) = self.scopes.last_mut() {
+            if scope.next_slot < chunk_slots {
+                scope.next_slot = chunk_slots;
+            }
         }
     }
 

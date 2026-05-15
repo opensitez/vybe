@@ -66,10 +66,10 @@ ord                 = { emit = "host:wasm:js-string:charCodeAt", min_args = 1, m
 # Most callers do `!== false` which still passes since -1 is truthy in PHP.
 strpos              = { emit = "opcode:str_index_of",        min_args = 2, max_args = 3 }
 stripos             = { emit = "opcode:str_index_of",        min_args = 2, max_args = 3 }
-# Path utilities — backed by `wasi:filesystem` (already used by Node's
-# `path.basename`/`path.dirname` in the JS profile). Same semantics.
-basename            = { emit = "host:wasi:filesystem:pathGetFileName",  min_args = 1, max_args = 2 }
-dirname             = { emit = "host:wasi:filesystem:pathGetDirectory", min_args = 1, max_args = 2 }
+# Path utilities — routed through the PHP filesystem emitter so PHP keeps a
+# language-local boundary even when the underlying host call is a thin path op.
+basename            = { emit = "common:php.basename",  min_args = 1, max_args = 2 }
+dirname             = { emit = "common:php.dirname", min_args = 1, max_args = 2 }
 pathinfo            = { emit = "common:php.pathinfo",           min_args = 1, max_args = 2 }
 # Substring replace — direct STR_REPLACE opcode (ECMA replaceAll-equivalent).
 str_replace         = { emit = "common:php.str_replace",     min_args = 3, max_args = 4 }
@@ -413,8 +413,8 @@ __php_decrement     = { emit = "common:php.dec",                 min_args = 1, m
 
 # ── File I/O ────────────────────────────────────────────────────────────────
 
-file_get_contents   = { emit = "host:wasi:filesystem:readFile",  min_args = 1, max_args = 5 }
-file_put_contents   = { emit = "host:wasi:filesystem:writeFile", min_args = 2, max_args = 4 }
+file_get_contents   = { emit = "common:php.file_get_contents",  min_args = 1, max_args = 5 }
+file_put_contents   = { emit = "common:php.file_put_contents", min_args = 2, max_args = 4 }
 # Backed by real WASI 0.2.8 stat-at via stdlib chunks. The shim
 # `wasi:filesystem:exists`/`isFile`/`isDir` are deprecated and will
 # move to `vybe:fs` when the namespace truth-rename lands.
@@ -425,7 +425,7 @@ is_link             = { emit = "common:php.is_link",            min_args = 1, ma
 filesize            = { emit = "common:php.filesize",           min_args = 1, max_args = 1 }
 filemtime           = { emit = "common:php.filemtime",          min_args = 1, max_args = 1 }
 readlink            = { emit = "common:php.readlink",           min_args = 1, max_args = 1 }
-mkdir               = { emit = "host:wasi:filesystem:mkdir",     min_args = 1, max_args = 4 }
+mkdir               = { emit = "common:php.mkdir",               min_args = 1, max_args = 4 }
 unlink              = { emit = "common:php.unlink",             min_args = 1, max_args = 2 }
 
 # ── Environment / CLI ───────────────────────────────────────────────────────

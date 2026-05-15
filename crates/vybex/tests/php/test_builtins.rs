@@ -24,6 +24,15 @@ fn assert_outputs(src: &str, expected: &[&str]) {
 #[test] fn chr_ord() { assert_outputs("<?php echo chr(65); echo ord('A');", &["A", "65"]); }
 #[test] fn ucfirst() { assert_outputs("<?php echo ucfirst('hello');", &["Hello"]); }
 #[test] fn lcfirst() { assert_outputs("<?php echo lcfirst('Hello');", &["hello"]); }
+#[test] fn string_post_inc_trailing_digits() {
+	assert_outputs("<?php $x = '2026-03-25'; $x++; echo $x;", &["2026-03-26"]);
+}
+#[test] fn string_post_inc_date_loop_terminates() {
+	assert_outputs(
+		"<?php $x = '2026-03-25'; $e = '2026-03-31'; $count = 0; while ($x <= $e && $count < 20) { $count = $count + 1; $x++; } echo $count;",
+		&["7"],
+	);
+}
 #[test] fn nl2br() { compile_ok("<?php $x = nl2br(\"hello\\nworld\");"); }
 #[test] fn htmlspecialchars() { assert_outputs("<?php echo htmlspecialchars('<b>hi</b>');", &["&lt;b&gt;hi&lt;/b&gt;"]); }
 #[test] fn sprintf() { compile_ok("<?php $x = sprintf('Hello %s, age %d', 'John', 30);"); }

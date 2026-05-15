@@ -131,8 +131,13 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
     let caps = if no_sandbox {
         Capabilities::all()
     } else {
-        // Safe + HttpServer so the script can read req / write resp.
+        // Directory-serving scripts need local filesystem access for
+        // PHP/webroot routing (`is_dir`, `file_exists`, includes, etc.).
+        // The host layer registers the current filesystem surface as a
+        // single module behind FileRead/FileWrite gating, so FileRead is
+        // the narrowest capability that makes those imports resolvable.
         let mut c = Capabilities::safe();
+        c.grant(Capability::FileRead);
         c.grant(Capability::HttpServer);
         c
     };
