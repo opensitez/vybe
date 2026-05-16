@@ -100,7 +100,7 @@ impl App {
         self.flush_code_to_project();
         self.sync_active_form_to_project();
         if let Some(path) = self.project_path.clone() {
-            match vybex::projects::serialization::save_project_auto(&self.project, &path) {
+            match vybe_compiler::projects::serialization::save_project_auto(&self.project, &path) {
                 Ok(_) => self.output_push(format!("Saved: {}", path)),
                 Err(e) => self.output_push(format!("Save error: {}", e)),
             }
@@ -111,7 +111,7 @@ impl App {
             {
                 let path_str = path.to_string_lossy().to_string();
                 self.project_path = Some(path_str.clone());
-                match vybex::projects::serialization::save_project_auto(&self.project, &path_str) {
+                match vybe_compiler::projects::serialization::save_project_auto(&self.project, &path_str) {
                     Ok(_) => self.output_push(format!("Saved: {}", path_str)),
                     Err(e) => self.output_push(format!("Save error: {}", e)),
                 }
@@ -126,7 +126,7 @@ impl App {
             Some(p) => p,
             None => { self.output_push("Save the project first.".to_string()); return; }
         };
-        let _ = vybex::projects::serialization::save_project_auto(&self.project, &path);
+        let _ = vybe_compiler::projects::serialization::save_project_auto(&self.project, &path);
         let config_flag = match self.build_config {
             super::BuildConfig::Debug => "--debug",
             super::BuildConfig::Release => "--release",
@@ -179,7 +179,7 @@ impl App {
             .pick_files()
         else { return };
         for path in paths {
-            match vybex::projects::load_form_vb(&path) {
+            match vybe_compiler::projects::load_form_vb(&path) {
                 Ok(fm) => {
                     let name = fm.form.name.clone();
                     if self.project.forms.iter().all(|f| f.form.name != name) {
@@ -211,7 +211,7 @@ impl App {
         event: &str,
         is_form: bool,
     ) {
-        let params = vybex::projects::EventType::from_name(event)
+        let params = vybe_compiler::projects::EventType::from_name(event)
             .map(|et| et.parameters().to_string())
             .unwrap_or_else(|| "sender As Object, e As EventArgs".to_string());
         let handler_name = format!("{}_{}", target, event);
@@ -293,12 +293,12 @@ impl App {
         else { return };
         for path in paths {
             let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-            let code = match vybex::projects::read_text_file(&path) {
+            let code = match vybe_compiler::projects::read_text_file(&path) {
                 Ok(c) => c,
                 Err(e) => { println!("Failed to read: {}", e); continue; }
             };
             if self.project.code_files.iter().all(|cf| cf.name != name) {
-                self.project.code_files.push(vybex::projects::project::CodeFile {
+                self.project.code_files.push(vybe_compiler::projects::project::CodeFile {
                     name: name.clone(),
                     code: code.clone(),
                 });
@@ -438,7 +438,7 @@ impl App {
         }
     }
 
-    pub(super) fn create_resource_editor_from_project(project: &vybex::projects::project::Project) -> vybe_widgets::ResourceEditor {
+    pub(super) fn create_resource_editor_from_project(project: &vybe_compiler::projects::project::Project) -> vybe_widgets::ResourceEditor {
         let mut editor = vybe_widgets::ResourceEditor::new();
         for rm in &project.resource_files {
             for item in &rm.resources {
@@ -447,12 +447,12 @@ impl App {
                     value: item.value.clone(),
                     comment: item.comment.clone().unwrap_or_default(),
                     tab: match item.resource_type {
-                        vybex::projects::resources::ResourceType::String => vybe_widgets::ResourceTab::Strings,
-                        vybex::projects::resources::ResourceType::Image => vybe_widgets::ResourceTab::Images,
-                        vybex::projects::resources::ResourceType::Icon => vybe_widgets::ResourceTab::Icons,
-                        vybex::projects::resources::ResourceType::Audio => vybe_widgets::ResourceTab::Audio,
-                        vybex::projects::resources::ResourceType::File => vybe_widgets::ResourceTab::Files,
-                        vybex::projects::resources::ResourceType::Other => vybe_widgets::ResourceTab::Other,
+                        vybe_compiler::projects::resources::ResourceType::String => vybe_widgets::ResourceTab::Strings,
+                        vybe_compiler::projects::resources::ResourceType::Image => vybe_widgets::ResourceTab::Images,
+                        vybe_compiler::projects::resources::ResourceType::Icon => vybe_widgets::ResourceTab::Icons,
+                        vybe_compiler::projects::resources::ResourceType::Audio => vybe_widgets::ResourceTab::Audio,
+                        vybe_compiler::projects::resources::ResourceType::File => vybe_widgets::ResourceTab::Files,
+                        vybe_compiler::projects::resources::ResourceType::Other => vybe_widgets::ResourceTab::Other,
                     },
                     file_name: item.file_name.clone(),
                 });
@@ -461,7 +461,7 @@ impl App {
         editor
     }
 
-    pub(super) fn process_resource_event(evt: vybe_widgets::ResourceEditorEvent, r: &mut vybe_widgets::ResourceEditor, project: &mut vybex::projects::project::Project) {
+    pub(super) fn process_resource_event(evt: vybe_widgets::ResourceEditorEvent, r: &mut vybe_widgets::ResourceEditor, project: &mut vybe_compiler::projects::project::Project) {
         match evt {
             vybe_widgets::ResourceEditorEvent::AddResource(tab) => {
                 if tab.is_file_based() {
@@ -482,14 +482,14 @@ impl App {
                             let res_tab = tab;
                             r.entries.push(vybe_widgets::ResourceEntry { name: name.clone(), value: path_str.clone(), comment: String::new(), tab: res_tab, file_name: Some(path_str.clone()) });
                             let rt = match res_tab {
-                                vybe_widgets::ResourceTab::Images => vybex::projects::resources::ResourceType::Image,
-                                vybe_widgets::ResourceTab::Icons => vybex::projects::resources::ResourceType::Icon,
-                                vybe_widgets::ResourceTab::Audio => vybex::projects::resources::ResourceType::Audio,
-                                vybe_widgets::ResourceTab::Files => vybex::projects::resources::ResourceType::File,
-                                _ => vybex::projects::resources::ResourceType::String,
+                                vybe_widgets::ResourceTab::Images => vybe_compiler::projects::resources::ResourceType::Image,
+                                vybe_widgets::ResourceTab::Icons => vybe_compiler::projects::resources::ResourceType::Icon,
+                                vybe_widgets::ResourceTab::Audio => vybe_compiler::projects::resources::ResourceType::Audio,
+                                vybe_widgets::ResourceTab::Files => vybe_compiler::projects::resources::ResourceType::File,
+                                _ => vybe_compiler::projects::resources::ResourceType::String,
                             };
-                            if project.resource_files.is_empty() { project.resource_files.push(vybex::projects::ResourceManager::new()); }
-                            if let Some(rm) = project.resource_files.first_mut() { rm.resources.push(vybex::projects::ResourceItem::new_file(name, &path_str, rt)); }
+                            if project.resource_files.is_empty() { project.resource_files.push(vybe_compiler::projects::ResourceManager::new()); }
+                            if let Some(rm) = project.resource_files.first_mut() { rm.resources.push(vybe_compiler::projects::ResourceItem::new_file(name, &path_str, rt)); }
                         }
                     }
                 } else {
@@ -528,10 +528,10 @@ impl App {
                 let tab = r.active_tab;
                 r.entries.push(vybe_widgets::ResourceEntry { name: name.clone(), value: value.clone(), comment: comment.clone(), tab, file_name: None });
                 r.dirty = true;
-                if project.resource_files.is_empty() { project.resource_files.push(vybex::projects::ResourceManager::new()); }
+                if project.resource_files.is_empty() { project.resource_files.push(vybe_compiler::projects::ResourceManager::new()); }
                 if let Some(rm) = project.resource_files.first_mut() {
-                    let mut item = vybex::projects::ResourceItem::new_string(name, value);
-                    item.resource_type = match tab { vybe_widgets::ResourceTab::Other => vybex::projects::resources::ResourceType::Other, _ => vybex::projects::resources::ResourceType::String };
+                    let mut item = vybe_compiler::projects::ResourceItem::new_string(name, value);
+                    item.resource_type = match tab { vybe_widgets::ResourceTab::Other => vybe_compiler::projects::resources::ResourceType::Other, _ => vybe_compiler::projects::resources::ResourceType::String };
                     item.comment = if comment.is_empty() { None } else { Some(comment) };
                     rm.resources.push(item);
                 }
@@ -541,25 +541,25 @@ impl App {
         }
     }
 
-    pub(super) fn sync_resources_to_project(r: &vybe_widgets::ResourceEditor, project: &mut vybex::projects::project::Project) {
-        if project.resource_files.is_empty() { project.resource_files.push(vybex::projects::ResourceManager::new()); }
+    pub(super) fn sync_resources_to_project(r: &vybe_widgets::ResourceEditor, project: &mut vybe_compiler::projects::project::Project) {
+        if project.resource_files.is_empty() { project.resource_files.push(vybe_compiler::projects::ResourceManager::new()); }
         if let Some(rm) = project.resource_files.first_mut() {
             rm.resources.clear();
             for entry in &r.entries {
                 let rt = match entry.tab {
-                    vybe_widgets::ResourceTab::Strings => vybex::projects::resources::ResourceType::String,
-                    vybe_widgets::ResourceTab::Images => vybex::projects::resources::ResourceType::Image,
-                    vybe_widgets::ResourceTab::Icons => vybex::projects::resources::ResourceType::Icon,
-                    vybe_widgets::ResourceTab::Audio => vybex::projects::resources::ResourceType::Audio,
-                    vybe_widgets::ResourceTab::Files => vybex::projects::resources::ResourceType::File,
-                    vybe_widgets::ResourceTab::Other => vybex::projects::resources::ResourceType::Other,
+                    vybe_widgets::ResourceTab::Strings => vybe_compiler::projects::resources::ResourceType::String,
+                    vybe_widgets::ResourceTab::Images => vybe_compiler::projects::resources::ResourceType::Image,
+                    vybe_widgets::ResourceTab::Icons => vybe_compiler::projects::resources::ResourceType::Icon,
+                    vybe_widgets::ResourceTab::Audio => vybe_compiler::projects::resources::ResourceType::Audio,
+                    vybe_widgets::ResourceTab::Files => vybe_compiler::projects::resources::ResourceType::File,
+                    vybe_widgets::ResourceTab::Other => vybe_compiler::projects::resources::ResourceType::Other,
                 };
                 if entry.tab.is_file_based() {
-                    let mut item = vybex::projects::ResourceItem::new_file(entry.name.clone(), &entry.value, rt);
+                    let mut item = vybe_compiler::projects::ResourceItem::new_file(entry.name.clone(), &entry.value, rt);
                     item.comment = if entry.comment.is_empty() { None } else { Some(entry.comment.clone()) };
                     rm.resources.push(item);
                 } else {
-                    let mut item = vybex::projects::ResourceItem::new_string(entry.name.clone(), entry.value.clone());
+                    let mut item = vybe_compiler::projects::ResourceItem::new_string(entry.name.clone(), entry.value.clone());
                     item.resource_type = rt;
                     item.comment = if entry.comment.is_empty() { None } else { Some(entry.comment.clone()) };
                     rm.resources.push(item);
@@ -688,7 +688,7 @@ impl App {
             .pick_file()
         {
             let path_str = path.to_string_lossy().to_string();
-            if let Ok(proj) = vybex::projects::serialization::load_project_auto(&path_str) {
+            if let Ok(proj) = vybe_compiler::projects::serialization::load_project_auto(&path_str) {
                 self.tabs.retain(|t| !matches!(&t.content, TabContent::Code(_)) && !matches!(&t.content, TabContent::Resources(_)));
                 if let Some(first_form) = proj.forms.first() {
                     if let Some(idx) = self.tabs.iter().position(|t| matches!(&t.content, TabContent::Form(_))) {
@@ -712,17 +712,17 @@ impl App {
         {
             let path_str = path.to_string_lossy().to_string();
             self.project_path = Some(path_str.clone());
-            let _ = vybex::projects::serialization::save_project_auto(&self.project, &path_str);
+            let _ = vybe_compiler::projects::serialization::save_project_auto(&self.project, &path_str);
         }
     }
 
     fn palette_add_form(&mut self) {
         self.sync_active_form_to_project();
         let name = format!("Form{}", self.project.forms.len() + 1);
-        let mut form = vybex::projects::Form::new(name.clone());
+        let mut form = vybe_compiler::projects::Form::new(name.clone());
         form.width = 640; form.height = 480;
         let form_clone = form.clone();
-        let fm = vybex::projects::project::FormModule::new_classic(form);
+        let fm = vybe_compiler::projects::project::FormModule::new_classic(form);
         self.project.forms.push(fm);
         if let Some(idx) = self.tabs.iter().position(|t| matches!(&t.content, TabContent::Form(_))) {
             if let TabContent::Form(fd) = &mut self.tabs[idx].content {
@@ -735,7 +735,7 @@ impl App {
 
     fn palette_add_module(&mut self) {
         let name = format!("Module{}.vb", self.project.code_files.len() + 1);
-        self.project.code_files.push(vybex::projects::project::CodeFile {
+        self.project.code_files.push(vybe_compiler::projects::project::CodeFile {
             name: name.clone(),
             code: format!("Module {}\n\nEnd Module\n", name.replace(".vb", "")),
         });
@@ -743,7 +743,7 @@ impl App {
 
     fn palette_add_resource_file(&mut self) {
         if self.project.resource_files.is_empty() {
-            self.project.resource_files.push(vybex::projects::ResourceManager::new());
+            self.project.resource_files.push(vybe_compiler::projects::ResourceManager::new());
         }
         if let Some(idx) = self.tabs.iter().position(|t| matches!(&t.content, TabContent::Resources(_))) {
             self.active_tab = idx;

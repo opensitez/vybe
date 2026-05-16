@@ -119,7 +119,7 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
     let _guard = vybe_host::install_context(Arc::clone(&ctx));
 
     // Compile the script (Phase 2: compile cache).
-    let bundle = match crate::projects::load(script_path) {
+    let bundle = match vybe_compiler::projects::load(script_path) {
         Ok(b) => b,
         Err(e) => {
             let msg = format!("compile error: {e}");
@@ -579,10 +579,10 @@ mod tests {
     use vybe_bytecode::value::ObjectKind;
     use vybe_bytecode::{HostContext, VM, Value};
     fn compile_php(src: &str) -> Vec<vybe_bytecode::Chunk> {
-        let module = crate::languages::php::parse(src).expect("parse php");
-        let profile = crate::profile::parse_profile(crate::languages::php::profile_source())
+        let module = vybe_compiler::languages::php::parse(src).expect("parse php");
+        let profile = vybe_compiler::profile::parse_profile(vybe_compiler::languages::php::profile_source())
             .expect("parse php profile");
-        crate::compiler::Compiler::with_profile(profile)
+        vybe_compiler::compiler::Compiler::with_profile(profile)
             .compile(&module)
             .expect("compile php")
     }

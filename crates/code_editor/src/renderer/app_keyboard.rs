@@ -93,10 +93,10 @@ impl App {
                         }
                         "n" => {
                             // New project
-                            self.project = vybex::projects::project::Project::new("Project1".to_string());
-                            let mut form = vybex::projects::Form::new("Form1".to_string());
+                            self.project = vybe_compiler::projects::project::Project::new("Project1".to_string());
+                            let mut form = vybe_compiler::projects::Form::new("Form1".to_string());
                             form.width = 640; form.height = 480;
-                            self.project.forms.push(vybex::projects::project::FormModule::new_classic(form.clone()));
+                            self.project.forms.push(vybe_compiler::projects::project::FormModule::new_classic(form.clone()));
                             f.form = form;
                             f.selected_controls.clear();
                         }
@@ -107,7 +107,7 @@ impl App {
                                 .pick_file()
                             {
                                 let path_str = path.to_string_lossy().to_string();
-                                if let Ok(proj) = vybex::projects::serialization::load_project_auto(&path_str) {
+                                if let Ok(proj) = vybe_compiler::projects::serialization::load_project_auto(&path_str) {
                                     if let Some(first) = proj.forms.first() {
                                         f.form = first.form.clone();
                                         f.selected_controls.clear();
@@ -280,7 +280,7 @@ impl App {
                             } else if let Some(cf) = self.project.code_files.iter_mut().find(|cf| cf.name == tab_name) {
                                 cf.code = code;
                             }
-                            let msg = match vybex::projects::serialization::save_project_auto(&self.project, &pp) {
+                            let msg = match vybe_compiler::projects::serialization::save_project_auto(&self.project, &pp) {
                                 Ok(_) => format!("Saved: {}", pp),
                                 Err(e) => format!("Save error: {}", e),
                             };

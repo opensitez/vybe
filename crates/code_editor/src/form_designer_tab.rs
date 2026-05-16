@@ -2,7 +2,7 @@ use vybe_widgets::{FontSystem, SwashCache, TextColor as CosmicColor};
 use vybe_widgets::{PropertiesPanel, PropItem, PropTab, PropEvent};
 use tiny_skia::{Paint, Pixmap, Transform, Stroke, PathBuilder};
 use uuid::Uuid;
-use vybex::projects::{Form, Control, ControlType};
+use vybe_compiler::projects::{Form, Control, ControlType};
 
 use crate::ide_text::{draw_text, draw_text_with_font, measure_text_with_font};
 
@@ -1185,7 +1185,7 @@ impl FormDesignerState {
                 "Checked" => {
                     if let Ok(b) = parse_bool(value) {
                         ctrl.properties.set("Checked", b);
-                        use vybex::projects::PropertyValue;
+                        use vybe_compiler::projects::PropertyValue;
                         let int_val = if b { 1 } else { 0 };
                         ctrl.properties.set_raw("CheckState", PropertyValue::Integer(int_val));
                         ctrl.properties.set_raw("Value",      PropertyValue::Integer(int_val));
@@ -1210,7 +1210,7 @@ impl FormDesignerState {
                 | "DecimalPlaces" | "MaxLength" | "SelectedIndex"
                 | "Cols" | "Rows" => {
                     if let Ok(v) = value.parse::<i32>() {
-                        use vybex::projects::PropertyValue;
+                        use vybe_compiler::projects::PropertyValue;
                         ctrl.properties.set_raw(key, PropertyValue::Integer(v));
                     }
                 }

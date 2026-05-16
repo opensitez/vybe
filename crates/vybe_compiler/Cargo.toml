@@ -1,0 +1,83 @@
+[package]
+name = "vybe_compiler"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = []
+gui_forms = []
+
+[dependencies]
+pest = { workspace = true }
+pest_derive = { workspace = true }
+chrono = { workspace = true }
+vybe_bytecode = { workspace = true }
+vybe_host = { workspace = true, features = ["gui"] }
+vybe_widgets = { workspace = true }
+uuid = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+crossbeam-channel = "0.5"
+toml = "1.1"
+quick-xml = "0.39"
+
+# HTTP server stack (for the compiler-owned CLI/server entrypoint).
+tokio = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+percent-encoding = { workspace = true }
+form_urlencoded = { workspace = true }
+indexmap = { workspace = true }
+mime_guess = { workspace = true }
+httpdate = { workspace = true }
+dashmap = { workspace = true }
+
+[dev-dependencies]
+vybex = { path = "../vybex" }
+
+[[test]]
+name = "vb"
+path = "tests/vb/main.rs"
+
+[[test]]
+name = "js"
+path = "tests/js/main.rs"
+
+[[test]]
+name = "pascal"
+path = "tests/pascal/main.rs"
+
+[[test]]
+name = "csharp"
+path = "tests/csharp/main.rs"
+
+[[test]]
+name = "python"
+path = "tests/python/main.rs"
+
+[[test]]
+name = "php"
+path = "tests/php/main.rs"
+
+[[test]]
+name = "ruby"
+path = "tests/ruby/main.rs"
+
+[[test]]
+name = "dart"
+path = "tests/dart/main.rs"
+
+[[test]]
+name = "cobol"
+path = "tests/cobol/main.rs"
+
+[[test]]
+name = "emitter"
+path = "tests/emitter/main.rs"

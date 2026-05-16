@@ -51,8 +51,8 @@ pub fn register_all(vm: &mut VM) -> Result<(), String> {
 /// bodies (real translation logic) are a follow-up; those require
 /// compiling the adapter's chunks into the VM's chunk list.
 fn register_js_adapter(vm: &mut VM, specifier: &str, source: &str) -> Result<(), String> {
-    use crate::ast::StmtKind;
-    let module = crate::languages::js::parse(source)
+    use vybe_compiler::ast::StmtKind;
+    let module = vybe_compiler::languages::js::parse(source)
         .map_err(|e| format!("adapter {} parse error: {}", specifier, e))?;
 
     let mut record = ModuleRecord {

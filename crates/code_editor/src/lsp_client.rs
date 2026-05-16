@@ -225,7 +225,7 @@ impl LspClient {
 }
 
 fn run_internal_analysis(lang: &str, content: &str, uri: &str, tx: &Sender<LspEvent>) {
-    let result = vybex::lsp::analyze(uri, content);
+    let result = vybe_compiler::lsp::analyze(uri, content);
     let diagnostics = result.diagnostics.into_iter().map(|d| {
         Diagnostic {
             range: Range::new(
@@ -233,9 +233,9 @@ fn run_internal_analysis(lang: &str, content: &str, uri: &str, tx: &Sender<LspEv
                 Position::new(d.line, d.end_col),
             ),
             severity: Some(match d.severity {
-                vybex::lsp::DiagSeverity::Error => DiagnosticSeverity::ERROR,
-                vybex::lsp::DiagSeverity::Warning => DiagnosticSeverity::WARNING,
-                vybex::lsp::DiagSeverity::Info => DiagnosticSeverity::INFORMATION,
+                vybe_compiler::lsp::DiagSeverity::Error => DiagnosticSeverity::ERROR,
+                vybe_compiler::lsp::DiagSeverity::Warning => DiagnosticSeverity::WARNING,
+                vybe_compiler::lsp::DiagSeverity::Info => DiagnosticSeverity::INFORMATION,
             }),
             code: None,
             code_description: None,

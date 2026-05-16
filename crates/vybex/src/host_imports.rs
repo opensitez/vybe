@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use vybe_bytecode::{Value, VM};
 use vybe_bytecode::value::{Object, ObjectKind};
 
-use crate::compiler::HostImportMetadata;
+use vybe_compiler::compiler::HostImportMetadata;
 
 /// Install named + wildcard ESM host-module imports as VM globals.
 pub fn install(vm: &mut VM, meta: &HostImportMetadata) {
