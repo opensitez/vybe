@@ -970,25 +970,79 @@ fn walk_statement_into_body(pair: Pair<Rule>) -> Result<Vec<Statement>, String> 
 fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut inner = inner_nokw(pair);
     let cond = walk_expression(inner.next().unwrap())?;
-    let then_body = walk_statement_into_body(inner.next().unwrap())?;
+    let then_pair = inner.next().unwrap();
+    let (then_body, elifs, else_body) = match then_pair.as_rule() {
+        Rule::if_alt_block => {
+            walk_if_alt_block(then_pair)?
+        }
+        _ => {
+            let then_body = walk_statement_into_body(then_pair)?;
+            let mut elifs = Vec::new();
+            let mut else_body = None;
+            for p in inner {
+                match p.as_rule() {
+                    Rule::elseif_clause => {
+                        let mut e = inner_nokw(p);
+                        let c = walk_expression(e.next().unwrap())?;
+                        let b = walk_statement_into_body(e.next().unwrap())?;
+                        elifs.push((c, b));
+                    }
+                    Rule::else_clause => {
+                        let s = inner_nokw(p).next().unwrap();
+                        else_body = Some(walk_statement_into_body(s)?);
+                    }
+                    _ => {}
+                }
+            }
+            (then_body, elifs, else_body)
+        }
+    };
+    Ok(StmtKind::If { cond, then_body, elifs, else_body })
+}
+
+fn walk_if_alt_block(
+    pair: Pair<Rule>,
+) -> Result<(Vec<Statement>, Vec<(Expression, Vec<Statement>)>, Option<Vec<Statement>>), String> {
+    let mut then_body = Vec::new();
     let mut elifs = Vec::new();
     let mut else_body = None;
-    for p in inner {
-        match p.as_rule() {
-            Rule::elseif_clause => {
-                let mut e = inner_nokw(p);
-                let c = walk_expression(e.next().unwrap())?;
-                let b = walk_statement_into_body(e.next().unwrap())?;
-                elifs.push((c, b));
+
+    for part in pair.into_inner() {
+        match part.as_rule() {
+            Rule::elseif_alt_clause => {
+                let mut cond = None;
+                let mut body = Vec::new();
+                for inner in inner_nokw(part) {
+                    match inner.as_rule() {
+                        Rule::expression => cond = Some(walk_expression(inner)?),
+                        _ => {
+                            if let Some(stmt) = walk_statement(inner)? {
+                                body.push(stmt);
+                            }
+                        }
+                    }
+                }
+                elifs.push((cond.ok_or("elseif alt block: missing condition")?, body));
             }
-            Rule::else_clause => {
-                let s = inner_nokw(p).next().unwrap();
-                else_body = Some(walk_statement_into_body(s)?);
+            Rule::else_alt_clause => {
+                let mut body = Vec::new();
+                for inner in inner_nokw(part) {
+                    if let Some(stmt) = walk_statement(inner)? {
+                        body.push(stmt);
+                    }
+                }
+                else_body = Some(body);
             }
-            _ => {}
+            Rule::kw_endif => {}
+            _ => {
+                if let Some(stmt) = walk_statement(part)? {
+                    then_body.push(stmt);
+                }
+            }
         }
     }
-    Ok(StmtKind::If { cond, then_body, elifs, else_body })
+
+    Ok((then_body, elifs, else_body))
 }
 
 fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {

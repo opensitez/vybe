@@ -20,9 +20,16 @@ use super::helpers::{compile_ok, run_prints};
 
 // ── Casting ─────────────────────────────────────────────────
 #[test] fn cast_int() { compile_ok("<?php $x = (int)'42'; echo $x;"); }
+#[test] fn cast_integer_long_form() { compile_ok("<?php $x = (integer)trim(' 42 '); echo $x;"); }
 #[test] fn cast_float() { compile_ok("<?php $x = (float)'3.14'; echo $x;"); }
 #[test] fn cast_string() { compile_ok("<?php $x = (string)42; echo $x;"); }
 #[test] fn cast_bool() { compile_ok("<?php $x = (bool)''; $y = (bool)'hello';"); }
+#[test] fn cast_boolean_long_form_function_call() { compile_ok(r#"<?php
+class Reader { public $currentTagContents = " 1 "; }
+$reader = new Reader();
+$value = (boolean)trim($reader->currentTagContents);
+echo $value;
+"#); }
 #[test] fn cast_array() { compile_ok("<?php $x = (array)'hello';"); }
 
 // ── intval / floatval / strval / boolval ────────────────────

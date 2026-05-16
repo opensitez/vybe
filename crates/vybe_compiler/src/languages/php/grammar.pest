@@ -162,8 +162,8 @@ ident_cont = _{ ASCII_ALPHANUMERIC | "_" }
 
 // Cast keywords (inside parens for `(int) $x`, `(string) $y`, …)
 cast_kw = @{
-    (^"int" | ^"integer" | ^"float" | ^"double" | ^"real"
-     | ^"string" | ^"bool" | ^"boolean" | ^"array" | ^"object")
+    (^"integer" | ^"int" | ^"double" | ^"float" | ^"real"
+     | ^"string" | ^"boolean" | ^"bool" | ^"array" | ^"object")
     ~ !ident_cont
 }
 
@@ -497,13 +497,24 @@ enum_case = {
 
 if_statement = {
     kw_if ~ "(" ~ expression ~ ")"
-    ~ statement
-    ~ elseif_clause*
-    ~ else_clause?
+    ~ (if_alt_block | statement ~ elseif_clause* ~ else_clause?)
 }
 
 elseif_clause = { (kw_elseif | kw_else_if) ~ "(" ~ expression ~ ")" ~ statement }
 else_clause   = { kw_else ~ statement }
+
+if_alt_block = {
+    ":" ~ statement*
+    ~ elseif_alt_clause*
+    ~ else_alt_clause?
+    ~ kw_endif ~ stmt_terminator
+}
+
+elseif_alt_clause = {
+    (kw_elseif | kw_else_if) ~ "(" ~ expression ~ ")" ~ ":" ~ statement*
+}
+
+else_alt_clause = { kw_else ~ ":" ~ statement* }
 
 while_statement = {
     kw_while ~ "(" ~ expression ~ ")" ~ statement

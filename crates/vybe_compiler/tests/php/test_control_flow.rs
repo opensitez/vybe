@@ -5,6 +5,15 @@ use super::helpers::compile_ok;
 #[test] fn if_else() { compile_ok("<?php if ($x > 0) { echo 'pos'; } else { echo 'neg'; }"); }
 #[test] fn if_elseif_else() { compile_ok("<?php if ($x > 0) { echo 'pos'; } elseif ($x < 0) { echo 'neg'; } else { echo 'zero'; }"); }
 #[test] fn nested_if() { compile_ok("<?php if ($a) { if ($b) { echo 'both'; } }"); }
+#[test] fn if_alternative_syntax() { compile_ok("<?php if ($x > 0) : echo 'yes'; endif;"); }
+#[test] fn if_alternative_syntax_with_elseif_else() { compile_ok("<?php if ($x > 0) : echo 'pos'; elseif ($x < 0) : echo 'neg'; else : echo 'zero'; endif;"); }
+#[test] fn if_alternative_syntax_wraps_polyfill_function() { compile_ok(r#"<?php
+if ( ! function_exists( 'mb_substr' ) ) :
+	function mb_substr( $text, $start, $length = null, $encoding = null ) {
+		return _mb_substr( $text, $start, $length, $encoding );
+	}
+endif;
+"#); }
 
 // While
 #[test] fn while_loop() { compile_ok("<?php $i = 0; while ($i < 10) { $i++; }"); }
