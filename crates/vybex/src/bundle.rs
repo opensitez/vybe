@@ -250,7 +250,7 @@ fn expand_php_source_file(
             if should_expand {
                 let include_source = std::fs::read_to_string(&canonical)
                     .map_err(|e| format!("PHP include error reading {}: {}", canonical.display(), e))?;
-                let normalized_include = strip_leading_php_open_tag(&include_source);
+                let normalized_include = normalize_php_include_for_inlining(&include_source);
                 out.push(expand_php_source_file(&canonical, &normalized_include, included_once)?);
             }
             continue;
@@ -416,15 +416,184 @@ fn eval_php_path_atom(
     None
 }
 
-fn strip_leading_php_open_tag(source: &str) -> String {
-    let trimmed = source.trim_start();
-    if let Some(rest) = trimmed.strip_prefix("<?php") {
-        return rest.trim_start_matches(['\r', '\n']).to_string();
+fn normalize_php_include_for_inlining(source: &str) -> String {
+    let mut out = String::new();
+    let mut in_php = true;
+    let segments = split_mixed_php_include_source(source);
+    let last_index = segments.len().saturating_sub(1);
+
+    for (index, segment) in segments.into_iter().enumerate() {
+        match segment {
+            MixedPhpIncludeSegment::Html(html) => {
+                if html.is_empty()
+                    || (html.trim().is_empty() && (index == 0 || index == last_index))
+                {
+                    continue;
+                }
+                if in_php {
+                    out.push_str("?>");
+                    in_php = false;
+                }
+                out.push_str(html);
+            }
+            MixedPhpIncludeSegment::Echo { expr, has_close_tag } => {
+                let expr = expr.trim();
+                if !expr.is_empty() {
+                    if !in_php {
+                        out.push_str("<?php ");
+                        in_php = true;
+                    }
+                    out.push_str("echo ");
+                    out.push_str(expr);
+                    out.push_str(";\n");
+                }
+                if has_close_tag {
+                    if in_php {
+                        out.push_str("?>");
+                        in_php = false;
+                    }
+                }
+            }
+            MixedPhpIncludeSegment::Code { code, has_close_tag } => {
+                if !in_php {
+                    out.push_str("<?php");
+                    in_php = true;
+                }
+                out.push_str(code);
+                if has_close_tag && php_code_block_needs_terminator(code) {
+                    out.push(';');
+                }
+                if has_close_tag {
+                    out.push_str("?>");
+                    in_php = false;
+                } else if !out.ends_with('\n') {
+                    out.push('\n');
+                }
+            }
+        }
     }
-    if let Some(rest) = trimmed.strip_prefix("<?") {
-        return rest.trim_start_matches(['\r', '\n']).to_string();
+
+    if !in_php {
+        out.push_str("<?php\n");
     }
-    source.to_string()
+
+    out
+}
+
+enum MixedPhpIncludeSegment<'a> {
+    Html(&'a str),
+    Code { code: &'a str, has_close_tag: bool },
+    Echo { expr: &'a str, has_close_tag: bool },
+}
+
+fn php_code_block_needs_terminator(code: &str) -> bool {
+    let trimmed = code.trim_end();
+    let Some(last) = trimmed.chars().last() else {
+        return false;
+    };
+    !matches!(last, ';' | '{' | '}' | ':')
+}
+
+fn split_mixed_php_include_source(source: &str) -> Vec<MixedPhpIncludeSegment<'_>> {
+    let mut segments = Vec::new();
+    let mut cursor = 0usize;
+
+    while let Some(open_rel) = source[cursor..].find("<?") {
+        let open = cursor + open_rel;
+        if open > cursor {
+            segments.push(MixedPhpIncludeSegment::Html(&source[cursor..open]));
+        }
+
+        let is_echo = source[open..].starts_with("<?=");
+        let code_start = if is_echo {
+            open + 3
+        } else if source[open..].starts_with("<?php") {
+            open + 5
+        } else {
+            open + 2
+        };
+        let close = find_php_include_close_tag(source, code_start).unwrap_or(source.len());
+        let has_close_tag = close < source.len();
+        let code = &source[code_start..close];
+        if is_echo {
+            segments.push(MixedPhpIncludeSegment::Echo { expr: code, has_close_tag });
+        } else {
+            segments.push(MixedPhpIncludeSegment::Code { code, has_close_tag });
+        }
+        cursor = if has_close_tag { (close + 2).min(source.len()) } else { close };
+    }
+
+    if cursor < source.len() {
+        segments.push(MixedPhpIncludeSegment::Html(&source[cursor..]));
+    }
+
+    segments
+}
+
+fn find_php_include_close_tag(source: &str, start: usize) -> Option<usize> {
+    #[derive(Copy, Clone, Eq, PartialEq)]
+    enum ScanState {
+        Normal,
+        SingleQuote,
+        DoubleQuote,
+        LineComment,
+        BlockComment,
+    }
+
+    let bytes = source.as_bytes();
+    let mut index = start;
+    let mut state = ScanState::Normal;
+
+    while index + 1 < bytes.len() {
+        match state {
+            ScanState::Normal => {
+                if bytes[index] == b'?' && bytes[index + 1] == b'>' {
+                    return Some(index);
+                }
+                if bytes[index] == b'\'' {
+                    state = ScanState::SingleQuote;
+                } else if bytes[index] == b'"' {
+                    state = ScanState::DoubleQuote;
+                } else if bytes[index] == b'#' {
+                    state = ScanState::LineComment;
+                } else if bytes[index] == b'/' && bytes[index + 1] == b'/' {
+                    state = ScanState::LineComment;
+                    index += 1;
+                } else if bytes[index] == b'/' && bytes[index + 1] == b'*' {
+                    state = ScanState::BlockComment;
+                    index += 1;
+                }
+            }
+            ScanState::SingleQuote => {
+                if bytes[index] == b'\\' {
+                    index += 1;
+                } else if bytes[index] == b'\'' {
+                    state = ScanState::Normal;
+                }
+            }
+            ScanState::DoubleQuote => {
+                if bytes[index] == b'\\' {
+                    index += 1;
+                } else if bytes[index] == b'"' {
+                    state = ScanState::Normal;
+                }
+            }
+            ScanState::LineComment => {
+                if bytes[index] == b'\n' {
+                    state = ScanState::Normal;
+                }
+            }
+            ScanState::BlockComment => {
+                if bytes[index] == b'*' && bytes[index + 1] == b'/' {
+                    state = ScanState::Normal;
+                    index += 1;
+                }
+            }
+        }
+        index += 1;
+    }
+
+    None
 }
 
 fn normalize_php_alternative_control_syntax(line: &str) -> String {
@@ -562,6 +731,82 @@ mod tests {
         };
 
         bundle.prepared_module().expect("prepared module");
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn php_bundle_strips_included_close_tag_before_inline_html() {
+        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_close_tag_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_root).expect("create temp dir");
+
+        let header_path = temp_root.join("header.php");
+        std::fs::write(&header_path, "<?php echo 'head'; ?>\n<nav>nav</nav>\n")
+            .expect("write header");
+
+        let entry_path = temp_root.join("entry.php");
+        let entry_src = "<?php\ninclude 'header.php';\n?>\n<div>body</div>\n";
+        std::fs::write(&entry_path, entry_src).expect("write entry");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "entry".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        let module = bundle.prepared_module().expect("prepared module");
+        let echoed_text: String = module.body.iter().filter_map(|stmt| {
+            if let StmtKind::Echo(exprs) = &stmt.kind {
+                if exprs.len() == 1 {
+                    if let ExprKind::Lit(crate::ast::Literal::Str(text)) = &exprs[0].kind {
+                        return Some(text.clone());
+                    }
+                }
+            }
+            None
+        }).collect();
+        assert!(!echoed_text.contains("?>"), "bundled inline HTML should not contain a literal close tag: {echoed_text}");
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn php_bundle_ignores_boundary_whitespace_from_included_code_file() {
+        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_boundary_ws_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_root).expect("create temp dir");
+
+        let helper_path = temp_root.join("helper.php");
+        std::fs::write(&helper_path, "\n<?php\nfunction helper_value() { return 1; }\n")
+            .expect("write helper");
+
+        let entry_path = temp_root.join("entry.php");
+        let entry_src = "<?php\ninclude 'helper.php';\nheader('Location: /next.php');\n";
+        std::fs::write(&entry_path, entry_src).expect("write entry");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "entry".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        let module = bundle.prepared_module().expect("prepared module");
+        let echoed_text: String = module.body.iter().filter_map(|stmt| {
+            if let StmtKind::Echo(exprs) = &stmt.kind {
+                if exprs.len() == 1 {
+                    if let ExprKind::Lit(crate::ast::Literal::Str(text)) = &exprs[0].kind {
+                        return Some(text.clone());
+                    }
+                }
+            }
+            None
+        }).collect();
+        assert!(echoed_text.is_empty(), "boundary whitespace from included code file should not become output: {echoed_text:?}");
 
         let _ = std::fs::remove_dir_all(&temp_root);
     }
