@@ -6,7 +6,9 @@ use vybe_bytecode::{VM, Value};
 use vybe_compiler::bundle::{Bundle, CompiledBundle, EntryPoint, SourceFile};
 use vybe_compiler::compiler::HostImportMetadata;
 use vybe_compiler::languages::{self, Language};
+use vybe_host::{Capabilities, Capability};
 
+#[derive(Debug)]
 pub struct DynamicCompilation {
     pub chunks: Vec<Chunk>,
     pub host_imports: HostImportMetadata,
@@ -14,11 +16,16 @@ pub struct DynamicCompilation {
 
 pub struct RuntimeCompilerService<'vm> {
     vm: &'vm mut VM,
+    caps: Capabilities,
 }
 
 impl<'vm> RuntimeCompilerService<'vm> {
     pub fn new(vm: &'vm mut VM) -> Self {
-        Self { vm }
+        Self::with_capabilities(vm, Capabilities::all())
+    }
+
+    pub fn with_capabilities(vm: &'vm mut VM, caps: Capabilities) -> Self {
+        Self { vm, caps }
     }
 
     pub fn vm(&mut self) -> &mut VM {
@@ -44,6 +51,7 @@ impl<'vm> RuntimeCompilerService<'vm> {
         language: Language,
         virtual_path: impl Into<PathBuf>,
     ) -> Result<DynamicCompilation, String> {
+        self.ensure_dynamic_compile_allowed()?;
         let bundle = bundle_from_source(source, language, virtual_path);
         self.compile_bundle(&bundle)
     }
@@ -57,6 +65,17 @@ impl<'vm> RuntimeCompilerService<'vm> {
         let language = languages::find_by_name(language_name)
             .ok_or_else(|| format!("unknown language: {language_name}"))?;
         self.compile_source(source, language, virtual_path)
+    }
+
+    pub fn can_dynamic_compile(&self) -> bool {
+        self.caps.has(Capability::DynamicCompile)
+    }
+
+    fn ensure_dynamic_compile_allowed(&self) -> Result<(), String> {
+        if self.can_dynamic_compile() {
+            return Ok(());
+        }
+        Err("Dynamic compilation is disabled by the current capability set (missing Capability::DynamicCompile)".to_string())
     }
 
     pub fn run_compiled(&mut self, compiled: DynamicCompilation) -> Result<Value, String> {
@@ -280,5 +299,17 @@ mod tests {
                 .run_compiled(compiled)
                 .unwrap_or_else(|err| panic!("{} dynamic run failed: {}", case.language, err));
         }
+    }
+
+    #[test]
+    fn dynamic_compile_requires_capability_for_source_text() {
+        let mut vm = configured_vm();
+        let mut service = RuntimeCompilerService::with_capabilities(&mut vm, vybe_host::Capabilities::safe());
+
+        let err = service
+            .compile_source_by_name("let x = 7;", "js", PathBuf::from("dynamic/locked.js"))
+            .expect_err("dynamic compile should be denied without capability");
+
+        assert!(err.contains("DynamicCompile"), "unexpected error: {err}");
     }
 }

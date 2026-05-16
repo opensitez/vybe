@@ -236,8 +236,19 @@ pub fn run() {
         crate::server::serve_directory(config);
     }
 
+    let dynamic_compile_caps = if sandbox {
+        vybe_host::Capabilities::safe()
+    } else {
+        vybe_host::Capabilities::all()
+    };
+
     if eval_source.is_some() && file_arg.is_some() {
         eprintln!("Use either a file path or --eval, not both");
+        std::process::exit(1);
+    }
+
+    if eval_source.is_some() && !dynamic_compile_caps.has(vybe_host::Capability::DynamicCompile) {
+        eprintln!("Dynamic compilation is disabled in the current mode (missing Capability::DynamicCompile)");
         std::process::exit(1);
     }
 
@@ -254,19 +265,19 @@ pub fn run() {
     };
 
     let source_path: PathBuf;
-    let bundle = if let Some(source) = eval_source {
-        let Some(language_name) = eval_language else {
+    let bundle = if let Some(source) = eval_source.as_ref() {
+        let Some(language_name) = eval_language.as_ref() else {
             eprintln!("--eval requires --lang <name>");
             std::process::exit(1);
         };
-        let Some(language) = vybe_compiler::languages::find_by_name(&language_name) else {
+        let Some(language) = vybe_compiler::languages::find_by_name(language_name) else {
             eprintln!("Unknown language for --lang: {language_name}");
             std::process::exit(1);
         };
         source_path = eval_virtual_path
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(format!("eval.{language_name}")));
-        crate::dynamic::bundle_from_source(source, language, source_path.clone())
+        crate::dynamic::bundle_from_source(source.clone(), language, source_path.clone())
     } else {
         let file_path = file_path.expect("file path already checked");
         source_path = PathBuf::from(&file_path);
@@ -362,10 +373,21 @@ pub fn run() {
     // ── Compile ─────────────────────────────────────────────────────────────
     eprintln!("[vybex] Preparing and compiling module...");
     let compiled = {
-        let mut runtime_compiler = crate::dynamic::RuntimeCompilerService::new(&mut vm);
-        match runtime_compiler.compile_bundle(&bundle) {
-            Ok(c) => c,
-            Err(e) => { eprintln!("Compile error: {e}"); std::process::exit(1); }
+        let mut runtime_compiler = crate::dynamic::RuntimeCompilerService::with_capabilities(
+            &mut vm,
+            dynamic_compile_caps.clone(),
+        );
+        match (&eval_source, &eval_language) {
+            (Some(source), Some(language_name)) => {
+                match runtime_compiler.compile_source_by_name(source.clone(), language_name, source_path.clone()) {
+                    Ok(c) => c,
+                    Err(e) => { eprintln!("Compile error: {e}"); std::process::exit(1); }
+                }
+            }
+            _ => match runtime_compiler.compile_bundle(&bundle) {
+                Ok(c) => c,
+                Err(e) => { eprintln!("Compile error: {e}"); std::process::exit(1); }
+            },
         }
     };
 
@@ -396,7 +418,10 @@ pub fn run() {
     }
 
     // ── Run ─────────────────────────────────────────────────────────────────
-    let mut runtime_compiler = crate::dynamic::RuntimeCompilerService::new(&mut vm);
+    let mut runtime_compiler = crate::dynamic::RuntimeCompilerService::with_capabilities(
+        &mut vm,
+        dynamic_compile_caps,
+    );
     match runtime_compiler.run_compiled(compiled) {
         Ok(_) => {}
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }

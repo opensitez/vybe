@@ -63,6 +63,9 @@ pub struct Capabilities {
 pub enum Capability {
     /// Console I/O (stdout, stderr). Safe for most contexts.
     Console,
+    /// Runtime compilation from source text (guest-visible eval / compile).
+    /// Static project loading and compile-time-resolved imports do not use it.
+    DynamicCompile,
     /// Filesystem read access.
     FileRead,
     /// Filesystem write access (implies FileRead).
@@ -105,7 +108,7 @@ impl Capabilities {
     pub fn all() -> Self {
         use Capability::*;
         let mut granted = HashSet::new();
-        for cap in [Console, FileRead, FileWrite, Http, Sockets, Database,
+        for cap in [Console, DynamicCompile, FileRead, FileWrite, Http, Sockets, Database,
                     Environment, Gui, Threading, Crypto, Clock, Random, Xml, HttpServer, Process] {
             granted.insert(cap);
         }
