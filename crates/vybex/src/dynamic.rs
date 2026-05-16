@@ -158,6 +158,19 @@ mod tests {
     use super::RuntimeCompilerService;
     use vybe_bytecode::{VM, Value};
 
+    struct DynamicSmokeCase {
+        language: &'static str,
+        virtual_path: &'static str,
+        source: &'static str,
+    }
+
+    fn configured_vm() -> VM {
+        let mut vm = VM::new();
+        let _gui = vybe_host::register_all_with_gui(&mut vm);
+        vybe_host::setup_namespaces(&mut vm);
+        vm
+    }
+
     fn assert_numeric_value(value: Value, expected: f64) {
         match value {
             Value::I32(n) => assert_eq!(n as f64, expected),
@@ -169,9 +182,7 @@ mod tests {
 
     #[test]
     fn compiles_source_into_live_vm_and_publishes_function_globals() {
-        let mut vm = VM::new();
-        let _gui = vybe_host::register_all_with_gui(&mut vm);
-        vybe_host::setup_namespaces(&mut vm);
+        let mut vm = configured_vm();
 
         {
             let mut service = RuntimeCompilerService::new(&mut vm);
@@ -197,5 +208,77 @@ mod tests {
 
         assert_numeric_value(vm.invoke(&greet, &[]).expect("invoke greet"), 7.0);
         assert_numeric_value(vm.invoke(&call_greet, &[]).expect("invoke callGreet"), 7.0);
+    }
+
+    #[test]
+    fn dynamic_execution_smoke_matrix_for_supported_languages() {
+        let cases = [
+            DynamicSmokeCase {
+                language: "js",
+                virtual_path: "dynamic/matrix.js",
+                source: "let x = 7;",
+            },
+            DynamicSmokeCase {
+                language: "php",
+                virtual_path: "dynamic/matrix.php",
+                source: "<?php $x = 7;",
+            },
+            DynamicSmokeCase {
+                language: "python",
+                virtual_path: "dynamic/matrix.py",
+                source: "x = 7",
+            },
+            DynamicSmokeCase {
+                language: "ruby",
+                virtual_path: "dynamic/matrix.rb",
+                source: "x = 7",
+            },
+            DynamicSmokeCase {
+                language: "dart",
+                virtual_path: "dynamic/matrix.dart",
+                source: "var x = 7;",
+            },
+            DynamicSmokeCase {
+                language: "vb",
+                virtual_path: "dynamic/matrix.vb",
+                source: "Dim x As Integer = 7",
+            },
+            DynamicSmokeCase {
+                language: "csharp",
+                virtual_path: "dynamic/matrix.cs",
+                source: "int x = 7;",
+            },
+            DynamicSmokeCase {
+                language: "pascal",
+                virtual_path: "dynamic/matrix.pas",
+                source: "program T; var x: Integer; begin x := 7; end.",
+            },
+            DynamicSmokeCase {
+                language: "cobol",
+                virtual_path: "dynamic/matrix.cob",
+                source: "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 X PIC 9 VALUE 7.\nPROCEDURE DIVISION.\n    STOP RUN.",
+            },
+            DynamicSmokeCase {
+                language: "fortran",
+                virtual_path: "dynamic/matrix.f90",
+                source: "program test\n  integer :: x\n  x = 7\nend program test",
+            },
+        ];
+
+        for case in cases {
+            let mut vm = configured_vm();
+            let mut service = RuntimeCompilerService::new(&mut vm);
+            let compiled = service
+                .compile_source_by_name(
+                    case.source,
+                    case.language,
+                    PathBuf::from(case.virtual_path),
+                )
+                .unwrap_or_else(|err| panic!("{} dynamic compile failed: {}", case.language, err));
+
+            service
+                .run_compiled(compiled)
+                .unwrap_or_else(|err| panic!("{} dynamic run failed: {}", case.language, err));
+        }
     }
 }

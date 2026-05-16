@@ -54,6 +54,11 @@ impl Bundle {
     /// Parse all sources into the common AST and apply the same
     /// bundle-level preparation that compilation uses: source-import
     /// resolution plus entry-point injection.
+    ///
+    /// Static-first rule: if an include/import can be resolved here,
+    /// it should stay on the normal compiler path rather than falling
+    /// through to runtime compilation. That keeps the resulting module
+    /// graph as portable as possible across runtimes beyond Vybe.
     pub fn prepared_module(&self) -> Result<Module, String> {
         let combined = if self.language.name == "php" {
             expand_php_bundle_sources(&self.sources)?
