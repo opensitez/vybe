@@ -2810,6 +2810,42 @@ impl Compiler {
         element_type.unwrap_or_else(|| "object".into())
     }
 
+    fn member_access_path(expr: &Expression) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Ident(name) => Some(name.clone()),
+            ExprKind::Member { object, field, .. } => {
+                let prefix = Self::member_access_path(object)?;
+                Some(format!("{prefix}.{field}"))
+            }
+            _ => None,
+        }
+    }
+
+    fn infer_vb_runtime_member_type_hint(&self, expr: &Expression) -> Option<String> {
+        let path = Self::member_access_path(expr)?;
+        match self.canon(&path).as_str() {
+            "environment.currentdirectory"
+            | "environment.newline"
+            | "environment.machinename"
+            | "environment.username"
+            | "environment.osversion"
+            | "system.environment.currentdirectory"
+            | "system.environment.newline"
+            | "system.environment.machinename"
+            | "system.environment.username"
+            | "system.environment.osversion"
+            | "app.path"
+            | "app.title" => Some("string".into()),
+            "environment.processorcount"
+            | "environment.tickcount"
+            | "system.environment.processorcount"
+            | "system.environment.tickcount"
+            | "screen.width"
+            | "screen.height" => Some("integer".into()),
+            _ => None,
+        }
+    }
+
     fn infer_expr_type_hint(&self, expr: &Expression) -> Option<String> {
         match &expr.kind {
             ExprKind::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
@@ -2850,6 +2886,9 @@ impl Compiler {
                 .infer_expr_type_hint(object)
                 .and_then(|type_hint| type_hint.trim().trim_end_matches('?').trim().strip_suffix("()").map(str::to_string)),
             ExprKind::Member { object, field, .. } => {
+                if let Some(type_hint) = self.infer_vb_runtime_member_type_hint(expr) {
+                    return Some(type_hint);
+                }
                 if let Some(receiver_type) = self.infer_expr_type_hint(object) {
                     if let Some(class_name) = self.resolve_pending_class_name_for_type_hint(&receiver_type) {
                         if let Some(type_hint) = self
@@ -3271,6 +3310,22 @@ impl Compiler {
         self.emit_u16(Op::GLOBAL_GET, idx);
     }
 
+
+    fn emit_ensure_global_map(&mut self, name: &str) {
+        let key = self.str_const(name);
+        self.emit_u16(Op::GLOBAL_GET, key);
+        self.emit(Op::DUP);
+        self.emit(Op::REF_IS_NULL);
+        let has_map = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit(Op::DROP);
+        common::collections::emit_map_new(&mut self.chunks, self.current, self.line);
+        self.emit(Op::DUP);
+        self.emit_u16(Op::GLOBAL_SET, key);
+        self.emit(Op::DROP);
+
+        self.patch_jump(has_map);
+    }
     fn emit_var_set(&mut self, name: &str) {
         // Local
         if let Some(slot) = self.scope().resolve(name) {
@@ -5283,22 +5338,81 @@ impl Compiler {
             StmtKind::Label(_) => { /* no-op */ }
 
             // ── VB legacy file I/O ──────────────────────────────────────
-            StmtKind::OpenFile { path, mode: _, file_number } => {
+            StmtKind::OpenFile { path, mode, file_number } => {
+                let path_slot = self.define_local("__vb_open_path");
+                let file_slot = self.define_local("__vb_open_file_number");
+                let path_map_key = self.str_const("__vb_file_path_by_handle");
+                let eof_map_key = self.str_const("__vb_file_eof_by_handle");
+                let mode_text = match mode {
+                    FileMode::Input => "Input",
+                    FileMode::Output => "Output",
+                    FileMode::Append => "Append",
+                    FileMode::Binary => "Binary",
+                    FileMode::Random => "Random",
+                };
+
                 self.compile_expr(path)?;
+                self.emit_u16(Op::LOCAL_SET, path_slot);
+                self.emit(Op::DROP);
+
                 self.compile_expr(file_number)?;
+                self.emit_u16(Op::LOCAL_SET, file_slot);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, path_slot);
+                self.emit_const(Value::String(Arc::from(mode_text)));
+                self.emit_u16(Op::LOCAL_GET, file_slot);
                 let idx = self.import("wasi:filesystem", "openFile");
-                self.emit_host_call(idx, 2);
+                self.emit_host_call(idx, 3);
+                self.emit(Op::DROP);
+
+                self.emit_ensure_global_map("__vb_file_path_by_handle");
+                self.emit_u16(Op::GLOBAL_GET, path_map_key);
+                self.emit_u16(Op::LOCAL_GET, file_slot);
+                self.emit_u16(Op::LOCAL_GET, path_slot);
+                self.emit(Op::ARRAY_SET);
+                self.emit(Op::DROP);
+
+                self.emit_ensure_global_map("__vb_file_eof_by_handle");
+                self.emit_u16(Op::GLOBAL_GET, eof_map_key);
+                self.emit_u16(Op::LOCAL_GET, file_slot);
+                self.emit_const(Value::Bool(false));
+                self.emit(Op::ARRAY_SET);
                 self.emit(Op::DROP);
             }
             StmtKind::CloseFile(file_num) => {
+                let path_map_key = self.str_const("__vb_file_path_by_handle");
+                let eof_map_key = self.str_const("__vb_file_eof_by_handle");
                 if let Some(fnum) = file_num {
+                    let file_slot = self.define_local("__vb_close_file_number");
                     self.compile_expr(fnum)?;
+                    self.emit_u16(Op::LOCAL_SET, file_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, file_slot);
+                    let idx = self.import("wasi:filesystem", "closeFile");
+                    self.emit_host_call(idx, 1);
+                    self.emit(Op::DROP);
+
+                    self.emit_ensure_global_map("__vb_file_path_by_handle");
+                    self.emit_u16(Op::GLOBAL_GET, path_map_key);
+                    self.emit_u16(Op::LOCAL_GET, file_slot);
+                    self.emit(Op::NULL);
+                    self.emit(Op::ARRAY_SET);
+                    self.emit(Op::DROP);
+
+                    self.emit_ensure_global_map("__vb_file_eof_by_handle");
+                    self.emit_u16(Op::GLOBAL_GET, eof_map_key);
+                    self.emit_u16(Op::LOCAL_GET, file_slot);
+                    self.emit_const(Value::Bool(false));
+                    self.emit(Op::ARRAY_SET);
+                    self.emit(Op::DROP);
                 } else {
                     self.emit(Op::NULL);
+                    let idx = self.import("wasi:filesystem", "closeFile");
+                    self.emit_host_call(idx, 1);
+                    self.emit(Op::DROP);
                 }
-                let idx = self.import("wasi:filesystem", "closeFile");
-                self.emit_host_call(idx, 1);
-                self.emit(Op::DROP);
             }
             StmtKind::PrintFile { file_number, items } => {
                 self.compile_expr(file_number)?;
@@ -5310,25 +5424,63 @@ impl Compiler {
             StmtKind::WriteFile { file_number, items } => {
                 self.compile_expr(file_number)?;
                 for item in items { self.compile_expr(item)?; }
-                let idx = self.import("wasi:filesystem", "writeFile");
+                let idx = self.import("wasi:filesystem", "writeFile_handle");
                 self.emit_host_call(idx, (items.len() + 1) as u8);
                 self.emit(Op::DROP);
             }
             StmtKind::InputFile { file_number, variables } => {
+                let file_slot = self.define_local("__vb_input_file_number");
+                let values_slot = self.define_local("__vb_input_values");
+                let eof_map_key = self.str_const("__vb_file_eof_by_handle");
+
                 self.compile_expr(file_number)?;
+                self.emit_u16(Op::LOCAL_SET, file_slot);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, file_slot);
                 let idx = self.import("wasi:filesystem", "inputFile");
                 self.emit_host_call(idx, 1);
-                if let Some(first) = variables.first() {
-                    self.emit_var_set(first);
-                } else {
+                self.emit_u16(Op::LOCAL_SET, values_slot);
+                self.emit(Op::DROP);
+
+                for (index, variable) in variables.iter().enumerate() {
+                    self.emit_u16(Op::LOCAL_GET, values_slot);
+                    self.emit_const(Value::F64(index as f64));
+                    self.emit(Op::ARRAY_GET);
+                    self.emit_var_set(variable);
+                }
+
+                if variables.is_empty() {
+                    self.emit_u16(Op::LOCAL_GET, values_slot);
                     self.emit(Op::DROP);
                 }
+
+                self.emit_ensure_global_map("__vb_file_eof_by_handle");
+                self.emit_u16(Op::GLOBAL_GET, eof_map_key);
+                self.emit_u16(Op::LOCAL_GET, file_slot);
+                self.emit_const(Value::Bool(true));
+                self.emit(Op::ARRAY_SET);
+                self.emit(Op::DROP);
             }
             StmtKind::LineInput { file_number, variable } => {
+                let file_slot = self.define_local("__vb_line_input_file_number");
+                let eof_map_key = self.str_const("__vb_file_eof_by_handle");
+
                 self.compile_expr(file_number)?;
+                self.emit_u16(Op::LOCAL_SET, file_slot);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, file_slot);
                 let idx = self.import("wasi:filesystem", "lineInput");
                 self.emit_host_call(idx, 1);
                 self.emit_var_set(variable);
+
+                self.emit_ensure_global_map("__vb_file_eof_by_handle");
+                self.emit_u16(Op::GLOBAL_GET, eof_map_key);
+                self.emit_u16(Op::LOCAL_GET, file_slot);
+                self.emit_const(Value::Bool(true));
+                self.emit(Op::ARRAY_SET);
+                self.emit(Op::DROP);
             }
 
             // ── Export ──────────────────────────────────────────────────

@@ -297,8 +297,8 @@ weekdayname  = { emit = "host:ecma:string:String",         min_args = 1, max_arg
 
 # ── File I/O ─────────────────────────────────────────────────────────────────
 
-"dir"        = { emit = "host:wasi:filesystem:listDir",  min_args = 0, max_args = 1 }
-"dir$"       = { emit = "host:wasi:filesystem:listDir",  min_args = 0, max_args = 1 }
+"dir"        = { emit = "common:vb.dir",  min_args = 0, max_args = 1 }
+"dir$"       = { emit = "common:vb.dir",  min_args = 0, max_args = 1 }
 filecopy     = { emit = "host:wasi:filesystem:copy",     min_args = 2, max_args = 2 }
 kill         = { emit = "host:wasi:filesystem:remove",   min_args = 1, max_args = 1 }
 fileexists   = { emit = "host:wasi:filesystem:exists",   min_args = 1, max_args = 1 }
@@ -326,12 +326,12 @@ fileexists   = { emit = "host:wasi:filesystem:exists",   min_args = 1, max_args 
 "path.changeextension"          = { emit = "host:wasi:filesystem:pathChangeExtension",        min_args = 2, max_args = 2 }
 "path.hasextension"             = { emit = "host:wasi:filesystem:pathHasExtension",           min_args = 1, max_args = 1 }
 "path.ispathrooted"             = { emit = "host:wasi:filesystem:pathIsRooted",               min_args = 1, max_args = 1 }
-filedatetime = { emit = "host:wasi:clocks:vbNow",        min_args = 1, max_args = 1 }
+filedatetime = { emit = "common:vb.filedatetime",        min_args = 1, max_args = 1 }
 filelen      = { emit = "host:wasi:filesystem:fileSize",  min_args = 1, max_args = 1 }
-lof          = { emit = "host:wasi:filesystem:fileSize",  min_args = 1, max_args = 1 }
-"curdir"     = { emit = "host:wasi:cli:cwd",              min_args = 0, max_args = 0 }
-"curdir$"    = { emit = "host:wasi:cli:cwd",              min_args = 0, max_args = 0 }
-chdir        = { emit = "host:wasi:cli:cwd",              min_args = 1, max_args = 1 }
+lof          = { emit = "common:vb.lof",                   min_args = 1, max_args = 1 }
+"curdir"     = { emit = "host:node:process:cwd",          min_args = 0, max_args = 0 }
+"curdir$"    = { emit = "host:node:process:cwd",          min_args = 0, max_args = 0 }
+chdir        = { emit = "host:node:process:chdir",        min_args = 1, max_args = 1 }
 mkdir        = { emit = "host:wasi:filesystem:mkdir",     min_args = 1, max_args = 1 }
 rmdir        = { emit = "host:wasi:filesystem:remove",    min_args = 1, max_args = 1 }
 freefile     = { emit = "intrinsic:cint",         min_args = 0, max_args = 0 }
@@ -340,7 +340,7 @@ loc          = { emit = "intrinsic:cint",         min_args = 1, max_args = 1 }
 fileattr     = { emit = "intrinsic:cint",         min_args = 1, max_args = 1 }
 getattr      = { emit = "intrinsic:cint",         min_args = 1, max_args = 1 }
 setattr      = { emit = "noop",                           min_args = 2, max_args = 2 }
-eof          = { emit = "host:ecma:boolean:Boolean",        min_args = 1, max_args = 1 }
+eof          = { emit = "common:vb.eof",                  min_args = 1, max_args = 1 }
 seek         = { emit = "noop",                           min_args = 2, max_args = 2 }
 get          = { emit = "host:wasi:filesystem:readFile",  min_args = 1, max_args = 3 }
 put          = { emit = "host:wasi:filesystem:writeFile", min_args = 1, max_args = 3 }
@@ -354,7 +354,7 @@ performlayout  = { emit = "noop", min_args = 0, max_args = 0 }
 # ── Interaction ──────────────────────────────────────────────────────────────
 
 beep         = { emit = "noop",                            min_args = 0, max_args = 0 }
-shell        = { emit = "host:node:child_process:execSync", min_args = 1, max_args = 2 }
+shell        = { emit = "common:vb.shell_pid",             min_args = 1, max_args = 2 }
 environ      = { emit = "intrinsic:environ",               min_args = 1, max_args = 1 }
 "environ$"   = { emit = "intrinsic:environ",               min_args = 1, max_args = 1 }
 command      = { emit = "intrinsic:command",               min_args = 0, max_args = 0 }
@@ -365,16 +365,18 @@ doevents     = { emit = "noop",                            min_args = 0, max_arg
 
 # ── Environment ──────────────────────────────────────────────────────────────
 
-"environment.currentdirectory"        = { emit = "host:wasi:cli:cwd",        min_args = 0, max_args = 0 }
-"environment.newline"                 = { emit = "host:wasi:cli:newLine",     min_args = 0, max_args = 0 }
-"environment.machinename"             = { emit = "host:wasi:cli:machineName", min_args = 0, max_args = 0 }
-"environment.username"                = { emit = "host:wasi:cli:userName",    min_args = 0, max_args = 0 }
-"environment.osversion"               = { emit = "host:wasi:cli:platform",    min_args = 0, max_args = 0 }
-"environment.processorcount"          = { emit = "host:wasi:cli:arch",        min_args = 0, max_args = 0 }
-"environment.tickcount"               = { emit = "host:wasi:cli:tickCount",   min_args = 0, max_args = 0 }
+"environment.currentdirectory"        = { emit = "host:node:process:cwd",              min_args = 0, max_args = 0 }
+"environment.newline"                 = { emit = "host:node:os:EOL",                    min_args = 0, max_args = 0 }
+"environment.machinename"             = { emit = "host:node:os:hostname",               min_args = 0, max_args = 0 }
+"environment.username"                = { emit = "common:dotnet.environment_username",  min_args = 0, max_args = 0 }
+"environment.osversion"               = { emit = "host:node:os:version",                min_args = 0, max_args = 0 }
+"environment.processorcount"          = { emit = "common:dotnet.environment_processor_count", min_args = 0, max_args = 0 }
+"environment.tickcount"               = { emit = "common:dotnet.environment_tick_count", min_args = 0, max_args = 0 }
 "environment.getenvironmentvariable"  = { emit = "common:dotnet.environment_get", min_args = 1, max_args = 1 }
 "environment.setenvironmentvariable"  = { emit = "common:dotnet.environment_set", min_args = 2, max_args = 2 }
 "environment.getfolderpath"           = { emit = "host:wasi:cli:getFolderPath", min_args = 1, max_args = 1 }
+"app.path"                            = { emit = "host:node:process:cwd",               min_args = 0, max_args = 0 }
+"app.title"                           = { emit = "host:node:process:argv0",             min_args = 0, max_args = 0 }
 
 # ── Convert (Base64) ─────────────────────────────────────────────────────────
 

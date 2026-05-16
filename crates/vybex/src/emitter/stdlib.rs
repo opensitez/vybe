@@ -2980,11 +2980,13 @@ fn build_isobject(_imports: &mut Chunk) -> Chunk {
 //
 // Vybe's DateTime adapter stamps `__type = "DateTime"` on the wrapper
 // object. Non-objects, or objects without that stamp, return false.
-fn build_isdate(_imports: &mut Chunk) -> Chunk {
+fn build_isdate(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_isdate");
     c.arity = 1;
     c.local_count = 2;
+    let parse_idx = imports.add_import("ecma:date", "parse");
     let obj_str = c.add_constant(Value::String(std::sync::Arc::from("object")));
+    let str_str = c.add_constant(Value::String(std::sync::Arc::from("string")));
     let type_key = c.add_constant(Value::String(std::sync::Arc::from("__type")));
     let dt_str = c.add_constant(Value::String(std::sync::Arc::from("DateTime")));
 
@@ -2994,6 +2996,26 @@ fn build_isdate(_imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::I32_CONST_0, 0);
     c.emit_op_u16(Op::LOCAL_SET, 1, 0);
     c.emit_op(Op::DROP, 0);
+
+    // if typeof(v) == "string" → parseable strings also count as dates.
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op(Op::REF_TYPEOF, 0);
+    c.emit_op_u16(Op::CONST, str_str, 0);
+    c.emit_op(Op::STR_EQUALS, 0);
+    let not_string = c.emit_jump(Op::BR_IF_FALSE, 0);
+
+    c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    c.emit_op_u16(Op::CALL_IMPORT, parse_idx, 0);
+    c.emit(1, 0);
+    c.emit_op(Op::DUP, 0);
+    c.emit_op(Op::DYN_EQ, 0);
+    c.emit_op_u16(Op::LOCAL_SET, 1, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_end(0); c.patch_block(done);
+    c.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    c.emit_op(Op::RETURN, 0);
+
+    c.patch_jump(not_string);
 
     // if typeof(v) != "object" → done with false
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);

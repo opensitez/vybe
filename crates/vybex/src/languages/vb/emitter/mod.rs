@@ -5,3 +5,4 @@
 //! lacks the required math primitives.
 
 pub mod financial_adapter;
+pub mod misc_adapter;
