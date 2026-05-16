@@ -579,8 +579,10 @@ yield_expression = {
 // but we put them just above ternary for simplicity. They're rarely
 // used in mixed-precedence contexts.
 logical_or_expression = {
-    ternary_expression ~ ((kw_or | kw_xor | kw_and) ~ ternary_expression)*
+    ternary_expression ~ (logical_word_op ~ ternary_expression)*
 }
+
+logical_word_op = { kw_or | kw_xor | kw_and }
 
 ternary_expression = {
     null_coalesce_expression
@@ -592,12 +594,16 @@ null_coalesce_expression = {
 }
 
 logic_or_expression = {
-    logic_and_expression ~ ("||" ~ logic_and_expression)*
+    logic_and_expression ~ (logic_or_op ~ logic_and_expression)*
 }
 
+logic_or_op = { "||" }
+
 logic_and_expression = {
-    bit_or_expression ~ ("&&" ~ bit_or_expression)*
+    bit_or_expression ~ (logic_and_op ~ bit_or_expression)*
 }
+
+logic_and_op = { "&&" }
 
 // Bitwise OR / XOR / AND collapsed to one level (like JS)
 bit_or_expression = {

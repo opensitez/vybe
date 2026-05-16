@@ -6175,44 +6175,26 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span)
             )
         }
         // PHP `substr($s, $start, $length?)` →
-        //   2-arg: `$s.substring($start)`
-        //   3-arg: `$s.substring($start, $start + $length)` (start eval'd
-        //          twice — typical PHP usage passes a literal/variable).
+        //   2-arg: `__php_substr($s, $start)`
+        //   3-arg: `__php_substr($s, $start, $length)`
+        // The compiler intrinsic lowers this directly to STR_SUBSTRING,
+        // which keeps dynamic receivers safe (e.g. `$_SERVER[...]`).
         "substr" | "mb_substr" if args.len() == 2 => {
             mk_call(
                 Expression::with_span(
-                    ExprKind::Member {
-                        object: Box::new(arg(0)?),
-                        field: "substring".to_string(),
-                        null_safe: false,
-                    },
+                    ExprKind::Ident("__php_substr".to_string()),
                     span.clone(),
                 ),
-                vec![arg(1)?],
+                vec![arg(0)?, arg(1)?],
             )
         }
         "substr" | "mb_substr" if args.len() >= 3 => {
-            let start_first = arg(1)?;
-            let start_second = arg(1)?;
-            let length = arg(2)?;
-            let end = Expression::with_span(
-                ExprKind::Binary {
-                    op: BinOp::Add,
-                    left: Box::new(start_second),
-                    right: Box::new(length),
-                },
-                span.clone(),
-            );
             mk_call(
                 Expression::with_span(
-                    ExprKind::Member {
-                        object: Box::new(arg(0)?),
-                        field: "substring".to_string(),
-                        null_safe: false,
-                    },
+                    ExprKind::Ident("__php_substr".to_string()),
                     span.clone(),
                 ),
-                vec![start_first, end],
+                vec![arg(0)?, arg(1)?, arg(2)?],
             )
         }
         // PHP `lcfirst($s)` — same shape, lowercase first character.

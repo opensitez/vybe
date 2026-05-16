@@ -1,4 +1,11 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
+
+fn assert_php_output(src: &str, expected: &[&str]) {
+	assert_eq!(
+		run_prints(src),
+		expected.iter().map(|value| (*value).to_string()).collect::<Vec<_>>()
+	);
+}
 
 // Arithmetic
 #[test] fn add_sub_mul_div() { compile_ok("<?php $x = 1 + 2 * 3 - 4 / 2;"); }
@@ -51,3 +58,181 @@ use super::helpers::compile_ok;
 #[test] fn array_access_assign() { compile_ok("<?php $a = [1,2]; $a[0] = 99;"); }
 #[test] fn assoc_access_assign() { compile_ok("<?php $a = []; $a['key'] = 'value';"); }
 #[test] fn property_assign() { compile_ok("<?php $obj->name = 'test';"); }
+
+#[test]
+fn logical_operators_runtime_results() {
+	assert_php_output(
+		r#"<?php
+$_SERVER = [];
+if (!isset($defaultLang) && !empty($_SERVER['HTTP_ACCEPT_LANGUAGE'])) {
+	echo 'and-bad';
+} else {
+	echo 'and-ok';
+}
+
+if (!empty($_SERVER['HTTP_ACCEPT_LANGUAGE']) || !isset($defaultLang)) {
+	echo 'or-ok';
+} else {
+	echo 'or-bad';
+}
+
+if (true and false) {
+	echo 'word-and-bad';
+} else {
+	echo 'word-and-ok';
+}
+
+if (false or true) {
+	echo 'word-or-ok';
+} else {
+	echo 'word-or-bad';
+}
+
+if (true xor true) {
+	echo 'word-xor-bad';
+} else {
+	echo 'word-xor-ok';
+}
+"#,
+		&[
+			"and-ok",
+			"or-ok",
+			"word-and-ok",
+			"word-or-ok",
+			"word-xor-ok",
+		],
+	);
+}
+
+#[test]
+fn arithmetic_comparison_and_control_operator_runtime_results() {
+	assert_php_output(
+		r#"<?php
+echo 1 + 2;
+echo 7 - 4;
+echo 6 * 7;
+echo 7 / 2;
+echo 7 % 3;
+echo 2 ** 3;
+echo 'a' . 'b';
+echo (-5) + 8;
+echo (+5);
+echo (!false) ? 't' : 'f';
+echo (2 < 3) ? 't' : 'f';
+echo (3 > 2) ? 't' : 'f';
+echo (3 <= 3) ? 't' : 'f';
+echo (4 >= 5) ? 't' : 'f';
+echo (2 == '2') ? 't' : 'f';
+echo (2 === '2') ? 't' : 'f';
+echo (2 != 3) ? 't' : 'f';
+echo (2 !== '2') ? 't' : 'f';
+echo 1 <=> 2;
+echo 2 <=> 2;
+echo 3 <=> 2;
+echo null ?? 'fallback';
+echo 'value' ?? 'fallback';
+echo false ? 'then' : 'else';
+echo 0 ?: 'fallback';
+"#,
+		&[
+			"3",
+			"3",
+			"42",
+			"3.5",
+			"1",
+			"8",
+			"ab",
+			"3",
+			"5",
+			"t",
+			"t",
+			"t",
+			"t",
+			"f",
+			"t",
+			"f",
+			"t",
+			"t",
+			"-1",
+			"0",
+			"1",
+			"fallback",
+			"value",
+			"else",
+			"fallback",
+		],
+	);
+}
+
+#[test]
+fn bitwise_and_shift_operator_runtime_results() {
+	assert_php_output(
+		r#"<?php
+echo 6 & 3;
+echo 6 | 3;
+echo 6 ^ 3;
+echo 1 << 3;
+echo 8 >> 2;
+echo ~1;
+"#,
+		&["2", "7", "5", "8", "2", "-2"],
+	);
+}
+
+#[test]
+fn compound_assignment_operator_runtime_results() {
+	assert_php_output(
+		r#"<?php
+$x = 5;
+$x += 2;
+echo $x;
+$x -= 4;
+echo $x;
+$x *= 3;
+echo $x;
+$x /= 9;
+echo $x;
+$x %= 2;
+echo $x;
+
+$text = 'a';
+$text .= 'b';
+echo $text;
+
+$bits = 6;
+$bits &= 3;
+echo $bits;
+$bits |= 4;
+echo $bits;
+$bits ^= 1;
+echo $bits;
+
+$shift = 1;
+$shift <<= 3;
+echo $shift;
+$shift >>= 2;
+echo $shift;
+
+$fallback = null;
+$fallback ??= 'set';
+echo $fallback;
+$fallback ??= 'again';
+echo $fallback;
+"#,
+		&[
+			"7",
+			"3",
+			"9",
+			"1",
+			"1",
+			"ab",
+			"2",
+			"6",
+			"7",
+			"8",
+			"2",
+			"set",
+			"set",
+		],
+	);
+}

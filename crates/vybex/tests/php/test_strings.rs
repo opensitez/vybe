@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── String operations ───────────────────────────────────────
 #[test] fn concat_dot() { compile_ok("<?php $x = 'hello' . ' ' . 'world'; echo $x;"); }
@@ -8,6 +8,13 @@ use super::helpers::compile_ok;
 #[test] fn string_case() { compile_ok("<?php echo strtolower('HELLO'); echo strtoupper('hello');"); }
 #[test] fn string_trim() { compile_ok("<?php echo trim('  hi  '); echo ltrim('  hi'); echo rtrim('hi  ');"); }
 #[test] fn string_substr() { compile_ok("<?php echo substr('hello world', 6); echo substr('hello', 0, 3);"); }
+#[test]
+fn string_substr_dynamic_receiver_runtime() {
+	assert_eq!(
+		run_prints("<?php $_SERVER = ['HTTP_ACCEPT_LANGUAGE' => 'abcdef']; echo substr($_SERVER['HTTP_ACCEPT_LANGUAGE'], 0, 2);"),
+		vec!["ab".to_string()]
+	);
+}
 #[test] fn string_search() { compile_ok("<?php echo strpos('hello', 'lo'); echo str_contains('hello', 'ell');"); }
 #[test] fn string_replace() { compile_ok("<?php echo str_replace('world', 'PHP', 'hello world');"); }
 #[test] fn string_split() { compile_ok("<?php $parts = explode(',', 'a,b,c'); echo $parts[0];"); }

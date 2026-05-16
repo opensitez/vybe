@@ -7012,9 +7012,39 @@ impl Compiler {
                 }
             },
             BinOp::Spaceship => {
-                // a <=> b: returns -1, 0, or 1
-                let i = self.import("ecma:math", "spaceship");
-                self.emit_host_call(i, 2);
+                let right_slot = self.define_local("__spaceship_rhs");
+                let left_slot = self.define_local("__spaceship_lhs");
+                self.emit_u16(Op::LOCAL_SET, right_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_SET, left_slot); self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, left_slot);
+                self.emit_u16(Op::LOCAL_GET, right_slot);
+                if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
+                else if self.is_php_profile() { self.coerce_top_two_php_datetime_for_compare(); }
+                if self.profile.name == "pascal" { self.emit_pascal_relational_compare(Op::DYN_LT); }
+                else { self.emit(Op::DYN_LT); }
+                let lt_true = self.emit_jump(Op::BR_IF_TRUE);
+
+                self.emit_u16(Op::LOCAL_GET, left_slot);
+                self.emit_u16(Op::LOCAL_GET, right_slot);
+                if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
+                else if self.is_php_profile() { self.coerce_top_two_php_datetime_for_compare(); }
+                if self.profile.name == "pascal" { self.emit_pascal_relational_compare(Op::DYN_GT); }
+                else { self.emit(Op::DYN_GT); }
+                let gt_true = self.emit_jump(Op::BR_IF_TRUE);
+
+                self.emit_const(Value::I32(0));
+                let done = self.emit_jump(Op::BR);
+
+                self.patch_jump(lt_true);
+                self.emit_const(Value::I32(-1));
+                let done_lt = self.emit_jump(Op::BR);
+
+                self.patch_jump(gt_true);
+                self.emit_const(Value::I32(1));
+
+                self.patch_jump(done);
+                self.patch_jump(done_lt);
             }
             BinOp::And | BinOp::Or => unreachable!(), // handled with short-circuit
             BinOp::Xor => {
@@ -8617,6 +8647,35 @@ impl Compiler {
                     // end = len(s)
                     self.emit_u16(Op::LOCAL_GET, s_slot);
                     common::strings::emit_length(self.chunk(), line);
+                    common::strings::emit_substring(self.chunk(), line);
+                } else {
+                    self.emit(Op::NULL);
+                }
+            }
+            "php_substr" => {
+                if args.len() >= 2 {
+                    let str_slot = self.define_local("__php_substr_s");
+                    let start_slot = self.define_local("__php_substr_start");
+
+                    self.compile_expr(args[0])?;
+                    self.emit_u16(Op::LOCAL_SET, str_slot); self.emit(Op::DROP);
+
+                    self.compile_expr(args[1])?;
+                    common::convert::emit_to_int(self.chunk(), line);
+                    self.emit_u16(Op::LOCAL_SET, start_slot); self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, str_slot);
+                    self.emit_u16(Op::LOCAL_GET, start_slot);
+
+                    if args.len() >= 3 {
+                        self.emit_u16(Op::LOCAL_GET, start_slot);
+                        self.compile_expr(args[2])?;
+                        common::convert::emit_to_int(self.chunk(), line);
+                        self.emit(Op::I32_ADD);
+                    } else {
+                        self.emit_const(Value::I32(i32::MAX));
+                    }
+
                     common::strings::emit_substring(self.chunk(), line);
                 } else {
                     self.emit(Op::NULL);

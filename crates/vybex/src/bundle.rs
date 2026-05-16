@@ -2,7 +2,7 @@
 //! compile and run — whether loaded from a single source file or a multi-file
 //! project. The caller never cares which.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use crate::ast::*;
 use crate::languages::Language;
@@ -55,11 +55,14 @@ impl Bundle {
     /// bundle-level preparation that compilation uses: source-import
     /// resolution plus entry-point injection.
     pub fn prepared_module(&self) -> Result<Module, String> {
-        // Concatenate all sources
-        let combined: String = self.sources.iter()
-            .map(|s| s.code.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
+        let combined = if self.language.name == "php" {
+            expand_php_bundle_sources(&self.sources)?
+        } else {
+            self.sources.iter()
+                .map(|s| s.code.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
 
         // Parse → common AST
         let mut module = (self.language.parse)(&combined)?;
@@ -195,6 +198,268 @@ impl Bundle {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PhpIncludeKind {
+    Include,
+    IncludeOnce,
+    Require,
+    RequireOnce,
+}
+
+fn expand_php_bundle_sources(sources: &[SourceFile]) -> Result<String, String> {
+    let mut included_once = HashSet::new();
+    let mut expanded = Vec::new();
+    for source in sources {
+        expanded.push(expand_php_source_file(&source.path, &source.code, &mut included_once)?);
+    }
+    Ok(expanded.join("\n"))
+}
+
+fn expand_php_source_file(
+    source_path: &Path,
+    code: &str,
+    included_once: &mut HashSet<PathBuf>,
+) -> Result<String, String> {
+    let mut aliases: HashMap<String, String> = HashMap::new();
+    let mut out = Vec::new();
+
+    for line in code.lines() {
+        let trimmed = line.trim();
+
+        if let Some((name, value)) = parse_php_alias_assignment(trimmed, source_path, &aliases) {
+            aliases.insert(name, value);
+            out.push(line.to_string());
+            continue;
+        }
+
+        if let Some((kind, expr)) = parse_php_include_statement(trimmed) {
+            let resolved = eval_php_path_expression(expr, source_path, &aliases)
+                .ok_or_else(|| format!(
+                    "Unsupported PHP include path expression in {}: {}",
+                    source_path.display(),
+                    trimmed,
+                ))?;
+            let include_path = resolve_php_include_path(source_path, &resolved);
+            let canonical = std::fs::canonicalize(&include_path).unwrap_or(include_path.clone());
+
+            let should_expand = match kind {
+                PhpIncludeKind::IncludeOnce | PhpIncludeKind::RequireOnce => included_once.insert(canonical.clone()),
+                PhpIncludeKind::Include | PhpIncludeKind::Require => true,
+            };
+
+            if should_expand {
+                let include_source = std::fs::read_to_string(&canonical)
+                    .map_err(|e| format!("PHP include error reading {}: {}", canonical.display(), e))?;
+                let normalized_include = strip_leading_php_open_tag(&include_source);
+                out.push(expand_php_source_file(&canonical, &normalized_include, included_once)?);
+            }
+            continue;
+        }
+
+        out.push(normalize_php_alternative_control_syntax(line));
+    }
+
+    Ok(out.join("\n"))
+}
+
+fn absolutize_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    }
+}
+
+fn resolve_php_include_path(source_path: &Path, resolved: &str) -> PathBuf {
+    let candidate = PathBuf::from(resolved);
+    if candidate.is_absolute() {
+        candidate
+    } else {
+        absolutize_path(source_path)
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join(candidate)
+    }
+}
+
+fn parse_php_alias_assignment(
+    line: &str,
+    source_path: &Path,
+    aliases: &HashMap<String, String>,
+) -> Option<(String, String)> {
+    if !line.starts_with('$') || !line.ends_with(';') {
+        return None;
+    }
+    let (lhs, rhs) = line[..line.len() - 1].split_once('=')?;
+    let name = lhs.trim().strip_prefix('$')?.trim();
+    if name.is_empty() || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+        return None;
+    }
+    let value = eval_php_path_expression(rhs.trim(), source_path, aliases)?;
+    Some((name.to_string(), value))
+}
+
+fn parse_php_include_statement(line: &str) -> Option<(PhpIncludeKind, &str)> {
+    let kinds = [
+        ("require_once", PhpIncludeKind::RequireOnce),
+        ("include_once", PhpIncludeKind::IncludeOnce),
+        ("require", PhpIncludeKind::Require),
+        ("include", PhpIncludeKind::Include),
+    ];
+
+    for (kw, kind) in kinds {
+        if let Some(rest) = line.strip_prefix(kw) {
+            let mut expr = rest.trim();
+            expr = expr.strip_suffix(';')?.trim();
+            if expr.starts_with('(') && expr.ends_with(')') {
+                expr = expr[1..expr.len() - 1].trim();
+            }
+            return Some((kind, expr));
+        }
+    }
+    None
+}
+
+fn eval_php_path_expression(
+    expr: &str,
+    source_path: &Path,
+    aliases: &HashMap<String, String>,
+) -> Option<String> {
+    let mut out = String::new();
+    for part in split_php_concat(expr) {
+        out.push_str(&eval_php_path_atom(part.trim(), source_path, aliases)?);
+    }
+    Some(out)
+}
+
+fn split_php_concat(expr: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    let chars: Vec<(usize, char)> = expr.char_indices().collect();
+    let mut index = 0usize;
+
+    while index < chars.len() {
+        let (byte_idx, ch) = chars[index];
+        if let Some(q) = quote {
+            if ch == '\\' {
+                index += 2;
+                continue;
+            }
+            if ch == q {
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            '.' if depth == 0 => {
+                parts.push(expr[start..byte_idx].trim());
+                start = byte_idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+
+    let tail = expr[start..].trim();
+    if !tail.is_empty() {
+        parts.push(tail);
+    }
+    parts
+}
+
+fn eval_php_path_atom(
+    atom: &str,
+    source_path: &Path,
+    aliases: &HashMap<String, String>,
+) -> Option<String> {
+    let atom = atom.trim();
+    if atom.is_empty() {
+        return Some(String::new());
+    }
+
+    if let Some(stripped) = atom.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        return Some(stripped.to_string());
+    }
+    if let Some(stripped) = atom.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
+        return Some(stripped.to_string());
+    }
+    if atom.eq("__DIR__") {
+        return Some(
+            absolutize_path(source_path)
+                .parent()
+                .unwrap_or(Path::new("."))
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+    if atom.eq("__FILE__") {
+        return Some(absolutize_path(source_path).to_string_lossy().into_owned());
+    }
+    if let Some(name) = atom.strip_prefix('$') {
+        return aliases.get(name).cloned();
+    }
+    if atom.starts_with("dirname(") && atom.ends_with(')') {
+        let inner = &atom["dirname(".len()..atom.len() - 1];
+        let resolved = eval_php_path_expression(inner, source_path, aliases)?;
+        let parent = Path::new(&resolved).parent().unwrap_or(Path::new("."));
+        return Some(parent.to_string_lossy().into_owned());
+    }
+    None
+}
+
+fn strip_leading_php_open_tag(source: &str) -> String {
+    let trimmed = source.trim_start();
+    if let Some(rest) = trimmed.strip_prefix("<?php") {
+        return rest.trim_start_matches(['\r', '\n']).to_string();
+    }
+    if let Some(rest) = trimmed.strip_prefix("<?") {
+        return rest.trim_start_matches(['\r', '\n']).to_string();
+    }
+    source.to_string()
+}
+
+fn normalize_php_alternative_control_syntax(line: &str) -> String {
+    let indent_len = line.len() - line.trim_start().len();
+    let indent = &line[..indent_len];
+    let trimmed = line.trim();
+    let Some(inner) = trimmed.strip_prefix("<?php").and_then(|s| s.strip_suffix("?>")) else {
+        return line.to_string();
+    };
+    let inner = inner.trim();
+
+    if let Some(prefix) = inner.strip_suffix(':').map(str::trim_end) {
+        if prefix.starts_with("if ")
+            || prefix.starts_with("foreach ")
+            || prefix.starts_with("for ")
+            || prefix.starts_with("while ")
+            || prefix.starts_with("switch ")
+        {
+            return format!("{}<?php {} {{ ?>", indent, prefix);
+        }
+        if prefix.starts_with("elseif ") {
+            return format!("{}<?php }} {} {{ ?>", indent, prefix);
+        }
+        if prefix == "else" {
+            return format!("{}<?php }} else {{ ?>", indent);
+        }
+    }
+
+    if matches!(inner, "endif;" | "endforeach;" | "endfor;" | "endwhile;" | "endswitch;") {
+        return format!("{}<?php }} ?>", indent);
+    }
+
+    line.to_string()
+}
+
 /// Resolve `import { x } from "./file.js"` by parsing the imported file
 /// and prepending its body to the main module.
 fn resolve_imports(module: &mut Module, lang: &Language, base_dir: &Path) {
@@ -243,6 +508,63 @@ fn resolve_imports(module: &mut Module, lang: &Language, base_dir: &Path) {
     }
     prepend.append(&mut module.body);
     module.body = prepend;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn php_bundle_expands_require_once_with_dir_alias() {
+        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_{}", uuid::Uuid::new_v4()));
+        let public_dir = temp_root.join("public");
+        std::fs::create_dir_all(&public_dir).expect("create temp dirs");
+
+        let lib_path = temp_root.join("lib.php");
+        std::fs::write(&lib_path, "<?php\nfunction shared_helper() { return 1; }\n")
+            .expect("write lib");
+
+        let entry_path = public_dir.join("entry.php");
+        let entry_src = "<?php\n$basedir = dirname(__DIR__);\nrequire_once $basedir . '/lib.php';\necho shared_helper();\n";
+        std::fs::write(&entry_path, entry_src).expect("write entry");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "entry".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        let module = bundle.prepared_module().expect("prepared module");
+        assert!(module.body.iter().any(|stmt| matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "shared_helper")));
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn php_bundle_normalizes_alternative_template_if_syntax() {
+        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_alt_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_root).expect("create temp dir");
+
+        let entry_path = temp_root.join("entry.php");
+        let entry_src = "<?php\n$value = true;\n?>\n<?php if ($value): ?>\n<div>ok</div>\n<?php endif; ?>\n";
+        std::fs::write(&entry_path, entry_src).expect("write entry");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "entry".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        bundle.prepared_module().expect("prepared module");
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
 }
 
 fn should_resolve_source_import(path_str: &str, resolved: &Path) -> bool {

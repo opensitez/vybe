@@ -399,7 +399,7 @@ sleep               = { emit = "host:wasi:clocks:sleep",     min_args = 1, max_a
 # ── String formatting ──────────────────────────────────────────────────────
 
 sprintf             = { emit = "stdlib:sprintf",            min_args = 1, max_args = 255 }
-# `substr` walker-rewritten to `$s.substring($start, $start + $length)`.
+# `substr` walker-rewritten to `__php_substr($s, $start, $length?)`.
 
 # ── Internal helpers — AST rewrite targets ─────────────────────────────────
 # The PHP walker rewrites `$x++` → `$x = __php_increment($x)` and
@@ -410,6 +410,7 @@ sprintf             = { emit = "stdlib:sprintf",            min_args = 1, max_ar
 
 __php_increment     = { emit = "common:php.inc",                 min_args = 1, max_args = 1 }
 __php_decrement     = { emit = "common:php.dec",                 min_args = 1, max_args = 1 }
+__php_substr        = { emit = "intrinsic:php_substr",          min_args = 2, max_args = 3 }
 
 # ── File I/O ────────────────────────────────────────────────────────────────
 
