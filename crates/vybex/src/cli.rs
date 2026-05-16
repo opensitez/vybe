@@ -6,6 +6,9 @@
 //!   --dump, -d        Disassemble bytecode and exit (no run)
 //!   --dump-ast        Parse and print the prepared common AST, then exit
 //!   --emit-wasm, -w   Compile to .wasm binary and exit
+//!   --eval CODE       Compile and run source from a string
+//!   --lang NAME       Language to use with --eval
+//!   --virtual-path P  Virtual source path to use with --eval
 //!   --sandbox, -s     Restricted mode (no filesystem/network/database)
 //!   --portable, -p    Minimal WASI runtime only (no Vybe host optimizations)
 //!   --trace, -t       Enable bytecode trace output
@@ -15,7 +18,7 @@
 //! (.vybe, .vbproj, .csproj, .pyproj/.ipyproj), and .wasm binaries.
 //! Language is determined automatically.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use vybe_compiler::ast::{ExprKind, Literal, Module, StmtKind};
 use vybe_bytecode::chunk::Chunk;
@@ -151,6 +154,9 @@ pub fn run() {
     let mut dump = false;
     let mut dump_ast = false;
     let mut emit_wasm = false;
+    let mut eval_source: Option<String> = None;
+    let mut eval_language: Option<String> = None;
+    let mut eval_virtual_path: Option<String> = None;
     let mut sandbox = false;
     let mut portable = false;
     let mut trace = false;
@@ -169,6 +175,27 @@ pub fn run() {
             "--dump" | "-d" => dump = true,
             "--dump-ast" => dump_ast = true,
             "--emit-wasm" | "-w" => emit_wasm = true,
+            "--eval" => {
+                let Some(code) = iter.next() else {
+                    eprintln!("Missing value for --eval");
+                    std::process::exit(1);
+                };
+                eval_source = Some(code.clone());
+            }
+            "--lang" => {
+                let Some(name) = iter.next() else {
+                    eprintln!("Missing value for --lang");
+                    std::process::exit(1);
+                };
+                eval_language = Some(name.clone());
+            }
+            "--virtual-path" => {
+                let Some(path) = iter.next() else {
+                    eprintln!("Missing value for --virtual-path");
+                    std::process::exit(1);
+                };
+                eval_virtual_path = Some(path.clone());
+            }
             "--sandbox" | "-s" => sandbox = true,
             "--portable" | "-p" => portable = true,
             "--trace" | "-t" => trace = true,
@@ -209,30 +236,56 @@ pub fn run() {
         crate::server::serve_directory(config);
     }
 
-    let file_path = match file_arg {
-        Some(f) => f,
-        None => {
-            print_usage();
-            std::process::exit(1);
-        }
-    };
-
-    let path = Path::new(&file_path);
-
-    // ── Handle .wasm binaries directly ──────────────────────────────────────
-    if path.extension().and_then(|e| e.to_str()) == Some("wasm") {
-        if dump_ast {
-            eprintln!("AST dump is only available for source files and projects");
-            std::process::exit(1);
-        }
-        run_wasm(path, dump, trace, chunk_filter.as_deref());
-        return;
+    if eval_source.is_some() && file_arg.is_some() {
+        eprintln!("Use either a file path or --eval, not both");
+        std::process::exit(1);
     }
 
-    // ── Load project/source ─────────────────────────────────────────────────
-    let bundle = match vybe_compiler::projects::load(path) {
-        Ok(b) => b,
-        Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+    let file_path = if eval_source.is_none() {
+        match file_arg {
+            Some(f) => Some(f),
+            None => {
+                print_usage();
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
+
+    let source_path: PathBuf;
+    let bundle = if let Some(source) = eval_source {
+        let Some(language_name) = eval_language else {
+            eprintln!("--eval requires --lang <name>");
+            std::process::exit(1);
+        };
+        let Some(language) = vybe_compiler::languages::find_by_name(&language_name) else {
+            eprintln!("Unknown language for --lang: {language_name}");
+            std::process::exit(1);
+        };
+        source_path = eval_virtual_path
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(format!("eval.{language_name}")));
+        crate::dynamic::bundle_from_source(source, language, source_path.clone())
+    } else {
+        let file_path = file_path.expect("file path already checked");
+        source_path = PathBuf::from(&file_path);
+        let path = Path::new(&file_path);
+
+        // ── Handle .wasm binaries directly ──────────────────────────────────
+        if path.extension().and_then(|e| e.to_str()) == Some("wasm") {
+            if dump_ast {
+                eprintln!("AST dump is only available for source files and projects");
+                std::process::exit(1);
+            }
+            run_wasm(path, dump, trace, chunk_filter.as_deref());
+            return;
+        }
+
+        match vybe_compiler::projects::load(path) {
+            Ok(b) => b,
+            Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+        }
     };
 
     eprintln!("[vybex] Project '{}', sources={}, entry={:?}",
@@ -308,17 +361,18 @@ pub fn run() {
 
     // ── Compile ─────────────────────────────────────────────────────────────
     eprintln!("[vybex] Preparing and compiling module...");
-    let compiled = match bundle.compile_full_with_modules(&vm.modules) {
-        Ok(c) => c,
-        Err(e) => { eprintln!("Compile error: {e}"); std::process::exit(1); }
+    let compiled = {
+        let mut runtime_compiler = crate::dynamic::RuntimeCompilerService::new(&mut vm);
+        match runtime_compiler.compile_bundle(&bundle) {
+            Ok(c) => c,
+            Err(e) => { eprintln!("Compile error: {e}"); std::process::exit(1); }
+        }
     };
-    let chunks = compiled.chunks;
-    let host_imports = compiled.host_imports;
 
     // ── --dump: disassemble and exit ────────────────────────────────────────
     if dump {
-        print_chunk_summary(&chunks, chunk_filter.as_deref());
-        for chunk in filter_chunks(&chunks, chunk_filter.as_deref()) {
+        print_chunk_summary(&compiled.chunks, chunk_filter.as_deref());
+        for chunk in filter_chunks(&compiled.chunks, chunk_filter.as_deref()) {
             println!("{}", vybe_bytecode::debug::disassemble(chunk));
         }
         return;
@@ -326,8 +380,8 @@ pub fn run() {
 
     // ── --emit-wasm: write .wasm binary and exit ────────────────────────────
     if emit_wasm {
-        let wasm_bytes = vybe_bytecode::wasm::write_wasm(&chunks);
-        let out_path = path.with_extension("wasm");
+        let wasm_bytes = vybe_bytecode::wasm::write_wasm(&compiled.chunks);
+        let out_path = source_path.with_extension("wasm");
         std::fs::write(&out_path, &wasm_bytes).unwrap();
         eprintln!("Wrote {} bytes to {}", wasm_bytes.len(), out_path.display());
         return;
@@ -341,41 +395,9 @@ pub fn run() {
         vm.set_trace_chunk_filter(chunk_filter.clone());
     }
 
-    // ── Install ESM host-module imports as VM globals ───────────────────────
-    // `import { log } from "wasi:cli"` creates a local binding `log`. The
-    // compiler emits direct CALL_IMPORT for `log(...)` calls, but a
-    // read-as-value such as `const f = log; f("hi")` resolves via GLOBAL_GET
-    // — so install each named import as a global bound to the host function
-    // reference. Wildcard imports (`import * as ns from "wasi:foo"`) need a
-    // namespace object exposing every host fn under that module.
-    crate::host_imports::install(&mut vm, &host_imports);
-
-    // ── Register WASM function names as globals ─────────────────────────────
-    // When a .vybe project includes .wasm files, their named functions are
-    // appended after the compiled source chunks. Register them so the source
-    // code can call them by name (e.g. `add(3, 4)` in VB).
-    for (idx, chunk) in chunks.iter().enumerate() {
-        if !chunk.name.is_empty()
-            && chunk.name != "<script>"
-            && chunk.name != "<bootstrap>"
-            && !chunk.name.starts_with("__stdlib_")
-        {
-            use std::sync::{Arc as StdArc, Mutex as StdMutex};
-            let func = vybe_bytecode::value::Function {
-                name: Some(chunk.name.clone()),
-                arity: chunk.arity,
-                chunk_index: idx,
-                upvalues: vec![],
-            };
-            let mut obj = vybe_bytecode::value::Object::new();
-            obj.kind = vybe_bytecode::value::ObjectKind::Function(func);
-            let val = vybe_bytecode::Value::Object(StdArc::new(StdMutex::new(obj)));
-            vm.globals.insert(chunk.name.to_lowercase(), val);
-        }
-    }
-
     // ── Run ─────────────────────────────────────────────────────────────────
-    match vm.run(chunks) {
+    let mut runtime_compiler = crate::dynamic::RuntimeCompilerService::new(&mut vm);
+    match runtime_compiler.run_compiled(compiled) {
         Ok(_) => {}
         Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
     }
@@ -443,12 +465,16 @@ fn print_usage() {
     eprintln!("vybex — Universal compiler");
     eprintln!();
     eprintln!("Usage: vybex [flags] <file>");
+    eprintln!("       vybex --eval CODE --lang NAME [--virtual-path PATH]");
     eprintln!("       vybex --serve [BIND] [ROOT]");
     eprintln!();
     eprintln!("Flags:");
     eprintln!("  -d, --dump        Disassemble bytecode (no run)");
     eprintln!("      --dump-ast    Parse and print the prepared common AST");
     eprintln!("  -w, --emit-wasm   Compile to .wasm binary");
+    eprintln!("      --eval CODE   Compile source from a string");
+    eprintln!("      --lang NAME   Language for --eval (js, php, python, vb, ...)");
+    eprintln!("      --virtual-path PATH  Source path used for relative imports in --eval");
     eprintln!("  -s, --sandbox     Restricted mode (safe capabilities only)");
     eprintln!("  -p, --portable    Minimal WASI runtime (no Vybe host)");
     eprintln!("  -t, --trace       Enable bytecode trace output");

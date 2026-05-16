@@ -127,14 +127,6 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
             return;
         }
     };
-    let chunks = match bundle.compile() {
-        Ok(c) => c,
-        Err(e) => {
-            let msg = format!("compile error: {e}");
-            end_with_text(&ctx, 500, &msg);
-            return;
-        }
-    };
 
     // Fresh VM per request (Phase 2: pool).
     let mut vm = VM::new();
@@ -152,6 +144,14 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
         c
     };
     vybe_host::register_with_capabilities(&mut vm, &caps);
+    vybe_host::setup_namespaces(&mut vm);
+
+    crate::server::programmatic::register(&mut vm);
+    if let Err(e) = crate::adapters::register_all(&mut vm) {
+        let msg = format!("adapter registration error: {e}");
+        end_with_text(&ctx, 500, &msg);
+        return;
+    }
 
     // Populate PHP-style superglobals from the request context. Built as
     // `ObjectKind::Map` — the canonical cross-language associative type
@@ -190,28 +190,8 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
         vybe_bytecode::Value::Null
     }));
 
-    // Register WASM-named globals (mirrors main.rs). Allows scripts to
-    // reference named functions across multi-file projects.
-    for (idx, chunk) in chunks.iter().enumerate() {
-        if !chunk.name.is_empty()
-            && chunk.name != "<script>"
-            && chunk.name != "<bootstrap>"
-            && !chunk.name.starts_with("__stdlib_")
-        {
-            let func = vybe_bytecode::value::Function {
-                name: Some(chunk.name.clone()),
-                arity: chunk.arity,
-                chunk_index: idx,
-                upvalues: vec![],
-            };
-            let mut obj = vybe_bytecode::value::Object::new();
-            obj.kind = vybe_bytecode::value::ObjectKind::Function(func);
-            let val = vybe_bytecode::Value::Object(std::sync::Arc::new(std::sync::Mutex::new(obj)));
-            vm.globals.insert(chunk.name.to_lowercase(), val);
-        }
-    }
-
-    if let Err(e) = vm.run(chunks) {
+    let mut runtime_compiler = crate::dynamic::RuntimeCompilerService::new(&mut vm);
+    if let Err(e) = runtime_compiler.compile_and_run_bundle(&bundle) {
         // If the response hasn't been flushed yet, we can still return
         // a proper 500. Otherwise we can only log; headers are gone.
         let headers_sent = ctx.response.lock().unwrap().headers_sent;

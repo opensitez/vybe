@@ -1,0 +1,201 @@
+use std::path::{Path, PathBuf};
+
+use vybe_bytecode::chunk::Chunk;
+use vybe_bytecode::value::{Function, Object, ObjectKind};
+use vybe_bytecode::{VM, Value};
+use vybe_compiler::bundle::{Bundle, CompiledBundle, EntryPoint, SourceFile};
+use vybe_compiler::compiler::HostImportMetadata;
+use vybe_compiler::languages::{self, Language};
+
+pub struct DynamicCompilation {
+    pub chunks: Vec<Chunk>,
+    pub host_imports: HostImportMetadata,
+}
+
+pub struct RuntimeCompilerService<'vm> {
+    vm: &'vm mut VM,
+}
+
+impl<'vm> RuntimeCompilerService<'vm> {
+    pub fn new(vm: &'vm mut VM) -> Self {
+        Self { vm }
+    }
+
+    pub fn vm(&mut self) -> &mut VM {
+        self.vm
+    }
+
+    pub fn compile_bundle(&mut self, bundle: &Bundle) -> Result<DynamicCompilation, String> {
+        let compiled = bundle.compile_full_with_modules(&self.vm.modules)?;
+        Ok(DynamicCompilation {
+            chunks: compiled.chunks,
+            host_imports: compiled.host_imports,
+        })
+    }
+
+    pub fn compile_path(&mut self, path: &Path) -> Result<DynamicCompilation, String> {
+        let bundle = vybe_compiler::projects::load(path)?;
+        self.compile_bundle(&bundle)
+    }
+
+    pub fn compile_source(
+        &mut self,
+        source: impl Into<String>,
+        language: Language,
+        virtual_path: impl Into<PathBuf>,
+    ) -> Result<DynamicCompilation, String> {
+        let bundle = bundle_from_source(source, language, virtual_path);
+        self.compile_bundle(&bundle)
+    }
+
+    pub fn compile_source_by_name(
+        &mut self,
+        source: impl Into<String>,
+        language_name: &str,
+        virtual_path: impl Into<PathBuf>,
+    ) -> Result<DynamicCompilation, String> {
+        let language = languages::find_by_name(language_name)
+            .ok_or_else(|| format!("unknown language: {language_name}"))?;
+        self.compile_source(source, language, virtual_path)
+    }
+
+    pub fn run_compiled(&mut self, compiled: DynamicCompilation) -> Result<Value, String> {
+        let base_chunk_index = self.vm.chunks.len();
+        crate::host_imports::install(self.vm, &compiled.host_imports);
+        install_chunk_globals(self.vm, &compiled.chunks, base_chunk_index);
+        self.vm.run(compiled.chunks).map_err(|e| e.to_string())
+    }
+
+    pub fn compile_and_run_bundle(&mut self, bundle: &Bundle) -> Result<Value, String> {
+        let compiled = self.compile_bundle(bundle)?;
+        self.run_compiled(compiled)
+    }
+
+    pub fn compile_and_run_path(&mut self, path: &Path) -> Result<Value, String> {
+        let compiled = self.compile_path(path)?;
+        self.run_compiled(compiled)
+    }
+
+    pub fn compile_and_run_source(
+        &mut self,
+        source: impl Into<String>,
+        language: Language,
+        virtual_path: impl Into<PathBuf>,
+    ) -> Result<Value, String> {
+        let compiled = self.compile_source(source, language, virtual_path)?;
+        self.run_compiled(compiled)
+    }
+}
+
+pub fn bundle_from_source(
+    source: impl Into<String>,
+    language: Language,
+    virtual_path: impl Into<PathBuf>,
+) -> Bundle {
+    let path = virtual_path.into();
+    let name = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("dynamic")
+        .to_string();
+
+    Bundle {
+        name,
+        language,
+        sources: vec![SourceFile {
+            path,
+            code: source.into(),
+        }],
+        wasm_files: Vec::new(),
+        entry_point: EntryPoint::Auto,
+    }
+}
+
+pub fn language_for_path(path: &Path) -> Option<Language> {
+    let ext = path.extension()?.to_str()?;
+    languages::find_by_extension(ext)
+}
+
+pub fn install_chunk_globals(vm: &mut VM, chunks: &[Chunk], base_chunk_index: usize) {
+    use std::sync::{Arc, Mutex};
+
+    for (idx, chunk) in chunks.iter().enumerate() {
+        if !should_publish_chunk_name(&chunk.name) {
+            continue;
+        }
+
+        let func = Function {
+            name: Some(chunk.name.clone()),
+            arity: chunk.arity,
+            chunk_index: base_chunk_index + idx,
+            upvalues: vec![],
+        };
+        let mut obj = Object::new();
+        obj.kind = ObjectKind::Function(func);
+        let val = Value::Object(Arc::new(Mutex::new(obj)));
+        vm.globals.insert(chunk.name.to_lowercase(), val);
+    }
+}
+
+fn should_publish_chunk_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "<script>"
+        && name != "<bootstrap>"
+        && !name.starts_with("__stdlib_")
+}
+
+pub fn into_dynamic_compilation(compiled: CompiledBundle) -> DynamicCompilation {
+    DynamicCompilation {
+        chunks: compiled.chunks,
+        host_imports: compiled.host_imports,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::RuntimeCompilerService;
+    use vybe_bytecode::{VM, Value};
+
+    fn assert_numeric_value(value: Value, expected: f64) {
+        match value {
+            Value::I32(n) => assert_eq!(n as f64, expected),
+            Value::I64(n) => assert_eq!(n as f64, expected),
+            Value::F64(n) => assert_eq!(n, expected),
+            other => panic!("expected numeric value, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compiles_source_into_live_vm_and_publishes_function_globals() {
+        let mut vm = VM::new();
+        let _gui = vybe_host::register_all_with_gui(&mut vm);
+        vybe_host::setup_namespaces(&mut vm);
+
+        {
+            let mut service = RuntimeCompilerService::new(&mut vm);
+            service
+                .compile_and_run_source(
+                    "function greet() { return 7; }",
+                    vybe_compiler::languages::find_by_name("js").expect("js language"),
+                    PathBuf::from("dynamic/greet.js"),
+                )
+                .expect("compile and run greet");
+
+            service
+                .compile_and_run_source(
+                    "function callGreet() { return greet(); }",
+                    vybe_compiler::languages::find_by_name("js").expect("js language"),
+                    PathBuf::from("dynamic/call_greet.js"),
+                )
+                .expect("compile and run callGreet");
+        }
+
+        let greet = vm.globals.get("greet").cloned().expect("greet global");
+        let call_greet = vm.globals.get("callgreet").cloned().expect("callGreet global");
+
+        assert_numeric_value(vm.invoke(&greet, &[]).expect("invoke greet"), 7.0);
+        assert_numeric_value(vm.invoke(&call_greet, &[]).expect("invoke callGreet"), 7.0);
+    }
+}
