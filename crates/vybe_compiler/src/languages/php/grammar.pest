@@ -113,6 +113,10 @@ kw_new = @{ ^"new"         ~ !ident_cont }
 kw_clone = @{ ^"clone"       ~ !ident_cont }
 kw_echo = @{ ^"echo"        ~ !ident_cont }
 kw_print = @{ ^"print"       ~ !ident_cont }
+kw_include = @{ ^"include"     ~ !ident_cont }
+kw_include_once = @{ ^"include_once" ~ !ident_cont }
+kw_require = @{ ^"require"     ~ !ident_cont }
+kw_require_once = @{ ^"require_once" ~ !ident_cont }
 kw_null = @{ ^"null"        ~ !ident_cont }
 kw_true = @{ ^"true"        ~ !ident_cont }
 kw_false = @{ ^"false"       ~ !ident_cont }
@@ -171,6 +175,7 @@ reserved = _{
     | kw_continue | kw_return | kw_goto | kw_declare | kw_function | kw_class | kw_extends
     | kw_implements | kw_interface | kw_trait | kw_enum | kw_new | kw_clone
     | kw_echo | kw_print | kw_null | kw_true | kw_false | kw_instanceof
+    | kw_include | kw_include_once | kw_require | kw_require_once
     | kw_throw | kw_try | kw_catch | kw_finally | kw_static | kw_public
     | kw_private | kw_protected | kw_abstract | kw_final | kw_const
     | kw_match | kw_fn | kw_use | kw_namespace | kw_yield_from | kw_yield
@@ -549,7 +554,7 @@ switch_case = {
 
 return_statement = { kw_return ~ expression? ~ ";" }
 goto_statement = { kw_goto ~ (identifier | "{" ~ expression ~ "}") ~ ";" }
-label_statement = { identifier ~ ":" ~ statement? }
+label_statement = { identifier ~ ":" ~ !":" ~ statement? }
 declare_statement = {
     kw_declare ~ "(" ~ identifier ~ "=" ~ expression ~ ")" ~ (statement | block_statement | ";")
 }
@@ -759,6 +764,7 @@ primary_expression = {
     | isset_expression
     | empty_expression
     | print_expression
+    | include_expression
     | unset_expression
     | list_expression
     | array_expression
@@ -819,6 +825,11 @@ match_conditions = { expression ~ ("," ~ expression)* }
 isset_expression = { kw_isset ~ "(" ~ expression ~ ("," ~ expression)* ~ ")" }
 empty_expression = { kw_empty ~ "(" ~ expression ~ ")" }
 print_expression = { kw_print ~ expression }
+include_expression = {
+    (kw_include_once | kw_require_once | kw_include | kw_require)
+    ~ include_operand
+}
+include_operand = { "(" ~ expression ~ ")" | expression }
 unset_expression = { kw_unset ~ "(" ~ expression ~ ("," ~ expression)* ~ ")" }
 
 list_expression = {

@@ -45,6 +45,7 @@ print               = { emit = "print",                      min_args = 1, max_a
 print_r             = { emit = "print",                      min_args = 1, max_args = 2 }
 var_dump            = { emit = "print",                      min_args = 1, max_args = 255 }
 printf              = { emit = "print",                      min_args = 1, max_args = 255 }
+__php_dynamic_include = { emit = "host:vybe:php:dynamic_include", min_args = 2, max_args = 2 }
 readline            = { emit = "host:wasi:cli:readLine",     min_args = 0, max_args = 1 }
 error_log           = { emit = "host:wasi:cli:error",        min_args = 1, max_args = 4 }
 

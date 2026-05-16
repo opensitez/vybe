@@ -234,6 +234,7 @@ fn expand_php_source_file(
 ) -> Result<String, String> {
     let mut aliases: HashMap<String, String> = HashMap::new();
     let mut recent_optional_guards: VecDeque<PathBuf> = VecDeque::new();
+    let mut recent_optional_plugin_dirs: VecDeque<PathBuf> = VecDeque::new();
     let mut brace_depth = 0usize;
     let mut previous_nonempty_line: Option<String> = None;
     let mut out = Vec::new();
@@ -245,6 +246,12 @@ fn expand_php_source_file(
             recent_optional_guards.push_back(guarded);
             if recent_optional_guards.len() > 8 {
                 recent_optional_guards.pop_front();
+            }
+        }
+        for guarded in extract_php_plugin_active_guards(trimmed, source_path, &aliases, constants) {
+            recent_optional_plugin_dirs.push_back(guarded);
+            if recent_optional_plugin_dirs.len() > 8 {
+                recent_optional_plugin_dirs.pop_front();
             }
         }
 
@@ -300,6 +307,11 @@ fn expand_php_source_file(
                     Err(err) => {
                         if err.kind() == std::io::ErrorKind::NotFound
                             && recent_optional_guards.iter().any(|guarded| guarded == &canonical)
+                        {
+                            continue;
+                        }
+                        if err.kind() == std::io::ErrorKind::NotFound
+                            && recent_optional_plugin_dirs.iter().any(|guarded| canonical.starts_with(guarded))
                         {
                             continue;
                         }
@@ -560,6 +572,38 @@ fn extract_php_file_exists_guards(
     guards
 }
 
+fn extract_php_plugin_active_guards(
+    line: &str,
+    source_path: &Path,
+    aliases: &HashMap<String, String>,
+    constants: &HashMap<String, String>,
+) -> Vec<PathBuf> {
+    let line = line.trim();
+    if (!line.starts_with("if") && !line.starts_with("elseif")) || line.contains("! is_plugin_active") {
+        return Vec::new();
+    }
+
+    let Some(start) = line.find("is_plugin_active(") else {
+        return Vec::new();
+    };
+    let after = &line[start + "is_plugin_active(".len()..];
+    let Some(end) = after.find(')') else {
+        return Vec::new();
+    };
+
+    let arg = after[..end].trim();
+    let Some(plugin_rel) = eval_php_path_expression(arg, source_path, aliases, constants) else {
+        return Vec::new();
+    };
+    let Some(plugin_root) = constants.get("WP_PLUGIN_DIR") else {
+        return Vec::new();
+    };
+
+    let plugin_path = PathBuf::from(plugin_root.trim_end_matches('/')).join(plugin_rel.trim_start_matches('/'));
+    let plugin_dir = plugin_path.parent().unwrap_or(&plugin_path).to_path_buf();
+    vec![std::fs::canonicalize(&plugin_dir).unwrap_or(plugin_dir)]
+}
+
 fn update_php_brace_depth(mut depth: usize, line: &str) -> usize {
     let mut quote: Option<char> = None;
     let chars: Vec<char> = line.chars().collect();
@@ -722,6 +766,9 @@ fn eval_php_path_atom(
     }
 
     if let Some(stripped) = atom.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        if php_double_quoted_string_has_interpolation(stripped) {
+            return None;
+        }
         return Some(stripped.to_string());
     }
     if let Some(stripped) = atom.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
@@ -754,6 +801,22 @@ fn eval_php_path_atom(
         return Some(parent.to_string_lossy().into_owned());
     }
     None
+}
+
+fn php_double_quoted_string_has_interpolation(content: &str) -> bool {
+    let bytes = content.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] == b'\\' {
+            index += 2;
+            continue;
+        }
+        if bytes[index] == b'$' {
+            return true;
+        }
+        index += 1;
+    }
+    false
 }
 
 fn normalize_php_include_for_inlining(source: &str) -> String {
@@ -1234,6 +1297,30 @@ mod tests {
     }
 
     #[test]
+    fn php_bundle_skips_interpolated_double_quoted_include_paths() {
+        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_interpolated_include_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_root).expect("create temp dir");
+
+        let entry_path = temp_root.join("entry.php");
+        let entry_src = "<?php\ndefine('WP_LANG_DIR', __DIR__ . '/languages');\n$locale = get_locale();\n$locale_file = WP_LANG_DIR . \"/$locale.php\";\nif ( is_readable( $locale_file ) ) {\n    require $locale_file;\n}\nfunction after_locale_include() { return 1; }\n";
+        std::fs::write(&entry_path, entry_src).expect("write entry");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "entry".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        let module = bundle.prepared_module().expect("prepared module");
+        assert!(module.body.iter().any(|stmt| matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "after_locale_include")));
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
     fn php_bundle_does_not_treat_includes_prefixed_function_calls_as_include_statements() {
         let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_include_prefix_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
@@ -1300,6 +1387,30 @@ mod tests {
 
         let module = bundle.prepared_module().expect("prepared module");
         assert!(module.body.iter().any(|stmt| matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "after_defined_guard")));
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn php_bundle_skips_missing_plugin_include_when_guarded_by_is_plugin_active() {
+        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_plugin_guard_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_root).expect("create temp dir");
+
+        let entry_path = temp_root.join("entry.php");
+        let entry_src = "<?php\ndefine('WP_PLUGIN_DIR', __DIR__ . '/wp-content/plugins');\nif ( is_plugin_active( 'press-this/press-this-plugin.php' ) ) {\n    include WP_PLUGIN_DIR . '/press-this/class-wp-press-this-plugin.php';\n}\nfunction after_plugin_guard() { return 1; }\n";
+        std::fs::write(&entry_path, entry_src).expect("write entry");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "entry".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        let module = bundle.prepared_module().expect("prepared module");
+        assert!(module.body.iter().any(|stmt| matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "after_plugin_guard")));
 
         let _ = std::fs::remove_dir_all(&temp_root);
     }

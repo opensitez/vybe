@@ -317,7 +317,8 @@ fn is_kw(r: Rule) -> bool {
         | Rule::kw_function | Rule::kw_class | Rule::kw_extends
         | Rule::kw_implements | Rule::kw_interface | Rule::kw_trait
         | Rule::kw_enum | Rule::kw_new | Rule::kw_clone | Rule::kw_echo
-        | Rule::kw_print | Rule::kw_null | Rule::kw_true | Rule::kw_false
+        | Rule::kw_print | Rule::kw_include | Rule::kw_include_once
+        | Rule::kw_require | Rule::kw_require_once | Rule::kw_null | Rule::kw_true | Rule::kw_false
         | Rule::kw_instanceof | Rule::kw_throw | Rule::kw_try | Rule::kw_catch
         | Rule::kw_finally | Rule::kw_static | Rule::kw_public | Rule::kw_private
         | Rule::kw_protected | Rule::kw_abstract | Rule::kw_final | Rule::kw_const
@@ -2112,6 +2113,12 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                 optional: false,
             }
         }
+        Rule::include_operand => return walk_expression(pair.into_inner().next().unwrap()),
+        Rule::include_expression => {
+            let include_kind = php_include_kind(&pair)?;
+            let arg = walk_expression(inner_nokw(pair).next().unwrap())?;
+            build_php_dynamic_include_call(include_kind, arg, &span).kind
+        }
         Rule::unset_expression => {
             // PHP `unset($a, $b, $obj->prop, $arr[$k])` — walker
             // rewrites each target individually based on its shape:
@@ -2198,6 +2205,39 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
     };
 
     Ok(Expression::with_span(kind, span))
+}
+
+fn php_include_kind(pair: &Pair<Rule>) -> Result<&'static str, String> {
+    for inner in pair.clone().into_inner() {
+        let kind = match inner.as_rule() {
+            Rule::kw_include => Some("include"),
+            Rule::kw_include_once => Some("include_once"),
+            Rule::kw_require => Some("require"),
+            Rule::kw_require_once => Some("require_once"),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            return Ok(kind);
+        }
+    }
+    Err("missing PHP include kind".to_string())
+}
+
+fn build_php_dynamic_include_call(kind: &str, target: Expression, span: &Span) -> Expression {
+    Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::ident("__php_dynamic_include")),
+            args: vec![
+                Argument::positional(Expression::with_span(
+                    ExprKind::Lit(Literal::Str(kind.to_string())),
+                    span.clone(),
+                )),
+                Argument::positional(target),
+            ],
+            optional: false,
+        },
+        span.clone(),
+    )
 }
 
 fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
