@@ -5,11 +5,12 @@ members = [
     "crates/vybe_bytecode",
     "crates/vybe_host",
     "crates/vybe_widgets",
+    "crates/vybe_compiler",
     "crates/vybex",
 ]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 authors = ["Opensitez Vybe Team"]
 license = "GPLv3"
@@ -64,3 +65,5 @@ quick-xml = "0.36"
 vybe_bytecode = { path = "crates/vybe_bytecode" }
 vybe_host = { path = "crates/vybe_host" }
 vybe_widgets = { path = "crates/vybe_widgets" }
+vybe_compiler = { path = "crates/vybe_compiler" }
+vybex = { path = "crates/vybex" }
