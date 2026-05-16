@@ -192,7 +192,7 @@ pub enum StringIndexing {
 /// Namespace resolution configuration.
 #[derive(Debug, Clone, Default)]
 pub struct NamespaceConfig {
-    /// Use .NET BCL resolution from crate::emitter::dotnet.
+    /// Use .NET BCL resolution from crate::platforms::dotnet.
     /// When true, the compiler uses dotnet::namespace_roots(), dotnet::default_interface_imports(),
     /// dotnet::resolve_dotted_name(), etc. — the full .NET resolution pipeline.
     pub use_dotnet: bool,
@@ -545,7 +545,7 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         }
     }
     if namespaces.use_dotnet {
-        for (name, value) in crate::emitter::dotnet::namespace_constant_mappings() {
+        for (name, value) in crate::platforms::dotnet::namespace_constant_mappings() {
             namespace_constants
                 .entry((*name).to_string())
                 .or_insert(ConstantValue::Float(*value));

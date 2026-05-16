@@ -10,6 +10,7 @@
 //!   crate; moved in-tree now that it has a single consumer.
 //! * [`compiler`] — AST-driven dispatch that feeds the emitter.
 //! * [`languages`] — per-language walkers + profiles.
+//! * [`platforms`] — reusable runtime/framework surfaces such as .NET.
 
 pub mod emitter;
 pub mod php;
@@ -18,6 +19,7 @@ pub mod common;     // cross-language compile-time helpers (class normalisation,
 pub mod compiler;
 pub mod dotnet_register;
 pub mod languages;
+pub mod platforms;
 pub mod profile;
 pub mod scope;
 pub mod bundle;
