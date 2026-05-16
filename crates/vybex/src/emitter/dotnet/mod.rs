@@ -86,6 +86,11 @@ pub enum StaticMethodTarget {
     Common { emit: String },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StaticPropertyTarget {
+    Host { module: String, func: String },
+}
+
 /// What an instance-method call resolves to in the Component Model
 /// dispatch path. Mirrors `StaticMethodTarget` plus the `arity` so the
 /// caller can validate `args.len()` against the declared signature.
@@ -97,6 +102,11 @@ pub enum InstanceMethodTarget {
     /// Method body is a `compiler_common` emit name routed through
     /// `dispatch::emit_common`.
     Common { emit: String, arity: u8 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstancePropertyTarget {
+    Host { module: String, func: String },
 }
 
 pub struct DotnetSurface {
@@ -238,6 +248,29 @@ impl DotnetSurface {
             })
     }
 
+    pub fn lookup_instance_property(&self, class_name: &str, property_name: &str) -> Option<InstancePropertyTarget> {
+        let requested = class_name.trim();
+        let requested_short = requested.rsplit('.').next().unwrap_or(requested);
+        self.component_descriptor
+            .classes
+            .iter()
+            .find(|class| {
+                class.name.eq_ignore_ascii_case(requested)
+                    || class.name.eq_ignore_ascii_case(requested_short)
+            })
+            .and_then(|class| {
+                class.properties
+                    .iter()
+                    .find(|property| property.name.eq_ignore_ascii_case(property_name))
+            })
+            .and_then(|property| {
+                property.getter.as_ref().map(|target| InstancePropertyTarget::Host {
+                    module: target.module.clone(),
+                    func: target.name.clone(),
+                })
+            })
+    }
+
     pub fn lookup_static_method(&self, prefix: &str, method_parts: &[&str]) -> Option<StaticMethodTarget> {
         let (interface_name, type_name, method_name) = match method_parts {
             [method_name] if prefix.eq_ignore_ascii_case("application") => {
@@ -279,6 +312,42 @@ impl DotnetSurface {
                         MethodBody::Common(name) => Some(StaticMethodTarget::Common { emit: name.clone() }),
                         _ => None,
                     }
+                })
+            })
+    }
+
+    pub fn lookup_static_property(&self, prefix: &str, property_name: &str) -> Option<StaticPropertyTarget> {
+        let (interface_name, type_name) = if prefix.eq_ignore_ascii_case("application") {
+            ("system.windows.forms".to_string(), "application".to_string())
+        } else {
+            let mut collected: Vec<&str> = prefix.split('.').collect();
+            let type_name = collected.pop()?;
+            (collected.join("."), type_name.to_string())
+        };
+
+        self.component_descriptor
+            .exports
+            .iter()
+            .find_map(|export| {
+                let ComponentItemKind::Class(class) = &export.kind else {
+                    return None;
+                };
+                let export_interface = export
+                    .interface
+                    .strip_prefix("dotnet.")
+                    .unwrap_or(export.interface.as_str())
+                    .to_lowercase();
+                if export_interface != interface_name || !class.name.eq_ignore_ascii_case(&type_name) {
+                    return None;
+                }
+                class.properties.iter().find_map(|property| {
+                    if !property.name.eq_ignore_ascii_case(property_name) {
+                        return None;
+                    }
+                    property.getter.as_ref().map(|target| StaticPropertyTarget::Host {
+                        module: target.module.clone(),
+                        func: target.name.clone(),
+                    })
                 })
             })
     }
@@ -369,6 +438,10 @@ pub fn lookup_component_constructor(name: &str) -> Option<ConstructorTarget> {
 
 pub fn lookup_component_static_method(prefix: &str, method_parts: &[&str]) -> Option<StaticMethodTarget> {
     surface().lookup_static_method(prefix, method_parts)
+}
+
+pub fn lookup_component_static_property(prefix: &str, property_name: &str) -> Option<StaticPropertyTarget> {
+    surface().lookup_static_property(prefix, property_name)
 }
 
 fn collection_runtime_method_names(descriptor: &ComponentDescriptor) -> HashSet<String> {

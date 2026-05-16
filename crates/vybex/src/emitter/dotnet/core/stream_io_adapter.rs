@@ -50,8 +50,8 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
 /// `new StreamReader(path)` — load file into a `__content` string and
 /// initialise `__pos = 0`. Stack: `[path]` → `[reader]`.
 pub fn emit_stream_reader_new(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let read_idx = chunks[0].add_import("node:fs", "readFileSync");
     let chunk = &mut chunks[current];
-    let read_idx = chunk.add_import("node:fs", "readFileSync");
     let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
     let content_key = chunk.add_constant(Value::String(Arc::from(CONTENT_KEY)));
     let pos_key = chunk.add_constant(Value::String(Arc::from(POS_KEY)));
@@ -336,10 +336,10 @@ pub fn emit_stream_writer_write_line(chunks: &mut [Chunk], current: usize, line:
 /// `writer.Flush()` / `writer.Close()` — `node:fs.writeFileSync(__path, __buf)`.
 /// Stack: `[writer]` → `[null]`.
 pub fn emit_stream_writer_flush(chunks: &mut [Chunk], current: usize, line: u32) {
+    let write_idx = chunks[0].add_import("node:fs", "writeFileSync");
     let chunk = &mut chunks[current];
     let path_key = chunk.add_constant(Value::String(Arc::from(PATH_KEY)));
     let buf_key = chunk.add_constant(Value::String(Arc::from(BUF_KEY)));
-    let write_idx = chunk.add_import("node:fs", "writeFileSync");
 
     let writer_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, writer_slot, line);
@@ -354,6 +354,41 @@ pub fn emit_stream_writer_flush(chunks: &mut [Chunk], current: usize, line: u32)
     chunk.emit(2, line);
     chunk.emit_op(Op::DROP, line); // discard writeFileSync result
 
+    chunk.emit_op(Op::NULL, line);
+}
+
+/// `reader.Close()` / `writer.Close()` — no-op for readers, flush for writers.
+/// Stack: `[stream]` → `[null]`.
+pub fn emit_stream_close(chunks: &mut [Chunk], current: usize, line: u32) {
+    let write_idx = chunks[0].add_import("node:fs", "writeFileSync");
+    let chunk = &mut chunks[current];
+    let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
+    let path_key = chunk.add_constant(Value::String(Arc::from(PATH_KEY)));
+    let buf_key = chunk.add_constant(Value::String(Arc::from(BUF_KEY)));
+
+    let stream_slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, stream_slot, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, type_key, line);
+    push_const(chunk, Value::String(Arc::from(WRITER_TYPE)), line);
+    chunk.emit_op(Op::DYN_EQ, line);
+
+    let skip_flush = chunk.emit_block(line);
+    chunk.emit_op(Op::DYN_NOT, line);
+    chunk.emit_br_if(0, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, path_key, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, buf_key, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, write_idx, line);
+    chunk.emit(2, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_end(line);
+    chunk.patch_block(skip_flush);
     chunk.emit_op(Op::NULL, line);
 }
 

@@ -1134,6 +1134,103 @@ impl Compiler {
                     self.compile_expr(object)?;
                 }
 
+                let dotnet_instance_property = if matches!(self.profile.name.as_str(), "csharp" | "vb")
+                    && self.profile.namespaces.use_dotnet
+                    && !*null_safe
+                {
+                    receiver_type_hint.as_deref().and_then(|type_hint| {
+                        let class_name = Self::normalize_type_hint(type_hint);
+                        common::dotnet::surface().lookup_instance_property(&class_name, field)
+                    })
+                } else {
+                    None
+                };
+
+                if let Some(target) = dotnet_instance_property {
+                    match target {
+                        common::dotnet::InstancePropertyTarget::Host { module, func } => {
+                            let idx = self.import(&module, &func);
+                            self.emit_host_call(idx, 1);
+                            return Ok(());
+                        }
+                    }
+                }
+
+                let dotnet_instance_zero_arg_method = if matches!(self.profile.name.as_str(), "csharp" | "vb")
+                    && self.profile.namespaces.use_dotnet
+                    && !*null_safe
+                    && !is_csharp_len_accessor
+                    && !is_csharp_runtime_count_accessor
+                {
+                    receiver_type_hint.as_deref().and_then(|type_hint| {
+                        let class_name = Self::normalize_type_hint(type_hint);
+                        common::dotnet::surface().lookup_instance_method(&class_name, field, 0)
+                    })
+                } else {
+                    None
+                };
+
+                if let Some(target) = dotnet_instance_zero_arg_method {
+                    if let common::dotnet::InstanceMethodTarget::Common { emit, .. } = &target {
+                        let line = self.line;
+                        self.compile_expr(object)?;
+                        self.emit_common(emit, 1, line);
+                        return Ok(());
+                    }
+
+                    let obj_slot = self.define_local("__dotnet_zero_arg_obj");
+                    self.compile_expr(object)?;
+                    self.emit_u16(Op::LOCAL_SET, obj_slot);
+                    self.emit(Op::DROP);
+
+                    let value_slot = self.define_local("__dotnet_zero_arg_value");
+                    let field_name = self.canon(field);
+                    let canonical_idx = self.str_const(&field_name);
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.emit_u16(Op::STRUCT_GET, canonical_idx);
+                    self.emit_u16(Op::LOCAL_SET, value_slot);
+                    self.emit(Op::DROP);
+
+                    if matches!(self.profile.name.as_str(), "csharp" | "vb")
+                        && self.profile.namespaces.use_dotnet
+                        && field.as_str() != field_name
+                    {
+                        self.emit_u16(Op::LOCAL_GET, value_slot);
+                        self.emit(Op::REF_IS_UNDEFINED);
+                        let have_canonical_value = self.emit_jump(Op::BR_IF_FALSE);
+
+                        let exact_idx = self.str_const(field);
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit_u16(Op::STRUCT_GET, exact_idx);
+                        self.emit_u16(Op::LOCAL_SET, value_slot);
+                        self.emit(Op::DROP);
+
+                        self.patch_jump(have_canonical_value);
+                    }
+
+                    self.emit_u16(Op::LOCAL_GET, value_slot);
+                    self.emit(Op::REF_IS_UNDEFINED);
+                    let return_value = self.emit_jump(Op::BR_IF_FALSE);
+
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    match target {
+                        common::dotnet::InstanceMethodTarget::Host { module, func, .. } => {
+                            let idx = self.import(&module, &func);
+                            self.emit_host_call(idx, 1);
+                        }
+                        common::dotnet::InstanceMethodTarget::Common { emit, .. } => {
+                            let line = self.line;
+                            self.emit_common(&emit, 1, line);
+                        }
+                    }
+                    let done = self.emit_jump(Op::BR);
+
+                    self.patch_jump(return_value);
+                    self.emit_u16(Op::LOCAL_GET, value_slot);
+                    self.patch_jump(done);
+                    return Ok(());
+                }
+
                 if is_csharp_len_accessor {
                     common::collections::emit_len(&mut self.chunks, self.current, self.line);
                     return Ok(());

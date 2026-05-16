@@ -1,6 +1,5 @@
 use super::super::super::class_exports::DotnetClassExport;
-use super::component_classes_common::static_only_class;
-use vybe_bytecode::component_model::{ClassType, ConstructorDef, MethodBody, MethodDef};
+use vybe_bytecode::component_model::{ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef};
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     vec![
@@ -8,6 +7,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             "dotnet.System.IO",
             ClassType::new("StreamReader")
                 .with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.stream_reader_new"))
+                .with_method(MethodDef::new("EndOfStream", 0, MethodBody::Common("dotnet.stream_reader_at_end".into())))
                 .with_method(MethodDef::new("ReadLine", 0, MethodBody::Common("dotnet.stream_reader_read_line".into())))
                 .with_method(MethodDef::new("ReadToEnd", 0, MethodBody::Common("dotnet.stream_reader_read_to_end".into())))
                 .with_method(MethodDef::new("Close", 0, MethodBody::Common("dotnet.stream_reader_close".into())))
@@ -23,40 +23,39 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new("Close", 0, MethodBody::Common("dotnet.stream_writer_flush".into())))
                 .with_method(MethodDef::new("Dispose", 0, MethodBody::Common("dotnet.stream_writer_flush".into()))),
         ),
-        static_only_class(
+        DotnetClassExport::new(
             "dotnet.System.IO",
-            "File",
-            &[
-                ("ReadAllText", 1, "wasi:filesystem", "readFile"),
-                ("WriteAllText", 2, "wasi:filesystem", "writeFile"),
-                ("AppendAllText", 2, "wasi:filesystem", "appendFile"),
-                ("Exists", 1, "wasi:filesystem", "exists"),
-                ("Delete", 1, "wasi:filesystem", "remove"),
-                ("Copy", 2, "wasi:filesystem", "copy"),
-                ("Move", 2, "wasi:filesystem", "rename"),
-            ],
+            ClassType::new("File")
+                .with_method(MethodDef::static_method("ReadAllText", 1, MethodBody::HostCall(HostTarget::new("wasi:filesystem", "readFile"))))
+                .with_method(MethodDef::static_method("WriteAllText", 2, MethodBody::HostCall(HostTarget::new("wasi:filesystem", "writeFile"))))
+                .with_method(MethodDef::static_method("AppendAllText", 2, MethodBody::HostCall(HostTarget::new("wasi:filesystem", "appendFile"))))
+                .with_method(MethodDef::static_method("Exists", 1, MethodBody::HostCall(HostTarget::new("wasi:filesystem", "exists"))))
+                .with_method(MethodDef::static_method("Delete", 1, MethodBody::HostCall(HostTarget::new("wasi:filesystem", "remove"))))
+                .with_method(MethodDef::static_method("Copy", 2, MethodBody::HostCall(HostTarget::new("wasi:filesystem", "copy"))))
+                .with_method(MethodDef::static_method("Move", 2, MethodBody::HostCall(HostTarget::new("wasi:filesystem", "rename"))))
+                .with_method(MethodDef::static_method("ReadAllLines", 1, MethodBody::Common("dotnet.file_read_all_lines".into()))),
         ),
-        static_only_class(
+        DotnetClassExport::new(
             "dotnet.System.IO",
-            "Directory",
-            &[
-                ("CreateDirectory", 1, "wasi:filesystem", "mkdir"),
-                ("GetFiles", 1, "wasi:filesystem", "listDir"),
-            ],
+            ClassType::new("Directory")
+                .with_method(MethodDef::static_method("Exists", 1, MethodBody::HostCall(HostTarget::new("wasi:filesystem", "isDir"))))
+                .with_method(MethodDef::static_method("CreateDirectory", 1, MethodBody::HostCall(HostTarget::new("wasi:filesystem", "mkdir"))))
+                .with_method(MethodDef::static_method("Delete", 1, MethodBody::HostCall(HostTarget::new("wasi:filesystem", "remove"))))
+                .with_method(MethodDef::static_method("GetFiles", 1, MethodBody::Common("dotnet.directory_get_files".into())))
+                .with_method(MethodDef::static_method("GetDirectories", 1, MethodBody::Common("dotnet.directory_get_directories".into())))
+                .with_method(MethodDef::static_method("GetCurrentDirectory", 0, MethodBody::HostCall(HostTarget::new("node:process", "cwd")))),
         ),
-        static_only_class(
+        DotnetClassExport::new(
             "dotnet.System.IO",
-            "Path",
-            &[
-                ("Combine", 2, "wasi:filesystem", "pathCombine"),
-                ("GetFileName", 1, "wasi:filesystem", "pathGetFileName"),
-                ("GetExtension", 1, "wasi:filesystem", "pathGetExtension"),
-                ("GetDirectoryName", 1, "wasi:filesystem", "pathGetDirectory"),
-                ("GetFileNameWithoutExtension", 1, "wasi:filesystem", "pathGetFileNameWithoutExt"),
-                ("ChangeExtension", 2, "wasi:filesystem", "pathChangeExtension"),
-                ("GetFullPath", 1, "wasi:filesystem", "pathGetFullPath"),
-                ("GetTempPath", 0, "wasi:filesystem", "pathGetTempPath"),
-            ],
+            ClassType::new("Path")
+                .with_method(MethodDef::static_method("Combine", 2, MethodBody::HostCall(HostTarget::new("wasi:filesystem", "pathCombine"))))
+                .with_method(MethodDef::static_method("GetFileName", 1, MethodBody::HostCall(HostTarget::new("wasi:filesystem", "pathGetFileName"))))
+                .with_method(MethodDef::static_method("GetExtension", 1, MethodBody::HostCall(HostTarget::new("node:path", "extname"))))
+                .with_method(MethodDef::static_method("GetDirectoryName", 1, MethodBody::HostCall(HostTarget::new("wasi:filesystem", "pathGetDirectory"))))
+                .with_method(MethodDef::static_method("GetFileNameWithoutExtension", 1, MethodBody::HostCall(HostTarget::new("wasi:filesystem", "pathGetFileNameWithoutExt"))))
+                .with_method(MethodDef::static_method("ChangeExtension", 2, MethodBody::HostCall(HostTarget::new("wasi:filesystem", "pathChangeExtension"))))
+                .with_method(MethodDef::static_method("GetFullPath", 1, MethodBody::HostCall(HostTarget::new("wasi:filesystem", "pathGetFullPath"))))
+                .with_method(MethodDef::static_method("GetTempPath", 0, MethodBody::HostCall(HostTarget::new("wasi:filesystem", "pathGetTempPath")))),
         ),
     ]
 }

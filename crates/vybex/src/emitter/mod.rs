@@ -39,6 +39,7 @@ pub use crate::languages::python::emitter as python;
 pub use crate::languages::fortran::emitter as fortran;
 pub use crate::languages::dart::emitter as dart;
 pub use crate::languages::js::emitter as js;
+pub use crate::languages::vb::emitter as vb;
 
 pub use target::Target;
 pub use type_registry::CompileTimeTypes;

@@ -202,6 +202,45 @@ pub fn emit_sb_insert(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::NULL, line);
 }
 
+/// `sb.Remove(start, count)` — remove `count` chars from `start`.
+///
+/// Stack on entry: `[sb, start, count]` ; Stack on exit: `[null]`
+pub fn emit_sb_remove(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let buffer_key = chunk.add_constant(Value::String(Arc::from(BUFFER_KEY)));
+    let count_slot = reserve_slot(chunk);
+    let start_slot = reserve_slot(chunk);
+    let buf_slot = reserve_slot(chunk);
+
+    chunk.emit_op_u16(Op::LOCAL_SET, count_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, start_slot, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, buffer_key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, buf_slot, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
+    push_const(chunk, Value::I32(0), line);
+    chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
+    chunk.emit_op(Op::STR_SUBSTRING, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
+    chunk.emit_op(Op::STR_LENGTH, line);
+    chunk.emit_op(Op::STR_SUBSTRING, line);
+
+    chunk.emit_op(Op::DYN_ADD, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, buffer_key, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op(Op::NULL, line);
+}
+
 /// `sb.Replace(oldText, newText)` — replace all occurrences in buffer.
 ///
 /// Stack on entry: `[sb, old, new]` ; Stack on exit: `[null]`

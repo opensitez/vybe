@@ -5,6 +5,9 @@ pub mod types;
 pub mod namespaces;
 pub mod sockets_adapter;
 pub mod stringbuilder_adapter;
+pub mod random_adapter;
+pub mod regex_adapter;
+pub mod stopwatch_adapter;
 pub mod process_adapter;
 pub mod array_adapter;
 pub mod timespan_adapter;
@@ -18,6 +21,8 @@ pub mod console_adapter;
 pub mod linq_adapter;
 pub mod parse_adapter;
 pub mod collections_adapter;
+pub mod environment_adapter;
+pub mod filesystem_adapter;
 
 use vybe_bytecode::component_model::ComponentDescriptor;
 

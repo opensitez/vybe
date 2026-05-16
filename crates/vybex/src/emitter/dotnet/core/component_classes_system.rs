@@ -1,7 +1,6 @@
 use super::super::super::class_exports::DotnetClassExport;
 use super::super::super::classes::DotnetClass;
-use super::component_classes_common::{constructor_class, static_only_class};
-use vybe_bytecode::component_model::{ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef};
+use vybe_bytecode::component_model::{ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef, PropertyDef};
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     vec![
@@ -47,7 +46,15 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new("AddMonths", 1, MethodBody::Common("dotnet.datetime_add_months".into())))
                 .with_method(MethodDef::new("ToShortDateString", 0, MethodBody::Common("dotnet.datetime_to_short_date_string".into()))),
         ),
-        constructor_class("dotnet.System", "Random", "wasi:random/insecure", "get-insecure-random-u64"),
+            DotnetClassExport::new(
+                "dotnet.System",
+                ClassType::new("Random")
+                .with_constructor(ConstructorDef::new(0).with_common_backing("dotnet.random_new"))
+                .with_method(MethodDef::new("Next", 0, MethodBody::Common("dotnet.random_next".into())))
+                .with_method(MethodDef::new("Next", 1, MethodBody::Common("dotnet.random_next".into())))
+                .with_method(MethodDef::new("Next", 2, MethodBody::Common("dotnet.random_next".into())))
+                .with_method(MethodDef::new("NextDouble", 0, MethodBody::Common("dotnet.random_next_double".into()))),
+            ),
         DotnetClassExport::new(
             "dotnet.System",
             ClassType::new("TimeSpan")
@@ -99,26 +106,52 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method("Combine", 2, MethodBody::Common("delegates.combine".into())))
                 .with_method(MethodDef::static_method("Remove", 2, MethodBody::Common("delegates.remove".into()))),
         ),
-        static_only_class(
+        DotnetClassExport::new(
             "dotnet.System",
-            "Convert",
-            &[
-                ("ToInt32", 1, "ecma:number", "parseInt"),
-                ("ToDouble", 1, "ecma:number", "Number"),
-                ("ToString", 1, "ecma:string", "String"),
-                ("ToBoolean", 1, "ecma:boolean", "Boolean"),
-                ("ToDateTime", 1, "ecma:string", "String"),
-            ],
+            ClassType::new("Convert")
+                .with_method(MethodDef::static_method("ToInt32", 1, MethodBody::HostCall(HostTarget::new("ecma:number", "parseInt"))))
+                .with_method(MethodDef::static_method("ToDouble", 1, MethodBody::HostCall(HostTarget::new("ecma:number", "Number"))))
+                .with_method(MethodDef::static_method("ToString", 1, MethodBody::HostCall(HostTarget::new("ecma:string", "String"))))
+                .with_method(MethodDef::static_method("ToBoolean", 1, MethodBody::HostCall(HostTarget::new("ecma:boolean", "Boolean"))))
+                .with_method(MethodDef::static_method("ToDateTime", 1, MethodBody::Common("dotnet.datetime_parse".into()))),
         ),
         DotnetClassExport::new(
             "dotnet.System",
             ClassType::new("String")
                 .with_method(MethodDef::static_method("Format", 2, MethodBody::Common("dotnet.string_format".into()))),
         ),
-        static_only_class(
+        DotnetClassExport::new(
             "dotnet.System",
-            "Environment",
-            &[("GetEnvironmentVariable", 1, "wasi:cli", "getEnv")],
+            ClassType::new("Environment")
+                .with_property(PropertyDef::new("CurrentDirectory").with_getter(HostTarget::new("node:process", "cwd")))
+                .with_property(PropertyDef::new("NewLine").with_getter(HostTarget::new("node:os", "EOL")))
+                .with_property(PropertyDef::new("MachineName").with_getter(HostTarget::new("node:os", "hostname")))
+                .with_property(PropertyDef::new("OSVersion").with_getter(HostTarget::new("node:os", "version")))
+                .with_method(MethodDef::static_method(
+                    "UserName",
+                    0,
+                    MethodBody::Common("dotnet.environment_username".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ProcessorCount",
+                    0,
+                    MethodBody::Common("dotnet.environment_processor_count".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "TickCount",
+                    0,
+                    MethodBody::Common("dotnet.environment_tick_count".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetEnvironmentVariable",
+                    1,
+                    MethodBody::Common("dotnet.environment_get".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "SetEnvironmentVariable",
+                    2,
+                    MethodBody::Common("dotnet.environment_set".into()),
+                )),
         ),
     ]
 }

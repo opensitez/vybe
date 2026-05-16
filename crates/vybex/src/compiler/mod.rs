@@ -2734,6 +2734,11 @@ impl Compiler {
         {
             return Some("DateTime".into());
         }
+        if class_name.eq_ignore_ascii_case("Convert")
+            && field.eq_ignore_ascii_case("ToDateTime")
+        {
+            return Some("DateTime".into());
+        }
         if class_name.eq_ignore_ascii_case("Guid")
             && matches!(field.as_str(), "Empty" | "NewGuid" | "Parse")
         {
@@ -7712,6 +7717,38 @@ impl Compiler {
         // override the common import defaults (e.g. Dart `print` needs
         // toString conversion before logging, which is different from
         // generic `wasi:cli.log`).
+        if self.profile.name == "vb"
+            && args.len() == 1
+        {
+            if let Some(type_hint) = self.infer_expr_type_hint(&args[0]) {
+                let normalized = Self::normalize_type_hint(&type_hint);
+                if normalized == "datetime" || normalized.ends_with(".datetime") {
+                    let field_name = if name.eq_ignore_ascii_case("year") {
+                        Some("Year")
+                    } else if name.eq_ignore_ascii_case("month") {
+                        Some("Month")
+                    } else if name.eq_ignore_ascii_case("day") {
+                        Some("Day")
+                    } else if name.eq_ignore_ascii_case("hour") {
+                        Some("Hour")
+                    } else if name.eq_ignore_ascii_case("minute") {
+                        Some("Minute")
+                    } else if name.eq_ignore_ascii_case("second") {
+                        Some("Second")
+                    } else {
+                        None
+                    };
+
+                    if let Some(field_name) = field_name {
+                        self.compile_expr(&args[0])?;
+                        let idx = self.str_const(field_name);
+                        self.emit_u16(Op::STRUCT_GET, idx);
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+
         let builtin = self.profile.lookup_builtin(name).cloned();
         // Check common import table only if the profile didn't bind it.
         if builtin.is_none() {

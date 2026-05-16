@@ -161,7 +161,7 @@ multi_value_tuple_returns = true
 # ── Environment ──────────────────────────────────────────────────────────────
 
 "Environment.NewLine"          = { emit = "stdlib:newline",             min_args = 0, max_args = 0 }
-"Environment.GetEnvironmentVariable" = { emit = "host:wasi:cli:getEnv", min_args = 1, max_args = 1 }
+"Environment.GetEnvironmentVariable" = { emit = "common:dotnet.environment_get", min_args = 1, max_args = 1 }
 
 # ── Threading ────────────────────────────────────────────────────────────────
 # Routes through compiler_common::threading which uses real WASM threading

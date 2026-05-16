@@ -210,8 +210,42 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::dotnet::core::stringbuilder_adapter::emit_sb_length(chunks, current, line),
         "dotnet.sb_insert"
             => crate::emitter::dotnet::core::stringbuilder_adapter::emit_sb_insert(chunks, current, line),
+        "dotnet.sb_remove"
+            => crate::emitter::dotnet::core::stringbuilder_adapter::emit_sb_remove(chunks, current, line),
         "dotnet.sb_replace"
             => crate::emitter::dotnet::core::stringbuilder_adapter::emit_sb_replace(chunks, current, line),
+
+        // ── .NET Random adapter ─────────────────────────────────────
+        "dotnet.random_new"
+            => crate::emitter::dotnet::core::random_adapter::emit_random_new(chunks, current, argc, line),
+        "dotnet.random_next"
+            => crate::emitter::dotnet::core::random_adapter::emit_random_next(chunks, current, argc, line),
+        "dotnet.random_next_double"
+            => crate::emitter::dotnet::core::random_adapter::emit_random_next_double(chunks, current, line),
+
+        // ── .NET Regex adapter ──────────────────────────────────────
+        "dotnet.regex_new"
+            => crate::emitter::dotnet::core::regex_adapter::emit_regex_new(chunks, current, argc, line),
+        "dotnet.regex_is_match"
+            => crate::emitter::dotnet::core::regex_adapter::emit_regex_is_match(chunks, current, line),
+        "dotnet.regex_replace"
+            => crate::emitter::dotnet::core::regex_adapter::emit_regex_replace(chunks, current, line),
+        "dotnet.regex_split"
+            => crate::emitter::dotnet::core::regex_adapter::emit_regex_split(chunks, current, line),
+        "dotnet.regex_match"
+            => crate::emitter::dotnet::core::regex_adapter::emit_regex_match(chunks, current, line),
+        "dotnet.regex_matches"
+            => crate::emitter::dotnet::core::regex_adapter::emit_regex_matches(chunks, current, line),
+
+        // ── .NET Stopwatch adapter ──────────────────────────────────
+        "dotnet.stopwatch_start_new"
+            => crate::emitter::dotnet::core::stopwatch_adapter::emit_stopwatch_start_new(chunks, current, line),
+        "dotnet.stopwatch_restart"
+            => crate::emitter::dotnet::core::stopwatch_adapter::emit_stopwatch_restart(chunks, current, line),
+        "dotnet.stopwatch_elapsed_ms"
+            => crate::emitter::dotnet::core::stopwatch_adapter::emit_stopwatch_elapsed_ms(chunks, current, line),
+        "dotnet.stopwatch_is_running"
+            => crate::emitter::dotnet::core::stopwatch_adapter::emit_stopwatch_is_running(chunks, current, line),
 
         // ── .NET Process / ProcessStartInfo adapter ─────────────────
         // Lowers to `node:child_process.spawnSync` + plain Object
@@ -691,8 +725,26 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::dotnet::core::stream_io_adapter::emit_stream_writer_write_line(chunks, current, line),
         "dotnet.stream_writer_flush"
             => crate::emitter::dotnet::core::stream_io_adapter::emit_stream_writer_flush(chunks, current, line),
+        "dotnet.stream_close"
+            => crate::emitter::dotnet::core::stream_io_adapter::emit_stream_close(chunks, current, line),
+        "dotnet.file_read_all_lines"
+            => crate::emitter::dotnet::core::filesystem_adapter::emit_file_read_all_lines(chunks, current, line),
+        "dotnet.directory_get_files"
+            => crate::emitter::dotnet::core::filesystem_adapter::emit_directory_get_files(chunks, current, line),
+        "dotnet.directory_get_directories"
+            => crate::emitter::dotnet::core::filesystem_adapter::emit_directory_get_directories(chunks, current, line),
         "dotnet.console_writeline"
             => crate::emitter::dotnet::core::console_adapter::emit_console_writeline(chunks, current, line),
+        "dotnet.environment_username"
+            => crate::emitter::dotnet::core::environment_adapter::emit_environment_username(chunks, current, line),
+        "dotnet.environment_processor_count"
+            => crate::emitter::dotnet::core::environment_adapter::emit_environment_processor_count(chunks, current, line),
+        "dotnet.environment_tick_count"
+            => crate::emitter::dotnet::core::environment_adapter::emit_environment_tick_count(chunks, current, line),
+        "dotnet.environment_get"
+            => crate::emitter::dotnet::core::environment_adapter::emit_environment_get(chunks, current, line),
+        "dotnet.environment_set"
+            => crate::emitter::dotnet::core::environment_adapter::emit_environment_set(chunks, current, line),
 
         // ── LINQ surface — composed bytecode shared by every .NET-shape language ──
         "dotnet.linq_first"
@@ -823,6 +875,16 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         // .NET-shape rather than stdlib because Choose is a VB.NET / VBA
         // language built-in, not a generic helper.
         "dotnet.choose" => emit_choose(&mut chunks[current], argc, line),
+        "vb.pmt" => crate::emitter::vb::financial_adapter::emit_vb_pmt(chunks, current, argc, line),
+        "vb.fv" => crate::emitter::vb::financial_adapter::emit_vb_fv(chunks, current, argc, line),
+        "vb.pv" => crate::emitter::vb::financial_adapter::emit_vb_pv(chunks, current, argc, line),
+        "vb.nper" => crate::emitter::vb::financial_adapter::emit_vb_nper(chunks, current, argc, line),
+        "vb.rate" => crate::emitter::vb::financial_adapter::emit_vb_rate(chunks, current, argc, line),
+        "vb.ipmt" => crate::emitter::vb::financial_adapter::emit_vb_ipmt(chunks, current, argc, line),
+        "vb.ppmt" => crate::emitter::vb::financial_adapter::emit_vb_ppmt(chunks, current, argc, line),
+        "vb.sln" => crate::emitter::vb::financial_adapter::emit_vb_sln(chunks, current, argc, line),
+        "vb.ddb" => crate::emitter::vb::financial_adapter::emit_vb_ddb(chunks, current, argc, line),
+        "vb.syd" => crate::emitter::vb::financial_adapter::emit_vb_syd(chunks, current, argc, line),
         "threading.atomic_load" => threading::emit_atomic_load(&mut chunks[current], line),
         "threading.atomic_store" => threading::emit_atomic_store(&mut chunks[current], line),
         "threading.atomic_add" => threading::emit_atomic_add(&mut chunks[current], line),

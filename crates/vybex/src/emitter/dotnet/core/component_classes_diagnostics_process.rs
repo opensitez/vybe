@@ -1,14 +1,20 @@
 use super::super::super::class_exports::DotnetClassExport;
-use super::component_classes_common::{common_constructor_class, constructor_and_static_class, static_only_class};
-use vybe_bytecode::component_model::{ClassType, ConstructorDef, MethodBody, MethodDef};
+use super::component_classes_common::{common_constructor_class, static_only_class};
+use vybe_bytecode::component_model::{ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef};
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     vec![
-        constructor_and_static_class(
+        DotnetClassExport::new(
             "dotnet.System.Diagnostics",
-            "Stopwatch",
-            Some(("wasi:clocks", "stopwatchNew")),
-            &[("StartNew", 0, "wasi:clocks", "stopwatchNew")],
+            ClassType::new("Stopwatch")
+                .with_constructor(ConstructorDef::new(0).with_backing(HostTarget::new("wasi:clocks", "stopwatchNew")))
+                .with_method(MethodDef::static_method("StartNew", 0, MethodBody::Common("dotnet.stopwatch_start_new".into())))
+                .with_method(MethodDef::new("Start", 0, MethodBody::HostCall(HostTarget::new("wasi:clocks", "stopwatchStart"))))
+                .with_method(MethodDef::new("Stop", 0, MethodBody::HostCall(HostTarget::new("wasi:clocks", "stopwatchStop"))))
+                .with_method(MethodDef::new("Reset", 0, MethodBody::HostCall(HostTarget::new("wasi:clocks", "stopwatchReset"))))
+                .with_method(MethodDef::new("Restart", 0, MethodBody::Common("dotnet.stopwatch_restart".into())))
+                .with_method(MethodDef::new("ElapsedMilliseconds", 0, MethodBody::Common("dotnet.stopwatch_elapsed_ms".into())))
+                .with_method(MethodDef::new("IsRunning", 0, MethodBody::Common("dotnet.stopwatch_is_running".into()))),
         ),
         static_only_class(
             "dotnet.System.Diagnostics",

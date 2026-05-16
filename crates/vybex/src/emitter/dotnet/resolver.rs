@@ -258,6 +258,10 @@ fn try_resolve_via_imports_refs(lower_parts: &[&str], imports: &[String]) -> Opt
         return None;
     }
 
+    if let Some(res) = try_resolve_static_component_property_refs(lower_parts) {
+        return Some(res);
+    }
+
     if let Some(res) = try_resolve_static_component_call_refs(lower_parts) {
         return Some(res);
     }
@@ -276,6 +280,16 @@ fn try_resolve_via_imports_refs(lower_parts: &[&str], imports: &[String]) -> Opt
                         DottedResolution::CommonCall { emit }
                     }
                 });
+            }
+
+            if suffix.len() == 1 {
+                if let Some(target) = super::lookup_component_static_property(&prefix, suffix[0]) {
+                    return Some(match target {
+                        super::StaticPropertyTarget::Host { module, func } => {
+                            DottedResolution::HostCall { module, func }
+                        }
+                    });
+                }
             }
 
             // Keep dotted suffixes like `task.run` or `process.start`
@@ -304,6 +318,18 @@ fn try_resolve_via_imports_refs(lower_parts: &[&str], imports: &[String]) -> Opt
         }
     }
     None
+}
+
+fn try_resolve_static_component_property_refs(lower_parts: &[&str]) -> Option<DottedResolution> {
+    if lower_parts.len() < 2 {
+        return None;
+    }
+
+    let property_name = lower_parts.last().copied()?;
+    let prefix = lower_parts[..lower_parts.len() - 1].join(".");
+    super::lookup_component_static_property(&prefix, property_name).map(|target| match target {
+        super::StaticPropertyTarget::Host { module, func } => DottedResolution::HostCall { module, func },
+    })
 }
 
 fn try_resolve_static_component_call(lower_parts: &[String]) -> Option<DottedResolution> {

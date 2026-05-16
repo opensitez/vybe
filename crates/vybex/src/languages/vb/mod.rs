@@ -1,4 +1,5 @@
 mod walker;
+pub mod emitter;
 pub mod forms;
 pub mod designer_codegen;
 pub mod normalize_class;

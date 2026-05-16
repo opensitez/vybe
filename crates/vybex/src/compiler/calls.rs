@@ -62,6 +62,11 @@ fn dotnet_factory_return_type(callee: &Expression) -> Option<String> {
     {
         return Some("DateTime".into());
     }
+    if class_name.eq_ignore_ascii_case("Convert")
+        && field.eq_ignore_ascii_case("ToDateTime")
+    {
+        return Some("DateTime".into());
+    }
     if class_name.eq_ignore_ascii_case("Guid")
         && matches!(field.as_str(), "Empty" | "NewGuid" | "Parse")
     {

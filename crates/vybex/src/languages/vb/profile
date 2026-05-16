@@ -186,6 +186,19 @@ pow                 = { emit = "stdlib:pow",    min_args = 2, max_args = 2 }
 "math.clamp"        = { emit = "stdlib:clamp",         min_args = 3, max_args = 3 }
 "system.math.clamp" = { emit = "stdlib:clamp",         min_args = 3, max_args = 3 }
 
+# ── Financial functions ─────────────────────────────────────────────────────
+
+pmt   = { emit = "common:vb.pmt",   min_args = 3, max_args = 5 }
+fv    = { emit = "common:vb.fv",    min_args = 3, max_args = 5 }
+pv    = { emit = "common:vb.pv",    min_args = 3, max_args = 5 }
+nper  = { emit = "common:vb.nper",  min_args = 3, max_args = 5 }
+rate  = { emit = "common:vb.rate",  min_args = 3, max_args = 6 }
+ipmt  = { emit = "common:vb.ipmt",  min_args = 4, max_args = 6 }
+ppmt  = { emit = "common:vb.ppmt",  min_args = 4, max_args = 6 }
+sln   = { emit = "common:vb.sln",   min_args = 3, max_args = 3 }
+ddb   = { emit = "common:vb.ddb",   min_args = 4, max_args = 5 }
+syd   = { emit = "common:vb.syd",   min_args = 4, max_args = 4 }
+
 # ── String functions — WASM string builtins (zero overhead) ──────────────────
 
 len        = { emit = "opcode:str_length",         min_args = 1, max_args = 1 }
@@ -296,16 +309,16 @@ fileexists   = { emit = "host:wasi:filesystem:exists",   min_args = 1, max_args 
 "file.delete"         = { emit = "host:wasi:filesystem:remove",      min_args = 1, max_args = 1 }
 "file.copy"           = { emit = "host:wasi:filesystem:copy",        min_args = 2, max_args = 2 }
 "file.move"           = { emit = "host:wasi:filesystem:rename",      min_args = 2, max_args = 2 }
-"file.readalllines"   = { emit = "host:wasi:filesystem:readFile",    min_args = 1, max_args = 1 }
+"file.readalllines"   = { emit = "common:dotnet.file_read_all_lines", min_args = 1, max_args = 1 }
 "directory.exists"          = { emit = "host:wasi:filesystem:isDir",         min_args = 1, max_args = 1 }
 "directory.createdirectory" = { emit = "host:wasi:filesystem:mkdir",         min_args = 1, max_args = 1 }
 "directory.delete"          = { emit = "host:wasi:filesystem:remove",        min_args = 1, max_args = 2 }
-"directory.getfiles"        = { emit = "host:wasi:filesystem:listDir",       min_args = 1, max_args = 1 }
-"directory.getdirectories"  = { emit = "host:wasi:filesystem:listDir",       min_args = 1, max_args = 1 }
-"directory.getcurrentdirectory" = { emit = "host:wasi:cli:cwd",              min_args = 0, max_args = 0 }
+"directory.getfiles"        = { emit = "common:dotnet.directory_get_files",       min_args = 1, max_args = 1 }
+"directory.getdirectories"  = { emit = "common:dotnet.directory_get_directories", min_args = 1, max_args = 1 }
+"directory.getcurrentdirectory" = { emit = "host:node:process:cwd",               min_args = 0, max_args = 0 }
 "path.getfilename"              = { emit = "host:wasi:filesystem:pathGetFileName",            min_args = 1, max_args = 1 }
 "path.getfilenamewithoutextension" = { emit = "host:wasi:filesystem:pathGetFileNameWithoutExt", min_args = 1, max_args = 1 }
-"path.getextension"             = { emit = "host:wasi:filesystem:pathGetExtension",           min_args = 1, max_args = 1 }
+"path.getextension"             = { emit = "host:node:path:extname",                         min_args = 1, max_args = 1 }
 "path.getdirectoryname"         = { emit = "host:wasi:filesystem:pathGetDirectory",           min_args = 1, max_args = 1 }
 "path.getfullpath"              = { emit = "host:wasi:filesystem:pathGetFullPath",            min_args = 1, max_args = 1 }
 "path.gettemppath"              = { emit = "host:wasi:filesystem:pathGetTempPath",            min_args = 0, max_args = 0 }
@@ -359,15 +372,15 @@ doevents     = { emit = "noop",                            min_args = 0, max_arg
 "environment.osversion"               = { emit = "host:wasi:cli:platform",    min_args = 0, max_args = 0 }
 "environment.processorcount"          = { emit = "host:wasi:cli:arch",        min_args = 0, max_args = 0 }
 "environment.tickcount"               = { emit = "host:wasi:cli:tickCount",   min_args = 0, max_args = 0 }
-"environment.getenvironmentvariable"  = { emit = "host:wasi:cli:getEnv",      min_args = 1, max_args = 1 }
-"environment.setenvironmentvariable"  = { emit = "noop",                      min_args = 2, max_args = 2 }
+"environment.getenvironmentvariable"  = { emit = "common:dotnet.environment_get", min_args = 1, max_args = 1 }
+"environment.setenvironmentvariable"  = { emit = "common:dotnet.environment_set", min_args = 2, max_args = 2 }
 "environment.getfolderpath"           = { emit = "host:wasi:cli:getFolderPath", min_args = 1, max_args = 1 }
 
 # ── Convert (Base64) ─────────────────────────────────────────────────────────
 
 "convert.tobase64string"   = { emit = "host:ecma:string:btoa",  min_args = 1, max_args = 1 }
 "convert.frombase64string" = { emit = "host:ecma:string:atob",  min_args = 1, max_args = 1 }
-"convert.todatetime"       = { emit = "host:ecma:date:parse", min_args = 1, max_args = 1 }
+"convert.todatetime"       = { emit = "common:dotnet.datetime_parse", min_args = 1, max_args = 1 }
 
 # ── JSON / XML / Regex ───────────────────────────────────────────────────────
 
@@ -437,13 +450,6 @@ screen       = { emit = "intrinsic:cint",      min_args = 0, max_args = 0 }
 clipboard    = { emit = "host:ecma:string:String",  min_args = 0, max_args = 1 }
 forms        = { emit = "host:ecma:string:String",  min_args = 0, max_args = 0 }
 print        = { emit = "host:wasi:cli:log",           min_args = 0, max_args = 255 }
-write        = { emit = "host:dotnet:io:streamWriterWrite",    min_args = 1, max_args = 1 }
-writeline    = { emit = "host:dotnet:io:streamWriterWriteLine", min_args = 1, max_args = 1 }
-readline     = { emit = "host:dotnet:io:streamReaderReadLine", min_args = 0, max_args = 0 }
-readtoend    = { emit = "host:dotnet:io:streamReaderReadToEnd", min_args = 0, max_args = 0 }
-endofstream  = { emit = "host:dotnet:io:streamReaderAtEnd",    min_args = 0, max_args = 0 }
-flush        = { emit = "host:dotnet:io:streamWriterFlush",    min_args = 0, max_args = 0 }
-close        = { emit = "host:dotnet:io:streamWriterClose",    min_args = 0, max_args = 0 }
 input        = { emit = "host:wasi:cli:readLine",      min_args = 0, max_args = 1 }
 inputb       = { emit = "host:wasi:cli:readLine",      min_args = 0, max_args = 1 }
 lineinput    = { emit = "host:wasi:cli:readLine",      min_args = 0, max_args = 1 }
@@ -578,9 +584,9 @@ append         = { emit = "common:dotnet.sb_append",       min_args = 1, max_arg
 appendline     = { emit = "common:dotnet.sb_append_line",  min_args = 0, max_args = 1 }
 
 # Stopwatch extended
-restart             = { emit = "host:wasi:clocks:stopwatchReset",    min_args = 0, max_args = 0 }
-elapsedmilliseconds = { emit = "host:wasi:clocks:stopwatchElapsed",  min_args = 0, max_args = 0 }
-isrunning           = { emit = "noop",                               min_args = 0, max_args = 0 }
+elapsedmilliseconds = { emit = "common:dotnet.stopwatch_elapsed_ms", min_args = 0, max_args = 0 }
+isrunning           = { emit = "common:dotnet.stopwatch_is_running", min_args = 0, max_args = 0 }
+restart             = { emit = "common:dotnet.stopwatch_restart",    min_args = 0, max_args = 0 }
 
 # List/collection extra — `addrange` shares the .NET BCL semantics
 # with C# `List<T>.AddRange`; both route through the dotnet adapter.
@@ -632,9 +638,9 @@ pop            = { emit = "host:ecma:array:pop",      min_args = 0, max_args = 0
 # conversion for `.NextDouble()` are compiler-lowering work-in-progress
 # (TODO: compiler_common::random) and temporarily return unscaled values.
 "next"         = [
-    { emit = "host:wasi:random/insecure:get-insecure-random-u64", min_args = 0, max_args = 2 },
+    { emit = "common:dotnet.random_next", min_args = 0, max_args = 2 },
 ]
-nextdouble     = { emit = "host:wasi:random/insecure:get-insecure-random-u64", min_args = 0, max_args = 0 }
+nextdouble     = { emit = "common:dotnet.random_next_double", min_args = 0, max_args = 0 }
 
 
 # ────────────────────────────────────────────────────────────────────────────
