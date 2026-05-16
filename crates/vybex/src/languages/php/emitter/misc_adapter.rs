@@ -163,9 +163,13 @@ pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, _argc: u8, l
     let needs_cookie = chunk.add_constant(Value::String(Arc::from("__php_session_needs_cookie")));
     let session_id = chunk.add_constant(Value::String(Arc::from("__php_session_id")));
     let started = chunk.add_constant(Value::String(Arc::from("__php_session_started")));
+    let destroyed = chunk.add_constant(Value::String(Arc::from("__php_session_destroyed")));
 
     chunk.emit_op(Op::TRUE, line);
     chunk.emit_op_u16(Op::GLOBAL_SET, started, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op(Op::FALSE, line);
+    chunk.emit_op_u16(Op::GLOBAL_SET, destroyed, line);
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::GLOBAL_GET, needs_cookie, line);
@@ -186,6 +190,42 @@ pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, _argc: u8, l
     chunk.patch_jump(no_cookie);
     chunk.emit_op(Op::TRUE, line);
     chunk.patch_jump(done);
+}
+
+pub fn emit_php_session_unset(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    call_import(chunks, current, "ecma:map", "new", 0, line);
+    let chunk = &mut chunks[current];
+    let session = chunk.add_constant(Value::String(Arc::from("$_SESSION")));
+    chunk.emit_op_u16(Op::GLOBAL_SET, session, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op(Op::TRUE, line);
+}
+
+pub fn emit_php_session_destroy(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    emit_php_session_unset(chunks, current, 0, line);
+    let set_cookie_import = chunks[0].add_import("node:http".to_string(), "set_cookie".to_string());
+    let chunk = &mut chunks[current];
+    let started = chunk.add_constant(Value::String(Arc::from("__php_session_started")));
+    let destroyed = chunk.add_constant(Value::String(Arc::from("__php_session_destroyed")));
+    let needs_cookie = chunk.add_constant(Value::String(Arc::from("__php_session_needs_cookie")));
+
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op(Op::FALSE, line);
+    chunk.emit_op_u16(Op::GLOBAL_SET, started, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op(Op::TRUE, line);
+    chunk.emit_op_u16(Op::GLOBAL_SET, destroyed, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op(Op::FALSE, line);
+    chunk.emit_op_u16(Op::GLOBAL_SET, needs_cookie, line);
+    chunk.emit_op(Op::DROP, line);
+
+    push_str(chunk, "PHPSESSID", line);
+    push_str(chunk, "", line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, set_cookie_import, line);
+    chunk.emit(2, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op(Op::TRUE, line);
 }
 
 fn emit_nullish_return(chunk: &mut Chunk, value_slot: u16, line: u32) -> usize {

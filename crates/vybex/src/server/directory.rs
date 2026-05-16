@@ -70,11 +70,15 @@ pub fn resolve(url_path: &str, config: &ServeConfig) -> Resolution {
 }
 
 /// Script extensions that trigger compile-and-run dispatch.
+///
+/// Directory mode serves browser assets from mixed webroots, so `.js`
+/// and `.mjs` stay on the static-file path rather than being executed as
+/// server scripts.
 pub fn is_script(path: &Path) -> bool {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     matches!(
         ext,
-        "php" | "vb"  | "js" | "mjs" | "py"  | "rb"
+        "php" | "vb"  | "py"  | "rb"
             | "cs" | "dart" | "cob" | "cbl" | "f90" | "pas"
     )
 }

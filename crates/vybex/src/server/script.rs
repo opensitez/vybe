@@ -25,6 +25,7 @@ const PHP_SESSION_COOKIE_NAME: &str = "PHPSESSID";
 const PHP_SESSION_ID_GLOBAL: &str = "__php_session_id";
 const PHP_SESSION_STARTED_GLOBAL: &str = "__php_session_started";
 const PHP_SESSION_NEEDS_COOKIE_GLOBAL: &str = "__php_session_needs_cookie";
+const PHP_SESSION_DESTROYED_GLOBAL: &str = "__php_session_destroyed";
 
 static PHP_SESSION_STORE: std::sync::LazyLock<dashmap::DashMap<String, IndexMap<String, vybe_bytecode::Value>>> =
     std::sync::LazyLock::new(dashmap::DashMap::new);
@@ -318,6 +319,10 @@ fn inject_superglobals(vm: &mut vybe_bytecode::VM, ctx: &Arc<RequestContext>) {
         PHP_SESSION_NEEDS_COOKIE_GLOBAL.to_string(),
         Value::Bool(session_cookie.is_none()),
     );
+    vm.globals.insert(
+        PHP_SESSION_DESTROYED_GLOBAL.to_string(),
+        Value::Bool(false),
+    );
     let mut request_im: IndexMap<Value, Value> = IndexMap::new();
     for key in ["$_GET", "$_POST", "$_COOKIE"] {
         if let Some(Value::Object(obj)) = vm.globals.get(key) {
@@ -357,6 +362,20 @@ fn make_string_map_value(pairs: impl IntoIterator<Item = (String, String)>) -> v
 }
 
 fn persist_superglobals(vm: &vybe_bytecode::VM, _ctx: &Arc<RequestContext>) {
+    let destroyed = matches!(
+        vm.globals.get(PHP_SESSION_DESTROYED_GLOBAL),
+        Some(vybe_bytecode::Value::Bool(true))
+    );
+
+    if destroyed {
+        let session_id = match vm.globals.get(PHP_SESSION_ID_GLOBAL) {
+            Some(vybe_bytecode::Value::String(s)) if !s.is_empty() => s.to_string(),
+            _ => return,
+        };
+        PHP_SESSION_STORE.remove(&session_id);
+        return;
+    }
+
     let started = matches!(
         vm.globals.get(PHP_SESSION_STARTED_GLOBAL),
         Some(vybe_bytecode::Value::Bool(true))
@@ -754,6 +773,64 @@ mod tests {
             second_ctx,
         );
         assert_eq!(out2, vec!["alice".to_string()]);
+    }
+
+    #[test]
+    fn session_destroy_removes_persisted_state_and_clears_cookie() {
+        let first_ctx = build_ctx(
+            "GET",
+            "http://localhost:8080/index.php",
+            &[("Host", "localhost:8080")],
+            b"",
+        );
+        let (_out1, first_ctx, first_vm) = run_php_request_vm(
+            r#"<?php session_start(); $_SESSION['user'] = 'alice';"#,
+            Arc::clone(&first_ctx),
+        );
+        let cookie = {
+            let response = first_ctx.response.lock().expect("lock response");
+            response
+                .headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("set-cookie"))
+                .map(|(_, value)| value.clone())
+                .expect("set-cookie header")
+        };
+        let session_id = parse_cookie_header(&cookie)
+            .into_iter()
+            .find(|(name, _)| name == PHP_SESSION_COOKIE_NAME)
+            .map(|(_, value)| value)
+            .expect("session id from cookie");
+        persist_superglobals(&first_vm, &first_ctx);
+        assert!(PHP_SESSION_STORE.get(&session_id).is_some());
+
+        let second_ctx = build_ctx(
+            "GET",
+            "http://localhost:8080/logout.php",
+            &[("Host", "localhost:8080"), ("Cookie", &cookie)],
+            b"",
+        );
+        let (_out2, second_ctx, second_vm) = run_php_request_vm(
+            r#"<?php session_start(); session_unset(); session_destroy();"#,
+            Arc::clone(&second_ctx),
+        );
+        persist_superglobals(&second_vm, &second_ctx);
+        assert!(PHP_SESSION_STORE.get(&session_id).is_none());
+        let cleared_cookie = {
+            let response = second_ctx.response.lock().expect("lock response");
+            response
+                .headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("set-cookie"))
+                .map(|(_, value)| value.clone())
+                .expect("cleared set-cookie header")
+        };
+        let cleared_value = parse_cookie_header(&cleared_cookie)
+            .into_iter()
+            .find(|(name, _)| name == PHP_SESSION_COOKIE_NAME)
+            .map(|(_, value)| value)
+            .expect("cleared php session cookie");
+        assert!(cleared_value.is_empty());
     }
 
     #[test]

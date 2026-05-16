@@ -1401,7 +1401,83 @@ pub fn emit_array_key_last(chunks: &mut [Chunk], current: usize, _argc: u8, line
     emit_array_key_first_or_last(chunks, current, /*last=*/true, line);
 }
 
-// ── array_diff_assoc / array_intersect_key / array_replace ─────────
+// ── array_diff_key / array_diff_assoc / array_intersect_key / array_replace ─────────
+
+/// PHP `array_diff_key(a, b)` — entries in a whose keys do not exist in b.
+pub fn emit_array_diff_key(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let (b_slot, a_slot, out_slot, keys_slot, i_slot, len_slot, k_slot, av_slot) = {
+        let chunk = &mut chunks[current];
+        (
+            alloc_local(chunk), alloc_local(chunk), alloc_local(chunk),
+            alloc_local(chunk), alloc_local(chunk), alloc_local(chunk),
+            alloc_local(chunk), alloc_local(chunk),
+        )
+    };
+    {
+        let chunk = &mut chunks[current];
+        lset(chunk, b_slot, line);
+        lset(chunk, a_slot, line);
+    }
+    call_import(chunks, current, "ecma:map", "new", 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    call_import(chunks, current, "ecma:object", "keys", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    {
+        let chunk = &mut chunks[current];
+        push_const(chunk, Value::F64(0.0), line);
+        lset(chunk, i_slot, line);
+        lget(chunk, keys_slot, line);
+        chunk.emit_op(Op::ARRAY_LENGTH, line);
+        lset(chunk, len_slot, line);
+    }
+
+    let loop_top = chunks[current].current_offset();
+    let exit = {
+        let chunk = &mut chunks[current];
+        lget(chunk, i_slot, line);
+        lget(chunk, len_slot, line);
+        chunk.emit_op(Op::DYN_LT, line);
+        let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+        lget(chunk, keys_slot, line);
+        lget(chunk, i_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        lset(chunk, k_slot, line);
+
+        lget(chunk, a_slot, line);
+        lget(chunk, k_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        lset(chunk, av_slot, line);
+
+        lget(chunk, b_slot, line);
+        lget(chunk, k_slot, line);
+        call_import(chunks, current, "ecma:object", "hasOwn", 2, line);
+        let exists = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
+
+        let chunk = &mut chunks[current];
+        lget(chunk, out_slot, line);
+        lget(chunk, k_slot, line);
+        lget(chunk, av_slot, line);
+        chunk.emit_op(Op::ARRAY_SET, line);
+        chunk.patch_jump(exists);
+
+        lget(chunk, i_slot, line);
+        push_const(chunk, Value::F64(1.0), line);
+        chunk.emit_op(Op::F64_ADD, line);
+        lset(chunk, i_slot, line);
+        chunk.emit_loop(loop_top, line);
+        chunk.patch_jump(exit);
+
+        lget(chunk, out_slot, line);
+        exit
+    };
+    let _ = exit;
+}
 
 /// PHP `array_diff_assoc(a, b)` — entries in a whose key→value pair
 /// differs in b.

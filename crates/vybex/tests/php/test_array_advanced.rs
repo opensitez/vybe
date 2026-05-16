@@ -153,6 +153,17 @@ echo implode(",", $result);
 "#), &["a,c", "1,3"]);
 }
 
+#[test]
+fn array_diff_key() {
+    assert_eq!(run_prints(r#"<?php
+$a = ["a" => 1, "b" => 2, "c" => 3];
+$b = ["a" => 10, "c" => 30, "d" => 40];
+$result = array_diff_key($a, $b);
+echo implode(",", array_keys($result));
+echo implode(",", $result);
+"#), &["b", "2"]);
+}
+
 // ── array_fill / array_pad / array_product ───────────────────────
 #[test]
 fn array_fill_basic() {

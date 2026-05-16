@@ -595,6 +595,8 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::php::array_adapter::emit_array_key_first(chunks, current, argc, line),
         "php.array_key_last"
             => crate::emitter::php::array_adapter::emit_array_key_last(chunks, current, argc, line),
+        "php.array_diff_key"
+            => crate::emitter::php::array_adapter::emit_array_diff_key(chunks, current, argc, line),
         "php.array_diff_assoc"
             => crate::emitter::php::array_adapter::emit_array_diff_assoc(chunks, current, argc, line),
         "php.array_intersect_key"
@@ -774,6 +776,8 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         "php.header" => crate::emitter::php::misc_adapter::emit_php_header(chunks, current, argc, line),
         "php.empty" => crate::emitter::php::misc_adapter::emit_php_empty(chunks, current, argc, line),
         "php.session_start" => crate::emitter::php::misc_adapter::emit_php_session_start(chunks, current, argc, line),
+        "php.session_unset" => crate::emitter::php::misc_adapter::emit_php_session_unset(chunks, current, argc, line),
+        "php.session_destroy" => crate::emitter::php::misc_adapter::emit_php_session_destroy(chunks, current, argc, line),
         "php.serialize" => crate::emitter::php::misc_adapter::emit_php_serialize(chunks, current, argc, line),
         "php.unserialize" => crate::emitter::php::misc_adapter::emit_php_unserialize(chunks, current, argc, line),
         "php.pdo_new" => crate::emitter::php::database_adapter::emit_php_pdo_new(chunks, current, argc, line),
