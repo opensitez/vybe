@@ -850,6 +850,46 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
 
         Rule::foreach_statement => walk_foreach(pair)?,
 
+        Rule::goto_statement => {
+            let mut label = String::new();
+            for p in pair.into_inner() {
+                match p.as_rule() {
+                    Rule::identifier => label = p.as_str().to_string(),
+                    Rule::expression => {
+                        label = match walk_expression(p)?.kind {
+                            ExprKind::Ident(name) => name,
+                            ExprKind::Lit(Literal::Str(text)) => text,
+                            _ => "__php_dynamic_goto".to_string(),
+                        };
+                    }
+                    _ => {}
+                }
+            }
+            StmtKind::GoTo(label)
+        }
+
+        Rule::label_statement => {
+            let mut inner = pair.into_inner();
+            let label = inner.next().unwrap().as_str().to_string();
+            if let Some(body_pair) = inner.next() {
+                let body = walk_statement(body_pair)?.unwrap_or_else(|| Statement::new(StmtKind::Empty));
+                StmtKind::Labeled { label, body: Box::new(body) }
+            } else {
+                StmtKind::Label(label)
+            }
+        }
+
+        Rule::declare_statement => {
+            let body = pair.into_inner().find_map(|p| match p.as_rule() {
+                Rule::statement | Rule::block_statement => Some(p),
+                _ => None,
+            });
+            match body {
+                Some(stmt) => StmtKind::Block(walk_statement_into_body(stmt)?),
+                None => StmtKind::Empty,
+            }
+        }
+
         Rule::switch_statement => walk_switch(pair)?,
 
         Rule::return_statement => {
@@ -1006,14 +1046,24 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
     // foreach_statement = { kw_foreach ~ "(" ~ expression ~ kw_as
-    //                       ~ foreach_target ~ ")" ~ statement }
+    //                       ~ foreach_target ~ ")" ~ (statement | foreach_alt_block) }
     let mut iter: Option<Expression> = None;
     let mut target_pair: Option<Pair<Rule>> = None;
-    let mut body_stmt: Option<Pair<Rule>> = None;
+    let mut body: Vec<Statement> = Vec::new();
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::expression => iter = Some(walk_expression(p)?),
             Rule::foreach_target => target_pair = Some(p),
+            Rule::foreach_alt_block => {
+                for stmt in p.into_inner() {
+                    if matches!(stmt.as_rule(), Rule::kw_endforeach) {
+                        continue;
+                    }
+                    if let Some(walked) = walk_statement(stmt)? {
+                        body.push(walked);
+                    }
+                }
+            }
             _ => {
                 if matches!(p.as_rule(),
                     Rule::block_statement | Rule::expression_statement | Rule::if_statement |
@@ -1021,9 +1071,13 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     Rule::foreach_statement | Rule::switch_statement | Rule::return_statement |
                     Rule::break_statement | Rule::continue_statement | Rule::throw_statement |
                     Rule::try_statement | Rule::echo_statement | Rule::print_statement |
-                    Rule::empty_statement | Rule::function_declaration | Rule::class_declaration
+                    Rule::empty_statement | Rule::function_declaration | Rule::class_declaration |
+                    Rule::template_break_stmt | Rule::template_echo_stmt | Rule::goto_statement |
+                    Rule::label_statement | Rule::declare_statement
                 ) {
-                    body_stmt = Some(p);
+                    if let Some(walked) = walk_statement(p)? {
+                        body.push(walked);
+                    }
                 }
             }
         }
@@ -1044,7 +1098,9 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
         (None, walk_foreach_value_target(first)?)
     };
 
-    let mut body = walk_statement_into_body(body_stmt.ok_or("foreach: missing body")?)?;
+    if body.is_empty() {
+        return Err("foreach: missing body".into());
+    }
     let (var, prefix) = foreach_binding_target(value_target, target_suffix)?;
     if let Some(prefix_stmt) = prefix {
         body.insert(0, prefix_stmt);
@@ -1683,11 +1739,15 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
             let mut type_hint: Option<String> = None;
             let mut init: Option<Expression> = None;
             let mut modifiers = Modifiers::default();
+            let mut getter: Option<Vec<Statement>> = None;
+            let mut setter: Option<PropertySetter> = None;
             for p in pair.into_inner() {
                 match p.as_rule() {
-                    Rule::member_modifier => apply_member_modifier(&mut modifiers, p.as_str()),
+                    Rule::member_modifier | Rule::asymmetric_set_modifier => {
+                        apply_member_modifier(&mut modifiers, p.as_str())
+                    }
                     Rule::type_annotation => type_hint = Some(p.as_str().to_string()),
-                    Rule::variable => {
+                    Rule::simple_variable | Rule::variable => {
                         // Property names are stored WITHOUT the `$`
                         // sigil (member access `$this->prop` looks up
                         // "prop"). PHP variables in expression context
@@ -1697,17 +1757,33 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
                         name = raw.strip_prefix('$').unwrap_or(raw).to_string();
                     }
                     Rule::expression => init = Some(walk_expression(p)?),
+                    Rule::property_hook_block => {
+                        let (hook_getter, hook_setter) = walk_property_hooks(p, &type_hint)?;
+                        getter = hook_getter;
+                        setter = hook_setter;
+                    }
                     _ => {}
                 }
             }
-            Ok(Some(ClassMember::Field {
-                name,
-                type_hint,
-                init,
-                modifiers,
-                with_events: false,
-                array_bounds: None,
-            }))
+            if getter.is_some() || setter.is_some() {
+                Ok(Some(ClassMember::Property {
+                    name,
+                    type_hint,
+                    getter,
+                    setter,
+                    is_auto: false,
+                    modifiers,
+                }))
+            } else {
+                Ok(Some(ClassMember::Field {
+                    name,
+                    type_hint,
+                    init,
+                    modifiers,
+                    with_events: false,
+                    array_bounds: None,
+                }))
+            }
         }
         Rule::method_declaration => {
             let mut method_name = String::new();
@@ -1812,15 +1888,20 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
 
 fn apply_member_modifier(mods: &mut Modifiers, kw: &str) {
     let lower = kw.to_lowercase();
-    match lower.as_str() {
-        "public" => mods.visibility = Visibility::Public,
-        "private" => mods.visibility = Visibility::Private,
-        "protected" => mods.visibility = Visibility::Protected,
-        "static" => mods.is_static = true,
-        "abstract" => mods.is_abstract = true,
-        "final" => mods.is_not_overridable = true,
-        "readonly" => mods.is_readonly = true,
-        _ => {}
+    if lower.starts_with("public") {
+        mods.visibility = Visibility::Public;
+    } else if lower.starts_with("private") {
+        mods.visibility = Visibility::Private;
+    } else if lower.starts_with("protected") {
+        mods.visibility = Visibility::Protected;
+    } else {
+        match lower.as_str() {
+            "static" => mods.is_static = true,
+            "abstract" => mods.is_abstract = true,
+            "final" => mods.is_not_overridable = true,
+            "readonly" => mods.is_readonly = true,
+            _ => {}
+        }
     }
 }
 
@@ -1887,7 +1968,8 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
         Rule::number_lit => return Ok(Expression::with_span(walk_number(&pair).kind, span)),
         Rule::string_lit => return Ok(Expression::with_span(walk_string(&pair).kind, span)),
 
-        Rule::variable => ExprKind::Ident(strip_dollar(pair.as_str()).to_string()),
+        Rule::variable => return walk_php_variable_expr(pair, span),
+        Rule::simple_variable => ExprKind::Ident(strip_dollar(pair.as_str()).to_string()),
         Rule::identifier => {
             let name = pair.as_str();
             // Bare PHP global constants get rewritten to their JS-shaped
@@ -2018,6 +2100,14 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
             let arg = walk_expression(inner_nokw(pair).next().unwrap())?;
             ExprKind::Call {
                 callee: Box::new(Expression::ident("empty")),
+                args: vec![Argument::positional(arg)],
+                optional: false,
+            }
+        }
+        Rule::print_expression => {
+            let arg = walk_expression(inner_nokw(pair).next().unwrap())?;
+            ExprKind::Call {
+                callee: Box::new(Expression::ident("__php_print_expr")),
                 args: vec![Argument::positional(arg)],
                 optional: false,
             }
@@ -3271,8 +3361,93 @@ fn parse_unary_op(s: &str) -> UnaryOp {
         "++" => UnaryOp::PreInc,
         "--" => UnaryOp::PreDec,
         "@" => UnaryOp::Pos, // PHP error suppression — semantically a no-op for us
+        "&" => UnaryOp::AddrOf,
         _ => UnaryOp::Pos,
     }
+}
+
+fn walk_php_variable_expr(pair: Pair<Rule>, span: Span) -> Result<Expression, String> {
+    let raw = pair.as_str();
+    if let Some(rest) = raw.strip_prefix("$$") {
+        let key_expr = if rest.starts_with('$') {
+            Expression::with_span(ExprKind::Ident(rest.to_string()), span.clone())
+        } else {
+            Expression::with_span(ExprKind::Lit(Literal::Str(rest.to_string())), span.clone())
+        };
+        return Ok(Expression::with_span(
+            ExprKind::Index {
+                object: Box::new(Expression::with_span(ExprKind::Ident("__php_var_vars".to_string()), span.clone())),
+                index: Box::new(key_expr),
+                null_safe: false,
+            },
+            span,
+        ));
+    }
+
+    let mut inner = pair.clone().into_inner();
+    if let Some(first) = inner.next() {
+        if matches!(first.as_rule(), Rule::expression) {
+            let key_expr = walk_expression(first)?;
+            return Ok(Expression::with_span(
+                ExprKind::Index {
+                    object: Box::new(Expression::with_span(ExprKind::Ident("__php_var_vars".to_string()), span.clone())),
+                    index: Box::new(key_expr),
+                    null_safe: false,
+                },
+                span,
+            ));
+        }
+    }
+
+    Ok(Expression::with_span(ExprKind::Ident(strip_dollar(raw).to_string()), span))
+}
+
+fn walk_property_hooks(
+    pair: Pair<Rule>,
+    type_hint: &Option<String>,
+) -> Result<(Option<Vec<Statement>>, Option<PropertySetter>), String> {
+    let mut getter = None;
+    let mut setter = None;
+
+    for hook in pair.into_inner() {
+        match hook.as_rule() {
+            Rule::property_get_hook => {
+                if let Some(block) = hook.into_inner().find(|p| matches!(p.as_rule(), Rule::block_statement)) {
+                    getter = Some(walk_statement_into_body(block)?);
+                }
+            }
+            Rule::property_set_hook => {
+                let mut param = Param {
+                    name: "value".to_string(),
+                    type_hint: type_hint.clone(),
+                    default: None,
+                    pass_by: PassBy::Value,
+                    is_rest: false,
+                    is_kwargs: false,
+                    is_optional: false,
+                    is_nullable: false,
+                };
+                let mut body = Vec::new();
+                for item in hook.into_inner() {
+                    match item.as_rule() {
+                        Rule::param_list => {
+                            if let Some(first) = walk_params(item)?.into_iter().next() {
+                                param = first;
+                            }
+                        }
+                        Rule::block_statement => {
+                            body = walk_statement_into_body(item)?;
+                        }
+                        _ => {}
+                    }
+                }
+                setter = Some(PropertySetter { param, body });
+            }
+            _ => {}
+        }
+    }
+
+    Ok((getter, setter))
 }
 
 fn walk_cast(pair: Pair<Rule>) -> Result<Expression, String> {

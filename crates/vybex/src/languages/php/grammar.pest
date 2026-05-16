@@ -99,6 +99,8 @@ kw_default = @{ ^"default"     ~ !ident_cont }
 kw_break = @{ ^"break"       ~ !ident_cont }
 kw_continue = @{ ^"continue"    ~ !ident_cont }
 kw_return = @{ ^"return"      ~ !ident_cont }
+kw_goto = @{ ^"goto"        ~ !ident_cont }
+kw_declare = @{ ^"declare"     ~ !ident_cont }
 kw_function = @{ ^"function"    ~ !ident_cont }
 kw_class = @{ ^"class"       ~ !ident_cont }
 kw_extends = @{ ^"extends"     ~ !ident_cont }
@@ -135,6 +137,8 @@ kw_yield = @{ ^"yield"       ~ !ident_cont }
 kw_list = @{ ^"list"        ~ !ident_cont }
 kw_global = @{ ^"global"      ~ !ident_cont }
 kw_readonly = @{ ^"readonly"    ~ !ident_cont }
+kw_get = @{ ^"get"         ~ !ident_cont }
+kw_set = @{ ^"set"         ~ !ident_cont }
 kw_and = @{ ^"and"         ~ !ident_cont }
 kw_or = @{ ^"or"          ~ !ident_cont }
 kw_xor = @{ ^"xor"         ~ !ident_cont }
@@ -164,7 +168,7 @@ cast_kw = @{
 reserved = _{
     kw_if | kw_elseif | kw_else_if | kw_else | kw_while | kw_do | kw_for
     | kw_foreach | kw_as | kw_switch | kw_case | kw_default | kw_break
-    | kw_continue | kw_return | kw_function | kw_class | kw_extends
+    | kw_continue | kw_return | kw_goto | kw_declare | kw_function | kw_class | kw_extends
     | kw_implements | kw_interface | kw_trait | kw_enum | kw_new | kw_clone
     | kw_echo | kw_print | kw_null | kw_true | kw_false | kw_instanceof
     | kw_throw | kw_try | kw_catch | kw_finally | kw_static | kw_public
@@ -179,9 +183,10 @@ reserved = _{
 
 identifier = @{ !reserved ~ (ASCII_ALPHA | "_") ~ ident_cont* }
 
-// `$varname`. The dollar prefix distinguishes variables from
-// identifiers (function names, class names, constants).
-variable = @{ "$" ~ (ASCII_ALPHA | "_") ~ ident_cont* }
+// `$varname`, `$$name`, `${expr}`.
+simple_variable = @{ "$" ~ (ASCII_ALPHA | "_") ~ ident_cont* }
+dynamic_variable = { "$" ~ (simple_variable | "{" ~ expression ~ "}") }
+variable = { dynamic_variable | simple_variable }
 
 // PHP allows backslash-qualified names: \Foo\Bar\Baz, Foo\Bar
 qualified_name = @{ "\\"? ~ identifier ~ ("\\" ~ identifier)* }
@@ -209,8 +214,8 @@ dq_string = @{ "\"" ~ ("\\\"" | "\\\\" | "\\$" | "\\" ~ ANY | (!"\"" ~ ANY))* ~ 
 // through the parser stack so we can match it on the closing line.
 heredoc_str = ${
     "<<<" ~ ("\""? ~ "'"?) ~ PUSH(heredoc_tag) ~ ("\""? ~ "'"?) ~ ("\r"? ~ "\n")
-    ~ (!(("\r"? ~ "\n") ~ PEEK ~ (";" | "," | ")" | "\r" | "\n")) ~ ANY)*
-    ~ ("\r"? ~ "\n") ~ POP
+    ~ (!( ("\r"? ~ "\n") ~ (" " | "\t")* ~ PEEK ~ (";" | "," | ")" | "\r" | "\n")) ~ ANY)*
+    ~ ("\r"? ~ "\n") ~ (" " | "\t")* ~ POP
 }
 heredoc_tag = @{ (ASCII_ALPHA | "_") ~ ident_cont* }
 
@@ -238,6 +243,9 @@ statement = _{
     | do_while_statement
     | for_statement
     | foreach_statement
+    | goto_statement
+    | label_statement
+    | declare_statement
     | switch_statement
     | return_statement
     | break_statement
@@ -426,8 +434,19 @@ class_constant = {
 }
 
 property_declaration = {
-    attribute_group* ~ member_modifier* ~ type_annotation? ~ variable ~ ("=" ~ expression)? ~ ";"
+    attribute_group* ~ (asymmetric_set_modifier | member_modifier)* ~ type_annotation? ~ simple_variable ~ ("=" ~ expression)? ~ (property_hook_block | ";")
 }
+
+asymmetric_set_modifier = {
+    kw_public ~ "(" ~ kw_set ~ ")"
+    | kw_private ~ "(" ~ kw_set ~ ")"
+    | kw_protected ~ "(" ~ kw_set ~ ")"
+}
+
+property_hook_block = { "{" ~ property_hook* ~ "}" }
+property_hook = { property_get_hook | property_set_hook }
+property_get_hook = { kw_get ~ block_statement }
+property_set_hook = { kw_set ~ "(" ~ param_list? ~ ")" ~ block_statement }
 
 method_declaration = {
     // PHP allows reserved words as method names (`list`, `match`, etc.).
@@ -506,7 +525,11 @@ foreach_statement = {
     ~ expression ~ kw_as
     ~ foreach_target
     ~ ")"
-    ~ statement
+    ~ (statement | foreach_alt_block)
+}
+
+foreach_alt_block = {
+    ":" ~ statement* ~ kw_endforeach ~ stmt_terminator
 }
 
 // `as $value` or `as $key => $value`
@@ -525,6 +548,11 @@ switch_case = {
 }
 
 return_statement = { kw_return ~ expression? ~ ";" }
+goto_statement = { kw_goto ~ (identifier | "{" ~ expression ~ "}") ~ ";" }
+label_statement = { identifier ~ ":" ~ statement? }
+declare_statement = {
+    kw_declare ~ "(" ~ identifier ~ "=" ~ expression ~ ")" ~ (statement | block_statement | ";")
+}
 break_statement  = { kw_break ~ expression? ~ ";" }
 continue_statement = { kw_continue ~ expression? ~ ";" }
 throw_statement = { kw_throw ~ expression ~ ";" }
@@ -651,7 +679,7 @@ unary_expression = {
     | postfix_expression
 }
 
-unary_op = { "!" | "~" | "-" | "+" | "++" | "--" | "@" }
+unary_op = { "!" | "~" | "-" | "+" | "++" | "--" | "@" | "&" }
 
 cast_expression = {
     "(" ~ cast_kw ~ ")" ~ unary_expression
@@ -730,6 +758,7 @@ primary_expression = {
     | match_expression
     | isset_expression
     | empty_expression
+    | print_expression
     | unset_expression
     | list_expression
     | array_expression
@@ -789,6 +818,7 @@ match_conditions = { expression ~ ("," ~ expression)* }
 
 isset_expression = { kw_isset ~ "(" ~ expression ~ ("," ~ expression)* ~ ")" }
 empty_expression = { kw_empty ~ "(" ~ expression ~ ")" }
+print_expression = { kw_print ~ expression }
 unset_expression = { kw_unset ~ "(" ~ expression ~ ("," ~ expression)* ~ ")" }
 
 list_expression = {

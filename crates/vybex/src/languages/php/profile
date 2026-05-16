@@ -62,9 +62,10 @@ str_ends_with       = { emit = "opcode:str_ends_with",       min_args = 2, max_a
 str_repeat          = { emit = "opcode:str_repeat",          min_args = 2, max_args = 2 }
 chr                 = { emit = "opcode:str_from_char_code",  min_args = 1, max_args = 1 }
 ord                 = { emit = "host:wasm:js-string:charCodeAt", min_args = 1, max_args = 1 }
-# PHP `strpos`: returns position or false; opcode returns -1 on miss.
-# Most callers do `!== false` which still passes since -1 is truthy in PHP.
-strpos              = { emit = "opcode:str_index_of",        min_args = 2, max_args = 3 }
+# PHP `strpos` / `mb_strpos`: return position or `false`, and the 3rd
+# arg is an offset rather than JS's direct `indexOf` shape.
+strpos              = { emit = "intrinsic:php_strpos",       min_args = 2, max_args = 3 }
+mb_strpos           = { emit = "intrinsic:php_strpos",       min_args = 2, max_args = 3 }
 stripos             = { emit = "opcode:str_index_of",        min_args = 2, max_args = 3 }
 # Path utilities — routed through the PHP filesystem emitter so PHP keeps a
 # language-local boundary even when the underlying host call is a thin path op.
@@ -278,7 +279,7 @@ boolval             = { emit = "host:ecma:boolean:Boolean",    min_args = 1, max
 #     PHP distinguishes arrays from class instances; Vybe's runtime
 #     doesn't tag them differently yet, so a JS-shape rewrite would be
 #     half-correct. The intrinsic forms stay until that's resolved.
-is_numeric          = { emit = "host:ecma:number:isNaN",         min_args = 1, max_args = 1 }
+is_numeric          = { emit = "stdlib:isnumeric",               min_args = 1, max_args = 1 }
 is_float            = { emit = "intrinsic:php_is_float",         min_args = 1, max_args = 1 }
 is_double           = { emit = "intrinsic:php_is_float",         min_args = 1, max_args = 1 }
 is_real             = { emit = "intrinsic:php_is_float",         min_args = 1, max_args = 1 }
@@ -294,9 +295,10 @@ array_pop           = { emit = "opcode:array_pop",                 min_args = 1,
 array_shift         = { emit = "opcode:array_shift",               min_args = 1, max_args = 1 }
 array_reverse       = { emit = "opcode:array_reverse",             min_args = 1, max_args = 1 }
 in_array            = { emit = "opcode:array_contains",            min_args = 2, max_args = 3 }
-array_search        = { emit = "opcode:array_index_of",            min_args = 2, max_args = 3 }
-array_slice         = { emit = "opcode:array_slice",               min_args = 2, max_args = 4 }
+array_search        = { emit = "intrinsic:php_array_search",       min_args = 2, max_args = 3 }
+array_slice         = { emit = "intrinsic:php_array_slice",        min_args = 2, max_args = 4 }
 array_merge         = { emit = "opcode:array_concat",              min_args = 1, max_args = 255 }
+range               = { emit = "intrinsic:php_range",              min_args = 2, max_args = 3 }
 array_map           = { emit = "common:php.array_map",             min_args = 2, max_args = 2 }
 array_filter        = { emit = "common:php.array_filter",          min_args = 1, max_args = 3 }
 array_walk_recursive = { emit = "common:php.array_walk_recursive", min_args = 2, max_args = 3 }
@@ -412,6 +414,10 @@ sprintf             = { emit = "stdlib:sprintf",            min_args = 1, max_ar
 __php_increment     = { emit = "common:php.inc",                 min_args = 1, max_args = 1 }
 __php_decrement     = { emit = "common:php.dec",                 min_args = 1, max_args = 1 }
 __php_substr        = { emit = "intrinsic:php_substr",          min_args = 2, max_args = 3 }
+__php_strpos        = { emit = "intrinsic:php_strpos",          min_args = 2, max_args = 3 }
+__php_array_search  = { emit = "intrinsic:php_array_search",    min_args = 2, max_args = 3 }
+__php_array_slice   = { emit = "intrinsic:php_array_slice",     min_args = 2, max_args = 4 }
+__php_print_expr    = { emit = "intrinsic:php_print_expr",      min_args = 1, max_args = 1 }
 
 # ── File I/O ────────────────────────────────────────────────────────────────
 

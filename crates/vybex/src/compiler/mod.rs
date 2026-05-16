@@ -8870,6 +8870,157 @@ impl Compiler {
                     self.emit(Op::NULL);
                 }
             }
+            "php_strpos" => {
+                if args.len() >= 2 {
+                    let haystack_slot = self.define_local("__php_strpos_haystack");
+                    let needle_slot = self.define_local("__php_strpos_needle");
+                    let offset_slot = self.define_local("__php_strpos_offset");
+                    let idx_slot = self.define_local("__php_strpos_idx");
+
+                    self.compile_expr(args[0])?;
+                    self.emit_u16(Op::LOCAL_SET, haystack_slot); self.emit(Op::DROP);
+
+                    self.compile_expr(args[1])?;
+                    self.emit_u16(Op::LOCAL_SET, needle_slot); self.emit(Op::DROP);
+
+                    if args.len() >= 3 {
+                        self.compile_expr(args[2])?;
+                        common::convert::emit_to_int(self.chunk(), line);
+                    } else {
+                        self.emit(Op::I32_CONST_0);
+                    }
+                    self.emit_u16(Op::LOCAL_SET, offset_slot); self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, haystack_slot);
+                    self.emit_u16(Op::LOCAL_GET, offset_slot);
+                    self.emit_const(Value::I32(i32::MAX));
+                    common::strings::emit_substring(self.chunk(), line);
+                    self.emit_u16(Op::LOCAL_GET, needle_slot);
+                    common::strings::emit_index_of(self.chunk(), line);
+                    self.emit_u16(Op::LOCAL_SET, idx_slot); self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, idx_slot);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit(Op::DYN_LT);
+                    let found = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit(Op::FALSE);
+                    let done = self.emit_jump(Op::BR);
+                    self.patch_jump(found);
+                    self.emit_u16(Op::LOCAL_GET, idx_slot);
+                    self.emit_u16(Op::LOCAL_GET, offset_slot);
+                    self.emit(Op::I32_ADD);
+                    self.patch_jump(done);
+                } else {
+                    self.emit(Op::FALSE);
+                }
+            }
+            "php_array_search" => {
+                if args.len() >= 2 {
+                    let idx_slot = self.define_local("__php_array_search_idx");
+                    self.compile_expr(args[1])?;
+                    self.compile_expr(args[0])?;
+                    common::collections::emit_index_of(&mut self.chunks, self.current, line);
+                    self.emit_u16(Op::LOCAL_SET, idx_slot); self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, idx_slot);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit(Op::DYN_LT);
+                    let found = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit(Op::FALSE);
+                    let done = self.emit_jump(Op::BR);
+                    self.patch_jump(found);
+                    self.emit_u16(Op::LOCAL_GET, idx_slot);
+                    self.patch_jump(done);
+                } else {
+                    self.emit(Op::FALSE);
+                }
+            }
+            "php_array_slice" => {
+                if args.len() >= 2 {
+                    let arr_slot = self.define_local("__php_array_slice_arr");
+                    let start_slot = self.define_local("__php_array_slice_start");
+
+                    self.compile_expr(args[0])?;
+                    self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
+
+                    self.compile_expr(args[1])?;
+                    common::convert::emit_to_int(self.chunk(), line);
+                    self.emit_u16(Op::LOCAL_SET, start_slot); self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, arr_slot);
+                    self.emit_u16(Op::LOCAL_GET, start_slot);
+
+                    if args.len() >= 3 {
+                        self.emit_u16(Op::LOCAL_GET, start_slot);
+                        self.compile_expr(args[2])?;
+                        common::convert::emit_to_int(self.chunk(), line);
+                        self.emit(Op::I32_ADD);
+                    } else {
+                        self.emit_const(Value::I32(i32::MAX));
+                    }
+
+                    common::collections::emit_slice(&mut self.chunks, self.current, line);
+                } else {
+                    self.emit(Op::NULL);
+                }
+            }
+            "php_range" => {
+                if args.len() >= 2 {
+                    let start_slot = self.define_local("__php_range_start");
+                    let end_slot = self.define_local("__php_range_end");
+                    let step_slot = self.define_local("__php_range_step");
+                    let stop_slot = self.define_local("__php_range_stop");
+
+                    self.compile_expr(args[0])?;
+                    self.emit_u16(Op::LOCAL_SET, start_slot); self.emit(Op::DROP);
+
+                    self.compile_expr(args[1])?;
+                    self.emit_u16(Op::LOCAL_SET, end_slot); self.emit(Op::DROP);
+
+                    if args.len() >= 3 {
+                        self.compile_expr(args[2])?;
+                    } else {
+                        self.emit(Op::I32_CONST_1);
+                    }
+                    self.emit_u16(Op::LOCAL_SET, step_slot); self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, step_slot);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit(Op::DYN_LT);
+                    let positive_step = self.emit_jump(Op::BR_IF_FALSE);
+
+                    self.emit_u16(Op::LOCAL_GET, end_slot);
+                    self.emit_const(Value::I32(1));
+                    self.emit(Op::I32_SUB);
+                    let stop_done = self.emit_jump(Op::BR);
+
+                    self.patch_jump(positive_step);
+                    self.emit_u16(Op::LOCAL_GET, end_slot);
+                    self.emit_const(Value::I32(1));
+                    self.emit(Op::I32_ADD);
+
+                    self.patch_jump(stop_done);
+                    self.emit_u16(Op::LOCAL_SET, stop_slot); self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, start_slot);
+                    self.emit_u16(Op::LOCAL_GET, stop_slot);
+                    self.emit_u16(Op::LOCAL_GET, step_slot);
+                    common::collections::emit_range(&mut self.chunks, self.current, 3, line);
+                } else {
+                    common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+                }
+            }
+            "php_print_expr" => {
+                if let Some(arg) = args.first() {
+                    let log_idx = self.import("wasi:cli", "log");
+                    self.compile_expr(arg)?;
+                    self.emit_common("php.echo_stringify", 1, line);
+                    common::io::emit_print_with_import(self.chunk(), log_idx, 1, line);
+                    self.emit(Op::I32_CONST_1);
+                } else {
+                    self.emit(Op::I32_CONST_1);
+                }
+            }
             "string_isnullorempty" => {
                 // String.IsNullOrEmpty(s) → s is null OR str_length(s) == 0.
                 // Compile s, dup, ref_is_null → if true return true, else
