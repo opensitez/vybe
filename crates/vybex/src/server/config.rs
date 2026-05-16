@@ -9,7 +9,7 @@ pub struct ServeConfig {
     /// Root directory to serve.
     pub root: PathBuf,
     /// If true, scripts run with `Capabilities::all()`. Otherwise
-    /// `Capabilities::safe()` plus `HttpServer` for `vybe:http` access.
+    /// they use the restricted sandbox capability set.
     pub no_sandbox: bool,
     /// Maximum request body size in bytes.
     pub max_body: usize,
@@ -34,7 +34,7 @@ impl Default for ServeConfig {
         Self {
             bind: "127.0.0.1:8080".into(),
             root: PathBuf::from("."),
-            no_sandbox: false,
+            no_sandbox: true,
             max_body: 10 * 1024 * 1024,
             max_header: 16 * 1024,
             timeout_secs: 30,

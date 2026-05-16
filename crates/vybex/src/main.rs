@@ -196,7 +196,7 @@ fn main() {
 
     if serve {
         let mut config = vybex::server::ServeConfig::default();
-        config.no_sandbox = serve_no_sandbox;
+        config.no_sandbox = serve_no_sandbox || !sandbox;
         // Positional parsing: first token that looks like an addr is bind;
         // first token that looks like a path is root. Order-insensitive.
         for p in &serve_positional {
@@ -455,7 +455,7 @@ fn print_usage() {
     eprintln!("      --chunk NAME  Limit --dump/--trace output to a chunk name or index");
     eprintln!("      --serve       Start HTTP server for a directory (see httpserver.md)");
     eprintln!("                    BIND defaults to 127.0.0.1:8080, ROOT to current dir");
-    eprintln!("      --no-sandbox  With --serve: give scripts full host access");
+    eprintln!("      --no-sandbox  With --serve: keep full host access (default)");
     eprintln!("  -h, --help        Show this help");
     eprintln!();
     eprintln!("Supported: {}", ext_list.join(", "));

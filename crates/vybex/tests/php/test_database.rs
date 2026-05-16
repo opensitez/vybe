@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── PDO style ───────────────────────────────────────────────
 #[test] fn pdo_connect_sqlite() { compile_ok(r#"<?php $pdo = new PDO('sqlite:test.db');"#); }
@@ -43,6 +43,22 @@ $pdo->beginTransaction();
 $pdo->exec("DELETE FROM users");
 $pdo->rollBack();
 "#); }
+
+#[test]
+fn pdo_sqlite_memory_runtime_round_trip() {
+    let lines = run_prints(r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
+$stmt = $pdo->prepare('INSERT INTO users (name) VALUES (?)');
+$stmt->execute(['Alice']);
+$rows = $pdo->query('SELECT name FROM users');
+$names = $rows->fetchAll(PDO::FETCH_COLUMN);
+echo $names[0];
+"#);
+
+    assert_eq!(lines, vec!["Alice"]);
+}
 
 // ── mysqli style ────────────────────────────────────────────
 #[test] fn mysqli_connect() { compile_ok(r#"<?php $conn = mysqli_connect('sqlite:test.db');"#); }

@@ -776,6 +776,17 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         "php.session_start" => crate::emitter::php::misc_adapter::emit_php_session_start(chunks, current, argc, line),
         "php.serialize" => crate::emitter::php::misc_adapter::emit_php_serialize(chunks, current, argc, line),
         "php.unserialize" => crate::emitter::php::misc_adapter::emit_php_unserialize(chunks, current, argc, line),
+        "php.pdo_new" => crate::emitter::php::database_adapter::emit_php_pdo_new(chunks, current, argc, line),
+        "php.pdo_query" => crate::emitter::php::database_adapter::emit_php_pdo_query(chunks, current, argc, line),
+        "php.pdo_exec" => crate::emitter::php::database_adapter::emit_php_pdo_exec(chunks, current, argc, line),
+        "php.pdo_prepare" => crate::emitter::php::database_adapter::emit_php_pdo_prepare(chunks, current, argc, line),
+        "php.pdo_set_attribute" => crate::emitter::php::database_adapter::emit_php_pdo_set_attribute(chunks, current, argc, line),
+        "php.pdo_begin_transaction" => crate::emitter::php::database_adapter::emit_php_pdo_begin_transaction(chunks, current, argc, line),
+        "php.pdo_commit" => crate::emitter::php::database_adapter::emit_php_pdo_commit(chunks, current, argc, line),
+        "php.pdo_rollback" => crate::emitter::php::database_adapter::emit_php_pdo_rollback(chunks, current, argc, line),
+        "php.pdo_statement_execute" => crate::emitter::php::database_adapter::emit_php_pdo_statement_execute(chunks, current, argc, line),
+        "php.pdo_statement_fetch" => crate::emitter::php::database_adapter::emit_php_pdo_statement_fetch(chunks, current, argc, line),
+        "php.pdo_statement_fetch_all" => crate::emitter::php::database_adapter::emit_php_pdo_statement_fetch_all(chunks, current, argc, line),
 
         // ── Fortran `max(a, b, c, ...)` / `min(a, b, c, ...)` — variadic.
         // Pure WASM (chained f64.max / f64.min); no host calls.

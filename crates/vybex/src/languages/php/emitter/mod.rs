@@ -28,6 +28,7 @@ pub mod numeric_adapter;
 pub mod ctype_adapter;
 pub mod math_adapter;
 pub mod misc_adapter;
+pub mod database_adapter;
 pub mod string_adapter;
 pub mod array_adapter;
 pub mod filesystem_adapter;

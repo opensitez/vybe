@@ -540,9 +540,21 @@ __php_fiber_is_terminated = { emit = "common:php.fiber_is_terminated", min_args 
 # up as instance methods here. The compiler routes them through the
 # value_methods table the same way JS / VB do.
 
+[known_types]
+PDO = ["common", "php.pdo_new"]
+
 [value_methods]
 
-# Empty for Phase 1 — to be filled in as test files demand.
+query            = { emit = "common:php.pdo_query",              min_args = 1, max_args = 1 }
+exec             = { emit = "common:php.pdo_exec",               min_args = 1, max_args = 1 }
+prepare          = { emit = "common:php.pdo_prepare",            min_args = 1, max_args = 1 }
+setAttribute     = { emit = "common:php.pdo_set_attribute",      min_args = 2, max_args = 2 }
+beginTransaction = { emit = "common:php.pdo_begin_transaction",  min_args = 0, max_args = 0 }
+commit           = { emit = "common:php.pdo_commit",             min_args = 0, max_args = 0 }
+rollBack         = { emit = "common:php.pdo_rollback",           min_args = 0, max_args = 0 }
+execute          = { emit = "common:php.pdo_statement_execute",  min_args = 0, max_args = 1 }
+fetch            = { emit = "common:php.pdo_statement_fetch",    min_args = 0, max_args = 1 }
+fetchAll         = { emit = "common:php.pdo_statement_fetch_all", min_args = 0, max_args = 1 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # ARRAY HIGHER-ORDER METHODS — same dispatch as JS profile.
@@ -589,6 +601,10 @@ reduce   = "__array_reduce"
 "Number.POSITIVE_INFINITY" = "Infinity"
 "Number.NEGATIVE_INFINITY" = "-Infinity"
 "Number.NaN"            = "NaN"
+"PDO.ATTR_ERRMODE"      = 3
+"PDO.ERRMODE_EXCEPTION" = 2
+"PDO.FETCH_ASSOC"       = 2
+"PDO.FETCH_COLUMN"      = 7
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACES — none. PHP namespaces are flattened by the walker.

@@ -3121,6 +3121,15 @@ impl Compiler {
                         self.emit_const(Value::F64(value as f64));
                         return Ok(());
                     }
+
+                    let compound = format!("{}.{}", class_name, member_name);
+                    if let Some(cv) = self.profile.lookup_constant(&compound) {
+                        match cv {
+                            ConstantValue::Float(f) => self.emit_const(Value::F64(*f)),
+                            ConstantValue::Str(s) => self.emit_const(Value::String(Arc::from(s.as_str()))),
+                        }
+                        return Ok(());
+                    }
                 }
 
                 // class::member → look up class, then get static member
