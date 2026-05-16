@@ -86,6 +86,77 @@ fn set_struct_from_slot(chunk: &mut Chunk, obj_slot: u16, key: &str, value_slot:
     struct_set_key(chunk, key, line);
 }
 
+pub fn emit_php_header(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let send_header_import = chunks[0].add_import("node:http".to_string(), "send_header_raw".to_string());
+    let response_code_import = chunks[0].add_import("node:http".to_string(), "http_response_code".to_string());
+    let string_import = chunks[0].add_import("ecma:string".to_string(), "String".to_string());
+    let lower_import = chunks[0].add_import("ecma:string".to_string(), "toLowerCase".to_string());
+    let starts_with_import = chunks[0].add_import("ecma:string".to_string(), "startsWith".to_string());
+    let chunk = &mut chunks[current];
+
+    let header_slot = alloc_local(chunk);
+    let replace_slot = if argc >= 2 { Some(alloc_local(chunk)) } else { None };
+    let response_code_slot = if argc >= 3 { Some(alloc_local(chunk)) } else { None };
+
+    if let Some(slot) = response_code_slot {
+        lset(chunk, slot, line);
+    }
+    if let Some(slot) = replace_slot {
+        lset(chunk, slot, line);
+    }
+    lset(chunk, header_slot, line);
+
+    lget(chunk, header_slot, line);
+    if let Some(slot) = replace_slot {
+        lget(chunk, slot, line);
+    }
+    if let Some(slot) = response_code_slot {
+        lget(chunk, slot, line);
+    }
+    chunk.emit_op_u16(Op::CALL_IMPORT, send_header_import, line);
+    chunk.emit(argc, line);
+    chunk.emit_op(Op::DROP, line);
+
+    let skip_implicit_redirect = if let Some(slot) = response_code_slot {
+        lget(chunk, slot, line);
+        push_const(chunk, Value::F64(0.0), line);
+        chunk.emit_op(Op::DYN_EQ, line);
+        Some(chunk.emit_jump(Op::BR_IF_FALSE, line))
+    } else {
+        None
+    };
+
+    lget(chunk, header_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, string_import, line);
+    chunk.emit(1, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, lower_import, line);
+    chunk.emit(1, line);
+    push_str(chunk, "location:", line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, starts_with_import, line);
+    chunk.emit(2, line);
+    chunk.emit_op(Op::DYN_TO_BOOL, line);
+    let not_location = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    chunk.emit_op_u16(Op::CALL_IMPORT, response_code_import, line);
+    chunk.emit(0, line);
+    push_const(chunk, Value::F64(200.0), line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let not_default_status = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    push_const(chunk, Value::F64(302.0), line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, response_code_import, line);
+    chunk.emit(1, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.patch_jump(not_default_status);
+    chunk.patch_jump(not_location);
+    if let Some(skip_jump) = skip_implicit_redirect {
+        chunk.patch_jump(skip_jump);
+    }
+
+    chunk.emit_op(Op::NULL, line);
+}
+
 pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let set_cookie_import = chunks[0].add_import("node:http".to_string(), "set_cookie".to_string());
     let chunk = &mut chunks[current];

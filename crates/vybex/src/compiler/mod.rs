@@ -3679,6 +3679,14 @@ impl Compiler {
                         if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vb_err_raise") => {
                         return self.compile_vb_err_raise_stmt(args);
                     }
+                    ExprKind::Ident(name)
+                        if self.is_php_profile()
+                            && (name.eq_ignore_ascii_case("exit")
+                                || name.eq_ignore_ascii_case("die")) => {
+                        self.emit(Op::NULL);
+                        self.emit_return_through_finally(1)?;
+                        return Ok(());
+                    }
                     // Bare identifier that's a known function → call with 0 args
                     ExprKind::Ident(name) if self.defined_functions.contains(name.as_str()) => {
                         let saved_js_this = self.save_js_this("__js_stmt_prev_this");
