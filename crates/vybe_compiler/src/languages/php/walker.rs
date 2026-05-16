@@ -81,6 +81,251 @@ thread_local! {
     static LINE_STARTS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 }
 
+const PHP_LITERAL_OPEN_MASK: &str = "\u{E000}\u{E001}";
+const PHP_LITERAL_CLOSE_MASK: &str = "\u{E001}\u{E000}";
+
+fn unmask_php_literal_tags(text: &str) -> String {
+    text.replace(PHP_LITERAL_OPEN_MASK, "<?")
+        .replace(PHP_LITERAL_CLOSE_MASK, "?>")
+}
+
+fn parse_php_heredoc_header(bytes: &[u8], start: usize) -> Option<(usize, Vec<u8>)> {
+    if start + 3 >= bytes.len()
+        || bytes[start] != b'<'
+        || bytes[start + 1] != b'<'
+        || bytes[start + 2] != b'<'
+    {
+        return None;
+    }
+
+    let mut index = start + 3;
+    while index < bytes.len() && matches!(bytes[index], b' ' | b'\t') {
+        index += 1;
+    }
+
+    let quote = match bytes.get(index).copied() {
+        Some(b'\'') | Some(b'"') => {
+            let q = bytes[index];
+            index += 1;
+            Some(q)
+        }
+        _ => None,
+    };
+
+    let tag_start = index;
+    if !matches!(bytes.get(index).copied(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_')) {
+        return None;
+    }
+    index += 1;
+    while index < bytes.len() && matches!(bytes[index], b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_') {
+        index += 1;
+    }
+    let tag = bytes[tag_start..index].to_vec();
+
+    if let Some(q) = quote {
+        if bytes.get(index).copied() != Some(q) {
+            return None;
+        }
+        index += 1;
+    }
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\n' => {
+                index += 1;
+                break;
+            }
+            b'\r' => {
+                index += 1;
+                if bytes.get(index).copied() == Some(b'\n') {
+                    index += 1;
+                }
+                break;
+            }
+            _ => index += 1,
+        }
+    }
+
+    Some((index, tag))
+}
+
+fn mask_php_literal_tag_sequences(source: &str) -> String {
+    enum ScanState {
+        Normal,
+        SingleQuote,
+        DoubleQuote,
+        LineComment,
+        BlockComment,
+        Heredoc { tag: Vec<u8>, at_line_start: bool },
+    }
+
+    let bytes = source.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut index = 0usize;
+    let mut state = ScanState::Normal;
+
+    while index < bytes.len() {
+        match &mut state {
+            ScanState::Normal => {
+                if let Some((after_header, tag)) = parse_php_heredoc_header(bytes, index) {
+                    out.extend_from_slice(&bytes[index..after_header]);
+                    index = after_header;
+                    state = ScanState::Heredoc { tag, at_line_start: true };
+                    continue;
+                }
+                if bytes[index] == b'/' && index + 1 < bytes.len() && bytes[index + 1] == b'/' {
+                    out.extend_from_slice(b"//");
+                    index += 2;
+                    state = ScanState::LineComment;
+                    continue;
+                }
+                if bytes[index] == b'#' {
+                    out.push(bytes[index]);
+                    index += 1;
+                    state = ScanState::LineComment;
+                    continue;
+                }
+                if bytes[index] == b'/' && index + 1 < bytes.len() && bytes[index + 1] == b'*' {
+                    out.extend_from_slice(b"/*");
+                    index += 2;
+                    state = ScanState::BlockComment;
+                    continue;
+                }
+                if bytes[index] == b'\'' {
+                    out.push(bytes[index]);
+                    index += 1;
+                    state = ScanState::SingleQuote;
+                    continue;
+                }
+                if bytes[index] == b'"' {
+                    out.push(bytes[index]);
+                    index += 1;
+                    state = ScanState::DoubleQuote;
+                    continue;
+                }
+                out.push(bytes[index]);
+                index += 1;
+            }
+            ScanState::SingleQuote => {
+                if index + 1 < bytes.len() && bytes[index] == b'<' && bytes[index + 1] == b'?' {
+                    out.extend_from_slice(PHP_LITERAL_OPEN_MASK.as_bytes());
+                    index += 2;
+                    continue;
+                }
+                if index + 1 < bytes.len() && bytes[index] == b'?' && bytes[index + 1] == b'>' {
+                    out.extend_from_slice(PHP_LITERAL_CLOSE_MASK.as_bytes());
+                    index += 2;
+                    continue;
+                }
+                if bytes[index] == b'\\' && index + 1 < bytes.len() {
+                    out.extend_from_slice(&bytes[index..index + 2]);
+                    index += 2;
+                    continue;
+                }
+                out.push(bytes[index]);
+                if bytes[index] == b'\'' {
+                    state = ScanState::Normal;
+                }
+                index += 1;
+            }
+            ScanState::DoubleQuote => {
+                if index + 1 < bytes.len() && bytes[index] == b'<' && bytes[index + 1] == b'?' {
+                    out.extend_from_slice(PHP_LITERAL_OPEN_MASK.as_bytes());
+                    index += 2;
+                    continue;
+                }
+                if index + 1 < bytes.len() && bytes[index] == b'?' && bytes[index + 1] == b'>' {
+                    out.extend_from_slice(PHP_LITERAL_CLOSE_MASK.as_bytes());
+                    index += 2;
+                    continue;
+                }
+                if bytes[index] == b'\\' && index + 1 < bytes.len() {
+                    out.extend_from_slice(&bytes[index..index + 2]);
+                    index += 2;
+                    continue;
+                }
+                out.push(bytes[index]);
+                if bytes[index] == b'"' {
+                    state = ScanState::Normal;
+                }
+                index += 1;
+            }
+            ScanState::LineComment => {
+                out.push(bytes[index]);
+                let is_newline = bytes[index] == b'\n';
+                index += 1;
+                if is_newline {
+                    state = ScanState::Normal;
+                }
+            }
+            ScanState::BlockComment => {
+                out.push(bytes[index]);
+                if bytes[index] == b'*' && index + 1 < bytes.len() && bytes[index + 1] == b'/' {
+                    out.push(bytes[index + 1]);
+                    index += 2;
+                    state = ScanState::Normal;
+                    continue;
+                }
+                index += 1;
+            }
+            ScanState::Heredoc { tag, at_line_start } => {
+                if *at_line_start {
+                    let mut check = index;
+                    while check < bytes.len() && matches!(bytes[check], b' ' | b'\t') {
+                        check += 1;
+                    }
+                    if bytes[check..].starts_with(tag) {
+                        let mut after = check + tag.len();
+                        if after == bytes.len() || matches!(bytes[after], b';' | b'\n' | b'\r') {
+                            if bytes.get(after).copied() == Some(b';') {
+                                after += 1;
+                            }
+                            while after < bytes.len() {
+                                match bytes[after] {
+                                    b'\n' => {
+                                        after += 1;
+                                        break;
+                                    }
+                                    b'\r' => {
+                                        after += 1;
+                                        if bytes.get(after).copied() == Some(b'\n') {
+                                            after += 1;
+                                        }
+                                        break;
+                                    }
+                                    _ => after += 1,
+                                }
+                            }
+                            out.extend_from_slice(&bytes[index..after]);
+                            index = after;
+                            state = ScanState::Normal;
+                            continue;
+                        }
+                    }
+                }
+                if index + 1 < bytes.len() && bytes[index] == b'<' && bytes[index + 1] == b'?' {
+                    out.extend_from_slice(PHP_LITERAL_OPEN_MASK.as_bytes());
+                    index += 2;
+                    *at_line_start = false;
+                    continue;
+                }
+                if index + 1 < bytes.len() && bytes[index] == b'?' && bytes[index + 1] == b'>' {
+                    out.extend_from_slice(PHP_LITERAL_CLOSE_MASK.as_bytes());
+                    index += 2;
+                    *at_line_start = false;
+                    continue;
+                }
+                let byte = bytes[index];
+                out.push(byte);
+                index += 1;
+                *at_line_start = byte == b'\n';
+            }
+        }
+    }
+
+    String::from_utf8(out).unwrap_or_else(|_| source.to_string())
+}
+
 fn build_line_starts(source: &str) -> Vec<usize> {
     let mut starts = Vec::with_capacity(source.len() / 32 + 2);
     starts.push(0);
@@ -237,6 +482,117 @@ fn split_mixed_php_source(source: &str) -> Vec<MixedPhpSegment<'_>> {
     segments
 }
 
+fn skip_php_heredoc(bytes: &[u8], start: usize) -> Option<usize> {
+    if start + 3 >= bytes.len()
+        || bytes[start] != b'<'
+        || bytes[start + 1] != b'<'
+        || bytes[start + 2] != b'<'
+    {
+        return None;
+    }
+
+    let mut index = start + 3;
+    while index < bytes.len() && matches!(bytes[index], b' ' | b'\t') {
+        index += 1;
+    }
+
+    let quote = match bytes.get(index).copied() {
+        Some(b'\'') | Some(b'"') => {
+            let q = bytes[index];
+            index += 1;
+            Some(q)
+        }
+        _ => None,
+    };
+
+    let tag_start = index;
+    if !matches!(bytes.get(index).copied(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_')) {
+        return None;
+    }
+    index += 1;
+    while index < bytes.len() && matches!(bytes[index], b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_') {
+        index += 1;
+    }
+    let tag = &bytes[tag_start..index];
+
+    if let Some(q) = quote {
+        if bytes.get(index).copied() != Some(q) {
+            return None;
+        }
+        index += 1;
+    }
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\n' => {
+                index += 1;
+                break;
+            }
+            b'\r' => {
+                index += 1;
+                if bytes.get(index).copied() == Some(b'\n') {
+                    index += 1;
+                }
+                break;
+            }
+            _ => index += 1,
+        }
+    }
+
+    while index < bytes.len() {
+        let line_start = index;
+        while index < bytes.len() && matches!(bytes[index], b' ' | b'\t') {
+            index += 1;
+        }
+
+        if bytes[index..].starts_with(tag) {
+            let mut after = index + tag.len();
+            if after == bytes.len() || matches!(bytes[after], b';' | b'\n' | b'\r') {
+                if bytes.get(after).copied() == Some(b';') {
+                    after += 1;
+                }
+                while after < bytes.len() {
+                    match bytes[after] {
+                        b'\n' => {
+                            after += 1;
+                            break;
+                        }
+                        b'\r' => {
+                            after += 1;
+                            if bytes.get(after).copied() == Some(b'\n') {
+                                after += 1;
+                            }
+                            break;
+                        }
+                        _ => after += 1,
+                    }
+                }
+                return Some(after);
+            }
+        }
+
+        index = line_start;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'\n' => {
+                    index += 1;
+                    break;
+                }
+                b'\r' => {
+                    index += 1;
+                    if bytes.get(index).copied() == Some(b'\n') {
+                        index += 1;
+                    }
+                    break;
+                }
+                _ => index += 1,
+            }
+        }
+    }
+
+    Some(bytes.len())
+}
+
 fn find_php_close_tag(source: &str, start: usize) -> Option<usize> {
     #[derive(Copy, Clone, Eq, PartialEq)]
     enum ScanState {
@@ -254,6 +610,10 @@ fn find_php_close_tag(source: &str, start: usize) -> Option<usize> {
     while index + 1 < bytes.len() {
         match state {
             ScanState::Normal => {
+                if let Some(next_index) = skip_php_heredoc(bytes, index) {
+                    index = next_index;
+                    continue;
+                }
                 if bytes[index] == b'?' && bytes[index + 1] == b'>' {
                     return Some(index);
                 }
@@ -286,11 +646,17 @@ fn find_php_close_tag(source: &str, start: usize) -> Option<usize> {
                 }
             }
             ScanState::LineComment => {
+                if bytes[index] == b'?' && bytes[index + 1] == b'>' {
+                    return Some(index);
+                }
                 if bytes[index] == b'\n' {
                     state = ScanState::Normal;
                 }
             }
             ScanState::BlockComment => {
+                if bytes[index] == b'?' && bytes[index + 1] == b'>' {
+                    return Some(index);
+                }
                 if bytes[index] == b'*' && bytes[index + 1] == b'/' {
                     state = ScanState::Normal;
                     index += 1;
@@ -406,71 +772,28 @@ fn collect_program_body(
     Ok(())
 }
 
-fn collect_bare_body(
-    bare: Pair<Rule>,
-    body: &mut Vec<Statement>,
-    interface_names: &mut std::collections::HashSet<String>,
-    trait_names: &mut std::collections::HashSet<String>,
-) -> Result<(), String> {
-    for pair in bare.into_inner() {
-        if matches!(pair.as_rule(), Rule::EOI) {
-            continue;
-        }
-        let pair = if matches!(pair.as_rule(), Rule::pure_top_level_statement) {
-            match pair.into_inner().next() {
-                Some(inner) => inner,
-                None => continue,
-            }
-        } else {
-            pair
-        };
-        let pair_rule = pair.as_rule();
-        let pair_span = to_span(&pair);
-        let pair_started = std::time::Instant::now();
-        let was_interface = matches!(pair.as_rule(), Rule::interface_declaration);
-        let was_trait = matches!(pair.as_rule(), Rule::trait_declaration);
-        if let Some(stmt) = walk_statement(pair)? {
-            if was_interface {
-                if let StmtKind::ClassDecl { ref name, .. } = stmt.kind {
-                    interface_names.insert(name.clone());
-                }
-            }
-            if was_trait {
-                if let StmtKind::ClassDecl { ref name, .. } = stmt.kind {
-                    trait_names.insert(name.clone());
-                }
-            }
-            body.push(stmt);
-        }
-        let elapsed = pair_started.elapsed();
-        if elapsed.as_millis() >= 250 {
-            eprintln!(
-                "[php] slow pure top-level item: rule={pair_rule:?} line={}..{} took {:.3}s",
-                pair_span.start_line,
-                pair_span.end_line,
-                elapsed.as_secs_f64(),
-            );
-        }
-    }
-
-    Ok(())
-}
-
 pub fn parse(source: &str) -> Result<Module, String> {
     let normalize_started = std::time::Instant::now();
-    let normalized_source;
     let trimmed = source.trim_start();
-    let should_normalize_mixed = trimmed.starts_with("<?")
+    let should_normalize_first = trimmed.starts_with("<?")
         || (trimmed.starts_with('<') && source.contains("<?"));
-    let source = if should_normalize_mixed {
-        normalized_source = normalize_mixed_php_source(source);
+    let mut normalized_source = None;
+    let mut pairs = if should_normalize_first {
+        let normalized = normalize_mixed_php_source(source);
         if std::env::var_os("VYBEX_DEBUG_WRITE_NORMALIZED_PHP").is_some() {
-            let _ = std::fs::write("/tmp/vybex_normalized.php", &normalized_source);
+            let _ = std::fs::write("/tmp/vybex_normalized.php", &normalized);
         }
-        normalized_source.as_str()
+        normalized_source = Some(normalized);
+        PhpParser::parse(Rule::program_pure, normalized_source.as_deref().unwrap_or(source))
+            .map_err(|e| format!("PHP parse error: {}", e))?
     } else {
-        source
+        match PhpParser::parse(Rule::program_pure, source) {
+            Ok(pairs) => pairs,
+            Err(_) => PhpParser::parse(Rule::program, source)
+                .map_err(|e| format!("PHP parse error: {}", e))?,
+        }
     };
+    let source = normalized_source.as_deref().unwrap_or(source);
     eprintln!("[php] normalize: {:.3}s", normalize_started.elapsed().as_secs_f64());
 
     let mut body = Vec::new();
@@ -487,23 +810,46 @@ pub fn parse(source: &str) -> Result<Module, String> {
     });
 
     let pest_started = std::time::Instant::now();
-    if should_normalize_mixed {
-        let mut pairs = PhpParser::parse(Rule::program_pure, source)
-            .map_err(|e| format!("PHP parse error: {}", e))?;
-        let bare = pairs.next().ok_or("empty parse")?;
-        eprintln!("[php] pest parse: {:.3}s", pest_started.elapsed().as_secs_f64());
-        let walk_started = std::time::Instant::now();
-        collect_bare_body(bare, &mut body, &mut interface_names, &mut trait_names)?;
-        eprintln!("[php] ast walk: {:.3}s", walk_started.elapsed().as_secs_f64());
-    } else {
-        let mut pairs = PhpParser::parse(Rule::program_pure, source)
-            .map_err(|e| format!("PHP parse error: {}", e))?;
-        let bare = pairs.next().ok_or("empty parse")?;
-        eprintln!("[php] pest parse: {:.3}s", pest_started.elapsed().as_secs_f64());
-        let walk_started = std::time::Instant::now();
-        collect_bare_body(bare, &mut body, &mut interface_names, &mut trait_names)?;
-        eprintln!("[php] ast walk: {:.3}s", walk_started.elapsed().as_secs_f64());
+    let program = pairs.next().ok_or("empty parse")?;
+    eprintln!("[php] pest parse: {:.3}s", pest_started.elapsed().as_secs_f64());
+    let walk_started = std::time::Instant::now();
+    match program.as_rule() {
+        Rule::program => {
+            collect_program_body(program, &mut body, &mut interface_names, &mut trait_names)?;
+        }
+        Rule::program_pure => {
+            for pair in program.into_inner() {
+                if matches!(pair.as_rule(), Rule::EOI) {
+                    continue;
+                }
+                let pair = if matches!(pair.as_rule(), Rule::pure_top_level_statement) {
+                    match pair.into_inner().next() {
+                        Some(inner) => inner,
+                        None => continue,
+                    }
+                } else {
+                    pair
+                };
+                let was_interface = matches!(pair.as_rule(), Rule::interface_declaration);
+                let was_trait = matches!(pair.as_rule(), Rule::trait_declaration);
+                if let Some(stmt) = walk_statement(pair)? {
+                    if was_interface {
+                        if let StmtKind::ClassDecl { ref name, .. } = stmt.kind {
+                            interface_names.insert(name.clone());
+                        }
+                    }
+                    if was_trait {
+                        if let StmtKind::ClassDecl { ref name, .. } = stmt.kind {
+                            trait_names.insert(name.clone());
+                        }
+                    }
+                    body.push(stmt);
+                }
+            }
+        }
+        _ => return Err("unexpected PHP parse root".to_string()),
     }
+    eprintln!("[php] ast walk: {:.3}s", walk_started.elapsed().as_secs_f64());
 
     let post_started = std::time::Instant::now();
 
@@ -5101,12 +5447,12 @@ fn walk_string(pair: &Pair<Rule>) -> Expression {
             }
             out.push(c);
         }
-        return Expression::new(ExprKind::Lit(Literal::Str(out)));
+        return Expression::new(ExprKind::Lit(Literal::Str(unmask_php_literal_tags(&out))));
     }
 
     if !body.contains('$') {
         return Expression::new(ExprKind::Lit(Literal::Str(
-            decode_php_double_quoted_literal(body),
+            unmask_php_literal_tags(&decode_php_double_quoted_literal(body)),
         )));
     }
 
@@ -5176,7 +5522,7 @@ fn parse_php_interpolation(body: &str) -> Vec<InterpolPart> {
 
     let flush = |parts: &mut Vec<InterpolPart>, text: &mut String| {
         if !text.is_empty() {
-            parts.push(InterpolPart::Text(std::mem::take(text)));
+            parts.push(InterpolPart::Text(unmask_php_literal_tags(&std::mem::take(text))));
         }
     };
 

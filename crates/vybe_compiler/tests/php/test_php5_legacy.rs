@@ -50,6 +50,25 @@ use super::helpers::{compile_ok_check, parse_ok};
 // Nowdoc
 #[test] fn nowdoc() { assert!(parse_ok("<?php $x = <<<'EOT'\nNo $interpolation here\nEOT;")); }
 
+#[test] fn heredoc_with_xml_decl_stays_pure_php() { assert!(compile_ok_check(r#"<?php
+class IXR_Request {
+    public $xml = '';
+
+    public function __construct() {
+        $this->xml = <<<EOD
+<?xml version="1.0"?>
+<methodCall>
+<params>
+EOD;
+        $this->xml .= '<param><value>';
+    }
+}
+"#)); }
+
+#[test] fn xml_decl_concat_with_charset_expression() { assert!(compile_ok_check("<?php $xml = '<?xml version=\"1.0\" encoding=\"'.$charset.'\"?>'.\"\\n\".$xml;")); }
+
+#[test] fn bare_php_xml_decl_concat_with_charset_expression() { assert!(compile_ok_check("$xml = '<?xml version=\"1.0\" encoding=\"'.$charset.'\"?>'.\"\\n\".$xml;")); }
+
 // Ternary shorthand (Elvis) — $a ?: $b
 #[test] fn elvis() { assert!(compile_ok_check("<?php $x = '' ?: 'default'; echo $x;")); }
 

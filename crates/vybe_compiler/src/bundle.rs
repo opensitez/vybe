@@ -60,17 +60,33 @@ impl Bundle {
     /// through to runtime compilation. That keeps the resulting module
     /// graph as portable as possible across runtimes beyond Vybe.
     pub fn prepared_module(&self) -> Result<Module, String> {
-        let combined = if self.language.name == "php" {
-            expand_php_bundle_sources(&self.sources)?
+        let (combined, php_blocks) = if self.language.name == "php" {
+            let expanded = expand_php_bundle_sources_with_map(&self.sources)?;
+            let blocks = expanded.blocks.clone();
+            (expanded.into_code(), Some(blocks))
         } else {
-            self.sources.iter()
-                .map(|s| s.code.as_str())
-                .collect::<Vec<_>>()
-                .join("\n")
+            (
+                self.sources.iter()
+                    .map(|s| s.code.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                None,
+            )
         };
 
+        if self.language.name == "php"
+            && std::env::var_os("VYBEX_DEBUG_WRITE_EXPANDED_PHP").is_some()
+        {
+            let _ = std::fs::write("/tmp/vybex_expanded.php", &combined);
+        }
+
         // Parse → common AST
-        let mut module = (self.language.parse)(&combined)?;
+        let mut module = (self.language.parse)(&combined).map_err(|err| {
+            php_blocks
+                .as_ref()
+                .map(|blocks| annotate_php_parse_error(&err, blocks))
+                .unwrap_or(err)
+        })?;
 
         // Resolve imports relative to first source's directory
         if let Some(first) = self.sources.first() {
@@ -211,19 +227,105 @@ enum PhpIncludeKind {
     RequireOnce,
 }
 
+#[derive(Debug, Clone)]
+struct ExpandedPhpBlock {
+    path: PathBuf,
+    start_line: usize,
+    end_line: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ExpandedPhpSource {
+    lines: Vec<String>,
+    blocks: Vec<ExpandedPhpBlock>,
+}
+
+impl ExpandedPhpSource {
+    fn into_code(self) -> String {
+        self.lines.join("\n")
+    }
+}
+
+fn record_expanded_line(expanded: &mut ExpandedPhpSource, path: &Path, line: String) {
+    expanded.lines.push(line);
+    let line_no = expanded.lines.len();
+    if let Some(last) = expanded.blocks.last_mut()
+        && last.path == path
+        && last.end_line + 1 == line_no
+    {
+        last.end_line = line_no;
+        return;
+    }
+    expanded.blocks.push(ExpandedPhpBlock {
+        path: path.to_path_buf(),
+        start_line: line_no,
+        end_line: line_no,
+    });
+}
+
+fn merge_expanded_block(blocks: &mut Vec<ExpandedPhpBlock>, block: ExpandedPhpBlock) {
+    if let Some(last) = blocks.last_mut()
+        && last.path == block.path
+        && last.end_line + 1 == block.start_line
+    {
+        last.end_line = block.end_line;
+        return;
+    }
+    blocks.push(block);
+}
+
+fn append_expanded_source(expanded: &mut ExpandedPhpSource, nested: ExpandedPhpSource) {
+    let line_offset = expanded.lines.len();
+    expanded.lines.extend(nested.lines);
+    for mut block in nested.blocks {
+        block.start_line += line_offset;
+        block.end_line += line_offset;
+        merge_expanded_block(&mut expanded.blocks, block);
+    }
+}
+
+fn extract_php_parse_error_line(err: &str) -> Option<usize> {
+    err.lines().find_map(|line| {
+        let rest = line.split_once("-->")?.1.trim();
+        rest.split(':').next()?.trim().parse::<usize>().ok()
+    })
+}
+
+fn annotate_php_parse_error(err: &str, blocks: &[ExpandedPhpBlock]) -> String {
+    let Some(expanded_line) = extract_php_parse_error_line(err) else {
+        return err.to_string();
+    };
+    let Some(block) = blocks.iter().rev().find(|block| {
+        expanded_line >= block.start_line && expanded_line <= block.end_line
+    }) else {
+        return err.to_string();
+    };
+    let source_line = expanded_line - block.start_line + 1;
+    format!(
+        "{}\nsource: {}:{}",
+        err,
+        block.path.display(),
+        source_line,
+    )
+}
+
 fn expand_php_bundle_sources(sources: &[SourceFile]) -> Result<String, String> {
+    Ok(expand_php_bundle_sources_with_map(sources)?.into_code())
+}
+
+fn expand_php_bundle_sources_with_map(sources: &[SourceFile]) -> Result<ExpandedPhpSource, String> {
     let mut included_once = HashSet::new();
     let mut constants: HashMap<String, String> = HashMap::new();
-    let mut expanded = Vec::new();
+    let mut expanded = ExpandedPhpSource::default();
     for source in sources {
-        expanded.push(expand_php_source_file(
+        append_expanded_source(&mut expanded, expand_php_source_file(
             &source.path,
             &source.code,
             &mut included_once,
             &mut constants,
         )?);
     }
-    Ok(expanded.join("\n"))
+    Ok(expanded)
 }
 
 fn expand_php_source_file(
@@ -231,15 +333,16 @@ fn expand_php_source_file(
     code: &str,
     included_once: &mut HashSet<PathBuf>,
     constants: &mut HashMap<String, String>,
-) -> Result<String, String> {
+) -> Result<ExpandedPhpSource, String> {
     let mut aliases: HashMap<String, String> = HashMap::new();
     let mut recent_optional_guards: VecDeque<PathBuf> = VecDeque::new();
     let mut recent_optional_plugin_dirs: VecDeque<PathBuf> = VecDeque::new();
     let mut brace_depth = 0usize;
     let mut previous_nonempty_line: Option<String> = None;
-    let mut out = Vec::new();
+    let mut out = ExpandedPhpSource::default();
 
-    for line in code.lines() {
+    let mut lines = code.lines().peekable();
+    while let Some(line) = lines.next() {
         let trimmed = line.trim();
 
         for guarded in extract_php_file_exists_guards(trimmed, source_path, &aliases, constants) {
@@ -259,14 +362,14 @@ fn expand_php_source_file(
             && let Some((name, value)) = parse_php_alias_assignment(trimmed, source_path, &aliases, constants)
         {
             aliases.insert(name, value);
-            out.push(line.to_string());
+            record_expanded_line(&mut out, source_path, line.to_string());
             brace_depth = update_php_brace_depth(brace_depth, line);
             continue;
         }
 
         if let Some((name, value)) = parse_php_constant_assignment(trimmed, source_path, &aliases, constants) {
             constants.insert(name, value);
-            out.push(line.to_string());
+            record_expanded_line(&mut out, source_path, line.to_string());
             brace_depth = update_php_brace_depth(brace_depth, line);
             continue;
         }
@@ -319,7 +422,7 @@ fn expand_php_source_file(
                     }
                 };
                 let normalized_include = normalize_php_include_for_inlining(&include_source);
-                out.push(expand_php_source_file(
+                append_expanded_source(&mut out, expand_php_source_file(
                     &canonical,
                     &normalized_include,
                     included_once,
@@ -330,12 +433,37 @@ fn expand_php_source_file(
             continue;
         }
 
-        out.push(normalize_php_alternative_control_syntax(line));
+        if starts_multiline_php_alternative_control_header(line) {
+            let mut header_lines = vec![line.to_string()];
+            let mut normalized_block = None;
+
+            while let Some(next_line) = lines.peek().copied() {
+                header_lines.push(next_line.to_string());
+                lines.next();
+                let candidate = header_lines.join("\n");
+                if let Some(normalized) = normalize_multiline_php_alternative_control_syntax(&candidate) {
+                    normalized_block = Some(normalized);
+                    break;
+                }
+            }
+
+            let expanded_lines = normalized_block.unwrap_or_else(|| header_lines.join("\n"));
+            for expanded_line in expanded_lines.lines() {
+                record_expanded_line(&mut out, source_path, expanded_line.to_string());
+            }
+            for original_line in &header_lines {
+                brace_depth = update_php_brace_depth(brace_depth, original_line);
+                previous_nonempty_line = next_previous_nonempty_line(original_line.trim(), &previous_nonempty_line);
+            }
+            continue;
+        }
+
+        record_expanded_line(&mut out, source_path, normalize_php_alternative_control_syntax(line));
         brace_depth = update_php_brace_depth(brace_depth, line);
         previous_nonempty_line = next_previous_nonempty_line(trimmed, &previous_nonempty_line);
     }
 
-    Ok(out.join("\n"))
+    Ok(out)
 }
 
 fn absolutize_path(path: &Path) -> PathBuf {
@@ -933,6 +1061,117 @@ fn split_mixed_php_include_source(source: &str) -> Vec<MixedPhpIncludeSegment<'_
     segments
 }
 
+fn skip_php_heredoc(bytes: &[u8], start: usize) -> Option<usize> {
+    if start + 3 >= bytes.len()
+        || bytes[start] != b'<'
+        || bytes[start + 1] != b'<'
+        || bytes[start + 2] != b'<'
+    {
+        return None;
+    }
+
+    let mut index = start + 3;
+    while index < bytes.len() && matches!(bytes[index], b' ' | b'\t') {
+        index += 1;
+    }
+
+    let quote = match bytes.get(index).copied() {
+        Some(b'\'') | Some(b'"') => {
+            let q = bytes[index];
+            index += 1;
+            Some(q)
+        }
+        _ => None,
+    };
+
+    let tag_start = index;
+    if !matches!(bytes.get(index).copied(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_')) {
+        return None;
+    }
+    index += 1;
+    while index < bytes.len() && matches!(bytes[index], b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_') {
+        index += 1;
+    }
+    let tag = &bytes[tag_start..index];
+
+    if let Some(q) = quote {
+        if bytes.get(index).copied() != Some(q) {
+            return None;
+        }
+        index += 1;
+    }
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\n' => {
+                index += 1;
+                break;
+            }
+            b'\r' => {
+                index += 1;
+                if bytes.get(index).copied() == Some(b'\n') {
+                    index += 1;
+                }
+                break;
+            }
+            _ => index += 1,
+        }
+    }
+
+    while index < bytes.len() {
+        let line_start = index;
+        while index < bytes.len() && matches!(bytes[index], b' ' | b'\t') {
+            index += 1;
+        }
+
+        if bytes[index..].starts_with(tag) {
+            let mut after = index + tag.len();
+            if after == bytes.len() || matches!(bytes[after], b';' | b'\n' | b'\r') {
+                if bytes.get(after).copied() == Some(b';') {
+                    after += 1;
+                }
+                while after < bytes.len() {
+                    match bytes[after] {
+                        b'\n' => {
+                            after += 1;
+                            break;
+                        }
+                        b'\r' => {
+                            after += 1;
+                            if bytes.get(after).copied() == Some(b'\n') {
+                                after += 1;
+                            }
+                            break;
+                        }
+                        _ => after += 1,
+                    }
+                }
+                return Some(after);
+            }
+        }
+
+        index = line_start;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'\n' => {
+                    index += 1;
+                    break;
+                }
+                b'\r' => {
+                    index += 1;
+                    if bytes.get(index).copied() == Some(b'\n') {
+                        index += 1;
+                    }
+                    break;
+                }
+                _ => index += 1,
+            }
+        }
+    }
+
+    Some(bytes.len())
+}
+
 fn find_php_include_close_tag(source: &str, start: usize) -> Option<usize> {
     #[derive(Copy, Clone, Eq, PartialEq)]
     enum ScanState {
@@ -950,6 +1189,10 @@ fn find_php_include_close_tag(source: &str, start: usize) -> Option<usize> {
     while index + 1 < bytes.len() {
         match state {
             ScanState::Normal => {
+                if let Some(next_index) = skip_php_heredoc(bytes, index) {
+                    index = next_index;
+                    continue;
+                }
                 if bytes[index] == b'?' && bytes[index + 1] == b'>' {
                     return Some(index);
                 }
@@ -982,11 +1225,17 @@ fn find_php_include_close_tag(source: &str, start: usize) -> Option<usize> {
                 }
             }
             ScanState::LineComment => {
+                if bytes[index] == b'?' && bytes[index + 1] == b'>' {
+                    return Some(index);
+                }
                 if bytes[index] == b'\n' {
                     state = ScanState::Normal;
                 }
             }
             ScanState::BlockComment => {
+                if bytes[index] == b'?' && bytes[index + 1] == b'>' {
+                    return Some(index);
+                }
                 if bytes[index] == b'*' && bytes[index + 1] == b'/' {
                     state = ScanState::Normal;
                     index += 1;
@@ -1000,36 +1249,161 @@ fn find_php_include_close_tag(source: &str, start: usize) -> Option<usize> {
 }
 
 fn normalize_php_alternative_control_syntax(line: &str) -> String {
+    #[derive(Copy, Clone, Eq, PartialEq)]
+    enum TagMode {
+        Bare,
+        OpenOnly,
+        CloseOnly,
+        Wrapped,
+    }
+
+    fn split_line_comment<'a>(line: &'a str) -> (&'a str, &'a str) {
+        if let Some((head, tail)) = line.split_once("//") {
+            return (head.trim_end(), tail);
+        }
+        if let Some((head, tail)) = line.split_once('#') {
+            return (head.trim_end(), tail);
+        }
+        (line.trim_end(), "")
+    }
+
     let indent_len = line.len() - line.trim_start().len();
     let indent = &line[..indent_len];
     let trimmed = line.trim();
-    let Some(inner) = trimmed.strip_prefix("<?php").and_then(|s| s.strip_suffix("?>")) else {
-        return line.to_string();
+    let (inner, tag_mode, close_suffix) = if let Some(rest) = trimmed.strip_prefix("<?php") {
+        let rest = rest.trim();
+        if let Some(close_index) = rest.find("?>") {
+            let inner = rest[..close_index].trim();
+            let close_suffix = &rest[close_index + 2..];
+            (inner, TagMode::Wrapped, close_suffix)
+        } else {
+            (rest, TagMode::OpenOnly, "")
+        }
+    } else if let Some(close_index) = trimmed.find("?>") {
+        let inner = trimmed[..close_index].trim();
+        let close_suffix = &trimmed[close_index + 2..];
+        (inner, TagMode::CloseOnly, close_suffix)
+    } else {
+        (trimmed, TagMode::Bare, "")
     };
-    let inner = inner.trim();
+    let (code, comment) = split_line_comment(inner);
+    let comment_suffix = if comment.is_empty() {
+        String::new()
+    } else if inner.contains("//") {
+        format!(" //{}", comment)
+    } else {
+        format!(" #{}", comment)
+    };
 
-    if let Some(prefix) = inner.strip_suffix(':').map(str::trim_end) {
+    if let Some(prefix) = code.strip_suffix(':').map(str::trim_end) {
         if prefix.starts_with("if ")
             || prefix.starts_with("foreach ")
             || prefix.starts_with("for ")
             || prefix.starts_with("while ")
             || prefix.starts_with("switch ")
         {
-            return format!("{}<?php {} {{ ?>", indent, prefix);
+            return match tag_mode {
+                TagMode::Wrapped => format!("{}<?php {} {{ ?>{}", indent, prefix, close_suffix),
+                TagMode::OpenOnly => format!("{}<?php {} {{{}", indent, prefix, comment_suffix),
+                TagMode::CloseOnly => format!("{}{} {{ ?>{}", indent, prefix, close_suffix),
+                TagMode::Bare => format!("{}{} {{{}", indent, prefix, comment_suffix),
+            };
         }
         if prefix.starts_with("elseif ") {
-            return format!("{}<?php }} {} {{ ?>", indent, prefix);
+            return match tag_mode {
+                TagMode::Wrapped => format!("{}<?php }} {} {{ ?>{}", indent, prefix, close_suffix),
+                TagMode::OpenOnly => format!("{}<?php }} {} {{{}", indent, prefix, comment_suffix),
+                TagMode::CloseOnly => format!("{}}} {} {{ ?>{}", indent, prefix, close_suffix),
+                TagMode::Bare => format!("{}}} {} {{{}", indent, prefix, comment_suffix),
+            };
         }
         if prefix == "else" {
-            return format!("{}<?php }} else {{ ?>", indent);
+            return match tag_mode {
+                TagMode::Wrapped => format!("{}<?php }} else {{ ?>{}", indent, close_suffix),
+                TagMode::OpenOnly => format!("{}<?php }} else {{{}", indent, comment_suffix),
+                TagMode::CloseOnly => format!("{}}} else {{ ?>{}", indent, close_suffix),
+                TagMode::Bare => format!("{}}} else {{{}", indent, comment_suffix),
+            };
         }
     }
 
-    if matches!(inner, "endif;" | "endforeach;" | "endfor;" | "endwhile;" | "endswitch;") {
-        return format!("{}<?php }} ?>", indent);
+    if matches!(code, "endif;" | "endforeach;" | "endfor;" | "endwhile;" | "endswitch;") {
+        return match tag_mode {
+            TagMode::Wrapped => format!("{}<?php }} ?>{}", indent, close_suffix),
+            TagMode::OpenOnly => format!("{}<?php }}{}", indent, comment_suffix),
+            TagMode::CloseOnly => format!("{}}} ?>{}", indent, close_suffix),
+            TagMode::Bare => format!("{}}}{}", indent, comment_suffix),
+        };
     }
 
     line.to_string()
+}
+
+fn starts_multiline_php_alternative_control_header(line: &str) -> bool {
+    let trimmed = line.trim();
+    let body = trimmed
+        .strip_prefix("<?php")
+        .map(str::trim_start)
+        .unwrap_or(trimmed);
+
+    (body.starts_with("if ")
+        || body.starts_with("foreach ")
+        || body.starts_with("for ")
+        || body.starts_with("while ")
+        || body.starts_with("switch "))
+        && !body.contains(':')
+        && !body.contains("?>")
+}
+
+fn normalize_multiline_php_alternative_control_syntax(block: &str) -> Option<String> {
+    let lines: Vec<&str> = block.lines().collect();
+    if lines.len() < 2 {
+        return None;
+    }
+
+    let first_trimmed = lines.first()?.trim();
+    let first_body = first_trimmed
+        .strip_prefix("<?php")
+        .map(str::trim_start)
+        .unwrap_or(first_trimmed);
+    let last_trimmed = lines.last()?.trim();
+    let (last_body, close_suffix) = if let Some(close_index) = last_trimmed.find("?>") {
+        (last_trimmed[..close_index].trim_end(), &last_trimmed[close_index + 2..])
+    } else {
+        (last_trimmed, "")
+    };
+
+    let mut combined = String::from(first_body);
+    for middle in lines.iter().skip(1).take(lines.len().saturating_sub(2)) {
+        combined.push('\n');
+        combined.push_str(middle.trim());
+    }
+    combined.push('\n');
+    combined.push_str(last_body);
+
+    let prefix = combined.trim_end().strip_suffix(':')?.trim_end();
+    if !(prefix.starts_with("if ")
+        || prefix.starts_with("foreach ")
+        || prefix.starts_with("for ")
+        || prefix.starts_with("while ")
+        || prefix.starts_with("switch "))
+    {
+        return None;
+    }
+
+    let last_line = *lines.last()?;
+    let last_indent_len = last_line.len() - last_line.trim_start().len();
+    let last_indent = &last_line[..last_indent_len];
+    let last_prefix = last_body.trim_end().strip_suffix(':')?.trim_end();
+
+    let mut normalized_lines = lines.iter().map(|line| line.to_string()).collect::<Vec<_>>();
+    let mut normalized_last = format!("{}{} {{", last_indent, last_prefix);
+    if last_trimmed.contains("?>") {
+        normalized_last.push_str(" ?>");
+        normalized_last.push_str(close_suffix);
+    }
+    *normalized_lines.last_mut()? = normalized_last;
+    Some(normalized_lines.join("\n"))
 }
 
 /// Resolve `import { x } from "./file.js"` by parsing the imported file
@@ -1439,6 +1813,121 @@ mod tests {
     }
 
     #[test]
+    fn php_bundle_normalizes_bare_alternative_while_syntax() {
+        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_alt_while_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_root).expect("create temp dir");
+
+        let entry_path = temp_root.join("entry.php");
+        let entry_src = "<?php\n$i = 0;\nwhile ($i < 1) : ?>\n<div>ok</div>\n<?php\n$i++;\nendwhile;\n";
+        std::fs::write(&entry_path, entry_src).expect("write entry");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "entry".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        bundle.prepared_module().expect("prepared module");
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn php_bundle_normalizes_bare_alternative_foreach_syntax() {
+        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_alt_foreach_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_root).expect("create temp dir");
+
+        let entry_path = temp_root.join("entry.php");
+        let entry_src = "<?php\n$items = ['mp4'];\nforeach ($items as $type) : ?>\n<span><?php echo $type; ?></span>\n<?php\nendforeach;\n";
+        std::fs::write(&entry_path, entry_src).expect("write entry");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "entry".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        bundle.prepared_module().expect("prepared module");
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn php_bundle_normalizes_wrapped_alternative_foreach_with_template_suffix() {
+        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_alt_foreach_suffix_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_root).expect("create temp dir");
+
+        let entry_path = temp_root.join("entry.php");
+        let entry_src = "<?php\nforeach ( ['autoplay'] as $attr ) :\n?>\n<# <?php echo $attr; ?> #>\n<?php endforeach; ?>#>\n";
+        std::fs::write(&entry_path, entry_src).expect("write entry");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "entry".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        bundle.prepared_module().expect("prepared module");
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn php_bundle_normalizes_multiline_alternative_foreach_header() {
+        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_alt_foreach_multiline_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_root).expect("create temp dir");
+
+        let entry_path = temp_root.join("entry.php");
+        let entry_src = "<?php\nforeach ( array(\n    'artist' => 'Artist',\n    'album' => 'Album',\n) as $key => $label ) :\n?>\n<span><?php echo $label; ?></span>\n<?php endforeach; ?>\n";
+        std::fs::write(&entry_path, entry_src).expect("write entry");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "entry".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        bundle.prepared_module().expect("prepared module");
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn php_bundle_normalizes_bare_alternative_endif_with_comment() {
+        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_alt_endif_comment_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_root).expect("create temp dir");
+
+        let entry_path = temp_root.join("entry.php");
+        let entry_src = "<?php\nif (true) :\n?>\n<div>ok</div>\n<?php\nendif; // keep parser aligned\n";
+        std::fs::write(&entry_path, entry_src).expect("write entry");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "entry".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        bundle.prepared_module().expect("prepared module");
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
     fn php_bundle_strips_included_close_tag_before_inline_html() {
         let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_close_tag_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
@@ -1510,6 +1999,36 @@ mod tests {
             None
         }).collect();
         assert!(echoed_text.is_empty(), "boundary whitespace from included code file should not become output: {echoed_text:?}");
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn php_bundle_preserves_heredoc_xml_close_tags() {
+        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_heredoc_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_root).expect("create temp dir");
+
+        let include_path = temp_root.join("ixr.php");
+        let include_src = "<?php\nclass IXR_Request {\n    public $xml;\n    public function __construct() {\n        $this->xml = <<<EOD\n<?xml version=\"1.0\"?>\n<methodCall>\nEOD;\n    }\n}\n";
+        std::fs::write(&include_path, include_src).expect("write include");
+
+        let entry_path = temp_root.join("entry.php");
+        let entry_src = "<?php\nrequire_once __DIR__ . '/ixr.php';\nnew IXR_Request();\n";
+        std::fs::write(&entry_path, entry_src).expect("write entry");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "entry".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        let expanded = expand_php_bundle_sources(&bundle.sources).expect("expand php bundle");
+        assert!(expanded.contains("<?xml version=\"1.0\"?>"));
+        assert!(!expanded.contains("<?xml version=\"1.0\";?>"));
+        bundle.prepared_module().expect("prepared module");
 
         let _ = std::fs::remove_dir_all(&temp_root);
     }
