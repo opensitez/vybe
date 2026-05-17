@@ -90,7 +90,15 @@ fn assert_outputs(src: &str, expected: &[&str]) {
 #[test] fn empty() { compile_ok("<?php $x = empty($a);"); }
 #[test] fn gettype() { assert_outputs("<?php echo gettype(42);", &["integer"]); }
 #[test] fn define_defined() { compile_ok("<?php define('FOO', 42); $x = defined('FOO');"); }
-#[test] fn function_exists() { compile_ok("<?php $x = function_exists('strlen');"); }
+#[test] fn function_exists_builtin_runtime() {
+	assert_outputs("<?php echo function_exists('error_reporting') ? 'yes' : 'no';", &["yes"]);
+}
+#[test] fn function_exists_missing_runtime() {
+	assert_outputs("<?php echo function_exists('definitely_missing_function') ? 'yes' : 'no';", &["no"]);
+}
+#[test] fn function_exists_user_defined_runtime() {
+	assert_outputs("<?php function LocalFn() {} echo function_exists('LocalFn') ? 'yes' : 'no';", &["yes"]);
+}
 #[test] fn class_exists() { compile_ok("<?php $x = class_exists('stdClass');"); }
 
 // ── Encoding / JSON / Crypto ────────────────────────────────

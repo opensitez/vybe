@@ -424,17 +424,33 @@ impl PhpIncludeRuntime {
         let language = languages::find_by_name("php").ok_or_else(|| "php language profile missing".to_string())?;
         let bundle = bundle_from_source(source, language, resolved_path.clone());
         let mut compiled = self.compile_dynamic_php(vm, &bundle)?;
-        remap_import_operands(&mut compiled.chunks, &self.active_imports)?;
 
         let base_chunk_index = vm.chunks.len();
         crate::host_imports::install(vm, &compiled.host_imports);
         install_chunk_globals(vm, &compiled.chunks, base_chunk_index);
 
+        let child_active_imports = compiled
+            .chunks
+            .first()
+            .map(|chunk| chunk.imports.clone())
+            .unwrap_or_default();
+        let (merged_active_imports, child_import_remap) =
+            merge_imports(&self.active_imports, &child_active_imports);
+        remap_import_operands(&mut compiled.chunks, &child_import_remap)?;
+        let merged_active_resolved_imports = resolve_imports(vm, &merged_active_imports)?;
+        let saved_active_imports = std::mem::replace(&mut self.active_imports, merged_active_imports);
+        let saved_active_resolved_imports = std::mem::replace(
+            &mut self.active_resolved_imports,
+            merged_active_resolved_imports.clone(),
+        );
+
         self.current_paths.push(canonical_path.clone());
         let result = vm
-            .run_linked(compiled.chunks, self.active_resolved_imports.clone())
+            .run_linked(compiled.chunks, merged_active_resolved_imports)
             .map_err(|err| err.to_string());
         self.current_paths.pop();
+        self.active_imports = saved_active_imports;
+        self.active_resolved_imports = saved_active_resolved_imports;
 
         match result {
             Ok(Value::Null) => {
@@ -537,28 +553,25 @@ fn resolve_imports(vm: &VM, imports: &[Import]) -> Result<Vec<ImportTarget>, Str
     Ok(resolved)
 }
 
-fn remap_import_operands(chunks: &mut [Chunk], active_imports: &[Import]) -> Result<(), String> {
-    let remap: Vec<u16> = chunks
-        .first()
-        .map(|chunk| {
-            chunk
-                .imports
-                .iter()
-                .map(|import| {
-                    active_imports
-                        .iter()
-                        .position(|active| active.module == import.module && active.name == import.name)
-                        .map(|index| index as u16)
-                        .ok_or_else(|| format!(
-                            "dynamic include requires unavailable import: {}:{}",
-                            import.module, import.name
-                        ))
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()?
-        .unwrap_or_default();
+fn merge_imports(active_imports: &[Import], child_imports: &[Import]) -> (Vec<Import>, Vec<u16>) {
+    let mut merged = active_imports.to_vec();
+    let mut remap = Vec::with_capacity(child_imports.len());
 
+    for child in child_imports {
+        let index = merged
+            .iter()
+            .position(|active| active.module == child.module && active.name == child.name)
+            .unwrap_or_else(|| {
+                merged.push(child.clone());
+                merged.len() - 1
+            });
+        remap.push(index as u16);
+    }
+
+    (merged, remap)
+}
+
+fn remap_import_operands(chunks: &mut [Chunk], remap: &[u16]) -> Result<(), String> {
     for chunk in chunks {
         let code = &mut chunk.code;
         let mut ip = 0;
@@ -572,10 +585,11 @@ fn remap_import_operands(chunks: &mut [Chunk], active_imports: &[Import]) -> Res
             };
             if op == Op::CALL_IMPORT && ip + 3 < code.len() {
                 let old_idx = ((code[ip + 2] as u16) << 8) | (code[ip + 3] as u16);
-                if let Some(&new_idx) = remap.get(old_idx as usize) {
-                    code[ip + 2] = (new_idx >> 8) as u8;
-                    code[ip + 3] = (new_idx & 0xff) as u8;
-                }
+                let Some(&new_idx) = remap.get(old_idx as usize) else {
+                    return Err(format!("dynamic include import remap missing entry for index {old_idx}"));
+                };
+                code[ip + 2] = (new_idx >> 8) as u8;
+                code[ip + 3] = (new_idx & 0xff) as u8;
             }
             ip += 2;
             match op.operand_format() {
@@ -829,6 +843,50 @@ mod tests {
             Some(Value::I64(value)) => assert_eq!(*value, 42),
             Some(Value::F64(value)) => assert_eq!(*value, 42.0),
             other => panic!("expected nested $result global, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn php_dynamic_include_normalizes_alternative_control_syntax() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("vybe-dynamic-alt-syntax-{stamp}"));
+        std::fs::create_dir_all(&base).expect("create temp dir");
+
+        let main_path = base.join("main.php");
+        let compat_path = base.join("compat.php");
+
+        std::fs::write(
+            &main_path,
+            "<?php $result = require __DIR__ . '/compat.php'; $call_result = compat_polyfill();",
+        )
+        .expect("write main php");
+        std::fs::write(
+            &compat_path,
+            "<?php\nif ( ! function_exists( 'compat_polyfill' ) ) :\n\t/**\n\t * Timing attack safe string comparison.\n\t *\n\t * @param string $known_string Expected string.\n\t * @param string $user_string  Actual, user supplied, string.\n\t * @return bool Whether strings are equal.\n\t */\n\tfunction compat_polyfill( $known_string = 'a', $user_string = 'a' ) {\n\t\t$known_string_length = strlen( $known_string );\n\n\t\tif ( strlen( $user_string ) !== $known_string_length ) {\n\t\t\treturn false;\n\t\t}\n\n\t\t$result = 0;\n\n\t\tfor ( $i = 0; $i < $known_string_length; $i++ ) {\n\t\t\t$result |= ord( $known_string[ $i ] ) ^ ord( $user_string[ $i ] );\n\t\t}\n\n\t\treturn 0 === $result ? 42 : 0;\n\t}\nendif;\n\nreturn compat_polyfill();\n",
+        )
+        .expect("write compat php");
+
+        let mut vm = configured_vm();
+        let mut service = RuntimeCompilerService::new(&mut vm);
+        service
+            .compile_and_run_path(&main_path)
+            .expect("run php with alternative syntax include");
+
+        match vm.globals.get("$result") {
+            Some(Value::I32(value)) => assert_eq!(*value, 42),
+            Some(Value::I64(value)) => assert_eq!(*value, 42),
+            Some(Value::F64(value)) => assert_eq!(*value, 42.0),
+            other => panic!("expected include $result global, got {other:?}"),
+        }
+
+        match vm.globals.get("$call_result") {
+            Some(Value::I32(value)) => assert_eq!(*value, 42),
+            Some(Value::I64(value)) => assert_eq!(*value, 42),
+            Some(Value::F64(value)) => assert_eq!(*value, 42.0),
+            other => panic!("expected include $call_result global, got {other:?}"),
         }
     }
 }

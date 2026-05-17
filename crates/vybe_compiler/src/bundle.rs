@@ -63,7 +63,7 @@ impl Bundle {
         let (combined, php_blocks) = if self.language.name == "php" {
             let expanded = expand_php_bundle_sources_with_map(&self.sources)?;
             let blocks = expanded.blocks.clone();
-            (expanded.into_code(), Some(blocks))
+            (normalize_php_source_for_parser(&expanded.into_code()), Some(blocks))
         } else {
             (
                 self.sources.iter()
@@ -334,6 +334,7 @@ fn expand_php_source_file(
     included_once: &mut HashSet<PathBuf>,
     constants: &mut HashMap<String, String>,
 ) -> Result<ExpandedPhpSource, String> {
+    let rewritten_code = rewrite_php_magic_constants(code, source_path);
     let mut aliases: HashMap<String, String> = HashMap::new();
     let mut recent_optional_guards: VecDeque<PathBuf> = VecDeque::new();
     let mut recent_optional_plugin_dirs: VecDeque<PathBuf> = VecDeque::new();
@@ -341,7 +342,7 @@ fn expand_php_source_file(
     let mut previous_nonempty_line: Option<String> = None;
     let mut out = ExpandedPhpSource::default();
 
-    let mut lines = code.lines().peekable();
+    let mut lines = rewritten_code.lines().peekable();
     while let Some(line) = lines.next() {
         let trimmed = line.trim();
 
@@ -436,10 +437,15 @@ fn expand_php_source_file(
         if starts_multiline_php_alternative_control_header(line) {
             let mut header_lines = vec![line.to_string()];
             let mut normalized_block = None;
+            let mut scanned_lines = 0usize;
 
             while let Some(next_line) = lines.peek().copied() {
+                if should_stop_multiline_php_header_scan(next_line) || scanned_lines >= 12 {
+                    break;
+                }
                 header_lines.push(next_line.to_string());
                 lines.next();
+                scanned_lines += 1;
                 let candidate = header_lines.join("\n");
                 if let Some(normalized) = normalize_multiline_php_alternative_control_syntax(&candidate) {
                     normalized_block = Some(normalized);
@@ -1011,6 +1017,154 @@ fn normalize_php_include_for_inlining(source: &str) -> String {
     out
 }
 
+fn rewrite_php_magic_constants(source: &str, source_path: &Path) -> String {
+    if !source.contains("__DIR__") && !source.contains("__FILE__") {
+        return source.to_string();
+    }
+
+    if !source.contains("<?") {
+        return rewrite_php_magic_constants_in_code(source, source_path);
+    }
+
+    let mut out = String::new();
+    for segment in split_mixed_php_include_source(source) {
+        match segment {
+            MixedPhpIncludeSegment::Html(html) => out.push_str(html),
+            MixedPhpIncludeSegment::Echo { expr, has_close_tag } => {
+                out.push_str("<?=");
+                out.push_str(&rewrite_php_magic_constants_in_code(expr, source_path));
+                if has_close_tag {
+                    out.push_str("?>");
+                }
+            }
+            MixedPhpIncludeSegment::Code { code, has_close_tag } => {
+                out.push_str("<?php");
+                out.push_str(&rewrite_php_magic_constants_in_code(code, source_path));
+                if has_close_tag {
+                    out.push_str("?>");
+                }
+            }
+        }
+    }
+    out
+}
+
+fn rewrite_php_magic_constants_in_code(code: &str, source_path: &Path) -> String {
+    #[derive(Copy, Clone, Eq, PartialEq)]
+    enum ScanState {
+        Normal,
+        SingleQuote,
+        DoubleQuote,
+        LineComment,
+        BlockComment,
+    }
+
+    fn is_ident_byte(byte: u8) -> bool {
+        matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_')
+    }
+
+    fn php_single_quoted_literal(text: &str) -> String {
+        let escaped = text.replace('\\', "\\\\").replace('\'', "\\'");
+        format!("'{}'", escaped)
+    }
+
+    fn matches_magic_token(bytes: &[u8], index: usize, token: &[u8]) -> bool {
+        if !bytes[index..].starts_with(token) {
+            return false;
+        }
+        let prev_ok = index == 0 || !is_ident_byte(bytes[index - 1]);
+        let next_index = index + token.len();
+        let next_ok = next_index >= bytes.len() || !is_ident_byte(bytes[next_index]);
+        prev_ok && next_ok
+    }
+
+    let dir_value = php_single_quoted_literal(
+        &absolutize_path(source_path)
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_string_lossy(),
+    );
+    let file_value = php_single_quoted_literal(&absolutize_path(source_path).to_string_lossy());
+
+    let bytes = code.as_bytes();
+    let mut out = String::with_capacity(code.len());
+    let mut index = 0usize;
+    let mut state = ScanState::Normal;
+
+    while index < bytes.len() {
+        match state {
+            ScanState::Normal => {
+                if let Some(next_index) = skip_php_heredoc(bytes, index) {
+                    out.push_str(&code[index..next_index]);
+                    index = next_index;
+                    continue;
+                }
+                if matches_magic_token(bytes, index, b"__DIR__") {
+                    out.push_str(&dir_value);
+                    index += "__DIR__".len();
+                    continue;
+                }
+                if matches_magic_token(bytes, index, b"__FILE__") {
+                    out.push_str(&file_value);
+                    index += "__FILE__".len();
+                    continue;
+                }
+                if bytes[index] == b'\'' {
+                    state = ScanState::SingleQuote;
+                } else if bytes[index] == b'"' {
+                    state = ScanState::DoubleQuote;
+                } else if bytes[index] == b'#' {
+                    state = ScanState::LineComment;
+                } else if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'/' {
+                    state = ScanState::LineComment;
+                } else if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'*' {
+                    state = ScanState::BlockComment;
+                }
+                out.push(bytes[index] as char);
+                index += 1;
+            }
+            ScanState::SingleQuote => {
+                out.push(bytes[index] as char);
+                if bytes[index] == b'\\' && index + 1 < bytes.len() {
+                    index += 1;
+                    out.push(bytes[index] as char);
+                } else if bytes[index] == b'\'' {
+                    state = ScanState::Normal;
+                }
+                index += 1;
+            }
+            ScanState::DoubleQuote => {
+                out.push(bytes[index] as char);
+                if bytes[index] == b'\\' && index + 1 < bytes.len() {
+                    index += 1;
+                    out.push(bytes[index] as char);
+                } else if bytes[index] == b'"' {
+                    state = ScanState::Normal;
+                }
+                index += 1;
+            }
+            ScanState::LineComment => {
+                out.push(bytes[index] as char);
+                if bytes[index] == b'\n' {
+                    state = ScanState::Normal;
+                }
+                index += 1;
+            }
+            ScanState::BlockComment => {
+                out.push(bytes[index] as char);
+                if index + 1 < bytes.len() && bytes[index] == b'*' && bytes[index + 1] == b'/' {
+                    index += 1;
+                    out.push(bytes[index] as char);
+                    state = ScanState::Normal;
+                }
+                index += 1;
+            }
+        }
+    }
+
+    out
+}
+
 enum MixedPhpIncludeSegment<'a> {
     Html(&'a str),
     Code { code: &'a str, has_close_tag: bool },
@@ -1287,6 +1441,7 @@ fn normalize_php_alternative_control_syntax(line: &str) -> String {
         (trimmed, TagMode::Bare, "")
     };
     let (code, comment) = split_line_comment(inner);
+    let code = code.trim();
     let comment_suffix = if comment.is_empty() {
         String::new()
     } else if inner.contains("//") {
@@ -1327,7 +1482,8 @@ fn normalize_php_alternative_control_syntax(line: &str) -> String {
         }
     }
 
-    if matches!(code, "endif;" | "endforeach;" | "endfor;" | "endwhile;" | "endswitch;") {
+    let end_keyword = code.strip_suffix(';').map(str::trim_end).unwrap_or(code);
+    if matches!(end_keyword, "endif" | "endforeach" | "endfor" | "endwhile" | "endswitch") {
         return match tag_mode {
             TagMode::Wrapped => format!("{}<?php }} ?>{}", indent, close_suffix),
             TagMode::OpenOnly => format!("{}<?php }}{}", indent, comment_suffix),
@@ -1351,13 +1507,32 @@ fn starts_multiline_php_alternative_control_header(line: &str) -> bool {
         || body.starts_with("for ")
         || body.starts_with("while ")
         || body.starts_with("switch "))
+        && !body.contains('{')
         && !body.contains(':')
         && !body.contains("?>")
 }
 
+    fn should_stop_multiline_php_header_scan(line: &str) -> bool {
+        let trimmed = line.trim_start();
+        trimmed.starts_with("case ")
+        || trimmed.starts_with("default:")
+        || line.contains('{')
+        || line.contains('}')
+    }
+
 fn normalize_multiline_php_alternative_control_syntax(block: &str) -> Option<String> {
     let lines: Vec<&str> = block.lines().collect();
     if lines.len() < 2 {
+        return None;
+    }
+
+    if lines.iter().any(|line| {
+        let trimmed = line.trim_start();
+        trimmed.starts_with("case ")
+            || trimmed.starts_with("default:")
+            || line.contains('{')
+            || line.contains('}')
+    }) {
         return None;
     }
 
@@ -1404,6 +1579,162 @@ fn normalize_multiline_php_alternative_control_syntax(block: &str) -> Option<Str
     }
     *normalized_lines.last_mut()? = normalized_last;
     Some(normalized_lines.join("\n"))
+}
+
+fn normalize_php_source_for_parser(source: &str) -> String {
+    let source = rewrite_php_execution_operator(source);
+    let mut normalized_lines = Vec::new();
+    let mut lines = source.lines().peekable();
+
+    while let Some(line) = lines.next() {
+        if starts_multiline_php_alternative_control_header(line) {
+            let mut header_lines = vec![line.to_string()];
+            let mut normalized_block = None;
+            let mut scanned_lines = 0usize;
+
+            while let Some(next_line) = lines.peek().copied() {
+                if should_stop_multiline_php_header_scan(next_line) || scanned_lines >= 12 {
+                    break;
+                }
+                header_lines.push(next_line.to_string());
+                lines.next();
+                scanned_lines += 1;
+                let candidate = header_lines.join("\n");
+                if let Some(normalized) = normalize_multiline_php_alternative_control_syntax(&candidate) {
+                    normalized_block = Some(normalized);
+                    break;
+                }
+            }
+
+            normalized_lines.extend(
+                normalized_block
+                    .unwrap_or_else(|| header_lines.join("\n"))
+                    .lines()
+                    .map(str::to_string),
+            );
+            continue;
+        }
+
+        normalized_lines.push(normalize_php_alternative_control_syntax(line));
+    }
+
+    let mut normalized = normalized_lines.join("\n");
+    if source.ends_with('\n') {
+        normalized.push('\n');
+    }
+    normalized
+}
+
+fn rewrite_php_execution_operator(source: &str) -> String {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum State {
+        Normal,
+        SingleQuoted,
+        DoubleQuoted,
+        LineComment,
+        BlockComment,
+    }
+
+    let bytes = source.as_bytes();
+    let mut out = String::with_capacity(source.len());
+    let mut index = 0usize;
+    let mut state = State::Normal;
+
+    while index < bytes.len() {
+        match state {
+            State::Normal => {
+                if bytes[index] == b'`' {
+                    index += 1;
+                    let mut inner = String::new();
+
+                    while index < bytes.len() {
+                        let byte = bytes[index];
+                        if byte == b'\\' && index + 1 < bytes.len() {
+                            let next = bytes[index + 1] as char;
+                            if next == '"' {
+                                inner.push('\\');
+                            }
+                            inner.push(next);
+                            index += 2;
+                            continue;
+                        }
+                        if byte == b'`' {
+                            index += 1;
+                            break;
+                        }
+                        if byte == b'"' {
+                            inner.push('\\');
+                        }
+                        inner.push(byte as char);
+                        index += 1;
+                    }
+
+                    out.push_str("shell_exec(\"");
+                    out.push_str(&inner);
+                    out.push_str("\")");
+                    continue;
+                }
+
+                if bytes[index] == b'\'' {
+                    state = State::SingleQuoted;
+                } else if bytes[index] == b'"' {
+                    state = State::DoubleQuoted;
+                } else if bytes[index] == b'/' && index + 1 < bytes.len() && bytes[index + 1] == b'/' {
+                    state = State::LineComment;
+                } else if bytes[index] == b'#' {
+                    state = State::LineComment;
+                } else if bytes[index] == b'/' && index + 1 < bytes.len() && bytes[index + 1] == b'*' {
+                    state = State::BlockComment;
+                }
+
+                out.push(bytes[index] as char);
+                index += 1;
+            }
+            State::SingleQuoted => {
+                out.push(bytes[index] as char);
+                if bytes[index] == b'\\' && index + 1 < bytes.len() {
+                    out.push(bytes[index + 1] as char);
+                    index += 2;
+                    continue;
+                }
+                if bytes[index] == b'\'' {
+                    state = State::Normal;
+                }
+                index += 1;
+            }
+            State::DoubleQuoted => {
+                out.push(bytes[index] as char);
+                if bytes[index] == b'\\' && index + 1 < bytes.len() {
+                    out.push(bytes[index + 1] as char);
+                    index += 2;
+                    continue;
+                }
+                if bytes[index] == b'"' {
+                    state = State::Normal;
+                }
+                index += 1;
+            }
+            State::LineComment => {
+                out.push(bytes[index] as char);
+                if bytes[index] == b'\n' {
+                    state = State::Normal;
+                }
+                index += 1;
+            }
+            State::BlockComment => {
+                out.push(bytes[index] as char);
+                if bytes[index] == b'*' && index + 1 < bytes.len() && bytes[index + 1] == b'/' {
+                    out.push('/');
+                    index += 2;
+                    state = State::Normal;
+                    continue;
+                }
+                index += 1;
+            }
+        }
+    }
+
+    out
 }
 
 /// Resolve `import { x } from "./file.js"` by parsing the imported file
@@ -1460,6 +1791,27 @@ fn resolve_imports(module: &mut Module, lang: &Language, base_dir: &Path) {
 mod tests {
     use super::*;
 
+    fn run_php_bundle_prints(bundle: &Bundle) -> Vec<String> {
+        use std::sync::{Arc, Mutex};
+        use vybe_bytecode::{HostContext, VM, Value};
+
+        let compiled = bundle.compile_full().expect("compiled bundle");
+        let mut vm = VM::new();
+        let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured = output.clone();
+
+        vybe_host::register_all(&mut vm);
+        vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let line = args.iter().map(|value| format!("{}", value)).collect::<Vec<_>>().join(" ");
+            captured.lock().unwrap().push(line);
+            Value::Null
+        }));
+        vybe_host::setup_namespaces(&mut vm);
+        vm.run(compiled.chunks).expect("run bundle");
+
+        output.lock().unwrap().clone()
+    }
+
     #[test]
     fn php_bundle_expands_require_once_with_dir_alias() {
         let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_{}", uuid::Uuid::new_v4()));
@@ -1485,6 +1837,33 @@ mod tests {
 
         let module = bundle.prepared_module().expect("prepared module");
         assert!(module.body.iter().any(|stmt| matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "shared_helper")));
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn php_bundle_rewrites_magic_dir_and_file_constants_for_runtime() {
+        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_magic_consts_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_root).expect("create temp dir");
+
+        let entry_path = temp_root.join("entry.php");
+        let entry_src = "<?php\necho __DIR__;\necho __FILE__;\n";
+        std::fs::write(&entry_path, entry_src).expect("write entry");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "entry".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        let outputs = run_php_bundle_prints(&bundle);
+        assert_eq!(outputs, vec![
+            temp_root.to_string_lossy().into_owned(),
+            entry_path.to_string_lossy().into_owned(),
+        ]);
 
         let _ = std::fs::remove_dir_all(&temp_root);
     }
@@ -2028,6 +2407,101 @@ mod tests {
         let expanded = expand_php_bundle_sources(&bundle.sources).expect("expand php bundle");
         assert!(expanded.contains("<?xml version=\"1.0\"?>"));
         assert!(!expanded.contains("<?xml version=\"1.0\";?>"));
+        bundle.prepared_module().expect("prepared module");
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn php_bundle_does_not_rewrite_braced_switch_case_labels() {
+        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_switch_case_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_root).expect("create temp dir");
+
+        let entry_path = temp_root.join("entry.php");
+        let entry_src = "<?php\nfunction classify($mode) {\n    switch ($mode) {\n        case 0:\n            return 'zero';\n        default:\n            return 'other';\n    }\n}\necho classify(0);\n";
+        std::fs::write(&entry_path, entry_src).expect("write entry");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "entry".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        bundle.prepared_module().expect("prepared module");
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn php_bundle_prepares_wordpress_kses_file() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let kses_path = manifest_dir
+            .join("..")
+            .join("..")
+            .join("examples")
+            .join("webroot")
+            .join("wordpress")
+            .join("wp-includes")
+            .join("kses.php");
+        let entry_src = std::fs::read_to_string(&kses_path).expect("read kses.php");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "kses".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: kses_path, code: entry_src }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        bundle.prepared_module().expect("prepared module");
+    }
+
+    #[test]
+    fn php_bundle_prepares_wordpress_index_entry() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let index_path = manifest_dir
+            .join("..")
+            .join("..")
+            .join("examples")
+            .join("webroot")
+            .join("wordpress")
+            .join("index.php");
+        let entry_src = std::fs::read_to_string(&index_path).expect("read index.php");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "wordpress-index".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: index_path, code: entry_src }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        bundle.prepared_module().expect("prepared module");
+    }
+
+    #[test]
+    fn php_bundle_rewrites_backtick_execution_operator() {
+        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_backtick_exec_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_root).expect("create temp dir");
+
+        let entry_path = temp_root.join("entry.php");
+        let entry_src = "<?php\n$commandline = 'printf ok';\n$result = `$commandline`;\n";
+        std::fs::write(&entry_path, entry_src).expect("write entry");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "entry".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
         bundle.prepared_module().expect("prepared module");
 
         let _ = std::fs::remove_dir_all(&temp_root);

@@ -8735,6 +8735,28 @@ impl Compiler {
                     self.emit_const(Value::Bool(false));
                 }
             }
+            "php_function_exists" => {
+                if let Some(Expression { kind: ExprKind::Lit(Literal::Str(name)), .. }) = args.first() {
+                    let builtin_exists = self.profile.lookup_builtin(name).is_some()
+                        || common::imports::resolve_common_import(name).is_some();
+                    if builtin_exists {
+                        self.emit_const(Value::Bool(true));
+                    } else {
+                        let global_name = self.canon(name);
+                        let idx = self.str_const(&global_name);
+                        self.emit_u16(Op::GLOBAL_GET, idx);
+                        self.emit_const(Value::Undefined);
+                        self.emit(Op::DYN_EQ);
+                        self.emit(Op::DYN_NOT);
+                    }
+                } else {
+                    if let Some(arg) = args.first() {
+                        self.compile_expr(arg)?;
+                        self.emit(Op::DROP);
+                    }
+                    self.emit_const(Value::Bool(false));
+                }
+            }
             "php_define" => {
                 if args.len() < 2 {
                     self.emit_const(Value::Bool(false));
