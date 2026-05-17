@@ -19,6 +19,15 @@ fn assert_outputs(src: &str, expected: &[&str]) {
 #[test] fn str_contains() { assert_outputs("<?php echo str_contains('hello', 'ell') ? 'yes' : 'no';", &["yes"]); }
 #[test] fn str_starts_with() { assert_outputs("<?php echo str_starts_with('hello', 'he') ? 'yes' : 'no';", &["yes"]); }
 #[test] fn str_ends_with() { assert_outputs("<?php echo str_ends_with('hello', 'lo') ? 'yes' : 'no';", &["yes"]); }
+#[test] fn superglobal_string_key_read_after_assignment() {
+	assert_outputs("<?php $_SERVER = ['SCRIPT_NAME' => '/cgi-bin/php.cgi']; echo $_SERVER['SCRIPT_NAME'];", &["/cgi-bin/php.cgi"]);
+}
+#[test] fn str_contains_dynamic_array_value() {
+	assert_outputs("<?php $_SERVER = ['SCRIPT_NAME' => '/cgi-bin/php.cgi']; echo str_contains($_SERVER['SCRIPT_NAME'], 'php.cgi') ? 'yes' : 'no';", &["yes"]);
+}
+#[test] fn str_ends_with_dynamic_array_value() {
+	assert_outputs("<?php $_SERVER = ['SCRIPT_FILENAME' => '/usr/bin/php.cgi']; echo str_ends_with($_SERVER['SCRIPT_FILENAME'], 'php.cgi') ? 'yes' : 'no';", &["yes"]);
+}
 #[test] fn str_repeat() { assert_outputs("<?php echo str_repeat('ab', 3);", &["ababab"]); }
 #[test] fn str_pad() { assert_outputs("<?php echo str_pad('42', 5, '0');", &["42000"]); }
 #[test] fn chr_ord() { assert_outputs("<?php echo chr(65); echo ord('A');", &["A", "65"]); }
@@ -98,6 +107,12 @@ fn assert_outputs(src: &str, expected: &[&str]) {
 }
 #[test] fn function_exists_user_defined_runtime() {
 	assert_outputs("<?php function LocalFn() {} echo function_exists('LocalFn') ? 'yes' : 'no';", &["yes"]);
+}
+#[test] fn class_exists_missing_runtime() {
+	assert_outputs("<?php echo class_exists('MO', false) ? 'yes' : 'no';", &["no"]);
+}
+#[test] fn class_exists_declared_runtime() {
+	assert_outputs("<?php class MO {} echo class_exists('MO', false) ? 'yes' : 'no';", &["yes"]);
 }
 #[test] fn version_compare_returns_ordering() {
 	assert_outputs("<?php echo version_compare('7.0.0', '8.2.0'); echo version_compare('8.2.0', '7.0.0'); echo version_compare('8.2.0', '8.2.0');", &["-1", "1", "0"]);

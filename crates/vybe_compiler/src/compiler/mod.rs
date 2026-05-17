@@ -8757,6 +8757,31 @@ impl Compiler {
                     self.emit_const(Value::Bool(false));
                 }
             }
+            "php_class_exists" => {
+                if let Some(Expression { kind: ExprKind::Lit(Literal::Str(name)), .. }) = args.first() {
+                    for arg in args.iter().skip(1) {
+                        self.compile_expr(arg)?;
+                        self.emit(Op::DROP);
+                    }
+                    let global_name = self.canon(name);
+                    let idx = self.str_const(&global_name);
+                    self.emit_u16(Op::GLOBAL_GET, idx);
+                    self.emit(Op::REF_TYPEOF);
+                    self.emit_const(Value::String(Arc::from("undefined")));
+                    self.emit(Op::DYN_EQ);
+                    self.emit(Op::DYN_NOT);
+                } else {
+                    if let Some(arg) = args.first() {
+                        self.compile_expr(arg)?;
+                        self.emit(Op::DROP);
+                    }
+                    for arg in args.iter().skip(1) {
+                        self.compile_expr(arg)?;
+                        self.emit(Op::DROP);
+                    }
+                    self.emit_const(Value::Bool(false));
+                }
+            }
             "php_define" => {
                 if args.len() < 2 {
                     self.emit_const(Value::Bool(false));
@@ -9037,6 +9062,54 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, offset_slot);
                     self.emit(Op::I32_ADD);
                     self.patch_jump(done);
+                } else {
+                    self.emit(Op::FALSE);
+                }
+            }
+            "php_str_contains" => {
+                if args.len() >= 2 {
+                    let tostring_global = self.str_const("__vybe_tostring");
+                    self.emit_u16(Op::GLOBAL_GET, tostring_global);
+                    self.compile_expr(args[0])?;
+                    self.emit_u8(Op::CALL_REF, 1);
+
+                    self.emit_u16(Op::GLOBAL_GET, tostring_global);
+                    self.compile_expr(args[1])?;
+                    self.emit_u8(Op::CALL_REF, 1);
+
+                    self.emit(Op::STR_CONTAINS);
+                } else {
+                    self.emit(Op::FALSE);
+                }
+            }
+            "php_str_starts_with" => {
+                if args.len() >= 2 {
+                    let tostring_global = self.str_const("__vybe_tostring");
+                    self.emit_u16(Op::GLOBAL_GET, tostring_global);
+                    self.compile_expr(args[0])?;
+                    self.emit_u8(Op::CALL_REF, 1);
+
+                    self.emit_u16(Op::GLOBAL_GET, tostring_global);
+                    self.compile_expr(args[1])?;
+                    self.emit_u8(Op::CALL_REF, 1);
+
+                    self.emit(Op::STR_STARTS_WITH);
+                } else {
+                    self.emit(Op::FALSE);
+                }
+            }
+            "php_str_ends_with" => {
+                if args.len() >= 2 {
+                    let tostring_global = self.str_const("__vybe_tostring");
+                    self.emit_u16(Op::GLOBAL_GET, tostring_global);
+                    self.compile_expr(args[0])?;
+                    self.emit_u8(Op::CALL_REF, 1);
+
+                    self.emit_u16(Op::GLOBAL_GET, tostring_global);
+                    self.compile_expr(args[1])?;
+                    self.emit_u8(Op::CALL_REF, 1);
+
+                    self.emit(Op::STR_ENDS_WITH);
                 } else {
                     self.emit(Op::FALSE);
                 }

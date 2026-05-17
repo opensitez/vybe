@@ -6741,51 +6741,6 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span)
                 vec![lambda, mk_lit_f64(1.0)],
             )
         }
-        // ── Substring ──────────────────────────────────────────────────
-        // PHP 8 `str_contains/str_starts_with/str_ends_with($haystack,
-        // $needle)` → JS `String.prototype.includes/startsWith/endsWith`.
-        // Profile bindings to `opcode:str_*` exist but `emit_builtin_opcode`
-        // doesn't wire those names; routing through the JS member-call
-        // path uses the existing String prototype dispatch.
-        "str_contains" if args.len() == 2 => {
-            mk_call(
-                Expression::with_span(
-                    ExprKind::Member {
-                        object: Box::new(arg(0)?),
-                        field: "includes".to_string(),
-                        null_safe: false,
-                    },
-                    span.clone(),
-                ),
-                vec![arg(1)?],
-            )
-        }
-        "str_starts_with" if args.len() == 2 => {
-            mk_call(
-                Expression::with_span(
-                    ExprKind::Member {
-                        object: Box::new(arg(0)?),
-                        field: "startsWith".to_string(),
-                        null_safe: false,
-                    },
-                    span.clone(),
-                ),
-                vec![arg(1)?],
-            )
-        }
-        "str_ends_with" if args.len() == 2 => {
-            mk_call(
-                Expression::with_span(
-                    ExprKind::Member {
-                        object: Box::new(arg(0)?),
-                        field: "endsWith".to_string(),
-                        null_safe: false,
-                    },
-                    span.clone(),
-                ),
-                vec![arg(1)?],
-            )
-        }
         // PHP `substr($s, $start, $length?)` →
         //   2-arg: `__php_substr($s, $start)`
         //   3-arg: `__php_substr($s, $start, $length)`

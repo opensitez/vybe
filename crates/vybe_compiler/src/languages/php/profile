@@ -57,9 +57,9 @@ strtoupper          = { emit = "opcode:str_to_upper",        min_args = 1, max_a
 trim                = { emit = "common:php.trim",            min_args = 1, max_args = 2 }
 ltrim               = { emit = "common:php.ltrim",           min_args = 1, max_args = 2 }
 rtrim               = { emit = "common:php.rtrim",           min_args = 1, max_args = 2 }
-str_contains        = { emit = "opcode:str_contains",        min_args = 2, max_args = 2 }
-str_starts_with     = { emit = "opcode:str_starts_with",     min_args = 2, max_args = 2 }
-str_ends_with       = { emit = "opcode:str_ends_with",       min_args = 2, max_args = 2 }
+str_contains        = { emit = "intrinsic:php_str_contains",        min_args = 2, max_args = 2 }
+str_starts_with     = { emit = "intrinsic:php_str_starts_with",     min_args = 2, max_args = 2 }
+str_ends_with       = { emit = "intrinsic:php_str_ends_with",       min_args = 2, max_args = 2 }
 str_repeat          = { emit = "opcode:str_repeat",          min_args = 2, max_args = 2 }
 chr                 = { emit = "opcode:str_from_char_code",  min_args = 1, max_args = 1 }
 ord                 = { emit = "host:wasm:js-string:charCodeAt", min_args = 1, max_args = 1 }
@@ -477,6 +477,7 @@ header_remove       = { emit = "host:node:http:remove_header",     min_args = 0,
 defined             = { emit = "intrinsic:php_defined",      min_args = 1, max_args = 1 }
 define              = { emit = "intrinsic:php_define",       min_args = 2, max_args = 3 }
 function_exists     = { emit = "intrinsic:php_function_exists", min_args = 1, max_args = 1 }
+class_exists        = { emit = "intrinsic:php_class_exists", min_args = 1, max_args = 2 }
 
 # isset / empty / unset — polymorphic primitives shared with the rest of
 # the runtime (every language's "is this value defined?" check uses the
