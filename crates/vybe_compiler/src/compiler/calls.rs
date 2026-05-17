@@ -794,6 +794,53 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, result_slot);
     }
 
+    fn emit_php_dynamic_function_name_resolution(&mut self, callee_slot: u16) {
+        if !self.is_php_profile() {
+            return;
+        }
+
+        let mut known_functions: Vec<String> = self.defined_functions.iter().cloned().collect();
+        if known_functions.is_empty() {
+            return;
+        }
+        known_functions.sort();
+
+        self.emit_u16(Op::LOCAL_GET, callee_slot);
+        self.emit(Op::REF_TYPEOF);
+        self.emit_const(Value::String(Arc::from("string")));
+        self.emit(Op::DYN_EQ);
+        let not_string = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, callee_slot);
+    let line = self.line;
+    common::strings::emit_to_lower(self.chunk(), line);
+        let callee_name_slot = self.define_local("__php_string_callee_name");
+        self.emit_u16(Op::LOCAL_SET, callee_name_slot);
+        self.emit(Op::DROP);
+
+        let mut done_jumps = Vec::new();
+        for function_name in known_functions {
+            let lowered_name = function_name.to_ascii_lowercase();
+            self.emit_u16(Op::LOCAL_GET, callee_name_slot);
+            self.emit_const(Value::String(Arc::from(lowered_name.as_str())));
+            self.emit(Op::DYN_EQ);
+            let next = self.emit_jump(Op::BR_IF_FALSE);
+
+            let idx = self.str_const(&function_name);
+            self.emit_u16(Op::GLOBAL_GET, idx);
+            self.emit_u16(Op::LOCAL_SET, callee_slot);
+            self.emit(Op::DROP);
+            done_jumps.push(self.emit_jump(Op::BR));
+
+            self.patch_jump(next);
+        }
+
+        self.patch_jump(not_string);
+        for done in done_jumps {
+            self.patch_jump(done);
+        }
+    }
+
     fn emit_flat_call_args_array(&mut self, args: &[Argument], slot_name: &str) -> Result<u16, String> {
         let line = self.line;
         let args_slot = self.define_local(slot_name);
@@ -4512,7 +4559,7 @@ impl Compiler {
             // `defined_functions` and `defined_classes` from the "looks like
             // a variable" set, otherwise `GetResult()` (function call) and
             // `New Result()` (class) would be mis-identified as indexing.
-            if !is_known_func && arg_exprs.len() == 1 && self.profile.parens_for_index {
+            if !is_known_func && arg_exprs.len() == 1 && self.profile.parens_for_index && !self.is_php_profile() {
                 let canon_name = self.canon(name);
                 let is_local = self.has_accessible_local_binding(name);
                 let is_global_var = self.defined_globals.contains(&canon_name)
@@ -4709,6 +4756,7 @@ impl Compiler {
                 let callee_slot = self.define_local("__ident_spread_callee");
                 self.emit_u16(Op::LOCAL_SET, callee_slot);
                 self.emit(Op::DROP);
+                self.emit_php_dynamic_function_name_resolution(callee_slot);
                 let receiver_key = self.str_const("__vybe_method_receiver");
                 self.emit_u16(Op::LOCAL_GET, callee_slot);
                 self.emit_u16(Op::STRUCT_GET, receiver_key);
@@ -4780,6 +4828,7 @@ impl Compiler {
             self.emit_var_get(name);
             self.emit_u16(Op::LOCAL_SET, callee_slot);
             self.emit(Op::DROP);
+            self.emit_php_dynamic_function_name_resolution(callee_slot);
             let receiver_key = self.str_const("__vybe_method_receiver");
             self.emit_u16(Op::LOCAL_GET, callee_slot);
             self.emit_u16(Op::STRUCT_GET, receiver_key);
@@ -4927,6 +4976,7 @@ impl Compiler {
         let callee_slot = self.define_local("__call_ref_callee");
         self.emit_u16(Op::LOCAL_SET, callee_slot);
         self.emit(Op::DROP);
+        self.emit_php_dynamic_function_name_resolution(callee_slot);
 
         if self.profile.parens_for_index
             && !arg_exprs.is_empty()

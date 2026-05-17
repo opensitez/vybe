@@ -157,6 +157,76 @@ pub fn emit_php_header(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     chunk.emit_op(Op::NULL, line);
 }
 
+pub fn emit_php_extension_loaded(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let string_import = chunks[0].add_import("ecma:string".to_string(), "String".to_string());
+    let lower_import = chunks[0].add_import("ecma:string".to_string(), "toLowerCase".to_string());
+    let chunk = &mut chunks[current];
+    if argc == 0 {
+        chunk.emit_op(Op::FALSE, line);
+        return;
+    }
+
+    // extension_loaded() is unary; discard extra args defensively.
+    for _ in 1..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+
+    chunk.emit_op_u16(Op::CALL_IMPORT, string_import, line);
+    chunk.emit(1, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, lower_import, line);
+    chunk.emit(1, line);
+
+    let ext_slot = alloc_local(chunk);
+    lset(chunk, ext_slot, line);
+
+    lget(chunk, ext_slot, line);
+    push_str(chunk, "mysqli", line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let not_mysqli = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::TRUE, line);
+    let done = chunk.emit_jump(Op::BR, line);
+    chunk.patch_jump(not_mysqli);
+
+    lget(chunk, ext_slot, line);
+    push_str(chunk, "mysqlnd", line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let not_mysqlnd = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::TRUE, line);
+    let done_mysqlnd = chunk.emit_jump(Op::BR, line);
+    chunk.patch_jump(not_mysqlnd);
+
+    lget(chunk, ext_slot, line);
+    push_str(chunk, "pdo_mysql", line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let not_pdo_mysql = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::TRUE, line);
+    let done_pdo_mysql = chunk.emit_jump(Op::BR, line);
+    chunk.patch_jump(not_pdo_mysql);
+
+    lget(chunk, ext_slot, line);
+    push_str(chunk, "mysql", line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let not_mysql = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::TRUE, line);
+    let done_mysql = chunk.emit_jump(Op::BR, line);
+    chunk.patch_jump(not_mysql);
+
+    chunk.emit_op(Op::FALSE, line);
+
+    chunk.patch_jump(done);
+    chunk.patch_jump(done_mysqlnd);
+    chunk.patch_jump(done_pdo_mysql);
+    chunk.patch_jump(done_mysql);
+}
+
+pub fn emit_php_phpversion(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 0..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+    push_str(chunk, "8.0.0", line);
+}
+
 pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let set_cookie_import = chunks[0].add_import("node:http".to_string(), "set_cookie".to_string());
     let chunk = &mut chunks[current];

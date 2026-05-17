@@ -79,6 +79,76 @@ $result = mysqli_query($conn, 'SELECT * FROM users');
 echo mysqli_num_rows($result);
 "#); }
 
+#[test] fn mysqli_surface_compile() { compile_ok(r#"<?php
+$dbh = mysqli_init();
+mysqli_select_db($dbh, 'app');
+mysqli_set_charset($dbh, 'utf8mb4');
+mysqli_ping($dbh);
+mysqli_errno($dbh);
+mysqli_affected_rows($dbh);
+mysqli_insert_id($dbh);
+mysqli_num_fields($dbh);
+mysqli_fetch_field($dbh);
+mysqli_free_result($dbh);
+mysqli_more_results($dbh);
+mysqli_next_result($dbh);
+mysqli_close($dbh);
+mysqli_real_escape_string($dbh, 'hello');
+mysqli_character_set_name($dbh);
+mysqli_get_client_info();
+mysqli_get_server_info($dbh);
+"#); }
+
+#[test]
+fn mysqli_surface_runtime_shape() {
+    let lines = run_prints(r#"<?php
+$dbh = mysqli_init();
+echo mysqli_ping($dbh) ? 'yes' : 'no';
+echo mysqli_set_charset($dbh, 'utf8mb4') ? 'yes' : 'no';
+echo mysqli_character_set_name($dbh);
+echo mysqli_get_client_info();
+echo mysqli_get_server_info($dbh);
+echo mysqli_real_escape_string($dbh, "O'Reilly\\\\");
+echo mysqli_errno($dbh);
+echo mysqli_affected_rows($dbh);
+echo mysqli_insert_id($dbh);
+"#);
+
+    assert_eq!(lines[0], "no");
+    assert_eq!(lines[1], "yes");
+    assert_eq!(lines[2], "utf8mb4");
+    assert!(lines.iter().any(|line| line.contains("mysqlnd")));
+    assert!(lines.iter().any(|line| line == "8.0.0"));
+    assert!(lines.iter().any(|line| line.contains("O\\'Reilly\\\\")));
+    assert!(lines.iter().filter(|line| line.as_str() == "0").count() >= 1);
+}
+
+#[test]
+fn mysqli_adapter_db_connect_shape_runtime() {
+    let lines = run_prints(r#"<?php
+mysqli_report(0);
+$dbh = mysqli_init();
+$ok = mysqli_real_connect($dbh, 'localhost', 'user', 'pass', null, null, null, 0);
+echo ($ok ? 'yes' : 'no') . ':' . (isset($dbh->connect_errno) ? 'has' : 'missing');
+"#);
+
+    assert_eq!(lines, vec!["no:has"]);
+}
+
+#[test]
+fn mysqli_adapter_exposes_connect_error_helpers() {
+    let lines = run_prints(r#"<?php
+mysqli_report(0);
+$dbh = mysqli_init();
+mysqli_real_connect($dbh, 'localhost', 'user', 'pass', null, null, null, 0);
+echo mysqli_connect_errno();
+echo mysqli_connect_error();
+echo mysqli_error($dbh);
+"#);
+
+    assert_eq!(lines, vec!["1", "Connection failed", "Connection failed"]);
+}
+
 // ── Real-world patterns ─────────────────────────────────────
 #[test] fn crud_pattern() { compile_ok(r#"<?php
 $pdo = new PDO('sqlite:app.db');

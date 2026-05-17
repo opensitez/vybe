@@ -8752,9 +8752,43 @@ impl Compiler {
                 } else {
                     if let Some(arg) = args.first() {
                         self.compile_expr(arg)?;
+                        let name_slot = self.define_local("__php_function_exists_name");
+                        self.emit_u16(Op::LOCAL_SET, name_slot);
                         self.emit(Op::DROP);
+
+                        self.emit_u16(Op::LOCAL_GET, name_slot);
+                        self.emit(Op::REF_TYPEOF);
+                        self.emit_const(Value::String(Arc::from("string")));
+                        self.emit(Op::DYN_EQ);
+                        let not_string = self.emit_jump(Op::BR_IF_FALSE);
+
+                        self.emit_u16(Op::LOCAL_GET, name_slot);
+                        self.emit(Op::STR_TO_LOWER);
+                        let lowered_slot = self.define_local("__php_function_exists_lowered");
+                        self.emit_u16(Op::LOCAL_SET, lowered_slot);
+                        self.emit(Op::DROP);
+
+                        let mut known_functions: Vec<String> = self.defined_functions.iter().cloned().collect();
+                        known_functions.sort();
+                        let mut done_jumps = Vec::new();
+                        for function_name in known_functions {
+                            self.emit_u16(Op::LOCAL_GET, lowered_slot);
+                            self.emit_const(Value::String(Arc::from(function_name.to_ascii_lowercase())));
+                            self.emit(Op::DYN_EQ);
+                            let next = self.emit_jump(Op::BR_IF_FALSE);
+                            self.emit_const(Value::Bool(true));
+                            done_jumps.push(self.emit_jump(Op::BR));
+                            self.patch_jump(next);
+                        }
+
+                        self.patch_jump(not_string);
+                        self.emit_const(Value::Bool(false));
+                        for done in done_jumps {
+                            self.patch_jump(done);
+                        }
+                    } else {
+                        self.emit_const(Value::Bool(false));
                     }
-                    self.emit_const(Value::Bool(false));
                 }
             }
             "php_class_exists" => {

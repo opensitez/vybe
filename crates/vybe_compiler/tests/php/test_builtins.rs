@@ -102,11 +102,26 @@ fn assert_outputs(src: &str, expected: &[&str]) {
 #[test] fn function_exists_builtin_runtime() {
 	assert_outputs("<?php echo function_exists('error_reporting') ? 'yes' : 'no';", &["yes"]);
 }
+#[test] fn function_exists_detects_mysqli_connect_builtin() {
+	assert_outputs("<?php echo function_exists('mysqli_connect') ? 'yes' : 'no';", &["yes"]);
+}
 #[test] fn function_exists_missing_runtime() {
 	assert_outputs("<?php echo function_exists('definitely_missing_function') ? 'yes' : 'no';", &["no"]);
 }
 #[test] fn function_exists_user_defined_runtime() {
 	assert_outputs("<?php function LocalFn() {} echo function_exists('LocalFn') ? 'yes' : 'no';", &["yes"]);
+}
+#[test] fn variable_function_name_user_defined_runtime() {
+	assert_outputs("<?php function LocalFn($name) { echo 'hi ' . $name; } $fn = 'LocalFn'; $fn('wp');", &["hi wp"]);
+}
+#[test] fn extension_loaded_runtime_condition_shape() {
+	assert_outputs("<?php $is_ipv6 = false; echo ($is_ipv6 && extension_loaded('mysqlnd')) ? 'yes' : 'no';", &["no"]);
+}
+#[test] fn extension_loaded_mysql_surface_runtime() {
+	assert_outputs("<?php echo extension_loaded('mysqlnd') ? 'yes' : 'no'; echo extension_loaded('mysqli') ? 'yes' : 'no'; echo extension_loaded('pdo_mysql') ? 'yes' : 'no'; echo extension_loaded('definitely_missing_ext') ? 'yes' : 'no';", &["yes", "yes", "yes", "no"]);
+}
+#[test] fn php_version_constant_and_function_runtime() {
+	assert_outputs("<?php echo PHP_VERSION; echo phpversion();", &["8.0.0", "8.0.0"]);
 }
 #[test] fn class_exists_missing_runtime() {
 	assert_outputs("<?php echo class_exists('MO', false) ? 'yes' : 'no';", &["no"]);

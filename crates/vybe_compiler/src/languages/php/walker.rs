@@ -3012,7 +3012,8 @@ fn build_magic_isset_rewrite(
 
 /// Build the magic-`__invoke` rewrite for `$var(args)` calls:
 ///
-///     typeof $var === "function"
+///     (typeof $var === "function"
+///      || (typeof $var === "string" && function_exists($var)))
 ///       ? $var(args)
 ///       : $var->__invoke(args)
 fn build_magic_invoke_rewrite(
@@ -3022,11 +3023,45 @@ fn build_magic_invoke_rewrite(
         ExprKind::TypeOf(Box::new(receiver.clone())),
         span.clone(),
     );
-    let cond = Expression::with_span(
+    let is_function = Expression::with_span(
         ExprKind::Binary {
             op: BinOp::StrictEq,
             left: Box::new(typeof_expr),
             right: Box::new(Expression::string("function")),
+        },
+        span.clone(),
+    );
+    let is_string = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(Expression::with_span(
+                ExprKind::TypeOf(Box::new(receiver.clone())),
+                span.clone(),
+            )),
+            right: Box::new(Expression::string("string")),
+        },
+        span.clone(),
+    );
+    let function_exists = Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::ident("function_exists")),
+            args: vec![Argument::positional(receiver.clone())],
+            optional: false,
+        },
+        span.clone(),
+    );
+    let cond = Expression::with_span(
+        ExprKind::Binary {
+            op: BinOp::Or,
+            left: Box::new(is_function),
+            right: Box::new(Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::And,
+                    left: Box::new(is_string),
+                    right: Box::new(function_exists),
+                },
+                span.clone(),
+            )),
         },
         span.clone(),
     );
@@ -6127,10 +6162,13 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span)
         "is_callable" => {
             // PHP `is_callable($x)` matches:
             //   - actual functions/closures (typeof === "function")
+            //   - string function names that resolve via function_exists()
             //   - objects implementing `__invoke` magic method
             //
             // Walker emits:
-            //   typeof $x === "function" || (typeof $x === "object" &&
+            //   typeof $x === "function" ||
+            //   (typeof $x === "string" && function_exists($x)) ||
+            //   (typeof $x === "object" &&
             //   typeof $x->__invoke === "function")
             //
             // The double-typeof check on the same expression is fine —
@@ -6142,6 +6180,31 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span)
                         ExprKind::TypeOf(Box::new(arg(0)?)), span.clone(),
                     )),
                     right: Box::new(Expression::string("function")),
+                },
+                span.clone(),
+            );
+            let is_string = Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::StrictEq,
+                    left: Box::new(Expression::with_span(
+                        ExprKind::TypeOf(Box::new(arg(0)?)), span.clone(),
+                    )),
+                    right: Box::new(Expression::string("string")),
+                },
+                span.clone(),
+            );
+            let string_callable = Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::And,
+                    left: Box::new(is_string),
+                    right: Box::new(Expression::with_span(
+                        ExprKind::Call {
+                            callee: Box::new(Expression::ident("function_exists")),
+                            args: vec![Argument::positional(arg(0)?)],
+                            optional: false,
+                        },
+                        span.clone(),
+                    )),
                 },
                 span.clone(),
             );
@@ -6183,7 +6246,14 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span)
             );
             ExprKind::Binary {
                 op: BinOp::Or,
-                left: Box::new(left_typeof),
+                left: Box::new(Expression::with_span(
+                    ExprKind::Binary {
+                        op: BinOp::Or,
+                        left: Box::new(left_typeof),
+                        right: Box::new(string_callable),
+                    },
+                    span.clone(),
+                )),
                 right: Box::new(obj_with_invoke),
             }
         }

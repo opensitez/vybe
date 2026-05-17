@@ -442,7 +442,8 @@ unlink              = { emit = "common:php.unlink",             min_args = 1, ma
 # ── Environment / CLI ───────────────────────────────────────────────────────
 
 getenv              = { emit = "host:wasi:cli:getEnv",       min_args = 1, max_args = 1 }
-phpversion          = { emit = "noop",                        min_args = 0, max_args = 1 }
+extension_loaded    = { emit = "common:php.extension_loaded", min_args = 1, max_args = 1 }
+phpversion          = { emit = "common:php.phpversion",       min_args = 0, max_args = 1 }
 
 # ── PHP error / INI runtime (no-ops for CLI / web compilation) ──────────────
 # These are runtime configuration calls that don't affect compiled-bytecode
@@ -478,6 +479,40 @@ defined             = { emit = "intrinsic:php_defined",      min_args = 1, max_a
 define              = { emit = "intrinsic:php_define",       min_args = 2, max_args = 3 }
 function_exists     = { emit = "intrinsic:php_function_exists", min_args = 1, max_args = 1 }
 class_exists        = { emit = "intrinsic:php_class_exists", min_args = 1, max_args = 2 }
+
+# ── mysqli compatibility (wpdb bootstrap path) ─────────────────────────────
+# Routed through the PHP database adapter emitter so WordPress db bootstrap
+# can execute without unresolved dynamic `call_ref` fallthroughs.
+mysqli_report       = { emit = "common:php.mysqli_report",       min_args = 1, max_args = 1 }
+mysqli_connect      = { emit = "common:php.mysqli_connect",      min_args = 1, max_args = 8 }
+mysqli_init         = { emit = "common:php.mysqli_init",         min_args = 0, max_args = 0 }
+mysqli_real_connect = { emit = "common:php.mysqli_real_connect", min_args = 4, max_args = 8 }
+mysqli_connect_errno = { emit = "common:php.mysqli_connect_errno", min_args = 0, max_args = 0 }
+mysqli_connect_error = { emit = "common:php.mysqli_connect_error", min_args = 0, max_args = 0 }
+mysqli_error        = { emit = "common:php.mysqli_error",        min_args = 1, max_args = 1 }
+mysqli_query        = { emit = "common:php.mysqli_query",        min_args = 2, max_args = 2 }
+mysqli_prepare      = { emit = "common:php.mysqli_prepare",      min_args = 2, max_args = 2 }
+mysqli_select_db    = { emit = "common:php.mysqli_select_db",    min_args = 2, max_args = 2 }
+mysqli_set_charset  = { emit = "common:php.mysqli_set_charset",  min_args = 2, max_args = 2 }
+mysqli_ping         = { emit = "common:php.mysqli_ping",         min_args = 1, max_args = 1 }
+mysqli_errno        = { emit = "common:php.mysqli_errno",        min_args = 1, max_args = 1 }
+mysqli_affected_rows = { emit = "common:php.mysqli_affected_rows", min_args = 1, max_args = 1 }
+mysqli_insert_id    = { emit = "common:php.mysqli_insert_id",    min_args = 1, max_args = 1 }
+mysqli_num_fields   = { emit = "common:php.mysqli_num_fields",   min_args = 1, max_args = 1 }
+mysqli_fetch_field  = { emit = "common:php.mysqli_fetch_field",  min_args = 1, max_args = 1 }
+mysqli_free_result  = { emit = "common:php.mysqli_free_result",  min_args = 1, max_args = 1 }
+mysqli_more_results = { emit = "common:php.mysqli_more_results", min_args = 1, max_args = 1 }
+mysqli_next_result  = { emit = "common:php.mysqli_next_result",  min_args = 1, max_args = 1 }
+mysqli_close        = { emit = "common:php.mysqli_close",        min_args = 1, max_args = 1 }
+mysqli_real_escape_string = { emit = "common:php.mysqli_real_escape_string", min_args = 2, max_args = 2 }
+mysqli_character_set_name = { emit = "common:php.mysqli_character_set_name", min_args = 1, max_args = 1 }
+mysqli_get_client_info = { emit = "common:php.mysqli_get_client_info", min_args = 0, max_args = 0 }
+mysqli_get_server_info = { emit = "common:php.mysqli_get_server_info", min_args = 1, max_args = 1 }
+mysqli_fetch_array  = { emit = "common:php.mysqli_fetch_array",  min_args = 1, max_args = 2 }
+mysqli_fetch_assoc  = { emit = "common:php.mysqli_fetch_assoc",  min_args = 1, max_args = 1 }
+mysqli_fetch_object = { emit = "common:php.mysqli_fetch_object", min_args = 1, max_args = 1 }
+mysqli_num_rows     = { emit = "common:php.mysqli_num_rows",     min_args = 1, max_args = 1 }
+mysqli_fetch_all    = { emit = "common:php.mysqli_fetch_all",    min_args = 1, max_args = 1 }
 
 # isset / empty / unset — polymorphic primitives shared with the rest of
 # the runtime (every language's "is this value defined?" check uses the
@@ -600,6 +635,8 @@ reduce   = "__array_reduce"
 # ────────────────────────────────────────────────────────────────────────────
 
 [namespace_constants]
+"PHP_VERSION"           = "8.0.0"
+"PHP_VERSION_ID"        = 80000
 "Math.PI"               = 3.141592653589793
 "Math.E"                = 2.718281828459045
 "Math.LN2"              = 0.6931471805599453
