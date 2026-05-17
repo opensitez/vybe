@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── sprintf basic format specifiers ──────────────────────────
 
@@ -78,16 +78,19 @@ echo sprintf("%c%c%c", 72, 105, 33);  // Hi!
 // ── Argument swapping ─────────────────────────────────────────
 
 #[test] fn sprintf_argument_swap() {
-    compile_ok(r#"<?php
+    assert_eq!(run_prints(r#"<?php
 echo sprintf('%2$s %1$s', 'World', 'Hello');
 echo sprintf('%1$s has %2$d items at $%3$.2f each', 'Cart', 3, 9.99);
-"#);
+"#), vec![
+        "Hello World".to_string(),
+        "Cart has 3 items at $9.99 each".to_string(),
+    ]);
 }
 
 #[test] fn sprintf_argument_swap_repeat() {
-    compile_ok(r#"<?php
+    assert_eq!(run_prints(r#"<?php
 echo sprintf('%1$s %1$s %2$s', 'la', 'land');
-"#);
+"#), vec!["la la land".to_string()]);
 }
 
 // ── Width and precision ───────────────────────────────────────

@@ -654,9 +654,6 @@ fn find_php_close_tag(source: &str, start: usize) -> Option<usize> {
                 }
             }
             ScanState::BlockComment => {
-                if bytes[index] == b'?' && bytes[index + 1] == b'>' {
-                    return Some(index);
-                }
                 if bytes[index] == b'*' && bytes[index + 1] == b'/' {
                     state = ScanState::Normal;
                     index += 1;
@@ -1732,7 +1729,7 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::identifier => name = p.as_str().to_string(),
+            Rule::identifier | Rule::method_ident => name = p.as_str().to_string(),
             Rule::param_list => params = walk_params(p)?,
             Rule::return_type_annotation => {
                 return_type = Some(p.as_str().trim_start_matches(':').trim().to_string());
@@ -2371,7 +2368,7 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
 
         Rule::variable => return walk_php_variable_expr(pair, span),
         Rule::simple_variable => ExprKind::Ident(strip_dollar(pair.as_str()).to_string()),
-        Rule::identifier => {
+        Rule::identifier | Rule::method_ident => {
             let name = pair.as_str();
             // Bare PHP global constants get rewritten to their JS-shaped
             // equivalent (`M_PI` → `Math.PI`, `STR_PAD_LEFT` → `0`, etc.)

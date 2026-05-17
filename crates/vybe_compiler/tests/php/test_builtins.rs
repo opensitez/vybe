@@ -99,6 +99,18 @@ fn assert_outputs(src: &str, expected: &[&str]) {
 #[test] fn function_exists_user_defined_runtime() {
 	assert_outputs("<?php function LocalFn() {} echo function_exists('LocalFn') ? 'yes' : 'no';", &["yes"]);
 }
+#[test] fn version_compare_returns_ordering() {
+	assert_outputs("<?php echo version_compare('7.0.0', '8.2.0'); echo version_compare('8.2.0', '7.0.0'); echo version_compare('8.2.0', '8.2.0');", &["-1", "1", "0"]);
+}
+#[test] fn version_compare_operator_runtime() {
+	assert_outputs("<?php echo version_compare('8.2.0', '7.0.0', '>') ? 'yes' : 'no'; echo version_compare('7.0.0', '8.2.0', '>') ? 'yes' : 'no'; echo version_compare('8.2.0', '8.2.0', '>=') ? 'yes' : 'no';", &["yes", "no", "yes"]);
+}
+#[test] fn wordpress_php_version_error_branch_runtime() {
+	assert_outputs(
+		"<?php $required_php_version = '8.2.0'; $wp_version = '6.5.5'; $php_version = '7.0.0'; if ( version_compare( $required_php_version, $php_version, '>' ) ) { printf('Your server is running PHP version %1$s but WordPress %2$s requires at least %3$s.', $php_version, $wp_version, $required_php_version); exit( 1 ); } echo 'after';",
+		&["Your server is running PHP version 7.0.0 but WordPress 6.5.5 requires at least 8.2.0."],
+	);
+}
 #[test] fn class_exists() { compile_ok("<?php $x = class_exists('stdClass');"); }
 
 // ── Encoding / JSON / Crypto ────────────────────────────────
@@ -120,5 +132,5 @@ fn assert_outputs(src: &str, expected: &[&str]) {
 #[test] fn file_exists() { compile_ok("<?php $x = file_exists('/tmp/test');"); }
 #[test] fn dirname_basename() { compile_ok("<?php $x = dirname('/tmp/test.txt'); $y = basename('/tmp/test.txt');"); }
 #[test] fn time() { compile_ok("<?php $t = time();"); }
-#[test] fn die() { compile_ok("<?php die('goodbye');"); }
-#[test] fn exit_call() { compile_ok("<?php exit(0);"); }
+#[test] fn die() { assert_outputs("<?php die('goodbye'); echo 'after';", &["goodbye"]); }
+#[test] fn exit_call() { assert_outputs("<?php echo 'before'; exit(0); echo 'after';", &["before"]); }

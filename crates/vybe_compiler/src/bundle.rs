@@ -1387,9 +1387,6 @@ fn find_php_include_close_tag(source: &str, start: usize) -> Option<usize> {
                 }
             }
             ScanState::BlockComment => {
-                if bytes[index] == b'?' && bytes[index + 1] == b'>' {
-                    return Some(index);
-                }
                 if bytes[index] == b'*' && bytes[index + 1] == b'/' {
                     state = ScanState::Normal;
                     index += 1;
@@ -1449,6 +1446,23 @@ fn normalize_php_alternative_control_syntax(line: &str) -> String {
     } else {
         format!(" #{}", comment)
     };
+
+    for end_keyword in ["endif", "endforeach", "endfor", "endwhile", "endswitch"] {
+        let end_prefix = format!("{end_keyword};");
+        if let Some(rest) = code.strip_prefix(&end_prefix) {
+            let rest = rest.trim_start();
+            if !rest.is_empty() {
+                let normalized_rest = normalize_php_alternative_control_syntax(rest);
+                let combined = format!("}} {}", normalized_rest.trim_start());
+                return match tag_mode {
+                    TagMode::Wrapped => format!("{}<?php {} ?>{}", indent, combined, close_suffix),
+                    TagMode::OpenOnly => format!("{}<?php {}{}", indent, combined, comment_suffix),
+                    TagMode::CloseOnly => format!("{}{} ?>{}", indent, combined, close_suffix),
+                    TagMode::Bare => format!("{}{}{}", indent, combined, comment_suffix),
+                };
+            }
+        }
+    }
 
     if let Some(prefix) = code.strip_suffix(':').map(str::trim_end) {
         if prefix.starts_with("if ")
@@ -2485,12 +2499,129 @@ mod tests {
     }
 
     #[test]
+    fn php_bundle_prepares_wordpress_widgets_file() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let widgets_path = manifest_dir
+            .join("..")
+            .join("..")
+            .join("examples")
+            .join("webroot")
+            .join("wordpress")
+            .join("wp-includes")
+            .join("widgets.php");
+        let source = std::fs::read_to_string(&widgets_path).expect("read widgets.php");
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "widgets".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: widgets_path, code: source }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        bundle.prepared_module().expect("prepared module");
+    }
+
+    #[test]
+    fn php_bundle_prepares_wordpress_media_template_file() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let media_template_path = manifest_dir
+            .join("..")
+            .join("..")
+            .join("examples")
+            .join("webroot")
+            .join("wordpress")
+            .join("wp-includes")
+            .join("media-template.php");
+        let source = std::fs::read_to_string(&media_template_path).expect("read media-template.php");
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "media-template".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: media_template_path, code: source }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        bundle.prepared_module().expect("prepared module");
+    }
+
+    #[test]
     fn php_bundle_rewrites_backtick_execution_operator() {
         let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_backtick_exec_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
 
         let entry_path = temp_root.join("entry.php");
         let entry_src = "<?php\n$commandline = 'printf ok';\n$result = `$commandline`;\n";
+        std::fs::write(&entry_path, entry_src).expect("write entry");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "entry".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        bundle.prepared_module().expect("prepared module");
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn php_bundle_prepares_doc_comment_with_php_tag_example() {
+        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_comment_tags_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_root).expect("create temp dir");
+
+        let entry_path = temp_root.join("entry.php");
+        let entry_src = "<?php\n/**\n * Example:\n * <main><p><?php echo \"Hello\"; ?></p></main>\n */\nfunction demo() {\n    $can_use_cached = ! wp_is_development_mode( 'theme' );\n    return $can_use_cached;\n}\n";
+        std::fs::write(&entry_path, entry_src).expect("write entry");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "entry".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        bundle.prepared_module().expect("prepared module");
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn php_bundle_prepares_readonly_named_function() {
+        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_readonly_fn_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_root).expect("create temp dir");
+
+        let entry_path = temp_root.join("entry.php");
+        let entry_src = "<?php\nfunction readonly( $readonly_value, $current = true, $display = true ) {\n    return $readonly_value;\n}\nreadonly( true );\n";
+        std::fs::write(&entry_path, entry_src).expect("write entry");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "entry".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        bundle.prepared_module().expect("prepared module");
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn php_bundle_normalizes_chained_endif_if_same_line() {
+        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_alt_chain_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_root).expect("create temp dir");
+
+        let entry_path = temp_root.join("entry.php");
+        let entry_src = "<?php\n$first = true;\n$second = true;\nif ( $first ) : ?>\n<div>first</div>\n<?php endif; if ( $second ) : ?>\n<div>second</div>\n<?php endif; ?>\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
         let lang = crate::languages::find_by_name("php").expect("php language");

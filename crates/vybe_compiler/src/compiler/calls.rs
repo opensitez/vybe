@@ -4384,6 +4384,36 @@ impl Compiler {
                 .filter(|signature| signature.has_rest)
                 .cloned();
 
+            if self.is_php_profile()
+                && (name.eq_ignore_ascii_case("exit") || name.eq_ignore_ascii_case("die"))
+            {
+                if let Some(arg) = arg_exprs.first() {
+                    let arg_slot = self.define_local("__php_exit_arg");
+                    self.compile_expr(arg)?;
+                    self.emit_u16(Op::LOCAL_SET, arg_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, arg_slot);
+                    let typeof_idx = self.import("ecma:value", "typeof");
+                    self.emit_host_call(typeof_idx, 1);
+                    self.emit_const(Value::String(Arc::from("string")));
+                    self.emit(Op::DYN_EQ);
+                    let skip_print = self.emit_jump(Op::BR_IF_FALSE);
+
+                    let log_idx = self.import("wasi:cli", "log");
+                    let line = self.line;
+                    self.emit_u16(Op::LOCAL_GET, arg_slot);
+                    self.emit_common("php.echo_stringify", 1, line);
+                    common::io::emit_print_with_import(self.chunk(), log_idx, 1, line);
+
+                    self.patch_jump(skip_print);
+                }
+
+                self.emit(Op::NULL);
+                self.emit_return_through_finally(1)?;
+                return Ok(());
+            }
+
             // Inside a class: bare call to a static method should bind to
             // the class object before any generic function lookup. Static
             // methods are also registered as ordinary functions, so this

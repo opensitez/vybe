@@ -331,7 +331,7 @@ attribute = { qualified_name ~ ("(" ~ arg_list? ~ ")")? }
 
 function_declaration = {
     attribute_group*
-    ~ kw_function ~ "&"? ~ identifier
+    ~ kw_function ~ "&"? ~ method_ident
     ~ "(" ~ param_list? ~ ")"
     ~ return_type_annotation?
     ~ block_statement
@@ -787,6 +787,7 @@ primary_expression = {
     | kw_self
     | kw_parent
     | kw_static
+    | method_ident
 }
 
 // PHP 8.0: throw is now an expression as well as a statement.

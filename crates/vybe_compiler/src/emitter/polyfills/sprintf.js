@@ -31,6 +31,20 @@ function sprintf(fmt, ...args) {
             continue;
         }
         i++;
+        // PHP positional arg selector: %2$s, %3$.2f, etc.
+        let explicitArgIdx = -1;
+        const indexStart = i;
+        let parsedIndex = 0;
+        while (i < len && fmt.charAt(i) >= "0" && fmt.charAt(i) <= "9") {
+            parsedIndex = parsedIndex * 10 + (fmt.charCodeAt(i) - 48);
+            i++;
+        }
+        if (i < len && fmt.charAt(i) === "$" && i > indexStart) {
+            explicitArgIdx = parsedIndex - 1;
+            i++;
+        } else {
+            i = indexStart;
+        }
         // Parse flags.
         let flagLeft = false, flagSign = false, flagZero = false;
         let flagSpace = false, flagAlt = false;
@@ -70,8 +84,9 @@ function sprintf(fmt, ...args) {
         const conv = fmt.charAt(i);
         i++;
         if (conv === "%") { out += "%"; continue; }
-        const arg = args[argIdx];
-        argIdx++;
+        const usesSequentialArg = explicitArgIdx < 0;
+        const arg = usesSequentialArg ? args[argIdx] : args[explicitArgIdx];
+        if (usesSequentialArg) argIdx++;
         let raw = "";
         if (conv === "s") {
             raw = String(arg);
@@ -128,7 +143,7 @@ function sprintf(fmt, ...args) {
             raw = String.fromCharCode(Number(arg));
         } else {
             // Unknown conversion: emit literally, return the arg slot.
-            argIdx--;
+            if (usesSequentialArg) argIdx--;
             raw = "%" + conv;
         }
         // Apply width.

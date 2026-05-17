@@ -8797,6 +8797,97 @@ impl Compiler {
                     self.emit_const(Value::Bool(false));
                 }
             }
+            "php_version_compare" => {
+                if args.len() >= 2 {
+                    self.compile_expr(args[0])?;
+                    self.emit_common("dotnet.version_parse", 1, line);
+                    self.compile_expr(args[1])?;
+                    self.emit_common("dotnet.version_parse", 1, line);
+                    self.emit_common("dotnet.version_compare", 2, line);
+
+                    let cmp_slot = self.define_local("__php_version_compare_cmp");
+                    self.emit_u16(Op::LOCAL_SET, cmp_slot);
+                    self.emit(Op::DROP);
+
+                    if let Some(operator) = args.get(2) {
+                        let op_slot = self.define_local("__php_version_compare_op");
+                        self.compile_expr(operator)?;
+                        self.emit_u16(Op::LOCAL_SET, op_slot);
+                        self.emit(Op::DROP);
+
+                        let mut done_jumps = Vec::new();
+                        for (op_text, compare_op) in [
+                            ("<", Op::DYN_LT),
+                            ("lt", Op::DYN_LT),
+                            ("<=", Op::DYN_LE),
+                            ("le", Op::DYN_LE),
+                            (">", Op::DYN_GT),
+                            ("gt", Op::DYN_GT),
+                            (">=", Op::DYN_GE),
+                            ("ge", Op::DYN_GE),
+                            ("==", Op::DYN_EQ),
+                            ("=", Op::DYN_EQ),
+                            ("eq", Op::DYN_EQ),
+                            ("!=", Op::DYN_NE),
+                            ("<>", Op::DYN_NE),
+                            ("ne", Op::DYN_NE),
+                        ] {
+                            self.emit_u16(Op::LOCAL_GET, op_slot);
+                            self.emit_const(Value::String(Arc::from(op_text)));
+                            self.emit(Op::DYN_EQ);
+                            let next_check = self.emit_jump(Op::BR_IF_FALSE);
+                            self.emit_u16(Op::LOCAL_GET, cmp_slot);
+                            self.emit_const(Value::F64(0.0));
+                            self.emit(compare_op);
+                            done_jumps.push(self.emit_jump(Op::BR));
+                            self.patch_jump(next_check);
+                        }
+
+                        self.emit_const(Value::Bool(false));
+                        for jump in done_jumps {
+                            self.patch_jump(jump);
+                        }
+                    } else {
+                        self.emit_u16(Op::LOCAL_GET, cmp_slot);
+                    }
+                } else {
+                    self.emit_const(Value::I32(0));
+                }
+            }
+            "php_printf" => {
+                if args.is_empty() {
+                    self.emit_const(Value::I32(0));
+                } else {
+                    let global_name = Self::stdlib_global_name("sprintf");
+                    let name_idx = self.str_const(&global_name);
+                    let result_slot = self.define_local("__php_printf_result");
+                    let log_idx = self.import("wasi:cli", "log");
+                    let callee_slot = self.define_local("__php_printf_fn");
+                    let synthetic_args: Vec<Argument> = args
+                        .iter()
+                        .map(|arg| Argument::positional((**arg).clone()))
+                        .collect();
+                    let signature = CallSignature {
+                        param_names: vec![String::new(), String::new()],
+                        min_arity: 1,
+                        has_rest: true,
+                    };
+
+                    self.emit_u16(Op::GLOBAL_GET, name_idx);
+                    self.emit_u16(Op::LOCAL_SET, callee_slot);
+                    self.emit(Op::DROP);
+                    self.emit_known_rest_call_from_local(callee_slot, None, &synthetic_args, &signature)?;
+                    self.emit_u16(Op::LOCAL_SET, result_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, result_slot);
+                    self.emit_common("php.echo_stringify", 1, line);
+                    common::io::emit_print_with_import(self.chunk(), log_idx, 1, line);
+
+                    self.emit_u16(Op::LOCAL_GET, result_slot);
+                    common::strings::emit_length(self.chunk(), line);
+                }
+            }
             "php_rsort" => {
                 // PHP `rsort($arr)` — descending in-place sort. Compose
                 // from existing stdlib: `sort_in_place(arr)` for the
