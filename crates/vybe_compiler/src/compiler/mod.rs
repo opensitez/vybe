@@ -8888,6 +8888,20 @@ impl Compiler {
                     common::strings::emit_length(self.chunk(), line);
                 }
             }
+            "php_register_shutdown_function" => {
+                for arg in args {
+                    self.compile_expr(arg)?;
+                    self.emit(Op::DROP);
+                }
+                self.emit(Op::NULL);
+            }
+            "php_date_default_timezone_set" => {
+                for arg in args {
+                    self.compile_expr(arg)?;
+                    self.emit(Op::DROP);
+                }
+                self.emit_const(Value::Bool(true));
+            }
             "php_rsort" => {
                 // PHP `rsort($arr)` — descending in-place sort. Compose
                 // from existing stdlib: `sort_in_place(arr)` for the

@@ -400,6 +400,7 @@ strftime            = { emit = "common:php.strftime",            min_args = 1, m
 strtotime           = { emit = "common:php.strtotime",           min_args = 1, max_args = 2 }
 mktime              = { emit = "common:php.mktime",              min_args = 0, max_args = 6 }
 sleep               = { emit = "host:wasi:clocks:sleep",     min_args = 1, max_args = 1 }
+date_default_timezone_set = { emit = "intrinsic:php_date_default_timezone_set", min_args = 1, max_args = 1 }
 
 # ── String formatting ──────────────────────────────────────────────────────
 
@@ -453,6 +454,7 @@ set_error_handler   = { emit = "noop",                        min_args = 1, max_
 restore_error_handler = { emit = "noop",                      min_args = 0, max_args = 0 }
 set_exception_handler = { emit = "noop",                      min_args = 1, max_args = 1 }
 trigger_error       = { emit = "noop",                        min_args = 1, max_args = 2 }
+register_shutdown_function = { emit = "intrinsic:php_register_shutdown_function", min_args = 1, max_args = 255 }
 php_sapi_name       = { emit = "host:node:http:php_sapi_name", min_args = 0, max_args = 0 }
 getcwd              = { emit = "host:wasi:cli:cwd",          min_args = 0, max_args = 0 }
 gethostname         = { emit = "host:wasi:cli:machineName",  min_args = 0, max_args = 0 }

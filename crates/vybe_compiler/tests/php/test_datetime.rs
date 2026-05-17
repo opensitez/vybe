@@ -38,6 +38,13 @@ echo $ts2 - $ts1;
 "#), &["86400"]);
 }
 
+#[test]
+fn date_default_timezone_set_utc_runtime() {
+    assert_eq!(run_prints(r#"<?php
+echo date_default_timezone_set('UTC') ? 'yes' : 'no';
+"#), &["yes"]);
+}
+
 // ── strtotime ────────────────────────────────────────────────────
 #[test]
 fn strtotime_basic() {

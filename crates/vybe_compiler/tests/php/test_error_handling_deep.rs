@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── set_error_handler ────────────────────────────────────────
 
@@ -322,4 +322,17 @@ restore_error_handler();
 echo $collector->count();
 echo ':' . $collector->getErrors()[0]['msg'];
 "#);
+}
+
+#[test] fn register_shutdown_function_object_method_callable_runtime() {
+    let outputs = run_prints(r#"<?php
+class FatalHandler {
+    public function handle(): void { echo 'late'; }
+}
+$handler = new FatalHandler();
+echo 'before';
+register_shutdown_function([$handler, 'handle']);
+echo 'after';
+"#);
+    assert!(outputs.starts_with(&["before".to_string(), "after".to_string()]));
 }
