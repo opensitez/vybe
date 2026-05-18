@@ -57,6 +57,7 @@ strtoupper          = { emit = "opcode:str_to_upper",        min_args = 1, max_a
 trim                = { emit = "common:php.trim",            min_args = 1, max_args = 2 }
 ltrim               = { emit = "common:php.ltrim",           min_args = 1, max_args = 2 }
 rtrim               = { emit = "common:php.rtrim",           min_args = 1, max_args = 2 }
+iconv               = { emit = "common:php.iconv",           min_args = 3, max_args = 3 }
 str_contains        = { emit = "intrinsic:php_str_contains",        min_args = 2, max_args = 2 }
 str_starts_with     = { emit = "intrinsic:php_str_starts_with",     min_args = 2, max_args = 2 }
 str_ends_with       = { emit = "intrinsic:php_str_ends_with",       min_args = 2, max_args = 2 }
@@ -144,6 +145,9 @@ explode             = { emit = "opcode:str_split",           min_args = 2, max_a
 # `file($path)` returns the file as an array of lines. stdlib chunk
 # composing wasi:filesystem:readFile + STR_SPLIT on "\n".
 file                = { emit = "common:php.file",           min_args = 1, max_args = 3 }
+# `glob($pattern)` currently supports the common single-`*` filename form
+# used by apps like Keynote, returning matching full paths.
+glob                = { emit = "common:php.glob",           min_args = 1, max_args = 2 }
 # Regex — PHP PCRE → ECMA-262 §22.2 RegExp (Rust regex backing).
 # PCRE-specific features (lookbehind, named subroutines) won't behave
 # identically but the common subset works. Three-arg form
@@ -294,6 +298,7 @@ count               = { emit = "common:php.count",                min_args = 1, 
 sizeof              = { emit = "common:php.count",                min_args = 1, max_args = 2 }
 array_push          = { emit = "opcode:array_push",                min_args = 2, max_args = 255 }
 array_pop           = { emit = "opcode:array_pop",                 min_args = 1, max_args = 1 }
+end                 = { emit = "common:php.end",                  min_args = 1, max_args = 1 }
 array_shift         = { emit = "opcode:array_shift",               min_args = 1, max_args = 1 }
 array_reverse       = { emit = "opcode:array_reverse",             min_args = 1, max_args = 1 }
 in_array            = { emit = "opcode:array_contains",            min_args = 2, max_args = 3 }
@@ -321,8 +326,8 @@ array_walk_recursive = { emit = "common:php.array_walk_recursive", min_args = 2,
 # WASM imports for the same semantic operation. That way `array_keys`
 # in PHP and `Object.keys` in JS share ONE host handler, one test
 # surface, one CVE surface.
-array_keys          = { emit = "host:ecma:object:keys",         min_args = 1, max_args = 3 }
-array_values        = { emit = "host:ecma:object:values",       min_args = 1, max_args = 1 }
+array_keys          = { emit = "common:php.array_keys",         min_args = 1, max_args = 3 }
+array_values        = { emit = "common:php.array_values",       min_args = 1, max_args = 1 }
 # Argument order is normalized to canonical `(obj, key)` at the PHP
 # walker layer (`canonicalize_php_call_args`), so both entries below
 # bind directly to the portable `ecma:object.hasOwn` — identical
@@ -456,6 +461,8 @@ restore_error_handler = { emit = "noop",                      min_args = 0, max_
 set_exception_handler = { emit = "noop",                      min_args = 1, max_args = 1 }
 trigger_error       = { emit = "noop",                        min_args = 1, max_args = 2 }
 register_shutdown_function = { emit = "intrinsic:php_register_shutdown_function", min_args = 1, max_args = 255 }
+spl_autoload_register = { emit = "common:php.spl_autoload_register", min_args = 1, max_args = 3 }
+spl_autoload_unregister = { emit = "common:php.spl_autoload_unregister", min_args = 1, max_args = 1 }
 php_sapi_name       = { emit = "host:node:http:php_sapi_name", min_args = 0, max_args = 0 }
 getcwd              = { emit = "host:wasi:cli:cwd",          min_args = 0, max_args = 0 }
 gethostname         = { emit = "host:wasi:cli:machineName",  min_args = 0, max_args = 0 }

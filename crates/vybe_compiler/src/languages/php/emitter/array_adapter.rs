@@ -66,6 +66,147 @@ fn emit_json_stringify_slots(
     call_import(chunks, current, "ecma:json", "stringify", argc, line);
 }
 
+fn emit_php_key_list_from_slot(chunks: &mut [Chunk], current: usize, value_slot: u16, line: u32) {
+    let chunk = &mut chunks[current];
+    let keys_slot = alloc_local(chunk);
+    let len_slot = alloc_local(chunk);
+    let csv_slot = alloc_local(chunk);
+
+    lget(chunk, value_slot, line);
+    let keys_key = chunk.add_constant(Value::String(Arc::from("__keys")));
+    chunk.emit_op_u16(Op::STRUCT_GET, keys_key, line);
+    lset(chunk, keys_slot, line);
+
+    lget(chunk, keys_slot, line);
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    let no_keys = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    chunk.emit_op(Op::REF_IS_UNDEFINED, line);
+    let no_keys_undef = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    chunk.emit_op(Op::DROP, line);
+
+    lget(chunk, keys_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, len_slot, line);
+    lget(chunk, len_slot, line);
+    chunk.emit_op(Op::I32_CONST_0, line);
+    chunk.emit_op(Op::DYN_GT, line);
+    let have_keys = chunk.emit_jump(Op::BR_IF_TRUE, line);
+
+    chunk.patch_jump(no_keys);
+    chunk.emit_op(Op::DROP, line);
+    let after_keys_null = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(no_keys_undef);
+    chunk.emit_op(Op::DROP, line);
+    chunk.patch_jump(after_keys_null);
+
+    lget(chunk, value_slot, line);
+    let csv_key = chunk.add_constant(Value::String(Arc::from("vybe$assoc_keys_csv")));
+    chunk.emit_op_u16(Op::STRUCT_GET, csv_key, line);
+    lset(chunk, csv_slot, line);
+
+    lget(chunk, csv_slot, line);
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    let no_csv = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    chunk.emit_op(Op::REF_IS_UNDEFINED, line);
+    let no_csv_undef = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    chunk.emit_op(Op::DROP, line);
+
+    lget(chunk, csv_slot, line);
+    push_str(chunk, "\x1F", line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:string", "split", 2, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, keys_slot, line);
+
+    lget(chunk, keys_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, len_slot, line);
+    lget(chunk, len_slot, line);
+    chunk.emit_op(Op::I32_CONST_0, line);
+    chunk.emit_op(Op::DYN_GT, line);
+    let have_csv_keys = chunk.emit_jump(Op::BR_IF_TRUE, line);
+
+    chunk.patch_jump(no_csv);
+    chunk.emit_op(Op::DROP, line);
+    let after_csv_null = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(no_csv_undef);
+    chunk.emit_op(Op::DROP, line);
+    chunk.patch_jump(after_csv_null);
+
+    lget(chunk, value_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:object", "keys", 1, line);
+    let chunk = &mut chunks[current];
+    let done = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(have_keys);
+    lget(chunk, keys_slot, line);
+    let done_keys = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(have_csv_keys);
+    lget(chunk, keys_slot, line);
+
+    chunks[current].patch_jump(done);
+    chunks[current].patch_jump(done_keys);
+}
+
+pub fn emit_php_array_keys(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 1..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+    let value_slot = alloc_local(chunk);
+    lset(chunk, value_slot, line);
+    emit_php_key_list_from_slot(chunks, current, value_slot, line);
+}
+
+pub fn emit_php_array_values(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 1..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+    crate::emitter::collections::emit_iter_values(chunks, current, line);
+}
+
+pub fn emit_php_end(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 1..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+    let arr_slot = alloc_local(chunk);
+    let values_slot = alloc_local(chunk);
+    let len_slot = alloc_local(chunk);
+    lset(chunk, arr_slot, line);
+
+    lget(chunk, arr_slot, line);
+    crate::emitter::collections::emit_iter_values(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, values_slot, line);
+
+    lget(chunk, values_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, len_slot, line);
+
+    lget(chunk, len_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let nonempty = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::FALSE, line);
+    let done_empty = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(nonempty);
+    lget(chunk, values_slot, line);
+    lget(chunk, len_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.patch_jump(done_empty);
+}
+
 fn emit_object_from_keys(chunks: &mut [Chunk], current: usize, source_slot: u16, keys_slot: u16, line: u32) {
     let chunk = &mut chunks[current];
     let entries_slot = alloc_local(chunk);
@@ -1360,10 +1501,7 @@ fn emit_array_key_first_or_last(
 
     lset(chunk, arr_slot, line);
 
-    // Object.keys(arr) — works for both arrays and Maps
-    lget(chunk, arr_slot, line);
-    let _ = chunk;
-    call_import(chunks, current, "ecma:object", "keys", 1, line);
+    emit_php_key_list_from_slot(chunks, current, arr_slot, line);
     let chunk = &mut chunks[current];
     lset(chunk, keys_slot, line);
 
@@ -1371,13 +1509,13 @@ fn emit_array_key_first_or_last(
     chunk.emit_op(Op::ARRAY_LENGTH, line);
     lset(chunk, len_slot, line);
 
-    // if len === 0: return null
     lget(chunk, len_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     chunk.emit_op(Op::DYN_EQ, line);
     let nonempty = chunk.emit_jump(Op::BR_IF_FALSE, line);
     chunk.emit_op(Op::NULL, line);
     let done_empty = chunk.emit_jump(Op::BR, line);
+
     chunk.patch_jump(nonempty);
 
     if last {

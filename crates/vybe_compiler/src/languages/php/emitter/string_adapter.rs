@@ -2651,6 +2651,25 @@ pub fn emit_php_rtrim(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     emit_trim_impl(chunks, current, argc, /*left=*/false, /*right=*/true, line);
 }
 
+pub fn emit_php_iconv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let s_slot = alloc_local(chunk);
+
+    if argc >= 3 {
+        lset(chunk, s_slot, line);
+    } else {
+        push_str(chunk, "", line);
+        lset(chunk, s_slot, line);
+    }
+
+    for _ in 1..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+
+    lget(chunk, s_slot, line);
+    coerce_to_str(chunk, line);
+}
+
 fn emit_trim_impl(chunks: &mut [Chunk], current: usize, argc: u8, left: bool, right: bool, line: u32) {
     let chunk = &mut chunks[current];
     let chars_slot = alloc_local(chunk);

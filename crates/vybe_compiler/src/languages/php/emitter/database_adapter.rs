@@ -374,6 +374,10 @@ fn emit_new_statement(
     }
 
     lget(chunk, stmt_slot, line);
+    lget(chunk, conn_slot, line);
+    struct_set_key(chunk, "__conn", line);
+
+    lget(chunk, stmt_slot, line);
     if let Some(slot) = rows_slot {
         lget(chunk, slot, line);
     } else {
@@ -487,7 +491,7 @@ pub fn emit_php_pdo_rollback(chunks: &mut [Chunk], current: usize, _argc: u8, li
 
 pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    let params_slot = if argc >= 1 { Some(alloc_local(chunk)) } else { None };
+    let params_slot = if argc >= 2 { Some(alloc_local(chunk)) } else { None };
     let stmt_slot = alloc_local(chunk);
     if let Some(slot) = params_slot { lset(chunk, slot, line); }
     lset(chunk, stmt_slot, line);
@@ -513,12 +517,13 @@ pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc
         chunk.patch_jump(jump);
     }
     lget(chunk, stmt_slot, line);
+    lget(chunk, stmt_slot, line);
+    struct_get_key(chunk, "commandtext", line);
     if let Some(slot) = params_slot {
-        chunk.emit_op(Op::NULL, line);
         lget(chunk, slot, line);
         call_import(chunks, current, "vybe:database", "query", 3, line);
     } else {
-        call_import(chunks, current, "vybe:database", "query", 1, line);
+        call_import(chunks, current, "vybe:database", "query", 2, line);
     }
     let rows_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
@@ -534,12 +539,13 @@ pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc
 
     chunk.patch_jump(not_query);
     lget(chunk, stmt_slot, line);
+    lget(chunk, stmt_slot, line);
+    struct_get_key(chunk, "commandtext", line);
     if let Some(slot) = params_slot {
-        chunk.emit_op(Op::NULL, line);
         lget(chunk, slot, line);
         call_import(chunks, current, "vybe:database", "execute", 3, line);
     } else {
-        call_import(chunks, current, "vybe:database", "execute", 1, line);
+        call_import(chunks, current, "vybe:database", "execute", 2, line);
     }
     let count_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
@@ -563,7 +569,7 @@ pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc
 
 pub fn emit_php_pdo_statement_fetch(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    let mode_slot = if argc >= 1 { Some(alloc_local(chunk)) } else { None };
+    let mode_slot = if argc >= 2 { Some(alloc_local(chunk)) } else { None };
     let stmt_slot = alloc_local(chunk);
     if let Some(slot) = mode_slot { lset(chunk, slot, line); }
     lset(chunk, stmt_slot, line);
@@ -617,7 +623,7 @@ pub fn emit_php_pdo_statement_fetch(chunks: &mut [Chunk], current: usize, argc: 
 
 pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    let mode_slot = if argc >= 1 { Some(alloc_local(chunk)) } else { None };
+    let mode_slot = if argc >= 2 { Some(alloc_local(chunk)) } else { None };
     let stmt_slot = alloc_local(chunk);
     if let Some(slot) = mode_slot { lset(chunk, slot, line); }
     lset(chunk, stmt_slot, line);

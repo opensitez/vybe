@@ -442,6 +442,10 @@ fn normalize_mixed_php_source(source: &str) -> String {
     out
 }
 
+pub(crate) fn normalize_source_for_parser(source: &str) -> String {
+    normalize_mixed_php_source(source)
+}
+
 fn split_mixed_php_source(source: &str) -> Vec<MixedPhpSegment<'_>> {
     let mut segments = Vec::new();
     let mut cursor = 0usize;

@@ -227,6 +227,22 @@ pub fn emit_php_phpversion(chunks: &mut [Chunk], current: usize, argc: u8, line:
     push_str(chunk, "8.0.0", line);
 }
 
+pub fn emit_php_spl_autoload_register(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 0..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+    chunk.emit_op(Op::TRUE, line);
+}
+
+pub fn emit_php_spl_autoload_unregister(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 0..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+    chunk.emit_op(Op::TRUE, line);
+}
+
 pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let set_cookie_import = chunks[0].add_import("node:http".to_string(), "set_cookie".to_string());
     let chunk = &mut chunks[current];
@@ -945,11 +961,38 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     push_str(chunk, "array", line);
     chunk.emit_op(Op::DYN_EQ, line);
     let not_array = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
     lget(chunk, value_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
+    let base_len_slot = alloc_local(chunk);
+    let extra_len_slot = alloc_local(chunk);
+    lset(chunk, base_len_slot, line);
+
+    lget(chunk, value_slot, line);
+    let assoc_key = chunk.add_constant(Value::String(Arc::from("vybe$assoc_keys_csv")));
+    chunk.emit_op_u16(Op::STRUCT_GET, assoc_key, line);
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    let no_assoc_keys = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    push_str(chunk, "\x1F", line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:string", "split", 2, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, extra_len_slot, line);
+    lget(chunk, base_len_slot, line);
+    lget(chunk, extra_len_slot, line);
+    chunk.emit_op(Op::DYN_ADD, line);
     chunk.emit_op(Op::I32_CONST_0, line);
     chunk.emit_op(Op::DYN_EQ, line);
     let done_array = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(no_assoc_keys);
+    chunk.emit_op(Op::DROP, line);
+    lget(chunk, base_len_slot, line);
+    chunk.emit_op(Op::I32_CONST_0, line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let done_array_no_keys = chunk.emit_jump(Op::BR, line);
     chunk.patch_jump(not_array);
 
     chunk.emit_op(Op::FALSE, line);
@@ -961,6 +1004,7 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     chunk.patch_jump(done_string);
     chunk.patch_jump(done_string_empty);
     chunk.patch_jump(done_array);
+    chunk.patch_jump(done_array_no_keys);
 }
 
 pub fn emit_php_serialize(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {

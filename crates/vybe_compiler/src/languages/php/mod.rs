@@ -19,6 +19,10 @@ pub fn parse(source: &str) -> Result<crate::ast::Module, String> {
     walker::parse(source)
 }
 
+pub(crate) fn normalize_source_for_parser(source: &str) -> String {
+    walker::normalize_source_for_parser(source)
+}
+
 /// Embedded TOML profile source.
 pub fn profile_source() -> &'static str {
     include_str!("profile")

@@ -242,10 +242,188 @@ pub fn emit_file(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunk.emit_op(Op::DROP, line);
     }
     let _ = chunk;
-    call_import(chunks, current, "wasi:filesystem", "readFile", 1, line);
+    let chunk = &mut chunks[current];
+    push_str(chunk, "utf8", line);
+    let _ = chunk;
+    call_import(chunks, current, "node:fs", "readFileSync", 2, line);
     let chunk = &mut chunks[current];
     push_str(chunk, "\n", line);
     chunk.emit_op(Op::STR_SPLIT, line);
+}
+
+/// PHP `glob($pattern, $flags = 0)` — current support covers the common
+/// single-`*` filename wildcard form by listing the directory and
+/// filtering entries with prefix/suffix checks. Returns matching full paths.
+pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 1..argc {
+        chunk.emit_op(Op::DROP, line);
+    }
+
+    let pattern_slot = alloc_local(chunk);
+    let dir_slot = alloc_local(chunk);
+    let file_pattern_slot = alloc_local(chunk);
+    let result_slot = alloc_local(chunk);
+    lset(chunk, pattern_slot, line);
+
+    lget(chunk, pattern_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "wasi:filesystem", "pathGetDirectory", 1, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, dir_slot, line);
+
+    lget(chunk, pattern_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "wasi:filesystem", "pathGetFileName", 1, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, file_pattern_slot, line);
+
+    lget(chunk, file_pattern_slot, line);
+    push_str(chunk, "*", line);
+    chunk.emit_op(Op::STR_CONTAINS, line);
+    let no_wildcard = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    let parts_slot = alloc_local(chunk);
+    let parts_len_slot = alloc_local(chunk);
+    let last_part_idx_slot = alloc_local(chunk);
+    let prefix_slot = alloc_local(chunk);
+    let suffix_slot = alloc_local(chunk);
+    let entries_slot = alloc_local(chunk);
+    let entries_len_slot = alloc_local(chunk);
+    let index_slot = alloc_local(chunk);
+    let entry_slot = alloc_local(chunk);
+    let full_path_slot = alloc_local(chunk);
+
+    lget(chunk, file_pattern_slot, line);
+    push_str(chunk, "*", line);
+    chunk.emit_op(Op::STR_SPLIT, line);
+    lset(chunk, parts_slot, line);
+
+    lget(chunk, parts_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, parts_len_slot, line);
+
+    lget(chunk, parts_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    lset(chunk, prefix_slot, line);
+
+    lget(chunk, parts_len_slot, line);
+    push_const(chunk, Value::F64(-1.0), line);
+    chunk.emit_op(Op::DYN_ADD, line);
+    lset(chunk, last_part_idx_slot, line);
+
+    lget(chunk, parts_slot, line);
+    lget(chunk, last_part_idx_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    lset(chunk, suffix_slot, line);
+
+    lget(chunk, dir_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "wasi:filesystem", "listDir", 1, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, entries_slot, line);
+
+    lget(chunk, entries_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, entries_len_slot, line);
+
+    crate::emitter::collections::emit_array_new(chunks, current, 0, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, result_slot, line);
+
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, index_slot, line);
+
+    let loop_top = chunk.code.len();
+    lget(chunk, index_slot, line);
+    lget(chunk, entries_len_slot, line);
+    chunk.emit_op(Op::DYN_LT, line);
+    let loop_done = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    lget(chunk, entries_slot, line);
+    lget(chunk, index_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    lset(chunk, entry_slot, line);
+
+    lget(chunk, prefix_slot, line);
+    push_str(chunk, "", line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let skip_prefix_check = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    lget(chunk, entry_slot, line);
+    lget(chunk, prefix_slot, line);
+    chunk.emit_op(Op::STR_STARTS_WITH, line);
+    let next_after_prefix = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.patch_jump(skip_prefix_check);
+
+    lget(chunk, suffix_slot, line);
+    push_str(chunk, "", line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let skip_suffix_check = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    lget(chunk, entry_slot, line);
+    lget(chunk, suffix_slot, line);
+    chunk.emit_op(Op::STR_ENDS_WITH, line);
+    let next_after_suffix = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.patch_jump(skip_suffix_check);
+
+    lget(chunk, dir_slot, line);
+    push_str(chunk, "/", line);
+    chunk.emit_op(Op::STR_CONCAT, line);
+    lget(chunk, entry_slot, line);
+    chunk.emit_op(Op::STR_CONCAT, line);
+    lset(chunk, full_path_slot, line);
+
+    lget(chunk, full_path_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "wasi:filesystem", "isFile", 1, line);
+    let chunk = &mut chunks[current];
+    let next_after_file_check = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    lget(chunk, result_slot, line);
+    lget(chunk, full_path_slot, line);
+    let _ = chunk;
+    crate::emitter::collections::emit_push(chunks, current, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.patch_jump(next_after_prefix);
+    chunk.patch_jump(next_after_suffix);
+    chunk.patch_jump(next_after_file_check);
+    lget(chunk, index_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::DYN_ADD, line);
+    lset(chunk, index_slot, line);
+    chunk.emit_loop(loop_top, line);
+    chunk.patch_jump(loop_done);
+
+    let wildcard_done = chunk.emit_jump(Op::BR, line);
+    chunk.patch_jump(no_wildcard);
+
+    lget(chunk, pattern_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "wasi:filesystem", "exists", 1, line);
+    let chunk = &mut chunks[current];
+    let exact_missing = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    crate::emitter::collections::emit_array_new(chunks, current, 0, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, result_slot, line);
+    lget(chunk, result_slot, line);
+    lget(chunk, pattern_slot, line);
+    let _ = chunk;
+    crate::emitter::collections::emit_push(chunks, current, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::DROP, line);
+    let exact_done = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(exact_missing);
+    crate::emitter::collections::emit_array_new(chunks, current, 0, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, result_slot, line);
+    chunk.patch_jump(exact_done);
+
+    chunk.patch_jump(wildcard_done);
+    lget(chunk, result_slot, line);
 }
 
 /// PHP `dir($path)` — materialize directory entries and return an
