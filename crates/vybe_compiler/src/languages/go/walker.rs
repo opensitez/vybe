@@ -1102,10 +1102,14 @@ fn go_single_named_binding_pattern(pattern: &BindingPattern) -> Option<BindingPa
         return None;
     };
 
+    if elements.len() != 1 {
+        return None;
+    }
+
     let mut bound_name = None;
     for element in elements {
         match element {
-            ArrayPatternElem::Hole => {}
+            ArrayPatternElem::Hole => return None,
             ArrayPatternElem::Pattern(BindingPattern::Ident(name), None) => {
                 if bound_name.is_some() {
                     return None;
@@ -1359,20 +1363,33 @@ fn walk_parameter_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
         if inner.as_rule() == Rule::parameter_decl {
             let mut names = Vec::new();
             let mut type_hint: Option<String> = None;
+            let mut is_rest = false;
 
             for p_inner in inner.into_inner() {
                 match p_inner.as_rule() {
                     Rule::ident_name => names.push(p_inner.as_str().to_string()),
                     Rule::ident_list => {
                         for id in p_inner.into_inner() {
-                            if id.as_rule() == Rule::ident_name {
+                            if matches!(id.as_rule(), Rule::ident_name | Rule::blank_ident) {
                                 names.push(id.as_str().to_string());
                             }
                         }
                     }
                     Rule::type_annotation => type_hint = Some(walk_type(p_inner)),
+                    Rule::variadic_parameter_type => {
+                        is_rest = true;
+                        for v_inner in p_inner.into_inner() {
+                            if v_inner.as_rule() == Rule::type_annotation {
+                                type_hint = Some(walk_type(v_inner));
+                            }
+                        }
+                    }
                     _ => {}
                 }
+            }
+
+            if names.is_empty() && type_hint.is_some() {
+                names.push(format!("__go_param_{}", params.len()));
             }
 
             for name in names {
@@ -1381,7 +1398,7 @@ fn walk_parameter_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                     type_hint: type_hint.clone(),
                     default: None,
                     pass_by: PassBy::Value,
-                    is_rest: false,
+                    is_rest,
                     is_kwargs: false,
                     is_optional: false,
                     is_nullable: false,
@@ -1484,7 +1501,7 @@ fn walk_var_spec(pair: Pair<Rule>, _kind: VarDeclKind) -> Result<(Vec<VarDeclara
         match inner.as_rule() {
             Rule::ident_list => {
                 for id in inner.into_inner() {
-                    if id.as_rule() == Rule::ident_name {
+                    if matches!(id.as_rule(), Rule::ident_name | Rule::blank_ident) || id.as_str() == "_" {
                         names.push(id.as_str().to_string());
                     }
                 }
@@ -1604,7 +1621,7 @@ fn walk_struct_type(name: String, pair: Pair<Rule>) -> Result<Statement, String>
                 match f_inner.as_rule() {
                     Rule::ident_list => {
                         for id in f_inner.into_inner() {
-                            if id.as_rule() == Rule::ident_name {
+                            if matches!(id.as_rule(), Rule::ident_name | Rule::blank_ident) {
                                 field_names.push(id.as_str().to_string());
                             }
                         }
@@ -1857,7 +1874,7 @@ fn walk_short_var_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         match inner.as_rule() {
             Rule::ident_list => {
                 for id in inner.into_inner() {
-                    if id.as_rule() == Rule::ident_name {
+                    if matches!(id.as_rule(), Rule::ident_name | Rule::blank_ident) {
                         names.push(id.as_str().to_string());
                     }
                 }
@@ -2292,7 +2309,7 @@ fn walk_select_comm_clause(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                     match part.as_rule() {
                         Rule::ident_list => {
                             for id in part.into_inner() {
-                                if id.as_rule() == Rule::ident_name {
+                                if matches!(id.as_rule(), Rule::ident_name | Rule::blank_ident) {
                                     names.push(id.as_str().to_string());
                                 }
                             }
@@ -2497,7 +2514,7 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         }
                         Rule::ident_list => {
                             for id in rc_inner.into_inner() {
-                                if id.as_rule() == Rule::ident_name {
+                                if matches!(id.as_rule(), Rule::ident_name | Rule::blank_ident) {
                                     range_vars.push(BindingPattern::Ident(id.as_str().to_string()));
                                 }
                             }

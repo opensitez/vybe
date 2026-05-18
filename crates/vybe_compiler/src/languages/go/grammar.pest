@@ -59,7 +59,8 @@ var_spec = {
     ident_list ~ type_annotation? ~ ("=" ~ expression_list)? ~ ";"?
 }
 
-ident_list = { ident_name ~ ("," ~ ident_name)* }
+blank_ident = { "_" }
+ident_list = { (ident_name | blank_ident) ~ ("," ~ (ident_name | blank_ident))* }
 expression_list = { expression ~ ("," ~ expression)* }
 
 // ── Constant declarations ───────────────────────────────────────────────────
@@ -111,8 +112,12 @@ result = {
 
 parameter_list = { parameter_decl ~ ("," ~ parameter_decl)* ~ ","? }
 
+variadic_parameter_type = { "..." ~ type_annotation }
+
 parameter_decl = {
-    ident_list ~ type_annotation
+    ident_list ~ variadic_parameter_type
+    | ident_list ~ type_annotation
+    | variadic_parameter_type
     | type_annotation
 }
 
