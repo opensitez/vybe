@@ -426,7 +426,7 @@ literal_value = { "{" ~ element_list? ~ "}" }
 element_list = { keyed_element ~ ("," ~ keyed_element)* ~ ","? }
 
 keyed_element = {
-    (string_literal | numeric_literal | ident_name) ~ ":" ~ element
+    (string_literal | numeric_literal | bool_literal | ident_name) ~ ":" ~ element
     | element
 }
 

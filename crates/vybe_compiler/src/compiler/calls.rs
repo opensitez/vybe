@@ -1173,6 +1173,37 @@ impl Compiler {
     // Call compilation
     // ════════════════════════════════════════════════════════════════════════
 
+    fn try_compile_go_map_has_call(&mut self, callee: &Expression, args: &[Argument]) -> Result<bool, String> {
+        if self.profile.name != "go" || args.len() != 2 {
+            return Ok(false);
+        }
+        let ExprKind::Ident(name) = &callee.kind else {
+            return Ok(false);
+        };
+        if name != "__go_map_has" {
+            return Ok(false);
+        }
+
+        self.compile_expr(&args[0].value)?;
+        let map_slot = self.define_local("__go_map_has_obj");
+        self.emit_u16(Op::LOCAL_SET, map_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, map_slot);
+        self.emit(Op::REF_IS_NULL);
+        let non_null = self.emit_jump(Op::BR_IF_FALSE);
+        self.emit(Op::FALSE);
+        let end = self.emit_jump(Op::BR);
+
+        self.patch_jump(non_null);
+        self.emit_u16(Op::LOCAL_GET, map_slot);
+        self.compile_expr(&args[1].value)?;
+        let line = self.line;
+        common::dict::emit_method_has(&mut self.chunks, self.current, line);
+        self.patch_jump(end);
+        Ok(true)
+    }
+
     pub(super) fn compile_call(&mut self, callee: &Expression, args: &[Argument]) -> Result<(), String> {
         let reordered_args;
         let args = if args.iter().any(|arg| arg.name.is_some()) {
@@ -1182,6 +1213,10 @@ impl Compiler {
             args
         };
         let arg_exprs: Vec<&Expression> = args.iter().map(|a| &a.value).collect();
+
+        if self.try_compile_go_map_has_call(callee, args)? {
+            return Ok(());
+        }
 
         if let ExprKind::Member { object, field, null_safe } = &callee.kind {
             if let Some(text) = self.resolve_reflection_string_member_expr(object) {

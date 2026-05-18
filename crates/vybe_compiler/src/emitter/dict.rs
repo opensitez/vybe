@@ -150,9 +150,49 @@ pub fn emit_method_get(chunks: &mut [Chunk], current: usize, line: u32) {
 /// map.has(key) / key in dict — check if key exists.
 /// Stack before: [dict, key]  Stack after: [bool]
 pub fn emit_method_has(chunks: &mut [Chunk], current: usize, line: u32) {
+    let dict_slot = chunks[current].local_count;
+    let key_slot = dict_slot + 1;
+    let has_slot = key_slot + 1;
+    chunks[current].local_count += 3;
+    let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, dict_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
+    chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
+    chunks[current].emit_op(Op::DUP, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    let no_keys = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    crate::emitter::collections::emit_contains(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, has_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, has_slot, line);
+    let key_found = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     crate::emitter::collections::emit_get(chunks, current, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::DYN_NOT, line);
+    let end = chunks[current].emit_jump(Op::BR, line);
+
+    chunks[current].patch_jump(no_keys);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    crate::emitter::collections::emit_get(chunks, current, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::DYN_NOT, line);
+    let no_keys_end = chunks[current].emit_jump(Op::BR, line);
+
+    chunks[current].patch_jump(key_found);
+    chunks[current].emit_op(Op::TRUE, line);
+    chunks[current].patch_jump(end);
+    chunks[current].patch_jump(no_keys_end);
 }
 
 /// map.delete(key) / del dict[key] — remove a key.

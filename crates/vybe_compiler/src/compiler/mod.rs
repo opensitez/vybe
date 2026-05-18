@@ -7058,6 +7058,47 @@ impl Compiler {
                         self.patch_jump(end);
                         return Ok(());
                     } else {
+                    if self.profile.name == "go" {
+                        let go_map_type = match &object.kind {
+                            ExprKind::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
+                            _ => self.infer_expr_type_hint(object),
+                        };
+                        if go_map_type.as_deref().is_some_and(|type_hint| type_hint.trim().starts_with("map[")) {
+                            let key_tmp = self.define_local("__go_idx_key");
+                            let obj_tmp = self.define_local("__go_idx_obj");
+                            self.emit_u16(Op::LOCAL_SET, key_tmp); self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            let keys_key = self.str_const("__keys");
+                            self.emit_u16(Op::STRUCT_GET, keys_key);
+                            self.emit(Op::DUP);
+                            self.emit(Op::REF_IS_NULL);
+                            let no_keys = self.emit_jump(Op::BR_IF_TRUE);
+                            self.emit_u16(Op::LOCAL_GET, key_tmp);
+                            common::collections::emit_index_of(&mut self.chunks, self.current, line);
+                            self.emit(Op::I32_CONST_0);
+                            self.emit(Op::DYN_LT);
+                            let key_exists = self.emit_jump(Op::BR_IF_FALSE);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::STRUCT_GET, keys_key);
+                            self.emit_u16(Op::LOCAL_GET, key_tmp);
+                            common::collections::emit_push(&mut self.chunks, self.current, line);
+                            self.emit(Op::DROP);
+                            self.patch_jump(key_exists);
+                            let after_track = self.emit_jump(Op::BR);
+                            self.patch_jump(no_keys);
+                            self.emit(Op::DROP);
+                            self.patch_jump(after_track);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::LOCAL_GET, key_tmp);
+                            self.emit_u16(Op::LOCAL_GET, tmp);
+                            common::collections::emit_set(&mut self.chunks, self.current, line);
+                            self.emit(Op::DROP);
+                            return Ok(());
+                        }
+                    }
                     // JS profile: track insertion order via the
                     // `__keys` side channel so `Object.keys` /
                     // `Object.entries` / `Object.values` see the

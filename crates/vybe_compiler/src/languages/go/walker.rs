@@ -312,7 +312,14 @@ fn normalize_go_statement(
                 next_decl.init = decl
                     .init
                     .as_ref()
-                    .map(|expr| normalize_go_expr(expr, env, signatures, state));
+                    .map(|expr| {
+                        if go_is_two_value_binding_pattern(&decl.pattern) {
+                            if let Some(tuple_expr) = go_normalize_map_lookup_tuple_expr(expr, env, signatures, state) {
+                                return tuple_expr;
+                            }
+                        }
+                        normalize_go_expr(expr, env, signatures, state)
+                    });
                 next_decl.array_bounds = decl
                     .array_bounds
                     .as_ref()
@@ -368,13 +375,13 @@ fn normalize_go_statement(
             vec![Statement::new(StmtKind::Assign {
                 targets: targets
                     .iter()
-                    .map(|target| normalize_go_expr(target, env, signatures, state))
+                    .map(|target| normalize_go_lvalue_expr(target, env, signatures, state))
                     .collect(),
                 value: next_value,
             })]
         }
         StmtKind::CompoundAssign { target, op, value } => vec![Statement::new(StmtKind::CompoundAssign {
-            target: normalize_go_expr(target, env, signatures, state),
+            target: normalize_go_lvalue_expr(target, env, signatures, state),
             op: *op,
             value: normalize_go_expr(value, env, signatures, state),
         })],
@@ -623,6 +630,13 @@ fn normalize_go_expr(
                 })
             }
         }
+        ExprKind::Unary { op: UnaryOp::Deref, expr }
+            if go_map_index_value_type(expr, env, signatures)
+                .as_deref()
+                .is_some_and(|type_name| type_name.trim_start().starts_with('*')) =>
+        {
+            normalize_go_expr(expr, env, signatures, state)
+        }
         ExprKind::Unary { op, expr } => Expression::new(ExprKind::Unary {
             op: *op,
             expr: Box::new(normalize_go_expr(expr, env, signatures, state)),
@@ -650,6 +664,10 @@ fn normalize_go_expr(
             let next_index = normalize_go_expr(index, env, signatures, state);
             if go_expr_type_hint(&next_object, env, signatures).as_deref() == Some("string") {
                 go_member_call(next_object, "charCodeAt", vec![next_index])
+            } else if let Some(value_type) = go_expr_type_hint(&next_object, env, signatures)
+                .and_then(|type_name| go_map_value_type(&type_name))
+            {
+                go_build_map_read_expr(next_object, next_index, &value_type)
             } else {
                 Expression::new(ExprKind::Index {
                     object: Box::new(next_object),
@@ -659,7 +677,7 @@ fn normalize_go_expr(
             }
         }
         ExprKind::Assign { target, value } => Expression::new(ExprKind::Assign {
-            target: Box::new(normalize_go_expr(target, env, signatures, state)),
+            target: Box::new(normalize_go_lvalue_expr(target, env, signatures, state)),
             value: Box::new(normalize_go_expr(value, env, signatures, state)),
         }),
         ExprKind::Call {
@@ -1080,6 +1098,75 @@ fn go_builtin_call(name: &str, args: Vec<Expression>) -> Expression {
     })
 }
 
+fn normalize_go_lvalue_expr(
+    expr: &Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+    state: &mut GoNormalizeState,
+) -> Expression {
+    match &expr.kind {
+        ExprKind::Index { object, index, null_safe } => Expression::new(ExprKind::Index {
+            object: Box::new(normalize_go_expr(object, env, signatures, state)),
+            index: Box::new(normalize_go_expr(index, env, signatures, state)),
+            null_safe: *null_safe,
+        }),
+        ExprKind::Assign { target, value } => Expression::new(ExprKind::Assign {
+            target: Box::new(normalize_go_lvalue_expr(target, env, signatures, state)),
+            value: Box::new(normalize_go_expr(value, env, signatures, state)),
+        }),
+        _ => normalize_go_expr(expr, env, signatures, state),
+    }
+}
+
+fn go_is_two_value_binding_pattern(pattern: &BindingPattern) -> bool {
+    matches!(pattern, BindingPattern::Array(elems) if elems.len() == 2)
+}
+
+fn go_normalize_map_lookup_tuple_expr(
+    expr: &Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+    state: &mut GoNormalizeState,
+) -> Option<Expression> {
+    let ExprKind::Index { object, index, .. } = &expr.kind else {
+        return None;
+    };
+    let value_type = go_map_index_value_type(expr, env, signatures)?;
+    let next_object = normalize_go_expr(object, env, signatures, state);
+    let next_index = normalize_go_expr(index, env, signatures, state);
+    Some(Expression::new(ExprKind::Tuple(vec![
+        go_build_map_read_expr(next_object.clone(), next_index.clone(), &value_type),
+        go_map_has_expr(next_object, next_index),
+    ])))
+}
+
+fn go_map_has_expr(object: Expression, index: Expression) -> Expression {
+    go_builtin_call("__go_map_has", vec![object, index])
+}
+
+fn go_map_index_value_type(
+    expr: &Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<String> {
+    let ExprKind::Index { object, .. } = &expr.kind else {
+        return None;
+    };
+    go_expr_type_hint(object, env, signatures).and_then(|type_name| go_map_value_type(&type_name))
+}
+
+fn go_build_map_read_expr(object: Expression, index: Expression, value_type: &str) -> Expression {
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(go_map_has_expr(object.clone(), index.clone())),
+        then: Box::new(Expression::new(ExprKind::Index {
+            object: Box::new(object),
+            index: Box::new(index),
+            null_safe: false,
+        })),
+        else_: Box::new(go_zero_value_expr(value_type)),
+    })
+}
+
 fn go_member_call(object: Expression, field: &str, args: Vec<Expression>) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
@@ -1132,7 +1219,7 @@ fn go_expr_type_hint(
                 if type_name == "string" {
                     Some("byte".to_string())
                 } else {
-                    go_array_element_type(&type_name)
+                    go_array_element_type(&type_name).or_else(|| go_map_value_type(&type_name))
                 }
             }),
         ExprKind::Assign { value, .. } => go_expr_type_hint(value, env, signatures),
@@ -1173,6 +1260,7 @@ fn go_expr_type_hint(
             }
             ExprKind::Ident(name) if name == "__go_fixed_array_equal" => Some("bool".to_string()),
             ExprKind::Ident(name) if name == "__go_regex_split_pat_first" => Some("[]string".to_string()),
+            ExprKind::Ident(name) if name == "__go_map_has" => Some("bool".to_string()),
             ExprKind::Ident(name) if name == "__go_to_int" => Some("int".to_string()),
             ExprKind::Ident(name) if name == "__go_str_from_char_code" => Some("string".to_string()),
             ExprKind::Ident(name) if name == "__go_type_assert" => {
@@ -3155,14 +3243,8 @@ fn walk_composite_literal(pair: Pair<Rule>) -> Result<Expression, String> {
         // Build a dict/object literal
         let mut props = Vec::new();
         for (key, val) in elements {
-            let key_str = match &key.kind {
-                ExprKind::Lit(Literal::Str(s)) => s.clone(),
-                ExprKind::Ident(s) => s.clone(),
-                ExprKind::Lit(Literal::Int(n)) => n.to_string(),
-                _ => format!("{:?}", key),
-            };
             props.push(ObjectProperty::KeyValue {
-                key: Expression::new(ExprKind::Lit(Literal::Str(key_str))),
+                key,
                 value: val,
             });
         }
@@ -3282,6 +3364,29 @@ fn go_zero_value_expr(type_name: &str) -> Expression {
     }
 }
 
+fn go_map_value_type(type_name: &str) -> Option<String> {
+    let trimmed = type_name.trim();
+    if !trimmed.starts_with("map[") {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    for (idx, ch) in trimmed.char_indices() {
+        match ch {
+            '[' => depth += 1,
+            ']' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    let tail = trimmed.get(idx + 1..)?.trim();
+                    return (!tail.is_empty()).then(|| tail.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn walk_element_list(pair: Pair<Rule>) -> Result<Vec<(Expression, Expression)>, String> {
     let mut elements = Vec::new();
     for inner in pair.into_inner() {
@@ -3311,6 +3416,7 @@ fn go_keyed_element_key(pair: Pair<Rule>) -> Result<Expression, String> {
     match pair.as_rule() {
         Rule::ident_name => Ok(Expression::new(ExprKind::Ident(pair.as_str().to_string()))),
         Rule::string_literal => Ok(Expression::new(ExprKind::Lit(Literal::Str(unquote(pair.as_str()))))),
+        Rule::bool_literal => Ok(Expression::new(ExprKind::Lit(Literal::Bool(pair.as_str() == "true")))),
         Rule::numeric_literal => {
             let literal = pair.as_str().replace('_', "");
             if let Ok(n) = literal.parse::<i64>() {
@@ -3340,6 +3446,7 @@ fn go_keyed_element_value(pair: Pair<Rule>) -> Result<Expression, String> {
         Rule::literal_value => walk_literal_value_expr(pair),
         Rule::ident_name => Ok(Expression::new(ExprKind::Ident(pair.as_str().to_string()))),
         Rule::string_literal => Ok(Expression::new(ExprKind::Lit(Literal::Str(unquote(pair.as_str()))))),
+        Rule::bool_literal => Ok(Expression::new(ExprKind::Lit(Literal::Bool(pair.as_str() == "true")))),
         Rule::numeric_literal => go_keyed_element_key(pair),
         _ => Ok(Expression::new(ExprKind::Lit(Literal::Null))),
     }
