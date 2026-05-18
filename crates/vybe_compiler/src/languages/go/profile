@@ -1,7 +1,8 @@
 # Go Compiler Profile
 # ───────────────────
 # Covers Go core: packages, functions, structs, interfaces, slices, maps,
-# methods, control flow. Goroutines/channels are parsed but compile to no-op.
+# methods, control flow. Goroutines lower to the shared thread/task emitter;
+# channel/select support is compile-oriented in the frontend.
 
 [info]
 name = "go"
@@ -22,6 +23,8 @@ dynamic_add = true
 # ────────────────────────────────────────────────────────────────────────────
 
 [builtins]
+
+"__go_spawn"    = { emit = "common:threading.task_run",      min_args = 1, max_args = 1 }
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 

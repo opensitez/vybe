@@ -128,6 +128,7 @@ statement = {
     | block_statement
     | if_statement
     | switch_statement
+    | select_statement
     | for_statement
     | return_statement
     | break_statement
@@ -214,6 +215,36 @@ expr_case_clause = {
 expr_switch_case = {
     "case" ~ expression_list
     | kw_default
+}
+
+select_statement = {
+    "select" ~ "{" ~ select_clause* ~ "}"
+}
+
+select_clause = {
+    select_case_clause
+    | select_default_clause
+}
+
+select_case_clause = {
+    "case" ~ select_comm_clause ~ ":" ~ statement_list?
+}
+
+select_default_clause = {
+    "default" ~ ":" ~ statement_list?
+}
+
+select_comm_clause = {
+    select_send_clause
+    | select_receive_clause
+}
+
+select_send_clause = {
+    expression ~ "<-" ~ expression
+}
+
+select_receive_clause = {
+    (ident_list ~ ":=")? ~ expression
 }
 
 kw_default = @{ "default" ~ !(ASCII_ALPHANUMERIC | "_") }
@@ -353,7 +384,7 @@ three_index_slice = { "[" ~ expression? ~ ":" ~ expression ~ ":" ~ expression ~ 
 type_assertion = { "." ~ "(" ~ type_annotation ~ ")" }
 call           = { "(" ~ argument_list? ~ ")" }
 argument_list  = { argument ~ ("," ~ argument)* ~ ","? }
-argument       = { expression ~ "..."? }
+argument       = { (expression | type_annotation) ~ "..."? }
 
 // ── Literals ────────────────────────────────────────────────────────────────
 
