@@ -119,6 +119,10 @@ async fn handle(
         body_bytes,
         remote,
         Some(path.to_string_lossy().as_ref()),
+        path.strip_prefix(&config.root)
+            .ok()
+            .map(|rel| format!("/{}", rel.to_string_lossy().replace('\\', "/")))
+            .as_deref(),
         &config.root,
         local_addr,
         scheme,

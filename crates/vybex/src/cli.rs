@@ -167,6 +167,7 @@ pub fn run() {
     // [BIND] [ROOT] instead of a single script path.
     let mut serve = false;
     let mut serve_no_sandbox = false;
+    let mut serve_bind: Option<String> = None;
     let mut serve_positional: Vec<String> = Vec::new();
 
     let mut iter = args[1..].iter();
@@ -200,6 +201,13 @@ pub fn run() {
             "--portable" | "-p" => portable = true,
             "--trace" | "-t" => trace = true,
             "--serve" => serve = true,
+            "--bind" => {
+                let Some(bind) = iter.next() else {
+                    eprintln!("Missing value for --bind");
+                    std::process::exit(1);
+                };
+                serve_bind = Some(bind.clone());
+            }
             "--no-sandbox" => serve_no_sandbox = true,
             "--chunk" => {
                 let Some(name) = iter.next() else {
@@ -232,6 +240,9 @@ pub fn run() {
             } else {
                 config.root = std::path::PathBuf::from(p);
             }
+        }
+        if let Some(bind) = serve_bind {
+            config.bind = bind;
         }
         crate::server::serve_directory(config);
     }
@@ -491,7 +502,7 @@ fn print_usage() {
     eprintln!();
     eprintln!("Usage: vybex [flags] <file>");
     eprintln!("       vybex --eval CODE --lang NAME [--virtual-path PATH]");
-    eprintln!("       vybex --serve [BIND] [ROOT]");
+    eprintln!("       vybex --serve [--bind BIND] [BIND] [ROOT]");
     eprintln!();
     eprintln!("Flags:");
     eprintln!("  -d, --dump        Disassemble bytecode (no run)");
@@ -505,6 +516,7 @@ fn print_usage() {
     eprintln!("  -t, --trace       Enable bytecode trace output");
     eprintln!("      --chunk NAME  Limit --dump/--trace output to a chunk name or index");
     eprintln!("      --serve       Start HTTP server for a directory (see httpserver.md)");
+    eprintln!("      --bind ADDR   With --serve: bind to ADDR instead of 127.0.0.1:8080");
     eprintln!("                    BIND defaults to 127.0.0.1:8080, ROOT to current dir");
     eprintln!("      --no-sandbox  With --serve: keep full host access (default)");
     eprintln!("  -h, --help        Show this help");

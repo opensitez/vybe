@@ -585,6 +585,7 @@ mod tests {
             Bytes::from(body.to_vec()),
             remote,
             Some("/tmp/index.php"),
+            Some("/index.php"),
             Path::new("/tmp"),
             local,
             "http",
@@ -656,11 +657,51 @@ mod tests {
 
         let server = map_entries(vm.globals.get("$_SERVER").expect("$_SERVER"));
         assert_eq!(value_as_string(map_value(&server, "PHP_SELF")), "/index.php");
+    assert_eq!(value_as_string(map_value(&server, "SCRIPT_NAME")), "/index.php");
+    assert_eq!(value_as_string(map_value(&server, "SCRIPT_FILENAME")), "/tmp/index.php");
+    assert_eq!(value_as_string(map_value(&server, "PATH_TRANSLATED")), "/tmp/index.php");
+    assert_eq!(value_as_string(map_value(&server, "DOCUMENT_URI")), "/index.php");
+    assert_eq!(value_as_string(map_value(&server, "SCRIPT_URL")), "/index.php");
+    assert_eq!(value_as_string(map_value(&server, "SCRIPT_URI")), "http://localhost:8080/index.php?foo=bar");
+    assert_eq!(value_as_string(map_value(&server, "HTTP_HOST")), "localhost:8080");
+    assert_eq!(value_as_string(map_value(&server, "REQUEST_SCHEME")), "http");
+    assert_eq!(value_as_string(map_value(&server, "SERVER_ADDR")), "127.0.0.1");
+    assert_eq!(value_as_string(map_value(&server, "REMOTE_HOST")), "127.0.0.1");
         assert!(!value_as_string(map_value(&server, "REQUEST_TIME")).is_empty());
         assert!(!value_as_string(map_value(&server, "REQUEST_TIME_FLOAT")).is_empty());
 
         let env = map_entries(vm.globals.get("$_ENV").expect("$_ENV"));
         assert!(env.contains_key("HOME") || env.contains_key("PATH"));
+    }
+
+    #[test]
+    fn inject_superglobals_uses_resolved_script_name_for_directory_indexes() {
+        let req = Request::builder()
+            .method("GET")
+            .uri("http://localhost:8080/genie/")
+            .header("Host", "localhost:8080")
+            .body(())
+            .expect("build request");
+        let local = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8080));
+        let remote = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 54321));
+        let built = crate::server::request_context::build(
+            &req,
+            Bytes::new(),
+            remote,
+            Some("/tmp/genie/index.php"),
+            Some("/genie/index.php"),
+            Path::new("/tmp"),
+            local,
+            "http",
+        );
+
+        let mut vm = VM::new();
+        inject_superglobals(&mut vm, &built.ctx);
+
+        let server = map_entries(vm.globals.get("$_SERVER").expect("$_SERVER"));
+        assert_eq!(value_as_string(map_value(&server, "REQUEST_URI")), "http://localhost:8080/genie/");
+        assert_eq!(value_as_string(map_value(&server, "SCRIPT_NAME")), "/genie/index.php");
+        assert_eq!(value_as_string(map_value(&server, "PHP_SELF")), "/genie/index.php");
     }
 
     #[test]

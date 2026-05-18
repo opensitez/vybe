@@ -407,7 +407,12 @@ impl PhpIncludeRuntime {
             .last()
             .cloned()
             .ok_or_else(|| "dynamic PHP include has no active caller path".to_string())?;
-        let resolved_path = resolve_php_include_path(&caller, &target);
+        let entry = self
+            .current_paths
+            .first()
+            .cloned()
+            .ok_or_else(|| "dynamic PHP include has no active entry path".to_string())?;
+        let resolved_path = resolve_php_include_path(&entry, &caller, &target);
         let canonical_path = resolved_path.canonicalize().unwrap_or_else(|_| resolved_path.clone());
 
         if matches!(kind.as_str(), "include_once" | "require_once")
@@ -423,7 +428,7 @@ impl PhpIncludeRuntime {
 
         let language = languages::find_by_name("php").ok_or_else(|| "php language profile missing".to_string())?;
         let bundle = bundle_from_source(source, language, resolved_path.clone());
-        let mut compiled = self.compile_dynamic_php(vm, &bundle)?;
+        let mut compiled = self.compile_dynamic_php(vm, &bundle, &entry)?;
 
         let base_chunk_index = vm.chunks.len();
         crate::host_imports::install(vm, &compiled.host_imports);
@@ -469,8 +474,16 @@ impl PhpIncludeRuntime {
         }
     }
 
-    fn compile_dynamic_php(&self, vm: &VM, bundle: &Bundle) -> Result<DynamicCompilation, String> {
-        let compiled = bundle.compile_full_with_modules(&vm.modules)?;
+    fn compile_dynamic_php(
+        &self,
+        vm: &VM,
+        bundle: &Bundle,
+        entry_path: &Path,
+    ) -> Result<DynamicCompilation, String> {
+        let compiled = bundle.compile_full_with_modules_and_php_entry_override(
+            &vm.modules,
+            Some(entry_path),
+        )?;
         Ok(DynamicCompilation {
             chunks: compiled.chunks,
             host_imports: compiled.host_imports,
@@ -504,15 +517,25 @@ fn ensure_php_runtime_registered(vm: &mut VM) {
     }));
 }
 
-fn resolve_php_include_path(caller_path: &Path, target: &str) -> PathBuf {
+fn resolve_php_include_path(entry_path: &Path, caller_path: &Path, target: &str) -> PathBuf {
     let target_path = PathBuf::from(target);
     if target_path.is_absolute() {
         return target_path;
     }
-    caller_path
+    let base_path = if is_explicit_relative_php_include(&target_path) {
+        caller_path
+    } else {
+        entry_path
+    };
+    base_path
         .parent()
         .map(|parent| parent.join(target_path.clone()))
         .unwrap_or(target_path)
+}
+
+fn is_explicit_relative_php_include(path: &Path) -> bool {
+    let raw = path.to_string_lossy();
+    raw == "." || raw == ".." || raw.starts_with("./") || raw.starts_with("../") || raw.starts_with(".\\") || raw.starts_with("..\\")
 }
 
 fn value_to_string(value: &Value) -> String {
@@ -625,6 +648,7 @@ fn remap_import_operands(chunks: &mut [Chunk], remap: &[u16]) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::RuntimeCompilerService;
@@ -888,5 +912,106 @@ mod tests {
             Some(Value::F64(value)) => assert_eq!(*value, 42.0),
             other => panic!("expected include $call_result global, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn php_dynamic_include_uses_entry_script_dir_for_nested_bare_relative_paths() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("vybe-dynamic-entry-relative-{stamp}"));
+        let classes_dir = base.join("classes");
+        let views_dir = base.join("views");
+        std::fs::create_dir_all(&classes_dir).expect("create classes dir");
+        std::fs::create_dir_all(&views_dir).expect("create views dir");
+
+        let main_path = base.join("main.php");
+        let child_path = classes_dir.join("child.php");
+        let partial_path = views_dir.join("partial.php");
+
+        std::fs::write(
+            &main_path,
+            "<?php $path = 'classes/child.php'; $result = include $path;",
+        )
+        .expect("write main php");
+        std::fs::write(
+            &child_path,
+            "<?php $view = 'views/partial.php'; return include $view;",
+        )
+        .expect("write child php");
+        std::fs::write(&partial_path, "<?php return 42;")
+            .expect("write partial php");
+
+        let mut vm = configured_vm();
+        let mut service = RuntimeCompilerService::new(&mut vm);
+        service
+            .compile_and_run_path(&main_path)
+            .expect("run php with entry-relative nested include");
+
+        match vm.globals.get("$result") {
+            Some(Value::I32(value)) => assert_eq!(*value, 42),
+            Some(Value::I64(value)) => assert_eq!(*value, 42),
+            Some(Value::F64(value)) => assert_eq!(*value, 42.0),
+            other => panic!("expected nested entry-relative $result global, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn php_dynamic_include_renders_nested_view_templates_with_entry_relative_paths() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("vybe-dynamic-view-render-{stamp}"));
+        let views_projects_dir = base.join("views/projects");
+        let views_templates_dir = base.join("views/templates");
+        std::fs::create_dir_all(&views_projects_dir).expect("create projects view dir");
+        std::fs::create_dir_all(&views_templates_dir).expect("create templates dir");
+
+        let main_path = base.join("index.php");
+        let list_path = views_projects_dir.join("list.php");
+        let header_path = views_templates_dir.join("header.php");
+
+        std::fs::write(
+            &main_path,
+            "<?php $result = include 'views/projects/list.php';",
+        )
+        .expect("write main php");
+        std::fs::write(
+            &list_path,
+            "<?php $appName = 'Plan'; include 'views/templates/header.php'; ?>\n<main>Projects</main>\n",
+        )
+        .expect("write list php");
+        std::fs::write(
+            &header_path,
+            "<header><?= htmlspecialchars($appName) ?></header>\n",
+        )
+        .expect("write header php");
+
+        let rendered = Arc::new(Mutex::new(String::new()));
+        let rendered_sink = rendered.clone();
+
+        let mut vm = configured_vm();
+        vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx, args| {
+            let mut out = rendered_sink.lock().expect("lock rendered output");
+            for arg in args {
+                match arg {
+                    Value::String(text) => out.push_str(text.as_ref()),
+                    other => out.push_str(&format!("{}", other)),
+                }
+            }
+            Value::Null
+        }));
+
+        let mut service = RuntimeCompilerService::new(&mut vm);
+        service
+            .compile_and_run_path(&main_path)
+            .expect("run php nested view include");
+
+        let rendered = rendered.lock().expect("lock rendered output").clone();
+        assert!(rendered.contains("<header>Plan</header>"), "missing rendered header: {rendered}");
+        assert!(rendered.contains("<main>Projects</main>"), "missing rendered list body: {rendered}");
+
     }
 }

@@ -203,6 +203,7 @@ async fn handle_request(
         body_bytes,
         remote,
         None,           // no script filename — user's handler *is* the entry
+        None,
         std::path::Path::new("."),
         local_addr,
         "http",
