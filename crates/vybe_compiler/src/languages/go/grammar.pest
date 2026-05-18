@@ -153,8 +153,7 @@ block_statement = { "{" ~ statement_list ~ "}" }
 
 statement_list = { (statement ~ ";"?)* }
 
-// expression_statement requires ";" so it doesn't swallow the next token
-expression_statement = { expression ~ ";" }
+expression_statement = { expression ~ ";"? }
 
 // assignment before expression_statement; assign_op covers "="
 assignment_statement = {
@@ -174,7 +173,7 @@ short_var_declaration = {
 
 // inc_dec: trailing ";" is OPTIONAL (needed in for-update position)
 inc_dec_statement = {
-    expression ~ ("++" | "--") ~ ";"?
+    primary ~ ("++" | "--") ~ ";"?
 }
 
 // ── If statement ────────────────────────────────────────────────────────────
@@ -256,11 +255,13 @@ for_clause = {
 }
 
 for_init = _{
-    short_var_declaration
-    | inc_dec_statement
-    | assignment_statement
-    | expression_statement
+    for_short_var_nosemi
+    | for_inc_dec
+    | for_assign_nosemi
+    | expression
 }
+
+for_short_var_nosemi = { ident_list ~ ":=" ~ expression_list }
 
 // Update: no trailing ";" required
 for_update = _{
@@ -269,7 +270,7 @@ for_update = _{
     | expression
 }
 
-for_inc_dec = { expression ~ ("++" | "--") }
+for_inc_dec = { primary ~ ("++" | "--") }
 
 for_assign_nosemi = { expression_list ~ assign_op ~ expression_list }
 
@@ -335,9 +336,14 @@ postfix_op = _{
 operand = {
     literal
     | "(" ~ expression ~ ")"
+    | slice_conversion
     | composite_literal
     | function_literal
     | ident_name
+}
+
+slice_conversion = {
+    "[]" ~ ident_name ~ "(" ~ expression ~ ")"
 }
 
 selector       = { "." ~ ident_name }

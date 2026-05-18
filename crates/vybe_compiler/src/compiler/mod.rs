@@ -8423,6 +8423,33 @@ impl Compiler {
             "to_upper" => { self.compile_expr(args[0])?; common::strings::emit_to_upper(self.chunk(), line); }
             "to_lower" => { self.compile_expr(args[0])?; common::strings::emit_to_lower(self.chunk(), line); }
             "trim" => { self.compile_expr(args[0])?; common::strings::emit_trim(self.chunk(), line); }
+            "str_contains" => {
+                if args.len() >= 2 {
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    self.emit(Op::STR_CONTAINS);
+                } else {
+                    self.emit(Op::NULL);
+                }
+            }
+            "str_starts_with" => {
+                if args.len() >= 2 {
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    self.emit(Op::STR_STARTS_WITH);
+                } else {
+                    self.emit(Op::NULL);
+                }
+            }
+            "str_ends_with" => {
+                if args.len() >= 2 {
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    self.emit(Op::STR_ENDS_WITH);
+                } else {
+                    self.emit(Op::NULL);
+                }
+            }
             "concat" => { for a in args { self.compile_expr(a)?; } common::strings::emit_concat(self.chunk(), args.len(), line); }
             "replace" => { if args.len() >= 3 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.compile_expr(args[2])?; common::strings::emit_replace(self.chunk(), line); } }
             "repeat" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; common::strings::emit_repeat(self.chunk(), line); } }

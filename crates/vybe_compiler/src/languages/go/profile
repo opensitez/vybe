@@ -15,6 +15,7 @@ enum_as_ordinals = false
 case_sensitive = true
 string_indexing = "zero_based"
 entry_point = "main"
+dynamic_add = true
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — bare global function calls
@@ -30,23 +31,27 @@ entry_point = "main"
 
 # ── Type conversion ──────────────────────────────────────────────────────────
 
-"strconv.Atoi"    = { emit = "host:ecma:number:parseInt",       min_args = 1, max_args = 1 }
+"strconv.Atoi"    = { emit = "opcode:to_int",                    min_args = 1, max_args = 1 }
 "strconv.Itoa"    = { emit = "host:ecma:string:String",         min_args = 1, max_args = 1 }
 "strconv.ParseFloat" = { emit = "host:ecma:number:parseFloat",  min_args = 1, max_args = 1 }
 
 # ── String functions ─────────────────────────────────────────────────────────
 
-"strings.ToUpper" = { emit = "opcode:str_to_upper",             min_args = 1, max_args = 1 }
-"strings.ToLower" = { emit = "opcode:str_to_lower",             min_args = 1, max_args = 1 }
-"strings.Trim"    = { emit = "opcode:str_trim",                 min_args = 1, max_args = 1 }
-"strings.TrimSpace" = { emit = "opcode:str_trim",               min_args = 1, max_args = 1 }
+"strings.ToUpper" = { emit = "common:strings.to_upper",         min_args = 1, max_args = 1 }
+"strings.ToLower" = { emit = "common:strings.to_lower",         min_args = 1, max_args = 1 }
+"strings.Trim"    = { emit = "common:strings.trim",             min_args = 1, max_args = 1 }
+"strings.TrimSpace" = { emit = "common:strings.trim",           min_args = 1, max_args = 1 }
 "strings.Contains" = { emit = "opcode:str_contains",            min_args = 2, max_args = 2 }
 "strings.HasPrefix" = { emit = "opcode:str_starts_with",        min_args = 2, max_args = 2 }
 "strings.HasSuffix" = { emit = "opcode:str_ends_with",          min_args = 2, max_args = 2 }
 "strings.Index"   = { emit = "common:strings.index_of",         min_args = 2, max_args = 2 }
 "strings.Replace" = { emit = "common:strings.replace",          min_args = 3, max_args = 4 }
+"strings.Count"   = { emit = "intrinsic:count",                min_args = 2, max_args = 2 }
+"strings.Repeat"  = { emit = "opcode:str_repeat",              min_args = 2, max_args = 2 }
+"strings.Compare" = { emit = "opcode:str_compare",             min_args = 2, max_args = 2 }
 "strings.Split"   = { emit = "common:strings.split",            min_args = 2, max_args = 2 }
 "strings.Join"    = { emit = "common:collections.join",         min_args = 2, max_args = 2 }
+"__go_regex_split_pat_first" = { emit = "stdlib:regex_split_pat_first", min_args = 2, max_args = 2 }
 
 # ── Math functions ───────────────────────────────────────────────────────────
 
