@@ -21,7 +21,7 @@
 //! - **`nil`**: Mapped to `ExprKind::Lit(Literal::Null)`.
 //! - **`make` / `new`**: `make` for slices/maps is rewritten to array/dict
 //!   creation. `new(T)` becomes `&T{}` (pointer to zero value).
-//! - **`append`**: Rewritten to array push.
+//! - **`append`**: Rewritten to slice concat so the updated slice value is preserved.
 //! - **`len` / `cap`**: Builtin functions mapped to host calls.
 //! - **`panic` / `recover`**: Mapped to throw/try-catch.
 //! - **`_` blank identifier**: Ignored in assignments.
@@ -767,6 +767,24 @@ fn normalize_go_expr(
                 });
             }
 
+            if call_name.as_deref() == Some("append") && !next_args.is_empty() {
+                let mut result = next_args[0].value.clone();
+                for arg in next_args.iter().skip(1) {
+                    let rhs = if arg.spread {
+                        arg.value.clone()
+                    } else {
+                        Expression::new(ExprKind::Array(vec![ArrayElement {
+                            key: None,
+                            value: arg.value.clone(),
+                            spread: false,
+                            by_ref: false,
+                        }]))
+                    };
+                    result = go_member_call(result, "concat", vec![rhs]);
+                }
+                return result;
+            }
+
             if call_name.as_deref() == Some("cap") && next_args.len() == 1 {
                 if let Some(cap_expr) = go_expr_capacity_hint(&next_args[0].value, env) {
                     return cap_expr;
@@ -1394,6 +1412,7 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
 fn walk_method_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut receiver_name = String::new();
     let mut receiver_type = String::new();
+    let mut receiver_owner = String::new();
     let mut method_name = String::new();
     let mut params = Vec::new();
     let mut body_stmts = Vec::new();
@@ -1405,7 +1424,11 @@ fn walk_method_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 for r_inner in inner.into_inner() {
                     match r_inner.as_rule() {
                         Rule::ident_name => receiver_name = r_inner.as_str().to_string(),
-                        Rule::type_annotation => receiver_type = walk_type(r_inner),
+                        Rule::type_annotation => {
+                            receiver_type = walk_type(r_inner.clone());
+                            receiver_owner = go_named_receiver_type(&receiver_type)
+                                .unwrap_or_else(|| receiver_type.clone());
+                        }
                         _ => {}
                     }
                 }
@@ -1448,7 +1471,7 @@ fn walk_method_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     });
 
     Ok(Statement::new(StmtKind::StructDecl {
-        name: receiver_type,
+        name: receiver_owner,
         interfaces: Vec::new(),
         members: vec![ClassMember::Method(Box::new(method_stmt))],
         visibility: Visibility::Public,
@@ -1853,6 +1876,14 @@ fn go_embedded_field_name(type_name: &str) -> Option<String> {
         return None;
     }
     trimmed.rsplit('.').next().map(|name| name.to_string())
+}
+
+fn go_named_receiver_type(type_name: &str) -> Option<String> {
+    let trimmed = type_name.trim().trim_start_matches('*').trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
 }
 
 // ── Statements ─────────────────────────────────────────────────────────────────────────

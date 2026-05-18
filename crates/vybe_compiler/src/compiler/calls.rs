@@ -247,6 +247,25 @@ fn is_numeric_overload_type(type_hint: &str) -> bool {
     )
 }
 
+fn resolve_go_pending_instance_method_owner(
+    compiler: &Compiler,
+    object: &Expression,
+    field: &str,
+) -> Option<String> {
+    if compiler.profile.name != "go" {
+        return None;
+    }
+    let receiver_type = resolve_receiver_type_hint(compiler, object)?;
+    let class_name = compiler.resolve_pending_class_name_for_type_hint(&receiver_type)?;
+    let pending = compiler.pending_classes.get(&class_name)?;
+    let method_key = compiler.canon(field);
+    pending
+        .instance_member_names
+        .iter()
+        .any(|name| compiler.canon(name) == method_key)
+        .then_some(class_name)
+}
+
 impl Compiler {
     fn resolve_php_autoload_callback_class_global(&self, class_name: &str) -> Option<String> {
         let resolved_class = self.resolve_source_type_alias(class_name);
@@ -4340,6 +4359,43 @@ impl Compiler {
                 } else {
                     self.emit_direct_instance_method_call(chunk_idx, obj_tmp, &arg_exprs)?;
                 }
+                return Ok(());
+            }
+
+            if let Some(class_name) = resolve_go_pending_instance_method_owner(self, object, field) {
+                let class_idx = self.str_const(&class_name);
+                self.emit_u16(Op::GLOBAL_GET, class_idx);
+                self.emit_u16(Op::STRUCT_GET, prop);
+                let fn_tmp = self.define_local("__go_pending_instance_fn");
+                self.emit_u16(Op::LOCAL_SET, fn_tmp);
+                self.emit(Op::DROP);
+
+                let receiver_slot = if self.pending_classes.get(&class_name).is_some_and(|pending| {
+                    !pending
+                        .instance_pointer_method_names
+                        .iter()
+                        .any(|name| self.canon(name) == self.canon(field))
+                        && !pending.fields.is_empty()
+                }) {
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_user_value_type_clone_from_stack(&class_name);
+                    let receiver_slot = self.define_local("__go_value_receiver");
+                    self.emit_u16(Op::LOCAL_SET, receiver_slot);
+                    self.emit(Op::DROP);
+                    receiver_slot
+                } else {
+                    obj_tmp
+                };
+
+                let mut arg_slots = Vec::with_capacity(arg_exprs.len());
+                for (index, arg) in arg_exprs.iter().enumerate() {
+                    self.compile_expr(arg)?;
+                    let arg_slot = self.define_local(&format!("__go_pending_method_arg_{}", index));
+                    self.emit_u16(Op::LOCAL_SET, arg_slot);
+                    self.emit(Op::DROP);
+                    arg_slots.push(arg_slot);
+                }
+                self.emit_call_ref_with_arg_slots(fn_tmp, Some(receiver_slot), &arg_slots);
                 return Ok(());
             }
 

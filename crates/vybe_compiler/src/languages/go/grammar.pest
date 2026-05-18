@@ -98,7 +98,7 @@ method_declaration = {
 }
 
 receiver = {
-    "(" ~ ident_name? ~ type_annotation ~ ")"
+    "(" ~ ((ident_name ~ type_annotation) | type_annotation) ~ ")"
 }
 
 signature = {

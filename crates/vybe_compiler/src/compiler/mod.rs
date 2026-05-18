@@ -56,6 +56,7 @@ struct PendingClass {
     fields: Vec<String>,
     is_value_type: bool,
     instance_member_names: Vec<String>,
+    instance_pointer_method_names: Vec<String>,
     /// Type hints for instance fields, keyed by canonical field name.
     /// Used when implicit-self resolution turns a bare field name into
     /// `this.<field>` so member access keeps the original receiver type.
@@ -744,6 +745,7 @@ impl Compiler {
     fn predeclare_struct_surface(&mut self, name: &str, members: &[ClassMember]) {
         let mut fields = Vec::new();
         let mut instance_member_names = Vec::new();
+        let mut instance_pointer_method_names = Vec::new();
         let mut instance_field_types = HashMap::new();
         let mut static_fields = Vec::new();
         let mut static_field_types = HashMap::new();
@@ -768,11 +770,18 @@ impl Compiler {
                     }
                 }
                 ClassMember::Method(stmt) => {
-                    if let StmtKind::FunctionDecl { name: method_name, modifiers, .. } = &stmt.kind {
+                    if let StmtKind::FunctionDecl { name: method_name, modifiers, params, .. } = &stmt.kind {
                         let canonical = self.canon(method_name);
                         if modifiers.is_shared {
                             static_method_names.push(canonical);
                         } else {
+                            if params
+                                .first()
+                                .and_then(|param| param.type_hint.as_deref())
+                                .is_some_and(|type_hint| type_hint.trim_start().starts_with('*'))
+                            {
+                                instance_pointer_method_names.push(canonical.clone());
+                            }
                             instance_member_names.push(canonical);
                         }
                     }
@@ -788,6 +797,7 @@ impl Compiler {
             fields,
             is_value_type: true,
             instance_member_names,
+            instance_pointer_method_names,
             instance_field_types,
             static_fields,
             static_field_types,
@@ -850,6 +860,7 @@ impl Compiler {
             fields: Vec::new(),
             is_value_type: false,
             instance_member_names: Vec::new(),
+            instance_pointer_method_names: Vec::new(),
             instance_field_types: HashMap::new(),
             static_fields: module_static_fields,
             static_field_types: module_static_field_types,
@@ -2063,6 +2074,7 @@ impl Compiler {
             fields: Vec::new(),
             is_value_type: false,
             instance_member_names: Vec::new(),
+            instance_pointer_method_names: Vec::new(),
             instance_field_types: HashMap::new(),
             static_fields: Vec::new(),
             static_field_types: HashMap::new(),

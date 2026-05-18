@@ -411,6 +411,18 @@ impl Compiler {
                 .iter()
                 .map(|method| method.canonical_name.clone())
                 .collect(),
+            instance_pointer_method_names: class
+                .instance_methods
+                .iter()
+                .filter(|method| {
+                    method
+                        .params
+                        .first()
+                        .and_then(|param| param.type_hint.as_deref())
+                        .is_some_and(|type_hint| type_hint.trim_start().starts_with('*'))
+                })
+                .map(|method| method.canonical_name.clone())
+                .collect(),
             instance_field_types,
             static_fields: static_member_names,
             static_field_types: class.static_fields.iter().filter_map(|f| {
