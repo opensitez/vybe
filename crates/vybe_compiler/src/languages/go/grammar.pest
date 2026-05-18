@@ -308,12 +308,12 @@ unary_expression = {
 unary_op = @{ "-" | "+" | "!" | "^" | "*" | "&" | "<-" }
 
 // CRITICAL: longer ops FIRST to prevent premature match
-binary_op = {
+binary_op = @{
     "||"
     | "&&"
     | "==" | "!="
-    | "<=" | ">=" | "<" | ">"
     | "<<" | ">>"
+    | "<=" | ">=" | "<" | ">"
     | "+"  | "-"  | "|" | "^"
     | "*"  | "/"  | "%" | "&^" | "&"
 }

@@ -457,12 +457,25 @@ fn normalize_go_expr(
         ExprKind::Binary { op, left, right } => {
             let next_left = normalize_go_expr(left, env, signatures, state);
             let next_right = normalize_go_expr(right, env, signatures, state);
-            if matches!(op, BinOp::Eq | BinOp::NotEq)
+            let normalized_op = if *op == BinOp::Div
+                && go_expr_type_hint(&next_left, env, signatures)
+                    .as_deref()
+                    .is_some_and(go_is_integer_type)
+                && go_expr_type_hint(&next_right, env, signatures)
+                    .as_deref()
+                    .is_some_and(go_is_integer_type)
+            {
+                BinOp::IDiv
+            } else {
+                *op
+            };
+
+            if matches!(normalized_op, BinOp::Eq | BinOp::NotEq)
                 && go_expr_is_fixed_array(&next_left, env, signatures)
                 && go_expr_is_fixed_array(&next_right, env, signatures)
             {
                 let equal = go_builtin_call("__go_fixed_array_equal", vec![next_left, next_right]);
-                if *op == BinOp::NotEq {
+                if normalized_op == BinOp::NotEq {
                     Expression::new(ExprKind::Unary {
                         op: UnaryOp::Not,
                         expr: Box::new(equal),
@@ -472,7 +485,7 @@ fn normalize_go_expr(
                 }
             } else {
                 Expression::new(ExprKind::Binary {
-                    op: *op,
+                    op: normalized_op,
                     left: Box::new(next_left),
                     right: Box::new(next_right),
                 })
@@ -857,11 +870,40 @@ fn go_expr_type_hint(
             .get(name)
             .cloned()
             .or_else(|| env.fixed_arrays.get(name).cloned()),
+        ExprKind::Lit(Literal::Int(_)) => Some("int".to_string()),
+        ExprKind::Lit(Literal::Float(_)) => Some("float64".to_string()),
+        ExprKind::Lit(Literal::Bool(_)) => Some("bool".to_string()),
         ExprKind::Lit(Literal::Str(_)) => Some("string".to_string()),
         ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
         ExprKind::Index { object, .. } => go_expr_type_hint(object, env, signatures)
             .and_then(|type_name| go_array_element_type(&type_name)),
         ExprKind::Assign { value, .. } => go_expr_type_hint(value, env, signatures),
+        ExprKind::Binary { op, left, right } => {
+            let left_type = go_expr_type_hint(left, env, signatures);
+            let right_type = go_expr_type_hint(right, env, signatures);
+            match op {
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::IDiv | BinOp::Mod
+                | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+                    if left_type.as_deref().is_some_and(go_is_integer_type)
+                        && right_type.as_deref().is_some_and(go_is_integer_type)
+                    {
+                        Some("int".to_string())
+                    } else {
+                        left_type.or(right_type)
+                    }
+                }
+                BinOp::Div => {
+                    if left_type.as_deref().is_some_and(go_is_integer_type)
+                        && right_type.as_deref().is_some_and(go_is_integer_type)
+                    {
+                        Some("int".to_string())
+                    } else {
+                        Some("float64".to_string())
+                    }
+                }
+                _ => None,
+            }
+        }
         ExprKind::Call { callee, args, .. } => match &callee.kind {
             ExprKind::Ident(name) if name == "__go_fixed_array_clone" => {
                 args.first().and_then(|arg| go_expr_type_hint(&arg.value, env, signatures))
@@ -953,6 +995,15 @@ fn go_is_fixed_array_type(type_name: &str) -> bool {
     go_array_head(type_name)
         .map(|(head, _)| !head.trim().is_empty())
         .unwrap_or(false)
+}
+
+fn go_is_integer_type(type_name: &str) -> bool {
+    matches!(
+        type_name.trim(),
+        "int" | "int8" | "int16" | "int32" | "int64"
+            | "uint" | "uint8" | "uint16" | "uint32" | "uint64" | "uintptr"
+            | "byte" | "rune"
+    )
 }
 
 fn walk_package_clause(pair: Pair<Rule>) -> Result<String, String> {
@@ -1560,19 +1611,42 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<StmtKind, String> {
     if op != "=" {
         // Compound assignment
         if targets.len() == 1 && values.len() == 1 {
+            let target = targets[0].clone();
+            let value = values[0].clone();
             let compound_op = match op {
-                "+=" => CompoundOp::Add,
-                "-=" => CompoundOp::Sub,
-                "*=" => CompoundOp::Mul,
-                "/=" => CompoundOp::Div,
-                "%=" => CompoundOp::Mod,
-                _ => CompoundOp::Add,
+                "+=" => Some(CompoundOp::Add),
+                "-=" => Some(CompoundOp::Sub),
+                "*=" => Some(CompoundOp::Mul),
+                "/=" => Some(CompoundOp::Div),
+                "%=" => Some(CompoundOp::Mod),
+                "&=" => Some(CompoundOp::BitAnd),
+                "|=" => Some(CompoundOp::BitOr),
+                "^=" => Some(CompoundOp::BitXor),
+                "<<=" => Some(CompoundOp::Shl),
+                ">>=" => Some(CompoundOp::Shr),
+                _ => None,
             };
-            return Ok(StmtKind::CompoundAssign {
-                target: targets.into_iter().next().unwrap(),
-                op: compound_op,
-                value: values.into_iter().next().unwrap(),
-            });
+            if let Some(compound_op) = compound_op {
+                return Ok(StmtKind::CompoundAssign {
+                    target,
+                    op: compound_op,
+                    value,
+                });
+            }
+            if op == "&^=" {
+                let rhs = Expression::new(ExprKind::Unary {
+                    op: UnaryOp::BitNot,
+                    expr: Box::new(value),
+                });
+                return Ok(StmtKind::Assign {
+                    targets: vec![target.clone()],
+                    value: Expression::new(ExprKind::Binary {
+                        op: BinOp::BitAnd,
+                        left: Box::new(target),
+                        right: Box::new(rhs),
+                    }),
+                });
+            }
         }
     }
 
@@ -1688,7 +1762,12 @@ fn walk_short_var_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 fn walk_inc_dec(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut expr = None;
-    let is_inc = !pair.as_str().trim_end().ends_with("--");
+    let is_inc = !pair
+        .as_str()
+        .trim_end()
+        .trim_end_matches(';')
+        .trim_end()
+        .ends_with("--");
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
@@ -2117,12 +2196,7 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                 if let (Some(op), _) = &ops[i] {
                     if i + 1 < ops.len() {
                         let right = ops[i + 1].1.clone();
-                        let bin_op = parse_bin_op(op);
-                        result = Expression::new(ExprKind::Binary {
-                            op: bin_op,
-                            left: Box::new(result),
-                            right: Box::new(right),
-                        });
+                        result = build_go_binary_expr(op, result, right);
                         i += 2;
                         continue;
                     }
@@ -2681,7 +2755,26 @@ fn parse_bin_op(op: &str) -> BinOp {
         "^" => BinOp::BitXor,
         "<<" => BinOp::Shl,
         ">>" => BinOp::Shr,
-        "&^" => BinOp::BitAnd, // Go's bit clear — map to BitAnd as approximation
+        "&^" => BinOp::BitAnd,
         _ => BinOp::Add,
+    }
+}
+
+fn build_go_binary_expr(op: &str, left: Expression, right: Expression) -> Expression {
+    if op == "&^" {
+        Expression::new(ExprKind::Binary {
+            op: BinOp::BitAnd,
+            left: Box::new(left),
+            right: Box::new(Expression::new(ExprKind::Unary {
+                op: UnaryOp::BitNot,
+                expr: Box::new(right),
+            })),
+        })
+    } else {
+        Expression::new(ExprKind::Binary {
+            op: parse_bin_op(op),
+            left: Box::new(left),
+            right: Box::new(right),
+        })
     }
 }
