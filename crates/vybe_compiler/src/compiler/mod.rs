@@ -2934,7 +2934,10 @@ impl Compiler {
             }
             ExprKind::Index { object, .. } => self
                 .infer_expr_type_hint(object)
-                .and_then(|type_hint| type_hint.trim().trim_end_matches('?').trim().strip_suffix("()").map(str::to_string)),
+                .and_then(|type_hint| {
+                    let trimmed = type_hint.trim().trim_end_matches('?').trim();
+                    trimmed.strip_suffix("()").map(str::to_string)
+                }),
             ExprKind::Member { object, field, .. } => {
                 if let Some(type_hint) = self.infer_vb_runtime_member_type_hint(expr) {
                     return Some(type_hint);
@@ -4286,19 +4289,33 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, iter_slot); self.emit(Op::DROP);
 
                     let runtime_generator_done = if *of && key.is_none() {
+                        // Large PHP foreach bodies can exceed the i16 reach of
+                        // flat BR/BR_IF patching when we emit the runtime
+                        // generator fast-path inline. Use structured label
+                        // branches here so skipping the generator path does not
+                        // depend on relative byte offsets.
+                        let done_block = self.chunk().emit_block(line);
+                        self.label_depth += 1;
+
+                        let normal_path_gate = self.chunk().emit_block(line);
+                        self.label_depth += 1;
+
                         self.emit_u16(Op::LOCAL_GET, iter_slot);
                         let is_gen_idx = self.import("ecma:value", "isGenerator");
                         self.emit_host_call(is_gen_idx, 1);
-                        let not_gen = self.emit_jump(Op::BR_IF_FALSE);
+                        self.emit(Op::DYN_NOT);
+                        self.emit_u8(Op::BR_IF_LABEL, 0);
+
                         self.compile_generator_for_in_cont(var, key.as_deref(), iter_slot, body, else_body.as_deref())?;
-                        Some((not_gen, self.emit_jump(Op::BR)))
+                        self.emit_u8(Op::BR_LABEL, 1);
+
+                        self.chunk().emit_end(line);
+                        self.chunk().patch_block(normal_path_gate);
+                        self.label_depth -= 1;
+                        Some(done_block)
                     } else {
                         None
                     };
-
-                    if let Some((not_gen, _)) = runtime_generator_done {
-                        self.patch_jump(not_gen);
-                    }
 
                     // JS profile: route the iter through __vybe_iter_drain
                     // first. If the value has a user-defined `iterator()`
@@ -4391,7 +4408,6 @@ impl Compiler {
                         //   index 1 → value_var
                         let pair_slot = self.define_local("__forin_pair");
                         self.emit_u16(Op::LOCAL_SET, pair_slot); self.emit(Op::DROP);
-
                         // key = pair[0]
                         self.emit_u16(Op::LOCAL_GET, pair_slot);
                         self.emit_const(Value::I32(0));
@@ -4453,8 +4469,10 @@ impl Compiler {
                         self.label_depth -= 1;
                     }
 
-                    if let Some((_, done)) = runtime_generator_done {
-                        self.patch_jump(done);
+                    if let Some(done_block) = runtime_generator_done {
+                        self.chunk().emit_end(line);
+                        self.chunk().patch_block(done_block);
+                        self.label_depth -= 1;
                     }
                 }
             }

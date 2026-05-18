@@ -28,6 +28,7 @@
 
 use pest::Parser;
 use pest::iterators::Pair;
+use std::collections::HashMap;
 use crate::ast::*;
 use super::{GoParser, Rule};
 
@@ -76,12 +77,748 @@ pub fn parse(source: &str) -> Result<Module, String> {
         }
     }
 
-    Ok(Module {
+    Ok(normalize_go_module(Module {
         name: _package_name,
         language: Lang::Go,
         body,
         imports,
+    }))
+}
+
+#[derive(Clone, Default)]
+struct GoFunctionSignature {
+    params: Vec<Option<String>>,
+    return_type: Option<String>,
+}
+
+#[derive(Clone, Default)]
+struct GoNormalizeEnv {
+    fixed_arrays: HashMap<String, String>,
+    return_type: Option<String>,
+}
+
+#[derive(Default)]
+struct GoNormalizeState {
+    next_temp: usize,
+}
+
+fn normalize_go_module(mut module: Module) -> Module {
+    let signatures = collect_go_function_signatures(&module.body);
+    let globals = collect_go_global_fixed_arrays(&module.body, &signatures);
+    let mut state = GoNormalizeState::default();
+    let mut env = GoNormalizeEnv {
+        fixed_arrays: globals.clone(),
+        return_type: None,
+    };
+
+    let mut normalized = Vec::with_capacity(module.body.len());
+    for stmt in &module.body {
+        normalized.extend(normalize_go_statement(stmt, &mut env, &signatures, &mut state));
+    }
+    module.body = normalized;
+    module
+}
+
+fn collect_go_function_signatures(body: &[Statement]) -> HashMap<String, GoFunctionSignature> {
+    let mut signatures = HashMap::new();
+    for stmt in body {
+        if let StmtKind::FunctionDecl {
+            name,
+            params,
+            return_type,
+            ..
+        } = &stmt.kind
+        {
+            signatures.insert(
+                name.clone(),
+                GoFunctionSignature {
+                    params: params.iter().map(|param| param.type_hint.clone()).collect(),
+                    return_type: return_type.clone(),
+                },
+            );
+        }
+    }
+    signatures
+}
+
+fn collect_go_global_fixed_arrays(
+    body: &[Statement],
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> HashMap<String, String> {
+    let env = GoNormalizeEnv::default();
+    let mut globals = HashMap::new();
+
+    for stmt in body {
+        if let StmtKind::VarDecl { declarations, .. } = &stmt.kind {
+            for decl in declarations {
+                if let Some((name, type_name)) = go_decl_fixed_array_binding(decl, &env, signatures) {
+                    globals.insert(name, type_name);
+                }
+            }
+        }
+    }
+
+    globals
+}
+
+fn normalize_go_block(
+    stmts: &[Statement],
+    base_env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+    state: &mut GoNormalizeState,
+) -> Vec<Statement> {
+    let mut env = base_env.clone();
+    let mut normalized = Vec::with_capacity(stmts.len());
+    for stmt in stmts {
+        normalized.extend(normalize_go_statement(stmt, &mut env, signatures, state));
+    }
+    normalized
+}
+
+fn normalize_go_statement(
+    stmt: &Statement,
+    env: &mut GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+    state: &mut GoNormalizeState,
+) -> Vec<Statement> {
+    match &stmt.kind {
+        StmtKind::FunctionDecl {
+            name,
+            params,
+            return_type,
+            body,
+            modifiers,
+            handles,
+            is_async,
+            is_generator,
+            is_sub,
+        } => {
+            let mut fn_env = GoNormalizeEnv {
+                fixed_arrays: env.fixed_arrays.clone(),
+                return_type: return_type.clone(),
+            };
+            for param in params {
+                if let Some(type_hint) = param.type_hint.as_deref().filter(|hint| go_is_fixed_array_type(hint)) {
+                    fn_env.fixed_arrays.insert(param.name.clone(), type_hint.to_string());
+                }
+            }
+
+            vec![Statement::new(StmtKind::FunctionDecl {
+                name: name.clone(),
+                params: params.clone(),
+                return_type: return_type.clone(),
+                body: normalize_go_block(body, &fn_env, signatures, state),
+                modifiers: modifiers.clone(),
+                handles: handles.clone(),
+                is_async: *is_async,
+                is_generator: *is_generator,
+                is_sub: *is_sub,
+            })]
+        }
+        StmtKind::VarDecl { declarations, kind } => {
+            let mut normalized = Vec::with_capacity(declarations.len());
+            for decl in declarations {
+                let mut next_decl = decl.clone();
+                next_decl.init = decl
+                    .init
+                    .as_ref()
+                    .map(|expr| normalize_go_expr(expr, env, signatures, state));
+                next_decl.array_bounds = decl
+                    .array_bounds
+                    .as_ref()
+                    .map(|bounds| bounds.iter().map(|expr| normalize_go_expr(expr, env, signatures, state)).collect());
+
+                if next_decl.init.is_none()
+                    && next_decl
+                        .type_hint
+                        .as_deref()
+                        .is_some_and(go_is_fixed_array_type)
+                {
+                    next_decl.init = next_decl
+                        .type_hint
+                        .as_deref()
+                        .map(go_zero_value_expr);
+                } else if let Some(init_expr) = next_decl.init.take() {
+                    next_decl.init = Some(go_wrap_fixed_array_copy(init_expr, env, signatures));
+                }
+
+                if let Some((name, type_name)) = go_decl_fixed_array_binding(&next_decl, env, signatures) {
+                    env.fixed_arrays.insert(name, type_name);
+                }
+                normalized.push(next_decl);
+            }
+
+            vec![Statement::new(StmtKind::VarDecl {
+                declarations: normalized,
+                kind: kind.clone(),
+            })]
+        }
+        StmtKind::Expr(expr) => vec![Statement::new(StmtKind::Expr(normalize_go_expr(
+            expr, env, signatures, state,
+        )))],
+        StmtKind::Assign { targets, value } => {
+            let mut next_value = normalize_go_expr(value, env, signatures, state);
+            next_value = go_wrap_fixed_array_copy(next_value, env, signatures);
+            vec![Statement::new(StmtKind::Assign {
+                targets: targets
+                    .iter()
+                    .map(|target| normalize_go_expr(target, env, signatures, state))
+                    .collect(),
+                value: next_value,
+            })]
+        }
+        StmtKind::CompoundAssign { target, op, value } => vec![Statement::new(StmtKind::CompoundAssign {
+            target: normalize_go_expr(target, env, signatures, state),
+            op: *op,
+            value: normalize_go_expr(value, env, signatures, state),
+        })],
+        StmtKind::Return(expr) => {
+            let next_expr = expr.as_ref().map(|value| {
+                let normalized = normalize_go_expr(value, env, signatures, state);
+                if env
+                    .return_type
+                    .as_deref()
+                    .is_some_and(go_is_fixed_array_type)
+                {
+                    go_wrap_fixed_array_copy(normalized, env, signatures)
+                } else {
+                    normalized
+                }
+            });
+            vec![Statement::new(StmtKind::Return(next_expr))]
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            let next_elifs = elifs
+                .iter()
+                .map(|(elif_cond, elif_body)| {
+                    (
+                        normalize_go_expr(elif_cond, env, signatures, state),
+                        normalize_go_block(elif_body, env, signatures, state),
+                    )
+                })
+                .collect();
+            let next_else = else_body
+                .as_ref()
+                .map(|body| normalize_go_block(body, env, signatures, state));
+            vec![Statement::new(StmtKind::If {
+                cond: normalize_go_expr(cond, env, signatures, state),
+                then_body: normalize_go_block(then_body, env, signatures, state),
+                elifs: next_elifs,
+                else_body: next_else,
+            })]
+        }
+        StmtKind::Switch { expr, cases, default } => {
+            let next_cases = cases
+                .iter()
+                .map(|case| SwitchCase {
+                    conditions: case
+                        .conditions
+                        .iter()
+                        .map(|condition| match condition {
+                            CaseCondition::Value(value) => {
+                                CaseCondition::Value(normalize_go_expr(value, env, signatures, state))
+                            }
+                            _ => condition.clone(),
+                        })
+                        .collect(),
+                    body: normalize_go_block(&case.body, env, signatures, state),
+                })
+                .collect();
+            vec![Statement::new(StmtKind::Switch {
+                expr: normalize_go_expr(expr, env, signatures, state),
+                cases: next_cases,
+                default: default
+                    .as_ref()
+                    .map(|body| normalize_go_block(body, env, signatures, state)),
+            })]
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            let mut loop_env = env.clone();
+            let next_init = init.as_ref().map(|stmt| {
+                Box::new(normalize_go_single_statement(stmt, &mut loop_env, signatures, state))
+            });
+            let next_cond = cond
+                .as_ref()
+                .map(|expr| normalize_go_expr(expr, &loop_env, signatures, state));
+            let next_update = update
+                .as_ref()
+                .map(|expr| normalize_go_expr(expr, &loop_env, signatures, state));
+            let next_body = normalize_go_block(body, &loop_env, signatures, state);
+            vec![Statement::new(StmtKind::For {
+                init: next_init,
+                cond: next_cond,
+                update: next_update,
+                body: next_body,
+            })]
+        }
+        StmtKind::ForIn {
+            var,
+            key,
+            iter,
+            body,
+            of,
+            else_body,
+            is_async,
+        } => {
+            let next_iter = normalize_go_expr(iter, env, signatures, state);
+            if *of && go_expr_is_fixed_array(&next_iter, env, signatures) {
+                lower_go_fixed_array_range(var, key.as_deref(), next_iter, body, env, signatures, state)
+            } else {
+                vec![Statement::new(StmtKind::ForIn {
+                    var: var.clone(),
+                    key: key.clone(),
+                    iter: next_iter,
+                    body: normalize_go_block(body, env, signatures, state),
+                    of: *of,
+                    else_body: else_body
+                        .as_ref()
+                        .map(|body| normalize_go_block(body, env, signatures, state)),
+                    is_async: *is_async,
+                })]
+            }
+        }
+        StmtKind::While { cond, body, else_body } => vec![Statement::new(StmtKind::While {
+            cond: normalize_go_expr(cond, env, signatures, state),
+            body: normalize_go_block(body, env, signatures, state),
+            else_body: else_body
+                .as_ref()
+                .map(|body| normalize_go_block(body, env, signatures, state)),
+        })],
+        StmtKind::DoWhile { body, cond, until } => vec![Statement::new(StmtKind::DoWhile {
+            body: normalize_go_block(body, env, signatures, state),
+            cond: normalize_go_expr(cond, env, signatures, state),
+            until: *until,
+        })],
+        StmtKind::Block(body) => vec![Statement::new(StmtKind::Block(normalize_go_block(
+            body, env, signatures, state,
+        )))],
+        StmtKind::Throw { expr, cause } => vec![Statement::new(StmtKind::Throw {
+            expr: expr
+                .as_ref()
+                .map(|value| normalize_go_expr(value, env, signatures, state)),
+            cause: cause
+                .as_ref()
+                .map(|value| normalize_go_expr(value, env, signatures, state)),
+        })],
+        _ => vec![stmt.clone()],
+    }
+}
+
+fn normalize_go_single_statement(
+    stmt: &Statement,
+    env: &mut GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+    state: &mut GoNormalizeState,
+) -> Statement {
+    let mut normalized = normalize_go_statement(stmt, env, signatures, state);
+    if normalized.len() == 1 {
+        normalized.pop().unwrap()
+    } else {
+        Statement::new(StmtKind::Block(normalized))
+    }
+}
+
+fn normalize_go_expr(
+    expr: &Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+    state: &mut GoNormalizeState,
+) -> Expression {
+    match &expr.kind {
+        ExprKind::Binary { op, left, right } => {
+            let next_left = normalize_go_expr(left, env, signatures, state);
+            let next_right = normalize_go_expr(right, env, signatures, state);
+            if matches!(op, BinOp::Eq | BinOp::NotEq)
+                && go_expr_is_fixed_array(&next_left, env, signatures)
+                && go_expr_is_fixed_array(&next_right, env, signatures)
+            {
+                let equal = go_builtin_call("__go_fixed_array_equal", vec![next_left, next_right]);
+                if *op == BinOp::NotEq {
+                    Expression::new(ExprKind::Unary {
+                        op: UnaryOp::Not,
+                        expr: Box::new(equal),
+                    })
+                } else {
+                    equal
+                }
+            } else {
+                Expression::new(ExprKind::Binary {
+                    op: *op,
+                    left: Box::new(next_left),
+                    right: Box::new(next_right),
+                })
+            }
+        }
+        ExprKind::Unary { op, expr } => Expression::new(ExprKind::Unary {
+            op: *op,
+            expr: Box::new(normalize_go_expr(expr, env, signatures, state)),
+        }),
+        ExprKind::Ternary { cond, then, else_ } => Expression::new(ExprKind::Ternary {
+            cond: Box::new(normalize_go_expr(cond, env, signatures, state)),
+            then: Box::new(normalize_go_expr(then, env, signatures, state)),
+            else_: Box::new(normalize_go_expr(else_, env, signatures, state)),
+        }),
+        ExprKind::Member {
+            object,
+            field,
+            null_safe,
+        } => Expression::new(ExprKind::Member {
+            object: Box::new(normalize_go_expr(object, env, signatures, state)),
+            field: field.clone(),
+            null_safe: *null_safe,
+        }),
+        ExprKind::Index {
+            object,
+            index,
+            null_safe,
+        } => Expression::new(ExprKind::Index {
+            object: Box::new(normalize_go_expr(object, env, signatures, state)),
+            index: Box::new(normalize_go_expr(index, env, signatures, state)),
+            null_safe: *null_safe,
+        }),
+        ExprKind::Assign { target, value } => Expression::new(ExprKind::Assign {
+            target: Box::new(normalize_go_expr(target, env, signatures, state)),
+            value: Box::new(normalize_go_expr(value, env, signatures, state)),
+        }),
+        ExprKind::Call {
+            callee,
+            args,
+            optional,
+        } => {
+            let next_callee = normalize_go_expr(callee, env, signatures, state);
+            let signature = match &next_callee.kind {
+                ExprKind::Ident(name) => signatures.get(name),
+                _ => None,
+            };
+            let next_args = args
+                .iter()
+                .enumerate()
+                .map(|(idx, arg)| {
+                    let mut value = normalize_go_expr(&arg.value, env, signatures, state);
+                    if signature
+                        .and_then(|sig| sig.params.get(idx))
+                        .and_then(|hint| hint.as_deref())
+                        .is_some_and(go_is_fixed_array_type)
+                    {
+                        value = go_wrap_fixed_array_copy(value, env, signatures);
+                    }
+                    Argument {
+                        value,
+                        name: arg.name.clone(),
+                        by_ref: arg.by_ref,
+                        spread: arg.spread,
+                    }
+                })
+                .collect();
+            Expression::new(ExprKind::Call {
+                callee: Box::new(next_callee),
+                args: next_args,
+                optional: *optional,
+            })
+        }
+        ExprKind::Array(elements) => Expression::new(ExprKind::Array(
+            elements
+                .iter()
+                .map(|element| ArrayElement {
+                    key: element
+                        .key
+                        .as_ref()
+                        .map(|key| normalize_go_expr(key, env, signatures, state)),
+                    value: normalize_go_expr(&element.value, env, signatures, state),
+                    spread: element.spread,
+                    by_ref: element.by_ref,
+                })
+                .collect(),
+        )),
+        ExprKind::Object(props) => Expression::new(ExprKind::Object(
+            props
+                .iter()
+                .map(|prop| match prop {
+                    ObjectProperty::KeyValue { key, value } => ObjectProperty::KeyValue {
+                        key: normalize_go_expr(key, env, signatures, state),
+                        value: normalize_go_expr(value, env, signatures, state),
+                    },
+                    ObjectProperty::Spread(value) => {
+                        ObjectProperty::Spread(normalize_go_expr(value, env, signatures, state))
+                    }
+                    ObjectProperty::Computed { key, value } => ObjectProperty::Computed {
+                        key: normalize_go_expr(key, env, signatures, state),
+                        value: normalize_go_expr(value, env, signatures, state),
+                    },
+                    _ => prop.clone(),
+                })
+                .collect(),
+        )),
+        ExprKind::Cast { expr, type_name } => Expression::new(ExprKind::Cast {
+            expr: Box::new(normalize_go_expr(expr, env, signatures, state)),
+            type_name: type_name.clone(),
+        }),
+        ExprKind::Tuple(values) => Expression::new(ExprKind::Tuple(
+            values
+                .iter()
+                .map(|value| normalize_go_expr(value, env, signatures, state))
+                .collect(),
+        )),
+        ExprKind::Lambda {
+            params,
+            body,
+            is_async,
+            captures,
+        } => {
+            let mut lambda_env = GoNormalizeEnv {
+                fixed_arrays: env.fixed_arrays.clone(),
+                return_type: None,
+            };
+            for param in params {
+                if let Some(type_hint) = param.type_hint.as_deref().filter(|hint| go_is_fixed_array_type(hint)) {
+                    lambda_env.fixed_arrays.insert(param.name.clone(), type_hint.to_string());
+                }
+            }
+            let next_body = match body {
+                LambdaBody::Expr(expr) => {
+                    LambdaBody::Expr(Box::new(normalize_go_expr(expr, &lambda_env, signatures, state)))
+                }
+                LambdaBody::Block(stmts) => {
+                    LambdaBody::Block(normalize_go_block(stmts, &lambda_env, signatures, state))
+                }
+            };
+            Expression::new(ExprKind::Lambda {
+                params: params.clone(),
+                body: next_body,
+                is_async: *is_async,
+                captures: captures.clone(),
+            })
+        }
+        _ => expr.clone(),
+    }
+}
+
+fn lower_go_fixed_array_range(
+    var: &str,
+    key: Option<&str>,
+    iter: Expression,
+    body: &[Statement],
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+    state: &mut GoNormalizeState,
+) -> Vec<Statement> {
+    let iter_type = go_expr_type_hint(&iter, env, signatures).unwrap_or_default();
+    let iter_name = fresh_go_temp(state, "__go_range_iter");
+    let index_name = fresh_go_temp(state, "__go_range_idx");
+
+    let iter_decl = Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(iter_name.clone()),
+            type_hint: (!iter_type.is_empty()).then(|| iter_type.clone()),
+            init: Some(go_wrap_fixed_array_copy(iter, env, signatures)),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    });
+
+    let mut body_env = env.clone();
+    if !iter_type.is_empty() {
+        body_env.fixed_arrays.insert(iter_name.clone(), iter_type.clone());
+    }
+
+    let mut lowered_body = Vec::new();
+    match key {
+        Some(key_name) => {
+            if key_name != "_" {
+                lowered_body.extend(normalize_go_statement(
+                    &Statement::new(StmtKind::VarDecl {
+                        declarations: vec![VarDeclarator {
+                            pattern: BindingPattern::Ident(key_name.to_string()),
+                            type_hint: Some("int".to_string()),
+                            init: Some(Expression::ident(&index_name)),
+                            array_bounds: None,
+                            with_events: false,
+                        }],
+                        kind: VarDeclKind::Let,
+                    }),
+                    &mut body_env,
+                    signatures,
+                    state,
+                ));
+            }
+            if var != "_" {
+                lowered_body.extend(normalize_go_statement(
+                    &Statement::new(StmtKind::VarDecl {
+                        declarations: vec![VarDeclarator {
+                            pattern: BindingPattern::Ident(var.to_string()),
+                            type_hint: go_array_element_type(&iter_type),
+                            init: Some(Expression::new(ExprKind::Index {
+                                object: Box::new(Expression::ident(&iter_name)),
+                                index: Box::new(Expression::ident(&index_name)),
+                                null_safe: false,
+                            })),
+                            array_bounds: None,
+                            with_events: false,
+                        }],
+                        kind: VarDeclKind::Let,
+                    }),
+                    &mut body_env,
+                    signatures,
+                    state,
+                ));
+            }
+        }
+        None => {
+            if var != "_" {
+                lowered_body.extend(normalize_go_statement(
+                    &Statement::new(StmtKind::VarDecl {
+                        declarations: vec![VarDeclarator {
+                            pattern: BindingPattern::Ident(var.to_string()),
+                            type_hint: Some("int".to_string()),
+                            init: Some(Expression::ident(&index_name)),
+                            array_bounds: None,
+                            with_events: false,
+                        }],
+                        kind: VarDeclKind::Let,
+                    }),
+                    &mut body_env,
+                    signatures,
+                    state,
+                ));
+            }
+        }
+    }
+
+    for stmt in body {
+        lowered_body.extend(normalize_go_statement(stmt, &mut body_env, signatures, state));
+    }
+
+    let for_stmt = Statement::new(StmtKind::For {
+        init: Some(Box::new(Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(index_name.clone()),
+                type_hint: Some("int".to_string()),
+                init: Some(Expression::int(0)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Let,
+        }))),
+        cond: Some(Expression::new(ExprKind::Binary {
+            op: BinOp::Lt,
+            left: Box::new(Expression::ident(&index_name)),
+            right: Box::new(go_builtin_call("len", vec![Expression::ident(&iter_name)])),
+        })),
+        update: Some(Expression::new(ExprKind::Assign {
+            target: Box::new(Expression::ident(&index_name)),
+            value: Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(Expression::ident(&index_name)),
+                right: Box::new(Expression::int(1)),
+            })),
+        })),
+        body: lowered_body,
+    });
+
+    vec![Statement::new(StmtKind::Block(vec![iter_decl, for_stmt]))]
+}
+
+fn fresh_go_temp(state: &mut GoNormalizeState, prefix: &str) -> String {
+    let name = format!("{}{}", prefix, state.next_temp);
+    state.next_temp += 1;
+    name
+}
+
+fn go_wrap_fixed_array_copy(
+    expr: Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Expression {
+    if go_expr_is_fixed_array(&expr, env, signatures) && go_requires_fixed_array_copy(&expr) {
+        go_builtin_call("__go_fixed_array_clone", vec![expr])
+    } else {
+        expr
+    }
+}
+
+fn go_requires_fixed_array_copy(expr: &Expression) -> bool {
+    matches!(expr.kind, ExprKind::Ident(_) | ExprKind::Member { .. } | ExprKind::Index { .. })
+}
+
+fn go_builtin_call(name: &str, args: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(name)),
+        args: args
+            .into_iter()
+            .map(|value| Argument {
+                value,
+                name: None,
+                by_ref: false,
+                spread: false,
+            })
+            .collect(),
+        optional: false,
     })
+}
+
+fn go_expr_is_fixed_array(
+    expr: &Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> bool {
+    go_expr_type_hint(expr, env, signatures)
+        .as_deref()
+        .is_some_and(go_is_fixed_array_type)
+}
+
+fn go_expr_type_hint(
+    expr: &Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => env.fixed_arrays.get(name).cloned(),
+        ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
+        ExprKind::Index { object, .. } => go_expr_type_hint(object, env, signatures)
+            .and_then(|type_name| go_array_element_type(&type_name)),
+        ExprKind::Assign { value, .. } => go_expr_type_hint(value, env, signatures),
+        ExprKind::Call { callee, args, .. } => match &callee.kind {
+            ExprKind::Ident(name) if name == "__go_fixed_array_clone" => {
+                args.first().and_then(|arg| go_expr_type_hint(&arg.value, env, signatures))
+            }
+            ExprKind::Ident(name) if name == "__go_fixed_array_equal" => Some("bool".to_string()),
+            ExprKind::Ident(name) => signatures.get(name).and_then(|sig| sig.return_type.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn go_decl_fixed_array_binding(
+    decl: &VarDeclarator,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<(String, String)> {
+    let BindingPattern::Ident(name) = &decl.pattern else {
+        return None;
+    };
+    let type_name = decl
+        .type_hint
+        .clone()
+        .or_else(|| decl.init.as_ref().and_then(|expr| go_expr_type_hint(expr, env, signatures)))?;
+    go_is_fixed_array_type(&type_name).then(|| (name.clone(), type_name))
+}
+
+fn go_is_fixed_array_type(type_name: &str) -> bool {
+    go_array_head(type_name)
+        .map(|(head, _)| !head.trim().is_empty())
+        .unwrap_or(false)
 }
 
 fn walk_package_clause(pair: Pair<Rule>) -> Result<String, String> {
@@ -400,7 +1137,7 @@ fn walk_const_decl(pair: Pair<Rule>) -> Result<Statement, String> {
 fn walk_var_spec(pair: Pair<Rule>, _kind: VarDeclKind) -> Result<(Vec<VarDeclarator>, Option<String>), String> {
     let mut names = Vec::new();
     let mut type_hint: Option<String> = None;
-    let mut init: Option<Expression> = None;
+    let mut init_values = Vec::new();
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
@@ -414,23 +1151,47 @@ fn walk_var_spec(pair: Pair<Rule>, _kind: VarDeclKind) -> Result<(Vec<VarDeclara
             Rule::ident_name => names.push(inner.as_str().to_string()),
             Rule::type_annotation => type_hint = Some(walk_type(inner)),
             Rule::expression_list => {
-                let exprs = walk_expression_list(inner)?;
-                if !exprs.is_empty() {
-                    init = Some(exprs.into_iter().next().unwrap());
-                }
+                init_values = walk_expression_list(inner)?;
             }
             Rule::expression => {
-                init = Some(walk_expression(inner)?);
+                init_values.push(walk_expression(inner)?);
             }
             _ => {}
         }
     }
 
+    if names.len() > 1 && !init_values.is_empty() {
+        let pattern = BindingPattern::Array(
+            names.into_iter().map(|name| {
+                if name == "_" {
+                    ArrayPatternElem::Hole
+                } else {
+                    ArrayPatternElem::Pattern(BindingPattern::Ident(name), None)
+                }
+            }).collect(),
+        );
+        let init = if init_values.len() == 1 {
+            init_values.into_iter().next().unwrap()
+        } else {
+            Expression::new(ExprKind::Tuple(init_values))
+        };
+        return Ok((vec![VarDeclarator {
+            pattern,
+            init: Some(init),
+            type_hint,
+            array_bounds: None,
+            with_events: false,
+        }], None));
+    }
+
     let mut declarations = Vec::new();
     for name in names {
+        if name == "_" {
+            continue;
+        }
         declarations.push(VarDeclarator {
             pattern: BindingPattern::Ident(name),
-            init: init.clone(),
+            init: init_values.first().cloned(),
             type_hint: type_hint.clone(),
             array_bounds: None,
             with_events: false,
@@ -653,22 +1414,38 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
+    if targets.len() > 1 {
+        let patterns = targets
+            .iter()
+            .map(|target| match &target.kind {
+                ExprKind::Ident(name) => {
+                    ArrayPatternElem::Pattern(BindingPattern::Ident(name.clone()), None)
+                }
+                _ => ArrayPatternElem::Hole,
+            })
+            .collect();
+        let value = if values.len() == 1 {
+            values.into_iter().next().unwrap()
+        } else {
+            Expression::new(ExprKind::Tuple(values))
+        };
+        return Ok(StmtKind::Assign {
+            targets: vec![Expression::new(ExprKind::Destructure(
+                DestructurePattern::Array(patterns),
+            ))],
+            value,
+        });
+    }
+
     if values.len() == 1 {
         Ok(StmtKind::Assign {
             targets,
             value: values.into_iter().next().unwrap(),
         })
     } else if !values.is_empty() {
-        // Multiple values — pack into array
-        let arr_elems: Vec<ArrayElement> = values.into_iter().map(|v| ArrayElement {
-            key: None,
-            value: v,
-            spread: false,
-            by_ref: false,
-        }).collect();
         Ok(StmtKind::Assign {
             targets,
-            value: Expression::new(ExprKind::Array(arr_elems)),
+            value: Expression::new(ExprKind::Tuple(values)),
         })
     } else {
         Ok(StmtKind::Empty)
@@ -684,10 +1461,7 @@ fn walk_short_var_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             Rule::ident_list => {
                 for id in inner.into_inner() {
                     if id.as_rule() == Rule::ident_name {
-                        let name = id.as_str().to_string();
-                        if name != "_" {
-                            names.push(name);
-                        }
+                        names.push(id.as_str().to_string());
                     }
                 }
             }
@@ -699,28 +1473,49 @@ fn walk_short_var_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 
     let mut declarations = Vec::new();
-    let value = if values.len() == 1 {
-        values.into_iter().next().unwrap()
-    } else if !values.is_empty() {
-        let arr_elems: Vec<ArrayElement> = values.into_iter().map(|v| ArrayElement {
-            key: None,
-            value: v,
-            spread: false,
-            by_ref: false,
-        }).collect();
-        Expression::new(ExprKind::Array(arr_elems))
-    } else {
-        Expression::new(ExprKind::Lit(Literal::Null))
-    };
-
-    for name in names {
+    if names.len() > 1 && !values.is_empty() {
+        let pattern = BindingPattern::Array(
+            names.into_iter().map(|name| {
+                if name == "_" {
+                    ArrayPatternElem::Hole
+                } else {
+                    ArrayPatternElem::Pattern(BindingPattern::Ident(name), None)
+                }
+            }).collect(),
+        );
+        let value = if values.len() == 1 {
+            values.into_iter().next().unwrap()
+        } else {
+            Expression::new(ExprKind::Tuple(values))
+        };
         declarations.push(VarDeclarator {
-            pattern: BindingPattern::Ident(name),
-            init: Some(value.clone()),
+            pattern,
+            init: Some(value),
             type_hint: None,
             array_bounds: None,
             with_events: false,
         });
+    } else {
+        let value = if values.len() == 1 {
+            values.into_iter().next().unwrap()
+        } else if !values.is_empty() {
+            Expression::new(ExprKind::Tuple(values))
+        } else {
+            Expression::new(ExprKind::Lit(Literal::Null))
+        };
+
+        for name in names {
+            if name == "_" {
+                continue;
+            }
+            declarations.push(VarDeclarator {
+                pattern: BindingPattern::Ident(name),
+                init: Some(value.clone()),
+                type_hint: None,
+                array_bounds: None,
+                with_events: false,
+            });
+        }
     }
 
     Ok(StmtKind::VarDecl {
@@ -981,6 +1776,9 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                                 update = Some(walk_expression(fc_inner)?);
                             }
                         }
+                        Rule::block_statement => {
+                            body = walk_block(fc_inner)?;
+                        }
                         _ => {}
                     }
                 }
@@ -1009,6 +1807,9 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         Rule::expression => {
                             range_iter = Some(walk_expression(rc_inner)?);
                         }
+                        Rule::block_statement => {
+                            body = walk_block(rc_inner)?;
+                        }
                         _ => {}
                     }
                 }
@@ -1024,13 +1825,17 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 
     if is_range {
-        let var = range_vars.get(0).cloned().unwrap_or_else(|| BindingPattern::Ident("_".to_string()));
+        let var = if range_vars.len() > 1 {
+            range_vars.get(1).cloned().unwrap_or_else(|| BindingPattern::Ident("_".to_string()))
+        } else {
+            range_vars.get(0).cloned().unwrap_or_else(|| BindingPattern::Ident("_".to_string()))
+        };
         let var_name = match var {
             BindingPattern::Ident(name) => name,
             _ => "_".to_string(),
         };
         let key = if range_vars.len() > 1 {
-            let key_pat = range_vars.get(1).cloned().unwrap();
+            let key_pat = range_vars.get(0).cloned().unwrap();
             match key_pat {
                 BindingPattern::Ident(name) => Some(name),
                 _ => None,
@@ -1397,22 +2202,7 @@ fn walk_composite_literal(pair: Pair<Rule>) -> Result<Expression, String> {
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::literal_type => {
-                for lt_inner in inner.into_inner() {
-                    match lt_inner.as_rule() {
-                        Rule::ident_name => type_name = lt_inner.as_str().to_string(),
-                        Rule::type_annotation => {
-                            let t = walk_type(lt_inner);
-                            if t.starts_with("map[") {
-                                type_name = "map".to_string();
-                            } else if t.starts_with("[]") || t.starts_with("[") {
-                                type_name = "[]".to_string();
-                            } else {
-                                type_name = t;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
+                type_name = inner.as_str().to_string();
             }
             Rule::literal_value => {
                 for lv_inner in inner.into_inner() {
@@ -1425,7 +2215,7 @@ fn walk_composite_literal(pair: Pair<Rule>) -> Result<Expression, String> {
         }
     }
 
-    if type_name == "map" || type_name.starts_with("map[") {
+    if type_name.starts_with("map[") {
         // Build a dict/object literal
         let mut props = Vec::new();
         for (key, val) in elements {
@@ -1440,9 +2230,39 @@ fn walk_composite_literal(pair: Pair<Rule>) -> Result<Expression, String> {
                 value: val,
             });
         }
-        Ok(Expression::new(ExprKind::Object(props)))
+        Ok(go_typed_composite_expr(Expression::new(ExprKind::Object(props)), &type_name))
+    } else if go_is_array_like_type(&type_name) {
+        let mut values: Vec<Expression> = elements.into_iter().map(|(_, value)| value).collect();
+        if let Some(target_len) = go_fixed_array_len(&type_name, values.len()) {
+            if let Some(elem_type) = go_array_element_type(&type_name) {
+                while values.len() < target_len {
+                    values.push(go_zero_value_expr(&elem_type));
+                }
+            }
+        }
+        let arr_elems: Vec<ArrayElement> = values.into_iter().map(|value| ArrayElement {
+            key: None,
+            value,
+            spread: false,
+            by_ref: false,
+        }).collect();
+        Ok(go_typed_composite_expr(Expression::new(ExprKind::Array(arr_elems)), &type_name))
+    } else if !type_name.is_empty() && elements.iter().all(|(key, _)| !matches!(key.kind, ExprKind::Lit(Literal::Null))) {
+        let mut props = Vec::new();
+        for (key, val) in elements {
+            let key = match key.kind {
+                ExprKind::Ident(name) => Expression::new(ExprKind::Lit(Literal::Str(name))),
+                ExprKind::Lit(Literal::Int(n)) => Expression::new(ExprKind::Lit(Literal::Str(n.to_string()))),
+                _ => key,
+            };
+            props.push(ObjectProperty::KeyValue {
+                key,
+                value: val,
+            });
+        }
+        Ok(go_typed_composite_expr(Expression::new(ExprKind::Object(props)), &type_name))
     } else {
-        // Array literal or struct literal
+        // Untyped composite literal fallback.
         let arr_elems: Vec<ArrayElement> = elements.into_iter().map(|(_, v)| ArrayElement {
             key: None,
             value: v,
@@ -1450,6 +2270,79 @@ fn walk_composite_literal(pair: Pair<Rule>) -> Result<Expression, String> {
             by_ref: false,
         }).collect();
         Ok(Expression::new(ExprKind::Array(arr_elems)))
+    }
+}
+
+fn go_typed_composite_expr(expr: Expression, type_name: &str) -> Expression {
+    if type_name.is_empty() {
+        expr
+    } else {
+        Expression::new(ExprKind::Cast {
+            expr: Box::new(expr),
+            type_name: type_name.to_string(),
+        })
+    }
+}
+
+fn go_is_array_like_type(type_name: &str) -> bool {
+    go_array_head(type_name).is_some()
+}
+
+fn go_array_head(type_name: &str) -> Option<(&str, &str)> {
+    let trimmed = type_name.trim();
+    if !trimmed.starts_with('[') {
+        return None;
+    }
+    let close = trimmed.find(']')?;
+    Some((&trimmed[1..close], trimmed[close + 1..].trim()))
+}
+
+fn go_array_element_type(type_name: &str) -> Option<String> {
+    let (_, tail) = go_array_head(type_name)?;
+    (!tail.is_empty()).then(|| tail.to_string())
+}
+
+fn go_fixed_array_len(type_name: &str, inferred_len: usize) -> Option<usize> {
+    let (head, _) = go_array_head(type_name)?;
+    let head = head.trim();
+    if head.is_empty() {
+        None
+    } else if head == "..." {
+        Some(inferred_len)
+    } else {
+        head.parse::<usize>().ok()
+    }
+}
+
+fn go_zero_value_expr(type_name: &str) -> Expression {
+    let trimmed = type_name.trim();
+    let lower = trimmed.to_ascii_lowercase();
+
+    if let Some(len) = go_fixed_array_len(trimmed, 0) {
+        if let Some(elem_type) = go_array_element_type(trimmed) {
+            let elements = (0..len).map(|_| ArrayElement {
+                key: None,
+                value: go_zero_value_expr(&elem_type),
+                spread: false,
+                by_ref: false,
+            }).collect();
+            return go_typed_composite_expr(Expression::new(ExprKind::Array(elements)), trimmed);
+        }
+    }
+
+    if lower.starts_with("[]") || lower.starts_with("map[") || lower.starts_with("chan ") || lower.starts_with('*') {
+        return Expression::new(ExprKind::Lit(Literal::Null));
+    }
+
+    match lower.as_str() {
+        "bool" => Expression::new(ExprKind::Lit(Literal::Bool(false))),
+        "string" => Expression::new(ExprKind::Lit(Literal::Str(String::new()))),
+        "float32" | "float64" => Expression::new(ExprKind::Lit(Literal::Float(0.0))),
+        "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8" | "uint16"
+        | "uint32" | "uint64" | "uintptr" | "byte" | "rune" => {
+            Expression::new(ExprKind::Lit(Literal::Int(0)))
+        }
+        _ => go_typed_composite_expr(Expression::new(ExprKind::Object(Vec::new())), trimmed),
     }
 }
 
@@ -1483,12 +2376,12 @@ fn walk_element_list(pair: Pair<Rule>) -> Result<Vec<(Expression, Expression)>, 
                                     val = Some(walk_expression(e_inner)?);
                                 }
                             } else if e_inner.as_rule() == Rule::literal_value {
-                                val = Some(Expression::new(ExprKind::Lit(Literal::Null)));
+                                val = Some(walk_literal_value_expr(e_inner)?);
                             }
                         }
                     }
                     Rule::literal_value => {
-                        val = Some(Expression::new(ExprKind::Lit(Literal::Null)));
+                        val = Some(walk_literal_value_expr(ke_inner)?);
                     }
                     _ => {}
                 }
@@ -1503,6 +2396,40 @@ fn walk_element_list(pair: Pair<Rule>) -> Result<Vec<(Expression, Expression)>, 
         }
     }
     Ok(elements)
+}
+
+fn walk_literal_value_expr(pair: Pair<Rule>) -> Result<Expression, String> {
+    let mut elements = Vec::new();
+    for inner in pair.into_inner() {
+        if inner.as_rule() == Rule::element_list {
+            elements = walk_element_list(inner)?;
+        }
+    }
+
+    if elements.iter().all(|(key, _)| !matches!(key.kind, ExprKind::Lit(Literal::Null))) {
+        let mut props = Vec::new();
+        for (key, value) in elements {
+            let key = match key.kind {
+                ExprKind::Ident(name) => Expression::string(&name),
+                ExprKind::Lit(Literal::Int(n)) => Expression::string(&n.to_string()),
+                _ => key,
+            };
+            props.push(ObjectProperty::KeyValue { key, value });
+        }
+        Ok(Expression::new(ExprKind::Object(props)))
+    } else {
+        Ok(Expression::new(ExprKind::Array(
+            elements
+                .into_iter()
+                .map(|(_, value)| ArrayElement {
+                    key: None,
+                    value,
+                    spread: false,
+                    by_ref: false,
+                })
+                .collect(),
+        )))
+    }
 }
 
 fn walk_function_literal(pair: Pair<Rule>) -> Result<Expression, String> {

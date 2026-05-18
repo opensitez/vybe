@@ -16,6 +16,13 @@ fn string_substr_dynamic_receiver_runtime() {
 	);
 }
 #[test] fn string_search() { compile_ok("<?php echo strpos('hello', 'lo'); echo str_contains('hello', 'ell');"); }
+#[test]
+fn string_collation_compare_runtime() {
+	assert_eq!(
+		run_prints("<?php echo strcoll('A', 'B'); echo strcoll('B', 'A'); echo strcoll('A', 'A');"),
+		vec!["-1".to_string(), "1".to_string(), "0".to_string()]
+	);
+}
 #[test] fn string_replace() { compile_ok("<?php echo str_replace('world', 'PHP', 'hello world');"); }
 #[test] fn string_split() { compile_ok("<?php $parts = explode(',', 'a,b,c'); echo $parts[0];"); }
 #[test] fn string_join() { compile_ok("<?php echo implode('-', ['a', 'b', 'c']);"); }

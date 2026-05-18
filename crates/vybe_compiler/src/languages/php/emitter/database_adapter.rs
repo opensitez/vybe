@@ -3,7 +3,8 @@ use std::sync::Arc;
 use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
 
-use crate::emitter::collections;
+use crate::emitter::{collections, convert};
+use crate::languages::php::emitter::string_adapter;
 
 const PDO_FETCH_COLUMN: f64 = 7.0;
 
@@ -348,6 +349,319 @@ fn emit_empty_array(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_array_new(chunks, current, 0, line);
 }
 
+fn emit_sql_literal_from_slot(chunks: &mut [Chunk], current: usize, value_slot: u16, line: u32) -> u16 {
+    let resolved_slot = alloc_local(&mut chunks[current]);
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, value_slot, line);
+        lset(chunk, resolved_slot, line);
+
+        lget(chunk, value_slot, line);
+        chunk.emit_op(Op::REF_IS_OBJECT, line);
+        let not_object = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+        lget(chunk, value_slot, line);
+        struct_get_key(chunk, "__value", line);
+        let inner_slot = alloc_local(&mut chunks[current]);
+        let chunk = &mut chunks[current];
+        lset(chunk, inner_slot, line);
+
+        lget(chunk, inner_slot, line);
+        chunk.emit_op(Op::REF_IS_UNDEFINED, line);
+        let no_inner = chunk.emit_jump(Op::BR_IF_TRUE, line);
+
+        lget(chunk, inner_slot, line);
+        lset(chunk, resolved_slot, line);
+
+        chunk.patch_jump(no_inner);
+        chunk.patch_jump(not_object);
+    }
+
+    let out_slot = alloc_local(&mut chunks[current]);
+    let string_slot = alloc_local(&mut chunks[current]);
+    let type_slot = alloc_local(&mut chunks[current]);
+
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, resolved_slot, line);
+        chunk.emit_op(Op::REF_TYPEOF, line);
+        lset(chunk, type_slot, line);
+    }
+
+    let value_is_null = {
+        let chunk = &mut chunks[current];
+        lget(chunk, resolved_slot, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+        chunk.emit_jump(Op::BR_IF_TRUE, line)
+    };
+
+    let value_is_undefined = {
+        let chunk = &mut chunks[current];
+        lget(chunk, resolved_slot, line);
+        chunk.emit_op(Op::REF_IS_UNDEFINED, line);
+        chunk.emit_jump(Op::BR_IF_TRUE, line)
+    };
+
+    let value_is_number = {
+        let chunk = &mut chunks[current];
+        lget(chunk, type_slot, line);
+        push_str(chunk, "number", line);
+        chunk.emit_op(Op::DYN_EQ, line);
+        let is_number = chunk.emit_jump(Op::BR_IF_TRUE, line);
+
+        lget(chunk, type_slot, line);
+        push_str(chunk, "i32", line);
+        chunk.emit_op(Op::DYN_EQ, line);
+        let is_i32 = chunk.emit_jump(Op::BR_IF_TRUE, line);
+
+        lget(chunk, type_slot, line);
+        push_str(chunk, "i64", line);
+        chunk.emit_op(Op::DYN_EQ, line);
+        let is_i64 = chunk.emit_jump(Op::BR_IF_TRUE, line);
+
+        chunk.patch_jump(is_number);
+        chunk.patch_jump(is_i32);
+        is_i64
+    };
+
+    let value_is_bool = {
+        let chunk = &mut chunks[current];
+        lget(chunk, type_slot, line);
+        push_str(chunk, "boolean", line);
+        chunk.emit_op(Op::DYN_EQ, line);
+        chunk.emit_jump(Op::BR_IF_TRUE, line)
+    };
+
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, resolved_slot, line);
+    }
+    string_adapter::emit_echo_stringify(chunks, current, 1, line);
+    {
+        let chunk = &mut chunks[current];
+        lset(chunk, string_slot, line);
+
+        lget(chunk, string_slot, line);
+        push_str(chunk, "'", line);
+        push_str(chunk, "''", line);
+        chunk.emit_op(Op::STR_REPLACE, line);
+        lset(chunk, string_slot, line);
+
+        push_str(chunk, "'", line);
+        lget(chunk, string_slot, line);
+        chunk.emit_op(Op::STR_CONCAT, line);
+        push_str(chunk, "'", line);
+        chunk.emit_op(Op::STR_CONCAT, line);
+        lset(chunk, out_slot, line);
+    }
+    let done = {
+        let chunk = &mut chunks[current];
+        chunk.emit_jump(Op::BR, line)
+    };
+
+    {
+        let chunk = &mut chunks[current];
+        chunk.patch_jump(value_is_null);
+        push_str(chunk, "null", line);
+        lset(chunk, out_slot, line);
+    }
+    let null_done = {
+        let chunk = &mut chunks[current];
+        chunk.emit_jump(Op::BR, line)
+    };
+
+    {
+        let chunk = &mut chunks[current];
+        chunk.patch_jump(value_is_undefined);
+        push_str(chunk, "null", line);
+        lset(chunk, out_slot, line);
+    }
+    let undefined_done = {
+        let chunk = &mut chunks[current];
+        chunk.emit_jump(Op::BR, line)
+    };
+
+    {
+        let chunk = &mut chunks[current];
+        chunk.patch_jump(value_is_number);
+        lget(chunk, resolved_slot, line);
+    }
+    call_import(chunks, current, "ecma:number", "Number", 1, line);
+    {
+        let chunk = &mut chunks[current];
+        push_const(chunk, Value::F64(10.0), line);
+    }
+    call_import(chunks, current, "ecma:number", "toString", 2, line);
+    {
+        let chunk = &mut chunks[current];
+        lset(chunk, out_slot, line);
+    }
+    let number_done = {
+        let chunk = &mut chunks[current];
+        chunk.emit_jump(Op::BR, line)
+    };
+
+    {
+        let chunk = &mut chunks[current];
+        chunk.patch_jump(value_is_bool);
+        lget(chunk, resolved_slot, line);
+        convert::emit_to_string(chunk, line);
+        lset(chunk, out_slot, line);
+        chunk.patch_jump(done);
+        chunk.patch_jump(null_done);
+        chunk.patch_jump(undefined_done);
+        chunk.patch_jump(number_done);
+    }
+
+    out_slot
+}
+
+fn emit_apply_named_bound_pairs(chunks: &mut [Chunk], current: usize, sql_slot: u16, pairs_slot: u16, line: u32) {
+    {
+        let chunk = &mut chunks[current];
+        push_const(chunk, Value::F64(0.0), line);
+    }
+    let index_slot = alloc_local(&mut chunks[current]);
+    {
+        let chunk = &mut chunks[current];
+        lset(chunk, index_slot, line);
+
+        lget(chunk, pairs_slot, line);
+    }
+    collections::emit_len(chunks, current, line);
+    let len_slot = alloc_local(&mut chunks[current]);
+    {
+        let chunk = &mut chunks[current];
+        lset(chunk, len_slot, line);
+    }
+
+    let loop_top = chunks[current].current_offset();
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, index_slot, line);
+        lget(chunk, len_slot, line);
+        chunk.emit_op(Op::DYN_LT, line);
+    }
+    let exit = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
+
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, pairs_slot, line);
+        lget(chunk, index_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+    }
+    let pair_slot = alloc_local(&mut chunks[current]);
+    {
+        let chunk = &mut chunks[current];
+        lset(chunk, pair_slot, line);
+
+        lget(chunk, pair_slot, line);
+        push_const(chunk, Value::F64(1.0), line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+    }
+    let pair_value_slot = alloc_local(&mut chunks[current]);
+    {
+        let chunk = &mut chunks[current];
+        lset(chunk, pair_value_slot, line);
+    }
+    let literal_slot = emit_sql_literal_from_slot(chunks, current, pair_value_slot, line);
+
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, sql_slot, line);
+        lget(chunk, pair_slot, line);
+        push_const(chunk, Value::F64(0.0), line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        lget(chunk, literal_slot, line);
+        chunk.emit_op(Op::STR_REPLACE, line);
+        lset(chunk, sql_slot, line);
+
+        lget(chunk, index_slot, line);
+        push_const(chunk, Value::F64(1.0), line);
+        chunk.emit_op(Op::F64_ADD, line);
+        lset(chunk, index_slot, line);
+        chunk.emit_loop(loop_top, line);
+        chunk.patch_jump(exit);
+    }
+}
+
+fn emit_apply_named_params_from_entries(chunks: &mut [Chunk], current: usize, sql_slot: u16, params_slot: u16, line: u32) {
+    let chunk = &mut chunks[current];
+    lget(chunk, params_slot, line);
+    collections::emit_iter_entries(chunks, current, line);
+    let entries_slot = alloc_local(&mut chunks[current]);
+    let chunk = &mut chunks[current];
+    lset(chunk, entries_slot, line);
+
+    push_const(chunk, Value::F64(0.0), line);
+    let index_slot = alloc_local(chunk);
+    lset(chunk, index_slot, line);
+
+    lget(chunk, entries_slot, line);
+    collections::emit_len(chunks, current, line);
+    let len_slot = alloc_local(&mut chunks[current]);
+    let chunk = &mut chunks[current];
+    lset(chunk, len_slot, line);
+
+    let pair_slot = alloc_local(chunk);
+    let key_slot = alloc_local(chunk);
+    let key_text_slot = alloc_local(chunk);
+    let value_slot = alloc_local(chunk);
+
+    let loop_top = chunk.current_offset();
+    lget(chunk, index_slot, line);
+    lget(chunk, len_slot, line);
+    chunk.emit_op(Op::DYN_LT, line);
+    let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    lget(chunk, entries_slot, line);
+    lget(chunk, index_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    lset(chunk, pair_slot, line);
+
+    lget(chunk, pair_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    lset(chunk, key_slot, line);
+
+    lget(chunk, key_slot, line);
+    let _ = chunk;
+    string_adapter::emit_echo_stringify(chunks, current, 1, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, key_text_slot, line);
+
+    lget(chunk, key_text_slot, line);
+    push_str(chunk, ":", line);
+    chunk.emit_op(Op::STR_STARTS_WITH, line);
+    let has_prefix = chunk.emit_jump(Op::BR_IF_TRUE, line);
+
+    push_str(chunk, ":", line);
+    lget(chunk, key_text_slot, line);
+    chunk.emit_op(Op::STR_CONCAT, line);
+    lset(chunk, key_text_slot, line);
+    chunk.patch_jump(has_prefix);
+
+    lget(chunk, pair_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    lset(chunk, value_slot, line);
+    let literal_slot = emit_sql_literal_from_slot(chunks, current, value_slot, line);
+    let chunk = &mut chunks[current];
+
+    lget(chunk, sql_slot, line);
+    lget(chunk, key_text_slot, line);
+    lget(chunk, literal_slot, line);
+    chunk.emit_op(Op::STR_REPLACE, line);
+    lset(chunk, sql_slot, line);
+
+    lget(chunk, index_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, index_slot, line);
+    chunk.emit_loop(loop_top, line);
+    chunk.patch_jump(exit);
+}
+
 fn emit_new_statement(
     chunks: &mut [Chunk],
     current: usize,
@@ -371,6 +685,10 @@ fn emit_new_statement(
         lget(chunk, stmt_slot, line);
         lget(chunk, slot, line);
         struct_set_key(chunk, "commandtext", line);
+
+        lget(chunk, stmt_slot, line);
+        lget(chunk, slot, line);
+        struct_set_key(chunk, "__prepared_commandtext", line);
     }
 
     lget(chunk, stmt_slot, line);
@@ -389,6 +707,16 @@ fn emit_new_statement(
     lget(chunk, stmt_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     struct_set_key(chunk, "__cursor", line);
+
+    lget(chunk, stmt_slot, line);
+    emit_empty_array(chunks, current, line);
+    let chunk = &mut chunks[current];
+    struct_set_key(chunk, "__bound_params", line);
+
+    lget(chunk, stmt_slot, line);
+    emit_empty_array(chunks, current, line);
+    let chunk = &mut chunks[current];
+    struct_set_key(chunk, "__bound_named_pairs", line);
 
     lget(chunk, stmt_slot, line);
 }
@@ -489,42 +817,157 @@ pub fn emit_php_pdo_rollback(chunks: &mut [Chunk], current: usize, _argc: u8, li
     call_import(chunks, current, "vybe:database", "rollback", 1, line);
 }
 
-pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+fn emit_php_pdo_statement_bind_common(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    let params_slot = if argc >= 2 { Some(alloc_local(chunk)) } else { None };
+    let _driver_options_slot = if argc >= 6 { Some(alloc_local(chunk)) } else { None };
+    let _max_length_slot = if argc >= 5 { Some(alloc_local(chunk)) } else { None };
+    let _type_slot = if argc >= 4 { Some(alloc_local(chunk)) } else { None };
+    let value_slot = alloc_local(chunk);
+    let param_slot = alloc_local(chunk);
     let stmt_slot = alloc_local(chunk);
-    if let Some(slot) = params_slot { lset(chunk, slot, line); }
+
+    if let Some(slot) = _driver_options_slot { lset(chunk, slot, line); }
+    if let Some(slot) = _max_length_slot { lset(chunk, slot, line); }
+    if let Some(slot) = _type_slot { lset(chunk, slot, line); }
+    lset(chunk, value_slot, line);
+    lset(chunk, param_slot, line);
     lset(chunk, stmt_slot, line);
 
-    lget(chunk, stmt_slot, line);
-    struct_get_key(chunk, "commandtext", line);
-    chunk.emit_op(Op::STR_TRIM, line);
-    chunk.emit_op(Op::STR_TO_LOWER, line);
-    let sql_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
-    lset(chunk, sql_slot, line);
 
-    let query_jumps = vec![
-        emit_queryish_check(chunk, sql_slot, "select", line),
-        emit_queryish_check(chunk, sql_slot, "pragma", line),
-        emit_queryish_check(chunk, sql_slot, "show", line),
-        emit_queryish_check(chunk, sql_slot, "with", line),
-        emit_queryish_check(chunk, sql_slot, "describe", line),
-    ];
-    let not_query = chunk.emit_jump(Op::BR, line);
+    lget(chunk, param_slot, line);
+    chunk.emit_op(Op::REF_IS_STRING, line);
+    let named_placeholder = chunk.emit_jump(Op::BR_IF_TRUE, line);
+
+    lget(chunk, stmt_slot, line);
+    struct_get_key(chunk, "__bound_params", line);
+    let params_slot = alloc_local(&mut chunks[current]);
+    let chunk = &mut chunks[current];
+    lset(chunk, params_slot, line);
+
+    lget(chunk, params_slot, line);
+    lget(chunk, param_slot, line);
+    convert::emit_to_int(chunk, line);
+    chunk.emit_op(Op::I32_CONST_1, line);
+    chunk.emit_op(Op::I32_SUB, line);
+    lget(chunk, value_slot, line);
+    collections::emit_set(chunks, current, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op(Op::TRUE, line);
+    let done = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(named_placeholder);
+    lget(chunk, stmt_slot, line);
+    struct_get_key(chunk, "__bound_named_pairs", line);
+    let named_pairs_slot = alloc_local(&mut chunks[current]);
+    let chunk = &mut chunks[current];
+    lset(chunk, named_pairs_slot, line);
+
+    lget(chunk, named_pairs_slot, line);
+    lget(chunk, param_slot, line);
+    lget(chunk, value_slot, line);
+    collections::emit_array_new(chunks, current, 2, line);
+    collections::emit_push(chunks, current, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op(Op::TRUE, line);
+    chunk.patch_jump(done);
+}
+
+pub fn emit_php_pdo_statement_bind_param(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_php_pdo_statement_bind_common(chunks, current, argc, line);
+}
+
+pub fn emit_php_pdo_statement_bind_value(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_php_pdo_statement_bind_common(chunks, current, argc, line);
+}
+
+pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let explicit_params_slot = {
+        let chunk = &mut chunks[current];
+        if argc >= 2 { Some(alloc_local(chunk)) } else { None }
+    };
+    let stmt_slot = {
+        let chunk = &mut chunks[current];
+        alloc_local(chunk)
+    };
+    {
+        let chunk = &mut chunks[current];
+        if let Some(slot) = explicit_params_slot { lset(chunk, slot, line); }
+        lset(chunk, stmt_slot, line);
+        lget(chunk, stmt_slot, line);
+        struct_get_key(chunk, "__prepared_commandtext", line);
+    }
+    let sql_text_slot = alloc_local(&mut chunks[current]);
+    {
+        let chunk = &mut chunks[current];
+        lset(chunk, sql_text_slot, line);
+    }
+
+    let effective_params_slot = alloc_local(&mut chunks[current]);
+    if let Some(slot) = explicit_params_slot {
+        let chunk = &mut chunks[current];
+        lget(chunk, slot, line);
+        lset(chunk, effective_params_slot, line);
+        emit_apply_named_params_from_entries(chunks, current, sql_text_slot, effective_params_slot, line);
+    } else {
+        {
+            let chunk = &mut chunks[current];
+            lget(chunk, stmt_slot, line);
+            struct_get_key(chunk, "__bound_params", line);
+            lset(chunk, effective_params_slot, line);
+
+            lget(chunk, stmt_slot, line);
+            struct_get_key(chunk, "__bound_named_pairs", line);
+        }
+        let named_pairs_slot = alloc_local(&mut chunks[current]);
+        {
+            let chunk = &mut chunks[current];
+            lset(chunk, named_pairs_slot, line);
+        }
+        emit_apply_named_bound_pairs(chunks, current, sql_text_slot, named_pairs_slot, line);
+    }
+
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, sql_text_slot, line);
+        chunk.emit_op(Op::STR_TRIM, line);
+        chunk.emit_op(Op::STR_TO_LOWER, line);
+    }
+    let sql_slot = alloc_local(&mut chunks[current]);
+    {
+        let chunk = &mut chunks[current];
+        lset(chunk, sql_slot, line);
+    }
+
+    let query_jumps = {
+        let chunk = &mut chunks[current];
+        vec![
+            emit_queryish_check(chunk, sql_slot, "select", line),
+            emit_queryish_check(chunk, sql_slot, "pragma", line),
+            emit_queryish_check(chunk, sql_slot, "show", line),
+            emit_queryish_check(chunk, sql_slot, "with", line),
+            emit_queryish_check(chunk, sql_slot, "describe", line),
+        ]
+    };
+    let not_query = {
+        let chunk = &mut chunks[current];
+        chunk.emit_jump(Op::BR, line)
+    };
 
     for jump in query_jumps {
+        let chunk = &mut chunks[current];
         chunk.patch_jump(jump);
     }
+    let chunk = &mut chunks[current];
     lget(chunk, stmt_slot, line);
+    lget(chunk, sql_text_slot, line);
+    struct_set_key(chunk, "commandtext", line);
     lget(chunk, stmt_slot, line);
-    struct_get_key(chunk, "commandtext", line);
-    if let Some(slot) = params_slot {
-        lget(chunk, slot, line);
-        call_import(chunks, current, "vybe:database", "query", 3, line);
-    } else {
-        call_import(chunks, current, "vybe:database", "query", 2, line);
-    }
+    lget(chunk, sql_text_slot, line);
+    lget(chunk, effective_params_slot, line);
+    call_import(chunks, current, "vybe:database", "query", 3, line);
     let rows_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, rows_slot, line);
@@ -539,14 +982,12 @@ pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc
 
     chunk.patch_jump(not_query);
     lget(chunk, stmt_slot, line);
+    lget(chunk, sql_text_slot, line);
+    struct_set_key(chunk, "commandtext", line);
     lget(chunk, stmt_slot, line);
-    struct_get_key(chunk, "commandtext", line);
-    if let Some(slot) = params_slot {
-        lget(chunk, slot, line);
-        call_import(chunks, current, "vybe:database", "execute", 3, line);
-    } else {
-        call_import(chunks, current, "vybe:database", "execute", 2, line);
-    }
+    lget(chunk, sql_text_slot, line);
+    lget(chunk, effective_params_slot, line);
+    call_import(chunks, current, "vybe:database", "execute", 3, line);
     let count_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, count_slot, line);

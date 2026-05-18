@@ -54,6 +54,7 @@ error_log           = { emit = "host:wasi:cli:error",        min_args = 1, max_a
 strlen              = { emit = "opcode:str_length",          min_args = 1, max_args = 1 }
 strtolower          = { emit = "opcode:str_to_lower",        min_args = 1, max_args = 1 }
 strtoupper          = { emit = "opcode:str_to_upper",        min_args = 1, max_args = 1 }
+strcoll             = { emit = "opcode:str_compare",         min_args = 2, max_args = 2 }
 trim                = { emit = "common:php.trim",            min_args = 1, max_args = 2 }
 ltrim               = { emit = "common:php.ltrim",           min_args = 1, max_args = 2 }
 rtrim               = { emit = "common:php.rtrim",           min_args = 1, max_args = 2 }
@@ -610,6 +611,8 @@ beginTransaction = { emit = "common:php.pdo_begin_transaction",  min_args = 0, m
 commit           = { emit = "common:php.pdo_commit",             min_args = 0, max_args = 0 }
 rollBack         = { emit = "common:php.pdo_rollback",           min_args = 0, max_args = 0 }
 execute          = { emit = "common:php.pdo_statement_execute",  min_args = 0, max_args = 1 }
+bindParam        = { emit = "common:php.pdo_statement_bind_param", min_args = 2, max_args = 5 }
+bindValue        = { emit = "common:php.pdo_statement_bind_value", min_args = 2, max_args = 4 }
 fetch            = { emit = "common:php.pdo_statement_fetch",    min_args = 0, max_args = 1 }
 fetchAll         = { emit = "common:php.pdo_statement_fetch_all", min_args = 0, max_args = 1 }
 
@@ -662,6 +665,8 @@ reduce   = "__array_reduce"
 "Number.NaN"            = "NaN"
 "PDO.ATTR_ERRMODE"      = 3
 "PDO.ERRMODE_EXCEPTION" = 2
+"PDO.PARAM_INT"        = 1
+"PDO.PARAM_STR"        = 2
 "PDO.FETCH_ASSOC"       = 2
 "PDO.FETCH_COLUMN"      = 7
 

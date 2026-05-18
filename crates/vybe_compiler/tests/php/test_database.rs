@@ -78,6 +78,24 @@ echo $rows[0]['name'];
     assert_eq!(lines, vec!["1", "Alice"]);
 }
 
+#[test]
+fn pdo_bind_param_named_fetch_assoc_runtime_round_trip() {
+    let lines = run_prints(r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT)');
+$pdo->exec("INSERT INTO projects (id, name) VALUES (10900, 'CTO')");
+$stmt = $pdo->prepare('SELECT name FROM projects WHERE id = :id');
+$id = 10900;
+$stmt->bindParam(':id', $id, PDO::PARAM_INT);
+$stmt->execute();
+$row = $stmt->fetch(PDO::FETCH_ASSOC);
+echo $row['name'];
+"#);
+
+    assert_eq!(lines, vec!["CTO"]);
+}
+
 // ── mysqli style ────────────────────────────────────────────
 #[test] fn mysqli_connect() { compile_ok(r#"<?php $conn = mysqli_connect('sqlite:test.db');"#); }
 

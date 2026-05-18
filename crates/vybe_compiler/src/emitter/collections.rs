@@ -594,6 +594,81 @@ pub fn emit_clone(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_import_call(chunks, current, "ecma:array", "slice", 3, line);
 }
 
+/// Sequence equality. Stack: [left_array, right_array] -> [bool].
+pub fn emit_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32) {
+    let left_slot = alloc_local(&mut chunks[current]);
+    let right_slot = alloc_local(&mut chunks[current]);
+    let len_slot = alloc_local(&mut chunks[current]);
+    let idx_slot = alloc_local(&mut chunks[current]);
+    let right_elem_slot = alloc_local(&mut chunks[current]);
+    let result_slot = alloc_local(&mut chunks[current]);
+
+    lset(&mut chunks[current], right_slot, line);
+    lset(&mut chunks[current], left_slot, line);
+
+    chunks[current].emit_op(Op::TRUE, line);
+    lset(&mut chunks[current], result_slot, line);
+
+    lget(&mut chunks[current], left_slot, line);
+    emit_len(chunks, current, line);
+    lset(&mut chunks[current], len_slot, line);
+
+    lget(&mut chunks[current], right_slot, line);
+    emit_len(chunks, current, line);
+    lget(&mut chunks[current], len_slot, line);
+    chunks[current].emit_op(Op::DYN_EQ, line);
+    let lengths_match = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
+    chunks[current].emit_op(Op::FALSE, line);
+    lset(&mut chunks[current], result_slot, line);
+    let done = chunks[current].emit_jump(Op::BR, line);
+
+    chunks[current].patch_jump(lengths_match);
+    chunks[current].emit_op(Op::I32_CONST_0, line);
+    lset(&mut chunks[current], idx_slot, line);
+
+    let outer_block = chunks[current].emit_block(line);
+    let (outer_loop, _) = chunks[current].emit_loop_s(line);
+    lget(&mut chunks[current], idx_slot, line);
+    lget(&mut chunks[current], len_slot, line);
+    chunks[current].emit_op(Op::DYN_LT, line);
+    chunks[current].emit_op(Op::DYN_NOT, line);
+    chunks[current].emit_br_if(1, line);
+
+    lget(&mut chunks[current], right_slot, line);
+    lget(&mut chunks[current], idx_slot, line);
+    emit_get(chunks, current, line);
+    lset(&mut chunks[current], right_elem_slot, line);
+
+    lget(&mut chunks[current], left_slot, line);
+    lget(&mut chunks[current], idx_slot, line);
+    emit_get(chunks, current, line);
+    lget(&mut chunks[current], right_elem_slot, line);
+    chunks[current].emit_op(Op::DYN_EQ, line);
+    let equal_values = chunks[current].emit_block(line);
+    chunks[current].emit_br_if(0, line);
+
+    chunks[current].emit_op(Op::FALSE, line);
+    lset(&mut chunks[current], result_slot, line);
+    chunks[current].emit_br(2, line);
+
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(equal_values);
+
+    lget(&mut chunks[current], idx_slot, line);
+    let one = chunks[current].add_constant(Value::I32(1));
+    chunks[current].emit_op_u16(Op::CONST, one, line);
+    chunks[current].emit_op(Op::DYN_ADD, line);
+    lset(&mut chunks[current], idx_slot, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(outer_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer_block);
+
+    chunks[current].patch_jump(done);
+    lget(&mut chunks[current], result_slot, line);
+}
+
 /// InsertRange. Stack: [array, index, src_array] → [null].
 /// Calls __vybe_array_insert_range stdlib (func below args via local reorder).
 pub fn emit_insert_range(chunks: &mut [Chunk], current: usize, line: u32) {

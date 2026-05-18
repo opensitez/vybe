@@ -13,7 +13,7 @@ block_comment = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
 
 // ── Program ─────────────────────────────────────────────────────────────────
 
-program = { SOI ~ package_clause ~ import_declarations? ~ top_level_declaration* ~ EOI }
+program = { SOI ~ package_clause ~ import_declarations? ~ (top_level_declaration ~ ";"?)* ~ EOI }
 
 // ── Package ─────────────────────────────────────────────────────────────────
 

@@ -71,9 +71,11 @@ entry_point = "main"
 
 # ── Array/Slice builtins ─────────────────────────────────────────────────────
 
-"len"             = { emit = "common:collections.len",         min_args = 1, max_args = 1 }
-"cap"             = { emit = "common:collections.len",         min_args = 1, max_args = 1 }
+"len"             = { emit = "common:collections.length",      min_args = 1, max_args = 1 }
+"cap"             = { emit = "common:collections.length",      min_args = 1, max_args = 1 }
 "append"          = { emit = "common:collections.push",        min_args = 2, max_args = 255 }
+"__go_fixed_array_clone" = { emit = "common:collections.clone", min_args = 1, max_args = 1 }
+"__go_fixed_array_equal" = { emit = "common:collections.sequence_equal", min_args = 2, max_args = 2 }
 "make"            = { emit = "host:ecma:array:from",           min_args = 1, max_args = 3 }
 "copy"            = { emit = "host:ecma:array:copyWithin",     min_args = 2, max_args = 3 }
 "delete"          = { emit = "host:ecma:object:delete",        min_args = 2, max_args = 2 }
@@ -125,8 +127,8 @@ Join         = { emit = "common:collections.join",  min_args = 1, max_args = 1 }
 
 # Slice/Array methods
 Append       = { emit = "common:collections.push",  min_args = 1, max_args = 255 }
-Len          = { emit = "common:collections.len",   min_args = 0, max_args = 0 }
-Cap          = { emit = "common:collections.len",   min_args = 0, max_args = 0 }
+Len          = { emit = "common:collections.length", min_args = 0, max_args = 0 }
+Cap          = { emit = "common:collections.length", min_args = 0, max_args = 0 }
 
 # Map methods
 HasKey       = { emit = "common:dict.has",          min_args = 1, max_args = 1 }
