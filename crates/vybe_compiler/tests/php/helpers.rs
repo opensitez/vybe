@@ -70,6 +70,27 @@ pub fn run_prints(src: &str) -> Vec<String> {
     result
 }
 
+pub fn run_prints_dynamic(src: &str, virtual_path: &str) -> Vec<String> {
+    let mut vm = VM::new();
+    let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let out = output.clone();
+    vybe_host::register_all(&mut vm);
+    vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+        let s: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
+        out.lock().unwrap().push(s.join(" "));
+        Value::Null
+    }));
+    vybe_host::setup_namespaces(&mut vm);
+
+    let language = vybe_compiler::languages::find_by_name("php").expect("php language not found");
+    let mut runtime = vybex::dynamic::RuntimeCompilerService::new(&mut vm);
+    runtime
+        .compile_and_run_source(src, language, virtual_path)
+        .expect("run failed");
+
+    output.lock().unwrap().clone()
+}
+
 /// Compile + parse only — the original `parse` helper from the old
 /// PHP tests. We don't expose the raw `Module` AST here; the caller
 /// just needs "did this parse?". Returns unit on success.

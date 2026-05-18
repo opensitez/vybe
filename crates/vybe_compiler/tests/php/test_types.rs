@@ -45,4 +45,22 @@ echo $value;
 #[test] fn empty_values() {
 	assert_eq!(run_prints("<?php echo empty('') ? 't' : 'f'; echo empty(0) ? 't' : 'f'; echo empty(null) ? 't' : 'f'; echo empty('0') ? 't' : 'f'; echo empty('x') ? 't' : 'f'; echo empty([]) ? 't' : 'f';"), &["t", "t", "t", "t", "f", "t"]);
 }
+#[test] fn empty_associative_array_uses_assoc_entries() {
+	assert_eq!(run_prints("<?php $files = []; $files['a.knt'] = '/tmp/a.knt'; echo empty($files) ? 't' : 'f'; echo count($files);"), &["f", "1"]);
+}
+#[test] fn associative_array_key_first_and_foreach_entries() {
+	assert_eq!(run_prints("<?php $files = []; $files['a.knt'] = '/tmp/a'; $files['b.knt'] = '/tmp/b'; echo array_key_first($files); foreach ($files as $key => $path) { echo $key; echo $path; }"), &["a.knt", "a.knt", "/tmp/a", "b.knt", "/tmp/b"]);
+}
+#[test] fn associative_array_foreach_values() {
+	assert_eq!(run_prints("<?php $files = []; $files['a.knt'] = '/tmp/a'; $files['b.knt'] = '/tmp/b'; foreach ($files as $path) { echo $path; }"), &["/tmp/a", "/tmp/b"]);
+}
+#[test] fn associative_array_truthiness_in_if() {
+	assert_eq!(run_prints("<?php $section = ['properties' => [], 'notes' => []]; if ($section) { echo 'yes'; } else { echo 'no'; } $section['properties']['NN'] = 'Work'; if ($section) { echo 'yes'; } else { echo 'no'; }"), &["yes", "yes"]);
+}
+#[test] fn end_returns_last_value() {
+	assert_eq!(run_prints("<?php $items = []; $items['a'] = 'one'; $items['b'] = 'two'; echo end($items);"), &["two"]);
+}
+#[test] fn iconv_passthrough_string() {
+	assert_eq!(run_prints("<?php echo iconv('WINDOWS-1252', 'UTF-8//TRANSLIT', 'Info Base');"), &["Info Base"]);
+}
 #[test] fn unset_var() { compile_ok("<?php $x = 1; unset($x);"); }

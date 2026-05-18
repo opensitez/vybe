@@ -248,6 +248,34 @@ fn is_numeric_overload_type(type_hint: &str) -> bool {
 }
 
 impl Compiler {
+    fn resolve_php_autoload_callback_class_global(&self, class_name: &str) -> Option<String> {
+        let resolved_class = self.resolve_source_type_alias(class_name);
+        let canon_class = self.canon(&resolved_class);
+        if self.defined_classes.contains(&canon_class) || self.defined_globals.contains(&canon_class) {
+            return Some(canon_class);
+        }
+        resolved_class.rsplit('.').next().and_then(|short_name| {
+            let short_canon = self.canon(short_name);
+            if self.defined_classes.contains(&short_canon) || self.defined_globals.contains(&short_canon) {
+                Some(short_canon)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn compile_php_autoload_callable_ref(&mut self, expr: &Expression) -> Result<(), String> {
+        match &expr.kind {
+            ExprKind::Lit(Literal::Str(function_name)) => {
+                let resolved_name = self.resolve_source_type_alias(function_name);
+                let function_idx = self.str_const(&self.canon(&resolved_name));
+                self.emit_u16(Op::GLOBAL_GET, function_idx);
+                Ok(())
+            }
+            _ => self.compile_expr(expr),
+        }
+    }
+
     fn overload_type_matches(&self, param_type: &str, arg_type: &str) -> bool {
         let normalized_param = Self::normalize_type_hint(strip_generic_suffix(param_type).trim_end_matches('?'));
         let normalized_arg = Self::normalize_type_hint(strip_generic_suffix(arg_type).trim_end_matches('?'));
@@ -1260,6 +1288,103 @@ impl Compiler {
 
         if self.is_php_profile() {
             if let ExprKind::Ident(name) = &callee.kind {
+                if name.eq_ignore_ascii_case("spl_autoload_register") {
+                    let receiver_idx = self.str_const("__php_autoload_callback_receiver");
+                    if let Some(callback) = args.first() {
+                        match &callback.value.kind {
+                            ExprKind::Array(elements)
+                                if elements.len() == 2 && elements.iter().all(|element| element.key.is_none()) =>
+                            {
+                                let ExprKind::Lit(Literal::Str(class_name)) = &elements[0].value.kind else {
+                                    self.emit(Op::UNDEFINED);
+                                    self.emit_u16(Op::GLOBAL_SET, receiver_idx);
+                                    self.emit(Op::DROP);
+                                    self.compile_php_autoload_callable_ref(&callback.value)?;
+                                    let global_idx = self.str_const("__php_autoload_callback");
+                                    self.emit_u16(Op::GLOBAL_SET, global_idx);
+                                    self.emit(Op::DROP);
+                                    for arg in args.iter().skip(1) {
+                                        self.compile_expr(&arg.value)?;
+                                        self.emit(Op::DROP);
+                                    }
+                                    self.emit_const(Value::Bool(true));
+                                    return Ok(());
+                                };
+                                let ExprKind::Lit(Literal::Str(method_name)) = &elements[1].value.kind else {
+                                    self.emit(Op::UNDEFINED);
+                                    self.emit_u16(Op::GLOBAL_SET, receiver_idx);
+                                    self.emit(Op::DROP);
+                                    self.compile_php_autoload_callable_ref(&callback.value)?;
+                                    let global_idx = self.str_const("__php_autoload_callback");
+                                    self.emit_u16(Op::GLOBAL_SET, global_idx);
+                                    self.emit(Op::DROP);
+                                    for arg in args.iter().skip(1) {
+                                        self.compile_expr(&arg.value)?;
+                                        self.emit(Op::DROP);
+                                    }
+                                    self.emit_const(Value::Bool(true));
+                                    return Ok(());
+                                };
+
+                                if let Some(class_global) = self.resolve_php_autoload_callback_class_global(class_name) {
+                                    let class_idx = self.str_const(&class_global);
+                                    self.emit_u16(Op::GLOBAL_GET, class_idx);
+                                    self.emit(Op::DUP);
+                                    self.emit_u16(Op::GLOBAL_SET, receiver_idx);
+                                    self.emit(Op::DROP);
+                                    let method_idx = self.str_const(&self.canon(method_name));
+                                    self.emit_u16(Op::STRUCT_GET, method_idx);
+                                } else {
+                                    self.emit(Op::UNDEFINED);
+                                    self.emit_u16(Op::GLOBAL_SET, receiver_idx);
+                                    self.emit(Op::DROP);
+                                    self.compile_php_autoload_callable_ref(&callback.value)?;
+                                }
+                            }
+                            _ => {
+                                self.emit(Op::UNDEFINED);
+                                self.emit_u16(Op::GLOBAL_SET, receiver_idx);
+                                self.emit(Op::DROP);
+                                self.compile_php_autoload_callable_ref(&callback.value)?;
+                            }
+                        }
+                    } else {
+                        self.emit(Op::UNDEFINED);
+                        self.emit_u16(Op::GLOBAL_SET, receiver_idx);
+                        self.emit(Op::DROP);
+                        self.emit(Op::UNDEFINED);
+                    }
+                    let global_idx = self.str_const("__php_autoload_callback");
+                    self.emit_u16(Op::GLOBAL_SET, global_idx);
+                    self.emit(Op::DROP);
+
+                    for arg in args.iter().skip(1) {
+                        self.compile_expr(&arg.value)?;
+                        self.emit(Op::DROP);
+                    }
+
+                    self.emit_const(Value::Bool(true));
+                    return Ok(());
+                }
+
+                if name.eq_ignore_ascii_case("spl_autoload_unregister") {
+                    for arg in args {
+                        self.compile_expr(&arg.value)?;
+                        self.emit(Op::DROP);
+                    }
+
+                    self.emit(Op::UNDEFINED);
+                    let receiver_idx = self.str_const("__php_autoload_callback_receiver");
+                    self.emit_u16(Op::GLOBAL_SET, receiver_idx);
+                    self.emit(Op::DROP);
+                    self.emit(Op::UNDEFINED);
+                    let global_idx = self.str_const("__php_autoload_callback");
+                    self.emit_u16(Op::GLOBAL_SET, global_idx);
+                    self.emit(Op::DROP);
+                    self.emit_const(Value::Bool(true));
+                    return Ok(());
+                }
+
                 if name == "compact" {
                     let line = self.line;
                     common::collections::emit_map_new(&mut self.chunks, self.current, line);
@@ -1293,6 +1418,56 @@ impl Compiler {
                             count += 1;
                         }
                         self.emit_const(Value::I64(count));
+                        return Ok(());
+                    }
+
+                    let mut binding_names = std::collections::BTreeSet::new();
+                    for local in &self.scope().locals {
+                        if local.name.starts_with('$') && !local.name.starts_with("$__") {
+                            binding_names.insert(local.name.clone());
+                        }
+                    }
+                    for global in &self.defined_globals {
+                        if global.starts_with('$') && !global.starts_with("$__") {
+                            binding_names.insert(global.clone());
+                        }
+                    }
+
+                    if !binding_names.is_empty() {
+                        let map_slot = self.define_local("__php_extract_map");
+                        self.compile_expr(&arg_exprs[0])?;
+                        self.emit_u16(Op::LOCAL_SET, map_slot);
+                        self.emit(Op::DROP);
+
+                        let count_slot = self.define_local("__php_extract_count");
+                        self.emit_const(Value::I64(0));
+                        self.emit_u16(Op::LOCAL_SET, count_slot);
+                        self.emit(Op::DROP);
+
+                        for bind_name in binding_names {
+                            let key_name = bind_name.strip_prefix('$').unwrap_or(bind_name.as_str());
+                            self.emit_u16(Op::LOCAL_GET, map_slot);
+                            self.emit_const(Value::String(Arc::from(key_name)));
+                            let line = self.line;
+                            common::collections::emit_get(&mut self.chunks, self.current, line);
+                            self.emit(Op::DUP);
+                            self.emit(Op::REF_IS_NULL);
+                            let skip_assign = self.emit_jump(Op::BR_IF_TRUE);
+
+                            self.emit_var_set(&bind_name);
+                            self.emit_u16(Op::LOCAL_GET, count_slot);
+                            self.emit_const(Value::I64(1));
+                            self.emit(Op::DYN_ADD);
+                            self.emit_u16(Op::LOCAL_SET, count_slot);
+                            self.emit(Op::DROP);
+                            let after_assign = self.emit_jump(Op::BR);
+
+                            self.patch_jump(skip_assign);
+                            self.emit(Op::DROP);
+                            self.patch_jump(after_assign);
+                        }
+
+                        self.emit_u16(Op::LOCAL_GET, count_slot);
                         return Ok(());
                     }
                 }

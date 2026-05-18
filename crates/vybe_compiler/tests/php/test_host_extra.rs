@@ -64,6 +64,40 @@ $dir->close();
     assert_eq!(out, vec!["ok"]);
 }
 
+#[test]
+fn glob_runtime_matches_suffix_in_real_directory() {
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("vybex_php_glob_{unique}"));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("one.knt"), "a").unwrap();
+    fs::write(root.join("two.knt"), "b").unwrap();
+    fs::write(root.join("skip.txt"), "c").unwrap();
+
+    let glob_path = root
+        .join("*.knt")
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('\'', "\\'");
+    let out = run_prints(&format!(r#"<?php
+$files = glob('{glob_path}');
+echo count($files);
+foreach ($files as $file) echo basename($file);
+"#));
+
+    assert_eq!(out.first().map(String::as_str), Some("2"));
+    let mut names = out.into_iter().skip(1).collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(names, vec!["one.knt".to_string(), "two.knt".to_string()]);
+
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test] fn define_and_defined_runtime() {
     let out = run_prints(r#"<?php
 echo defined('SIZESTEP') ? 'f0' : 't0';

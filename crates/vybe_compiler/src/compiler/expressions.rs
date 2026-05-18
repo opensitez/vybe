@@ -50,6 +50,156 @@ impl Compiler {
         Ok(())
     }
 
+    fn emit_php_constructor_ref_with_autoload(&mut self, ctor_global: &str, autoload_name: &str) {
+        let idx = self.str_const(ctor_global);
+        let ctor_slot = self.define_local("__php_ctor_ref");
+        self.emit_u16(Op::GLOBAL_GET, idx);
+        self.emit_u16(Op::LOCAL_SET, ctor_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, ctor_slot);
+        self.emit(Op::REF_TYPEOF);
+        self.emit_const(Value::String(Arc::from("undefined")));
+        self.emit(Op::DYN_EQ);
+        let skip_autoload = self.emit_jump(Op::BR_IF_FALSE);
+
+        let autoload_slot = self.define_local("__php_autoload_ref");
+        let autoload_idx = self.str_const("__php_autoload_callback");
+        self.emit_u16(Op::GLOBAL_GET, autoload_idx);
+        self.emit_u16(Op::LOCAL_SET, autoload_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, autoload_slot);
+        self.emit(Op::REF_TYPEOF);
+        self.emit_const(Value::String(Arc::from("undefined")));
+        self.emit(Op::DYN_EQ);
+        let no_autoload = self.emit_jump(Op::BR_IF_TRUE);
+
+        let receiver_slot = self.define_local("__php_autoload_receiver");
+        let receiver_idx = self.str_const("__php_autoload_callback_receiver");
+        self.emit_u16(Op::GLOBAL_GET, receiver_idx);
+        self.emit_u16(Op::LOCAL_SET, receiver_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, receiver_slot);
+        self.emit(Op::REF_TYPEOF);
+        self.emit_const(Value::String(Arc::from("undefined")));
+        self.emit(Op::DYN_EQ);
+        let no_receiver = self.emit_jump(Op::BR_IF_TRUE);
+
+        self.emit_u16(Op::LOCAL_GET, autoload_slot);
+        self.emit_u16(Op::LOCAL_GET, receiver_slot);
+        self.emit_const(Value::String(Arc::from(autoload_name)));
+        self.emit_u8(Op::CALL_REF, 2);
+        self.emit(Op::DROP);
+        let after_autoload = self.emit_jump(Op::BR);
+
+        self.patch_jump(no_receiver);
+        self.emit_u16(Op::LOCAL_GET, autoload_slot);
+        self.emit_const(Value::String(Arc::from(autoload_name)));
+        self.emit_u8(Op::CALL_REF, 1);
+        self.emit(Op::DROP);
+
+        self.patch_jump(after_autoload);
+        self.patch_jump(no_autoload);
+        self.emit_u16(Op::GLOBAL_GET, idx);
+        self.emit_u16(Op::LOCAL_SET, ctor_slot);
+        self.emit(Op::DROP);
+        self.patch_jump(skip_autoload);
+        self.emit_u16(Op::LOCAL_GET, ctor_slot);
+    }
+
+    fn emit_php_dynamic_constructor_ref_with_autoload(
+        &mut self,
+        primary_ctor_global: &str,
+        fallback_ctor_global: Option<&str>,
+        autoload_name: &str,
+    ) {
+        let ctor_slot = self.define_local("__php_dyn_ctor_ref");
+        let primary_idx = self.str_const(primary_ctor_global);
+        self.emit_u16(Op::GLOBAL_GET, primary_idx);
+        self.emit_u16(Op::LOCAL_SET, ctor_slot);
+        self.emit(Op::DROP);
+
+        if let Some(fallback) = fallback_ctor_global {
+            self.emit_u16(Op::LOCAL_GET, ctor_slot);
+            self.emit(Op::REF_TYPEOF);
+            self.emit_const(Value::String(Arc::from("undefined")));
+            self.emit(Op::DYN_EQ);
+            let skip_fallback = self.emit_jump(Op::BR_IF_FALSE);
+            let fallback_idx = self.str_const(fallback);
+            self.emit_u16(Op::GLOBAL_GET, fallback_idx);
+            self.emit_u16(Op::LOCAL_SET, ctor_slot);
+            self.emit(Op::DROP);
+            self.patch_jump(skip_fallback);
+        }
+
+        self.emit_u16(Op::LOCAL_GET, ctor_slot);
+        self.emit(Op::REF_TYPEOF);
+        self.emit_const(Value::String(Arc::from("undefined")));
+        self.emit(Op::DYN_EQ);
+        let skip_autoload = self.emit_jump(Op::BR_IF_FALSE);
+
+        let autoload_slot = self.define_local("__php_dyn_autoload_ref");
+        let autoload_idx = self.str_const("__php_autoload_callback");
+        self.emit_u16(Op::GLOBAL_GET, autoload_idx);
+        self.emit_u16(Op::LOCAL_SET, autoload_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, autoload_slot);
+        self.emit(Op::REF_TYPEOF);
+        self.emit_const(Value::String(Arc::from("undefined")));
+        self.emit(Op::DYN_EQ);
+        let no_autoload = self.emit_jump(Op::BR_IF_TRUE);
+
+        let receiver_slot = self.define_local("__php_dyn_autoload_receiver");
+        let receiver_idx = self.str_const("__php_autoload_callback_receiver");
+        self.emit_u16(Op::GLOBAL_GET, receiver_idx);
+        self.emit_u16(Op::LOCAL_SET, receiver_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, receiver_slot);
+        self.emit(Op::REF_TYPEOF);
+        self.emit_const(Value::String(Arc::from("undefined")));
+        self.emit(Op::DYN_EQ);
+        let no_receiver = self.emit_jump(Op::BR_IF_TRUE);
+
+        self.emit_u16(Op::LOCAL_GET, autoload_slot);
+        self.emit_u16(Op::LOCAL_GET, receiver_slot);
+        self.emit_const(Value::String(Arc::from(autoload_name)));
+        self.emit_u8(Op::CALL_REF, 2);
+        self.emit(Op::DROP);
+        let after_autoload = self.emit_jump(Op::BR);
+
+        self.patch_jump(no_receiver);
+        self.emit_u16(Op::LOCAL_GET, autoload_slot);
+        self.emit_const(Value::String(Arc::from(autoload_name)));
+        self.emit_u8(Op::CALL_REF, 1);
+        self.emit(Op::DROP);
+
+        self.patch_jump(after_autoload);
+        self.patch_jump(no_autoload);
+
+        self.emit_u16(Op::GLOBAL_GET, primary_idx);
+        self.emit_u16(Op::LOCAL_SET, ctor_slot);
+        self.emit(Op::DROP);
+        if let Some(fallback) = fallback_ctor_global {
+            self.emit_u16(Op::LOCAL_GET, ctor_slot);
+            self.emit(Op::REF_TYPEOF);
+            self.emit_const(Value::String(Arc::from("undefined")));
+            self.emit(Op::DYN_EQ);
+            let skip_fallback = self.emit_jump(Op::BR_IF_FALSE);
+            let fallback_idx = self.str_const(fallback);
+            self.emit_u16(Op::GLOBAL_GET, fallback_idx);
+            self.emit_u16(Op::LOCAL_SET, ctor_slot);
+            self.emit(Op::DROP);
+            self.patch_jump(skip_fallback);
+        }
+
+        self.patch_jump(skip_autoload);
+        self.emit_u16(Op::LOCAL_GET, ctor_slot);
+    }
+
     fn emit_generator_return_from_resume_slot(&mut self, resume_slot: u16) -> Result<(), String> {
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         let value_key = self.str_const("value");
@@ -589,7 +739,7 @@ impl Compiler {
             // ── Ternary ─────────────────────────────────────────────────
             ExprKind::Ternary { cond, then, else_ } => {
                 self.compile_expr(cond)?;
-                self.emit_python_truthiness_from_stack();
+                self.emit_condition_truthiness_from_stack();
                 let else_j = self.emit_jump(Op::BR_IF_FALSE);
                 self.compile_expr(then)?;
                 let end_j = self.emit_jump(Op::BR);
@@ -1667,6 +1817,12 @@ impl Compiler {
                     }
                     _ => None,
                 };
+                let php_autoload_name = match &class.kind {
+                    ExprKind::Ident(name) if self.is_php_profile() => {
+                        Some(Self::strip_global_namespace_prefix(name).to_string())
+                    }
+                    _ => None,
+                };
 
                 if let Some(type_name) = dotted_type_name.as_ref() {
                     // User-defined classes take priority over all built-in type mappings.
@@ -1686,11 +1842,35 @@ impl Compiler {
                         // canonicalize to "inner", and the implicit-self-field
                         // check would mis-route to `me.inner` instead of the
                         // class global. Type names always come from globals.
-                        let idx = self.str_const(&ctor_global);
-                        self.emit_u16(Op::GLOBAL_GET, idx);
+                        if self.is_php_profile() {
+                            let autoload_name = php_autoload_name.as_deref().unwrap_or(type_name);
+                            self.emit_php_constructor_ref_with_autoload(&ctor_global, autoload_name);
+                        } else {
+                            let idx = self.str_const(&ctor_global);
+                            self.emit_u16(Op::GLOBAL_GET, idx);
+                        }
                         for a in args { self.compile_expr(&a.value)?; }
                         self.emit_u8(Op::CALL_REF, args.len() as u8);
                         return Ok(());
+                    }
+                    if self.is_php_profile() {
+                        if let Some(autoload_name) = php_autoload_name.as_deref() {
+                            if let Some(flattened_name) = autoload_name.rsplit('\\').next() {
+                                let flattened_canon = self.canon(flattened_name);
+                                if self.defined_classes.contains(&flattened_canon) {
+                                    let overload_global = format!("{}$arity{}", flattened_canon, args.len());
+                                    let ctor_global = if self.defined_globals.contains(&overload_global) {
+                                        overload_global
+                                    } else {
+                                        flattened_canon
+                                    };
+                                    self.emit_php_constructor_ref_with_autoload(&ctor_global, autoload_name);
+                                    for a in args { self.compile_expr(&a.value)?; }
+                                    self.emit_u8(Op::CALL_REF, args.len() as u8);
+                                    return Ok(());
+                                }
+                            }
+                        }
                     }
                     // Nested class: `new Outer.Inner()` — the inner type
                     // is registered as a sibling global per ECMA-334 §15.3.
@@ -1700,8 +1880,13 @@ impl Compiler {
                         let last = class_parts.last().unwrap();
                         let canon_last = self.canon(last);
                         if self.defined_classes.contains(&canon_last) {
-                            let idx = self.str_const(&canon_last);
-                            self.emit_u16(Op::GLOBAL_GET, idx);
+                            if self.is_php_profile() {
+                                let autoload_name = php_autoload_name.as_deref().unwrap_or(type_name);
+                                self.emit_php_constructor_ref_with_autoload(&canon_last, autoload_name);
+                            } else {
+                                let idx = self.str_const(&canon_last);
+                                self.emit_u16(Op::GLOBAL_GET, idx);
+                            }
                             for a in args { self.compile_expr(&a.value)?; }
                             self.emit_u8(Op::CALL_REF, args.len() as u8);
                             return Ok(());
@@ -1855,8 +2040,13 @@ impl Compiler {
                         } else {
                             bare_str.to_lowercase()
                         };
-                        let ctor_idx = self.str_const(&ctor_name);
-                        self.emit_u16(Op::GLOBAL_GET, ctor_idx);
+                        if self.is_php_profile() {
+                            let autoload_name = php_autoload_name.as_deref().unwrap_or(type_name);
+                            self.emit_php_constructor_ref_with_autoload(&ctor_name, autoload_name);
+                        } else {
+                            let ctor_idx = self.str_const(&ctor_name);
+                            self.emit_u16(Op::GLOBAL_GET, ctor_idx);
+                        }
                         for a in args { self.compile_expr(&a.value)?; }
                         self.emit_u8(Op::CALL_REF, args.len() as u8);
 
@@ -1875,6 +2065,23 @@ impl Compiler {
                             self.emit(Op::DROP);
                         }
                         return Ok(());
+                    }
+
+                    if self.is_php_profile() {
+                        if let ExprKind::Ident(name) = &class.kind {
+                            let autoload_name = Self::strip_global_namespace_prefix(name).to_string();
+                            let ctor_base = autoload_name.rsplit('\\').next().unwrap_or(autoload_name.as_str());
+                            let fallback_ctor = self.canon(ctor_base);
+                            let primary_ctor = format!("{}$arity{}", fallback_ctor, args.len());
+                            self.emit_php_dynamic_constructor_ref_with_autoload(
+                                &primary_ctor,
+                                Some(&fallback_ctor),
+                                &autoload_name,
+                            );
+                            for a in args { self.compile_expr(&a.value)?; }
+                            self.emit_u8(Op::CALL_REF, args.len() as u8);
+                            return Ok(());
+                        }
                     }
                 }
                 if self.is_js_profile() {

@@ -60,6 +60,24 @@ echo $names[0];
     assert_eq!(lines, vec!["Alice"]);
 }
 
+#[test]
+fn pdo_prepare_select_fetch_assoc_runtime_round_trip() {
+    let lines = run_prints(r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
+$stmt = $pdo->prepare('INSERT INTO users (name) VALUES (?)');
+$stmt->execute(['Alice']);
+$select = $pdo->prepare('SELECT name FROM users');
+$select->execute();
+$rows = $select->fetchAll(PDO::FETCH_ASSOC);
+echo count($rows);
+echo $rows[0]['name'];
+"#);
+
+    assert_eq!(lines, vec!["1", "Alice"]);
+}
+
 // ── mysqli style ────────────────────────────────────────────
 #[test] fn mysqli_connect() { compile_ok(r#"<?php $conn = mysqli_connect('sqlite:test.db');"#); }
 

@@ -49,6 +49,203 @@ fn emit_import_call_into(imports: &mut Chunk, code: &mut Chunk, module: &str, na
     code.emit(argc, line);
 }
 
+fn alloc_local(chunk: &mut Chunk) -> u16 {
+    let slot = chunk.local_count;
+    chunk.local_count += 1;
+    slot
+}
+
+fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+}
+
+fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
+fn push_str(chunk: &mut Chunk, value: &str, line: u32) {
+    let idx = chunk.add_constant(Value::String(Arc::from(value)));
+    chunk.emit_op_u16(Op::CONST, idx, line);
+}
+
+fn push_f64(chunk: &mut Chunk, value: f64, line: u32) {
+    let idx = chunk.add_constant(Value::F64(value));
+    chunk.emit_op_u16(Op::CONST, idx, line);
+}
+
+fn emit_php_array_iter(chunks: &mut [Chunk], current: usize, line: u32, want_entries: bool) {
+    let chunk = &mut chunks[current];
+    let iter_slot = alloc_local(chunk);
+    let out_slot = alloc_local(chunk);
+    let i_slot = alloc_local(chunk);
+    let len_slot = alloc_local(chunk);
+    let keys_slot = alloc_local(chunk);
+    let csv_slot = alloc_local(chunk);
+
+    lset(chunk, iter_slot, line);
+
+    lget(chunk, iter_slot, line);
+    let keys_key = chunk.add_constant(Value::String(Arc::from("__keys")));
+    chunk.emit_op_u16(Op::STRUCT_GET, keys_key, line);
+    lset(chunk, keys_slot, line);
+
+    lget(chunk, keys_slot, line);
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    let no_keys = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    chunk.emit_op(Op::REF_IS_UNDEFINED, line);
+    let no_keys_undef = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    chunk.emit_op(Op::DROP, line);
+    lget(chunk, keys_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, len_slot, line);
+    lget(chunk, len_slot, line);
+    chunk.emit_op(Op::I32_CONST_0, line);
+    chunk.emit_op(Op::DYN_GT, line);
+    let have_keys = chunk.emit_jump(Op::BR_IF_TRUE, line);
+
+    chunk.patch_jump(no_keys);
+    chunk.emit_op(Op::DROP, line);
+    let after_keys_null = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(no_keys_undef);
+    chunk.emit_op(Op::DROP, line);
+    chunk.patch_jump(after_keys_null);
+
+    lget(chunk, iter_slot, line);
+    let csv_key = chunk.add_constant(Value::String(Arc::from("vybe$assoc_keys_csv")));
+    chunk.emit_op_u16(Op::STRUCT_GET, csv_key, line);
+    lset(chunk, csv_slot, line);
+
+    lget(chunk, csv_slot, line);
+    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    let no_csv = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    chunk.emit_op(Op::REF_IS_UNDEFINED, line);
+    let no_csv_undef = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    chunk.emit_op(Op::DROP, line);
+    lget(chunk, csv_slot, line);
+    push_str(chunk, "\x1F", line);
+    emit_import_call(chunks, current, "ecma:string", "split", 2, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, keys_slot, line);
+    lget(chunk, keys_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, len_slot, line);
+    lget(chunk, len_slot, line);
+    chunk.emit_op(Op::I32_CONST_0, line);
+    chunk.emit_op(Op::DYN_GT, line);
+    let have_csv_keys = chunk.emit_jump(Op::BR_IF_TRUE, line);
+
+    chunk.patch_jump(no_csv);
+    chunk.emit_op(Op::DROP, line);
+    let after_csv_null = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(no_csv_undef);
+    chunk.emit_op(Op::DROP, line);
+    chunk.patch_jump(after_csv_null);
+
+    lget(chunk, iter_slot, line);
+    let _ = chunk;
+    emit_import_call(
+        chunks,
+        current,
+        "ecma:object",
+        if want_entries { "entries" } else { "iterForOf" },
+        1,
+        line,
+    );
+    let chunk = &mut chunks[current];
+    let done_fallback = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(have_keys);
+    emit_array_new(chunks, current, 0, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, out_slot, line);
+    push_f64(chunk, 0.0, line);
+    lset(chunk, i_slot, line);
+    let loop_top = chunk.current_offset();
+    lget(chunk, i_slot, line);
+    lget(chunk, len_slot, line);
+    chunk.emit_op(Op::DYN_LT, line);
+    let loop_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    lget(chunk, out_slot, line);
+    if want_entries {
+        lget(chunk, keys_slot, line);
+        lget(chunk, i_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        lget(chunk, iter_slot, line);
+        lget(chunk, keys_slot, line);
+        lget(chunk, i_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        emit_get(chunks, current, line);
+        emit_array_new(chunks, current, 2, line);
+    } else {
+        lget(chunk, iter_slot, line);
+        lget(chunk, keys_slot, line);
+        lget(chunk, i_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        emit_get(chunks, current, line);
+    }
+    emit_import_call(chunks, current, "ecma:array", "push", 2, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::DROP, line);
+    lget(chunk, i_slot, line);
+    push_f64(chunk, 1.0, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, i_slot, line);
+    chunk.emit_loop(loop_top, line);
+    chunk.patch_jump(loop_exit);
+    lget(chunk, out_slot, line);
+    let done_tracked = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(have_csv_keys);
+    emit_array_new(chunks, current, 0, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, out_slot, line);
+    push_f64(chunk, 0.0, line);
+    lset(chunk, i_slot, line);
+    let csv_loop_top = chunk.current_offset();
+    lget(chunk, i_slot, line);
+    lget(chunk, len_slot, line);
+    chunk.emit_op(Op::DYN_LT, line);
+    let csv_loop_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    lget(chunk, out_slot, line);
+    if want_entries {
+        lget(chunk, keys_slot, line);
+        lget(chunk, i_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        lget(chunk, iter_slot, line);
+        lget(chunk, keys_slot, line);
+        lget(chunk, i_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        emit_get(chunks, current, line);
+        emit_array_new(chunks, current, 2, line);
+    } else {
+        lget(chunk, iter_slot, line);
+        lget(chunk, keys_slot, line);
+        lget(chunk, i_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        emit_get(chunks, current, line);
+    }
+    emit_import_call(chunks, current, "ecma:array", "push", 2, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::DROP, line);
+    lget(chunk, i_slot, line);
+    push_f64(chunk, 1.0, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, i_slot, line);
+    chunk.emit_loop(csv_loop_top, line);
+    chunk.patch_jump(csv_loop_exit);
+    lget(chunk, out_slot, line);
+
+    chunks[current].patch_jump(done_fallback);
+    chunks[current].patch_jump(done_tracked);
+}
+
 /// Create an empty array (common case). Stack: [] → [array] via
 /// `vybe:js-array.newWithLength(0)`.
 ///
@@ -187,14 +384,14 @@ pub fn emit_iter_keys(chunks: &mut [Chunk], current: usize, line: u32) {
 /// `Object.values(...)` keeps its spec-strict behaviour at the user-facing
 /// `ecma:object.values` entry — that's a different call site.
 pub fn emit_iter_values(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "ecma:object", "iterForOf", 1, line);
+    emit_php_array_iter(chunks, current, line, false);
 }
 
 /// Push an array of [key, value] pair arrays. Stack: [iterable] →
 /// [array_of_pairs]. Used for `foreach ($m as $k => $v)` in PHP and
 /// equivalents in other languages.
 pub fn emit_iter_entries(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_import_call(chunks, current, "ecma:object", "entries", 1, line);
+    emit_php_array_iter(chunks, current, line, true);
 }
 
 /// Create an empty Map (ordered associative: IndexMap<Value, Value>).

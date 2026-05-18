@@ -60,8 +60,18 @@ impl Bundle {
     /// through to runtime compilation. That keeps the resulting module
     /// graph as portable as possible across runtimes beyond Vybe.
     pub fn prepared_module(&self) -> Result<Module, String> {
+        self.prepared_module_with_php_entry_override(None)
+    }
+
+    pub fn prepared_module_with_php_entry_override(
+        &self,
+        php_entry_path_override: Option<&Path>,
+    ) -> Result<Module, String> {
         let (combined, php_blocks) = if self.language.name == "php" {
-            let expanded = expand_php_bundle_sources_with_map(&self.sources)?;
+            let expanded = expand_php_bundle_sources_with_map_and_entry_path(
+                &self.sources,
+                php_entry_path_override,
+            )?;
             let blocks = expanded.blocks.clone();
             (normalize_php_source_for_parser(&expanded.into_code()), Some(blocks))
         } else {
@@ -164,7 +174,10 @@ impl Bundle {
     /// Adapter modules (`node:*` etc.) should use
     /// [`Self::compile_full_with_modules`].
     pub fn compile_full(&self) -> Result<CompiledBundle, String> {
-        self.compile_full_with_modules(&std::collections::HashMap::new())
+        self.compile_full_with_modules_and_php_entry_override(
+            &std::collections::HashMap::new(),
+            None,
+        )
     }
 
     /// Compile with a read-only snapshot of `vm.modules` so the Linker
@@ -178,7 +191,15 @@ impl Bundle {
         &self,
         modules: &std::collections::HashMap<String, vybe_bytecode::ModuleRecord>,
     ) -> Result<CompiledBundle, String> {
-        let module = self.prepared_module()?;
+        self.compile_full_with_modules_and_php_entry_override(modules, None)
+    }
+
+    pub fn compile_full_with_modules_and_php_entry_override(
+        &self,
+        modules: &std::collections::HashMap<String, vybe_bytecode::ModuleRecord>,
+        php_entry_path_override: Option<&Path>,
+    ) -> Result<CompiledBundle, String> {
+        let module = self.prepared_module_with_php_entry_override(php_entry_path_override)?;
 
         // Load profile + compile source code.
         //
@@ -314,11 +335,20 @@ fn expand_php_bundle_sources(sources: &[SourceFile]) -> Result<String, String> {
 }
 
 fn expand_php_bundle_sources_with_map(sources: &[SourceFile]) -> Result<ExpandedPhpSource, String> {
+    expand_php_bundle_sources_with_map_and_entry_path(sources, None)
+}
+
+fn expand_php_bundle_sources_with_map_and_entry_path(
+    sources: &[SourceFile],
+    entry_path_override: Option<&Path>,
+) -> Result<ExpandedPhpSource, String> {
     let mut included_once = HashSet::new();
     let mut constants: HashMap<String, String> = HashMap::new();
     let mut expanded = ExpandedPhpSource::default();
     for source in sources {
+        let entry_path = entry_path_override.unwrap_or(&source.path);
         append_expanded_source(&mut expanded, expand_php_source_file(
+            entry_path,
             &source.path,
             &source.code,
             &mut included_once,
@@ -329,6 +359,7 @@ fn expand_php_bundle_sources_with_map(sources: &[SourceFile]) -> Result<Expanded
 }
 
 fn expand_php_source_file(
+    entry_path: &Path,
     source_path: &Path,
     code: &str,
     included_once: &mut HashSet<PathBuf>,
@@ -385,6 +416,12 @@ fn expand_php_source_file(
                 previous_nonempty_line = next_previous_nonempty_line(trimmed, &previous_nonempty_line);
                 continue;
             }
+            if brace_depth > 0 {
+                record_expanded_line(&mut out, source_path, line.to_string());
+                brace_depth = update_php_brace_depth(brace_depth, line);
+                previous_nonempty_line = next_previous_nonempty_line(trimmed, &previous_nonempty_line);
+                continue;
+            }
             let Some(resolved) = eval_php_path_expression(expr, source_path, &aliases, constants) else {
                 if is_dynamic_php_include_expression(expr, constants) {
                     brace_depth = update_php_brace_depth(brace_depth, line);
@@ -397,7 +434,7 @@ fn expand_php_source_file(
                     trimmed,
                 ));
             };
-            let include_path = resolve_php_include_path(source_path, &resolved);
+            let include_path = resolve_php_include_path_with_entry(entry_path, source_path, &resolved);
             let canonical = std::fs::canonicalize(&include_path).unwrap_or(include_path.clone());
 
             let should_expand = match kind {
@@ -422,8 +459,24 @@ fn expand_php_source_file(
                         return Err(format!("PHP include error reading {}: {}", canonical.display(), err));
                     }
                 };
+
+                if brace_depth > 0 && php_include_contains_inline_html(&include_source) {
+                    record_expanded_line(&mut out, source_path, line.to_string());
+                    brace_depth = update_php_brace_depth(brace_depth, line);
+                    previous_nonempty_line = next_previous_nonempty_line(trimmed, &previous_nonempty_line);
+                    continue;
+                }
+
+                if php_include_contains_top_level_return(&include_source) {
+                    record_expanded_line(&mut out, source_path, line.to_string());
+                    brace_depth = update_php_brace_depth(brace_depth, line);
+                    previous_nonempty_line = next_previous_nonempty_line(trimmed, &previous_nonempty_line);
+                    continue;
+                }
+
                 let normalized_include = normalize_php_include_for_inlining(&include_source);
                 append_expanded_source(&mut out, expand_php_source_file(
+                    entry_path,
                     &canonical,
                     &normalized_include,
                     included_once,
@@ -483,15 +536,29 @@ fn absolutize_path(path: &Path) -> PathBuf {
 }
 
 fn resolve_php_include_path(source_path: &Path, resolved: &str) -> PathBuf {
+    resolve_php_include_path_with_entry(source_path, source_path, resolved)
+}
+
+fn resolve_php_include_path_with_entry(entry_path: &Path, source_path: &Path, resolved: &str) -> PathBuf {
     let candidate = PathBuf::from(resolved);
     if candidate.is_absolute() {
         candidate
-    } else {
+    } else if is_explicit_relative_php_include(&candidate) {
         absolutize_path(source_path)
             .parent()
             .unwrap_or(Path::new("."))
             .join(candidate)
+    } else {
+        absolutize_path(entry_path)
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join(candidate)
     }
+}
+
+fn is_explicit_relative_php_include(path: &Path) -> bool {
+    let raw = path.to_string_lossy();
+    raw == "." || raw == ".." || raw.starts_with("./") || raw.starts_with("../") || raw.starts_with(".\\") || raw.starts_with("..\\")
 }
 
 fn parse_php_alias_assignment(
@@ -1017,6 +1084,129 @@ fn normalize_php_include_for_inlining(source: &str) -> String {
     out
 }
 
+fn php_include_contains_inline_html(source: &str) -> bool {
+    split_mixed_php_include_source(source).into_iter().any(|segment| match segment {
+        MixedPhpIncludeSegment::Html(html) => !html.trim().is_empty(),
+        _ => false,
+    })
+}
+
+fn php_include_contains_top_level_return(source: &str) -> bool {
+    split_mixed_php_include_source(source).into_iter().any(|segment| match segment {
+        MixedPhpIncludeSegment::Code { code, .. } | MixedPhpIncludeSegment::Echo { expr: code, .. } => {
+            php_code_contains_top_level_return(code)
+        }
+        MixedPhpIncludeSegment::Html(_) => false,
+    })
+}
+
+fn php_code_contains_top_level_return(code: &str) -> bool {
+    #[derive(Copy, Clone, Eq, PartialEq)]
+    enum ScanState {
+        Normal,
+        SingleQuote,
+        DoubleQuote,
+        LineComment,
+        BlockComment,
+    }
+
+    fn is_ident_byte(byte: u8) -> bool {
+        matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_')
+    }
+
+    let bytes = code.as_bytes();
+    let mut state = ScanState::Normal;
+    let mut index = 0usize;
+    let mut brace_depth = 0usize;
+
+    while index < bytes.len() {
+        match state {
+            ScanState::Normal => {
+                if let Some(next_index) = skip_php_heredoc(bytes, index) {
+                    index = next_index;
+                    continue;
+                }
+                match bytes[index] {
+                    b'\'' => {
+                        state = ScanState::SingleQuote;
+                        index += 1;
+                    }
+                    b'"' => {
+                        state = ScanState::DoubleQuote;
+                        index += 1;
+                    }
+                    b'/' if bytes.get(index + 1) == Some(&b'/') => {
+                        state = ScanState::LineComment;
+                        index += 2;
+                    }
+                    b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                        state = ScanState::BlockComment;
+                        index += 2;
+                    }
+                    b'#' => {
+                        state = ScanState::LineComment;
+                        index += 1;
+                    }
+                    b'{' => {
+                        brace_depth += 1;
+                        index += 1;
+                    }
+                    b'}' => {
+                        brace_depth = brace_depth.saturating_sub(1);
+                        index += 1;
+                    }
+                    b'r' if bytes[index..].starts_with(b"return") => {
+                        let prev_ok = index == 0 || !is_ident_byte(bytes[index - 1]);
+                        let next_index = index + b"return".len();
+                        let next_ok = next_index >= bytes.len() || !is_ident_byte(bytes[next_index]);
+                        if brace_depth == 0 && prev_ok && next_ok {
+                            return true;
+                        }
+                        index += 1;
+                    }
+                    _ => index += 1,
+                }
+            }
+            ScanState::SingleQuote => {
+                if bytes[index] == b'\\' {
+                    index = (index + 2).min(bytes.len());
+                } else if bytes[index] == b'\'' {
+                    state = ScanState::Normal;
+                    index += 1;
+                } else {
+                    index += 1;
+                }
+            }
+            ScanState::DoubleQuote => {
+                if bytes[index] == b'\\' {
+                    index = (index + 2).min(bytes.len());
+                } else if bytes[index] == b'"' {
+                    state = ScanState::Normal;
+                    index += 1;
+                } else {
+                    index += 1;
+                }
+            }
+            ScanState::LineComment => {
+                if bytes[index] == b'\n' {
+                    state = ScanState::Normal;
+                }
+                index += 1;
+            }
+            ScanState::BlockComment => {
+                if bytes[index] == b'*' && bytes.get(index + 1) == Some(&b'/') {
+                    state = ScanState::Normal;
+                    index += 2;
+                } else {
+                    index += 1;
+                }
+            }
+        }
+    }
+
+    false
+}
+
 fn rewrite_php_magic_constants(source: &str, source_path: &Path) -> String {
     if !source.contains("__DIR__") && !source.contains("__FILE__") {
         return source.to_string();
@@ -1418,6 +1608,10 @@ fn normalize_php_alternative_control_syntax(line: &str) -> String {
         (line.trim_end(), "")
     }
 
+    fn starts_control_header(prefix: &str, keyword: &str) -> bool {
+        prefix.starts_with(&format!("{keyword} ")) || prefix.starts_with(&format!("{keyword}("))
+    }
+
     let indent_len = line.len() - line.trim_start().len();
     let indent = &line[..indent_len];
     let trimmed = line.trim();
@@ -1465,11 +1659,11 @@ fn normalize_php_alternative_control_syntax(line: &str) -> String {
     }
 
     if let Some(prefix) = code.strip_suffix(':').map(str::trim_end) {
-        if prefix.starts_with("if ")
-            || prefix.starts_with("foreach ")
-            || prefix.starts_with("for ")
-            || prefix.starts_with("while ")
-            || prefix.starts_with("switch ")
+        if starts_control_header(prefix, "if")
+            || starts_control_header(prefix, "foreach")
+            || starts_control_header(prefix, "for")
+            || starts_control_header(prefix, "while")
+            || starts_control_header(prefix, "switch")
         {
             return match tag_mode {
                 TagMode::Wrapped => format!("{}<?php {} {{ ?>{}", indent, prefix, close_suffix),
@@ -1510,17 +1704,21 @@ fn normalize_php_alternative_control_syntax(line: &str) -> String {
 }
 
 fn starts_multiline_php_alternative_control_header(line: &str) -> bool {
+    fn starts_control_header(prefix: &str, keyword: &str) -> bool {
+        prefix.starts_with(&format!("{keyword} ")) || prefix.starts_with(&format!("{keyword}("))
+    }
+
     let trimmed = line.trim();
     let body = trimmed
         .strip_prefix("<?php")
         .map(str::trim_start)
         .unwrap_or(trimmed);
 
-    (body.starts_with("if ")
-        || body.starts_with("foreach ")
-        || body.starts_with("for ")
-        || body.starts_with("while ")
-        || body.starts_with("switch "))
+    (starts_control_header(body, "if")
+        || starts_control_header(body, "foreach")
+        || starts_control_header(body, "for")
+        || starts_control_header(body, "while")
+        || starts_control_header(body, "switch"))
         && !body.contains('{')
         && !body.contains(':')
         && !body.contains("?>")
@@ -1634,6 +1832,16 @@ fn normalize_php_source_for_parser(source: &str) -> String {
 
     let mut normalized = normalized_lines.join("\n");
     if source.ends_with('\n') {
+        normalized.push('\n');
+    }
+
+    let mixed_normalized = crate::languages::php::normalize_source_for_parser(&normalized);
+    let mut normalized = mixed_normalized
+        .lines()
+        .map(normalize_php_alternative_control_syntax)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if mixed_normalized.ends_with('\n') {
         normalized.push('\n');
     }
     normalized
@@ -1912,6 +2120,119 @@ mod tests {
     }
 
     #[test]
+    fn php_bundle_resolves_nested_bare_relative_include_from_entry_dir() {
+        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_entry_relative_{}", uuid::Uuid::new_v4()));
+        let classes_dir = temp_root.join("classes");
+        let views_dir = temp_root.join("views/users");
+        std::fs::create_dir_all(&classes_dir).expect("create classes dir");
+        std::fs::create_dir_all(&views_dir).expect("create views dir");
+
+        let entry_path = temp_root.join("index.php");
+        let controller_path = classes_dir.join("UserController.php");
+        let view_path = views_dir.join("list.php");
+
+        std::fs::write(&entry_path, "<?php\nrequire_once 'classes/UserController.php';\n")
+            .expect("write entry");
+        std::fs::write(&controller_path, "<?php\nfunction render_users() {\n    include 'views/users/list.php';\n    return users_view_value();\n}\n")
+            .expect("write controller");
+        std::fs::write(&view_path, "<?php\nfunction users_view_value() { return 42; }\n")
+            .expect("write view");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "entry".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: entry_path.clone(), code: std::fs::read_to_string(&entry_path).expect("read entry") }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        let expanded = expand_php_bundle_sources_with_map(&bundle.sources).expect("expand php bundle");
+        let expanded_code = expanded.into_code();
+        assert!(expanded_code.contains("function render_users()"));
+        assert!(expanded_code.contains("function users_view_value()"));
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn php_bundle_skips_nested_mixed_html_include_inside_class_method() {
+        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_nested_mixed_include_{}", uuid::Uuid::new_v4()));
+        let classes_dir = temp_root.join("classes");
+        let views_dir = temp_root.join("views/issues");
+        std::fs::create_dir_all(&classes_dir).expect("create classes dir");
+        std::fs::create_dir_all(&views_dir).expect("create views dir");
+
+        let entry_path = temp_root.join("index.php");
+        let controller_path = classes_dir.join("IssueController.php");
+        let view_path = views_dir.join("edit.php");
+
+        let entry_src = "<?php\nrequire_once 'classes/IssueController.php';\n";
+        let controller_src = "<?php\nclass IssueController {\n    public function edit($issue) {\n        include 'views/issues/edit.php';\n    }\n}\n";
+        let view_src = "<?php $pageTitle = 'Edit'; ?>\n<div><?= htmlspecialchars($issue['SUMMARY']) ?></div>\n";
+
+        std::fs::write(&entry_path, entry_src).expect("write entry");
+        std::fs::write(&controller_path, controller_src).expect("write controller");
+        std::fs::write(&view_path, view_src).expect("write view");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "entry".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        let module = bundle.prepared_module().expect("prepared module");
+        assert!(module.body.iter().any(|stmt| matches!(&stmt.kind, StmtKind::ClassDecl { name, .. } if name == "IssueController")));
+
+        let expanded = expand_php_bundle_sources_with_map(&bundle.sources).expect("expand php bundle");
+        let expanded_code = expanded.into_code();
+        assert!(expanded_code.contains("include 'views/issues/edit.php';"));
+        assert!(!expanded_code.contains("<div>"));
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn php_bundle_skips_nested_pure_php_require_once_inside_class_method() {
+        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_nested_require_once_{}", uuid::Uuid::new_v4()));
+        let classes_dir = temp_root.join("classes");
+        let vendor_dir = temp_root.join("vendor");
+        std::fs::create_dir_all(&classes_dir).expect("create classes dir");
+        std::fs::create_dir_all(&vendor_dir).expect("create vendor dir");
+
+        let entry_path = temp_root.join("index.php");
+        let controller_path = classes_dir.join("IssueController.php");
+        let include_path = vendor_dir.join("Loader.php");
+
+        let entry_src = "<?php\nrequire_once 'classes/IssueController.php';\n";
+        let controller_src = "<?php\nclass IssueController {\n    public static function load() {\n        require_once __DIR__ . '/../vendor/Loader.php';\n    }\n}\n";
+        let include_src = "<?php\nclass Loader {}\n";
+
+        std::fs::write(&entry_path, entry_src).expect("write entry");
+        std::fs::write(&controller_path, controller_src).expect("write controller");
+        std::fs::write(&include_path, include_src).expect("write include");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "entry".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        let expanded = expand_php_bundle_sources_with_map(&bundle.sources).expect("expand php bundle");
+        let expanded_code = expanded.into_code();
+        assert!(expanded_code.contains("require_once __DIR__ . '/../vendor/Loader.php';"));
+        assert!(!expanded_code.contains("class Loader {}"));
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
     fn php_bundle_skips_dynamic_variable_include_paths() {
         let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_dynamic_include_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_root).expect("create temp dir");
@@ -1932,6 +2253,40 @@ mod tests {
         let module = bundle.prepared_module().expect("prepared module");
         assert!(module.body.iter().any(|stmt| matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "load_dynamic")));
         assert!(module.body.iter().any(|stmt| matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "still_present")));
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn php_bundle_skips_top_level_returning_require_once() {
+        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_returning_require_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_root).expect("create temp dir");
+
+        let autoload_path = temp_root.join("autoload.php");
+        std::fs::write(
+            &autoload_path,
+            "<?php\nfunction loader_value() { return 7; }\nreturn loader_value();\n",
+        )
+        .expect("write autoload");
+
+        let entry_path = temp_root.join("entry.php");
+        let entry_src = "<?php\nrequire_once 'autoload.php';\necho 'done';\n";
+        std::fs::write(&entry_path, entry_src).expect("write entry");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "entry".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        let expanded = expand_php_bundle_sources_with_map(&bundle.sources).expect("expand php bundle");
+        let expanded_code = expanded.into_code();
+        assert!(expanded_code.contains("require_once 'autoload.php';"));
+        assert!(!expanded_code.contains("return loader_value();"));
+        assert!(expanded_code.contains("echo 'done';"));
 
         let _ = std::fs::remove_dir_all(&temp_root);
     }
@@ -2281,6 +2636,53 @@ mod tests {
 
         let entry_path = temp_root.join("entry.php");
         let entry_src = "<?php\nforeach ( array(\n    'artist' => 'Artist',\n    'album' => 'Album',\n) as $key => $label ) :\n?>\n<span><?php echo $label; ?></span>\n<?php endforeach; ?>\n";
+        std::fs::write(&entry_path, entry_src).expect("write entry");
+
+        let lang = crate::languages::find_by_name("php").expect("php language");
+        let bundle = Bundle {
+            name: "entry".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        bundle.prepared_module().expect("prepared module");
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn php_bundle_prepares_mixed_template_with_inner_function_and_template_loops() {
+        let temp_root = std::env::temp_dir().join(format!("vybex_php_bundle_keynote_template_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_root).expect("create temp dir");
+
+        let entry_path = temp_root.join("entry.php");
+        let entry_src = r#"<?php
+$notesTree = [
+    ['notes' => [['title' => 'One'], ['title' => 'Two']]],
+];
+?>
+<div id="tree">
+    <?php
+    function renderTree($notes) {
+        foreach ($notes as $note) {
+            echo '<div class="tree-node">' . htmlspecialchars($note['title']) . '</div>';
+        }
+    }
+    foreach ($notesTree as $section) {
+        if (!empty($section['notes'])) {
+            renderTree($section['notes']);
+        }
+    }
+    ?>
+</div>
+<div id="sections">
+    <?php foreach($notesTree as $section): ?>
+        <span><?php echo count($section['notes']); ?></span>
+    <?php endforeach; ?>
+</div>
+"#;
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
         let lang = crate::languages::find_by_name("php").expect("php language");

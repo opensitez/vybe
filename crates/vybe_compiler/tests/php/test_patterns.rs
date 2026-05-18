@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints, run_prints_dynamic};
 
 // ── Design patterns / real-world PHP ────────────────────────
 
@@ -18,6 +18,88 @@ class Database {
 $db = Database::getInstance();
 $db->connect();
 "#); }
+
+#[test]
+fn static_property_runtime_roundtrip() {
+    assert_eq!(run_prints(r#"<?php
+class D {
+    public static $value = null;
+}
+D::$value = 123;
+echo D::$value;
+"#), vec!["123"]);
+}
+
+#[test]
+fn singleton_runtime() {
+    assert_eq!(run_prints(r#"<?php
+class Database {
+    public static $instance = null;
+    public $connected = false;
+    public static function getInstance() {
+        if (Database::$instance === null) {
+            Database::$instance = new Database();
+        }
+        return Database::$instance;
+    }
+    public function connect() { echo 1; }
+}
+$db = Database::getInstance();
+$db->connect();
+"#), vec!["1"]);
+}
+
+#[test]
+fn extract_runtime_from_variable_array() {
+    assert_eq!(run_prints(r#"<?php
+$viewData = ["appName" => "X", "projects" => [1, 2]];
+$appName = "Y";
+$projects = [];
+extract($viewData);
+echo $appName;
+echo count($projects);
+"#), vec!["X", "2"]);
+}
+
+#[test]
+fn spl_autoload_register_accepts_array_callable_runtime() {
+    assert_eq!(run_prints(r#"<?php
+class LoaderBootstrap {
+    public static function loadClassLoader($class) { echo $class; }
+}
+echo spl_autoload_register(['LoaderBootstrap', 'loadClassLoader'], true, true) ? '1' : '0';
+echo spl_autoload_unregister(['LoaderBootstrap', 'loadClassLoader']) ? '1' : '0';
+"#), vec!["1", "1"]);
+}
+
+#[test]
+fn namespaced_class_constructor_runtime() {
+    assert_eq!(run_prints(r#"<?php
+namespace Composer\Autoload;
+class ClassLoader {
+    public function __construct($vendorDir = null) { echo $vendorDir; }
+}
+new ClassLoader(dirname('/tmp/example/vendor/composer'));
+"#), vec!["/tmp/example/vendor"]);
+}
+
+#[test]
+fn spl_autoload_register_loads_late_class_runtime() {
+    let fixture = format!(
+        "{}/tests/php/fixtures/autoload_late_class.php",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let entry = format!(
+        "{}/tests/php/fixtures/autoload_entry.php",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let src = format!(
+        "<?php\nclass LoaderBootstrap {{\n    public static function loadClassLoader($class) {{\n        echo $class;\n        require_once '{}';\n    }}\n}}\nspl_autoload_register(['LoaderBootstrap', 'loadClassLoader'], true, true);\nnew LateLoadedClass();\nspl_autoload_unregister(['LoaderBootstrap', 'loadClassLoader']);\n",
+        fixture,
+    );
+
+    assert_eq!(run_prints_dynamic(&src, &entry), vec!["LateLoadedClass", "autoload", "ctor"]);
+}
 
 #[test]
 fn builder_pattern() { compile_ok(r#"<?php

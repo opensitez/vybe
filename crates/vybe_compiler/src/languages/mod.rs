@@ -3,6 +3,7 @@ pub mod csharp;
 pub mod dart;
 pub mod form_modules;
 pub mod fortran;
+pub mod go;
 pub mod js;
 pub mod pascal;
 pub mod php;
@@ -39,6 +40,7 @@ pub fn all() -> Vec<Language> {
         Language { name: "dart",    parse: dart::parse,    profile_source: dart::profile_source },
         Language { name: "cobol",   parse: cobol::parse,   profile_source: cobol::profile_source },
         Language { name: "fortran", parse: fortran::parse, profile_source: fortran::profile_source },
+        Language { name: "go",      parse: go::parse,      profile_source: go::profile_source },
     ]
 }
 

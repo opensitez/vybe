@@ -79,5 +79,13 @@ name = "cobol"
 path = "tests/cobol/main.rs"
 
 [[test]]
+name = "fortran"
+path = "tests/fortran/main.rs"
+
+[[test]]
+name = "go"
+path = "tests/go/main.rs"
+
+[[test]]
 name = "emitter"
 path = "tests/emitter/main.rs"

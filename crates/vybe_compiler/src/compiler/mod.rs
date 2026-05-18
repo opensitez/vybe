@@ -706,7 +706,7 @@ impl Compiler {
         for stmt in body {
             match &stmt.kind {
                 StmtKind::NamespaceDecl { name, body } => {
-                    let member = self.canon(name);
+                    let member = self.canon(name).replace('\\', ".");
                     let qualified = namespace
                         .map(|prefix| format!("{prefix}.{member}"))
                         .unwrap_or(member);
@@ -903,18 +903,18 @@ impl Compiler {
 
     pub(super) fn resolve_source_type_alias(&self, name: &str) -> String {
         let normalized = Self::strip_global_namespace_prefix(name);
-        let trimmed = normalized.trim();
+        let trimmed = normalized.trim().replace('\\', ".");
         let (head, tail) = trimmed
             .split_once('.')
             .map(|(head, tail)| (head.trim(), Some(tail.trim())))
-            .unwrap_or((trimmed, None));
+            .unwrap_or((trimmed.as_str(), None));
         let (alias_head, suffix) = head
             .strip_suffix("()")
             .map(|bare| (bare.trim_end(), "()"))
             .unwrap_or((head, ""));
         let key = self.canon(alias_head);
         let Some(target) = self.source_type_aliases.get(&key) else {
-            return trimmed.to_string();
+            return trimmed;
         };
         match tail {
             Some(tail) if !tail.is_empty() => format!("{}{}.{}", target, suffix, tail),
@@ -2313,17 +2313,11 @@ impl Compiler {
     }
 
     fn emit_php_array_assoc_key_is_missing(&mut self, obj_slot: u16, key_slot: u16, line: u32) -> u16 {
-        let is_array_idx = self.import("ecma:array", "isArray");
         let missing_tmp = self.define_local("__php_assoc_key_missing");
 
         self.emit_const(Value::Bool(false));
         self.emit_u16(Op::LOCAL_SET, missing_tmp);
         self.emit(Op::DROP);
-
-        self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.chunk().emit_op_u16(Op::CALL_IMPORT, is_array_idx, line);
-        self.chunk().emit(1, line);
-        let not_array = self.emit_jump(Op::BR_IF_FALSE);
 
         self.emit_u16(Op::LOCAL_GET, key_slot);
         self.emit(Op::REF_IS_STRING);
@@ -2345,7 +2339,6 @@ impl Compiler {
         self.emit(Op::DROP);
 
         self.patch_jump(not_string);
-        self.patch_jump(not_array);
         missing_tmp
     }
 
@@ -2356,12 +2349,68 @@ impl Compiler {
         missing_slot: u16,
         line: u32,
     ) {
-        let _ = missing_slot;
-
         let tracker_tmp = self.define_local("__php_assoc_keys_csv");
+        let keys_tmp = self.define_local("__php_assoc_keys");
+        let tracker_key = self.str_const("vybe$assoc_keys_csv");
+        let keys_key = self.str_const("__keys");
+
+        self.emit_u16(Op::LOCAL_GET, missing_slot);
+        self.emit(Op::DYN_TO_BOOL);
+        self.emit(Op::DYN_NOT);
+        let done = self.emit_jump(Op::BR_IF_TRUE);
 
         self.emit_u16(Op::LOCAL_GET, obj_slot);
-        let tracker_key = self.str_const("vybe$assoc_keys_csv");
+        self.emit_u16(Op::STRUCT_GET, keys_key);
+        self.emit_u16(Op::LOCAL_SET, keys_tmp);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, keys_tmp);
+        self.emit(Op::DUP);
+        self.emit(Op::REF_IS_NULL);
+        let no_keys = self.emit_jump(Op::BR_IF_TRUE);
+        self.emit(Op::REF_IS_UNDEFINED);
+        let no_keys_undef = self.emit_jump(Op::BR_IF_TRUE);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, keys_tmp);
+        self.emit_u16(Op::LOCAL_GET, key_slot);
+        common::collections::emit_push(&mut self.chunks, self.current, line);
+        self.emit(Op::DROP);
+        let keys_done = self.emit_jump(Op::BR);
+
+        self.patch_jump(no_keys);
+        self.emit(Op::DROP);
+        common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+        self.emit_u16(Op::LOCAL_SET, keys_tmp);
+        self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_u16(Op::LOCAL_GET, keys_tmp);
+        self.emit_u16(Op::STRUCT_SET, keys_key);
+        self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_GET, keys_tmp);
+        self.emit_u16(Op::LOCAL_GET, key_slot);
+        common::collections::emit_push(&mut self.chunks, self.current, line);
+        self.emit(Op::DROP);
+        let keys_init_done = self.emit_jump(Op::BR);
+
+        self.patch_jump(no_keys_undef);
+        self.emit(Op::DROP);
+        common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+        self.emit_u16(Op::LOCAL_SET, keys_tmp);
+        self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_u16(Op::LOCAL_GET, keys_tmp);
+        self.emit_u16(Op::STRUCT_SET, keys_key);
+        self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_GET, keys_tmp);
+        self.emit_u16(Op::LOCAL_GET, key_slot);
+        common::collections::emit_push(&mut self.chunks, self.current, line);
+        self.emit(Op::DROP);
+
+        self.patch_jump(keys_done);
+        self.patch_jump(keys_init_done);
+
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_u16(Op::STRUCT_GET, tracker_key);
         self.emit_u16(Op::LOCAL_SET, tracker_tmp);
         self.emit(Op::DROP);
@@ -2404,6 +2453,7 @@ impl Compiler {
     self.emit(Op::DROP);
 
         self.patch_jump(after_track);
+        self.patch_jump(done);
     }
 
     fn emit_php_promote_empty_array_for_string_key(&mut self, obj_slot: u16, key_slot: u16, line: u32) {
@@ -3603,9 +3653,126 @@ impl Compiler {
         self.profile.name == "python"
     }
 
-    fn emit_python_truthiness_from_stack(&mut self) {
-        if !self.is_python_profile() {
+    fn emit_condition_truthiness_from_stack(&mut self) {
+        if !self.is_python_profile() && !self.is_php_profile() {
             self.emit(Op::DYN_TO_BOOL);
+            return;
+        }
+
+        if self.is_php_profile() {
+            let value_slot = self.define_local("__php_truth_value");
+            let keys_slot = self.define_local("__php_truth_keys");
+            let tracker_slot = self.define_local("__php_truth_tracker");
+
+            let typeof_idx = self.import("ecma:value", "typeof");
+            let array_len_idx = self.import("ecma:array", "length");
+            let has_own_idx = self.import("ecma:object", "hasOwn");
+            let keys_key = self.str_const("__keys");
+            let tracker_key = self.str_const("vybe$assoc_keys_csv");
+
+            self.emit_u16(Op::LOCAL_SET, value_slot);
+            self.emit(Op::DROP);
+
+            self.emit_u16(Op::LOCAL_GET, value_slot);
+            self.emit_host_call(typeof_idx, 1);
+            self.emit_const(Value::String(Arc::from("object")));
+            self.emit(Op::STR_EQUALS);
+            let object_case = self.emit_jump(Op::BR_IF_TRUE);
+
+            self.emit_u16(Op::LOCAL_GET, value_slot);
+            self.emit(Op::DYN_TO_BOOL);
+            let end = self.emit_jump(Op::BR);
+
+            self.patch_jump(object_case);
+
+            self.emit_u16(Op::LOCAL_GET, value_slot);
+            self.emit_host_call(array_len_idx, 1);
+            self.emit(Op::DYN_TO_BOOL);
+            let non_empty_collection = self.emit_jump(Op::BR_IF_TRUE);
+
+            self.emit_u16(Op::LOCAL_GET, value_slot);
+            self.emit_u16(Op::STRUCT_GET, keys_key);
+            self.emit_u16(Op::LOCAL_SET, keys_slot);
+            self.emit(Op::DROP);
+
+            self.emit_u16(Op::LOCAL_GET, keys_slot);
+            self.emit(Op::DUP);
+            self.emit(Op::REF_IS_NULL);
+            let no_keys = self.emit_jump(Op::BR_IF_TRUE);
+            self.emit(Op::REF_IS_UNDEFINED);
+            let no_keys_undef = self.emit_jump(Op::BR_IF_TRUE);
+            self.emit(Op::DROP);
+            self.emit_u16(Op::LOCAL_GET, keys_slot);
+            self.emit(Op::ARRAY_LENGTH);
+            self.emit(Op::DYN_TO_BOOL);
+            let non_empty_keys = self.emit_jump(Op::BR_IF_TRUE);
+            let after_keys = self.emit_jump(Op::BR);
+
+            self.patch_jump(no_keys);
+            self.emit(Op::DROP);
+            let after_keys_null = self.emit_jump(Op::BR);
+
+            self.patch_jump(no_keys_undef);
+            self.emit(Op::DROP);
+
+            self.patch_jump(after_keys);
+            self.patch_jump(after_keys_null);
+
+            self.emit_u16(Op::LOCAL_GET, value_slot);
+            self.emit_u16(Op::STRUCT_GET, tracker_key);
+            self.emit_u16(Op::LOCAL_SET, tracker_slot);
+            self.emit(Op::DROP);
+
+            self.emit_u16(Op::LOCAL_GET, tracker_slot);
+            self.emit(Op::DUP);
+            self.emit(Op::REF_IS_NULL);
+            let no_tracker = self.emit_jump(Op::BR_IF_TRUE);
+            self.emit(Op::REF_IS_UNDEFINED);
+            let no_tracker_undef = self.emit_jump(Op::BR_IF_TRUE);
+            self.emit(Op::DROP);
+            self.emit_u16(Op::LOCAL_GET, tracker_slot);
+            self.emit(Op::DYN_TO_BOOL);
+            let non_empty_tracker = self.emit_jump(Op::BR_IF_TRUE);
+            let after_tracker = self.emit_jump(Op::BR);
+
+            self.patch_jump(no_tracker);
+            self.emit(Op::DROP);
+            let after_tracker_null = self.emit_jump(Op::BR);
+
+            self.patch_jump(no_tracker_undef);
+            self.emit(Op::DROP);
+
+            self.patch_jump(after_tracker);
+            self.patch_jump(after_tracker_null);
+
+            self.emit_u16(Op::LOCAL_GET, value_slot);
+            self.emit_const(Value::String(Arc::from("__proto__")));
+            self.emit_host_call(has_own_idx, 2);
+            let has_proto = self.emit_jump(Op::BR_IF_TRUE);
+
+            self.emit_const(Value::Bool(false));
+            let object_end = self.emit_jump(Op::BR);
+
+            self.patch_jump(non_empty_collection);
+            self.emit_const(Value::Bool(true));
+            let collection_end = self.emit_jump(Op::BR);
+
+            self.patch_jump(non_empty_keys);
+            self.emit_const(Value::Bool(true));
+            let keys_end = self.emit_jump(Op::BR);
+
+            self.patch_jump(non_empty_tracker);
+            self.emit_const(Value::Bool(true));
+            let tracker_end = self.emit_jump(Op::BR);
+
+            self.patch_jump(has_proto);
+            self.emit_const(Value::Bool(true));
+
+            self.patch_jump(collection_end);
+            self.patch_jump(keys_end);
+            self.patch_jump(tracker_end);
+            self.patch_jump(object_end);
+            self.patch_jump(end);
             return;
         }
 
@@ -3961,7 +4128,7 @@ impl Compiler {
                 let then_block = self.chunk().emit_block(line);
                 self.label_depth += 1;
                 self.compile_expr(cond)?;
-                self.emit_python_truthiness_from_stack();
+                self.emit_condition_truthiness_from_stack();
                 self.emit(Op::DYN_NOT);
                 let line = self.line;
                 self.chunk().emit_br_if(0, line); // skip then if false
@@ -3983,7 +4150,7 @@ impl Compiler {
                     let elif_block = self.chunk().emit_block(line);
                     self.label_depth += 1;
                     self.compile_expr(elif_cond)?;
-                    self.emit_python_truthiness_from_stack();
+                    self.emit_condition_truthiness_from_stack();
                     self.emit(Op::DYN_NOT);
                     let line = self.line;
                     self.chunk().emit_br_if(0, line);
@@ -4934,7 +5101,7 @@ impl Compiler {
             // (matches .NET behavior — within the same compilation unit, bare type access
             // works without import). Also builds namespace struct for qualified access.
             StmtKind::NamespaceDecl { name, body } => {
-                let local_ns_name = self.canon(name);
+                let local_ns_name = self.canon(name).replace('\\', ".");
                 let ns_name = match self.current_namespace.as_deref() {
                     Some(prefix) if !prefix.is_empty() => format!("{prefix}.{local_ns_name}"),
                     _ => local_ns_name,
@@ -6395,6 +6562,31 @@ impl Compiler {
                 }
                 self.emit_var_set(name);
             }
+            ExprKind::StaticAccess { class, member } => {
+                let value_tmp = self.define_local("__static_access_value");
+                self.emit_u16(Op::LOCAL_SET, value_tmp);
+                self.emit(Op::DROP);
+
+                self.compile_expr(class)?;
+                let class_tmp = self.define_local("__static_access_class");
+                self.emit_u16(Op::LOCAL_SET, class_tmp);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, class_tmp);
+                if let ExprKind::Ident(name) = &member.kind {
+                    let field_name = self.canon(name);
+                    self.emit_u16(Op::LOCAL_GET, value_tmp);
+                    let idx = self.str_const(&field_name);
+                    self.emit_u16(Op::STRUCT_SET, idx);
+                    self.emit(Op::DROP);
+                } else {
+                    self.compile_expr(member)?;
+                    self.emit_u16(Op::LOCAL_GET, value_tmp);
+                    let line = self.line;
+                    common::collections::emit_set(&mut self.chunks, self.current, line);
+                    self.emit(Op::DROP);
+                }
+            }
             ExprKind::Member { object, field, .. } => {
                 if let ExprKind::Ident(obj_name) = &object.kind {
                     if let Some(key) = self.generic_static_member_key(obj_name, field) {
@@ -6637,6 +6829,7 @@ impl Compiler {
                                 self.compile_expr(index)?;
                                 let key_tmp = self.define_local("__php_index_member_key");
                                 self.emit_u16(Op::LOCAL_SET, key_tmp); self.emit(Op::DROP);
+                                self.emit_php_promote_empty_array_for_string_key(coll_tmp, key_tmp, line);
                                 let needs_track_tmp = self.emit_php_array_assoc_key_is_missing(coll_tmp, key_tmp, line);
                                 self.emit_u16(Op::LOCAL_GET, coll_tmp);
                                 self.emit_u16(Op::LOCAL_GET, key_tmp);
@@ -6709,6 +6902,7 @@ impl Compiler {
                         let obj_tmp = self.define_local("__php_idx_obj");
                         self.emit_u16(Op::LOCAL_SET, key_tmp); self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+                        self.emit_php_promote_empty_array_for_string_key(obj_tmp, key_tmp, line);
                         let needs_track_tmp = self.emit_php_array_assoc_key_is_missing(obj_tmp, key_tmp, line);
 
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -6717,6 +6911,10 @@ impl Compiler {
                         common::collections::emit_set(&mut self.chunks, self.current, line);
                         self.emit(Op::DROP);
                         self.emit_php_array_assoc_key_tracking_when_missing(obj_tmp, key_tmp, needs_track_tmp, line);
+                        if let ExprKind::Ident(name) = &object.kind {
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_var_set(name);
+                        }
                         return Ok(());
                     }
                     if self.is_python_profile() {

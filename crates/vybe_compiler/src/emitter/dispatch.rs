@@ -565,6 +565,8 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::php::string_adapter::emit_php_ltrim(chunks, current, argc, line),
         "php.rtrim"
             => crate::emitter::php::string_adapter::emit_php_rtrim(chunks, current, argc, line),
+        "php.iconv"
+            => crate::emitter::php::string_adapter::emit_php_iconv(chunks, current, argc, line),
         "php.preg_split"
             => crate::emitter::php::string_adapter::emit_preg_split(chunks, current, argc, line),
         "php.preg_match_all_groups"
@@ -611,6 +613,12 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::php::array_adapter::emit_php_count(chunks, current, argc, line),
         "php.json_encode"
             => crate::emitter::php::array_adapter::emit_php_json_encode(chunks, current, argc, line),
+        "php.array_keys"
+            => crate::emitter::php::array_adapter::emit_php_array_keys(chunks, current, argc, line),
+        "php.array_values"
+            => crate::emitter::php::array_adapter::emit_php_array_values(chunks, current, argc, line),
+        "php.end"
+            => crate::emitter::php::array_adapter::emit_php_end(chunks, current, argc, line),
         "php.array_chunk"
             => crate::emitter::php::array_adapter::emit_array_chunk(chunks, current, argc, line),
         "php.array_combine"
@@ -683,6 +691,8 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::php::filesystem_adapter::emit_unlink(chunks, current, argc, line),
         "php.file"
             => crate::emitter::php::filesystem_adapter::emit_file(chunks, current, argc, line),
+        "php.glob"
+            => crate::emitter::php::filesystem_adapter::emit_glob(chunks, current, argc, line),
         "php.dir"
             => crate::emitter::php::filesystem_adapter::emit_dir(chunks, current, argc, line),
         "php.dir_read"
@@ -828,6 +838,8 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         "php.header" => crate::emitter::php::misc_adapter::emit_php_header(chunks, current, argc, line),
         "php.extension_loaded" => crate::emitter::php::misc_adapter::emit_php_extension_loaded(chunks, current, argc, line),
         "php.phpversion" => crate::emitter::php::misc_adapter::emit_php_phpversion(chunks, current, argc, line),
+        "php.spl_autoload_register" => crate::emitter::php::misc_adapter::emit_php_spl_autoload_register(chunks, current, argc, line),
+        "php.spl_autoload_unregister" => crate::emitter::php::misc_adapter::emit_php_spl_autoload_unregister(chunks, current, argc, line),
         "php.empty" => crate::emitter::php::misc_adapter::emit_php_empty(chunks, current, argc, line),
         "php.session_start" => crate::emitter::php::misc_adapter::emit_php_session_start(chunks, current, argc, line),
         "php.session_unset" => crate::emitter::php::misc_adapter::emit_php_session_unset(chunks, current, argc, line),
