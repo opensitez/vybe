@@ -449,6 +449,7 @@ struct_type = {
 
 field_decl = {
     ident_list ~ type_annotation ~ string_literal? ~ ";"?
+    | type_annotation ~ string_literal? ~ ";"?
 }
 
 // ── Interface type ───────────────────────────────────────────────────────────

@@ -20,8 +20,9 @@
 //! fields directly.
 
 use super::types::*;
-use crate::ast::{ClassMember, ClassModifiers, Span};
+use crate::ast::{ClassMember, ClassModifiers, Span, StmtKind};
 use crate::compiler::Compiler;
+use crate::common::classes::{access_from_visibility, from_method_stmt};
 use crate::languages::cobol;
 use crate::languages::js;
 
@@ -38,17 +39,106 @@ pub fn emit_class_from_ast(
     modifiers: &ClassModifiers,
     is_value_type: bool,
 ) -> Result<(), String> {
-    let mut nc = normalize_for_profile(
-        compiler.profile.name.as_str(),
-        span,
-        cname,
-        parents,
-        interfaces,
-        members,
-        modifiers,
-    )?;
+    let mut nc = if compiler.profile.uses_normalize_class {
+        normalize_for_profile(
+            compiler.profile.name.as_str(),
+            span.clone(),
+            cname,
+            parents,
+            interfaces,
+            members,
+            modifiers,
+        )?
+    } else {
+        normalize_from_ast_legacy(span.clone(), cname, parents, interfaces, members, modifiers)
+    };
     nc.is_value_type = is_value_type;
     emit_class(compiler, nc)
+}
+
+fn normalize_from_ast_legacy(
+    span: Span,
+    name: &str,
+    parents: &[String],
+    interfaces: &[String],
+    members: &[ClassMember],
+    modifiers: &ClassModifiers,
+) -> NormalClass {
+    let mut instance_fields = Vec::new();
+    let mut static_fields = Vec::new();
+    let mut instance_methods = Vec::new();
+    let mut static_methods = Vec::new();
+    let mut raw_extra_members = Vec::new();
+
+    for member in members {
+        match member {
+            ClassMember::Field {
+                name,
+                type_hint,
+                init,
+                modifiers,
+                ..
+            } => {
+                let field = NormalField {
+                    span: span.clone(),
+                    name: name.clone(),
+                    type_hint: type_hint.clone(),
+                    init: init.clone(),
+                    access: access_from_visibility(modifiers.visibility),
+                    readonly: modifiers.is_readonly,
+                };
+                if modifiers.is_shared {
+                    static_fields.push(field);
+                } else {
+                    instance_fields.push(field);
+                }
+            }
+            ClassMember::Method(stmt) => {
+                if let StmtKind::FunctionDecl { name: method_name, modifiers, .. } = &stmt.kind {
+                    if let Some(method) = from_method_stmt(
+                        stmt.span.clone(),
+                        stmt,
+                        method_name,
+                        access_from_visibility(modifiers.visibility),
+                    ) {
+                        if modifiers.is_shared {
+                            static_methods.push(method);
+                        } else {
+                            instance_methods.push(method);
+                        }
+                    }
+                } else {
+                    raw_extra_members.push(member.clone());
+                }
+            }
+            _ => raw_extra_members.push(member.clone()),
+        }
+    }
+
+    NormalClass {
+        span,
+        name: name.to_string(),
+        parent: parents.first().cloned(),
+        interfaces: interfaces.to_vec(),
+        is_abstract: modifiers.is_abstract,
+        is_sealed: modifiers.is_sealed,
+        is_partial: modifiers.is_partial,
+        is_value_type: false,
+        explicit_self_param: true,
+        implicit_self_fields: false,
+        instance_fields,
+        static_fields,
+        instance_methods,
+        static_methods,
+        properties: Vec::new(),
+        constructors: Vec::new(),
+        constructor: None,
+        destructor: None,
+        auto_init_methods: Vec::new(),
+        special_methods: Vec::new(),
+        event_bindings: Vec::new(),
+        raw_extra_members,
+    }
 }
 
 /// Compile a `NormalClass` — the compiler-neutral entry point.

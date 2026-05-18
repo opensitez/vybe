@@ -17,6 +17,7 @@ case_sensitive = true
 string_indexing = "zero_based"
 entry_point = "main"
 dynamic_add = true
+uses_normalize_class = false
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — bare global function calls

@@ -716,6 +716,9 @@ impl Compiler {
                     let member = self.canon(name);
                     self.defined_globals.insert(member.clone());
                     self.defined_classes.insert(member.clone());
+                    if let StmtKind::StructDecl { members, .. } = &stmt.kind {
+                        self.predeclare_struct_surface(&member, members);
+                    }
                     if let Some(prefix) = namespace {
                         let qualified = format!("{prefix}.{member}");
                         self.defined_globals.insert(qualified.clone());
@@ -736,6 +739,64 @@ impl Compiler {
                 _ => {}
             }
         }
+    }
+
+    fn predeclare_struct_surface(&mut self, name: &str, members: &[ClassMember]) {
+        let mut fields = Vec::new();
+        let mut instance_member_names = Vec::new();
+        let mut instance_field_types = HashMap::new();
+        let mut static_fields = Vec::new();
+        let mut static_field_types = HashMap::new();
+        let mut static_method_names = Vec::new();
+
+        for member in members {
+            match member {
+                ClassMember::Field { name, type_hint, modifiers, .. } => {
+                    let field_name = self.canon(name);
+                    if modifiers.is_shared {
+                        static_fields.push(field_name.clone());
+                        if let Some(type_hint) = type_hint.as_ref() {
+                            static_field_types
+                                .insert(field_name, Self::normalize_type_hint(type_hint));
+                        }
+                    } else {
+                        fields.push(field_name.clone());
+                        if let Some(type_hint) = type_hint.as_ref() {
+                            instance_field_types
+                                .insert(field_name, Self::normalize_type_hint(type_hint));
+                        }
+                    }
+                }
+                ClassMember::Method(stmt) => {
+                    if let StmtKind::FunctionDecl { name: method_name, modifiers, .. } = &stmt.kind {
+                        let canonical = self.canon(method_name);
+                        if modifiers.is_shared {
+                            static_method_names.push(canonical);
+                        } else {
+                            instance_member_names.push(canonical);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        self.defined_globals.insert(format!("{}$arity0", name));
+        self.pending_classes.entry(name.to_string()).or_insert(PendingClass {
+            parent: None,
+            enclosing_class: self.current_class.clone(),
+            fields,
+            is_value_type: true,
+            instance_member_names,
+            instance_field_types,
+            static_fields,
+            static_field_types,
+            static_method_names,
+            instance_method_overloads: HashMap::new(),
+            static_method_overloads: HashMap::new(),
+            nested_types: Vec::new(),
+            statics: Vec::new(),
+        });
     }
 
     fn register_module_static_container(&mut self, module_name: &str, members: &[ClassMember]) {

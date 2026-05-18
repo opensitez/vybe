@@ -7,9 +7,9 @@
 //! - **Multiple return values**: Go functions can return multiple values.
 //!   For simplicity we compile to returning a single array/tuple.
 //! - **Short variable declaration** (`:=`): Maps to `VarDecl` with `Let`.
-//! - **Methods**: Go methods on structs are compiled as regular functions
-//!   with the receiver as the first parameter.
-//! - **Structs**: Mapped to `ClassDecl` with fields.
+//! - **Methods**: Go methods on structs are compiled into `StructDecl`
+//!   fragments with the receiver kept as the first explicit parameter.
+//! - **Structs**: Mapped to `StructDecl` with fields.
 //! - **Interfaces**: Mapped to `InterfaceDecl`.
 //! - **`range`**: Mapped to `ForIn` with `of: true`.
 //! - **`defer`**: Currently ignored (no-op) — Go's defer semantics require
@@ -105,6 +105,7 @@ struct GoNormalizeState {
 }
 
 fn normalize_go_module(mut module: Module) -> Module {
+    module.body = merge_go_struct_decls(&module.body);
     let signatures = collect_go_function_signatures(&module.body);
     let globals = collect_go_global_fixed_arrays(&module.body, &signatures);
     let mut state = GoNormalizeState::default();
@@ -126,23 +127,100 @@ fn normalize_go_module(mut module: Module) -> Module {
 fn collect_go_function_signatures(body: &[Statement]) -> HashMap<String, GoFunctionSignature> {
     let mut signatures = HashMap::new();
     for stmt in body {
-        if let StmtKind::FunctionDecl {
-            name,
-            params,
-            return_type,
-            ..
-        } = &stmt.kind
-        {
-            signatures.insert(
-                name.clone(),
-                GoFunctionSignature {
-                    params: params.iter().map(|param| param.type_hint.clone()).collect(),
-                    return_type: return_type.clone(),
-                },
-            );
+        match &stmt.kind {
+            StmtKind::FunctionDecl {
+                name,
+                params,
+                return_type,
+                ..
+            } => {
+                signatures.insert(
+                    name.clone(),
+                    GoFunctionSignature {
+                        params: params.iter().map(|param| param.type_hint.clone()).collect(),
+                        return_type: return_type.clone(),
+                    },
+                );
+            }
+            StmtKind::StructDecl { members, .. } => {
+                for member in members {
+                    if let ClassMember::Method(stmt) = member {
+                        if let StmtKind::FunctionDecl {
+                            name,
+                            params,
+                            return_type,
+                            ..
+                        } = &stmt.kind
+                        {
+                            signatures.insert(
+                                name.clone(),
+                                GoFunctionSignature {
+                                    params: params.iter().map(|param| param.type_hint.clone()).collect(),
+                                    return_type: return_type.clone(),
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
     signatures
+}
+
+fn merge_go_struct_decls(body: &[Statement]) -> Vec<Statement> {
+    let mut first_index: HashMap<String, usize> = HashMap::new();
+    for (index, stmt) in body.iter().enumerate() {
+        if let StmtKind::StructDecl { name, .. } = &stmt.kind {
+            first_index.entry(name.clone()).or_insert(index);
+        }
+    }
+
+    let mut emitted = std::collections::HashSet::new();
+    let mut merged_body = Vec::with_capacity(body.len());
+
+    for (index, stmt) in body.iter().enumerate() {
+        match &stmt.kind {
+            StmtKind::StructDecl { name, .. } => {
+                if first_index.get(name) != Some(&index) || !emitted.insert(name.clone()) {
+                    continue;
+                }
+
+                let mut merged = stmt.clone();
+                if let StmtKind::StructDecl {
+                    interfaces,
+                    members,
+                    ..
+                } = &mut merged.kind
+                {
+                    for later in body.iter().skip(index + 1) {
+                        if let StmtKind::StructDecl {
+                            name: later_name,
+                            interfaces: later_interfaces,
+                            members: later_members,
+                            ..
+                        } = &later.kind
+                        {
+                            if later_name == name {
+                                members.extend(later_members.clone());
+                                for interface in later_interfaces {
+                                    if !interfaces.iter().any(|existing| existing == interface) {
+                                        interfaces.push(interface.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                merged_body.push(merged);
+            }
+            _ => merged_body.push(stmt.clone()),
+        }
+    }
+
+    merged_body
 }
 
 fn collect_go_global_fixed_arrays(
@@ -438,6 +516,51 @@ fn normalize_go_statement(
                 .as_ref()
                 .map(|value| normalize_go_expr(value, env, signatures, state)),
         })],
+        StmtKind::StructDecl {
+            name,
+            interfaces,
+            members,
+            visibility,
+            decorators,
+        } => {
+            let normalized_members = members
+                .iter()
+                .map(|member| match member {
+                    ClassMember::Method(stmt) => {
+                        let normalized_method = normalize_go_single_statement(stmt, env, signatures, state);
+                        ClassMember::Method(Box::new(normalized_method))
+                    }
+                    ClassMember::Field {
+                        name,
+                        type_hint,
+                        init,
+                        modifiers,
+                        with_events,
+                        array_bounds,
+                    } => ClassMember::Field {
+                        name: name.clone(),
+                        type_hint: type_hint.clone(),
+                        init: init.as_ref().map(|expr| normalize_go_expr(expr, env, signatures, state)),
+                        modifiers: modifiers.clone(),
+                        with_events: *with_events,
+                        array_bounds: array_bounds.as_ref().map(|bounds| {
+                            bounds
+                                .iter()
+                                .map(|expr| normalize_go_expr(expr, env, signatures, state))
+                                .collect()
+                        }),
+                    },
+                    _ => member.clone(),
+                })
+                .collect();
+            vec![Statement::new(StmtKind::StructDecl {
+                name: name.clone(),
+                interfaces: interfaces.clone(),
+                members: normalized_members,
+                visibility: *visibility,
+                decorators: decorators.clone(),
+            })]
+        }
         _ => vec![stmt.clone()],
     }
 }
@@ -1303,7 +1426,7 @@ fn walk_method_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     // Prepend receiver as first parameter
     params.insert(0, Param {
         name: if receiver_name.is_empty() { "self".to_string() } else { receiver_name },
-        type_hint: Some(receiver_type),
+        type_hint: Some(receiver_type.clone()),
         default: None,
         pass_by: PassBy::Value,
         is_rest: false,
@@ -1312,7 +1435,7 @@ fn walk_method_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         is_nullable: false,
     });
 
-    Ok(Statement::new(StmtKind::FunctionDecl {
+    let method_stmt = Statement::new(StmtKind::FunctionDecl {
         name: method_name,
         params,
         return_type,
@@ -1322,6 +1445,14 @@ fn walk_method_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         is_async: false,
         is_generator: false,
         is_sub: false,
+    });
+
+    Ok(Statement::new(StmtKind::StructDecl {
+        name: receiver_type,
+        interfaces: Vec::new(),
+        members: vec![ClassMember::Method(Box::new(method_stmt))],
+        visibility: Visibility::Public,
+        decorators: Vec::new(),
     }))
 }
 
@@ -1571,7 +1702,12 @@ fn walk_type_decl(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
                 for spec_inner in inner.into_inner() {
                     match spec_inner.as_rule() {
                         Rule::ident_name => name = spec_inner.as_str().to_string(),
-                        Rule::type_annotation => type_str = walk_type(spec_inner),
+                        Rule::type_annotation => {
+                            if let Some(type_stmt) = walk_named_type_annotation(name.clone(), spec_inner.clone())? {
+                                return Ok(Some(type_stmt));
+                            }
+                            type_str = walk_type(spec_inner);
+                        }
                         Rule::struct_type => {
                             return Ok(Some(walk_struct_type(name, spec_inner)?));
                         }
@@ -1632,8 +1768,14 @@ fn walk_struct_type(name: String, pair: Pair<Rule>) -> Result<Statement, String>
                 }
             }
 
+            if field_names.is_empty() {
+                if let Some(type_name) = field_type.as_deref().and_then(go_embedded_field_name) {
+                    field_names.push(type_name);
+                }
+            }
+
             for fname in field_names {
-                    members.push(ClassMember::Field {
+                members.push(ClassMember::Field {
                     name: fname,
                     type_hint: field_type.clone(),
                     init: None,
@@ -1645,12 +1787,11 @@ fn walk_struct_type(name: String, pair: Pair<Rule>) -> Result<Statement, String>
         }
     }
 
-    Ok(Statement::new(StmtKind::ClassDecl {
+    Ok(Statement::new(StmtKind::StructDecl {
         name,
-        parents: Vec::new(),
         interfaces: Vec::new(),
         members,
-        modifiers: ClassModifiers::default(),
+        visibility: Visibility::Public,
         decorators: Vec::new(),
     }))
 }
@@ -1693,6 +1834,25 @@ fn walk_interface_type(name: String, pair: Pair<Rule>) -> Result<Statement, Stri
         members,
         decorators: Vec::new(),
     }))
+}
+
+fn walk_named_type_annotation(name: String, pair: Pair<Rule>) -> Result<Option<Statement>, String> {
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::struct_type => return Ok(Some(walk_struct_type(name, inner)?)),
+            Rule::interface_type => return Ok(Some(walk_interface_type(name, inner)?)),
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+
+fn go_embedded_field_name(type_name: &str) -> Option<String> {
+    let trimmed = type_name.trim().trim_start_matches('*').trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed.rsplit('.').next().map(|name| name.to_string())
 }
 
 // ── Statements ─────────────────────────────────────────────────────────────────────────
@@ -2644,38 +2804,31 @@ fn walk_labeled(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
     if pair.as_rule() == Rule::expression {
-        let mut left = None;
-        let mut ops = Vec::new();
+        let mut operands = Vec::new();
+        let mut operators: Vec<String> = Vec::new();
 
         for inner in pair.into_inner() {
             match inner.as_rule() {
-                Rule::unary_expression => {
-                    if left.is_none() {
-                        left = Some(walk_unary_expression(inner)?);
-                    } else {
-                        ops.push((None, walk_unary_expression(inner)?));
-                    }
-                }
+                Rule::unary_expression => operands.push(walk_unary_expression(inner)?),
                 Rule::binary_op => {
-                    ops.push((Some(inner.as_str().to_string()), Expression::new(ExprKind::Lit(Literal::Null))));
+                    let op = inner.as_str().to_string();
+                    while operators
+                        .last()
+                        .is_some_and(|top| go_binary_precedence(top) >= go_binary_precedence(&op))
+                    {
+                        go_reduce_binary_expr(&mut operands, &mut operators)?;
+                    }
+                    operators.push(op);
                 }
                 _ => {}
             }
         }
 
-        if let Some(mut result) = left {
-            let mut i = 0;
-            while i < ops.len() {
-                if let (Some(op), _) = &ops[i] {
-                    if i + 1 < ops.len() {
-                        let right = ops[i + 1].1.clone();
-                        result = build_go_binary_expr(op, result, right);
-                        i += 2;
-                        continue;
-                    }
-                }
-                i += 1;
-            }
+        while !operators.is_empty() {
+            go_reduce_binary_expr(&mut operands, &mut operators)?;
+        }
+
+        if let Some(result) = operands.pop() {
             return Ok(result);
         }
     } else if pair.as_rule() == Rule::unary_expression {
@@ -3102,52 +3255,63 @@ fn walk_element_list(pair: Pair<Rule>) -> Result<Vec<(Expression, Expression)>, 
     let mut elements = Vec::new();
     for inner in pair.into_inner() {
         if inner.as_rule() == Rule::keyed_element {
-            let mut key = None;
-            let mut val = None;
-
-            for ke_inner in inner.into_inner() {
-                match ke_inner.as_rule() {
-                    Rule::ident_name => {
-                        if key.is_none() {
-                            key = Some(Expression::new(ExprKind::Ident(ke_inner.as_str().to_string())));
-                        } else if val.is_none() {
-                            val = Some(Expression::new(ExprKind::Ident(ke_inner.as_str().to_string())));
-                        }
-                    }
-                    Rule::expression => {
-                        if key.is_none() {
-                            key = Some(walk_expression(ke_inner)?);
-                        } else if val.is_none() {
-                            val = Some(walk_expression(ke_inner)?);
-                        }
-                    }
-                    Rule::element => {
-                        for e_inner in ke_inner.into_inner() {
-                            if e_inner.as_rule() == Rule::expression {
-                                if val.is_none() {
-                                    val = Some(walk_expression(e_inner)?);
-                                }
-                            } else if e_inner.as_rule() == Rule::literal_value {
-                                val = Some(walk_literal_value_expr(e_inner)?);
-                            }
-                        }
-                    }
-                    Rule::literal_value => {
-                        val = Some(walk_literal_value_expr(ke_inner)?);
-                    }
-                    _ => {}
-                }
-            }
-
-            let value = val.unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
-            if let Some(k) = key {
-                elements.push((k, value));
+            let parts: Vec<_> = inner.into_inner().collect();
+            if parts.len() >= 2 {
+                let key = go_keyed_element_key(parts[0].clone())?;
+                let value = go_keyed_element_value(parts[1].clone())?;
+                elements.push((key, value));
+            } else if let Some(value_pair) = parts.into_iter().next() {
+                elements.push((
+                    Expression::new(ExprKind::Lit(Literal::Null)),
+                    go_keyed_element_value(value_pair)?,
+                ));
             } else {
-                elements.push((Expression::new(ExprKind::Lit(Literal::Null)), value));
+                elements.push((
+                    Expression::new(ExprKind::Lit(Literal::Null)),
+                    Expression::new(ExprKind::Lit(Literal::Null)),
+                ));
             }
         }
     }
     Ok(elements)
+}
+
+fn go_keyed_element_key(pair: Pair<Rule>) -> Result<Expression, String> {
+    match pair.as_rule() {
+        Rule::ident_name => Ok(Expression::new(ExprKind::Ident(pair.as_str().to_string()))),
+        Rule::string_literal => Ok(Expression::new(ExprKind::Lit(Literal::Str(unquote(pair.as_str()))))),
+        Rule::numeric_literal => {
+            let literal = pair.as_str().replace('_', "");
+            if let Ok(n) = literal.parse::<i64>() {
+                Ok(Expression::new(ExprKind::Lit(Literal::Int(n))))
+            } else if let Ok(f) = literal.parse::<f64>() {
+                Ok(Expression::new(ExprKind::Lit(Literal::Float(f))))
+            } else {
+                Ok(Expression::new(ExprKind::Lit(Literal::Null)))
+            }
+        }
+        Rule::expression => walk_expression(pair),
+        Rule::element => go_keyed_element_value(pair),
+        Rule::literal_value => walk_literal_value_expr(pair),
+        _ => Ok(Expression::new(ExprKind::Lit(Literal::Null))),
+    }
+}
+
+fn go_keyed_element_value(pair: Pair<Rule>) -> Result<Expression, String> {
+    match pair.as_rule() {
+        Rule::element => {
+            let Some(inner) = pair.into_inner().next() else {
+                return Ok(Expression::new(ExprKind::Lit(Literal::Null)));
+            };
+            go_keyed_element_value(inner)
+        }
+        Rule::expression => walk_expression(pair),
+        Rule::literal_value => walk_literal_value_expr(pair),
+        Rule::ident_name => Ok(Expression::new(ExprKind::Ident(pair.as_str().to_string()))),
+        Rule::string_literal => Ok(Expression::new(ExprKind::Lit(Literal::Str(unquote(pair.as_str()))))),
+        Rule::numeric_literal => go_keyed_element_key(pair),
+        _ => Ok(Expression::new(ExprKind::Lit(Literal::Null))),
+    }
 }
 
 fn walk_literal_value_expr(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -3271,6 +3435,34 @@ fn build_go_binary_expr(op: &str, left: Expression, right: Expression) -> Expres
             left: Box::new(left),
             right: Box::new(right),
         })
+    }
+}
+
+fn go_reduce_binary_expr(
+    operands: &mut Vec<Expression>,
+    operators: &mut Vec<String>,
+) -> Result<(), String> {
+    let Some(op) = operators.pop() else {
+        return Ok(());
+    };
+    let Some(right) = operands.pop() else {
+        return Err(format!("missing right operand for Go binary operator {op}"));
+    };
+    let Some(left) = operands.pop() else {
+        return Err(format!("missing left operand for Go binary operator {op}"));
+    };
+    operands.push(build_go_binary_expr(&op, left, right));
+    Ok(())
+}
+
+fn go_binary_precedence(op: &str) -> u8 {
+    match op {
+        "||" => 1,
+        "&&" => 2,
+        "==" | "!=" | "<" | "<=" | ">" | ">=" => 3,
+        "+" | "-" | "|" | "^" => 4,
+        "*" | "/" | "%" | "<<" | ">>" | "&" | "&^" => 5,
+        _ => 0,
     }
 }
 

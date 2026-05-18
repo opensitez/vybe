@@ -2897,6 +2897,54 @@ impl Compiler {
                         }
                     }
 
+                    if let Some(user_type) = self.user_value_type_name_from_hint(type_name) {
+                        if matches!(&inner.kind, ExprKind::Object(_)) {
+                            let ctor_global = {
+                                let overload = format!("{}$arity0", user_type);
+                                if self.defined_globals.contains(&overload) {
+                                    overload
+                                } else {
+                                    user_type.clone()
+                                }
+                            };
+
+                            let source_slot = self.define_local("__cast_struct_source");
+                            self.compile_expr(inner)?;
+                            self.emit_u16(Op::LOCAL_SET, source_slot);
+                            self.emit(Op::DROP);
+
+                            let value_slot = self.define_local("__cast_struct_value");
+                            let idx = self.str_const(&ctor_global);
+                            self.emit_u16(Op::GLOBAL_GET, idx);
+                            self.emit_u8(Op::CALL_REF, 0);
+                            self.emit_u16(Op::LOCAL_SET, value_slot);
+                            self.emit(Op::DROP);
+
+                            if let Some(fields) = self.pending_classes.get(&user_type).map(|pending| pending.fields.clone()) {
+                                for field_name in fields {
+                                    let member_slot = self.define_local("__cast_struct_member");
+                                    let field_idx = self.str_const(&field_name);
+                                    self.emit_u16(Op::LOCAL_GET, source_slot);
+                                    self.emit_u16(Op::STRUCT_GET, field_idx);
+                                    self.emit_u16(Op::LOCAL_SET, member_slot);
+                                    self.emit(Op::DROP);
+
+                                    self.emit_u16(Op::LOCAL_GET, member_slot);
+                                    self.emit(Op::REF_IS_UNDEFINED);
+                                    let skip_set = self.emit_jump(Op::BR_IF_TRUE);
+                                    self.emit_u16(Op::LOCAL_GET, value_slot);
+                                    self.emit_u16(Op::LOCAL_GET, member_slot);
+                                    self.emit_u16(Op::STRUCT_SET, field_idx);
+                                    self.emit(Op::DROP);
+                                    self.patch_jump(skip_set);
+                                }
+                            }
+
+                            self.emit_u16(Op::LOCAL_GET, value_slot);
+                            return Ok(());
+                        }
+                    }
+
                     let shadows_cast = self.defined_functions.contains(&canon_type)
                         || (!self.case_sensitive
                             && self.defined_functions.iter().any(|name| name.eq_ignore_ascii_case(type_name)));

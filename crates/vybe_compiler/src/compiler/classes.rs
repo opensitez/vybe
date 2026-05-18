@@ -577,6 +577,19 @@ impl Compiler {
             for p in &user_params {
                 cc.define_local_typed(&p.name, p.type_hint.clone());
             }
+            if !uses_js_this && !is_static_init && (!is_static || cc.profile.name == "php") {
+                if class.explicit_self_param {
+                    if let Some(self_param) = m.params.first() {
+                        if self_param.name != self_kw {
+                            let self_slot = cc.scope().resolve(&self_kw).unwrap();
+                            let alias_slot = cc.define_local_typed(&self_param.name, self_param.type_hint.clone());
+                            cc.emit_u16(Op::LOCAL_GET, self_slot);
+                            cc.emit_u16(Op::LOCAL_SET, alias_slot);
+                            cc.emit(Op::DROP);
+                        }
+                    }
+                }
+            }
             let generator_control_slot = m.is_generator.then(|| cc.define_local("__generator_entry_control"));
             let ref_out_slots: Vec<u16> = user_params.iter()
                 .filter(|param| matches!(param.pass_by, PassBy::Ref | PassBy::Out))
