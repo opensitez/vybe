@@ -254,7 +254,7 @@ type_switch_stmt = {
 }
 
 type_switch_guard = {
-    ident_name ~ ":=" ~ primary ~ "." ~ "(" ~ "type" ~ ")"
+    (ident_name ~ ":=")? ~ primary ~ "." ~ "(" ~ "type" ~ ")"
 }
 
 type_case_clause = {

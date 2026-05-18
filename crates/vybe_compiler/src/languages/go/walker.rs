@@ -603,6 +603,30 @@ fn normalize_go_expr(
                 }
             }
 
+            if call_name.as_deref() == Some("int") && next_args.len() == 1 {
+                return go_builtin_call("__go_to_int", vec![next_args[0].value.clone()]);
+            }
+
+            if matches!(call_name.as_deref(), Some("float32" | "float64")) && next_args.len() == 1 {
+                return Expression::new(ExprKind::Cast {
+                    expr: Box::new(next_args[0].value.clone()),
+                    type_name: call_name.unwrap(),
+                });
+            }
+
+            if call_name.as_deref() == Some("string") && next_args.len() == 1 {
+                if go_expr_type_hint(&next_args[0].value, env, signatures)
+                    .as_deref()
+                    .is_some_and(go_is_integer_type)
+                {
+                    return go_builtin_call("__go_str_from_char_code", vec![next_args[0].value.clone()]);
+                }
+                return Expression::new(ExprKind::Cast {
+                    expr: Box::new(next_args[0].value.clone()),
+                    type_name: "string".to_string(),
+                });
+            }
+
             if call_name.as_deref() == Some("copy") && next_args.len() >= 2 {
                 let target = next_args[0].value.clone();
                 let clone = go_member_call(next_args[1].value.clone(), "slice", Vec::new());
@@ -654,6 +678,12 @@ fn normalize_go_expr(
                         })),
                         value: Box::new(Expression::bool(true)),
                     });
+                }
+            }
+
+            if call_name.as_deref() == Some("__go_type_assert") && next_args.len() == 2 {
+                if let Some(type_name) = go_type_name_from_expr(&next_args[1].value) {
+                    return go_type_assert_value_expr(next_args[0].value.clone(), &type_name);
                 }
             }
 
@@ -955,9 +985,21 @@ fn go_expr_type_hint(
         ExprKind::Lit(Literal::Bool(_)) => Some("bool".to_string()),
         ExprKind::Lit(Literal::Str(_)) => Some("string".to_string()),
         ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
+        ExprKind::IsType { .. } => Some("bool".to_string()),
         ExprKind::Index { object, .. } => go_expr_type_hint(object, env, signatures)
-            .and_then(|type_name| go_array_element_type(&type_name)),
+            .and_then(|type_name| {
+                if type_name == "string" {
+                    Some("byte".to_string())
+                } else {
+                    go_array_element_type(&type_name)
+                }
+            }),
         ExprKind::Assign { value, .. } => go_expr_type_hint(value, env, signatures),
+        ExprKind::Ternary { then, else_, .. } => {
+            let then_type = go_expr_type_hint(then, env, signatures);
+            let else_type = go_expr_type_hint(else_, env, signatures);
+            if then_type == else_type { then_type } else { then_type.or(else_type) }
+        }
         ExprKind::Binary { op, left, right } => {
             let left_type = go_expr_type_hint(left, env, signatures);
             let right_type = go_expr_type_hint(right, env, signatures);
@@ -990,6 +1032,12 @@ fn go_expr_type_hint(
             }
             ExprKind::Ident(name) if name == "__go_fixed_array_equal" => Some("bool".to_string()),
             ExprKind::Ident(name) if name == "__go_regex_split_pat_first" => Some("[]string".to_string()),
+            ExprKind::Ident(name) if name == "__go_to_int" => Some("int".to_string()),
+            ExprKind::Ident(name) if name == "__go_str_from_char_code" => Some("string".to_string()),
+            ExprKind::Ident(name) if name == "__go_type_assert" => {
+                args.get(1).and_then(|arg| go_type_name_from_expr(&arg.value))
+            }
+            ExprKind::Member { field, .. } if field == "charCodeAt" => Some("int".to_string()),
             ExprKind::Ident(name) => signatures.get(name).and_then(|sig| sig.return_type.clone()),
             _ => None,
         },
@@ -1822,6 +1870,37 @@ fn walk_short_var_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 
     let mut declarations = Vec::new();
+    if names.len() == 2 && values.len() == 1 {
+        if let Some((expr, type_name)) = go_extract_type_assert_expr(&values[0]) {
+            let pattern = BindingPattern::Array(
+                names.into_iter().map(|name| {
+                    if name == "_" {
+                        ArrayPatternElem::Hole
+                    } else {
+                        ArrayPatternElem::Pattern(BindingPattern::Ident(name), None)
+                    }
+                }).collect(),
+            );
+            declarations.push(VarDeclarator {
+                pattern,
+                init: Some(Expression::new(ExprKind::Tuple(vec![
+                    go_type_assert_value_expr(expr.clone(), &type_name),
+                    Expression::new(ExprKind::IsType {
+                        expr: Box::new(expr),
+                        type_name,
+                    }),
+                ]))),
+                type_hint: None,
+                array_bounds: None,
+                with_events: false,
+            });
+            return Ok(StmtKind::VarDecl {
+                declarations,
+                kind: VarDeclKind::Let,
+            });
+        }
+    }
+
     if names.len() > 1 && !values.is_empty() {
         let pattern = BindingPattern::Array(
             names.into_iter().map(|name| {
@@ -1904,6 +1983,7 @@ fn walk_inc_dec(pair: Pair<Rule>) -> Result<StmtKind, String> {
 fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut cond = None;
     let mut then_body = Vec::new();
+    let mut elifs = Vec::new();
     let mut else_body: Option<Vec<Statement>> = None;
     let mut pre_stmt: Option<Box<Statement>> = None;
 
@@ -1925,13 +2005,19 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         Rule::block_statement => else_body = Some(walk_block(e_inner)?),
                         Rule::if_statement => {
                             let elif = walk_if(e_inner)?;
-                            if let StmtKind::If { cond: c, then_body: t, else_body: e, .. } = elif {
-                                then_body.push(Statement::new(StmtKind::If {
+                            match elif {
+                                StmtKind::If {
                                     cond: c,
                                     then_body: t,
-                                    elifs: Vec::new(),
-                                    else_body: e,
-                                }));
+                                    elifs: nested_elifs,
+                                    else_body: nested_else,
+                                } => {
+                                    elifs.push((c, t));
+                                    elifs.extend(nested_elifs);
+                                    else_body = nested_else;
+                                }
+                                StmtKind::Block(stmts) => else_body = Some(stmts),
+                                _ => {}
                             }
                         }
                         _ => {}
@@ -1952,20 +2038,33 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
-    let mut then = then_body;
-    if let Some(pre) = pre_stmt {
-        then.insert(0, *pre);
-    }
-
-    Ok(StmtKind::If {
+    let if_stmt = Statement::new(StmtKind::If {
         cond: cond.unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Bool(true)))),
-        then_body: then,
-        elifs: Vec::new(),
+        then_body,
+        elifs,
         else_body,
-    })
+    });
+
+    if let Some(pre) = pre_stmt {
+        Ok(StmtKind::Block(vec![*pre, if_stmt]))
+    } else {
+        Ok(if_stmt.kind)
+    }
 }
 
 fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
+    match pair.as_rule() {
+        Rule::switch_statement => {
+            if let Some(inner) = pair.into_inner().next() {
+                return walk_switch(inner);
+            }
+            return Ok(StmtKind::Empty);
+        }
+        Rule::type_switch_stmt => return walk_type_switch(pair),
+        Rule::expr_switch_stmt => {}
+        _ => return Ok(StmtKind::Empty),
+    }
+
     let mut expr = None;
     let mut cases = Vec::new();
     let mut default: Option<Vec<Statement>> = None;
@@ -2007,11 +2106,124 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
+    if expr.is_none() {
+        let mut first_case: Option<(Expression, Vec<Statement>)> = None;
+        let mut elifs = Vec::new();
+        for case in cases {
+            let cond = case
+                .conditions
+                .into_iter()
+                .filter_map(|condition| match condition {
+                    CaseCondition::Value(expr) => Some(expr),
+                    _ => None,
+                })
+                .reduce(|left, right| Expression::new(ExprKind::Binary {
+                    op: BinOp::Or,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                }))
+                .unwrap_or_else(|| Expression::bool(false));
+            if first_case.is_none() {
+                first_case = Some((cond, case.body));
+            } else {
+                elifs.push((cond, case.body));
+            }
+        }
+
+        if let Some((cond, then_body)) = first_case {
+            return Ok(StmtKind::If {
+                cond,
+                then_body,
+                elifs,
+                else_body: default,
+            });
+        }
+
+        return Ok(StmtKind::Block(default.unwrap_or_default()));
+    }
+
     Ok(StmtKind::Switch {
         expr: expr.unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Bool(true)))),
         cases,
         default,
     })
+}
+
+fn walk_type_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
+    let mut binding_name: Option<String> = None;
+    let mut switch_expr: Option<Expression> = None;
+    let mut first_case: Option<(Expression, Vec<Statement>)> = None;
+    let mut elifs = Vec::new();
+    let mut default_body: Option<Vec<Statement>> = None;
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::type_switch_guard => {
+                for guard_inner in inner.into_inner() {
+                    match guard_inner.as_rule() {
+                        Rule::ident_name => binding_name = Some(guard_inner.as_str().to_string()),
+                        Rule::primary => switch_expr = Some(walk_primary(guard_inner)?),
+                        _ => {}
+                    }
+                }
+            }
+            Rule::type_case_clause => {
+                let mut case_types = Vec::new();
+                let mut body = Vec::new();
+                for case_inner in inner.into_inner() {
+                    match case_inner.as_rule() {
+                        Rule::type_switch_case => {
+                            for switch_case_inner in case_inner.into_inner() {
+                                match switch_case_inner.as_rule() {
+                                    Rule::type_list => {
+                                        for ty in switch_case_inner.into_inner() {
+                                            if ty.as_rule() == Rule::type_annotation {
+                                                case_types.push(walk_type(ty));
+                                            }
+                                        }
+                                    }
+                                    Rule::kw_default => {}
+                                    _ => {}
+                                }
+                            }
+                        }
+                        Rule::statement_list => body = walk_statement_list(case_inner)?,
+                        _ => {}
+                    }
+                }
+
+                if case_types.is_empty() {
+                    default_body = Some(body);
+                } else {
+                    let expr = switch_expr.clone().unwrap_or_else(Expression::null);
+                    let cond = go_type_switch_case_cond(expr.clone(), &case_types);
+                    let case_body = go_type_switch_case_body(
+                        body,
+                        binding_name.as_deref(),
+                        expr,
+                        &case_types[0],
+                    );
+                    if first_case.is_none() {
+                        first_case = Some((cond, case_body));
+                    } else {
+                        elifs.push((cond, case_body));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let Some((cond, then_body)) = first_case {
+        Ok(StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body: default_body,
+        })
+    } else {
+        Ok(StmtKind::Block(default_body.unwrap_or_default()))
+    }
 }
 
 fn walk_select(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -2564,7 +2776,11 @@ fn walk_primary(pair: Pair<Rule>) -> Result<Expression, String> {
                 chain.push(PrimaryChain::Call(args));
             }
             Rule::type_assertion => {
-                // type assertions like .(Type) — ignore for now
+                for t_inner in inner.into_inner() {
+                    if t_inner.as_rule() == Rule::type_annotation {
+                        chain.push(PrimaryChain::TypeAssert(walk_type(t_inner)));
+                    }
+                }
             }
             _ => {}
         }
@@ -2585,17 +2801,27 @@ fn walk_primary(pair: Pair<Rule>) -> Result<Expression, String> {
                 }),
                 PrimaryChain::Slice { start, end } => {
                     let start_expr = start.unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Int(0))));
-                    let end_expr = end.unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
+                    let mut args = vec![Argument {
+                        value: start_expr,
+                        name: None,
+                        by_ref: false,
+                        spread: false,
+                    }];
+                    if let Some(end_expr) = end {
+                        args.push(Argument {
+                            value: end_expr,
+                            name: None,
+                            by_ref: false,
+                            spread: false,
+                        });
+                    }
                     Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::new(ExprKind::Member {
                             object: Box::new(result),
                             field: "slice".to_string(),
                             null_safe: false,
                         })),
-                        args: vec![
-                            Argument { value: start_expr, name: None, by_ref: false, spread: false },
-                            Argument { value: end_expr, name: None, by_ref: false, spread: false },
-                        ],
+                        args,
                         optional: false,
                     })
                 }
@@ -2604,6 +2830,7 @@ fn walk_primary(pair: Pair<Rule>) -> Result<Expression, String> {
                     args,
                     optional: false,
                 }),
+                PrimaryChain::TypeAssert(type_name) => go_type_assert_expr(result, type_name),
             };
         }
         Ok(result)
@@ -2618,6 +2845,7 @@ enum PrimaryChain {
     Index(Expression),
     Slice { start: Option<Expression>, end: Option<Expression> },
     Call(Vec<Argument>),
+    TypeAssert(String),
 }
 
 fn walk_operand(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -3034,6 +3262,111 @@ fn go_type_arg_expr(type_name: String) -> Expression {
         expr: Box::new(Expression::null()),
         type_name,
     })
+}
+
+fn go_type_assert_expr(expr: Expression, type_name: String) -> Expression {
+    go_builtin_call("__go_type_assert", vec![expr, go_type_arg_expr(type_name)])
+}
+
+fn go_extract_type_assert_expr(expr: &Expression) -> Option<(Expression, String)> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(callee.kind, ExprKind::Ident(ref name) if name == "__go_type_assert") || args.len() != 2 {
+        return None;
+    }
+    Some((args[0].value.clone(), go_type_name_from_expr(&args[1].value)?))
+}
+
+fn go_type_assert_value_expr(expr: Expression, type_name: &str) -> Expression {
+    if !matches!(type_name.trim(),
+        "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8" | "uint16"
+        | "uint32" | "uint64" | "uintptr" | "byte" | "rune" | "float32" | "float64"
+        | "string" | "bool"
+    ) {
+        return Expression::new(ExprKind::Cast {
+            expr: Box::new(expr),
+            type_name: type_name.to_string(),
+        });
+    }
+
+    let cond = go_build_is_type(expr.clone(), type_name);
+    let then_expr = Expression::new(ExprKind::Cast {
+        expr: Box::new(expr),
+        type_name: type_name.to_string(),
+    });
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(cond),
+        then: Box::new(then_expr),
+        else_: Box::new(go_zero_value_expr(type_name)),
+    })
+}
+
+fn go_type_switch_case_cond(expr: Expression, case_types: &[String]) -> Expression {
+    let mut iter = case_types.iter();
+    let first = iter
+        .next()
+        .map(|type_name| go_build_is_type(expr.clone(), type_name))
+        .unwrap_or_else(|| Expression::bool(false));
+    iter.fold(first, |acc, type_name| {
+        Expression::new(ExprKind::Binary {
+            op: BinOp::Or,
+            left: Box::new(acc),
+            right: Box::new(go_build_is_type(expr.clone(), type_name)),
+        })
+    })
+}
+
+fn go_build_is_type(expr: Expression, type_name: &str) -> Expression {
+    let typeof_tag = match type_name.trim() {
+        "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8" | "uint16"
+        | "uint32" | "uint64" | "uintptr" | "byte" | "rune" | "float32" | "float64" => {
+            Some("number")
+        }
+        "string" => Some("string"),
+        "bool" => Some("boolean"),
+        _ => None,
+    };
+
+    if let Some(tag) = typeof_tag {
+        return Expression::new(ExprKind::Binary {
+            op: BinOp::Eq,
+            left: Box::new(Expression::new(ExprKind::TypeOf(Box::new(expr)))),
+            right: Box::new(Expression::string(tag)),
+        });
+    }
+
+    Expression::new(ExprKind::IsType {
+        expr: Box::new(expr),
+        type_name: type_name.to_string(),
+    })
+}
+
+fn go_type_switch_case_body(
+    mut body: Vec<Statement>,
+    binding_name: Option<&str>,
+    expr: Expression,
+    case_type: &str,
+) -> Vec<Statement> {
+    if let Some(name) = binding_name {
+        body.insert(
+            0,
+            Statement::new(StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Ident(name.to_string()),
+                    init: Some(Expression::new(ExprKind::Cast {
+                        expr: Box::new(expr),
+                        type_name: case_type.to_string(),
+                    })),
+                    type_hint: Some(case_type.to_string()),
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Let,
+            }),
+        );
+    }
+    body
 }
 
 fn go_wrap_spawn_expr(expr: Expression) -> Expression {

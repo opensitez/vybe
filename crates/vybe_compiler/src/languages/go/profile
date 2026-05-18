@@ -25,6 +25,8 @@ dynamic_add = true
 [builtins]
 
 "__go_spawn"    = { emit = "common:threading.task_run",      min_args = 1, max_args = 1 }
+"__go_to_int"   = { emit = "opcode:to_int",                  min_args = 1, max_args = 1 }
+"__go_str_from_char_code" = { emit = "opcode:str_from_char_code", min_args = 1, max_args = 1 }
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
