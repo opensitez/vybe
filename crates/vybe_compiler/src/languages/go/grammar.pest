@@ -1,0 +1,481 @@
+// Go Grammar for pest parser — FIXED
+// Key fixes:
+//   1. statement is NON-SILENT so function bodies are non-empty
+//   2. binary_op: longer ops before shorter (>= before >, <= before <, etc.)
+//   3. for_clause update position: no trailing ";" required
+//   4. while-style for: expression ~ block_statement captured together
+//   5. Semicolons are optional on most statements (Go's lexer inserts them)
+
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT = _{ line_comment | block_comment }
+line_comment = _{ "//" ~ (!("\n" | "\r") ~ ANY)* }
+block_comment = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+
+// ── Program ─────────────────────────────────────────────────────────────────
+
+program = { SOI ~ package_clause ~ import_declarations? ~ top_level_declaration* ~ EOI }
+
+// ── Package ─────────────────────────────────────────────────────────────────
+
+package_clause = { "package" ~ ident_name ~ ";"? }
+
+// ── Imports ─────────────────────────────────────────────────────────────────
+
+import_declarations = { import_declaration+ }
+
+import_declaration = {
+    "import" ~ (import_group | import_spec) ~ ";"?
+}
+
+import_group = { "(" ~ (import_spec ~ ";"?)* ~ ")" }
+
+import_spec = {
+    (ident_name | "." | "_")? ~ string_literal
+}
+
+// ── Top-level declarations ──────────────────────────────────────────────────
+
+top_level_declaration = _{
+    method_declaration
+    | function_declaration
+    | declaration
+}
+
+declaration = _{
+    var_declaration
+    | const_declaration
+    | type_declaration
+}
+
+// ── Variable declarations ───────────────────────────────────────────────────
+
+var_declaration = {
+    "var" ~ (var_group | var_spec)
+}
+
+var_group = { "(" ~ (var_spec ~ ";"?)* ~ ")" }
+
+var_spec = {
+    ident_list ~ type_annotation? ~ ("=" ~ expression_list)? ~ ";"?
+}
+
+ident_list = { ident_name ~ ("," ~ ident_name)* }
+expression_list = { expression ~ ("," ~ expression)* }
+
+// ── Constant declarations ───────────────────────────────────────────────────
+
+const_declaration = {
+    "const" ~ (const_group | const_spec)
+}
+
+const_group = { "(" ~ (const_spec ~ ";"?)* ~ ")" }
+
+const_spec = {
+    ident_list ~ type_annotation? ~ ("=" ~ expression_list)? ~ ";"?
+}
+
+// ── Type declarations ───────────────────────────────────────────────────────
+
+type_declaration = {
+    "type" ~ (type_group | type_spec)
+}
+
+type_group = { "(" ~ (type_spec ~ ";"?)* ~ ")" }
+
+type_spec = {
+    ident_name ~ type_annotation ~ ";"?
+}
+
+// ── Function declarations ───────────────────────────────────────────────────
+
+function_declaration = {
+    "func" ~ ident_name ~ signature ~ (function_body | ";")
+}
+
+method_declaration = {
+    "func" ~ receiver ~ ident_name ~ signature ~ (function_body | ";")
+}
+
+receiver = {
+    "(" ~ ident_name? ~ type_annotation ~ ")"
+}
+
+signature = {
+    "(" ~ parameter_list? ~ ")" ~ result?
+}
+
+result = {
+    "(" ~ parameter_list? ~ ")"
+    | type_annotation
+}
+
+parameter_list = { parameter_decl ~ ("," ~ parameter_decl)* ~ ","? }
+
+parameter_decl = {
+    ident_list ~ type_annotation
+    | type_annotation
+}
+
+function_body = { block_statement }
+
+// ── Statements ──────────────────────────────────────────────────────────────
+// CRITICAL: statement is NON-SILENT so pest produces Rule::statement nodes.
+// Walker dispatches on the inner child rule.
+
+statement = {
+    empty_statement
+    | labeled_statement
+    | block_statement
+    | if_statement
+    | switch_statement
+    | for_statement
+    | return_statement
+    | break_statement
+    | continue_statement
+    | goto_statement
+    | defer_statement
+    | go_statement
+    | send_statement
+    | short_var_declaration
+    | inc_dec_statement
+    | assignment_statement
+    | var_declaration
+    | const_declaration
+    | type_declaration
+    | expression_statement
+}
+
+empty_statement = { ";" }
+
+labeled_statement = { ident_name ~ ":" ~ statement }
+
+block_statement = { "{" ~ statement_list ~ "}" }
+
+statement_list = { (statement ~ ";"?)* }
+
+// expression_statement requires ";" so it doesn't swallow the next token
+expression_statement = { expression ~ ";" }
+
+// assignment before expression_statement; assign_op covers "="
+assignment_statement = {
+    expression_list ~ assign_op ~ expression_list ~ ";"?
+}
+
+assign_op = {
+    "<<=" | ">>="
+    | "+=" | "-=" | "*=" | "/=" | "%="
+    | "&^=" | "&=" | "|=" | "^="
+    | "="
+}
+
+short_var_declaration = {
+    ident_list ~ ":=" ~ expression_list ~ ";"?
+}
+
+// inc_dec: trailing ";" is OPTIONAL (needed in for-update position)
+inc_dec_statement = {
+    expression ~ ("++" | "--") ~ ";"?
+}
+
+// ── If statement ────────────────────────────────────────────────────────────
+
+if_statement = {
+    "if" ~ if_init? ~ expression ~ block_statement ~ else_clause?
+}
+
+// if_init: short statement before the condition (not followed by ";" literally —
+// the ";" is consumed by short_var_declaration / assignment_statement)
+if_init = _{
+    short_var_declaration
+    | assignment_statement
+}
+
+else_clause = { "else" ~ (if_statement | block_statement) }
+
+// ── Switch statement ────────────────────────────────────────────────────────
+
+switch_statement = {
+    expr_switch_stmt
+    | type_switch_stmt
+}
+
+expr_switch_stmt = {
+    "switch" ~ switch_init? ~ expression? ~ "{" ~ expr_case_clause* ~ "}"
+}
+
+switch_init = _{
+    short_var_declaration
+    | assignment_statement
+}
+
+expr_case_clause = {
+    expr_switch_case ~ ":" ~ statement_list
+}
+
+expr_switch_case = {
+    "case" ~ expression_list
+    | kw_default
+}
+
+kw_default = @{ "default" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+type_switch_stmt = {
+    "switch" ~ type_switch_guard ~ "{" ~ type_case_clause* ~ "}"
+}
+
+type_switch_guard = {
+    ident_name ~ ":=" ~ primary ~ "." ~ "(" ~ "type" ~ ")"
+}
+
+type_case_clause = {
+    type_switch_case ~ ":" ~ statement_list
+}
+
+type_switch_case = {
+    "case" ~ type_list
+    | kw_default
+}
+
+type_list = { type_annotation ~ ("," ~ type_annotation)* }
+
+// ── For statement ───────────────────────────────────────────────────────────
+// Order matters: for_clause (has ";") must be tried before while-style.
+// "for expr block" = while-style; "for block" = infinite loop.
+
+for_statement = {
+    "for" ~ for_clause
+    | "for" ~ range_clause
+    | "for" ~ expression ~ block_statement
+    | "for" ~ block_statement
+}
+
+// for_init may have trailing ";" (short_var_declaration includes it)
+// for_update does NOT require ";" — i++ before "{" is valid
+for_clause = {
+    for_init? ~ ";" ~ expression? ~ ";" ~ for_update? ~ block_statement
+}
+
+for_init = _{
+    short_var_declaration
+    | inc_dec_statement
+    | assignment_statement
+    | expression_statement
+}
+
+// Update: no trailing ";" required
+for_update = _{
+    for_inc_dec
+    | for_assign_nosemi
+    | expression
+}
+
+for_inc_dec = { expression ~ ("++" | "--") }
+
+for_assign_nosemi = { expression_list ~ assign_op ~ expression_list }
+
+range_clause = {
+    (ident_list ~ ":=" | expression_list ~ "=")? ~ "range" ~ expression ~ block_statement
+}
+
+// ── Jump statements ─────────────────────────────────────────────────────────
+
+return_statement = { "return" ~ expression_list? ~ ";"? }
+break_statement    = { "break"    ~ ident_name? ~ ";"? }
+continue_statement = { "continue" ~ ident_name? ~ ";"? }
+goto_statement     = { "goto"     ~ ident_name  ~ ";"? }
+
+// ── Defer / Go ──────────────────────────────────────────────────────────────
+
+defer_statement = { "defer" ~ expression ~ ";"? }
+go_statement    = { "go"    ~ expression ~ ";"? }
+
+// ── Send statement ──────────────────────────────────────────────────────────
+
+send_statement = { expression ~ "<-" ~ expression ~ ";"? }
+
+// ── Expressions ─────────────────────────────────────────────────────────────
+// Flat precedence chain — walker uses op.as_str() to determine the operator.
+
+expression = { unary_expression ~ (binary_op ~ unary_expression)* }
+
+unary_expression = {
+    unary_op ~ unary_expression
+    | primary
+}
+
+// atomic so word-boundary works for identifier-adjacent ops
+unary_op = @{ "-" | "+" | "!" | "^" | "*" | "&" | "<-" }
+
+// CRITICAL: longer ops FIRST to prevent premature match
+binary_op = {
+    "||"
+    | "&&"
+    | "==" | "!="
+    | "<=" | ">=" | "<" | ">"
+    | "<<" | ">>"
+    | "+"  | "-"  | "|" | "^"
+    | "*"  | "/"  | "%" | "&^" | "&"
+}
+
+// ── Primary expressions ─────────────────────────────────────────────────────
+
+primary = {
+    operand ~ postfix_op*
+}
+
+postfix_op = _{
+    selector
+    | index
+    | three_index_slice
+    | two_index_slice
+    | type_assertion
+    | call
+}
+
+operand = {
+    literal
+    | "(" ~ expression ~ ")"
+    | composite_literal
+    | function_literal
+    | ident_name
+}
+
+selector       = { "." ~ ident_name }
+index          = { "[" ~ expression ~ "]" }
+two_index_slice   = { "[" ~ expression? ~ ":" ~ expression? ~ "]" }
+three_index_slice = { "[" ~ expression? ~ ":" ~ expression ~ ":" ~ expression ~ "]" }
+type_assertion = { "." ~ "(" ~ type_annotation ~ ")" }
+call           = { "(" ~ argument_list? ~ ")" }
+argument_list  = { argument ~ ("," ~ argument)* ~ ","? }
+argument       = { expression ~ "..."? }
+
+// ── Literals ────────────────────────────────────────────────────────────────
+
+literal = {
+    numeric_literal
+    | string_literal
+    | bool_literal
+    | nil_literal
+    | rune_literal
+}
+
+// atomic with word boundary so "true" doesn't match "trueValue"
+bool_literal = @{ ("true" | "false") ~ !(ASCII_ALPHANUMERIC | "_") }
+nil_literal  = @{ "nil"              ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// ── Composite literals ───────────────────────────────────────────────────────
+
+composite_literal = {
+    literal_type ~ literal_value
+}
+
+// Order: map and slice/array types before bare ident to avoid ambiguity
+literal_type = {
+    "map" ~ "[" ~ type_annotation ~ "]" ~ type_annotation
+    | "[" ~ "..." ~ "]" ~ type_annotation
+    | "[" ~ expression ~ "]" ~ type_annotation
+    | "[]" ~ type_annotation
+    | struct_type
+    | ident_name
+}
+
+literal_value = { "{" ~ element_list? ~ "}" }
+
+element_list = { keyed_element ~ ("," ~ keyed_element)* ~ ","? }
+
+keyed_element = {
+    (string_literal | numeric_literal | ident_name) ~ ":" ~ element
+    | element
+}
+
+element = {
+    literal_value
+    | expression
+}
+
+// ── Function literals ────────────────────────────────────────────────────────
+
+function_literal = {
+    "func" ~ signature ~ function_body
+}
+
+// ── Struct type ──────────────────────────────────────────────────────────────
+
+struct_type = {
+    "struct" ~ "{" ~ field_decl* ~ "}"
+}
+
+field_decl = {
+    ident_list ~ type_annotation ~ string_literal? ~ ";"?
+}
+
+// ── Interface type ───────────────────────────────────────────────────────────
+
+interface_type = {
+    "interface" ~ "{" ~ interface_member* ~ "}"
+}
+
+interface_member = {
+    ident_name ~ signature ~ ";"?
+    | ident_name ~ ";"?
+}
+
+// ── Type annotations ─────────────────────────────────────────────────────────
+
+type_annotation = {
+    function_type
+    | pointer_type
+    | "[]" ~ type_annotation
+    | "[" ~ expression ~ "]" ~ type_annotation
+    | "map" ~ "[" ~ type_annotation ~ "]" ~ type_annotation
+    | channel_type
+    | struct_type
+    | interface_type
+    | ident_name
+}
+
+pointer_type  = { "*"     ~ type_annotation }
+channel_type  = { "chan"  ~ "<-"? ~ type_annotation | "<-" ~ "chan" ~ type_annotation }
+function_type = { "func"  ~ signature }
+
+// ── Rune literals ────────────────────────────────────────────────────────────
+
+rune_literal = @{
+    "'" ~ ("\\" ~ ANY | (!"'" ~ ANY)) ~ "'"
+}
+
+// ── Numeric literals ─────────────────────────────────────────────────────────
+
+numeric_literal = @{
+    ("0x" | "0X") ~ (ASCII_HEX_DIGIT | "_")+ ~ !(ASCII_ALPHANUMERIC | "_")
+    | ("0o" | "0O") ~ (ASCII_OCT_DIGIT | "_")+ ~ !(ASCII_ALPHANUMERIC | "_")
+    | ("0b" | "0B") ~ ("0" | "1" | "_")+ ~ !(ASCII_ALPHANUMERIC | "_")
+    | ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ "." ~ (ASCII_DIGIT | "_")* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ !(ASCII_ALPHANUMERIC | "_")
+    | "." ~ ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ !(ASCII_ALPHANUMERIC | "_")
+    | ASCII_DIGIT ~ (ASCII_DIGIT | "_")* ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ !(ASCII_ALPHANUMERIC | "_")
+}
+
+// ── String literals ──────────────────────────────────────────────────────────
+
+string_literal = @{
+    "`" ~ (!"`" ~ ANY)* ~ "`"
+    | "\"" ~ ("\\\"" | "\\\\" | (!"\"" ~ ANY))* ~ "\""
+}
+
+// ── Identifiers ──────────────────────────────────────────────────────────────
+
+ident_name = @{
+    !strict_keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")*
+}
+
+// ── Keywords ─────────────────────────────────────────────────────────────────
+
+strict_keyword = _{
+    ( "break" | "case" | "chan" | "const" | "continue"
+    | "default" | "defer" | "else" | "fallthrough" | "for"
+    | "func" | "go" | "goto" | "if" | "import"
+    | "interface" | "map" | "package" | "range" | "return"
+    | "select" | "struct" | "switch" | "type" | "var"
+    | "true" | "false" | "nil" )
+    ~ !(ASCII_ALPHANUMERIC | "_")
+}

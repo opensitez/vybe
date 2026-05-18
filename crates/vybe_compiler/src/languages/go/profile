@@ -1,0 +1,170 @@
+# Go Compiler Profile
+# ───────────────────
+# Covers Go core: packages, functions, structs, interfaces, slices, maps,
+# methods, control flow. Goroutines/channels are parsed but compile to no-op.
+
+[info]
+name = "go"
+extensions = ["go"]
+
+[compiler]
+function_return = "explicit"
+self_keyword = "this"
+constructor_name = "constructor"
+enum_as_ordinals = false
+case_sensitive = true
+string_indexing = "zero_based"
+entry_point = "main"
+
+# ────────────────────────────────────────────────────────────────────────────
+# BUILTINS — bare global function calls
+# ────────────────────────────────────────────────────────────────────────────
+
+[builtins]
+
+# ── I/O ──────────────────────────────────────────────────────────────────────
+
+"fmt.Println"     = { emit = "print",                    min_args = 0, max_args = 255 }
+"fmt.Print"       = { emit = "print",                    min_args = 0, max_args = 255 }
+"fmt.Printf"      = { emit = "print",                    min_args = 0, max_args = 255 }
+
+# ── Type conversion ──────────────────────────────────────────────────────────
+
+"strconv.Atoi"    = { emit = "host:ecma:number:parseInt",       min_args = 1, max_args = 1 }
+"strconv.Itoa"    = { emit = "host:ecma:string:String",         min_args = 1, max_args = 1 }
+"strconv.ParseFloat" = { emit = "host:ecma:number:parseFloat",  min_args = 1, max_args = 1 }
+
+# ── String functions ─────────────────────────────────────────────────────────
+
+"strings.ToUpper" = { emit = "opcode:str_to_upper",             min_args = 1, max_args = 1 }
+"strings.ToLower" = { emit = "opcode:str_to_lower",             min_args = 1, max_args = 1 }
+"strings.Trim"    = { emit = "opcode:str_trim",                 min_args = 1, max_args = 1 }
+"strings.TrimSpace" = { emit = "opcode:str_trim",               min_args = 1, max_args = 1 }
+"strings.Contains" = { emit = "opcode:str_contains",            min_args = 2, max_args = 2 }
+"strings.HasPrefix" = { emit = "opcode:str_starts_with",        min_args = 2, max_args = 2 }
+"strings.HasSuffix" = { emit = "opcode:str_ends_with",          min_args = 2, max_args = 2 }
+"strings.Index"   = { emit = "common:strings.index_of",         min_args = 2, max_args = 2 }
+"strings.Replace" = { emit = "common:strings.replace",          min_args = 3, max_args = 4 }
+"strings.Split"   = { emit = "common:strings.split",            min_args = 2, max_args = 2 }
+"strings.Join"    = { emit = "common:collections.join",         min_args = 2, max_args = 2 }
+
+# ── Math functions ───────────────────────────────────────────────────────────
+
+"math.Sqrt"       = { emit = "opcode:f64_sqrt",                min_args = 1, max_args = 1 }
+"math.Abs"        = { emit = "opcode:f64_abs",                 min_args = 1, max_args = 1 }
+"math.Floor"      = { emit = "opcode:f64_floor",               min_args = 1, max_args = 1 }
+"math.Ceil"       = { emit = "opcode:f64_ceil",                min_args = 1, max_args = 1 }
+"math.Round"      = { emit = "opcode:f64_nearest",             min_args = 1, max_args = 1 }
+"math.Min"        = { emit = "opcode:f64_min",                 min_args = 2, max_args = 2 }
+"math.Max"        = { emit = "opcode:f64_max",                 min_args = 2, max_args = 2 }
+"math.Pow"        = { emit = "host:ecma:math:pow",             min_args = 2, max_args = 2 }
+"math.Sin"        = { emit = "host:ecma:math:sin",             min_args = 1, max_args = 1 }
+"math.Cos"        = { emit = "host:ecma:math:cos",             min_args = 1, max_args = 1 }
+"math.Tan"        = { emit = "host:ecma:math:tan",             min_args = 1, max_args = 1 }
+"math.Asin"       = { emit = "host:ecma:math:asin",            min_args = 1, max_args = 1 }
+"math.Acos"       = { emit = "host:ecma:math:acos",            min_args = 1, max_args = 1 }
+"math.Atan"       = { emit = "host:ecma:math:atan",            min_args = 1, max_args = 1 }
+"math.Atan2"      = { emit = "host:ecma:math:atan2",           min_args = 2, max_args = 2 }
+"math.Log"        = { emit = "host:ecma:math:log",             min_args = 1, max_args = 1 }
+"math.Exp"        = { emit = "host:ecma:math:exp",             min_args = 1, max_args = 1 }
+"math.Pi"         = { emit = "host:ecma:math:PI",              min_args = 0, max_args = 0 }
+
+# ── Array/Slice builtins ─────────────────────────────────────────────────────
+
+"len"             = { emit = "common:collections.len",         min_args = 1, max_args = 1 }
+"cap"             = { emit = "common:collections.len",         min_args = 1, max_args = 1 }
+"append"          = { emit = "common:collections.push",        min_args = 2, max_args = 255 }
+"make"            = { emit = "host:ecma:array:from",           min_args = 1, max_args = 3 }
+"copy"            = { emit = "host:ecma:array:copyWithin",     min_args = 2, max_args = 3 }
+"delete"          = { emit = "host:ecma:object:delete",        min_args = 2, max_args = 2 }
+
+# ── Error handling ───────────────────────────────────────────────────────────
+
+"panic"           = { emit = "host:ecma:error:throw",          min_args = 1, max_args = 1 }
+
+# ── Time ─────────────────────────────────────────────────────────────────────
+
+"time.Now"        = { emit = "host:ecma:date:now",             min_args = 0, max_args = 0 }
+
+# ── File I/O ─────────────────────────────────────────────────────────────────
+
+"os.ReadFile"     = { emit = "host:wasi:filesystem:readFile",  min_args = 1, max_args = 1 }
+"os.WriteFile"    = { emit = "host:wasi:filesystem:writeFile", min_args = 2, max_args = 2 }
+"os.Mkdir"        = { emit = "host:wasi:filesystem:mkdir",     min_args = 1, max_args = 2 }
+"os.Remove"       = { emit = "host:wasi:filesystem:remove",    min_args = 1, max_args = 1 }
+
+# ── Environment ──────────────────────────────────────────────────────────────
+
+"os.Getenv"       = { emit = "host:wasi:cli:getEnv",         min_args = 1, max_args = 1 }
+"os.Setenv"       = { emit = "host:wasi:cli:setEnv",         min_args = 2, max_args = 2 }
+
+# ── Random ───────────────────────────────────────────────────────────────────
+
+"rand.Intn"       = { emit = "host:ecma:math:random",        min_args = 1, max_args = 1 }
+
+# ────────────────────────────────────────────────────────────────────────────
+# VALUE METHODS — instance methods called on values
+# ────────────────────────────────────────────────────────────────────────────
+
+[value_methods]
+
+# String methods
+ToUpper      = { emit = "opcode:str_to_upper",      min_args = 0, max_args = 0 }
+ToLower      = { emit = "opcode:str_to_lower",      min_args = 0, max_args = 0 }
+Trim         = { emit = "opcode:str_trim",          min_args = 0, max_args = 0 }
+TrimSpace    = { emit = "opcode:str_trim",          min_args = 0, max_args = 0 }
+Contains     = { emit = "opcode:str_contains",      min_args = 1, max_args = 1 }
+HasPrefix    = { emit = "opcode:str_starts_with",   min_args = 1, max_args = 1 }
+HasSuffix    = { emit = "opcode:str_ends_with",     min_args = 1, max_args = 1 }
+Index        = { emit = "common:strings.index_of",  min_args = 1, max_args = 2 }
+LastIndex    = { emit = "opcode:str_last_index_of", min_args = 1, max_args = 2 }
+Replace      = { emit = "common:strings.replace",   min_args = 2, max_args = 2 }
+ReplaceAll   = { emit = "common:strings.replace",   min_args = 2, max_args = 2 }
+Split        = { emit = "common:strings.split",     min_args = 1, max_args = 1 }
+Join         = { emit = "common:collections.join",  min_args = 1, max_args = 1 }
+
+# Slice/Array methods
+Append       = { emit = "common:collections.push",  min_args = 1, max_args = 255 }
+Len          = { emit = "common:collections.len",   min_args = 0, max_args = 0 }
+Cap          = { emit = "common:collections.len",   min_args = 0, max_args = 0 }
+
+# Map methods
+HasKey       = { emit = "common:dict.has",          min_args = 1, max_args = 1 }
+Delete       = { emit = "host:ecma:object:delete",  min_args = 1, max_args = 1 }
+Keys         = { emit = "host:ecma:object:keys",    min_args = 0, max_args = 0 }
+Values       = { emit = "host:ecma:object:values",  min_args = 0, max_args = 0 }
+
+# ────────────────────────────────────────────────────────────────────────────
+# ARRAY METHODS — higher-order functions
+# ────────────────────────────────────────────────────────────────────────────
+
+[array_methods]
+
+# ────────────────────────────────────────────────────────────────────────────
+# NAMESPACE CONSTANTS
+# ────────────────────────────────────────────────────────────────────────────
+
+[namespace_constants]
+"math.Pi"       = 3.141592653589793
+"math.E"        = 2.718281828459045
+"math.Ln2"      = 0.6931471805599453
+"math.Ln10"     = 2.302585092994046
+"math.Sqrt2"    = 1.4142135623730951
+"math.MaxFloat" = 1.7976931348623157e308
+"math.SmallestNonzeroFloat64" = 5e-324
+
+# ────────────────────────────────────────────────────────────────────────────
+# KNOWN TYPES
+# ────────────────────────────────────────────────────────────────────────────
+
+[known_types]
+"error"         = ["ecma:error", "Error"]
+
+# ────────────────────────────────────────────────────────────────────────────
+# NAMESPACES
+# ────────────────────────────────────────────────────────────────────────────
+
+[namespaces]
+use_dotnet = false
+roots = []
+extra_imports = []
