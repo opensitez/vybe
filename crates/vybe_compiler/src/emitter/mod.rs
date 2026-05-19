@@ -10,6 +10,7 @@
 //! Everything emitted is standard WASM — no custom opcodes.
 
 pub mod dict;
+pub mod references;
 pub mod math;
 pub mod convert;
 pub mod io;

@@ -1048,6 +1048,7 @@ fn rewrite_vb_aliases_in_expr(expr: &mut Expression, aliases: &HashMap<String, S
             rewrite_vb_aliases_in_expr(right, aliases);
         }
         ExprKind::Unary { expr, .. }
+        | ExprKind::RefLoad(expr)
         | ExprKind::Await(expr)
         | ExprKind::YieldFrom(expr)
         | ExprKind::Spread(expr)
@@ -1056,6 +1057,15 @@ fn rewrite_vb_aliases_in_expr(expr: &mut Expression, aliases: &HashMap<String, S
         | ExprKind::TypeOf(expr) => {
             rewrite_vb_aliases_in_expr(expr, aliases);
         }
+        ExprKind::RefOf(place) => match place.as_mut() {
+            PlaceExpr::Ident(_) => {}
+            PlaceExpr::Member { object, .. } => rewrite_vb_aliases_in_expr(object, aliases),
+            PlaceExpr::Index { object, index, .. } => {
+                rewrite_vb_aliases_in_expr(object, aliases);
+                rewrite_vb_aliases_in_expr(index, aliases);
+            }
+            PlaceExpr::Deref(expr) => rewrite_vb_aliases_in_expr(expr, aliases),
+        },
         ExprKind::Ternary { cond, then, else_ } => {
             rewrite_vb_aliases_in_expr(cond, aliases);
             rewrite_vb_aliases_in_expr(then, aliases);
@@ -1346,12 +1356,19 @@ fn rewrite_vb_err_expr(expr: &mut Expression) -> bool {
             rewrite_vb_err_expr(left) | rewrite_vb_err_expr(right)
         }
         ExprKind::Unary { expr, .. }
+        | ExprKind::RefLoad(expr)
         | ExprKind::Await(expr)
         | ExprKind::YieldFrom(expr)
         | ExprKind::Spread(expr)
         | ExprKind::Void(expr)
         | ExprKind::Delete(expr)
         | ExprKind::TypeOf(expr) => rewrite_vb_err_expr(expr),
+        ExprKind::RefOf(place) => match place.as_mut() {
+            PlaceExpr::Ident(_) => false,
+            PlaceExpr::Member { object, .. } => rewrite_vb_err_expr(object),
+            PlaceExpr::Index { object, index, .. } => rewrite_vb_err_expr(object) | rewrite_vb_err_expr(index),
+            PlaceExpr::Deref(expr) => rewrite_vb_err_expr(expr),
+        },
         ExprKind::Ternary { cond, then, else_ } => {
             rewrite_vb_err_expr(cond) | rewrite_vb_err_expr(then) | rewrite_vb_err_expr(else_)
         }

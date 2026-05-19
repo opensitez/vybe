@@ -287,11 +287,17 @@ fn body_contains_yield(stmts: &[Statement]) -> bool {
             ExprKind::Yield(_) | ExprKind::YieldFrom(_) => true,
             // Scope boundaries — separate generator context
             ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_) | ExprKind::ClassExpr { .. } => false,
+            ExprKind::RefOf(place) => match place.as_ref() {
+                PlaceExpr::Ident(_) => false,
+                PlaceExpr::Member { object, .. } => ey(object),
+                PlaceExpr::Index { object, index, .. } => ey(object) || ey(index),
+                PlaceExpr::Deref(expr) => ey(expr),
+            },
             // Leaves
             ExprKind::Lit(_) | ExprKind::Ident(_) | ExprKind::DefaultOf(_) | ExprKind::This | ExprKind::Super
             | ExprKind::AddressOf(_) | ExprKind::Destructure(_) => false,
             // Unary wrappers
-            ExprKind::Unary { expr: i, .. } | ExprKind::IsType { expr: i, .. }
+            ExprKind::Unary { expr: i, .. } | ExprKind::RefLoad(i) | ExprKind::IsType { expr: i, .. }
             | ExprKind::Cast { expr: i, .. } | ExprKind::TypeOf(i)
             | ExprKind::Spread(i) | ExprKind::Await(i) | ExprKind::Void(i)
             | ExprKind::Delete(i) => ey(i),

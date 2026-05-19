@@ -297,6 +297,7 @@ type_ref = {
     procedural_type
     | array_type_ref
     | set_type_ref
+    | pointer_type
     | simple_type_ref
 }
 

@@ -705,6 +705,12 @@ impl Compiler {
                         if *op == UnaryOp::PreDec { self.emit(Op::DUP); }
                         self.compile_assign_target(inner)?;
                     }
+                    UnaryOp::AddrOf => {
+                        self.compile_address_of_expr(inner)?;
+                    }
+                    UnaryOp::Deref => {
+                        self.compile_deref_expr(inner)?;
+                    }
                     _ => {
                         self.compile_expr(inner)?;
                         match op {
@@ -727,13 +733,47 @@ impl Compiler {
                             UnaryOp::Typeof => self.emit(Op::REF_TYPEOF),
                             UnaryOp::Void => { self.emit(Op::DROP); self.emit(Op::UNDEFINED); }
                             UnaryOp::Delete => { self.emit(Op::DROP); self.emit(Op::TRUE); }
-                            UnaryOp::Deref => { let idx = self.str_const("__value"); self.emit_u16(Op::STRUCT_GET, idx); }
-                            UnaryOp::AddrOf => {} // no-op in VM
                             UnaryOp::Await => {} // handled below in ExprKind::Await
                             _ => {} // PreInc etc handled above
                         }
                     }
                 }
+            }
+
+            ExprKind::RefOf(place) => {
+                match place.as_ref() {
+                    PlaceExpr::Ident(name) => {
+                        if let Some(slot) = self.promote_local_binding_to_pointer_cell(name) {
+                            self.emit_u16(Op::LOCAL_GET, slot);
+                        } else {
+                            self.compile_expr(&Expression::ident(name))?;
+                            self.emit_wrap_top_of_stack_in_pointer_cell();
+                        }
+                    }
+                    PlaceExpr::Deref(expr) => {
+                        self.compile_expr(expr)?;
+                    }
+                    PlaceExpr::Member { object, field, null_safe } => {
+                        self.compile_expr(&Expression::new(ExprKind::Member {
+                            object: object.clone(),
+                            field: field.clone(),
+                            null_safe: *null_safe,
+                        }))?;
+                        self.emit_wrap_top_of_stack_in_pointer_cell();
+                    }
+                    PlaceExpr::Index { object, index, null_safe } => {
+                        self.compile_expr(&Expression::new(ExprKind::Index {
+                            object: object.clone(),
+                            index: index.clone(),
+                            null_safe: *null_safe,
+                        }))?;
+                        self.emit_wrap_top_of_stack_in_pointer_cell();
+                    }
+                }
+            }
+
+            ExprKind::RefLoad(expr) => {
+                self.compile_deref_expr(expr)?;
             }
 
             // ── Ternary ─────────────────────────────────────────────────
@@ -1282,6 +1322,7 @@ impl Compiler {
                     return Ok(());
                 } else {
                     self.compile_expr(object)?;
+                    self.emit_autoderef_pointer_cell();
                 }
 
                 let dotnet_instance_property = if matches!(self.profile.name.as_str(), "csharp" | "vb")
@@ -1758,6 +1799,7 @@ impl Compiler {
                     }
                 } else {
                     self.compile_expr(object)?;
+                    self.emit_autoderef_pointer_cell();
                     self.compile_expr(index)?;
                     if self.profile.negative_index_wraps {
                         self.emit_negative_index_wrap();

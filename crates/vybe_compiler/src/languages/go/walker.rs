@@ -630,12 +630,19 @@ fn normalize_go_expr(
                 })
             }
         }
-        ExprKind::Unary { op: UnaryOp::Deref, expr }
-            if go_map_index_value_type(expr, env, signatures)
-                .as_deref()
-                .is_some_and(|type_name| type_name.trim_start().starts_with('*')) =>
-        {
-            normalize_go_expr(expr, env, signatures, state)
+        ExprKind::Unary { op: UnaryOp::AddrOf, expr } => {
+            let next_expr = normalize_go_expr(expr, env, signatures, state);
+            if let Some(place) = go_expr_to_place(&next_expr) {
+                Expression::new(ExprKind::RefOf(Box::new(place)))
+            } else {
+                Expression::new(ExprKind::Unary {
+                    op: UnaryOp::AddrOf,
+                    expr: Box::new(next_expr),
+                })
+            }
+        }
+        ExprKind::Unary { op: UnaryOp::Deref, expr } => {
+            Expression::new(ExprKind::RefLoad(Box::new(normalize_go_expr(expr, env, signatures, state))))
         }
         ExprKind::Unary { op, expr } => Expression::new(ExprKind::Unary {
             op: *op,
@@ -1098,6 +1105,25 @@ fn go_builtin_call(name: &str, args: Vec<Expression>) -> Expression {
     })
 }
 
+fn go_expr_to_place(expr: &Expression) -> Option<PlaceExpr> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some(PlaceExpr::Ident(name.clone())),
+        ExprKind::Member { object, field, null_safe } => Some(PlaceExpr::Member {
+            object: object.clone(),
+            field: field.clone(),
+            null_safe: *null_safe,
+        }),
+        ExprKind::Index { object, index, null_safe } => Some(PlaceExpr::Index {
+            object: object.clone(),
+            index: index.clone(),
+            null_safe: *null_safe,
+        }),
+        ExprKind::RefLoad(expr) => Some(PlaceExpr::Deref(expr.clone())),
+        ExprKind::Unary { op: UnaryOp::Deref, expr } => Some(PlaceExpr::Deref(expr.clone())),
+        _ => None,
+    }
+}
+
 fn normalize_go_lvalue_expr(
     expr: &Expression,
     env: &GoNormalizeEnv,
@@ -1213,6 +1239,53 @@ fn go_expr_type_hint(
         ExprKind::Lit(Literal::Bool(_)) => Some("bool".to_string()),
         ExprKind::Lit(Literal::Str(_)) => Some("string".to_string()),
         ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
+        ExprKind::RefOf(place) => {
+            let pointee_type = match place.as_ref() {
+                PlaceExpr::Ident(name) => env
+                    .value_types
+                    .get(name)
+                    .cloned()
+                    .or_else(|| env.fixed_arrays.get(name).cloned()),
+                PlaceExpr::Member { object, field, null_safe } => go_expr_type_hint(
+                    &Expression::new(ExprKind::Member {
+                        object: object.clone(),
+                        field: field.clone(),
+                        null_safe: *null_safe,
+                    }),
+                    env,
+                    signatures,
+                ),
+                PlaceExpr::Index { object, index, null_safe } => go_expr_type_hint(
+                    &Expression::new(ExprKind::Index {
+                        object: object.clone(),
+                        index: index.clone(),
+                        null_safe: *null_safe,
+                    }),
+                    env,
+                    signatures,
+                ),
+                PlaceExpr::Deref(expr) => go_expr_type_hint(expr, env, signatures).map(|type_name| {
+                    type_name
+                        .trim()
+                        .trim_start_matches('*')
+                        .trim_start_matches('^')
+                        .trim()
+                        .to_string()
+                }),
+            }?;
+            Some(format!("*{}", pointee_type.trim()))
+        }
+        ExprKind::Unary { op: UnaryOp::AddrOf, expr } => go_expr_type_hint(expr, env, signatures)
+            .map(|type_name| format!("*{}", type_name.trim())),
+        ExprKind::Unary { op: UnaryOp::Deref, expr } | ExprKind::RefLoad(expr) => go_expr_type_hint(expr, env, signatures)
+            .map(|type_name| {
+                type_name
+                    .trim()
+                    .trim_start_matches('*')
+                    .trim_start_matches('^')
+                    .trim()
+                    .to_string()
+            }),
         ExprKind::IsType { .. } => Some("bool".to_string()),
         ExprKind::Index { object, .. } => go_expr_type_hint(object, env, signatures)
             .and_then(|type_name| {

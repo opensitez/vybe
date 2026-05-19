@@ -47,6 +47,7 @@ mod test_class_rtti;
 mod test_format_output;
 mod test_scope_advanced;
 mod test_properties;
+mod test_pointers;
 mod gui_form_lifecycle;
 mod gui_stdctrls;
 mod gui_extctrls;

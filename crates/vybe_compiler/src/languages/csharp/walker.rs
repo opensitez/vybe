@@ -578,6 +578,7 @@ fn rewrite_explicit_interface_accesses_in_expr(
             rewrite_explicit_interface_accesses_in_expr(right, conflicted);
         }
         ExprKind::Unary { expr, .. }
+        | ExprKind::RefLoad(expr)
         | ExprKind::Await(expr)
         | ExprKind::YieldFrom(expr)
         | ExprKind::Void(expr)
@@ -588,6 +589,19 @@ fn rewrite_explicit_interface_accesses_in_expr(
         | ExprKind::Spread(expr) => {
             rewrite_explicit_interface_accesses_in_expr(expr, conflicted);
         }
+        ExprKind::RefOf(place) => match place.as_mut() {
+            PlaceExpr::Ident(_) => {}
+            PlaceExpr::Member { object, .. } => {
+                rewrite_explicit_interface_accesses_in_expr(object, conflicted);
+            }
+            PlaceExpr::Index { object, index, .. } => {
+                rewrite_explicit_interface_accesses_in_expr(object, conflicted);
+                rewrite_explicit_interface_accesses_in_expr(index, conflicted);
+            }
+            PlaceExpr::Deref(expr) => {
+                rewrite_explicit_interface_accesses_in_expr(expr, conflicted);
+            }
+        },
         ExprKind::Ternary { cond, then, else_ } => {
             rewrite_explicit_interface_accesses_in_expr(cond, conflicted);
             rewrite_explicit_interface_accesses_in_expr(then, conflicted);
@@ -1037,6 +1051,7 @@ fn rewrite_record_uses_in_expr(
             rewrite_record_uses_in_expr(right, record_shapes, scopes);
         }
         ExprKind::Unary { expr, .. }
+        | ExprKind::RefLoad(expr)
         | ExprKind::Await(expr)
         | ExprKind::YieldFrom(expr)
         | ExprKind::Void(expr)
@@ -2337,6 +2352,7 @@ fn rewrite_using_imports_in_expr(
             rewrite_using_imports_in_expr(right, aliases, static_paths);
         }
         ExprKind::Unary { expr, .. }
+        | ExprKind::RefLoad(expr)
         | ExprKind::Await(expr)
         | ExprKind::YieldFrom(expr)
         | ExprKind::Void(expr)
@@ -2349,6 +2365,19 @@ fn rewrite_using_imports_in_expr(
             rewrite_using_imports_in_expr(then, aliases, static_paths);
             rewrite_using_imports_in_expr(else_, aliases, static_paths);
         }
+        ExprKind::RefOf(place) => match place.as_mut() {
+            PlaceExpr::Ident(_) => {}
+            PlaceExpr::Member { object, .. } => {
+                rewrite_using_imports_in_expr(object, aliases, static_paths);
+            }
+            PlaceExpr::Index { object, index, .. } => {
+                rewrite_using_imports_in_expr(object, aliases, static_paths);
+                rewrite_using_imports_in_expr(index, aliases, static_paths);
+            }
+            PlaceExpr::Deref(expr) => {
+                rewrite_using_imports_in_expr(expr, aliases, static_paths);
+            }
+        },
         ExprKind::Member { object, .. } => {
             rewrite_using_imports_in_expr(object, aliases, static_paths);
         }
@@ -2785,6 +2814,7 @@ fn rewrite_extension_calls_in_expr(
             rewrite_extension_calls_in_expr(right, extension_methods, extension_containers);
         }
         ExprKind::Unary { expr, .. }
+        | ExprKind::RefLoad(expr)
         | ExprKind::Await(expr)
         | ExprKind::YieldFrom(expr)
         | ExprKind::Void(expr)
@@ -2797,6 +2827,19 @@ fn rewrite_extension_calls_in_expr(
             rewrite_extension_calls_in_expr(then, extension_methods, extension_containers);
             rewrite_extension_calls_in_expr(else_, extension_methods, extension_containers);
         }
+        ExprKind::RefOf(place) => match place.as_mut() {
+            PlaceExpr::Ident(_) => {}
+            PlaceExpr::Member { object, .. } => {
+                rewrite_extension_calls_in_expr(object, extension_methods, extension_containers);
+            }
+            PlaceExpr::Index { object, index, .. } => {
+                rewrite_extension_calls_in_expr(object, extension_methods, extension_containers);
+                rewrite_extension_calls_in_expr(index, extension_methods, extension_containers);
+            }
+            PlaceExpr::Deref(expr) => {
+                rewrite_extension_calls_in_expr(expr, extension_methods, extension_containers);
+            }
+        },
         ExprKind::Member { object, .. } => {
             rewrite_extension_calls_in_expr(object, extension_methods, extension_containers);
         }

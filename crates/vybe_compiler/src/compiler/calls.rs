@@ -167,21 +167,59 @@ fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression) -> Option<
         }
         ExprKind::New { class, .. } => terminal_type_name(class)
             .map(|name| compiler.resolve_source_type_alias(&name)),
-        ExprKind::Call { callee, .. } => dotnet_factory_return_type(callee).or_else(|| match &callee.kind {
-            ExprKind::Ident(name) => {
-                let resolved = compiler.resolve_source_type_alias(name);
-                common::dotnet::surface()
-                    .lookup_constructor(&resolved)
-                    .map(|_| resolved)
+        ExprKind::Call { callee, args, .. } => {
+            let arg_exprs: Vec<&Expression> = args.iter().map(|arg| &arg.value).collect();
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if let Some(return_type) = compiler
+                    .resolve_instance_method_overload(object, field, &arg_exprs, false)
+                    .and_then(|overload| overload.return_type.clone())
+                {
+                    return Some(return_type);
+                }
             }
-            ExprKind::Member { field, .. } => {
-                let resolved = compiler.resolve_source_type_alias(field);
-                common::dotnet::surface()
-                    .lookup_constructor(&resolved)
-                    .map(|_| resolved)
+
+            let inferred = compiler
+                .infer_function_return_type(callee)
+                .or_else(|| dotnet_factory_return_type(callee))
+                .or_else(|| match &callee.kind {
+                    ExprKind::Ident(name) => {
+                        let resolved = compiler.resolve_source_type_alias(name);
+                        common::dotnet::surface()
+                            .lookup_constructor(&resolved)
+                            .map(|_| resolved)
+                    }
+                    ExprKind::Member { field, .. } => {
+                        let resolved = compiler.resolve_source_type_alias(field);
+                        common::dotnet::surface()
+                            .lookup_constructor(&resolved)
+                            .map(|_| resolved)
+                    }
+                    _ => None,
+                });
+
+            if inferred.is_some() {
+                return inferred;
             }
-            _ => None,
-        }),
+
+            if compiler.profile.name == "go" {
+                if let ExprKind::Member { object, field, .. } = &callee.kind {
+                    if let Some(receiver_type) = resolve_receiver_type_hint(compiler, object) {
+                        if let Some(class_name) = compiler.resolve_pending_class_name_for_type_hint(&receiver_type) {
+                            if compiler.pending_classes.get(&class_name).is_some_and(|pending| {
+                                pending
+                                    .instance_pointer_method_names
+                                    .iter()
+                                    .any(|name| compiler.canon(name) == compiler.canon(field))
+                            }) {
+                                return Some(receiver_type);
+                            }
+                        }
+                    }
+                }
+            }
+
+            None
+        }
         _ => None,
     }
 }
@@ -370,13 +408,8 @@ impl Compiler {
         require_multiple: bool,
     ) -> Option<PendingMethodOverload> {
         let receiver_type = resolve_receiver_type_hint(self, object)?;
-        let receiver_canon = self.canon(strip_generic_suffix(receiver_type.trim().trim_end_matches('?')));
-        let pending = self.pending_classes.get(&receiver_canon).or_else(|| {
-            self.pending_classes
-                .iter()
-                .find(|(name, _)| name.eq_ignore_ascii_case(&receiver_type) || name.eq_ignore_ascii_case(&receiver_canon))
-                .map(|(_, pending)| pending)
-        })?;
+        let class_name = self.resolve_pending_class_name_for_type_hint(&receiver_type)?;
+        let pending = self.pending_classes.get(&class_name)?;
         let method_key = self.canon(field);
         let overloads = pending.instance_method_overloads.get(&method_key)?;
         self.match_method_overload(overloads, arg_exprs, require_multiple)
@@ -394,7 +427,12 @@ impl Compiler {
 
     pub(super) fn resolve_pending_class_name_for_type_hint(&self, type_hint: &str) -> Option<String> {
         let resolved_type = self.resolve_source_type_alias(type_hint);
-        let receiver_type = resolved_type.trim().trim_end_matches('?');
+        let receiver_type = resolved_type
+            .trim()
+            .trim_end_matches('?')
+            .trim_start_matches('*')
+            .trim_start_matches('^')
+            .trim();
         let receiver_canon = self.canon(strip_generic_suffix(receiver_type));
         if self.pending_classes.contains_key(&receiver_canon) {
             return Some(receiver_canon);
@@ -452,14 +490,8 @@ impl Compiler {
         method_name: &str,
         arg_exprs: &[&Expression],
     ) -> Option<usize> {
-        let receiver_type = type_hint.trim().trim_end_matches('?');
-        let receiver_canon = self.canon(strip_generic_suffix(receiver_type));
-        let pending = self.pending_classes.get(&receiver_canon).or_else(|| {
-            self.pending_classes
-                .iter()
-                .find(|(name, _)| name.eq_ignore_ascii_case(receiver_type) || name.eq_ignore_ascii_case(&receiver_canon))
-                .map(|(_, pending)| pending)
-        })?;
+        let class_name = self.resolve_pending_class_name_for_type_hint(type_hint)?;
+        let pending = self.pending_classes.get(&class_name)?;
         let method_key = self.canon(method_name);
         let overloads = pending
             .static_method_overloads
@@ -474,14 +506,8 @@ impl Compiler {
         method_name: &str,
         arg_exprs: &[&Expression],
     ) -> Option<PendingMethodOverload> {
-        let receiver_type = type_hint.trim().trim_end_matches('?');
-        let receiver_canon = self.canon(strip_generic_suffix(receiver_type));
-        let pending = self.pending_classes.get(&receiver_canon).or_else(|| {
-            self.pending_classes
-                .iter()
-                .find(|(name, _)| name.eq_ignore_ascii_case(receiver_type) || name.eq_ignore_ascii_case(&receiver_canon))
-                .map(|(_, pending)| pending)
-        })?;
+        let class_name = self.resolve_pending_class_name_for_type_hint(type_hint)?;
+        let pending = self.pending_classes.get(&class_name)?;
         let method_key = self.canon(method_name);
         let overloads = pending
             .static_method_overloads
@@ -4413,6 +4439,7 @@ impl Compiler {
                         && !pending.fields.is_empty()
                 }) {
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_autoderef_pointer_cell();
                     self.emit_user_value_type_clone_from_stack(&class_name);
                     let receiver_slot = self.define_local("__go_value_receiver");
                     self.emit_u16(Op::LOCAL_SET, receiver_slot);

@@ -499,6 +499,14 @@ impl Expression {
 }
 
 #[derive(Debug, Clone)]
+pub enum PlaceExpr {
+    Ident(String),
+    Member { object: Box<Expression>, field: String, null_safe: bool },
+    Index { object: Box<Expression>, index: Box<Expression>, null_safe: bool },
+    Deref(Box<Expression>),
+}
+
+#[derive(Debug, Clone)]
 pub enum ExprKind {
     Lit(Literal),
     Ident(String),
@@ -509,6 +517,8 @@ pub enum ExprKind {
 
     Binary { op: BinOp, left: Box<Expression>, right: Box<Expression> },
     Unary { op: UnaryOp, expr: Box<Expression> },
+    RefOf(Box<PlaceExpr>),
+    RefLoad(Box<Expression>),
     Ternary { cond: Box<Expression>, then: Box<Expression>, else_: Box<Expression> },
 
     // ── Access (struct_get / struct_set) ─────────────────────────────────

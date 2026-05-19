@@ -90,6 +90,7 @@ struct PendingClass {
 struct PendingMethodOverload {
     param_types: Vec<String>,
     chunk_idx: usize,
+    return_type: Option<String>,
     signature: CallSignature,
 }
 
@@ -256,6 +257,7 @@ pub struct Compiler {
     pending_label: Option<String>,
     with_targets: Vec<u16>,
     capture_by_value_vars: Vec<String>,
+    pointer_cell_bindings: HashMap<usize, HashSet<String>>,
 
 
     /// Functions whose every explicit `Return` carries an `ExprKind::Tuple`
@@ -526,6 +528,7 @@ impl Compiler {
             pending_label: None,
             with_targets: Vec::new(),
             capture_by_value_vars: Vec::new(),
+            pointer_cell_bindings: HashMap::new(),
 
 
             multi_return_functions: HashMap::new(),
@@ -992,6 +995,47 @@ impl Compiler {
             Some(tail) if !tail.is_empty() => format!("{}{}.{}", target, suffix, tail),
             _ => format!("{}{}", target, suffix),
         }
+    }
+
+    fn parse_pascal_array_bound_token(token: &str) -> Option<i64> {
+        let trimmed = token.trim();
+        if let Ok(value) = trimmed.parse::<i64>() {
+            return Some(value);
+        }
+
+        if trimmed.starts_with('\'') && trimmed.ends_with('\'') && trimmed.len() >= 3 {
+            let inner = &trimmed[1..trimmed.len() - 1];
+            let unescaped = inner.replace("''", "'");
+            let mut chars = unescaped.chars();
+            if let (Some(ch), None) = (chars.next(), chars.next()) {
+                return Some(ch as i64);
+            }
+        }
+
+        None
+    }
+
+    fn pascal_array_type_hint_metadata(&self, type_hint: &str) -> Option<(bool, usize)> {
+        let trimmed = type_hint.trim().trim_end_matches('?').trim();
+        let lowered = trimmed.to_ascii_lowercase();
+        if !lowered.starts_with("array") {
+            return None;
+        }
+
+        let Some(bracket_start) = trimmed.find('[') else {
+            return Some((false, 0));
+        };
+        let bracket_end = trimmed[bracket_start + 1..].find(']')? + bracket_start + 1;
+        let first_dim = trimmed[bracket_start + 1..bracket_end].split(',').next()?.trim();
+        let (lower, upper) = first_dim.split_once("..")?;
+        let lower = Self::parse_pascal_array_bound_token(lower)?;
+        let upper = Self::parse_pascal_array_bound_token(upper)?;
+        let length = if upper >= lower {
+            (upper - lower + 1) as usize
+        } else {
+            0
+        };
+        Some((true, length))
     }
 
     fn collect_reflection_metadata(&mut self, body: &[Statement]) {
@@ -1800,6 +1844,137 @@ impl Compiler {
 
     fn scope(&self) -> &Scope { self.scopes.last().unwrap() }
     fn scope_mut(&mut self) -> &mut Scope { self.scopes.last_mut().unwrap() }
+
+    fn pointer_binding_key(&self, name: &str) -> String {
+        if self.case_sensitive {
+            name.to_string()
+        } else {
+            self.canon(name)
+        }
+    }
+
+    fn binding_uses_pointer_cell(&self, name: &str) -> bool {
+        let key = self.pointer_binding_key(name);
+        self.pointer_cell_bindings
+            .get(&self.current)
+            .is_some_and(|bindings| bindings.contains(&key))
+    }
+
+    fn mark_pointer_cell_binding(&mut self, name: &str) {
+        let key = self.pointer_binding_key(name);
+        self.pointer_cell_bindings.entry(self.current).or_default().insert(key);
+    }
+
+    fn resolve_named_local_slot(&self, name: &str) -> Option<u16> {
+        self.scope().resolve(name).or_else(|| {
+            if self.case_sensitive {
+                None
+            } else {
+                self.scope().resolve_ci(name)
+            }
+        })
+    }
+
+    fn promote_local_binding_to_pointer_cell(&mut self, name: &str) -> Option<u16> {
+        let slot = self.resolve_named_local_slot(name)?;
+        if !self.binding_uses_pointer_cell(name) {
+            common::references::emit_cell_new_from_local(&mut self.chunks, self.current, slot, self.line);
+            self.emit_u16(Op::LOCAL_SET, slot);
+            self.emit(Op::DROP);
+            self.mark_pointer_cell_binding(name);
+        }
+        Some(slot)
+    }
+
+    fn promote_global_binding_to_pointer_cell(&mut self, name: &str) -> bool {
+        let canon_name = self.canon(name);
+        if !self.defined_globals.contains(&canon_name) {
+            return false;
+        }
+
+        if !self.binding_uses_pointer_cell(name) {
+            let value_slot = self.define_local("__ref_global_value");
+            let idx = self.str_const(&canon_name);
+            self.emit_u16(Op::GLOBAL_GET, idx);
+            self.emit_u16(Op::LOCAL_SET, value_slot);
+            self.emit(Op::DROP);
+            common::references::emit_cell_new(&mut self.chunks, self.current, value_slot, self.line);
+            self.emit_u16(Op::GLOBAL_SET, idx);
+            self.emit(Op::DROP);
+            self.mark_pointer_cell_binding(name);
+        }
+
+        true
+    }
+
+    pub(super) fn emit_wrap_top_of_stack_in_pointer_cell(&mut self) {
+        let value_slot = self.define_local("__ref_cell_value");
+        self.emit_u16(Op::LOCAL_SET, value_slot);
+        self.emit(Op::DROP);
+        common::references::emit_cell_new(&mut self.chunks, self.current, value_slot, self.line);
+    }
+
+    pub(super) fn emit_autoderef_pointer_cell(&mut self) {
+        let obj_slot = self.define_local("__ref_autoderef_obj");
+        self.emit_u16(Op::LOCAL_SET, obj_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit(Op::REF_IS_OBJECT);
+        let not_object = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        let kind_key = self.str_const("__ref_kind");
+        self.emit_u16(Op::STRUCT_GET, kind_key);
+        self.emit_const(Value::String(Arc::from("cell")));
+        self.emit(Op::DYN_EQ);
+        let not_cell = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        common::references::emit_cell_load(&mut self.chunks, self.current, self.line);
+        let done = self.emit_jump(Op::BR);
+
+        self.patch_jump(not_cell);
+        self.patch_jump(not_object);
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.patch_jump(done);
+    }
+
+    pub(super) fn compile_address_of_expr(&mut self, expr: &Expression) -> Result<(), String> {
+        match &expr.kind {
+            ExprKind::Ident(name) => {
+                let canon_name = self.canon(name);
+                if self.defined_functions.contains(&canon_name) {
+                    self.emit_var_get(name);
+                    return Ok(());
+                }
+                if let Some(slot) = self.promote_local_binding_to_pointer_cell(name) {
+                    self.emit_u16(Op::LOCAL_GET, slot);
+                    return Ok(());
+                }
+                if self.promote_global_binding_to_pointer_cell(name) {
+                    let idx = self.str_const(&canon_name);
+                    self.emit_u16(Op::GLOBAL_GET, idx);
+                    return Ok(());
+                }
+            }
+            ExprKind::Unary { op: UnaryOp::Deref, expr } => {
+                self.compile_expr(expr)?;
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        self.compile_expr(expr)?;
+        self.emit_wrap_top_of_stack_in_pointer_cell();
+        Ok(())
+    }
+
+    pub(super) fn compile_deref_expr(&mut self, expr: &Expression) -> Result<(), String> {
+        self.compile_expr(expr)?;
+        self.emit_autoderef_pointer_cell();
+        Ok(())
+    }
 
     /// Define a local in the current scope AND sync the current chunk's
     /// `local_count` to the new high-water mark.
@@ -2748,7 +2923,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn emit_var_decl_initializer_value(&mut self, decl: &VarDeclarator) -> Result<(), String> {
+    fn emit_var_decl_initializer_value(&mut self, decl: &VarDeclarator, resolved_type_hint: Option<&str>) -> Result<(), String> {
         if let Some(ref init_expr) = decl.init {
             self.compile_expr_with_value_copy(init_expr)?;
             self.maybe_promote_pascal_array_literal_to_set(decl.type_hint.as_deref(), init_expr);
@@ -2765,7 +2940,16 @@ impl Compiler {
                 self.emit(Op::NULL);
             }
         } else {
-            if decl.type_hint.as_deref().and_then(Self::vb_fixed_string_len).is_some() {
+            let resolved_type_hint = resolved_type_hint
+                .map(str::to_string)
+                .or_else(|| decl.type_hint.as_deref().map(|type_hint| self.resolve_source_type_alias(type_hint)));
+            let effective_type_hint = resolved_type_hint.as_deref().or(decl.type_hint.as_deref());
+
+            if let Some((_, length)) = effective_type_hint.and_then(|type_hint| self.pascal_array_type_hint_metadata(type_hint)) {
+                let line = self.line;
+                self.emit_const(Value::F64(length as f64));
+                common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
+            } else if effective_type_hint.and_then(Self::vb_fixed_string_len).is_some() {
                 self.emit_const(Value::String(Arc::from("")));
             } else if let Some(type_name) = decl
                 .type_hint
@@ -2776,7 +2960,7 @@ impl Compiler {
                 self.emit_u16(Op::GLOBAL_GET, idx);
                 return Ok(());
             } else {
-                match decl.type_hint.as_deref().map(|s| s.to_lowercase()).as_deref() {
+                match effective_type_hint.map(|s| s.to_lowercase()).as_deref() {
                     Some("integer") | Some("int") | Some("longint") | Some("real") | Some("double") | Some("float") => {
                         self.emit(Op::F64_CONST_0);
                     }
@@ -2978,6 +3162,47 @@ impl Compiler {
             ExprKind::Lit(Literal::Bool(_)) => Some("bool".into()),
             ExprKind::Lit(Literal::Char(_)) => Some("char".into()),
             ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
+            ExprKind::RefOf(place) => {
+                let pointee_type = match place.as_ref() {
+                    PlaceExpr::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
+                    PlaceExpr::Member { object, field, null_safe } => self.infer_expr_type_hint(&Expression::new(ExprKind::Member {
+                        object: object.clone(),
+                        field: field.clone(),
+                        null_safe: *null_safe,
+                    })),
+                    PlaceExpr::Index { object, index, null_safe } => self.infer_expr_type_hint(&Expression::new(ExprKind::Index {
+                        object: object.clone(),
+                        index: index.clone(),
+                        null_safe: *null_safe,
+                    })),
+                    PlaceExpr::Deref(expr) => self.infer_expr_type_hint(expr).map(|type_hint| {
+                        type_hint
+                            .trim()
+                            .trim_end_matches('?')
+                            .trim()
+                            .trim_start_matches('*')
+                            .trim_start_matches('^')
+                            .trim()
+                            .to_string()
+                    }),
+                }?;
+                Some(format!("*{}", pointee_type.trim()))
+            }
+            ExprKind::Unary { op: UnaryOp::AddrOf, expr } => self
+                .infer_expr_type_hint(expr)
+                .map(|type_hint| format!("*{}", type_hint.trim().trim_end_matches('?').trim())),
+            ExprKind::Unary { op: UnaryOp::Deref, expr } | ExprKind::RefLoad(expr) => self
+                .infer_expr_type_hint(expr)
+                .map(|type_hint| {
+                    type_hint
+                        .trim()
+                        .trim_end_matches('?')
+                        .trim()
+                        .trim_start_matches('*')
+                        .trim_start_matches('^')
+                        .trim()
+                        .to_string()
+                }),
             ExprKind::New { class, .. } => Self::expr_terminal_type_name(class),
             ExprKind::Array(elements) => Some(format!(
                 "{}()",
@@ -3356,11 +3581,17 @@ impl Compiler {
         // Local
         if let Some(slot) = self.scope().resolve(name) {
             self.emit_u16(Op::LOCAL_GET, slot);
+            if self.binding_uses_pointer_cell(name) {
+                common::references::emit_cell_load(&mut self.chunks, self.current, self.line);
+            }
             return;
         }
         if !self.case_sensitive {
             if let Some(slot) = self.scope().resolve_ci(name) {
                 self.emit_u16(Op::LOCAL_GET, slot);
+                if self.binding_uses_pointer_cell(name) {
+                    common::references::emit_cell_load(&mut self.chunks, self.current, self.line);
+                }
                 return;
             }
         }
@@ -3434,6 +3665,9 @@ impl Compiler {
         // Global — canonicalize name for case-insensitive languages
         let idx = self.str_const(&cname);
         self.emit_u16(Op::GLOBAL_GET, idx);
+        if self.binding_uses_pointer_cell(name) {
+            common::references::emit_cell_load(&mut self.chunks, self.current, self.line);
+        }
     }
 
 
@@ -3455,12 +3689,28 @@ impl Compiler {
     fn emit_var_set(&mut self, name: &str) {
         // Local
         if let Some(slot) = self.scope().resolve(name) {
-            self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+            if self.binding_uses_pointer_cell(name) {
+                let value_slot = self.define_local("__ref_cell_set_value");
+                self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, slot);
+                common::references::emit_cell_store(&mut self.chunks, self.current, value_slot, self.line);
+                self.emit(Op::DROP);
+            } else {
+                self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+            }
             return;
         }
         if !self.case_sensitive {
             if let Some(slot) = self.scope().resolve_ci(name) {
-                self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+                if self.binding_uses_pointer_cell(name) {
+                    let value_slot = self.define_local("__ref_cell_set_value");
+                    self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, slot);
+                    common::references::emit_cell_store(&mut self.chunks, self.current, value_slot, self.line);
+                    self.emit(Op::DROP);
+                } else {
+                    self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+                }
                 return;
             }
         }
@@ -3524,7 +3774,19 @@ impl Compiler {
         if self.scopes.len() == 1 {
             self.defined_globals.insert(cname.clone());
         }
-        let idx = self.str_const(&cname); self.emit_u16(Op::GLOBAL_SET, idx); self.emit(Op::DROP);
+        if self.binding_uses_pointer_cell(name) {
+            let value_slot = self.define_local("__ref_global_set_value");
+            self.emit_u16(Op::LOCAL_SET, value_slot);
+            self.emit(Op::DROP);
+            let idx = self.str_const(&cname);
+            self.emit_u16(Op::GLOBAL_GET, idx);
+            common::references::emit_cell_store(&mut self.chunks, self.current, value_slot, self.line);
+            self.emit(Op::DROP);
+            return;
+        }
+        let idx = self.str_const(&cname);
+        self.emit_u16(Op::GLOBAL_SET, idx);
+        self.emit(Op::DROP);
     }
 
     /// Walk up the scope chain to find a variable in a parent scope.
@@ -6337,6 +6599,9 @@ impl Compiler {
                 let mut inferred_type_hint = decl.type_hint.clone().or_else(|| {
                     decl.init.as_ref().and_then(|expr| self.infer_expr_type_hint(expr))
                 });
+                let resolved_type_hint = inferred_type_hint
+                    .as_deref()
+                    .map(|type_hint| self.resolve_source_type_alias(type_hint));
                 if decl.array_bounds.is_some() {
                     if let Some(type_hint) = inferred_type_hint.as_mut() {
                         if !type_hint.trim_end().ends_with("()") {
@@ -6344,15 +6609,34 @@ impl Compiler {
                         }
                     }
                 }
+                let is_pascal_type_alias_decl = self.profile.name == "pascal"
+                    && *kind == VarDeclKind::Const
+                    && decl.init.is_none()
+                    && decl.array_bounds.is_none()
+                    && self.scopes.len() == 1
+                    && self.scope().depth == 0;
+                if is_pascal_type_alias_decl {
+                    if let Some(type_hint) = resolved_type_hint.as_deref().or(decl.type_hint.as_deref()) {
+                        self.source_type_aliases.insert(self.canon(name), type_hint.to_string());
+                    }
+                    return Ok(());
+                }
                 if inferred_type_hint
                     .as_deref()
                     .is_some_and(|type_hint| type_hint.trim().ends_with("()"))
                     || decl.array_bounds.is_some()
+                    || resolved_type_hint
+                        .as_deref()
+                        .is_some_and(|type_hint| self.pascal_array_type_hint_metadata(type_hint).is_some())
                 {
-                    let is_fixed = decl.array_bounds.as_ref().is_some_and(|bounds| !bounds.is_empty());
+                    let is_fixed = decl.array_bounds.as_ref().is_some_and(|bounds| !bounds.is_empty())
+                        || resolved_type_hint
+                            .as_deref()
+                            .and_then(|type_hint| self.pascal_array_type_hint_metadata(type_hint))
+                            .is_some_and(|(is_fixed, _)| is_fixed);
                     self.record_array_binding(name, ArrayBindingMetadata {
                         is_fixed,
-                        type_hint: inferred_type_hint.clone(),
+                        type_hint: resolved_type_hint.clone().or_else(|| inferred_type_hint.clone()),
                     });
                 }
                 // Top-level vars → globals.
@@ -6372,7 +6656,7 @@ impl Compiler {
                     self.emit(Op::DYN_TO_BOOL);
                     let skip_init = self.emit_jump(Op::BR_IF_TRUE);
 
-                    self.emit_var_decl_initializer_value(decl)?;
+                    self.emit_var_decl_initializer_value(decl, resolved_type_hint.as_deref())?;
                     let value_idx = self.str_const(&binding.global_name);
                     self.emit_u16(Op::GLOBAL_SET, value_idx);
                     self.emit(Op::DROP);
@@ -6437,7 +6721,7 @@ impl Compiler {
                         }
                     }
                 } else if decl.array_bounds.is_some() || decl.type_hint.is_some() {
-                    self.emit_var_decl_initializer_value(decl)?;
+                    self.emit_var_decl_initializer_value(decl, resolved_type_hint.as_deref())?;
                 } else {
                     self.emit(Op::NULL);
                 }
@@ -6736,6 +7020,7 @@ impl Compiler {
                 let field_name = self.canon(field);
                 if matches!(self.profile.name.as_str(), "csharp" | "vb") {
                     self.compile_expr(object)?;
+                    self.emit_autoderef_pointer_cell();
                     let obj_tmp = self.define_local("__member_set_obj");
                     self.emit_u16(Op::LOCAL_SET, obj_tmp);
                     self.emit(Op::DROP);
@@ -6769,6 +7054,7 @@ impl Compiler {
                 }
 
                 self.compile_expr(object)?;
+                self.emit_autoderef_pointer_cell();
                 // JS `Object.keys` / `Object.entries` need insertion order
                 // (ECMA-262 §7.3.22). The HashMap backing properties is
                 // non-deterministic, so we mirror each direct write into
@@ -6816,6 +7102,14 @@ impl Compiler {
                     self.emit_u16(Op::STRUCT_SET, idx);
                     self.emit(Op::DROP);
                 }
+            }
+            ExprKind::Unary { op: UnaryOp::Deref, expr } | ExprKind::RefLoad(expr) => {
+                let value_slot = self.define_local("__ref_store_value");
+                self.emit_u16(Op::LOCAL_SET, value_slot);
+                self.emit(Op::DROP);
+                self.compile_expr(expr)?;
+                common::references::emit_cell_store(&mut self.chunks, self.current, value_slot, self.line);
+                self.emit(Op::DROP);
             }
             ExprKind::Index { object, index, .. } => {
                 if self.is_python_profile() {
@@ -6951,12 +7245,14 @@ impl Compiler {
                 }
                 if is_append {
                     self.compile_expr(object)?;
+                    self.emit_autoderef_pointer_cell();
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     common::collections::emit_push(&mut self.chunks, self.current, line);
                     // ecma:array.push leaves [new_length]; drop it.
                     self.emit(Op::DROP);
                 } else if matches!(self.profile.name.as_str(), "csharp" | "vb") {
                     self.compile_expr(object)?;
+                    self.emit_autoderef_pointer_cell();
                     let obj_tmp = self.define_local("__index_set_obj");
                     self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
 
@@ -6987,6 +7283,7 @@ impl Compiler {
                     self.patch_jump(done);
                 } else {
                     self.compile_expr(object)?;
+                    self.emit_autoderef_pointer_cell();
                     self.compile_expr(index)?;
                     if self.is_php_profile() {
                         let key_tmp = self.define_local("__php_idx_key");

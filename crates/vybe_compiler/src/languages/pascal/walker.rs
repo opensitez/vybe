@@ -3016,10 +3016,7 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
 
     if op_src == "^" {
         // Dereference: ptr^
-        return Ok(Expression::new(ExprKind::Unary {
-            op: UnaryOp::Deref,
-            expr: Box::new(expr),
-        }));
+        return Ok(Expression::new(ExprKind::RefLoad(Box::new(expr))));
     }
 
     if op_src.starts_with('.') {

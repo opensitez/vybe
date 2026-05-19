@@ -693,6 +693,7 @@ impl Compiler {
                 overloads.entry(bound_name.clone()).or_default().push(PendingMethodOverload {
                     param_types,
                     chunk_idx: ci,
+                    return_type: m.return_type.clone(),
                     signature: CallSignature::from_params(
                         &user_params.iter().map(|param| (*param).clone()).collect::<Vec<_>>()
                     ),
