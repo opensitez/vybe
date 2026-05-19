@@ -12,8 +12,8 @@
 //! - **Structs**: Mapped to `StructDecl` with fields.
 //! - **Interfaces**: Mapped to `InterfaceDecl`.
 //! - **`range`**: Mapped to `ForIn` with `of: true`.
-//! - **`defer`**: Currently ignored (no-op) — Go's defer semantics require
-//!   runtime support not yet available.
+//! - **`defer`**: Lowered to a per-function stack of zero-arg closures that
+//!   drain from a synthesized `finally` block in LIFO order.
 //! - **`go`**: Lowered to the shared thread/task emitter surface.
 //! - **`fallthrough`**: Not yet supported in switch.
 //! - **`select`**: Lowered as a compile-safe block for the dummy concurrency tests.
@@ -102,6 +102,12 @@ struct GoNormalizeEnv {
 #[derive(Default)]
 struct GoNormalizeState {
     next_temp: usize,
+}
+
+struct GoSignatureInfo {
+    params: Vec<Param>,
+    return_type: Option<String>,
+    named_results: Vec<Param>,
 }
 
 fn normalize_go_module(mut module: Module) -> Module {
@@ -257,6 +263,596 @@ fn normalize_go_block(
     normalized
 }
 
+fn normalize_go_function_body(
+    stmts: &[Statement],
+    env: &mut GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+    state: &mut GoNormalizeState,
+) -> Vec<Statement> {
+    let mut named_result: Option<Param> = None;
+    let mut body_stmts = Vec::with_capacity(stmts.len());
+    for stmt in stmts {
+        if named_result.is_none() {
+            if let Some(param) = go_extract_named_result_marker(stmt) {
+                env.value_types.insert(param.name.clone(), param.type_hint.clone().unwrap_or_else(|| "object".to_string()));
+                named_result = Some(param);
+                continue;
+            }
+        }
+        body_stmts.push(stmt.clone());
+    }
+
+    let mut normalized = Vec::with_capacity(stmts.len());
+    for stmt in &body_stmts {
+        normalized.extend(normalize_go_statement(stmt, env, signatures, state));
+    }
+
+    let (normalized, final_return) = if let Some(param) = named_result {
+        go_lower_named_result_body(normalized, &param, state)
+    } else {
+        (normalized, None)
+    };
+
+    lower_go_defer_body(normalized, env, signatures, state, final_return)
+}
+
+fn lower_go_defer_body(
+    body: Vec<Statement>,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+    state: &mut GoNormalizeState,
+    final_return: Option<Expression>,
+) -> Vec<Statement> {
+    let stack_name = fresh_go_temp(state, "__go_defer_stack");
+    let (lowered_body, has_defer) = lower_go_defer_statements(body, env, signatures, state, &stack_name);
+    if !has_defer {
+        let mut body = lowered_body;
+        if let Some(expr) = final_return {
+            body.push(Statement::new(StmtKind::Return(Some(expr))));
+        }
+        return body;
+    }
+
+    let stack_decl = Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(stack_name.clone()),
+            type_hint: None,
+            init: Some(Expression::null()),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    });
+
+    let drain_name = fresh_go_temp(state, "__go_defer_fn");
+    let drain_loop = Statement::new(StmtKind::While {
+        cond: Expression::new(ExprKind::Binary {
+            op: BinOp::NotEq,
+            left: Box::new(Expression::ident(&stack_name)),
+            right: Box::new(Expression::null()),
+        }),
+        body: vec![
+            go_defer_temp_decl(
+                drain_name.clone(),
+                None,
+                Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident(&stack_name)),
+                    field: "fn".to_string(),
+                    null_safe: false,
+                }),
+            ),
+            Statement::new(StmtKind::Assign {
+                targets: vec![Expression::ident(&stack_name)],
+                value: Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident(&stack_name)),
+                    field: "next".to_string(),
+                    null_safe: false,
+                }),
+            }),
+            Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(&drain_name)),
+                args: Vec::new(),
+                optional: false,
+            }))),
+        ],
+        else_body: None,
+    });
+
+    let mut body = vec![
+        stack_decl,
+        Statement::new(StmtKind::Try {
+            body: lowered_body,
+            catches: Vec::new(),
+            else_body: None,
+            finally: Some(vec![drain_loop]),
+        }),
+    ];
+    if let Some(expr) = final_return {
+        body.push(Statement::new(StmtKind::Return(Some(expr))));
+    }
+    body
+}
+
+fn go_extract_named_result_marker(stmt: &Statement) -> Option<Param> {
+    let StmtKind::Expr(expr) = &stmt.kind else {
+        return None;
+    };
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(callee.kind, ExprKind::Ident(ref name) if name == "__go_named_result") || args.len() != 2 {
+        return None;
+    }
+    let ExprKind::Lit(Literal::Str(name)) = &args[0].value.kind else {
+        return None;
+    };
+    let type_hint = go_type_name_from_expr(&args[1].value)?;
+    Some(Param {
+        name: name.clone(),
+        type_hint: Some(type_hint),
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
+    })
+}
+
+fn go_lower_named_result_body(
+    body: Vec<Statement>,
+    result: &Param,
+    state: &mut GoNormalizeState,
+) -> (Vec<Statement>, Option<Expression>) {
+    let sentinel = fresh_go_temp(state, "__go_named_return");
+    let catch_name = fresh_go_temp(state, "__go_named_return_exc");
+    let result_name = result.name.clone();
+    let result_type = result.type_hint.clone().unwrap_or_else(|| "object".to_string());
+
+    let rewritten_body = go_rewrite_named_result_returns(body, &result_name, &sentinel);
+    let result_decl = Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(result_name.clone()),
+            type_hint: Some(result_type.clone()),
+            init: Some(go_zero_value_expr(&result_type)),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    });
+    let catch_body = vec![Statement::new(StmtKind::If {
+        cond: Expression::new(ExprKind::Binary {
+            op: BinOp::NotEq,
+            left: Box::new(Expression::ident(&catch_name)),
+            right: Box::new(Expression::string(&sentinel)),
+        }),
+        then_body: vec![Statement::new(StmtKind::Throw {
+            expr: Some(Expression::ident(&catch_name)),
+            cause: None,
+        })],
+        elifs: Vec::new(),
+        else_body: None,
+    })];
+
+    (
+        vec![
+            result_decl,
+            Statement::new(StmtKind::Try {
+                body: rewritten_body,
+                catches: vec![CatchClause {
+                    types: Vec::new(),
+                    var_name: Some(catch_name),
+                    stack_var: None,
+                    body: catch_body,
+                    when_clause: None,
+                }],
+                else_body: None,
+                finally: None,
+            }),
+        ],
+        Some(Expression::ident(&result_name)),
+    )
+}
+
+fn go_rewrite_named_result_returns(
+    body: Vec<Statement>,
+    result_name: &str,
+    sentinel: &str,
+) -> Vec<Statement> {
+    let mut rewritten = Vec::with_capacity(body.len());
+    for stmt in body {
+        rewritten.extend(go_rewrite_named_result_return_stmt(stmt, result_name, sentinel));
+    }
+    rewritten
+}
+
+fn go_rewrite_named_result_return_stmt(
+    stmt: Statement,
+    result_name: &str,
+    sentinel: &str,
+) -> Vec<Statement> {
+    match stmt.kind {
+        StmtKind::Return(expr) => {
+            let mut rewritten = Vec::new();
+            if let Some(expr) = expr {
+                rewritten.push(Statement::new(StmtKind::Assign {
+                    targets: vec![Expression::ident(result_name)],
+                    value: expr,
+                }));
+            }
+            rewritten.push(Statement::new(StmtKind::Throw {
+                expr: Some(Expression::string(sentinel)),
+                cause: None,
+            }));
+            rewritten
+        }
+        StmtKind::Block(body) => vec![Statement::new(StmtKind::Block(go_rewrite_named_result_returns(
+            body,
+            result_name,
+            sentinel,
+        )))],
+        StmtKind::If { cond, then_body, elifs, else_body } => vec![Statement::new(StmtKind::If {
+            cond,
+            then_body: go_rewrite_named_result_returns(then_body, result_name, sentinel),
+            elifs: elifs
+                .into_iter()
+                .map(|(cond, body)| (cond, go_rewrite_named_result_returns(body, result_name, sentinel)))
+                .collect(),
+            else_body: else_body.map(|body| go_rewrite_named_result_returns(body, result_name, sentinel)),
+        })],
+        StmtKind::For { init, cond, update, body } => vec![Statement::new(StmtKind::For {
+            init,
+            cond,
+            update,
+            body: go_rewrite_named_result_returns(body, result_name, sentinel),
+        })],
+        StmtKind::ForIn { var, key, iter, body, of, else_body, is_async } => vec![Statement::new(StmtKind::ForIn {
+            var,
+            key,
+            iter,
+            body: go_rewrite_named_result_returns(body, result_name, sentinel),
+            of,
+            else_body: else_body.map(|body| go_rewrite_named_result_returns(body, result_name, sentinel)),
+            is_async,
+        })],
+        StmtKind::While { cond, body, else_body } => vec![Statement::new(StmtKind::While {
+            cond,
+            body: go_rewrite_named_result_returns(body, result_name, sentinel),
+            else_body: else_body.map(|body| go_rewrite_named_result_returns(body, result_name, sentinel)),
+        })],
+        StmtKind::DoWhile { body, cond, until } => vec![Statement::new(StmtKind::DoWhile {
+            body: go_rewrite_named_result_returns(body, result_name, sentinel),
+            cond,
+            until,
+        })],
+        StmtKind::Switch { expr, cases, default } => vec![Statement::new(StmtKind::Switch {
+            expr,
+            cases: cases
+                .into_iter()
+                .map(|case| SwitchCase {
+                    conditions: case.conditions,
+                    body: go_rewrite_named_result_returns(case.body, result_name, sentinel),
+                })
+                .collect(),
+            default: default.map(|body| go_rewrite_named_result_returns(body, result_name, sentinel)),
+        })],
+        StmtKind::Try { body, catches, else_body, finally } => vec![Statement::new(StmtKind::Try {
+            body: go_rewrite_named_result_returns(body, result_name, sentinel),
+            catches: catches
+                .into_iter()
+                .map(|catch| CatchClause {
+                    types: catch.types,
+                    var_name: catch.var_name,
+                    stack_var: catch.stack_var,
+                    body: go_rewrite_named_result_returns(catch.body, result_name, sentinel),
+                    when_clause: catch.when_clause,
+                })
+                .collect(),
+            else_body: else_body.map(|body| go_rewrite_named_result_returns(body, result_name, sentinel)),
+            finally: finally.map(|body| go_rewrite_named_result_returns(body, result_name, sentinel)),
+        })],
+        _ => vec![stmt],
+    }
+}
+
+fn lower_go_defer_statements(
+    body: Vec<Statement>,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+    state: &mut GoNormalizeState,
+    stack_name: &str,
+) -> (Vec<Statement>, bool) {
+    let mut lowered = Vec::with_capacity(body.len());
+    let mut has_defer = false;
+
+    for stmt in body {
+        if let Some(expr) = go_extract_defer_expr(&stmt) {
+            lowered.extend(go_lower_defer_stmt(expr, env, signatures, state, stack_name));
+            has_defer = true;
+            continue;
+        }
+
+        let (next_stmt, nested_has_defer) = lower_go_defer_statement(stmt, env, signatures, state, stack_name);
+        lowered.push(next_stmt);
+        has_defer |= nested_has_defer;
+    }
+
+    (lowered, has_defer)
+}
+
+fn lower_go_defer_statement(
+    stmt: Statement,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+    state: &mut GoNormalizeState,
+    stack_name: &str,
+) -> (Statement, bool) {
+    match stmt.kind {
+        StmtKind::Block(body) => {
+            let (body, has_defer) = lower_go_defer_statements(body, env, signatures, state, stack_name);
+            (Statement::new(StmtKind::Block(body)), has_defer)
+        }
+        StmtKind::If { cond, then_body, elifs, else_body } => {
+            let (next_then, mut has_defer) = lower_go_defer_statements(then_body, env, signatures, state, stack_name);
+            let mut next_elifs = Vec::with_capacity(elifs.len());
+            for (elif_cond, elif_body) in elifs {
+                let (next_body, nested_has_defer) = lower_go_defer_statements(elif_body, env, signatures, state, stack_name);
+                next_elifs.push((elif_cond, next_body));
+                has_defer |= nested_has_defer;
+            }
+            let next_else = if let Some(body) = else_body {
+                let (body, nested_has_defer) = lower_go_defer_statements(body, env, signatures, state, stack_name);
+                has_defer |= nested_has_defer;
+                Some(body)
+            } else {
+                None
+            };
+            (
+                Statement::new(StmtKind::If {
+                    cond,
+                    then_body: next_then,
+                    elifs: next_elifs,
+                    else_body: next_else,
+                }),
+                has_defer,
+            )
+        }
+        StmtKind::For { init, cond, update, body } => {
+            let (body, has_defer) = lower_go_defer_statements(body, env, signatures, state, stack_name);
+            (
+                Statement::new(StmtKind::For { init, cond, update, body }),
+                has_defer,
+            )
+        }
+        StmtKind::ForIn { var, key, iter, body, of, else_body, is_async } => {
+            let (body, mut has_defer) = lower_go_defer_statements(body, env, signatures, state, stack_name);
+            let next_else = if let Some(body) = else_body {
+                let (body, nested_has_defer) = lower_go_defer_statements(body, env, signatures, state, stack_name);
+                has_defer |= nested_has_defer;
+                Some(body)
+            } else {
+                None
+            };
+            (
+                Statement::new(StmtKind::ForIn { var, key, iter, body, of, else_body: next_else, is_async }),
+                has_defer,
+            )
+        }
+        StmtKind::While { cond, body, else_body } => {
+            let (body, mut has_defer) = lower_go_defer_statements(body, env, signatures, state, stack_name);
+            let next_else = if let Some(body) = else_body {
+                let (body, nested_has_defer) = lower_go_defer_statements(body, env, signatures, state, stack_name);
+                has_defer |= nested_has_defer;
+                Some(body)
+            } else {
+                None
+            };
+            (
+                Statement::new(StmtKind::While { cond, body, else_body: next_else }),
+                has_defer,
+            )
+        }
+        StmtKind::DoWhile { body, cond, until } => {
+            let (body, has_defer) = lower_go_defer_statements(body, env, signatures, state, stack_name);
+            (
+                Statement::new(StmtKind::DoWhile { body, cond, until }),
+                has_defer,
+            )
+        }
+        StmtKind::Switch { expr, cases, default } => {
+            let mut has_defer = false;
+            let next_cases = cases
+                .into_iter()
+                .map(|case| {
+                    let (body, nested_has_defer) = lower_go_defer_statements(case.body, env, signatures, state, stack_name);
+                    has_defer |= nested_has_defer;
+                    SwitchCase {
+                        conditions: case.conditions,
+                        body,
+                    }
+                })
+                .collect();
+            let next_default = if let Some(body) = default {
+                let (body, nested_has_defer) = lower_go_defer_statements(body, env, signatures, state, stack_name);
+                has_defer |= nested_has_defer;
+                Some(body)
+            } else {
+                None
+            };
+            (
+                Statement::new(StmtKind::Switch { expr, cases: next_cases, default: next_default }),
+                has_defer,
+            )
+        }
+        StmtKind::Try { body, catches, else_body, finally } => {
+            let (body, mut has_defer) = lower_go_defer_statements(body, env, signatures, state, stack_name);
+            let next_catches = catches
+                .into_iter()
+                .map(|catch| {
+                    let (body, nested_has_defer) = lower_go_defer_statements(catch.body, env, signatures, state, stack_name);
+                    has_defer |= nested_has_defer;
+                    CatchClause {
+                        types: catch.types,
+                        var_name: catch.var_name,
+                        stack_var: catch.stack_var,
+                        body,
+                        when_clause: catch.when_clause,
+                    }
+                })
+                .collect();
+            let next_else = if let Some(body) = else_body {
+                let (body, nested_has_defer) = lower_go_defer_statements(body, env, signatures, state, stack_name);
+                has_defer |= nested_has_defer;
+                Some(body)
+            } else {
+                None
+            };
+            let next_finally = if let Some(body) = finally {
+                let (body, nested_has_defer) = lower_go_defer_statements(body, env, signatures, state, stack_name);
+                has_defer |= nested_has_defer;
+                Some(body)
+            } else {
+                None
+            };
+            (
+                Statement::new(StmtKind::Try {
+                    body,
+                    catches: next_catches,
+                    else_body: next_else,
+                    finally: next_finally,
+                }),
+                has_defer,
+            )
+        }
+        _ => (stmt, false),
+    }
+}
+
+fn go_extract_defer_expr(stmt: &Statement) -> Option<Expression> {
+    let StmtKind::Expr(expr) = &stmt.kind else {
+        return None;
+    };
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(callee.kind, ExprKind::Ident(ref name) if name == "__go_defer") || args.len() != 1 {
+        return None;
+    }
+    Some(args[0].value.clone())
+}
+
+fn go_lower_defer_stmt(
+    expr: Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+    state: &mut GoNormalizeState,
+    stack_name: &str,
+) -> Vec<Statement> {
+    let mut stmts = Vec::new();
+    let mut captures = Vec::new();
+
+    let deferred_expr = match expr.kind {
+        ExprKind::Call { callee, args, optional } => {
+            let deferred_callee = match callee.as_ref() {
+                Expression {
+                    kind: ExprKind::Member { object, field, null_safe },
+                    ..
+                } => {
+                    let receiver_type = go_expr_type_hint(object, env, signatures);
+                    let deferred_object = if matches!(object.as_ref().kind, ExprKind::Ident(_)) && receiver_type.is_none() {
+                        object.as_ref().clone()
+                    } else {
+                        let temp_name = fresh_go_temp(state, "__go_defer_recv");
+                        stmts.push(go_defer_temp_decl(
+                            temp_name.clone(),
+                            receiver_type,
+                            object.as_ref().clone(),
+                        ));
+                        captures.push(temp_name.clone());
+                        Expression::ident(&temp_name)
+                    };
+                    Expression::new(ExprKind::Member {
+                        object: Box::new(deferred_object),
+                        field: field.clone(),
+                        null_safe: *null_safe,
+                    })
+                }
+                _ => {
+                    let temp_name = fresh_go_temp(state, "__go_defer_fn");
+                    stmts.push(go_defer_temp_decl(
+                        temp_name.clone(),
+                        go_expr_type_hint(callee.as_ref(), env, signatures),
+                        callee.as_ref().clone(),
+                    ));
+                    captures.push(temp_name.clone());
+                    Expression::ident(&temp_name)
+                }
+            };
+
+            let deferred_args = args
+                .into_iter()
+                .map(|arg| {
+                    let temp_name = fresh_go_temp(state, "__go_defer_arg");
+                    let value = go_wrap_fixed_array_copy(arg.value, env, signatures);
+                    stmts.push(go_defer_temp_decl(
+                        temp_name.clone(),
+                        go_expr_type_hint(&value, env, signatures),
+                        value,
+                    ));
+                    captures.push(temp_name.clone());
+                    Argument {
+                        value: Expression::ident(&temp_name),
+                        name: arg.name,
+                        by_ref: arg.by_ref,
+                        spread: arg.spread,
+                    }
+                })
+                .collect();
+
+            Expression::new(ExprKind::Call {
+                callee: Box::new(deferred_callee),
+                args: deferred_args,
+                optional,
+            })
+        }
+        _ => expr,
+    };
+
+    let closure = Expression::new(ExprKind::Lambda {
+        params: Vec::new(),
+        body: LambdaBody::Block(vec![Statement::new(StmtKind::Expr(deferred_expr))]),
+        is_async: false,
+        captures,
+    });
+    stmts.push(Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident(stack_name)],
+        value: Expression::new(ExprKind::Object(vec![
+            ObjectProperty::KeyValue {
+                key: Expression::string("fn"),
+                value: closure,
+            },
+            ObjectProperty::KeyValue {
+                key: Expression::string("next"),
+                value: Expression::ident(stack_name),
+            },
+        ])),
+    }));
+    stmts
+}
+
+fn go_defer_temp_decl(name: String, type_hint: Option<String>, init: Expression) -> Statement {
+    Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(name),
+            type_hint,
+            init: Some(init),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    })
+}
+
 fn normalize_go_statement(
     stmt: &Statement,
     env: &mut GoNormalizeEnv,
@@ -294,7 +890,7 @@ fn normalize_go_statement(
                 name: name.clone(),
                 params: params.clone(),
                 return_type: return_type.clone(),
-                body: normalize_go_block(body, &fn_env, signatures, state),
+                body: normalize_go_function_body(body, &mut fn_env, signatures, state),
                 modifiers: modifiers.clone(),
                 handles: handles.clone(),
                 is_async: *is_async,
@@ -927,7 +1523,7 @@ fn normalize_go_expr(
                     LambdaBody::Expr(Box::new(normalize_go_expr(expr, &lambda_env, signatures, state)))
                 }
                 LambdaBody::Block(stmts) => {
-                    LambdaBody::Block(normalize_go_block(stmts, &lambda_env, signatures, state))
+                    LambdaBody::Block(normalize_go_function_body(stmts, &mut lambda_env, signatures, state))
                 }
             };
             Expression::new(ExprKind::Lambda {
@@ -1541,20 +2137,26 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut params = Vec::new();
     let mut body_stmts = Vec::new();
     let mut return_type: Option<String> = None;
+    let mut named_results = Vec::new();
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::ident_name => name = inner.as_str().to_string(),
             Rule::signature => {
-                let (p, rt) = walk_signature(inner)?;
-                params = p;
-                return_type = rt;
+                let sig = walk_signature(inner)?;
+                params = sig.params;
+                return_type = sig.return_type;
+                named_results = sig.named_results;
             }
             Rule::function_body | Rule::block_statement => {
                 body_stmts = walk_block(inner)?;
             }
             _ => {}
         }
+    }
+
+    for param in named_results.iter().rev() {
+        body_stmts.insert(0, go_named_result_marker_stmt(&param.name, param.type_hint.as_deref().unwrap_or("object")));
     }
 
     Ok(Statement::new(StmtKind::FunctionDecl {
@@ -1578,6 +2180,7 @@ fn walk_method_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut params = Vec::new();
     let mut body_stmts = Vec::new();
     let mut return_type: Option<String> = None;
+    let mut named_results = Vec::new();
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
@@ -1596,15 +2199,20 @@ fn walk_method_decl(pair: Pair<Rule>) -> Result<Statement, String> {
             }
             Rule::ident_name => method_name = inner.as_str().to_string(),
             Rule::signature => {
-                let (p, rt) = walk_signature(inner)?;
-                params = p;
-                return_type = rt;
+                let sig = walk_signature(inner)?;
+                params = sig.params;
+                return_type = sig.return_type;
+                named_results = sig.named_results;
             }
             Rule::function_body | Rule::block_statement => {
                 body_stmts = walk_block(inner)?;
             }
             _ => {}
         }
+    }
+
+    for param in named_results.iter().rev() {
+        body_stmts.insert(0, go_named_result_marker_stmt(&param.name, param.type_hint.as_deref().unwrap_or("object")));
     }
 
     // Prepend receiver as first parameter
@@ -1640,9 +2248,10 @@ fn walk_method_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     }))
 }
 
-fn walk_signature(pair: Pair<Rule>) -> Result<(Vec<Param>, Option<String>), String> {
+fn walk_signature(pair: Pair<Rule>) -> Result<GoSignatureInfo, String> {
     let mut params = Vec::new();
     let mut return_type: Option<String> = None;
+    let mut named_results = Vec::new();
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
@@ -1654,9 +2263,17 @@ fn walk_signature(pair: Pair<Rule>) -> Result<(Vec<Param>, Option<String>), Stri
                     match r_inner.as_rule() {
                         Rule::type_annotation => return_type = Some(walk_type(r_inner)),
                         Rule::parameter_list => {
-                            // Multiple return values — represent as array
                             let p = walk_parameter_list(r_inner)?;
-                            return_type = Some(format!("[{}]", p.len()));
+                            named_results = p
+                                .iter()
+                                .filter(|param| !param.name.starts_with("__go_param_"))
+                                .cloned()
+                                .collect();
+                            return_type = if p.len() == 1 {
+                                p[0].type_hint.clone()
+                            } else {
+                                Some(format!("[{}]", p.len()))
+                            };
                         }
                         _ => {}
                     }
@@ -1669,7 +2286,18 @@ fn walk_signature(pair: Pair<Rule>) -> Result<(Vec<Param>, Option<String>), Stri
         }
     }
 
-    Ok((params, return_type))
+    Ok(GoSignatureInfo {
+        params,
+        return_type,
+        named_results,
+    })
+}
+
+fn go_named_result_marker_stmt(name: &str, type_name: &str) -> Statement {
+    Statement::new(StmtKind::Expr(go_builtin_call(
+        "__go_named_result",
+        vec![Expression::string(name), go_type_arg_expr(type_name.to_string())],
+    )))
 }
 
 fn walk_parameter_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
@@ -1993,9 +2621,9 @@ fn walk_interface_type(name: String, pair: Pair<Rule>) -> Result<Statement, Stri
                 match m_inner.as_rule() {
                     Rule::ident_name => method_name = m_inner.as_str().to_string(),
                     Rule::signature => {
-                        let (p, rt) = walk_signature(m_inner)?;
-                        params = p;
-                        return_type = rt;
+                        let sig = walk_signature(m_inner)?;
+                        params = sig.params;
+                        return_type = sig.return_type;
                     }
                     _ => {}
                 }
@@ -2079,12 +2707,19 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         Rule::continue_statement => StmtKind::Continue(ContinueTarget::Implicit),
         Rule::goto_statement => StmtKind::GoTo(walk_goto(pair)?),
         Rule::labeled_statement => walk_labeled(pair)?,
-        Rule::defer_statement => StmtKind::Empty, // TODO: implement defer
+        Rule::defer_statement => walk_defer_stmt(pair)?,
         Rule::go_statement => walk_go_stmt(pair)?,
         Rule::send_statement => walk_send_stmt(pair)?,
         _ => StmtKind::Empty,
     };
     Ok(Statement::new(kind))
+}
+
+fn walk_defer_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
+    Ok(StmtKind::Expr(go_builtin_call(
+        "__go_defer",
+        vec![walk_expression(first_meaningful(pair)?)?],
+    )))
 }
 
 fn walk_go_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -3566,8 +4201,8 @@ fn walk_function_literal(pair: Pair<Rule>) -> Result<Expression, String> {
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::signature => {
-                let (p, _) = walk_signature(inner)?;
-                params = p;
+                let sig = walk_signature(inner)?;
+                params = sig.params;
             }
             Rule::function_body | Rule::block_statement => {
                 body = walk_block(inner)?;
