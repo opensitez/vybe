@@ -785,9 +785,13 @@ impl Compiler {
         if let Some(receiver_slot) = receiver_slot {
             self.emit_u16(Op::LOCAL_GET, receiver_slot);
             self.emit(Op::REF_IS_NULL);
+            let no_receiver_null = self.emit_jump(Op::BR_IF_TRUE);
+            self.emit_u16(Op::LOCAL_GET, receiver_slot);
+            self.emit(Op::REF_IS_UNDEFINED);
             let no_receiver = self.emit_jump(Op::BR_IF_TRUE);
             self.emit_dispatch_and_store_from_arg_slots(callee_slot, Some(receiver_slot), arg_slots, result_slot);
             let done = self.emit_jump(Op::BR);
+            self.patch_jump(no_receiver_null);
             self.patch_jump(no_receiver);
             self.emit_dispatch_and_store_from_arg_slots(callee_slot, None, arg_slots, result_slot);
             self.patch_jump(done);
@@ -855,9 +859,13 @@ impl Compiler {
         if let Some(receiver_slot) = receiver_slot {
             self.emit_u16(Op::LOCAL_GET, receiver_slot);
             self.emit(Op::REF_IS_NULL);
+            let no_receiver_null = self.emit_jump(Op::BR_IF_TRUE);
+            self.emit_u16(Op::LOCAL_GET, receiver_slot);
+            self.emit(Op::REF_IS_UNDEFINED);
             let no_receiver = self.emit_jump(Op::BR_IF_TRUE);
             self.emit_dispatch_and_store_from_args_array(callee_slot, Some(receiver_slot), args_slot, known_len, result_slot);
             let done = self.emit_jump(Op::BR);
+            self.patch_jump(no_receiver_null);
             self.patch_jump(no_receiver);
             self.emit_dispatch_and_store_from_args_array(callee_slot, None, args_slot, known_len, result_slot);
             self.patch_jump(done);
@@ -5131,11 +5139,15 @@ impl Compiler {
             if let Some(signature) = rest_signature.as_ref() {
                 self.emit_u16(Op::LOCAL_GET, receiver_slot);
                 self.emit(Op::REF_IS_NULL);
+                let no_receiver_null = self.emit_jump(Op::BR_IF_TRUE);
+                self.emit_u16(Op::LOCAL_GET, receiver_slot);
+                self.emit(Op::REF_IS_UNDEFINED);
                 let no_receiver = self.emit_jump(Op::BR_IF_TRUE);
 
                 self.emit_known_rest_call_from_local(callee_slot, Some(receiver_slot), args, signature)?;
                 let call_done = self.emit_jump(Op::BR);
 
+                self.patch_jump(no_receiver_null);
                 self.patch_jump(no_receiver);
                 self.emit_known_rest_call_from_local(callee_slot, None, args, signature)?;
                 self.patch_jump(call_done);
@@ -5163,6 +5175,9 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, callee_slot);
                     self.emit_u16(Op::LOCAL_GET, receiver_slot);
                     self.emit(Op::REF_IS_NULL);
+                    let no_receiver_null = self.emit_jump(Op::BR_IF_TRUE);
+                    self.emit_u16(Op::LOCAL_GET, receiver_slot);
+                    self.emit(Op::REF_IS_UNDEFINED);
                     let no_receiver = self.emit_jump(Op::BR_IF_TRUE);
 
                     self.emit_u16(Op::LOCAL_GET, callee_slot);
@@ -5173,6 +5188,7 @@ impl Compiler {
                     self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
                     let call_done = self.emit_jump(Op::BR);
 
+                    self.patch_jump(no_receiver_null);
                     self.patch_jump(no_receiver);
                     self.emit_u16(Op::LOCAL_GET, callee_slot);
                     for slot in &arg_slots {

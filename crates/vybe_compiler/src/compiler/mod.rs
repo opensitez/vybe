@@ -211,6 +211,8 @@ pub struct Compiler {
     function_label_base: u32,
     line: u32,
     defined_globals: HashSet<String>,
+    shared_global_slots: HashMap<String, u16>,
+    shared_global_names: Vec<String>,
     defined_functions: HashSet<String>,
     function_param_modes: HashMap<String, Vec<PassBy>>,
     function_min_arity: HashMap<String, usize>,
@@ -497,6 +499,8 @@ impl Compiler {
             function_label_base: 0,
             line: 1,
             defined_globals: HashSet::new(),
+            shared_global_slots: HashMap::new(),
+            shared_global_names: Vec::new(),
             defined_functions: HashSet::new(),
             function_param_modes: HashMap::new(),
             function_min_arity: HashMap::new(),
@@ -543,6 +547,102 @@ impl Compiler {
             catch_depth: 0,
             uses_proxy: false,
         }
+    }
+
+    fn reserve_shared_global_name(&mut self, name: &str) {
+        if self.shared_global_slots.contains_key(name) {
+            return;
+        }
+        let slot = self.shared_global_names.len() as u16;
+        let owned = name.to_string();
+        self.shared_global_slots.insert(owned.clone(), slot);
+        self.shared_global_names.push(owned);
+    }
+
+    fn reserve_shared_global_binding_pattern(&mut self, pattern: &BindingPattern) {
+        match pattern {
+            BindingPattern::Ident(name) => self.reserve_shared_global_name(&self.canon(name)),
+            BindingPattern::Object(props) => {
+                for prop in props {
+                    if let Some(value) = prop.value.as_ref() {
+                        self.reserve_shared_global_binding_pattern(value);
+                    } else {
+                        self.reserve_shared_global_name(&self.canon(&prop.key));
+                    }
+                }
+            }
+            BindingPattern::Array(items) => {
+                for item in items {
+                    match item {
+                        ArrayPatternElem::Pattern(pattern, _) => {
+                            self.reserve_shared_global_binding_pattern(pattern);
+                        }
+                        ArrayPatternElem::Rest(name) => {
+                            self.reserve_shared_global_name(&self.canon(name));
+                        }
+                        ArrayPatternElem::Hole => {}
+                    }
+                }
+            }
+        }
+    }
+
+    fn reserve_shared_global_names_in_body(&mut self, body: &[Statement]) {
+        for stmt in body {
+            match &stmt.kind {
+                StmtKind::Block(stmts) => {
+                    self.reserve_shared_global_names_in_body(stmts);
+                }
+                StmtKind::NamespaceDecl { body, .. } => {
+                    self.reserve_shared_global_names_in_body(body);
+                }
+                StmtKind::FunctionDecl { name, .. }
+                | StmtKind::ClassDecl { name, .. }
+                | StmtKind::StructDecl { name, .. }
+                | StmtKind::EnumDecl { name, .. }
+                | StmtKind::ModuleDecl { name, .. }
+                 => {
+                    self.reserve_shared_global_name(&self.canon(name));
+                }
+                StmtKind::VarDecl { declarations, .. } => {
+                    for decl in declarations {
+                        self.reserve_shared_global_binding_pattern(&decl.pattern);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn reserve_runtime_global_names(&mut self) {
+        for name in [
+            "__vb_file_path_by_handle",
+            "__vb_file_eof_by_handle",
+            "__vb_record_rows_by_handle",
+            "__vb_record_next_index_by_handle",
+            "__vb_record_current_index_by_handle",
+        ] {
+            self.reserve_shared_global_name(name);
+        }
+    }
+
+    fn seed_shared_global_constants(&self, chunk: &mut Chunk) {
+        for name in &self.shared_global_names {
+            chunk.add_constant(Value::String(Arc::from(name.as_str())));
+        }
+    }
+
+    fn shared_global_slot(&self, name: &str) -> u16 {
+        *self.shared_global_slots.get(name).unwrap_or_else(|| {
+            panic!("missing shared global slot for {name}")
+        })
+    }
+
+    fn global_name_const_idx(&mut self, name: &str) -> u16 {
+        self.shared_global_slots
+            .get(name)
+            .copied()
+            .unwrap_or_else(|| self.str_const(name))
     }
 
     /// Pre-populate the module-exports snapshot. Called by the Bundle
@@ -636,6 +736,11 @@ impl Compiler {
         }
 
         self.predeclare_type_names(&merged_body, None);
+        self.reserve_runtime_global_names();
+        let shared_global_names = self.shared_global_names.clone();
+        for name in shared_global_names {
+            self.chunks[0].add_constant(Value::String(Arc::from(name)));
+        }
 
         for stmt in &merged_body {
             if matches!(&stmt.kind, StmtKind::FunctionDecl { .. }) {
@@ -2171,6 +2276,7 @@ impl Compiler {
     #[allow(dead_code)]
     fn current_offset(&self) -> usize { self.chunks[self.current].current_offset() }
     fn str_const(&mut self, s: &str) -> u16 { self.chunks[self.current].add_constant(Value::String(Arc::from(s))) }
+    fn shared_str_const(&mut self, s: &str) -> u16 { self.chunks[0].add_constant(Value::String(Arc::from(s))) }
 
     fn import(&mut self, module: &str, name: &str) -> u16 { self.chunks[0].add_import(module, name) }
     fn emit_host_call(&mut self, idx: u16, argc: u8) {
@@ -2296,6 +2402,45 @@ impl Compiler {
             || normalized.ends_with(".string")
     }
 
+    fn is_numeric_type_hint(type_hint: &str) -> bool {
+        matches!(
+            Self::normalize_type_hint(type_hint).as_str(),
+            "integer" | "int" | "int32" | "longint" | "real"
+                | "double" | "float" | "single" | "decimal"
+                | "long" | "int64" | "short" | "int16"
+                | "uint" | "uint32" | "ulong" | "uint64"
+                | "ushort" | "uint16" | "byte" | "sbyte"
+        )
+    }
+
+    fn expr_prefers_numeric_add(&self, expr: &Expression) -> bool {
+        self.infer_expr_type_hint(expr)
+            .as_deref()
+            .is_some_and(Self::is_numeric_type_hint)
+    }
+
+    fn compile_expr_with_numeric_add_hint(
+        &mut self,
+        expr: &Expression,
+        prefer_numeric_add: bool,
+    ) -> Result<(), String> {
+        if prefer_numeric_add {
+            if let ExprKind::Binary {
+                op: BinOp::Add,
+                left,
+                right,
+            } = &expr.kind
+            {
+                self.compile_expr_with_numeric_add_hint(left, true)?;
+                self.compile_expr_with_numeric_add_hint(right, true)?;
+                self.emit(Op::F64_ADD);
+                return Ok(());
+            }
+        }
+
+        self.compile_expr(expr)
+    }
+
     fn emit_assignment_type_coercion_for_target(&mut self, target: &Expression) {
         let ExprKind::Ident(name) = &target.kind else {
             return;
@@ -2337,7 +2482,7 @@ impl Compiler {
     }
 
     fn emit_global_map_get_into_local(&mut self, map_name: &str, key_slot: u16, value_slot: u16) {
-        let map_key = self.str_const(map_name);
+        let map_key = self.shared_global_slot(map_name);
         self.emit_ensure_global_map(map_name);
         self.emit_u16(Op::GLOBAL_GET, map_key);
         self.emit_u16(Op::LOCAL_GET, key_slot);
@@ -2347,7 +2492,7 @@ impl Compiler {
     }
 
     fn emit_global_map_set_from_local(&mut self, map_name: &str, key_slot: u16, value_slot: u16) {
-        let map_key = self.str_const(map_name);
+        let map_key = self.shared_global_slot(map_name);
         self.emit_ensure_global_map(map_name);
         self.emit_u16(Op::GLOBAL_GET, map_key);
         self.emit_u16(Op::LOCAL_GET, key_slot);
@@ -2357,7 +2502,7 @@ impl Compiler {
     }
 
     fn emit_global_map_set_const(&mut self, map_name: &str, key_slot: u16, value: Value) {
-        let map_key = self.str_const(map_name);
+        let map_key = self.shared_global_slot(map_name);
         self.emit_ensure_global_map(map_name);
         self.emit_u16(Op::GLOBAL_GET, map_key);
         self.emit_u16(Op::LOCAL_GET, key_slot);
@@ -2367,7 +2512,7 @@ impl Compiler {
     }
 
     fn emit_global_map_set_null(&mut self, map_name: &str, key_slot: u16) {
-        let map_key = self.str_const(map_name);
+        let map_key = self.shared_global_slot(map_name);
         self.emit_ensure_global_map(map_name);
         self.emit_u16(Op::GLOBAL_GET, map_key);
         self.emit_u16(Op::LOCAL_GET, key_slot);
@@ -2378,7 +2523,7 @@ impl Compiler {
 
     fn emit_record_rows_cache(&mut self, file_slot: u16, rows_slot: u16, len_slot: u16) {
         let line = self.line;
-        let path_map_key = self.str_const("__vb_file_path_by_handle");
+        let path_map_key = self.shared_global_slot("__vb_file_path_by_handle");
 
         self.emit_global_map_get_into_local("__vb_record_rows_by_handle", file_slot, rows_slot);
         self.emit_u16(Op::LOCAL_GET, rows_slot);
@@ -2389,7 +2534,8 @@ impl Compiler {
         self.emit_u16(Op::GLOBAL_GET, path_map_key);
         self.emit_u16(Op::LOCAL_GET, file_slot);
         self.emit(Op::ARRAY_GET);
-        common::io::emit_read_file(self.chunk(), line);
+        let read_file_idx = self.import("wasi:filesystem", "readFile");
+        self.emit_host_call(read_file_idx, 1);
         self.emit_const(Value::String(Arc::from("\n")));
         self.emit(Op::STR_SPLIT);
         self.emit_u16(Op::LOCAL_SET, rows_slot);
@@ -3754,7 +3900,7 @@ impl Compiler {
         }
         if let Some(binding) = self.static_local_binding(name) {
             let global_name = binding.global_name.clone();
-            let idx = self.str_const(&global_name);
+            let idx = self.global_name_const_idx(&global_name);
             self.emit_u16(Op::GLOBAL_GET, idx);
             return;
         }
@@ -3777,7 +3923,7 @@ impl Compiler {
         // returns null because the static field lives on the class
         // struct, not the module's global namespace.
         if let Some(class_name) = self.is_class_static_field(name) {
-            let class_idx = self.str_const(&class_name);
+            let class_idx = self.global_name_const_idx(&class_name);
             self.emit_u16(Op::GLOBAL_GET, class_idx);
             let field_idx = self.str_const(&self.canon(name));
             self.emit_u16(Op::STRUCT_GET, field_idx);
@@ -3786,7 +3932,7 @@ impl Compiler {
         // Bare static method in class scope — `Double(x)` inside
         // `class Converter` resolves to `Converter.Double`.
         if let Some(class_name) = self.is_class_static_method(name) {
-            let class_idx = self.str_const(&class_name);
+            let class_idx = self.global_name_const_idx(&class_name);
             self.emit_u16(Op::GLOBAL_GET, class_idx);
             let method_idx = self.str_const(&self.canon(name));
             self.emit_u16(Op::STRUCT_GET, method_idx);
@@ -3813,7 +3959,7 @@ impl Compiler {
             return;
         }
         // Global — canonicalize name for case-insensitive languages
-        let idx = self.str_const(&cname);
+        let idx = self.global_name_const_idx(&cname);
         self.emit_u16(Op::GLOBAL_GET, idx);
         if self.binding_uses_pointer_cell(name) {
             common::references::emit_cell_load(&mut self.chunks, self.current, self.line);
@@ -3822,7 +3968,7 @@ impl Compiler {
 
 
     fn emit_ensure_global_map(&mut self, name: &str) {
-        let key = self.str_const(name);
+        let key = self.shared_global_slot(name);
         self.emit_u16(Op::GLOBAL_GET, key);
         self.emit(Op::DUP);
         self.emit(Op::REF_IS_NULL);
@@ -3874,7 +4020,7 @@ impl Compiler {
         }
         if let Some(binding) = self.static_local_binding(name) {
             let global_name = binding.global_name.clone();
-            let idx = self.str_const(&global_name);
+            let idx = self.global_name_const_idx(&global_name);
             self.emit_u16(Op::GLOBAL_SET, idx);
             self.emit(Op::DROP);
             return;
@@ -3898,7 +4044,7 @@ impl Compiler {
             // Stack: [value]. Need [class_obj, value] for STRUCT_SET.
             let value_slot = self.define_local("__static_set_value");
             self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
-            let class_idx = self.str_const(&class_name);
+            let class_idx = self.global_name_const_idx(&class_name);
             self.emit_u16(Op::GLOBAL_GET, class_idx);
             self.emit_u16(Op::LOCAL_GET, value_slot);
             let bare_name = self.canon(name);
@@ -3906,7 +4052,7 @@ impl Compiler {
             self.emit_u16(Op::STRUCT_SET, field_idx);
             self.emit(Op::DROP);
             if self.defined_globals.contains(&bare_name) {
-                let global_idx = self.str_const(&bare_name);
+                let global_idx = self.global_name_const_idx(&bare_name);
                 self.emit_u16(Op::LOCAL_GET, value_slot);
                 self.emit_u16(Op::GLOBAL_SET, global_idx);
                 self.emit(Op::DROP);
@@ -3928,13 +4074,13 @@ impl Compiler {
             let value_slot = self.define_local("__ref_global_set_value");
             self.emit_u16(Op::LOCAL_SET, value_slot);
             self.emit(Op::DROP);
-            let idx = self.str_const(&cname);
+            let idx = self.global_name_const_idx(&cname);
             self.emit_u16(Op::GLOBAL_GET, idx);
             common::references::emit_cell_store(&mut self.chunks, self.current, value_slot, self.line);
             self.emit(Op::DROP);
             return;
         }
-        let idx = self.str_const(&cname);
+        let idx = self.global_name_const_idx(&cname);
         self.emit_u16(Op::GLOBAL_SET, idx);
         self.emit(Op::DROP);
     }
@@ -4536,7 +4682,8 @@ impl Compiler {
                         self.emit_var_set(name);
                     }
                 } else {
-                    self.compile_expr(value)?;
+                    let prefer_numeric_add = matches!(targets.as_slice(), [target] if self.expr_prefers_numeric_add(target));
+                    self.compile_expr_with_numeric_add_hint(value, prefer_numeric_add)?;
                     if let [target] = targets.as_slice() {
                         self.emit_assignment_type_coercion_for_target(target);
                     }
@@ -4604,8 +4751,13 @@ impl Compiler {
                 }
                 // Load current value
                 self.compile_expr(target)?;
-                self.compile_expr(value)?;
-                self.compile_compound_op(op);
+                let prefer_numeric_add = matches!(op, CompoundOp::Add) && self.expr_prefers_numeric_add(target);
+                self.compile_expr_with_numeric_add_hint(value, prefer_numeric_add)?;
+                if prefer_numeric_add {
+                    self.emit(Op::F64_ADD);
+                } else {
+                    self.compile_compound_op(op);
+                }
                 self.compile_assign_target(target)?;
             }
 
@@ -6014,8 +6166,8 @@ impl Compiler {
             StmtKind::OpenFile { path, mode, file_number } => {
                 let path_slot = self.define_local("__vb_open_path");
                 let file_slot = self.define_local("__vb_open_file_number");
-                let path_map_key = self.str_const("__vb_file_path_by_handle");
-                let eof_map_key = self.str_const("__vb_file_eof_by_handle");
+                let path_map_key = self.shared_global_slot("__vb_file_path_by_handle");
+                let eof_map_key = self.shared_global_slot("__vb_file_eof_by_handle");
                 let mode_text = match mode {
                     FileMode::Input => "Input",
                     FileMode::Output => "Output",
@@ -6054,8 +6206,8 @@ impl Compiler {
                 self.emit(Op::DROP);
             }
             StmtKind::CloseFile(file_num) => {
-                let path_map_key = self.str_const("__vb_file_path_by_handle");
-                let eof_map_key = self.str_const("__vb_file_eof_by_handle");
+                let path_map_key = self.shared_global_slot("__vb_file_path_by_handle");
+                let eof_map_key = self.shared_global_slot("__vb_file_eof_by_handle");
                 if let Some(fnum) = file_num {
                     let file_slot = self.define_local("__vb_close_file_number");
                     self.compile_expr(fnum)?;
@@ -6104,7 +6256,7 @@ impl Compiler {
             StmtKind::InputFile { file_number, variables } => {
                 let file_slot = self.define_local("__vb_input_file_number");
                 let values_slot = self.define_local("__vb_input_values");
-                let eof_map_key = self.str_const("__vb_file_eof_by_handle");
+                let eof_map_key = self.shared_global_slot("__vb_file_eof_by_handle");
 
                 self.compile_expr(file_number)?;
                 self.emit_u16(Op::LOCAL_SET, file_slot);
@@ -6141,7 +6293,7 @@ impl Compiler {
             }
             StmtKind::LineInput { file_number, variable } => {
                 let file_slot = self.define_local("__vb_line_input_file_number");
-                let eof_map_key = self.str_const("__vb_file_eof_by_handle");
+                let eof_map_key = self.shared_global_slot("__vb_file_eof_by_handle");
 
                 self.compile_expr(file_number)?;
                 self.emit_u16(Op::LOCAL_SET, file_slot);
@@ -6345,7 +6497,7 @@ impl Compiler {
                 let line_slot = self.define_local("__vb_rewrite_line");
                 let items_slot = self.define_local("__vb_rewrite_items");
                 let path_slot = self.define_local("__vb_rewrite_path");
-                let path_map_key = self.str_const("__vb_file_path_by_handle");
+                let path_map_key = self.shared_global_slot("__vb_file_path_by_handle");
 
                 self.compile_expr(file_number)?;
                 self.emit_u16(Op::LOCAL_SET, file_slot);
@@ -6387,7 +6539,8 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, rows_slot);
                 self.emit_const(Value::String(Arc::from("\n")));
                 common::collections::emit_join(&mut self.chunks, self.current, line);
-                common::io::emit_write_file(self.chunk(), 2, line);
+                let write_file_idx = self.import("wasi:filesystem", "writeFile");
+                self.emit_host_call(write_file_idx, 2);
                 self.emit(Op::DROP);
                 self.patch_jump(done);
             }
@@ -8064,7 +8217,7 @@ impl Compiler {
                 // string operands (`"2026" + 4 == 2030`). `F64_ADD`
                 // coerces both sides via `Value::as_f64()`; `DYN_ADD`
                 // has the JS-style string-concat special case.
-                if self.profile.dynamic_add {
+                if self.profile.dynamic_add && self.profile.name != "cobol" {
                     // JS profile: ECMA §13.15.4 — call ToPrimitive on
                     // both operands with hint "default" before adding.
                     // The polyfill returns the operand unchanged for
@@ -8529,12 +8682,50 @@ impl Compiler {
 
     fn compile_compound_op(&mut self, op: &CompoundOp) {
         match op {
-            CompoundOp::Add => self.emit(Op::DYN_ADD),
-            CompoundOp::Sub => self.emit(Op::F64_SUB),
-            CompoundOp::Mul => self.emit(Op::F64_MUL),
-            CompoundOp::Div => self.emit(Op::F64_DIV),
-            CompoundOp::IDiv => { self.emit(Op::F64_DIV); let l = self.line; common::math::emit_trunc(self.chunk(), l); }
-            CompoundOp::Mod => { let idx = self.import("ecma:math", "fmod"); let l = self.line; common::expressions::emit_f64_mod_with_import(self.chunk(), idx, l); },
+            CompoundOp::Add => {
+                if self.profile.dynamic_add && self.profile.name != "cobol" {
+                    if self.is_js_profile() {
+                        self.coerce_top_two_to_default_primitive();
+                    }
+                    self.emit(Op::DYN_ADD);
+                } else {
+                    self.emit(Op::F64_ADD);
+                }
+            }
+            CompoundOp::Sub => {
+                if self.is_js_profile() {
+                    self.coerce_top_two_to_number();
+                }
+                self.emit(Op::F64_SUB);
+            }
+            CompoundOp::Mul => {
+                if self.is_js_profile() {
+                    self.coerce_top_two_to_number();
+                }
+                self.emit(Op::F64_MUL);
+            }
+            CompoundOp::Div => {
+                if self.is_js_profile() {
+                    self.coerce_top_two_to_number();
+                }
+                self.emit(Op::F64_DIV);
+            }
+            CompoundOp::IDiv => {
+                if self.is_js_profile() {
+                    self.coerce_top_two_to_number();
+                }
+                self.emit(Op::F64_DIV);
+                let l = self.line;
+                common::math::emit_trunc(self.chunk(), l);
+            }
+            CompoundOp::Mod => {
+                if self.is_js_profile() {
+                    self.coerce_top_two_to_number();
+                }
+                let idx = self.import("ecma:math", "fmod");
+                let l = self.line;
+                common::expressions::emit_f64_mod_with_import(self.chunk(), idx, l);
+            }
             CompoundOp::Pow => { let l = self.line; common::math::emit_pow(self.chunk(), l); }
             CompoundOp::Concat => { let l = self.line; common::strings::emit_str_concat(self.chunk(), l); }
             CompoundOp::BitAnd => self.emit(Op::I32_AND),

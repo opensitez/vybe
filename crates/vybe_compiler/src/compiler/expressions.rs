@@ -2361,16 +2361,21 @@ impl Compiler {
                         ObjectProperty::KeyValue { key, value } => {
                             if let ExprKind::Lit(Literal::Str(k)) = &key.kind {
                                 // Static string key — fast path via struct_set.
+                                let key_name = if self.case_sensitive {
+                                    k.clone()
+                                } else {
+                                    self.canon(k)
+                                };
                                 self.emit(Op::DUP);
                                 self.compile_expr(value)?;
-                                let idx = self.str_const(k);
+                                let idx = self.str_const(&key_name);
                                 self.emit_u16(Op::STRUCT_SET, idx);
                                 self.emit(Op::DROP);
                                 // Track key in __keys
                                 self.emit(Op::DUP);
                                 let keys_key = self.str_const("__keys");
                                 self.emit_u16(Op::STRUCT_GET, keys_key);
-                                self.emit_const(Value::String(Arc::from(k.as_str())));
+                                self.emit_const(Value::String(Arc::from(key_name.as_str())));
                                 let l = self.line;
                                 common::collections::emit_push(&mut self.chunks, self.current, l);
                                 self.emit(Op::DROP);

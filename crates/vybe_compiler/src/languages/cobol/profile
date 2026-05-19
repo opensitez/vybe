@@ -72,7 +72,7 @@ VARIANCE            = { emit = "host:ecma:math:variance",    min_args = 1, max_a
 
 CURRENT-DATE        = { emit = "host:wasi:clocks:toISOString", min_args = 0, max_args = 0 }
 DATE-OF-INTEGER     = { emit = "host:wasi:clocks:toISOString", min_args = 1, max_args = 1 }
-INTEGER-OF-DATE     = { emit = "host:wasi:clocks:now",       min_args = 1, max_args = 1 }
+INTEGER-OF-DATE     = { emit = "common:cobol.integer_of_date", min_args = 1, max_args = 1 }
 DAY-OF-INTEGER      = { emit = "host:wasi:clocks:toISOString", min_args = 1, max_args = 1 }
 WHEN-COMPILED       = { emit = "host:wasi:clocks:toISOString", min_args = 0, max_args = 0 }
 FORMATTED-DATE      = { emit = "host:wasi:clocks:toISOString", min_args = 1, max_args = 2 }
@@ -88,6 +88,21 @@ PRESENT-VALUE       = { emit = "host:ecma:math:presentValue", min_args = 2, max_
 __is_numeric        = { emit = "host:ecma:number:isNaN",    min_args = 1, max_args = 1 }
 __is_alphabetic     = { emit = "noop",                        min_args = 1, max_args = 1 }
 __refmod            = { emit = "opcode:str_substring",       min_args = 3, max_args = 3 }
+f64_floor           = { emit = "opcode:f64_floor",           min_args = 1, max_args = 1 }
+f64_ceil            = { emit = "opcode:f64_ceil",            min_args = 1, max_args = 1 }
+f64_trunc           = { emit = "opcode:f64_trunc",           min_args = 1, max_args = 1 }
+f64_nearest         = { emit = "opcode:f64_nearest",         min_args = 1, max_args = 1 }
+__cobol_round_away_from_zero = { emit = "common:cobol.round_away_from_zero", min_args = 1, max_args = 1 }
+__cobol_cancel      = { emit = "common:cobol.cancel",        min_args = 1, max_args = 1 }
+__cobol_release     = { emit = "common:cobol.release",       min_args = 2, max_args = 2 }
+__cobol_return      = { emit = "common:cobol.return_record", min_args = 1, max_args = 1 }
+__cobol_alter       = { emit = "common:cobol.alter",         min_args = 2, max_args = 2 }
+__cobol_sort        = { emit = "common:cobol.sort",          min_args = 1, max_args = 1 }
+__cobol_merge       = { emit = "common:cobol.merge",         min_args = 1, max_args = 1 }
+__cobol_copy        = { emit = "common:cobol.copy",          min_args = 1, max_args = 1 }
+__cobol_validate    = { emit = "common:cobol.validate",      min_args = 1, max_args = 1 }
+__cobol_typedef     = { emit = "common:cobol.typedef",       min_args = 2, max_args = 2 }
+__move_corresponding = { emit = "common:cobol.move_corresponding", min_args = 2, max_args = 2 }
 
 # ── EXEC blocks (walker emits as calls) ─────────────────────────────────────
 

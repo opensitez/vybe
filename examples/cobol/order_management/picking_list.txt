@@ -1,0 +1,8 @@
+--------------------------------------------------------------------------------
+ORDER: ORD-2024-001  CUSTOMER: ABC Manufacturing  DATE: null
+"SHIP TO: Acme Corp 123 Main St Springfield, IL 62701"
+SKU          DESCRIPTION                        QTY
+--------------------------------------------------------------------------------
+ORDER: ORD-2024-002  CUSTOMER: XYZ Retail Group  DATE: null
+"SHIP TO: XYZ Industries 456 Oak Ave Chicago, IL 60601"
+SKU          DESCRIPTION                        QTY

@@ -5,6 +5,7 @@
 //! `vybe_compiler::ast::Module`. From there everything goes through the
 //! shared compiler — no COBOL-specific code in `compiler.rs`.
 
+pub mod emitter;
 pub mod normalize_class;
 pub mod walker;
 

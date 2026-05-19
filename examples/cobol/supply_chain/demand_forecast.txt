@@ -1,0 +1,5 @@
+DEMAND FORECAST REPORT
+================================================================================
+ITEM CODE    DESCRIPTION                    AVG DEMAND   FORECAST     METHOD   EOQ
+--------------------------------------------------------------------------------
+ITEM-003 Gasket 0 null EXP 2000

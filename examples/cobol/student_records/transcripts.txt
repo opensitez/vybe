@@ -1,0 +1,18 @@
+================================================================================
+OFFICIAL ACADEMIC TRANSCRIPT
+Student: John Smith  ID: STU-2024-001
+Major: CS  Level: FR  Status: FT
+Cumulative GPA: 0  Total Credits: 6  Standing: SU
+--------------------------------------------------------------------------------
+================================================================================
+OFFICIAL ACADEMIC TRANSCRIPT
+Student: Mary Johnson  ID: STU-2024-002
+Major: ENGR  Level: SR  Status: FT
+Cumulative GPA: 3  Total Credits: 94  Standing: GS
+--------------------------------------------------------------------------------
+================================================================================
+OFFICIAL ACADEMIC TRANSCRIPT
+Student: Bob Williams  ID: STU-2024-003
+Major: BUS  Level: JR  Status: PT
+Cumulative GPA: 3.1500  Total Credits: 60.00  Standing: GS
+--------------------------------------------------------------------------------

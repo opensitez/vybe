@@ -1,0 +1,6 @@
+ITEM CODE    DESCRIPTION                    QTY ON HAND     AVG COST       TOTAL VALUE
+--------------------------------------------------------------------------------
+================================================================================
+TOTAL INVENTORY VALUE: 0
+ 
+VALUATION BY CATEGORY:

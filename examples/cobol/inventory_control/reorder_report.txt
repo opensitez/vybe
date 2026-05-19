@@ -1,0 +1,3 @@
+ITEM CODE    DESCRIPTION                    SUPPLIER   ON HAND        REORDER PT   SUGGEST QTY  LEAD
+--------------------------------------------------------------------------------
+Items requiring reorder: 0

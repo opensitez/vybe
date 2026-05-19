@@ -1,0 +1,59 @@
+use std::sync::Arc;
+
+use vybe_bytecode::{Chunk, Value};
+use vybe_bytecode::opcode::Op;
+
+use super::support::stash_args;
+
+pub fn emit_integer_of_date(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 1, line);
+    let value_slot = base;
+    let date_str_slot = chunks[current].local_count;
+    chunks[current].local_count += 1;
+
+    let to_string_idx = chunks[0].add_import("ecma:string", "String");
+    let parse_idx = chunks[0].add_import("ecma:date", "parse");
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunks[current].emit_op_u16(Op::CALL_IMPORT, to_string_idx, line);
+    chunks[current].emit(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, date_str_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    emit_yyyymmdd_slice(chunks, current, date_str_slot, 0.0, 4.0, line);
+    emit_string_const(chunks, current, "-", line);
+    emit_yyyymmdd_slice(chunks, current, date_str_slot, 4.0, 6.0, line);
+    emit_string_const(chunks, current, "-", line);
+    emit_yyyymmdd_slice(chunks, current, date_str_slot, 6.0, 8.0, line);
+    chunks[current].emit_op_u8(Op::STR_CONCAT_N, 5, line);
+
+    chunks[current].emit_op_u16(Op::CALL_IMPORT, parse_idx, line);
+    chunks[current].emit(1, line);
+    emit_f64_const(chunks, current, 86_400_000.0, line);
+    chunks[current].emit_op(Op::F64_DIV, line);
+    chunks[current].emit_op(Op::F64_TRUNC, line);
+}
+
+fn emit_yyyymmdd_slice(
+    chunks: &mut [Chunk],
+    current: usize,
+    date_str_slot: u16,
+    start: f64,
+    end: f64,
+    line: u32,
+) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, date_str_slot, line);
+    emit_f64_const(chunks, current, start, line);
+    emit_f64_const(chunks, current, end, line);
+    chunks[current].emit_op(Op::STR_SUBSTRING, line);
+}
+
+fn emit_string_const(chunks: &mut [Chunk], current: usize, text: &str, line: u32) {
+    let idx = chunks[current].add_constant(Value::String(Arc::from(text)));
+    chunks[current].emit_op_u16(Op::CONST, idx, line);
+}
+
+fn emit_f64_const(chunks: &mut [Chunk], current: usize, value: f64, line: u32) {
+    let idx = chunks[current].add_constant(Value::F64(value));
+    chunks[current].emit_op_u16(Op::CONST, idx, line);
+}

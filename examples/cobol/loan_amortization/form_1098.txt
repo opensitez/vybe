@@ -1,0 +1,10 @@
+MORTGAGE INTEREST STATEMENTS - FORM 1098
+================================================================================
+BORROWER: John Smith  SSN: 123-45-6789
+  Mortgage Interest: 540416  Points Paid: 0.00  Refund: 0.00
+  Property: 555 Oak St
+--------------------------------------------------------------------------------
+BORROWER: Mary Johnson  SSN: 234-56-7890
+  Mortgage Interest: 175958  Points Paid: 0.00  Refund: 0.00
+  Property: 777 Pine Ave
+--------------------------------------------------------------------------------

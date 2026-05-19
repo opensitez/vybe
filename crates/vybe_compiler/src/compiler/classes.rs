@@ -76,6 +76,7 @@ impl Compiler {
         }
         let func_idx = self.chunks.len();
         let mut chunk = common::functions::create_function_chunk(name, arity);
+        self.seed_shared_global_constants(&mut chunk);
         // Mark the chunk so the WASM emitter can list it in the
         // `vybe.jspi` custom section — JS hosts wrap promising exports
         // via `WebAssembly.promising(...)` at load time.

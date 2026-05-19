@@ -1327,14 +1327,13 @@ arg_list = { expression ~ ("," ~ expression)* }
 function_name = {
     kw_length | kw_upper_case | kw_lower_case | kw_trim | kw_reverse
   | kw_current_date | kw_max | kw_min | kw_mod | kw_rem
-  | kw_numval | kw_numval_c | kw_substitute
-  | kw_sqrt | kw_sum | kw_integer | kw_abs
+    | kw_numval_c | kw_numval | kw_substitute
+    | kw_sqrt | kw_sum | kw_integer_of_date | kw_date_of_integer | kw_day_of_integer | kw_integer | kw_abs
   | kw_ord | kw_char | kw_floor | kw_ceiling | kw_sign | kw_power
   | kw_log | kw_log10 | kw_exp
   | kw_sin | kw_cos | kw_tan | kw_asin | kw_acos | kw_atan
   | kw_random | kw_mean | kw_median | kw_variance
   | kw_concatenate | kw_when_compiled | kw_test_numval
-  | kw_date_of_integer | kw_integer_of_date | kw_day_of_integer
   | kw_annuity | kw_present_value
   | kw_formatted_date | kw_formatted_time
   | ident_name

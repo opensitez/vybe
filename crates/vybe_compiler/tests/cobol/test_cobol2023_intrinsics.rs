@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ═══════════════════════════════════════════════════════════
 // COBOL 2023: Modern intrinsic functions
@@ -67,6 +67,25 @@ PROCEDURE DIVISION.
     DISPLAY WS-INT.
     STOP RUN.
 "#);
+}
+
+#[test]
+fn integer_of_date_runtime_day_difference() {
+    let output = run_prints(r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-DIFF PIC 9(4).
+PROCEDURE DIVISION.
+    COMPUTE WS-DIFF =
+        FUNCTION INTEGER-OF-DATE(20240215) -
+        FUNCTION INTEGER-OF-DATE(20240116).
+    DISPLAY WS-DIFF.
+    STOP RUN.
+"#);
+
+    assert_eq!(output, vec!["30"]);
 }
 
 #[test]
