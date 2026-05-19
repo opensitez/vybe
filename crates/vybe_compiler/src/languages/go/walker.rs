@@ -28,7 +28,7 @@
 
 use pest::Parser;
 use pest::iterators::Pair;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use crate::ast::*;
 use super::{GoParser, Rule};
 
@@ -96,6 +96,7 @@ struct GoNormalizeEnv {
     value_types: HashMap<String, String>,
     fixed_arrays: HashMap<String, String>,
     slice_caps: HashMap<String, Expression>,
+    type_names: HashSet<String>,
     return_type: Option<String>,
 }
 
@@ -114,11 +115,13 @@ fn normalize_go_module(mut module: Module) -> Module {
     module.body = merge_go_struct_decls(&module.body);
     let signatures = collect_go_function_signatures(&module.body);
     let globals = collect_go_global_fixed_arrays(&module.body, &signatures);
+    let type_names = collect_go_type_names(&module.body);
     let mut state = GoNormalizeState::default();
     let mut env = GoNormalizeEnv {
         value_types: HashMap::new(),
         fixed_arrays: globals.clone(),
         slice_caps: HashMap::new(),
+        type_names,
         return_type: None,
     };
 
@@ -173,6 +176,34 @@ fn collect_go_function_signatures(body: &[Statement]) -> HashMap<String, GoFunct
         }
     }
     signatures
+}
+
+fn collect_go_type_names(body: &[Statement]) -> HashSet<String> {
+    let mut type_names = HashSet::new();
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::StructDecl { name, .. }
+            | StmtKind::InterfaceDecl { name, .. }
+            | StmtKind::EnumDecl { name, .. }
+            | StmtKind::ClassDecl { name, .. } => {
+                type_names.insert(name.clone());
+            }
+            StmtKind::VarDecl { declarations, kind } if *kind == VarDeclKind::Let => {
+                for decl in declarations {
+                    let BindingPattern::Ident(name) = &decl.pattern else {
+                        continue;
+                    };
+                    if matches!(decl.init.as_ref().map(|expr| &expr.kind), Some(ExprKind::Lit(Literal::Str(_))))
+                        && decl.type_hint.is_none()
+                    {
+                        type_names.insert(name.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    type_names
 }
 
 fn merge_go_struct_decls(body: &[Statement]) -> Vec<Statement> {
@@ -875,6 +906,7 @@ fn normalize_go_statement(
                 value_types: env.value_types.clone(),
                 fixed_arrays: env.fixed_arrays.clone(),
                 slice_caps: env.slice_caps.clone(),
+                type_names: env.type_names.clone(),
                 return_type: return_type.clone(),
             };
             for param in params {
@@ -1347,28 +1379,25 @@ fn normalize_go_expr(
                 }
             }
 
-            if call_name.as_deref() == Some("int") && next_args.len() == 1 {
-                return go_builtin_call("__go_to_int", vec![next_args[0].value.clone()]);
+            if call_name.as_deref() == Some("strconv.Atoi") && next_args.len() == 1 {
+                return Expression::new(ExprKind::Tuple(vec![
+                    go_builtin_call("__go_to_int", vec![next_args[0].value.clone()]),
+                    Expression::null(),
+                ]));
             }
 
-            if matches!(call_name.as_deref(), Some("float32" | "float64")) && next_args.len() == 1 {
-                return Expression::new(ExprKind::Cast {
-                    expr: Box::new(next_args[0].value.clone()),
-                    type_name: call_name.unwrap(),
-                });
-            }
-
-            if call_name.as_deref() == Some("string") && next_args.len() == 1 {
-                if go_expr_type_hint(&next_args[0].value, env, signatures)
+            if next_args.len() == 1 {
+                if let Some(type_name) = call_name
                     .as_deref()
-                    .is_some_and(go_is_integer_type)
+                    .filter(|name| go_is_type_conversion_target(name, env, signatures))
                 {
-                    return go_builtin_call("__go_str_from_char_code", vec![next_args[0].value.clone()]);
+                    return go_normalize_type_conversion(
+                        type_name,
+                        next_args[0].value.clone(),
+                        env,
+                        signatures,
+                    );
                 }
-                return Expression::new(ExprKind::Cast {
-                    expr: Box::new(next_args[0].value.clone()),
-                    type_name: "string".to_string(),
-                });
             }
 
             if call_name.as_deref() == Some("copy") && next_args.len() >= 2 {
@@ -1508,6 +1537,7 @@ fn normalize_go_expr(
                 value_types: env.value_types.clone(),
                 fixed_arrays: env.fixed_arrays.clone(),
                 slice_caps: env.slice_caps.clone(),
+                type_names: env.type_names.clone(),
                 return_type: None,
             };
             for param in params {
@@ -2036,6 +2066,56 @@ fn go_is_integer_type(type_name: &str) -> bool {
     )
 }
 
+fn go_is_float_type(type_name: &str) -> bool {
+    matches!(type_name.trim(), "float32" | "float64")
+}
+
+fn go_is_builtin_conversion_type(type_name: &str) -> bool {
+    go_is_integer_type(type_name)
+        || go_is_float_type(type_name)
+        || matches!(type_name.trim(), "string" | "bool")
+}
+
+fn go_is_type_conversion_target(
+    type_name: &str,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> bool {
+    (go_is_builtin_conversion_type(type_name) || env.type_names.contains(type_name))
+        && !signatures.contains_key(type_name)
+}
+
+fn go_normalize_type_conversion(
+    type_name: &str,
+    expr: Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Expression {
+    if go_is_integer_type(type_name) {
+        let int_expr = go_builtin_call("__go_to_int", vec![expr]);
+        if type_name == "int" {
+            return int_expr;
+        }
+        return Expression::new(ExprKind::Cast {
+            expr: Box::new(int_expr),
+            type_name: type_name.to_string(),
+        });
+    }
+
+    if type_name == "string"
+        && go_expr_type_hint(&expr, env, signatures)
+            .as_deref()
+            .is_some_and(go_is_integer_type)
+    {
+        return go_builtin_call("__go_str_from_char_code", vec![expr]);
+    }
+
+    Expression::new(ExprKind::Cast {
+        expr: Box::new(expr),
+        type_name: type_name.to_string(),
+    })
+}
+
 fn walk_package_clause(pair: Pair<Rule>) -> Result<String, String> {
     for inner in pair.into_inner() {
         if inner.as_rule() == Rule::ident_name {
@@ -2414,14 +2494,21 @@ fn walk_const_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::const_spec => {
-                let (mut decls, _) = walk_var_spec(inner, VarDeclKind::Const)?;
+                let (mut decls, _, _) = walk_const_spec(inner, 0, None, None)?;
                 declarations.append(&mut decls);
             }
             Rule::const_group => {
+                let mut prev_inits: Option<Vec<Expression>> = None;
+                let mut prev_type_hint: Option<String> = None;
+                let mut iota_index = 0i64;
                 for spec in inner.into_inner() {
                     if spec.as_rule() == Rule::const_spec {
-                        let (mut decls, _) = walk_var_spec(spec, VarDeclKind::Const)?;
+                        let (mut decls, next_inits, next_type_hint) =
+                            walk_const_spec(spec, iota_index, prev_inits.clone(), prev_type_hint.clone())?;
                         declarations.append(&mut decls);
+                        prev_inits = Some(next_inits);
+                        prev_type_hint = next_type_hint;
+                        iota_index += 1;
                     }
                 }
             }
@@ -2433,6 +2520,135 @@ fn walk_const_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         declarations,
         kind: VarDeclKind::Const,
     }))
+}
+
+fn walk_const_spec(
+    pair: Pair<Rule>,
+    iota_index: i64,
+    prev_inits: Option<Vec<Expression>>,
+    prev_type_hint: Option<String>,
+) -> Result<(Vec<VarDeclarator>, Vec<Expression>, Option<String>), String> {
+    let (names, type_hint, init_values) = parse_go_var_spec(pair)?;
+    let effective_type_hint = type_hint.or(prev_type_hint);
+    let raw_inits = if init_values.is_empty() {
+        prev_inits.unwrap_or_default()
+    } else {
+        init_values
+    };
+    let next_inits: Vec<Expression> = raw_inits
+        .iter()
+        .map(|expr| go_rewrite_iota_expr(expr, iota_index))
+        .collect();
+
+    if names.len() > 1 && !next_inits.is_empty() {
+        let pattern = BindingPattern::Array(
+            names.into_iter().map(|name| {
+                if name == "_" {
+                    ArrayPatternElem::Hole
+                } else {
+                    ArrayPatternElem::Pattern(BindingPattern::Ident(name), None)
+                }
+            }).collect(),
+        );
+        let init = if next_inits.len() == 1 {
+            next_inits[0].clone()
+        } else {
+            Expression::new(ExprKind::Tuple(next_inits.clone()))
+        };
+        return Ok((vec![VarDeclarator {
+            pattern,
+            init: Some(init),
+            type_hint: effective_type_hint.clone(),
+            array_bounds: None,
+            with_events: false,
+        }], raw_inits, effective_type_hint));
+    }
+
+    let mut declarations = Vec::new();
+    for name in names {
+        if name == "_" {
+            continue;
+        }
+        declarations.push(VarDeclarator {
+            pattern: BindingPattern::Ident(name),
+            init: next_inits.first().cloned(),
+            type_hint: effective_type_hint.clone(),
+            array_bounds: None,
+            with_events: false,
+        });
+    }
+
+    Ok((declarations, raw_inits, effective_type_hint))
+}
+
+fn parse_go_var_spec(pair: Pair<Rule>) -> Result<(Vec<String>, Option<String>, Vec<Expression>), String> {
+    let mut names = Vec::new();
+    let mut type_hint: Option<String> = None;
+    let mut init_values = Vec::new();
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::ident_list => {
+                for id in inner.into_inner() {
+                    if matches!(id.as_rule(), Rule::ident_name | Rule::blank_ident) || id.as_str() == "_" {
+                        names.push(id.as_str().to_string());
+                    }
+                }
+            }
+            Rule::ident_name => names.push(inner.as_str().to_string()),
+            Rule::type_annotation => type_hint = Some(walk_type(inner)),
+            Rule::expression_list => init_values = walk_expression_list(inner)?,
+            Rule::expression => init_values.push(walk_expression(inner)?),
+            _ => {}
+        }
+    }
+
+    Ok((names, type_hint, init_values))
+}
+
+fn go_rewrite_iota_expr(expr: &Expression, iota_index: i64) -> Expression {
+    match &expr.kind {
+        ExprKind::Ident(name) if name == "iota" => Expression::int(iota_index),
+        ExprKind::Unary { op, expr } => Expression::new(ExprKind::Unary {
+            op: *op,
+            expr: Box::new(go_rewrite_iota_expr(expr, iota_index)),
+        }),
+        ExprKind::Binary { op, left, right } => Expression::new(ExprKind::Binary {
+            op: *op,
+            left: Box::new(go_rewrite_iota_expr(left, iota_index)),
+            right: Box::new(go_rewrite_iota_expr(right, iota_index)),
+        }),
+        ExprKind::Ternary { cond, then, else_ } => Expression::new(ExprKind::Ternary {
+            cond: Box::new(go_rewrite_iota_expr(cond, iota_index)),
+            then: Box::new(go_rewrite_iota_expr(then, iota_index)),
+            else_: Box::new(go_rewrite_iota_expr(else_, iota_index)),
+        }),
+        ExprKind::Call { callee, args, optional } => Expression::new(ExprKind::Call {
+            callee: Box::new(go_rewrite_iota_expr(callee, iota_index)),
+            args: args.iter().map(|arg| Argument {
+                value: go_rewrite_iota_expr(&arg.value, iota_index),
+                name: arg.name.clone(),
+                by_ref: arg.by_ref,
+                spread: arg.spread,
+            }).collect(),
+            optional: *optional,
+        }),
+        ExprKind::Member { object, field, null_safe } => Expression::new(ExprKind::Member {
+            object: Box::new(go_rewrite_iota_expr(object, iota_index)),
+            field: field.clone(),
+            null_safe: *null_safe,
+        }),
+        ExprKind::Index { object, index, null_safe } => Expression::new(ExprKind::Index {
+            object: Box::new(go_rewrite_iota_expr(object, iota_index)),
+            index: Box::new(go_rewrite_iota_expr(index, iota_index)),
+            null_safe: *null_safe,
+        }),
+        ExprKind::Cast { expr, type_name } => Expression::new(ExprKind::Cast {
+            expr: Box::new(go_rewrite_iota_expr(expr, iota_index)),
+            type_name: type_name.clone(),
+        }),
+        _ => expr.clone(),
+    }
 }
 
 fn walk_var_spec(pair: Pair<Rule>, _kind: VarDeclKind) -> Result<(Vec<VarDeclarator>, Option<String>), String> {
