@@ -2296,6 +2296,156 @@ impl Compiler {
             || normalized.ends_with(".string")
     }
 
+    fn emit_assignment_type_coercion_for_target(&mut self, target: &Expression) {
+        let ExprKind::Ident(name) = &target.kind else {
+            return;
+        };
+        self.emit_assignment_type_coercion_for_ident(name);
+    }
+
+    fn emit_assignment_type_coercion_for_ident(&mut self, name: &str) {
+        let Some(type_hint) = self.lookup_var_type_hint(name).map(str::to_string) else {
+            return;
+        };
+        let normalized = Self::normalize_type_hint(&type_hint);
+        self.emit(Op::DUP);
+        self.emit(Op::REF_IS_NULL);
+        let skip = self.emit_jump(Op::BR_IF_TRUE);
+        let line = self.line;
+        match normalized.as_str() {
+            "integer" | "int" | "int32" | "longint" | "long" | "int64"
+            | "short" | "int16" | "uint" | "uint32" | "ulong" | "uint64"
+            | "ushort" | "uint16" | "byte" | "sbyte" => {
+                common::convert::emit_parse_int(self.chunk(), line);
+            }
+            "real" | "double" | "float" | "single" | "decimal" | "char" => {
+                common::convert::emit_parse_float(self.chunk(), line);
+            }
+            _ => {}
+        }
+        self.patch_jump(skip);
+    }
+
+    fn emit_file_key_compare(&mut self, relation: FileKeyRelation) {
+        match relation {
+            FileKeyRelation::Equal => self.emit(Op::DYN_EQ),
+            FileKeyRelation::Greater => self.emit(Op::DYN_GT),
+            FileKeyRelation::GreaterOrEqual => self.emit(Op::DYN_GE),
+            FileKeyRelation::Less => self.emit(Op::DYN_LT),
+            FileKeyRelation::LessOrEqual => self.emit(Op::DYN_LE),
+        }
+    }
+
+    fn emit_global_map_get_into_local(&mut self, map_name: &str, key_slot: u16, value_slot: u16) {
+        let map_key = self.str_const(map_name);
+        self.emit_ensure_global_map(map_name);
+        self.emit_u16(Op::GLOBAL_GET, map_key);
+        self.emit_u16(Op::LOCAL_GET, key_slot);
+        self.emit(Op::ARRAY_GET);
+        self.emit_u16(Op::LOCAL_SET, value_slot);
+        self.emit(Op::DROP);
+    }
+
+    fn emit_global_map_set_from_local(&mut self, map_name: &str, key_slot: u16, value_slot: u16) {
+        let map_key = self.str_const(map_name);
+        self.emit_ensure_global_map(map_name);
+        self.emit_u16(Op::GLOBAL_GET, map_key);
+        self.emit_u16(Op::LOCAL_GET, key_slot);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.emit(Op::ARRAY_SET);
+        self.emit(Op::DROP);
+    }
+
+    fn emit_global_map_set_const(&mut self, map_name: &str, key_slot: u16, value: Value) {
+        let map_key = self.str_const(map_name);
+        self.emit_ensure_global_map(map_name);
+        self.emit_u16(Op::GLOBAL_GET, map_key);
+        self.emit_u16(Op::LOCAL_GET, key_slot);
+        self.emit_const(value);
+        self.emit(Op::ARRAY_SET);
+        self.emit(Op::DROP);
+    }
+
+    fn emit_global_map_set_null(&mut self, map_name: &str, key_slot: u16) {
+        let map_key = self.str_const(map_name);
+        self.emit_ensure_global_map(map_name);
+        self.emit_u16(Op::GLOBAL_GET, map_key);
+        self.emit_u16(Op::LOCAL_GET, key_slot);
+        self.emit(Op::NULL);
+        self.emit(Op::ARRAY_SET);
+        self.emit(Op::DROP);
+    }
+
+    fn emit_record_rows_cache(&mut self, file_slot: u16, rows_slot: u16, len_slot: u16) {
+        let line = self.line;
+        let path_map_key = self.str_const("__vb_file_path_by_handle");
+
+        self.emit_global_map_get_into_local("__vb_record_rows_by_handle", file_slot, rows_slot);
+        self.emit_u16(Op::LOCAL_GET, rows_slot);
+        self.emit(Op::REF_IS_NULL);
+        let cached_rows = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_ensure_global_map("__vb_file_path_by_handle");
+        self.emit_u16(Op::GLOBAL_GET, path_map_key);
+        self.emit_u16(Op::LOCAL_GET, file_slot);
+        self.emit(Op::ARRAY_GET);
+        common::io::emit_read_file(self.chunk(), line);
+        self.emit_const(Value::String(Arc::from("\n")));
+        self.emit(Op::STR_SPLIT);
+        self.emit_u16(Op::LOCAL_SET, rows_slot);
+        self.emit(Op::DROP);
+
+        let skip_trim = self.chunk().emit_block(line);
+        self.emit_u16(Op::LOCAL_GET, rows_slot);
+        common::collections::emit_array_length(self.chunk(), line);
+        self.emit_u16(Op::LOCAL_SET, len_slot);
+        self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_GET, len_slot);
+        self.emit(Op::I32_CONST_0);
+        self.emit(Op::DYN_GT);
+        self.emit(Op::DYN_NOT);
+        self.chunk().emit_br_if(0, line);
+        self.emit_u16(Op::LOCAL_GET, rows_slot);
+        self.emit_u16(Op::LOCAL_GET, len_slot);
+        self.emit(Op::I32_CONST_1);
+        self.emit(Op::I32_SUB);
+        common::collections::emit_get(&mut self.chunks, self.current, line);
+        self.emit_const(Value::String(Arc::from("")));
+        self.emit(Op::DYN_EQ);
+        self.emit(Op::DYN_NOT);
+        self.chunk().emit_br_if(0, line);
+        self.emit_u16(Op::LOCAL_GET, rows_slot);
+        common::collections::emit_pop(&mut self.chunks, self.current, line);
+        self.emit(Op::DROP);
+        self.chunk().emit_end(line);
+        self.chunk().patch_block(skip_trim);
+
+        self.emit_global_map_set_from_local("__vb_record_rows_by_handle", file_slot, rows_slot);
+        self.patch_jump(cached_rows);
+
+        self.emit_u16(Op::LOCAL_GET, rows_slot);
+        common::collections::emit_array_length(self.chunk(), line);
+        self.emit_u16(Op::LOCAL_SET, len_slot);
+        self.emit(Op::DROP);
+    }
+
+    fn emit_record_assign_nulls(&mut self, variables: &[String]) {
+        for variable in variables {
+            self.emit(Op::NULL);
+            self.emit_var_set(variable);
+        }
+    }
+
+    fn emit_record_assign_values_from_local(&mut self, values_slot: u16, variables: &[String]) {
+        for (index, variable) in variables.iter().enumerate() {
+            self.emit_u16(Op::LOCAL_GET, values_slot);
+            self.emit_const(Value::F64(index as f64));
+            self.emit(Op::ARRAY_GET);
+            self.emit_assignment_type_coercion_for_ident(variable);
+            self.emit_var_set(variable);
+        }
+    }
+
     fn vb_fixed_string_len(type_hint: &str) -> Option<i32> {
         let normalized = Self::normalize_type_hint(type_hint);
         let (base, len) = normalized.split_once('*')?;
@@ -4388,6 +4538,9 @@ impl Compiler {
                 } else {
                     self.compile_expr(value)?;
                     if let [target] = targets.as_slice() {
+                        self.emit_assignment_type_coercion_for_target(target);
+                    }
+                    if let [target] = targets.as_slice() {
                         if let ExprKind::Ident(name) = &target.kind {
                             if let Some(type_hint) = self.lookup_var_type_hint(name) {
                                 if let Some(target_len) = Self::vb_fixed_string_len(type_hint) {
@@ -5967,6 +6120,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, values_slot);
                     self.emit_const(Value::F64(index as f64));
                     self.emit(Op::ARRAY_GET);
+                    self.emit_assignment_type_coercion_for_ident(variable);
                     self.emit_var_set(variable);
                 }
 
@@ -5978,7 +6132,10 @@ impl Compiler {
                 self.emit_ensure_global_map("__vb_file_eof_by_handle");
                 self.emit_u16(Op::GLOBAL_GET, eof_map_key);
                 self.emit_u16(Op::LOCAL_GET, file_slot);
-                self.emit_const(Value::Bool(true));
+                self.emit_u16(Op::LOCAL_GET, values_slot);
+                self.emit_const(Value::F64(0.0));
+                self.emit(Op::ARRAY_GET);
+                self.emit(Op::REF_IS_NULL);
                 self.emit(Op::ARRAY_SET);
                 self.emit(Op::DROP);
             }
@@ -6001,6 +6158,238 @@ impl Compiler {
                 self.emit_const(Value::Bool(true));
                 self.emit(Op::ARRAY_SET);
                 self.emit(Op::DROP);
+            }
+            StmtKind::StartFile { file_number, key_index, key_value, relation } => {
+                let line = self.line;
+                let file_slot = self.define_local("__vb_start_file_number");
+                let rows_slot = self.define_local("__vb_start_rows");
+                let len_slot = self.define_local("__vb_start_len");
+                let key_slot = self.define_local("__vb_start_key");
+                let found_slot = self.define_local("__vb_start_found");
+                let idx_slot = self.define_local("__vb_start_idx");
+                let row_slot = self.define_local("__vb_start_row");
+                let values_slot = self.define_local("__vb_start_values");
+
+                self.compile_expr(file_number)?;
+                self.emit_u16(Op::LOCAL_SET, file_slot);
+                self.emit(Op::DROP);
+                self.emit_record_rows_cache(file_slot, rows_slot, len_slot);
+
+                self.compile_expr(key_value)?;
+                self.emit_u16(Op::LOCAL_SET, key_slot);
+                self.emit(Op::DROP);
+                self.emit(Op::NULL);
+                self.emit_u16(Op::LOCAL_SET, found_slot);
+                self.emit(Op::DROP);
+
+                let state = common::loops::emit_for_in_start(&mut self.chunks, self.current, rows_slot, idx_slot, line);
+                self.emit_u16(Op::LOCAL_SET, row_slot);
+                self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, row_slot);
+                self.emit_const(Value::String(Arc::from(",")));
+                self.emit(Op::STR_SPLIT);
+                self.emit_u16(Op::LOCAL_SET, values_slot);
+                self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, values_slot);
+                self.emit_const(Value::F64(*key_index as f64));
+                self.emit(Op::ARRAY_GET);
+                self.emit_u16(Op::LOCAL_GET, key_slot);
+                self.emit_file_key_compare(*relation);
+                self.emit(Op::DYN_TO_BOOL);
+                self.emit(Op::DYN_NOT);
+                let no_match = self.emit_jump(Op::BR_IF_TRUE);
+                self.emit_u16(Op::LOCAL_GET, idx_slot);
+                self.emit_u16(Op::LOCAL_SET, found_slot);
+                self.emit(Op::DROP);
+                self.chunks[self.current].emit_br(state.break_depth(0), line);
+                self.patch_jump(no_match);
+                common::loops::emit_for_in_end(&mut self.chunks, self.current, idx_slot, state, line);
+
+                self.emit_global_map_set_null("__vb_record_current_index_by_handle", file_slot);
+                self.emit_u16(Op::LOCAL_GET, found_slot);
+                self.emit(Op::REF_IS_NULL);
+                let found = self.emit_jump(Op::BR_IF_FALSE);
+                self.emit_global_map_set_from_local("__vb_record_next_index_by_handle", file_slot, len_slot);
+                self.emit_global_map_set_const("__vb_file_eof_by_handle", file_slot, Value::Bool(true));
+                let done = self.emit_jump(Op::BR);
+                self.patch_jump(found);
+                self.emit_global_map_set_from_local("__vb_record_next_index_by_handle", file_slot, found_slot);
+                self.emit_global_map_set_const("__vb_file_eof_by_handle", file_slot, Value::Bool(false));
+                self.patch_jump(done);
+            }
+            StmtKind::InputRecordFile { file_number, variables, key_index, key_value } => {
+                let line = self.line;
+                let file_slot = self.define_local("__vb_record_file_number");
+                let rows_slot = self.define_local("__vb_record_rows");
+                let len_slot = self.define_local("__vb_record_len");
+                let idx_slot = self.define_local("__vb_record_idx");
+                let row_slot = self.define_local("__vb_record_row");
+                let values_slot = self.define_local("__vb_record_values");
+                let found_slot = self.define_local("__vb_record_found");
+                let key_slot = key_value.as_ref().map(|_| self.define_local("__vb_record_key"));
+
+                self.compile_expr(file_number)?;
+                self.emit_u16(Op::LOCAL_SET, file_slot);
+                self.emit(Op::DROP);
+                self.emit_record_rows_cache(file_slot, rows_slot, len_slot);
+
+                if let Some(key_expr) = key_value {
+                    let key_slot = key_slot.expect("key slot allocated when key_value exists");
+                    let key_index = key_index.unwrap_or(0);
+
+                    self.compile_expr(key_expr)?;
+                    self.emit_u16(Op::LOCAL_SET, key_slot);
+                    self.emit(Op::DROP);
+                    self.emit(Op::NULL);
+                    self.emit_u16(Op::LOCAL_SET, found_slot);
+                    self.emit(Op::DROP);
+
+                    let state = common::loops::emit_for_in_start(&mut self.chunks, self.current, rows_slot, idx_slot, line);
+                    self.emit_u16(Op::LOCAL_SET, row_slot);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, row_slot);
+                    self.emit_const(Value::String(Arc::from(",")));
+                    self.emit(Op::STR_SPLIT);
+                    self.emit_u16(Op::LOCAL_SET, values_slot);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, values_slot);
+                    self.emit_const(Value::F64(key_index as f64));
+                    self.emit(Op::ARRAY_GET);
+                    self.emit_u16(Op::LOCAL_GET, key_slot);
+                    self.emit_file_key_compare(FileKeyRelation::Equal);
+                    self.emit(Op::DYN_TO_BOOL);
+                    self.emit(Op::DYN_NOT);
+                    let no_match = self.emit_jump(Op::BR_IF_TRUE);
+                    self.emit_u16(Op::LOCAL_GET, idx_slot);
+                    self.emit_u16(Op::LOCAL_SET, found_slot);
+                    self.emit(Op::DROP);
+                    self.chunks[self.current].emit_br(state.break_depth(0), line);
+                    self.patch_jump(no_match);
+                    common::loops::emit_for_in_end(&mut self.chunks, self.current, idx_slot, state, line);
+
+                    self.emit_u16(Op::LOCAL_GET, found_slot);
+                    self.emit(Op::REF_IS_NULL);
+                    let found = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit_record_assign_nulls(variables);
+                    self.emit_global_map_set_null("__vb_record_current_index_by_handle", file_slot);
+                    self.emit_global_map_set_const("__vb_file_eof_by_handle", file_slot, Value::Bool(true));
+                    let done = self.emit_jump(Op::BR);
+                    self.patch_jump(found);
+                    self.emit_u16(Op::LOCAL_GET, rows_slot);
+                    self.emit_u16(Op::LOCAL_GET, found_slot);
+                    self.emit(Op::ARRAY_GET);
+                    self.emit_u16(Op::LOCAL_SET, row_slot);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, row_slot);
+                    self.emit_const(Value::String(Arc::from(",")));
+                    self.emit(Op::STR_SPLIT);
+                    self.emit_u16(Op::LOCAL_SET, values_slot);
+                    self.emit(Op::DROP);
+                    self.emit_record_assign_values_from_local(values_slot, variables);
+                    self.emit_global_map_set_from_local("__vb_record_current_index_by_handle", file_slot, found_slot);
+                    self.emit_u16(Op::LOCAL_GET, found_slot);
+                    self.emit(Op::I32_CONST_1);
+                    self.emit(Op::I32_ADD);
+                    self.emit_u16(Op::LOCAL_SET, idx_slot);
+                    self.emit(Op::DROP);
+                    self.emit_global_map_set_from_local("__vb_record_next_index_by_handle", file_slot, idx_slot);
+                    self.emit_global_map_set_const("__vb_file_eof_by_handle", file_slot, Value::Bool(false));
+                    self.patch_jump(done);
+                } else {
+                    self.emit_global_map_get_into_local("__vb_record_next_index_by_handle", file_slot, idx_slot);
+                    self.emit_u16(Op::LOCAL_GET, idx_slot);
+                    self.emit(Op::REF_IS_NULL);
+                    let have_idx = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit_u16(Op::LOCAL_SET, idx_slot);
+                    self.emit(Op::DROP);
+                    self.patch_jump(have_idx);
+
+                    self.emit_u16(Op::LOCAL_GET, idx_slot);
+                    self.emit_u16(Op::LOCAL_GET, len_slot);
+                    self.emit(Op::DYN_LT);
+                    let has_row = self.emit_jump(Op::BR_IF_TRUE);
+                    self.emit_record_assign_nulls(variables);
+                    self.emit_global_map_set_null("__vb_record_current_index_by_handle", file_slot);
+                    self.emit_global_map_set_const("__vb_file_eof_by_handle", file_slot, Value::Bool(true));
+                    let done = self.emit_jump(Op::BR);
+                    self.patch_jump(has_row);
+                    self.emit_u16(Op::LOCAL_GET, rows_slot);
+                    self.emit_u16(Op::LOCAL_GET, idx_slot);
+                    self.emit(Op::ARRAY_GET);
+                    self.emit_u16(Op::LOCAL_SET, row_slot);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, row_slot);
+                    self.emit_const(Value::String(Arc::from(",")));
+                    self.emit(Op::STR_SPLIT);
+                    self.emit_u16(Op::LOCAL_SET, values_slot);
+                    self.emit(Op::DROP);
+                    self.emit_record_assign_values_from_local(values_slot, variables);
+                    self.emit_global_map_set_from_local("__vb_record_current_index_by_handle", file_slot, idx_slot);
+                    self.emit_u16(Op::LOCAL_GET, idx_slot);
+                    self.emit(Op::I32_CONST_1);
+                    self.emit(Op::I32_ADD);
+                    self.emit_u16(Op::LOCAL_SET, idx_slot);
+                    self.emit(Op::DROP);
+                    self.emit_global_map_set_from_local("__vb_record_next_index_by_handle", file_slot, idx_slot);
+                    self.emit_global_map_set_const("__vb_file_eof_by_handle", file_slot, Value::Bool(false));
+                    self.patch_jump(done);
+                }
+            }
+            StmtKind::RewriteRecordFile { file_number, items } => {
+                let line = self.line;
+                let file_slot = self.define_local("__vb_rewrite_file_number");
+                let rows_slot = self.define_local("__vb_rewrite_rows");
+                let len_slot = self.define_local("__vb_rewrite_len");
+                let current_slot = self.define_local("__vb_rewrite_current");
+                let line_slot = self.define_local("__vb_rewrite_line");
+                let items_slot = self.define_local("__vb_rewrite_items");
+                let path_slot = self.define_local("__vb_rewrite_path");
+                let path_map_key = self.str_const("__vb_file_path_by_handle");
+
+                self.compile_expr(file_number)?;
+                self.emit_u16(Op::LOCAL_SET, file_slot);
+                self.emit(Op::DROP);
+                self.emit_record_rows_cache(file_slot, rows_slot, len_slot);
+                self.emit_global_map_get_into_local("__vb_record_current_index_by_handle", file_slot, current_slot);
+                self.emit_u16(Op::LOCAL_GET, current_slot);
+                self.emit(Op::REF_IS_NULL);
+                let has_current = self.emit_jump(Op::BR_IF_FALSE);
+                let done = self.emit_jump(Op::BR);
+                self.patch_jump(has_current);
+
+                for item in items {
+                    self.compile_expr(item)?;
+                }
+                common::collections::emit_array_new(&mut self.chunks, self.current, items.len() as u16, line);
+                self.emit_u16(Op::LOCAL_SET, items_slot);
+                self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, items_slot);
+                self.emit_const(Value::String(Arc::from(",")));
+                common::collections::emit_join(&mut self.chunks, self.current, line);
+                self.emit_u16(Op::LOCAL_SET, line_slot);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, rows_slot);
+                self.emit_u16(Op::LOCAL_GET, current_slot);
+                self.emit_u16(Op::LOCAL_GET, line_slot);
+                common::collections::emit_set(&mut self.chunks, self.current, line);
+                self.emit(Op::DROP);
+
+                self.emit_ensure_global_map("__vb_file_path_by_handle");
+                self.emit_u16(Op::GLOBAL_GET, path_map_key);
+                self.emit_u16(Op::LOCAL_GET, file_slot);
+                self.emit(Op::ARRAY_GET);
+                self.emit_u16(Op::LOCAL_SET, path_slot);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, path_slot);
+                self.emit_u16(Op::LOCAL_GET, rows_slot);
+                self.emit_const(Value::String(Arc::from("\n")));
+                common::collections::emit_join(&mut self.chunks, self.current, line);
+                common::io::emit_write_file(self.chunk(), 2, line);
+                self.emit(Op::DROP);
+                self.patch_jump(done);
             }
 
             // ── Export ──────────────────────────────────────────────────
@@ -6029,9 +6418,26 @@ impl Compiler {
                 let line = self.line;
                 let log_idx = self.import("wasi:cli", "log");
                 let php_echo = self.profile.name == "php";
-                for expr in exprs {
-                    self.compile_expr(expr)?;
-                    if php_echo {
+                if self.profile.name == "cobol" {
+                    if exprs.is_empty() {
+                        self.emit_const(Value::String(Arc::from("")));
+                    } else {
+                        let tostring_global = self.str_const("__vybe_tostring");
+                        self.emit_u16(Op::GLOBAL_GET, tostring_global);
+                        self.compile_expr(&exprs[0])?;
+                        self.emit_u8(Op::CALL_REF, 1);
+                        for expr in exprs.iter().skip(1) {
+                            self.emit_u16(Op::GLOBAL_GET, tostring_global);
+                            self.compile_expr(expr)?;
+                            self.emit_u8(Op::CALL_REF, 1);
+                            self.emit(Op::DYN_ADD);
+                        }
+                    }
+                    common::io::emit_print_with_import(self.chunk(), log_idx, 1, line);
+                } else {
+                    for expr in exprs {
+                        self.compile_expr(expr)?;
+                        if php_echo {
                         // PHP: when echoing an object with `__toString`,
                         // call the method and print its result. Other
                         // values pass through. The check is a runtime
@@ -6070,9 +6476,10 @@ impl Compiler {
                         self.patch_jump(done);
                         self.emit_common("php.echo_stringify", 1, line);
                         common::io::emit_print_with_import(self.chunk(), log_idx, 1, line);
-                        self.patch_jump(skip_log);
-                    } else {
-                        common::io::emit_print_with_import(self.chunk(), log_idx, 1, line);
+                            self.patch_jump(skip_log);
+                        } else {
+                            common::io::emit_print_with_import(self.chunk(), log_idx, 1, line);
+                        }
                     }
                 }
             }

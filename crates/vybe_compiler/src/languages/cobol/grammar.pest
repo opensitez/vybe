@@ -190,9 +190,18 @@ environment_division = {
 
 configuration_section = {
     kw_configuration ~ kw_section ~ period
-    ~ special_names_paragraph?
-    ~ repository_paragraph?
+    ~ configuration_entry*
 }
+
+configuration_entry = {
+    source_computer_paragraph
+  | object_computer_paragraph
+  | special_names_paragraph
+  | repository_paragraph
+}
+
+source_computer_paragraph = { kw_source_computer ~ period ~ ident_or_keyword ~ period }
+object_computer_paragraph = { kw_object_computer ~ period ~ ident_or_keyword ~ period }
 
 special_names_paragraph = {
     kw_special_names ~ period
@@ -274,6 +283,7 @@ select_clause = {
     kw_organization ~ kw_is? ~ (kw_sequential | kw_relative | kw_indexed | kw_line ~ kw_sequential)
   | kw_file_status ~ kw_is? ~ ident_name
   | kw_access ~ kw_mode? ~ kw_is? ~ (kw_sequential | kw_random | kw_dynamic)
+    | kw_relative ~ kw_key ~ kw_is? ~ ident_name
   | kw_record ~ kw_key ~ kw_is? ~ ident_name
   | kw_alternate ~ kw_record? ~ kw_key ~ kw_is? ~ ident_name ~ (kw_with? ~ kw_duplicates)?
 }
@@ -296,7 +306,7 @@ file_description = {
 }
 
 fd_clause = {
-    kw_record ~ kw_contains? ~ number_literal ~ kw_characters?
+        kw_record ~ kw_contains? ~ number_literal ~ (kw_to ~ number_literal)? ~ kw_characters?
   | kw_block ~ kw_contains? ~ number_literal ~ (kw_to ~ number_literal)? ~ kw_characters?
   | kw_label ~ kw_record? ~ kw_is? ~ (kw_standard | kw_omitted)
   | kw_data ~ kw_record? ~ kw_is? ~ ident_name
@@ -458,7 +468,7 @@ indexed_clause   = { kw_indexed ~ kw_by ~ ident_name ~ ("," ~ ident_name)* }
 redefines_clause = { kw_redefines ~ ident_name }
 usage_clause     = { kw_usage ~ kw_is? ~ usage_type }
 usage_type       = {
-    kw_binary | kw_comp | kw_comp_3 | kw_comp_5 | kw_display_usage
+        kw_binary | kw_comp_3 | kw_comp_5 | kw_comp | kw_display_usage
   | kw_packed_decimal | kw_pointer | kw_index
   | kw_float_long | kw_float_short | kw_national | kw_boolean
   | ident_name
@@ -531,7 +541,7 @@ paragraph = {
     ~ statement_list
 }
 
-paragraph_name = @{ ident_start ~ (ident_cont | "-")* }
+paragraph_name = @{ ASCII_ALPHANUMERIC ~ (ident_cont | "-")* }
 
 statement_list = { (statement ~ period?)* }
 
@@ -650,10 +660,10 @@ move_target = { data_target }
 
 add_stmt = {
     kw_add ~ (kw_corresponding | kw_corr) ~ ident_name ~ kw_to ~ ident_name
-        | kw_add ~ arith_operand+ ~ kw_giving ~ data_target ~ rounded_clause?
+        | kw_add ~ expression+ ~ kw_giving ~ data_target ~ rounded_clause?
         ~ size_error_clause?
         ~ kw_end_add?
-    | kw_add ~ arith_operand+ ~ kw_to ~ data_target ~ giving_clause? ~ rounded_clause?
+    | kw_add ~ expression+ ~ kw_to ~ data_target ~ giving_clause? ~ rounded_clause?
     ~ size_error_clause?
     ~ kw_end_add?
 }
@@ -709,7 +719,7 @@ remainder_clause = { kw_remainder ~ ident_name }
 // ── COMPUTE ─────────────────────────────────────────────────────────────────
 
 compute_stmt = {
-    kw_compute ~ ident_name ~ rounded_clause? ~ "=" ~ expression
+    kw_compute ~ data_target ~ rounded_clause? ~ "=" ~ expression
     ~ size_error_clause?
     ~ kw_end_compute?
 }
@@ -762,6 +772,7 @@ perform_stmt = {
   | perform_until
   | perform_times
   | perform_async
+    | perform_paragraph_until
   | perform_thru
   | perform_paragraph
   | perform_inline
@@ -786,11 +797,15 @@ perform_times = {
     ~ kw_end_perform?
 }
 
-perform_async = { kw_perform ~ kw_async ~ ident_name }
+perform_paragraph_until = {
+    kw_perform ~ paragraph_name ~ test_clause? ~ kw_until ~ condition
+}
 
-perform_thru = { kw_perform ~ ident_name ~ (kw_thru | kw_through) ~ ident_name }
+perform_async = { kw_perform ~ kw_async ~ paragraph_name }
 
-perform_paragraph = { kw_perform ~ ident_name }
+perform_thru = { kw_perform ~ paragraph_name ~ (kw_thru | kw_through) ~ paragraph_name }
+
+perform_paragraph = { kw_perform ~ paragraph_name }
 
 perform_inline = {
     kw_perform ~ statement_list ~ kw_end_perform?
@@ -835,9 +850,9 @@ unstring_stmt = {
 }
 
 unstring_target = {
-    ident_name
-    ~ (kw_delimiter ~ kw_in? ~ ident_name)?
-    ~ (kw_count ~ kw_in? ~ ident_name)?
+    data_target
+    ~ (kw_delimiter ~ kw_in? ~ data_target)?
+    ~ (kw_count ~ kw_in? ~ data_target)?
 }
 
 tallying_in_clause = { kw_tallying ~ kw_in? ~ ident_name }
@@ -856,7 +871,7 @@ inspect_tallying = {
 }
 
 inspect_tally_phrase = {
-    inspect_mode ~ (string_literal | ident_name)
+    inspect_mode ~ (kw_characters | string_literal | ident_name)
     ~ (kw_before | kw_after)? ~ (kw_initial ~ (string_literal | ident_name))?
 }
 
@@ -911,7 +926,7 @@ on_exception_clause = {
 // ── INITIALIZE ──────────────────────────────────────────────────────────────
 
 initialize_stmt = {
-    kw_initialize ~ ident_name
+    kw_initialize ~ ident_name+
     ~ (kw_replacing ~ (kw_alphanumeric | kw_numeric | kw_national) ~ kw_data? ~ kw_by ~ expression)?
 }
 
@@ -924,11 +939,11 @@ set_stmt = {
 
 // ── ALTER ───────────────────────────────────────────────────────────────────
 
-alter_stmt = { kw_alter ~ ident_name ~ kw_to ~ kw_proceed ~ kw_to ~ ident_name }
+alter_stmt = { kw_alter ~ paragraph_name ~ kw_to ~ kw_proceed ~ kw_to ~ paragraph_name }
 
 // ── GO TO ───────────────────────────────────────────────────────────────────
 
-go_to_stmt = { kw_go ~ kw_to? ~ ident_name }
+go_to_stmt = { kw_go ~ kw_to? ~ paragraph_name }
 
 // ── STOP RUN ────────────────────────────────────────────────────────────────
 
@@ -1010,25 +1025,30 @@ read_stmt = {
 clause_statement_list = { statement ~ period? ~ (statement ~ period?)* }
 
 at_end_clause = {
-    (kw_at? ~ kw_end ~ clause_statement_list)?
-    ~ (kw_not ~ kw_at? ~ kw_end ~ clause_statement_list)?
+    (kw_at? ~ kw_end ~ clause_statement_list
+        ~ (kw_not ~ kw_at? ~ kw_end ~ clause_statement_list)?)
+    | (kw_not ~ kw_at? ~ kw_end ~ clause_statement_list)
 }
 
 invalid_key_clause = {
-    (kw_invalid ~ kw_key? ~ clause_statement_list)?
-    ~ (kw_not ~ kw_invalid ~ kw_key? ~ clause_statement_list)?
+    (kw_invalid ~ kw_key? ~ clause_statement_list
+        ~ (kw_not ~ kw_invalid ~ kw_key? ~ clause_statement_list)?)
+    | (kw_not ~ kw_invalid ~ kw_key? ~ clause_statement_list)
 }
 
 // ── WRITE ───────────────────────────────────────────────────────────────────
 
 write_stmt = {
     kw_write ~ ident_name
-    ~ (kw_from ~ ident_name)?
+    ~ (kw_from ~ write_source)?
     ~ write_advancing?
     ~ end_of_page_clause?
     ~ invalid_key_clause?
     ~ kw_end_write?
 }
+
+write_source = { write_source_part ~ ("&" ~ write_source_part)* }
+write_source_part = { kw_all ~ literal | expression }
 
 end_of_page_clause = {
     (kw_at ~ kw_end_of_page ~ statement_list)?
@@ -1044,7 +1064,7 @@ write_advancing = {
 
 rewrite_stmt = {
     kw_rewrite ~ ident_name
-    ~ (kw_from ~ ident_name)?
+    ~ (kw_from ~ write_source)?
     ~ invalid_key_clause?
     ~ kw_end_rewrite?
 }
@@ -1294,11 +1314,13 @@ qualification = { (kw_of | kw_in) ~ ident_name }
 // ── Function calls ──────────────────────────────────────────────────────────
 
 function_call = {
-    kw_function ~ function_name ~ ("(" ~ func_args? ~ ")" | atom*)
+    kw_function ~ function_name ~ function_call_args? ~ subscript_or_refmod?
 }
 
 // COBOL function args are space-separated (not comma-separated)
 func_args = { expression+ }
+
+function_call_args = { "(" ~ func_args? ~ ")" | atom+ }
 
 arg_list = { expression ~ ("," ~ expression)* }
 
@@ -1423,6 +1445,8 @@ strict_keyword = _{
 kw_identification  = @{ ^"identification"  ~ !ident_cont }
 kw_environment     = @{ ^"environment"     ~ !ident_cont }
 kw_configuration   = @{ ^"configuration"   ~ !ident_cont }
+kw_source_computer = @{ ^"source-computer" ~ !ident_cont }
+kw_object_computer = @{ ^"object-computer" ~ !ident_cont }
 kw_data            = @{ ^"data"            ~ !ident_cont }
 kw_procedure       = @{ ^"procedure"       ~ !ident_cont }
 kw_division        = @{ ^"division"        ~ !ident_cont }

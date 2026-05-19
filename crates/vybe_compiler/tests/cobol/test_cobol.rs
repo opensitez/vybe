@@ -1,4 +1,4 @@
-use super::helpers::{compile_ok, parse_ok, compile_ok_check};
+use super::helpers::{compile_ok, parse_ok, compile_ok_check, run_prints};
 
 
 
@@ -1014,4 +1014,17 @@ PROCEDURE DIVISION.
     DISPLAY "Name: " WS-NAME " Age: " WS-AGE.
     STOP RUN.
 "#);
+}
+
+#[test]
+fn display_multiple_runtime_single_line() {
+    let output = run_prints(r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. DISPMULRUN.
+PROCEDURE DIVISION.
+    DISPLAY "Name: " "Alice" " Age: " 30.
+    STOP RUN.
+"#);
+
+    assert_eq!(output, vec!["Name: Alice Age: 30".to_string()]);
 }

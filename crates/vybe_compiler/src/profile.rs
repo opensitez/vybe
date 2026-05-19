@@ -483,10 +483,10 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
         map
     }
 
-    let builtins = parse_builtin_table(&root, "builtins");
-    let value_methods = parse_value_methods_table(&root);
+    let mut builtins = parse_builtin_table(&root, "builtins");
+    let mut value_methods = parse_value_methods_table(&root);
     let intrinsics = parse_string_table(&root, "intrinsics");
-    let array_methods = parse_string_table(&root, "array_methods");
+    let mut array_methods = parse_string_table(&root, "array_methods");
 
     let namespaces = if let Some(ns) = root.get("namespaces") {
         NamespaceConfig {
@@ -525,6 +525,25 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
                 }
             }
         }
+    }
+
+    if !case_sensitive {
+        builtins = builtins
+            .into_iter()
+            .map(|(name, def)| (name.to_lowercase(), def))
+            .collect();
+        value_methods = value_methods
+            .into_iter()
+            .map(|(name, defs)| (name.to_lowercase(), defs))
+            .collect();
+        array_methods = array_methods
+            .into_iter()
+            .map(|(name, target)| (name.to_lowercase(), target))
+            .collect();
+        known_types = known_types
+            .into_iter()
+            .map(|(name, target)| (name.to_lowercase(), target))
+            .collect();
     }
 
     let mut namespace_constants = HashMap::new();

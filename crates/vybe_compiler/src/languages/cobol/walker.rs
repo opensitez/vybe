@@ -34,8 +34,111 @@
 
 use pest::Parser;
 use pest::iterators::{Pair, Pairs};
+use std::collections::HashMap;
 use crate::ast::*;
 use super::{CobolParser, Rule};
+
+#[derive(Clone)]
+struct CobolRecordField {
+    name: String,
+    numeric: bool,
+}
+
+#[derive(Clone)]
+struct CobolFileBinding {
+    path: Expression,
+    file_number: i32,
+    status_var: Option<String>,
+    key_name: Option<String>,
+    record_name: Option<String>,
+    record_fields: Vec<CobolRecordField>,
+}
+
+struct CobolWalkerContext {
+    file_bindings: HashMap<String, CobolFileBinding>,
+    record_to_file: HashMap<String, String>,
+    record_fields: HashMap<String, Vec<CobolRecordField>>,
+    condition_names: HashMap<String, Expression>,
+    next_file_number: i32,
+}
+
+impl CobolWalkerContext {
+    fn new() -> Self {
+        Self {
+            file_bindings: HashMap::new(),
+            record_to_file: HashMap::new(),
+            record_fields: HashMap::new(),
+            condition_names: HashMap::new(),
+            next_file_number: 1,
+        }
+    }
+
+    fn register_file_binding(&mut self, file_name: &str, path: Expression, status_var: Option<String>, key_name: Option<String>) {
+        let key = cobol_name_key(file_name);
+        let existing = self.file_bindings.get(&key);
+        let record_name = self.file_bindings.get(&key).and_then(|binding| binding.record_name.clone());
+        let record_fields = self.file_bindings.get(&key)
+            .map(|binding| binding.record_fields.clone())
+            .unwrap_or_default();
+        self.file_bindings.insert(
+            key,
+            CobolFileBinding {
+                path,
+                file_number: self.next_file_number,
+                status_var,
+                key_name: key_name.or_else(|| existing.and_then(|binding| binding.key_name.clone())),
+                record_name,
+                record_fields,
+            },
+        );
+        self.next_file_number += 1;
+    }
+
+    fn bind_record_name(&mut self, file_name: &str, record_name: &str, record_fields: Vec<CobolRecordField>) {
+        let file_key = cobol_name_key(file_name);
+        let record_key = cobol_name_key(record_name);
+        self.record_to_file.insert(record_key, file_key.clone());
+        self.record_fields.insert(cobol_name_key(record_name), record_fields.clone());
+        if let Some(binding) = self.file_bindings.get_mut(&file_key) {
+            binding.record_name = Some(record_name.to_string());
+            binding.record_fields = record_fields;
+        }
+    }
+
+    fn bind_record_fields_for_record(&mut self, record_name: &str, record_fields: Vec<CobolRecordField>) {
+        self.record_fields.insert(cobol_name_key(record_name), record_fields.clone());
+        let Some(file_key) = self.record_to_file.get(&cobol_name_key(record_name)).cloned() else {
+            return;
+        };
+        if let Some(binding) = self.file_bindings.get_mut(&file_key) {
+            binding.record_fields = record_fields;
+        }
+    }
+
+    fn record_fields_for_name(&self, record_name: &str) -> Vec<CobolRecordField> {
+        self.record_fields
+            .get(&cobol_name_key(record_name))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn file_binding(&self, file_name: &str) -> Option<&CobolFileBinding> {
+        self.file_bindings.get(&cobol_name_key(file_name))
+    }
+
+    fn file_binding_for_record(&self, record_name: &str) -> Option<&CobolFileBinding> {
+        let file_key = self.record_to_file.get(&cobol_name_key(record_name))?;
+        self.file_bindings.get(file_key)
+    }
+
+    fn register_condition_name(&mut self, name: &str, expr: Expression) {
+        self.condition_names.insert(cobol_name_key(name), expr);
+    }
+
+    fn condition_expr(&self, name: &str) -> Option<Expression> {
+        self.condition_names.get(&cobol_name_key(name)).cloned()
+    }
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Keyword filter
@@ -109,6 +212,7 @@ fn is_kw(r: Rule) -> bool {
         | kw_select | kw_assign | kw_organization | kw_sequential
         | kw_relative | kw_file_status | kw_access | kw_mode | kw_random
         | kw_dynamic | kw_alternate | kw_order | kw_duplicates | kw_up | kw_down
+        | kw_source_computer | kw_object_computer
         | kw_reference | kw_content | kw_alphanumeric | kw_sign | kw_separate
         | kw_end_if | kw_end_evaluate | kw_end_perform | kw_end_call
         | kw_end_read | kw_end_write | kw_end_rewrite | kw_end_delete
@@ -172,6 +276,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     let mut pairs = CobolParser::parse(Rule::program, source)
         .map_err(|e| format!("COBOL parse error: {}", e))?;
     let program = pairs.next().ok_or("empty parse")?;
+    let mut ctx = CobolWalkerContext::new();
 
     let mut module = Module {
         name: String::new(),
@@ -193,17 +298,16 @@ pub fn parse(source: &str) -> Result<Module, String> {
             }
             Rule::environment_division => {
                 // Environment division is mostly declarative config.
-                // We extract file SELECT entries as comments / empty stmts.
-                walk_environment_division(pair, &mut module)?;
+                walk_environment_division(pair, &mut module, &mut ctx)?;
             }
             Rule::data_division => {
-                walk_data_division(pair, &mut module.body)?;
+                walk_data_division(pair, &mut module.body, &mut ctx)?;
             }
             Rule::procedure_division => {
-                walk_procedure_division(pair, &mut module.body)?;
+                walk_procedure_division(pair, &mut module.body, &ctx)?;
             }
             Rule::nested_program => {
-                walk_nested_program(pair, &mut module.body)?;
+                walk_nested_program(pair, &mut module.body, &mut ctx)?;
             }
             Rule::EOI => {}
             _ => {}
@@ -247,32 +351,350 @@ fn walk_identification_division(pair: Pair<Rule>, module: &mut Module) -> Result
 // Environment Division
 // ════════════════════════════════════════════════════════════════════════════
 
-fn walk_environment_division(pair: Pair<Rule>, _module: &mut Module) -> Result<(), String> {
-    // Environment division contains configuration and file control.
-    // For now we skip these — they affect runtime semantics but the
-    // common AST does not have a direct representation for file
-    // organisation modes, special-names, etc.  File I/O statements
-    // in the procedure division emit host calls directly.
-    for _child in pair.into_inner() {
-        // configuration_section, input_output_section — skipped
+fn walk_environment_division(
+    pair: Pair<Rule>,
+    module: &mut Module,
+    ctx: &mut CobolWalkerContext,
+) -> Result<(), String> {
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::configuration_section => {
+                for part in child.into_inner() {
+                    if part.as_rule() != Rule::configuration_entry {
+                        continue;
+                    }
+                    for entry in part.into_inner() {
+                        if entry.as_rule() == Rule::repository_paragraph {
+                            walk_repository_paragraph(entry, module)?;
+                        }
+                    }
+                }
+            }
+            Rule::input_output_section => {
+                for part in child.into_inner() {
+                    if part.as_rule() != Rule::file_control_paragraph {
+                        continue;
+                    }
+                    for entry in part.into_inner() {
+                        if entry.as_rule() == Rule::select_entry {
+                            walk_select_entry(entry, ctx)?;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
     Ok(())
+}
+
+fn walk_repository_paragraph(pair: Pair<Rule>, module: &mut Module) -> Result<(), String> {
+    for entry in pair.into_inner() {
+        if entry.as_rule() != Rule::repository_entry {
+            continue;
+        }
+        for item in entry.into_inner() {
+            match item.as_rule() {
+                Rule::repository_function_entry => {
+                    if let Some(import) = walk_repository_function_entry(item)? {
+                        module.imports.push(import);
+                    }
+                }
+                Rule::repository_class_entry | Rule::repository_interface_entry => {
+                    if let Some(import) = walk_repository_type_entry(item)? {
+                        module.imports.push(import);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+fn walk_repository_function_entry(pair: Pair<Rule>) -> Result<Option<Import>, String> {
+    let span = to_span(&pair);
+    let mut local_name: Option<String> = None;
+    let mut raw_specifier: Option<String> = None;
+    let mut all_intrinsic = false;
+
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::function_name if local_name.is_none() => {
+                local_name = Some(child.as_str().to_string());
+            }
+            Rule::string_literal => {
+                raw_specifier = Some(string_literal_value(&child));
+            }
+            Rule::kw_all => all_intrinsic = true,
+            _ => {}
+        }
+    }
+
+    if all_intrinsic {
+        return Ok(None);
+    }
+
+    let Some(local_name) = local_name else {
+        return Ok(None);
+    };
+    let Some(raw_specifier) = raw_specifier else {
+        return Ok(None);
+    };
+
+    let (path, imported_name) = split_repository_member_spec(&raw_specifier, &local_name);
+    let alias = if imported_name.eq_ignore_ascii_case(&local_name) {
+        None
+    } else {
+        Some(local_name)
+    };
+
+    Ok(Some(Import {
+        kind: ImportKind::Named {
+            path,
+            names: vec![ImportName { name: imported_name, alias }],
+            level: 0,
+        },
+        span,
+    }))
+}
+
+fn walk_repository_type_entry(pair: Pair<Rule>) -> Result<Option<Import>, String> {
+    let span = to_span(&pair);
+    let mut alias: Option<String> = None;
+    let mut target: Option<String> = None;
+
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::ident_name if alias.is_none() => alias = Some(child.as_str().to_string()),
+            Rule::string_literal => target = Some(string_literal_value(&child)),
+            _ => {}
+        }
+    }
+
+    let (Some(alias), Some(target)) = (alias, target) else {
+        return Ok(None);
+    };
+
+    Ok(Some(Import {
+        kind: ImportKind::Simple {
+            path: target,
+            alias: Some(alias),
+        },
+        span,
+    }))
+}
+
+fn split_repository_member_spec(raw_specifier: &str, fallback_name: &str) -> (String, String) {
+    if let Some((path, name)) = raw_specifier.rsplit_once('#') {
+        if !path.is_empty() && !name.is_empty() {
+            return (path.to_string(), name.to_string());
+        }
+    }
+    if let Some((path, name)) = raw_specifier.rsplit_once("::") {
+        if !path.is_empty() && !name.is_empty() {
+            return (path.to_string(), name.to_string());
+        }
+    }
+    if let Some((path, name)) = split_host_repository_spec(raw_specifier) {
+        return (path, name);
+    }
+    (raw_specifier.to_string(), fallback_name.to_string())
+}
+
+fn split_host_repository_spec(raw_specifier: &str) -> Option<(String, String)> {
+    let is_host_like = raw_specifier.starts_with("wasi:")
+        || raw_specifier.starts_with("wasm:")
+        || raw_specifier.starts_with("vybe:")
+        || raw_specifier.starts_with("node:");
+    if !is_host_like {
+        return None;
+    }
+
+    let split_at = raw_specifier.rfind(':')?;
+    let path = &raw_specifier[..split_at];
+    let name = &raw_specifier[split_at + 1..];
+    if path.is_empty() || name.is_empty() || name.contains('/') {
+        return None;
+    }
+    Some((path.to_string(), name.to_string()))
+}
+
+fn walk_select_entry(pair: Pair<Rule>, ctx: &mut CobolWalkerContext) -> Result<(), String> {
+    let children: Vec<Pair<Rule>> = pair.into_inner().collect();
+    let mut file_name = String::new();
+    let mut assign_target: Option<Expression> = None;
+    let mut status_var: Option<String> = None;
+    let mut key_name: Option<String> = None;
+
+    for child in children {
+        match child.as_rule() {
+            Rule::ident_name if file_name.is_empty() => {
+                file_name = child.as_str().to_string();
+            }
+            Rule::string_literal if assign_target.is_none() => {
+                assign_target = Some(walk_string_literal(&child)?);
+            }
+            Rule::ident_name if assign_target.is_none() => {
+                assign_target = Some(Expression::ident(child.as_str()));
+            }
+            Rule::select_clause => {
+                let clause_children: Vec<Pair<Rule>> = child.into_inner().collect();
+                if clause_children.iter().any(|part| part.as_rule() == Rule::kw_file_status) {
+                    status_var = clause_children.iter()
+                        .find(|part| part.as_rule() == Rule::ident_name)
+                        .map(|part| part.as_str().to_string());
+                }
+                if !clause_children.iter().any(|part| part.as_rule() == Rule::kw_alternate)
+                    && clause_children.iter().any(|part| matches!(part.as_rule(), Rule::kw_relative | Rule::kw_record))
+                    && clause_children.iter().any(|part| part.as_rule() == Rule::kw_key)
+                {
+                    key_name = clause_children.iter()
+                        .rev()
+                        .find(|part| part.as_rule() == Rule::ident_name)
+                        .map(|part| part.as_str().to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if !file_name.is_empty() {
+        ctx.register_file_binding(
+            &file_name,
+            assign_target.unwrap_or_else(|| Expression::string(&file_name.to_ascii_lowercase())),
+            status_var,
+            key_name,
+        );
+    }
+    Ok(())
+}
+
+fn extract_cobol_data_item_name(pair: &Pair<Rule>) -> Option<String> {
+    if pair.as_rule() != Rule::data_item {
+        return None;
+    }
+    pair.clone()
+        .into_inner()
+        .find_map(|child| match child.as_rule() {
+            Rule::regular_data_item => child.into_inner().find_map(|part| match part.as_rule() {
+                Rule::ident_name | Rule::ident_or_keyword => Some(part.as_str().to_string()),
+                _ => None,
+            }),
+            _ => None,
+        })
+}
+
+fn collect_cobol_record_fields(pair: Pair<Rule>, fields: &mut Vec<CobolRecordField>) {
+    match pair.as_rule() {
+        Rule::data_item => {
+            for child in pair.into_inner() {
+                collect_cobol_record_fields(child, fields);
+            }
+        }
+        Rule::regular_data_item => {
+            let mut name = String::new();
+            let mut nested_items = Vec::new();
+            let mut pic_str: Option<String> = None;
+            let mut usage_str: Option<String> = None;
+
+            for child in pair.into_inner() {
+                match child.as_rule() {
+                    Rule::ident_name | Rule::ident_or_keyword => {
+                        if name.is_empty() {
+                            name = child.as_str().to_string();
+                        }
+                    }
+                    Rule::kw_filler => {
+                        name = "FILLER".to_string();
+                    }
+                    Rule::data_clause => {
+                        let mut ignored_init = None;
+                        let mut ignored_occurs = None;
+                        let _ = walk_data_clause(
+                            child,
+                            &mut pic_str,
+                            &mut usage_str,
+                            &mut ignored_init,
+                            &mut ignored_occurs,
+                        );
+                    }
+                    Rule::data_item => nested_items.push(child),
+                    _ => {}
+                }
+            }
+
+            if nested_items.is_empty() {
+                if !name.is_empty() && name != "FILLER" {
+                    fields.push(CobolRecordField {
+                        name,
+                        numeric: cobol_type_hint(pic_str.as_deref(), usage_str.as_deref())
+                            .as_deref()
+                            .is_some_and(|hint| hint != "String" && hint != "Boolean"),
+                    });
+                }
+            } else {
+                for nested in nested_items {
+                    collect_cobol_record_fields(nested, fields);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn cobol_file_status_assign(status_var: Option<&str>, value: &str) -> Option<Statement> {
+    status_var.map(|name| Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident(name)],
+        value: Expression::string(value),
+    }))
+}
+
+fn cobol_record_key_index(
+    binding: &CobolFileBinding,
+    record_fields: &[CobolRecordField],
+    key_name_override: Option<&str>,
+) -> usize {
+    key_name_override.or(binding.key_name.as_deref())
+        .and_then(|key_name| {
+            record_fields.iter().position(|field| field.name.eq_ignore_ascii_case(key_name))
+        })
+        .unwrap_or(0)
+}
+
+fn parse_cobol_start_relation(source: &str) -> FileKeyRelation {
+    let lower = source.to_ascii_lowercase();
+    if lower.contains("not less") || lower.contains(">=") {
+        FileKeyRelation::GreaterOrEqual
+    } else if lower.contains("not greater") || lower.contains("<=") {
+        FileKeyRelation::LessOrEqual
+    } else if lower.contains(" > ") {
+        FileKeyRelation::Greater
+    } else if lower.contains(" < ") {
+        FileKeyRelation::Less
+    } else {
+        FileKeyRelation::Equal
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
 // Data Division
 // ════════════════════════════════════════════════════════════════════════════
 
-fn walk_data_division(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), String> {
+fn walk_data_division(
+    pair: Pair<Rule>,
+    body: &mut Vec<Statement>,
+    ctx: &mut CobolWalkerContext,
+) -> Result<(), String> {
     for child in pair.into_inner() {
         match child.as_rule() {
             Rule::file_section => {
-                walk_file_section(child, body)?;
+                walk_file_section(child, body, ctx)?;
             }
             Rule::working_storage_section
             | Rule::local_storage_section
             | Rule::linkage_section => {
-                walk_storage_section(child, body)?;
+                walk_storage_section(child, body, ctx)?;
             }
             Rule::screen_section => {
                 walk_screen_section(child, body)?;
@@ -283,30 +705,63 @@ fn walk_data_division(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(),
     Ok(())
 }
 
-fn walk_file_section(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), String> {
+fn walk_file_section(
+    pair: Pair<Rule>,
+    body: &mut Vec<Statement>,
+    ctx: &mut CobolWalkerContext,
+) -> Result<(), String> {
     for child in pair.into_inner() {
         if child.as_rule() == Rule::file_description {
-            walk_file_description(child, body)?;
+            walk_file_description(child, body, ctx)?;
         }
     }
     Ok(())
 }
 
-fn walk_file_description(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), String> {
-    // FD/SD name fd_clause* . data_item*
-    // We skip FD clauses and just emit data items.
-    for child in pair.into_inner() {
+fn walk_file_description(
+    pair: Pair<Rule>,
+    body: &mut Vec<Statement>,
+    ctx: &mut CobolWalkerContext,
+) -> Result<(), String> {
+    let children: Vec<Pair<Rule>> = pair.into_inner().collect();
+    let file_name = children.iter()
+        .find(|child| child.as_rule() == Rule::ident_or_keyword)
+        .map(|child| child.as_str().to_string())
+        .unwrap_or_default();
+    let data_items: Vec<Pair<Rule>> = children.iter()
+        .filter(|child| child.as_rule() == Rule::data_item)
+        .cloned()
+        .collect();
+    if let Some(record_item) = data_items.first().cloned() {
+        let record_name = extract_cobol_data_item_name(&record_item).unwrap_or_default();
+        let mut record_fields = Vec::new();
+        for item in data_items.iter().skip(1) {
+            collect_cobol_record_fields(item.clone(), &mut record_fields);
+        }
+        if record_fields.is_empty() {
+            collect_cobol_record_fields(record_item, &mut record_fields);
+        }
+        record_fields.dedup_by(|a, b| a.name.eq_ignore_ascii_case(&b.name));
+        if !file_name.is_empty() {
+            ctx.bind_record_name(&file_name, &record_name, record_fields);
+        }
+    }
+    for child in children {
         if child.as_rule() == Rule::data_item {
-            walk_data_item(child, body)?;
+            walk_data_item(child, body, ctx)?;
         }
     }
     Ok(())
 }
 
-fn walk_storage_section(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), String> {
+fn walk_storage_section(
+    pair: Pair<Rule>,
+    body: &mut Vec<Statement>,
+    ctx: &mut CobolWalkerContext,
+) -> Result<(), String> {
     for child in pair.into_inner() {
         if child.as_rule() == Rule::data_item {
-            walk_data_item(child, body)?;
+            walk_data_item(child, body, ctx)?;
         }
     }
     Ok(())
@@ -347,6 +802,7 @@ fn walk_screen_data_item(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<
 
     let mut name = String::new();
     let mut pic_str: Option<String> = None;
+    let mut usage_str: Option<String> = None;
     let mut init_value: Option<Expression> = None;
     let mut nested_items: Vec<Pair<Rule>> = Vec::new();
 
@@ -363,6 +819,9 @@ fn walk_screen_data_item(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<
                         pic_str = Some(part.as_str().to_string());
                     }
                 }
+            }
+            Rule::usage_clause => {
+                usage_str = extract_usage_clause_name(&child);
             }
             Rule::value_clause => {
                 for part in inner_nokw(child) {
@@ -408,8 +867,8 @@ fn walk_screen_data_item(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<
             kind: VarDeclKind::Dim,
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident(name),
-                type_hint: pic_str.as_ref().map(|p| pic_to_type_hint(p)),
-                init: init_value.or_else(|| pic_str.as_ref().map(|_| default_value_for_pic(&pic_str))),
+                type_hint: cobol_type_hint(pic_str.as_deref(), usage_str.as_deref()),
+                init: init_value.or_else(|| Some(default_value_for_cobol_type(pic_str.as_deref(), usage_str.as_deref()))),
                 array_bounds: None,
                 with_events: false,
             }],
@@ -421,7 +880,11 @@ fn walk_screen_data_item(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<
 
 // ── Data Items ─────────────────────────────────────────────────────────────
 
-fn walk_data_item(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), String> {
+fn walk_data_item(
+    pair: Pair<Rule>,
+    body: &mut Vec<Statement>,
+    ctx: &mut CobolWalkerContext,
+) -> Result<(), String> {
     let span = to_span(&pair);
     for child in pair.into_inner() {
         match child.as_rule() {
@@ -431,11 +894,11 @@ fn walk_data_item(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), Str
                 body.push(Statement::with_span(stmt, span));
             }
             Rule::regular_data_item => {
-                walk_regular_data_item(child, body)?;
+                walk_regular_data_item(child, body, ctx)?;
             }
             Rule::data_item => {
                 // Nested data items (children of a group)
-                walk_data_item(child, body)?;
+                walk_data_item(child, body, ctx)?;
             }
             _ => {}
         }
@@ -472,13 +935,54 @@ fn walk_level_88(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn walk_regular_data_item(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), String> {
+fn register_level_88_condition(
+    pair: Pair<Rule>,
+    parent_name: &str,
+    ctx: &mut CobolWalkerContext,
+) -> Result<(), String> {
+    if parent_name.is_empty() {
+        return Ok(());
+    }
+
+    let parts = inner_nokw(pair);
+    let mut name = String::new();
+    let mut values = Vec::new();
+
+    for part in parts {
+        match part.as_rule() {
+            Rule::ident_name => {
+                name = part.as_str().to_string();
+            }
+            Rule::literal => values.push(walk_literal(part)?),
+            _ => {}
+        }
+    }
+
+    if name.is_empty() || values.is_empty() {
+        return Ok(());
+    }
+
+    let mut comparisons = values.into_iter().map(|value| {
+        binary(BinOp::Eq, Expression::ident(parent_name), value)
+    });
+    let first = comparisons.next().unwrap();
+    let expr = comparisons.fold(first, |acc, cmp| binary(BinOp::Or, acc, cmp));
+    ctx.register_condition_name(&name, expr);
+    Ok(())
+}
+
+fn walk_regular_data_item(
+    pair: Pair<Rule>,
+    body: &mut Vec<Statement>,
+    ctx: &mut CobolWalkerContext,
+) -> Result<(), String> {
     let span = to_span(&pair);
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
-    let mut _level: u32 = 0;
+    let mut level: u32 = 0;
     let mut name = String::new();
     let mut pic_str: Option<String> = None;
+    let mut usage_str: Option<String> = None;
     let mut init_value: Option<Expression> = None;
     let mut occurs_count: Option<Expression> = None;
     let mut is_filler = false;
@@ -487,7 +991,7 @@ fn walk_regular_data_item(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result
     for child in children {
         match child.as_rule() {
             Rule::level_number => {
-                _level = child.as_str().trim().parse::<u32>().unwrap_or(0);
+                level = child.as_str().trim().parse::<u32>().unwrap_or(0);
             }
             Rule::ident_name | Rule::ident_or_keyword => {
                 // Grammar rule `regular_data_item` emits the data
@@ -508,12 +1012,10 @@ fn walk_regular_data_item(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result
                 name = "FILLER".to_string();
             }
             Rule::data_clause => {
-                walk_data_clause(child, &mut pic_str, &mut init_value, &mut occurs_count)?;
+                walk_data_clause(child, &mut pic_str, &mut usage_str, &mut init_value, &mut occurs_count)?;
             }
             Rule::level_88_item => {
-                // 88-level children — emit as separate constant declarations
-                let stmt = walk_level_88(child)?;
-                body.push(Statement::with_span(stmt, span));
+                register_level_88_condition(child, &name, ctx)?;
             }
             Rule::data_item => {
                 nested_items.push(child);
@@ -529,26 +1031,46 @@ fn walk_regular_data_item(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result
     if is_filler {
         // Still process nested items
         for nested in nested_items {
-            walk_data_item(nested, body)?;
+            walk_data_item(nested, body, ctx)?;
         }
         return Ok(());
     }
 
+    let (group_children, sibling_items): (Vec<_>, Vec<_>) = nested_items
+        .into_iter()
+        .partition(|item| cobol_data_item_level(item) > level);
+
     // Determine type hint from PIC
-    let type_hint = pic_str.as_ref().map(|p| pic_to_type_hint(p));
+    let type_hint = cobol_type_hint(pic_str.as_deref(), usage_str.as_deref());
 
     // Determine initial value
-    let init = if !nested_items.is_empty() {
+    let init = if !group_children.is_empty() {
         // Group item → Object initialiser with child fields
         let mut props = Vec::new();
         let mut child_stmts = Vec::new();
-        for nested in nested_items {
+        for nested in &group_children {
             // Walk nested item and collect as object property
-            collect_group_children(nested, &mut props, &mut child_stmts)?;
+            collect_group_children(nested.clone(), &mut props, &mut child_stmts)?;
         }
-        // Also emit any 88-level constants that were in child_stmts
-        for s in child_stmts {
-            body.push(s);
+        let field_names: Vec<CobolRecordField> = props.iter()
+            .filter_map(|prop| match prop {
+                ObjectProperty::KeyValue { key, value } => match &key.kind {
+                    ExprKind::Lit(Literal::Str(name)) => Some(CobolRecordField {
+                        name: name.clone(),
+                        numeric: !matches!(value.kind, ExprKind::Lit(Literal::Str(_))),
+                    }),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        if !field_names.is_empty() {
+            ctx.bind_record_fields_for_record(&name, field_names);
+        }
+        // Group children are also directly addressable in COBOL, so emit
+        // standalone bindings for them in addition to the parent object.
+        for nested in group_children {
+            walk_data_item(nested, body, ctx)?;
         }
         if props.is_empty() {
             init_value
@@ -558,7 +1080,7 @@ fn walk_regular_data_item(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result
     } else if let Some(count_expr) = occurs_count {
         // OCCURS → array initialiser
         let element_init = init_value.clone().unwrap_or_else(|| {
-            default_value_for_pic(&pic_str)
+            default_value_for_cobol_type(pic_str.as_deref(), usage_str.as_deref())
         });
         Some(Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("Array")),
@@ -569,7 +1091,7 @@ fn walk_regular_data_item(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result
             optional: false,
         }))
     } else {
-        init_value.or_else(|| Some(default_value_for_pic(&pic_str)))
+        init_value.or_else(|| Some(default_value_for_cobol_type(pic_str.as_deref(), usage_str.as_deref())))
     };
 
     if name.is_empty() {
@@ -587,15 +1109,24 @@ fn walk_regular_data_item(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result
         }],
     };
     body.push(Statement::with_span(stmt, span));
+    for sibling in sibling_items {
+        walk_data_item(sibling, body, ctx)?;
+    }
     Ok(())
 }
 
 fn walk_data_clause(
     pair: Pair<Rule>,
     pic_str: &mut Option<String>,
+    usage_str: &mut Option<String>,
     init_value: &mut Option<Expression>,
     occurs_count: &mut Option<Expression>,
 ) -> Result<(), String> {
+    if pair.as_str().trim_start().to_ascii_uppercase().starts_with("USAGE") {
+        *usage_str = extract_usage_clause_name(&pair);
+        return Ok(());
+    }
+
     for child in pair.into_inner() {
         match child.as_rule() {
             Rule::pic_clause => {
@@ -604,6 +1135,9 @@ fn walk_data_clause(
                         *pic_str = Some(p.as_str().to_string());
                     }
                 }
+            }
+            Rule::usage_clause => {
+                *usage_str = extract_usage_clause_name(&child);
             }
             Rule::value_clause => {
                 let parts = inner_nokw(child);
@@ -635,7 +1169,7 @@ fn walk_data_clause(
                     }
                 }
             }
-            Rule::redefines_clause | Rule::usage_clause | Rule::blank_clause
+            Rule::redefines_clause | Rule::blank_clause
             | Rule::justified_clause | Rule::sign_clause | Rule::sync_clause
             | Rule::global_clause | Rule::external_clause | Rule::national_clause => {
                 // These affect storage layout but not the AST structure
@@ -644,6 +1178,14 @@ fn walk_data_clause(
         }
     }
     Ok(())
+}
+
+fn extract_usage_clause_name(pair: &Pair<Rule>) -> Option<String> {
+    pair.as_str()
+        .split_whitespace()
+        .last()
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
 }
 
 /// Collect children of a group data item as ObjectProperty entries.
@@ -660,15 +1202,19 @@ fn collect_group_children(
             }
             Rule::regular_data_item => {
                 let children: Vec<Pair<Rule>> = child.into_inner().collect();
+                let mut field_level: u32 = 0;
                 let mut field_name = String::new();
                 let mut field_pic: Option<String> = None;
+                let mut field_usage: Option<String> = None;
                 let mut field_init: Option<Expression> = None;
                 let mut field_occurs: Option<Expression> = None;
                 let mut sub_items: Vec<Pair<Rule>> = Vec::new();
 
                 for c in children {
                     match c.as_rule() {
-                        Rule::level_number => {}
+                        Rule::level_number => {
+                            field_level = c.as_str().trim().parse::<u32>().unwrap_or(0);
+                        }
                         Rule::ident_name | Rule::ident_or_keyword => {
                             // See the equivalent fix in
                             // `walk_regular_data_item` — the grammar
@@ -684,7 +1230,7 @@ fn collect_group_children(
                             field_name = "FILLER".to_string();
                         }
                         Rule::data_clause => {
-                            walk_data_clause(c, &mut field_pic, &mut field_init, &mut field_occurs)?;
+                            walk_data_clause(c, &mut field_pic, &mut field_usage, &mut field_init, &mut field_occurs)?;
                         }
                         Rule::level_88_item => {
                             let stmt = walk_level_88(c)?;
@@ -706,14 +1252,20 @@ fn collect_group_children(
                     continue;
                 }
 
-                let value = if !sub_items.is_empty() {
+                let (true_children, leaked_siblings): (Vec<_>, Vec<_>) = sub_items
+                    .into_iter()
+                    .partition(|item| cobol_data_item_level(item) > field_level);
+
+                let value = if !true_children.is_empty() {
                     let mut sub_props = Vec::new();
-                    for si in sub_items {
+                    for si in true_children {
                         collect_group_children(si, &mut sub_props, extra_stmts)?;
                     }
                     Expression::new(ExprKind::Object(sub_props))
                 } else if let Some(count_expr) = field_occurs {
-                    let element_init = field_init.unwrap_or_else(|| default_value_for_pic(&field_pic));
+                    let element_init = field_init.unwrap_or_else(|| {
+                        default_value_for_cobol_type(field_pic.as_deref(), field_usage.as_deref())
+                    });
                     eprintln!("[D1 WALKER] nested OCCURS path emitting Array(count, init) for field");
                     Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("Array")),
@@ -724,13 +1276,19 @@ fn collect_group_children(
                         optional: false,
                     })
                 } else {
-                    field_init.unwrap_or_else(|| default_value_for_pic(&field_pic))
+                    field_init.unwrap_or_else(|| {
+                        default_value_for_cobol_type(field_pic.as_deref(), field_usage.as_deref())
+                    })
                 };
 
                 props.push(ObjectProperty::KeyValue {
                     key: Expression::string(&field_name),
                     value,
                 });
+
+                for sibling in leaked_siblings {
+                    collect_group_children(sibling, props, extra_stmts)?;
+                }
             }
             Rule::data_item => {
                 collect_group_children(child, props, extra_stmts)?;
@@ -741,37 +1299,104 @@ fn collect_group_children(
     Ok(())
 }
 
-/// Determine a type hint from a PIC string.
-fn pic_to_type_hint(pic: &str) -> String {
-    let upper = pic.to_uppercase();
-    if upper.starts_with('X') || upper.starts_with('A') {
-        "String".to_string()
-    } else if upper.contains('V') || upper.contains('.') {
-        "Double".to_string()
-    } else {
-        "Integer".to_string()
+fn cobol_type_hint(pic: Option<&str>, usage: Option<&str>) -> Option<String> {
+    if let Some(usage) = usage {
+        let usage = usage.trim().to_ascii_uppercase();
+        let hint = match usage.as_str() {
+            "BOOLEAN" => Some("Boolean"),
+            "FLOAT-SHORT" => Some("Single"),
+            "FLOAT-LONG" => Some("Double"),
+            "COMP-3" | "PACKED-DECIMAL" => Some("Decimal"),
+            "POINTER" | "INDEX" => Some("Long"),
+            "NATIONAL" => Some("String"),
+            "BINARY" | "COMP" | "COMP-5" => {
+                Some(if pic_integer_digits(pic.unwrap_or_default()) > 9 { "Long" } else { "Integer" })
+            }
+            _ => None,
+        };
+        if let Some(hint) = hint {
+            return Some(hint.to_string());
+        }
+    }
+
+    let pic = pic?;
+    let upper = pic.trim().to_ascii_uppercase();
+    if upper.is_empty() {
+        return None;
+    }
+    if upper.starts_with('X') || upper.starts_with('A') || upper.starts_with('N') {
+        return Some("String".to_string());
+    }
+    if upper.starts_with('B') && !upper.contains('9') {
+        return Some("Boolean".to_string());
+    }
+    if upper.contains('V') || upper.contains('.') || upper.contains('P') {
+        return Some("Decimal".to_string());
+    }
+    if pic_integer_digits(&upper) > 9 {
+        return Some("Long".to_string());
+    }
+    Some("Integer".to_string())
+}
+
+fn default_value_for_cobol_type(pic: Option<&str>, usage: Option<&str>) -> Expression {
+    match cobol_type_hint(pic, usage).as_deref() {
+        Some("String") => Expression::string(" "),
+        Some("Boolean") => Expression::bool(false),
+        Some("Integer") | Some("Long") | Some("Single") | Some("Double") | Some("Decimal") => Expression::int(0),
+        Some(_) | None => Expression::null(),
     }
 }
 
-/// Default value for a PIC type (spaces for alpha, 0 for numeric).
-fn default_value_for_pic(pic: &Option<String>) -> Expression {
-    if let Some(p) = pic {
-        let upper = p.to_uppercase();
-        if upper.starts_with('X') || upper.starts_with('A') {
-            Expression::string(" ")
-        } else {
-            Expression::int(0)
+fn pic_integer_digits(pic: &str) -> usize {
+    count_pic_markers_before_decimal(pic, &['9', 'Z', '*'])
+}
+
+fn count_pic_markers_before_decimal(pic: &str, markers: &[char]) -> usize {
+    let upper = pic.trim().to_ascii_uppercase();
+    let chars: Vec<char> = upper.chars().collect();
+    let mut index = 0;
+    let mut count = 0;
+
+    while index < chars.len() {
+        let ch = chars[index];
+        if ch == 'V' || ch == '.' {
+            break;
         }
-    } else {
-        Expression::null()
+        if markers.contains(&ch) {
+            let mut repeat = 1usize;
+            if index + 1 < chars.len() && chars[index + 1] == '(' {
+                let mut cursor = index + 2;
+                let mut digits = String::new();
+                while cursor < chars.len() && chars[cursor] != ')' {
+                    digits.push(chars[cursor]);
+                    cursor += 1;
+                }
+                if cursor < chars.len() && chars[cursor] == ')' {
+                    repeat = digits.parse::<usize>().unwrap_or(1);
+                    index = cursor;
+                }
+            }
+            count += repeat;
+        }
+        index += 1;
     }
+
+    count
 }
 
 // ════════════════════════════════════════════════════════════════════════════
 // Procedure Division
 // ════════════════════════════════════════════════════════════════════════════
 
-fn walk_procedure_division(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), String> {
+fn walk_procedure_division(
+    pair: Pair<Rule>,
+    body: &mut Vec<Statement>,
+    ctx: &CobolWalkerContext,
+) -> Result<(), String> {
+    let mut entry_name: Option<String> = None;
+    let mut saw_leading_statements = false;
+
     for child in pair.into_inner() {
         match child.as_rule() {
             Rule::using_clause | Rule::returning_clause => {
@@ -779,7 +1404,12 @@ fn walk_procedure_division(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Resul
                 // main program.  These are rarely used in practice.
             }
             Rule::statement_list => {
-                walk_statement_list(child, body)?;
+                let mut statements = Vec::new();
+                walk_statement_list(child, &mut statements, ctx)?;
+                if !statements.is_empty() && entry_name.is_none() {
+                    saw_leading_statements = true;
+                }
+                body.extend(statements);
             }
             Rule::declaratives_block => {
                 // Parsed for compatibility; no shared AST lowering yet.
@@ -787,17 +1417,33 @@ fn walk_procedure_division(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Resul
             Rule::procedure_block => {
                 for part in child.into_inner() {
                     match part.as_rule() {
-                        Rule::section => walk_section(part, body)?,
-                        Rule::paragraph => walk_paragraph(part, body)?,
+                        Rule::section => {
+                            if entry_name.is_none() && !saw_leading_statements {
+                                entry_name = first_cobol_block_name(&part);
+                            }
+                            walk_section(part, body, ctx)?;
+                        }
+                        Rule::paragraph => {
+                            if entry_name.is_none() && !saw_leading_statements {
+                                entry_name = first_cobol_block_name(&part);
+                            }
+                            walk_paragraph(part, body, ctx)?;
+                        }
                         _ => {}
                     }
                 }
             }
             Rule::section => {
-                walk_section(child, body)?;
+                if entry_name.is_none() && !saw_leading_statements {
+                    entry_name = first_cobol_block_name(&child);
+                }
+                walk_section(child, body, ctx)?;
             }
             Rule::paragraph => {
-                walk_paragraph(child, body)?;
+                if entry_name.is_none() && !saw_leading_statements {
+                    entry_name = first_cobol_block_name(&child);
+                }
+                walk_paragraph(child, body, ctx)?;
             }
             Rule::period => {}
             _ => {
@@ -807,10 +1453,30 @@ fn walk_procedure_division(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Resul
             }
         }
     }
+
+    if let Some(name) = entry_name {
+        body.push(Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident(&name)),
+            args: Vec::new(),
+            optional: false,
+        }))));
+    }
+
     Ok(())
 }
 
-fn walk_paragraph(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), String> {
+fn first_cobol_block_name(pair: &Pair<Rule>) -> Option<String> {
+    pair.clone()
+        .into_inner()
+        .find(|child| child.as_rule() == Rule::paragraph_name)
+        .map(|child| child.as_str().to_string())
+}
+
+fn walk_paragraph(
+    pair: Pair<Rule>,
+    body: &mut Vec<Statement>,
+    ctx: &CobolWalkerContext,
+) -> Result<(), String> {
     let span = to_span(&pair);
     let parts = filter_nokw(pair.into_inner());
 
@@ -823,7 +1489,7 @@ fn walk_paragraph(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), Str
                 name = p.as_str().to_string();
             }
             Rule::statement_list => {
-                walk_statement_list(p, &mut para_body)?;
+                walk_statement_list(p, &mut para_body, ctx)?;
             }
             _ => {}
         }
@@ -852,7 +1518,11 @@ fn walk_paragraph(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), Str
     Ok(())
 }
 
-fn walk_section(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), String> {
+fn walk_section(
+    pair: Pair<Rule>,
+    body: &mut Vec<Statement>,
+    ctx: &CobolWalkerContext,
+) -> Result<(), String> {
     let span = to_span(&pair);
     let parts = filter_nokw(pair.into_inner());
 
@@ -865,10 +1535,10 @@ fn walk_section(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), Strin
                 name = p.as_str().to_string();
             }
             Rule::statement_list => {
-                walk_statement_list(p, &mut section_body)?;
+                walk_statement_list(p, &mut section_body, ctx)?;
             }
             Rule::paragraph => {
-                walk_paragraph(p, &mut section_body)?;
+                walk_paragraph(p, &mut section_body, ctx)?;
             }
             _ => {}
         }
@@ -897,13 +1567,17 @@ fn walk_section(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), Strin
     Ok(())
 }
 
-fn walk_statement_list(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), String> {
+fn walk_statement_list(
+    pair: Pair<Rule>,
+    body: &mut Vec<Statement>,
+    ctx: &CobolWalkerContext,
+) -> Result<(), String> {
     for child in pair.into_inner() {
         let rule = child.as_rule();
         if matches!(rule, Rule::period) || is_kw(rule) {
             continue;
         }
-        if let Some(stmt) = walk_statement(child)? {
+        if let Some(stmt) = walk_statement(child, ctx)? {
             body.push(stmt);
         }
     }
@@ -914,7 +1588,7 @@ fn walk_statement_list(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<()
 // Statements
 // ════════════════════════════════════════════════════════════════════════════
 
-fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
+fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<Statement>, String> {
     let span = to_span(&pair);
     let rule = pair.as_rule();
 
@@ -970,17 +1644,17 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
 
         // ── IF ──────────────────────────────────────────────────────────
         Rule::if_stmt => {
-            walk_if_stmt(pair)?
+            walk_if_stmt(pair, ctx)?
         }
 
         // ── EVALUATE ────────────────────────────────────────────────────
         Rule::evaluate_stmt => {
-            walk_evaluate_stmt(pair)?
+            walk_evaluate_stmt(pair, ctx)?
         }
 
         // ── PERFORM ─────────────────────────────────────────────────────
         Rule::perform_stmt => {
-            walk_perform_stmt(pair)?
+            walk_perform_stmt(pair, ctx)?
         }
 
         // ── STRING ──────────────────────────────────────────────────────
@@ -1034,7 +1708,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
         Rule::go_to_stmt => {
             let parts = inner_nokw(pair);
             let name = parts.into_iter()
-                .find(|p| p.as_rule() == Rule::ident_name)
+                .find(|p| matches!(p.as_rule(), Rule::ident_name | Rule::paragraph_name))
                 .map(|p| p.as_str().to_string())
                 .unwrap_or_default();
             // GO TO paragraph → call the paragraph
@@ -1084,38 +1758,37 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
 
         // ── OPEN ────────────────────────────────────────────────────────
         Rule::open_stmt => {
-            walk_open_stmt(pair)?
+            walk_open_stmt(pair, ctx)?
         }
 
         // ── CLOSE ───────────────────────────────────────────────────────
         Rule::close_stmt => {
-            walk_close_stmt(pair)?
+            walk_close_stmt(pair, ctx)?
         }
 
         // ── READ ────────────────────────────────────────────────────────
         Rule::read_stmt => {
-            walk_read_stmt(pair)?
+            walk_read_stmt(pair, ctx)?
         }
 
         // ── WRITE ───────────────────────────────────────────────────────
         Rule::write_stmt => {
-            walk_write_stmt(pair)?
+            walk_write_stmt(pair, ctx)?
         }
 
         // ── REWRITE ─────────────────────────────────────────────────────
         Rule::rewrite_stmt => {
-            walk_rewrite_stmt(pair)?
+            walk_rewrite_stmt(pair, ctx)?
         }
 
         // ── DELETE ──────────────────────────────────────────────────────
         Rule::delete_stmt => {
-            walk_delete_stmt(pair)?
+            walk_delete_stmt(pair, ctx)?
         }
 
         // ── START ───────────────────────────────────────────────────────
         Rule::start_stmt => {
-            // START positions file — simplified as empty
-            StmtKind::Empty
+            walk_start_stmt(pair, ctx)?
         }
 
         // ── SORT ────────────────────────────────────────────────────────
@@ -1131,7 +1804,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
 
         // ── SEARCH ──────────────────────────────────────────────────────
         Rule::search_stmt => {
-            walk_search_stmt(pair)?
+            walk_search_stmt(pair, ctx)?
         }
 
         // ── COPY ────────────────────────────────────────────────────────
@@ -1276,13 +1949,14 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
         Rule::nested_program_stmt => {
             // Compile inline — walk its procedure division
             let mut nested_body = Vec::new();
+            let mut nested_ctx = CobolWalkerContext::new();
             for child in pair.into_inner() {
                 match child.as_rule() {
                     Rule::procedure_division => {
-                        walk_procedure_division(child, &mut nested_body)?;
+                        walk_procedure_division(child, &mut nested_body, &nested_ctx)?;
                     }
                     Rule::data_division => {
-                        walk_data_division(child, &mut nested_body)?;
+                        walk_data_division(child, &mut nested_body, &mut nested_ctx)?;
                     }
                     _ => {}
                 }
@@ -1293,7 +1967,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
         // ── statement_list (transparent wrapper) ────────────────────────
         Rule::statement_list => {
             let mut stmts = Vec::new();
-            walk_statement_list(pair, &mut stmts)?;
+            walk_statement_list(pair, &mut stmts, ctx)?;
             if stmts.len() == 1 {
                 return Ok(Some(stmts.remove(0)));
             }
@@ -1441,13 +2115,23 @@ fn walk_move_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 if child.as_rule() == Rule::expression {
                     src_expr = Some(walk_expression(child)?);
                 }
-            } else if matches!(child.as_rule(), Rule::ident_name | Rule::kw_sd) {
-                targets.push(Expression::ident(child.as_str()));
+            } else if let Some(target_name) = extract_data_target_name(child.clone()) {
+                targets.push(Expression::ident(&target_name));
             }
         }
 
         let value = src_expr.ok_or("MOVE missing source expression")?;
         Ok(StmtKind::Assign { targets, value })
+    }
+}
+
+fn extract_data_target_name(pair: Pair<Rule>) -> Option<String> {
+    match pair.as_rule() {
+        Rule::ident_name | Rule::ident_or_keyword | Rule::kw_sd => Some(pair.as_str().to_string()),
+        Rule::data_target | Rule::move_target | Rule::giving_clause | Rule::remainder_clause => {
+            pair.into_inner().find_map(extract_data_target_name)
+        }
+        _ => None,
     }
 }
 
@@ -1493,27 +2177,29 @@ fn walk_add_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
 
         if in_giving {
-            if child.as_rule() == Rule::ident_name {
-                giving_name = Some(child.as_str().to_string());
+            if let Some(target_name) = extract_data_target_name(child.clone()) {
+                giving_name = Some(target_name);
             }
         } else if in_to {
-            if child.as_rule() == Rule::ident_name {
-                to_name = Some(child.as_str().to_string());
+            if let Some(target_name) = extract_data_target_name(child.clone()) {
+                to_name = Some(target_name);
             } else if child.as_rule() == Rule::giving_clause {
                 // giving_clause nested inside
-                for gc in child.clone().into_inner() {
-                    if gc.as_rule() == Rule::ident_name {
-                        giving_name = Some(gc.as_str().to_string());
-                    }
+                if let Some(target_name) = extract_data_target_name(child.clone()) {
+                    giving_name = Some(target_name);
                 }
             }
         } else if child.as_rule() == Rule::expression {
             exprs.push(walk_expression(child.clone())?);
+        } else if child.as_rule() == Rule::arith_operand {
+            if let Some(inner) = child.clone().into_inner().next() {
+                exprs.push(walk_atom(inner)?);
+            }
+        } else if child.as_rule() == Rule::literal {
+            exprs.push(walk_literal(child.clone())?);
         } else if child.as_rule() == Rule::giving_clause {
-            for gc in child.clone().into_inner() {
-                if gc.as_rule() == Rule::ident_name {
-                    giving_name = Some(gc.as_str().to_string());
-                }
+            if let Some(target_name) = extract_data_target_name(child.clone()) {
+                giving_name = Some(target_name);
             }
         }
     }
@@ -1582,20 +2268,24 @@ fn walk_subtract_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
             continue;
         }
         if child.as_rule() == Rule::giving_clause {
-            for gc in child.clone().into_inner() {
-                if gc.as_rule() == Rule::ident_name {
-                    giving_name = Some(gc.as_str().to_string());
-                }
+            if let Some(target_name) = extract_data_target_name(child.clone()) {
+                giving_name = Some(target_name);
             }
             continue;
         }
 
         if in_from {
-            if child.as_rule() == Rule::ident_name {
-                from_name = Some(child.as_str().to_string());
+            if let Some(target_name) = extract_data_target_name(child.clone()) {
+                from_name = Some(target_name);
             }
         } else if child.as_rule() == Rule::expression {
             src_expr = Some(walk_expression(child.clone())?);
+        } else if child.as_rule() == Rule::arith_operand {
+            if let Some(inner) = child.clone().into_inner().next() {
+                src_expr = Some(walk_atom(inner)?);
+            }
+        } else if child.as_rule() == Rule::literal {
+            src_expr = Some(walk_literal(child.clone())?);
         }
     }
 
@@ -1638,10 +2328,8 @@ fn walk_multiply_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
             continue;
         }
         if child.as_rule() == Rule::giving_clause {
-            for gc in child.clone().into_inner() {
-                if gc.as_rule() == Rule::ident_name {
-                    giving_name = Some(gc.as_str().to_string());
-                }
+            if let Some(target_name) = extract_data_target_name(child.clone()) {
+                giving_name = Some(target_name);
             }
             continue;
         }
@@ -1651,9 +2339,9 @@ fn walk_multiply_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 if let Some(inner) = child.clone().into_inner().next() {
                     by_expr = Some(walk_atom(inner)?);
                 }
-            } else if child.as_rule() == Rule::ident_name {
-                by_name = Some(child.as_str().to_string());
-                by_expr = Some(Expression::ident(child.as_str()));
+            } else if let Some(target_name) = extract_data_target_name(child.clone()) {
+                by_name = Some(target_name.clone());
+                by_expr = Some(Expression::ident(&target_name));
             }
         } else if child.as_rule() == Rule::arith_operand {
             if let Some(inner) = child.clone().into_inner().next() {
@@ -1704,20 +2392,20 @@ fn walk_divide_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
             continue;
         }
         if child.as_rule() == Rule::remainder_clause {
-            for rc in child.clone().into_inner() {
-                if rc.as_rule() == Rule::ident_name {
-                    remainder_name = Some(rc.as_str().to_string());
-                }
+            if let Some(target_name) = extract_data_target_name(child.clone()) {
+                remainder_name = Some(target_name);
             }
             continue;
         }
 
         if child.as_rule() == Rule::expression {
             exprs.push(walk_expression(child.clone())?);
-        } else if child.as_rule() == Rule::ident_name && (is_by || is_into) {
+        } else if is_by || is_into {
             // After GIVING keyword
             if giving_name.is_none() {
-                giving_name = Some(child.as_str().to_string());
+                if let Some(target_name) = extract_data_target_name(child.clone()) {
+                    giving_name = Some(target_name);
+                }
             }
         }
     }
@@ -1763,14 +2451,19 @@ fn walk_divide_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 fn walk_compute_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let parts = inner_nokw(pair);
-    let mut target = String::new();
+    let mut target: Option<Expression> = None;
     let mut expr: Option<Expression> = None;
 
     for p in parts {
         match p.as_rule() {
+            Rule::data_target => {
+                if target.is_none() {
+                    target = Some(walk_data_target_expr(p)?);
+                }
+            }
             Rule::ident_name => {
-                if target.is_empty() {
-                    target = p.as_str().to_string();
+                if target.is_none() {
+                    target = Some(Expression::ident(p.as_str()));
                 }
             }
             Rule::expression => {
@@ -1781,14 +2474,14 @@ fn walk_compute_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 
     Ok(StmtKind::Assign {
-        targets: vec![Expression::ident(&target)],
+        targets: vec![target.unwrap_or_else(|| Expression::ident(""))],
         value: expr.unwrap_or(Expression::int(0)),
     })
 }
 
 // ── IF ──────────────────────────────────────────────────────────────────────
 
-fn walk_if_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_if_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
     let mut cond: Option<Expression> = None;
@@ -1799,19 +2492,19 @@ fn walk_if_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
         match child.as_rule() {
             Rule::condition => {
                 if cond.is_none() {
-                    cond = Some(walk_condition(child)?);
+                    cond = Some(walk_condition(child, ctx)?);
                 }
             }
             Rule::statement_list => {
                 if cond.is_some() && then_body.is_empty() {
-                    walk_statement_list(child, &mut then_body)?;
+                    walk_statement_list(child, &mut then_body, ctx)?;
                 }
             }
             Rule::else_clause => {
                 let mut body = Vec::new();
                 for ec in child.into_inner() {
                     if ec.as_rule() == Rule::statement_list {
-                        walk_statement_list(ec, &mut body)?;
+                        walk_statement_list(ec, &mut body, ctx)?;
                     }
                 }
                 else_body = Some(body);
@@ -1830,7 +2523,7 @@ fn walk_if_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 // ── EVALUATE ────────────────────────────────────────────────────────────────
 
-fn walk_evaluate_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_evaluate_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
     // First expression is the subject
@@ -1846,14 +2539,14 @@ fn walk_evaluate_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 }
             }
             Rule::when_clause => {
-                let case = walk_when_clause(child)?;
+                let case = walk_when_clause(child, ctx)?;
                 cases.push(case);
             }
             Rule::when_other_clause => {
                 let mut body = Vec::new();
                 for wc in child.into_inner() {
                     if wc.as_rule() == Rule::statement_list {
-                        walk_statement_list(wc, &mut body)?;
+                        walk_statement_list(wc, &mut body, ctx)?;
                     }
                 }
                 default = Some(body);
@@ -1879,7 +2572,7 @@ fn walk_evaluate_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn walk_when_clause(pair: Pair<Rule>) -> Result<SwitchCase, String> {
+fn walk_when_clause(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<SwitchCase, String> {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
     let mut conditions = Vec::new();
     let mut body = Vec::new();
@@ -1887,13 +2580,13 @@ fn walk_when_clause(pair: Pair<Rule>) -> Result<SwitchCase, String> {
     for child in children {
         match child.as_rule() {
             Rule::when_value => {
-                let val = walk_when_value(child)?;
+                let val = walk_when_value(child, ctx)?;
                 if let Some(cond) = val {
                     conditions.push(cond);
                 }
             }
             Rule::statement_list => {
-                walk_statement_list(child, &mut body)?;
+                walk_statement_list(child, &mut body, ctx)?;
             }
             _ => {}
         }
@@ -1902,7 +2595,7 @@ fn walk_when_clause(pair: Pair<Rule>) -> Result<SwitchCase, String> {
     Ok(SwitchCase { conditions, body })
 }
 
-fn walk_when_value(pair: Pair<Rule>) -> Result<Option<CaseCondition>, String> {
+fn walk_when_value(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<CaseCondition>, String> {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
     for child in &children {
@@ -1915,10 +2608,14 @@ fn walk_when_value(pair: Pair<Rule>) -> Result<Option<CaseCondition>, String> {
     }
 
     // Check for THRU range
-    let exprs: Vec<Expression> = children.iter()
-        .filter(|c| c.as_rule() == Rule::expression)
-        .map(|c| walk_expression(c.clone()))
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut exprs = Vec::new();
+    for child in &children {
+        match child.as_rule() {
+            Rule::expression => exprs.push(walk_expression(child.clone())?),
+            Rule::condition => exprs.push(walk_condition(child.clone(), ctx)?),
+            _ => {}
+        }
+    }
 
     if exprs.len() >= 2 {
         Ok(Some(CaseCondition::Range {
@@ -1981,17 +2678,18 @@ fn case_conditions_to_expr(conditions: &[CaseCondition]) -> Expression {
 
 // ── PERFORM ─────────────────────────────────────────────────────────────────
 
-fn walk_perform_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_perform_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
     let inner = pair.into_inner().next().ok_or("empty PERFORM")?;
 
     match inner.as_rule() {
-        Rule::perform_varying => walk_perform_varying(inner),
-        Rule::perform_until => walk_perform_until(inner),
-        Rule::perform_times => walk_perform_times(inner),
+        Rule::perform_varying => walk_perform_varying(inner, ctx),
+        Rule::perform_until => walk_perform_until(inner, ctx),
+        Rule::perform_times => walk_perform_times(inner, ctx),
+        Rule::perform_paragraph_until => walk_perform_paragraph_until(inner, ctx),
         Rule::perform_async => {
             let parts = inner_nokw(inner);
             let name = parts.into_iter()
-                .find(|p| p.as_rule() == Rule::ident_name)
+                .find(|p| matches!(p.as_rule(), Rule::ident_name | Rule::paragraph_name))
                 .map(|p| p.as_str().to_string())
                 .unwrap_or_default();
             Ok(StmtKind::Expr(Expression::new(ExprKind::Await(
@@ -2005,7 +2703,7 @@ fn walk_perform_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
         Rule::perform_thru => {
             let parts = inner_nokw(inner);
             let names: Vec<String> = parts.into_iter()
-                .filter(|p| p.as_rule() == Rule::ident_name)
+                .filter(|p| matches!(p.as_rule(), Rule::ident_name | Rule::paragraph_name))
                 .map(|p| p.as_str().to_string())
                 .collect();
             // PERFORM para1 THRU para2 → call both paragraphs
@@ -2024,7 +2722,7 @@ fn walk_perform_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
         Rule::perform_paragraph => {
             let parts = inner_nokw(inner);
             let name = parts.into_iter()
-                .find(|p| p.as_rule() == Rule::ident_name)
+                .find(|p| matches!(p.as_rule(), Rule::ident_name | Rule::paragraph_name))
                 .map(|p| p.as_str().to_string())
                 .unwrap_or_default();
             Ok(StmtKind::Expr(Expression::new(ExprKind::Call {
@@ -2037,7 +2735,7 @@ fn walk_perform_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
             let mut body = Vec::new();
             for child in inner.into_inner() {
                 if child.as_rule() == Rule::statement_list {
-                    walk_statement_list(child, &mut body)?;
+                    walk_statement_list(child, &mut body, ctx)?;
                 }
             }
             Ok(StmtKind::Block(body))
@@ -2046,7 +2744,7 @@ fn walk_perform_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 }
 
-fn walk_perform_varying(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_perform_varying(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
     let mut var_name = String::new();
@@ -2075,10 +2773,10 @@ fn walk_perform_varying(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 }
             }
             Rule::condition => {
-                until_cond = Some(walk_condition(child)?);
+                until_cond = Some(walk_condition(child, ctx)?);
             }
             Rule::statement_list => {
-                walk_statement_list(child, &mut body)?;
+                walk_statement_list(child, &mut body, ctx)?;
             }
             _ => {}
         }
@@ -2109,7 +2807,7 @@ fn walk_perform_varying(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn walk_perform_until(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_perform_until(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
     let mut test_after = false;
@@ -2127,10 +2825,10 @@ fn walk_perform_until(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 }
             }
             Rule::condition => {
-                until_cond = Some(walk_condition(child)?);
+                until_cond = Some(walk_condition(child, ctx)?);
             }
             Rule::statement_list => {
-                walk_statement_list(child, &mut body)?;
+                walk_statement_list(child, &mut body, ctx)?;
             }
             _ => {}
         }
@@ -2155,7 +2853,59 @@ fn walk_perform_until(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 }
 
-fn walk_perform_times(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_perform_paragraph_until(
+    pair: Pair<Rule>,
+    ctx: &CobolWalkerContext,
+) -> Result<StmtKind, String> {
+    let children: Vec<Pair<Rule>> = pair.into_inner().collect();
+
+    let mut test_after = false;
+    let mut until_cond: Option<Expression> = None;
+    let mut paragraph_name: Option<String> = None;
+
+    for child in children {
+        match child.as_rule() {
+            Rule::paragraph_name | Rule::ident_name => {
+                paragraph_name = Some(child.as_str().to_string());
+            }
+            Rule::test_clause => {
+                for tc in child.into_inner() {
+                    if tc.as_rule() == Rule::kw_after {
+                        test_after = true;
+                    }
+                }
+            }
+            Rule::condition => {
+                until_cond = Some(walk_condition(child, ctx)?);
+            }
+            _ => {}
+        }
+    }
+
+    let body = vec![Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(&paragraph_name.unwrap_or_default())),
+        args: Vec::new(),
+        optional: false,
+    })))];
+
+    let cond = negate_expr(until_cond.unwrap_or(Expression::bool(false)));
+
+    if test_after {
+        Ok(StmtKind::DoWhile {
+            body,
+            cond,
+            until: false,
+        })
+    } else {
+        Ok(StmtKind::While {
+            cond,
+            body,
+            else_body: None,
+        })
+    }
+}
+
+fn walk_perform_times(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
     let mut count_expr: Option<Expression> = None;
@@ -2169,7 +2919,7 @@ fn walk_perform_times(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 }
             }
             Rule::statement_list => {
-                walk_statement_list(child, &mut body)?;
+                walk_statement_list(child, &mut body, ctx)?;
             }
             _ => {}
         }
@@ -2246,25 +2996,31 @@ fn walk_unstring_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
     let mut src_name = String::new();
-    let mut target_names: Vec<String> = Vec::new();
+    let mut target_exprs: Vec<Expression> = Vec::new();
     let mut delimiter: Option<Expression> = None;
+    let mut saw_delimited_by = false;
 
     for child in &children {
         match child.as_rule() {
             Rule::ident_name => {
                 if src_name.is_empty() {
                     src_name = child.as_str().to_string();
+                } else if saw_delimited_by && delimiter.is_none() {
+                    delimiter = Some(Expression::ident(child.as_str()));
                 }
             }
+            Rule::kw_delimited | Rule::kw_by => {
+                saw_delimited_by = true;
+            }
             Rule::string_literal => {
-                if delimiter.is_none() {
+                if saw_delimited_by && delimiter.is_none() {
                     delimiter = Some(walk_string_literal(child)?);
                 }
             }
             Rule::unstring_target => {
                 for ut in child.clone().into_inner() {
-                    if ut.as_rule() == Rule::ident_name {
-                        target_names.push(ut.as_str().to_string());
+                    if ut.as_rule() == Rule::data_target {
+                        target_exprs.push(walk_data_target_expr(ut)?);
                         break;
                     }
                 }
@@ -2300,9 +3056,9 @@ fn walk_unstring_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }],
     }));
 
-    for (i, target) in target_names.iter().enumerate() {
+    for (i, target) in target_exprs.iter().enumerate() {
         stmts.push(Statement::new(StmtKind::Assign {
-            targets: vec![Expression::ident(target)],
+            targets: vec![target.clone()],
             value: Expression::new(ExprKind::Index {
                 object: Box::new(Expression::ident("__split_result")),
                 index: Box::new(Expression::int(i as i64)),
@@ -2339,9 +3095,14 @@ fn walk_inspect_tallying(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     // Find the target string/ident in tally phrases
     let mut target_expr = Expression::string(" ");
+    let mut count_characters = false;
     for p in parts {
         if p.as_rule() == Rule::inspect_tally_phrase {
             for tp in p.into_inner() {
+                if tp.as_rule() == Rule::kw_characters {
+                    count_characters = true;
+                    break;
+                }
                 if tp.as_rule() == Rule::string_literal {
                     target_expr = walk_string_literal(&tp)?;
                     break;
@@ -2352,6 +3113,19 @@ fn walk_inspect_tallying(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 }
             }
         }
+    }
+
+    if count_characters {
+        let len_expr = Expression::new(ExprKind::Member {
+            object: Box::new(Expression::ident(&var)),
+            field: "length".to_string(),
+            null_safe: false,
+        });
+
+        return Ok(StmtKind::Assign {
+            targets: vec![Expression::ident(&counter)],
+            value: len_expr,
+        });
     }
 
     // counter = split(var, target).length - 1
@@ -2543,16 +3317,25 @@ fn walk_call_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 fn walk_initialize_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let parts = inner_nokw(pair);
-    let name = parts.into_iter()
-        .find(|p| p.as_rule() == Rule::ident_name)
+    let names: Vec<String> = parts.into_iter()
+        .filter(|p| p.as_rule() == Rule::ident_name)
         .map(|p| p.as_str().to_string())
-        .unwrap_or_default();
+        .collect();
 
     // INITIALIZE sets to default value (spaces for alpha, zeros for numeric)
     // Without knowing the PIC at walk time, default to empty string
-    Ok(StmtKind::Assign {
-        targets: vec![Expression::ident(&name)],
-        value: Expression::string(""),
+    let mut stmts = Vec::new();
+    for name in names {
+        stmts.push(Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(&name)],
+            value: Expression::string(""),
+        }));
+    }
+
+    Ok(if stmts.len() == 1 {
+        stmts.remove(0).kind
+    } else {
+        StmtKind::Block(stmts)
     })
 }
 
@@ -2712,38 +3495,43 @@ fn walk_json_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 // ── File I/O ────────────────────────────────────────────────────────────────
 
-fn walk_open_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_open_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
     let mut stmts = Vec::new();
-    let mut current_mode = String::new();
+    let mut current_mode = FileMode::Input;
 
     for child in children {
         match child.as_rule() {
             Rule::file_open_mode => {
-                // Determine mode string
                 let mode_text = child.as_str().to_uppercase();
                 current_mode = if mode_text.contains("INPUT") {
-                    "r".to_string()
+                    FileMode::Input
                 } else if mode_text.contains("OUTPUT") {
-                    "w".to_string()
+                    FileMode::Output
                 } else if mode_text.contains("EXTEND") {
-                    "a".to_string()
+                    FileMode::Append
                 } else {
-                    "rw".to_string()
+                    FileMode::Input
                 };
             }
             Rule::ident_name => {
                 let file_name = child.as_str().to_string();
-                stmts.push(Statement::new(StmtKind::Expr(
-                    Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::ident("__file_open")),
-                        args: vec![
-                            Argument::positional(Expression::ident(&file_name)),
-                            Argument::positional(Expression::string(&current_mode)),
-                        ],
-                        optional: false,
-                    }),
-                )));
+                let binding = ctx.file_binding(&file_name).cloned().unwrap_or_else(|| CobolFileBinding {
+                    path: Expression::string(&file_name.to_ascii_lowercase()),
+                    file_number: 1,
+                    status_var: None,
+                    key_name: None,
+                    record_name: None,
+                    record_fields: Vec::new(),
+                });
+                stmts.push(Statement::new(StmtKind::OpenFile {
+                    path: binding.path,
+                    mode: current_mode,
+                    file_number: Expression::int(binding.file_number as i64),
+                }));
+                if let Some(status_stmt) = cobol_file_status_assign(binding.status_var.as_deref(), "00") {
+                    stmts.push(status_stmt);
+                }
             }
             _ => {}
         }
@@ -2756,7 +3544,7 @@ fn walk_open_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 }
 
-fn walk_close_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_close_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
     let parts = inner_nokw(pair);
     let names: Vec<String> = parts.into_iter()
         .filter(|p| p.as_rule() == Rule::ident_name)
@@ -2765,13 +3553,10 @@ fn walk_close_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     let mut stmts = Vec::new();
     for name in names {
-        stmts.push(Statement::new(StmtKind::Expr(
-            Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::ident("__file_close")),
-                args: vec![Argument::positional(Expression::ident(&name))],
-                optional: false,
-            }),
-        )));
+        let file_number = ctx.file_binding(&name)
+            .map(|binding| Expression::int(binding.file_number as i64))
+            .unwrap_or_else(|| Expression::int(1));
+        stmts.push(Statement::new(StmtKind::CloseFile(Some(file_number))));
     }
 
     if stmts.len() == 1 {
@@ -2781,13 +3566,16 @@ fn walk_close_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 }
 
-fn walk_read_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_read_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
+    let source = pair.as_str().to_ascii_lowercase();
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
     let mut file_name = String::new();
     let mut into_var: Option<String> = None;
-    let mut at_end_body = Vec::new();
-    let mut not_at_end_body = Vec::new();
+    let mut fail_body = Vec::new();
+    let mut success_body = Vec::new();
+    let mut saw_at_end = false;
+    let mut saw_invalid_key = false;
 
     for child in children {
         match child.as_rule() {
@@ -2799,115 +3587,333 @@ fn walk_read_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 }
             }
             Rule::at_end_clause => {
+                saw_at_end = true;
                 for ac in child.into_inner() {
-                    if ac.as_rule() == Rule::statement_list {
-                        if at_end_body.is_empty() {
-                            walk_statement_list(ac, &mut at_end_body)?;
+                    if matches!(ac.as_rule(), Rule::statement_list | Rule::clause_statement_list) {
+                        if fail_body.is_empty() {
+                            walk_statement_list(ac, &mut fail_body, ctx)?;
                         } else {
-                            walk_statement_list(ac, &mut not_at_end_body)?;
+                            walk_statement_list(ac, &mut success_body, ctx)?;
                         }
                     }
                 }
+            }
+            Rule::invalid_key_clause => {
+                let mut saw_invalid_key_body = false;
+                for clause in child.into_inner() {
+                    if matches!(clause.as_rule(), Rule::statement_list | Rule::clause_statement_list) {
+                        saw_invalid_key_body = true;
+                        if fail_body.is_empty() {
+                            walk_statement_list(clause, &mut fail_body, ctx)?;
+                        } else {
+                            walk_statement_list(clause, &mut success_body, ctx)?;
+                        }
+                    }
+                }
+                saw_invalid_key = saw_invalid_key_body;
             }
             _ => {}
         }
     }
 
-    let read_call = Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::ident("__file_read")),
-        args: vec![Argument::positional(Expression::ident(&file_name))],
-        optional: false,
+    if saw_at_end {
+        if let Some(status_stmt) = cobol_file_status_assign(
+            ctx.file_binding(&file_name).and_then(|binding| binding.status_var.as_deref()),
+            "10",
+        ) {
+            fail_body.insert(0, status_stmt);
+        }
+    } else if saw_invalid_key {
+        if let Some(status_stmt) = cobol_file_status_assign(
+            ctx.file_binding(&file_name).and_then(|binding| binding.status_var.as_deref()),
+            "23",
+        ) {
+            fail_body.insert(0, status_stmt);
+        }
+    }
+
+    let explicit_into = into_var.clone();
+    let target_name = into_var
+        .or_else(|| ctx.file_binding(&file_name).and_then(|binding| binding.record_name.clone()))
+        .unwrap_or_else(|| file_name.clone());
+    let binding = ctx.file_binding(&file_name).cloned().unwrap_or_else(|| CobolFileBinding {
+        path: Expression::string(&file_name.to_ascii_lowercase()),
+        file_number: 1,
+        status_var: None,
+        key_name: None,
+        record_name: Some(target_name.clone()),
+        record_fields: Vec::new(),
     });
 
-    if let Some(var) = into_var {
-        Ok(StmtKind::Assign {
-            targets: vec![Expression::ident(&var)],
-            value: read_call,
+    let record_fields = if binding.record_fields.is_empty() {
+        ctx.record_fields_for_name(&target_name)
+    } else {
+        binding.record_fields.clone()
+    };
+
+    let use_record_fields = explicit_into.is_none() && !record_fields.is_empty();
+    let first_record_field = record_fields.first().map(|field| field.name.clone());
+    let keyed_read = use_record_fields
+        && (saw_invalid_key || (!source.contains(" next") && binding.key_name.is_some()));
+    let keyed_read_name = binding.key_name.as_deref()
+        .or(first_record_field.as_deref())
+        .unwrap_or(&target_name);
+    let key_index = cobol_record_key_index(&binding, &record_fields, Some(keyed_read_name));
+    let key_value = keyed_read.then(|| Expression::ident(keyed_read_name));
+
+    if let Some(status_stmt) = cobol_file_status_assign(binding.status_var.as_deref(), "00") {
+        success_body.insert(0, status_stmt);
+    }
+
+    let eof_cond = if use_record_fields {
+        binary(
+            BinOp::Eq,
+            Expression::ident(first_record_field.as_deref().unwrap_or(&target_name)),
+            Expression::null(),
+        )
+    } else {
+        binary(BinOp::Eq, Expression::ident(&target_name), Expression::string(""))
+    };
+    let else_body = (!success_body.is_empty()).then_some(success_body);
+
+    let read_stmt = if use_record_fields {
+        Statement::new(StmtKind::InputRecordFile {
+            file_number: Expression::int(binding.file_number as i64),
+            variables: record_fields.iter().map(|field| field.name.clone()).collect(),
+            key_index: keyed_read.then_some(key_index),
+            key_value,
         })
     } else {
-        Ok(StmtKind::Expr(read_call))
-    }
+        Statement::new(StmtKind::LineInput {
+            file_number: Expression::int(binding.file_number as i64),
+            variable: target_name.clone(),
+        })
+    };
+
+    Ok(StmtKind::Block(vec![
+        read_stmt,
+        Statement::new(StmtKind::If {
+            cond: eof_cond,
+            then_body: fail_body,
+            elifs: Vec::new(),
+            else_body,
+        }),
+    ]))
 }
 
-fn walk_write_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let parts = inner_nokw(pair);
+fn walk_write_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
+    let parts = pair.into_inner();
     let mut record_name = String::new();
-    let mut from_var: Option<String> = None;
+    let mut source_expr: Option<Expression> = None;
 
     for p in parts {
         match p.as_rule() {
             Rule::ident_name => {
                 if record_name.is_empty() {
                     record_name = p.as_str().to_string();
-                } else if from_var.is_none() {
-                    from_var = Some(p.as_str().to_string());
                 }
+            }
+            Rule::write_source => {
+                source_expr = Some(walk_write_source(p)?);
             }
             _ => {}
         }
     }
 
-    let data_expr = if let Some(var) = from_var {
-        Expression::ident(&var)
+    let binding = ctx.file_binding_for_record(&record_name).cloned().or_else(|| ctx.file_binding(&record_name).cloned());
+    let file_number = binding.as_ref()
+        .map(|binding| Expression::int(binding.file_number as i64))
+        .unwrap_or_else(|| Expression::int(1));
+
+    let record_fields = binding.as_ref()
+        .map(|binding| binding.record_fields.clone())
+        .unwrap_or_default();
+    let write_from_record = source_expr.is_none() && !record_fields.is_empty();
+
+    let write_stmt = if write_from_record {
+        Statement::new(StmtKind::WriteFile {
+            file_number,
+            items: record_fields
+                .iter()
+                .map(|field| Expression::ident(&field.name))
+                .collect(),
+        })
     } else {
-        Expression::ident(&record_name)
+        let data_expr = source_expr.unwrap_or_else(|| Expression::ident(&record_name));
+        Statement::new(StmtKind::PrintFile {
+            file_number,
+            items: vec![data_expr],
+        })
     };
 
-    Ok(StmtKind::Expr(Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::ident("__file_write")),
-        args: vec![
-            Argument::positional(Expression::ident(&record_name)),
-            Argument::positional(data_expr),
-        ],
-        optional: false,
-    })))
+    let mut stmts = vec![write_stmt];
+    if let Some(status_stmt) = cobol_file_status_assign(binding.as_ref().and_then(|b| b.status_var.as_deref()), "00") {
+        stmts.push(status_stmt);
+    }
+    Ok(if stmts.len() == 1 { stmts.remove(0).kind } else { StmtKind::Block(stmts) })
 }
 
-fn walk_rewrite_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let parts = inner_nokw(pair);
+fn walk_rewrite_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
+    let fallback_pair = pair.clone();
+    let parts = pair.into_inner();
     let mut record_name = String::new();
-    let mut from_var: Option<String> = None;
+    let mut source_expr: Option<Expression> = None;
 
     for p in parts {
-        if p.as_rule() == Rule::ident_name {
-            if record_name.is_empty() {
-                record_name = p.as_str().to_string();
-            } else if from_var.is_none() {
-                from_var = Some(p.as_str().to_string());
+        match p.as_rule() {
+            Rule::ident_name => {
+                if record_name.is_empty() {
+                    record_name = p.as_str().to_string();
+                }
+            }
+            Rule::write_source => {
+                source_expr = Some(walk_write_source(p)?);
+            }
+            _ => {}
+        }
+    }
+
+    let binding = ctx.file_binding_for_record(&record_name).cloned().or_else(|| ctx.file_binding(&record_name).cloned());
+    let file_number = binding.as_ref()
+        .map(|binding| Expression::int(binding.file_number as i64))
+        .unwrap_or_else(|| Expression::int(1));
+    let record_fields = binding.as_ref()
+        .map(|binding| binding.record_fields.clone())
+        .unwrap_or_default();
+
+    let rewrite_stmt = if source_expr.is_none() && !record_fields.is_empty() {
+        Statement::new(StmtKind::RewriteRecordFile {
+            file_number,
+            items: record_fields
+                .iter()
+                .map(|field| Expression::ident(&field.name))
+                .collect(),
+        })
+    } else {
+        return walk_write_stmt(fallback_pair, ctx);
+    };
+
+    let mut stmts = vec![rewrite_stmt];
+    if let Some(status_stmt) = cobol_file_status_assign(binding.as_ref().and_then(|b| b.status_var.as_deref()), "00") {
+        stmts.push(status_stmt);
+    }
+    Ok(if stmts.len() == 1 { stmts.remove(0).kind } else { StmtKind::Block(stmts) })
+}
+
+fn walk_start_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
+    let source = pair.as_str().to_string();
+    let mut file_name = String::new();
+    let mut key_name: Option<String> = None;
+
+    for child in pair.into_inner() {
+        if child.as_rule() == Rule::ident_name {
+            if file_name.is_empty() {
+                file_name = child.as_str().to_string();
+            } else {
+                key_name = Some(child.as_str().to_string());
             }
         }
     }
 
-    let data_expr = from_var.map(|v| Expression::ident(&v))
-        .unwrap_or_else(|| Expression::ident(&record_name));
+    let Some(binding) = ctx.file_binding(&file_name).cloned() else {
+        return Ok(StmtKind::Empty);
+    };
+    let record_name = binding.record_name.clone().unwrap_or_else(|| file_name.clone());
+    let record_fields = if binding.record_fields.is_empty() {
+        ctx.record_fields_for_name(&record_name)
+    } else {
+        binding.record_fields.clone()
+    };
+    let relation = parse_cobol_start_relation(&source);
+    let Some(key_name) = key_name.or_else(|| binding.key_name.clone()) else {
+        return Ok(StmtKind::Empty);
+    };
+    let key_index = cobol_record_key_index(&binding, &record_fields, Some(&key_name));
 
-    Ok(StmtKind::Expr(Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::ident("__file_rewrite")),
-        args: vec![
-            Argument::positional(Expression::ident(&record_name)),
-            Argument::positional(data_expr),
-        ],
-        optional: false,
-    })))
+    let mut stmts = vec![Statement::new(StmtKind::StartFile {
+        file_number: Expression::int(binding.file_number as i64),
+        key_index,
+        key_value: Expression::ident(&key_name),
+        relation,
+    })];
+    if let Some(status_stmt) = cobol_file_status_assign(binding.status_var.as_deref(), "00") {
+        stmts.push(status_stmt);
+    }
+    Ok(if stmts.len() == 1 { stmts.remove(0).kind } else { StmtKind::Block(stmts) })
 }
 
-fn walk_delete_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_write_source(pair: Pair<Rule>) -> Result<Expression, String> {
+    let mut parts = Vec::new();
+
+    for child in pair.into_inner() {
+        if child.as_rule() != Rule::write_source_part {
+            continue;
+        }
+
+        let mut saw_all = false;
+        let mut expr: Option<Expression> = None;
+        for part in child.into_inner() {
+            match part.as_rule() {
+                Rule::kw_all => {
+                    saw_all = true;
+                }
+                Rule::expression => {
+                    expr = Some(walk_expression(part)?);
+                }
+                Rule::literal => {
+                    expr = Some(walk_literal(part)?);
+                }
+                _ => {}
+            }
+        }
+
+        let mut part_expr = expr.unwrap_or_else(|| Expression::string(""));
+        if saw_all {
+            // Best-effort support for `FROM ALL literal`; preserve the fill
+            // character even though fixed-width record padding happens later.
+            part_expr = Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(part_expr),
+                    field: "repeat".to_string(),
+                    null_safe: false,
+                })),
+                args: vec![Argument::positional(Expression::int(80))],
+                optional: false,
+            });
+        }
+        parts.push(part_expr);
+    }
+
+    if parts.is_empty() {
+        return Ok(Expression::string(""));
+    }
+
+    let mut result = parts.remove(0);
+    for part in parts {
+        result = binary(BinOp::Concat, result, part);
+    }
+    Ok(result)
+}
+
+fn walk_delete_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
     let parts = inner_nokw(pair);
     let name = parts.into_iter()
         .find(|p| p.as_rule() == Rule::ident_name)
         .map(|p| p.as_str().to_string())
         .unwrap_or_default();
-
-    Ok(StmtKind::Expr(Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::ident("__file_delete")),
-        args: vec![Argument::positional(Expression::ident(&name))],
-        optional: false,
-    })))
+    if let Some(status_stmt) = cobol_file_status_assign(
+        ctx.file_binding(&name).and_then(|binding| binding.status_var.as_deref()),
+        "00",
+    ) {
+        Ok(StmtKind::Block(vec![status_stmt]))
+    } else {
+        Ok(StmtKind::Empty)
+    }
 }
 
 // ── SEARCH ──────────────────────────────────────────────────────────────────
 
-fn walk_search_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
+fn walk_search_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
 
     let mut _table_name = String::new();
@@ -2922,14 +3928,14 @@ fn walk_search_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 }
             }
             Rule::condition => {
-                let cond = walk_condition(child)?;
+                let cond = walk_condition(child, ctx)?;
                 when_clauses.push((cond, Vec::new()));
             }
             Rule::statement_list => {
                 if let Some(last) = when_clauses.last_mut() {
-                    walk_statement_list(child, &mut last.1)?;
+                    walk_statement_list(child, &mut last.1, ctx)?;
                 } else {
-                    walk_statement_list(child, &mut at_end_body)?;
+                    walk_statement_list(child, &mut at_end_body, ctx)?;
                 }
             }
             _ => {}
@@ -3081,10 +4087,14 @@ fn walk_run_unit_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 // ── Nested program ──────────────────────────────────────────────────────────
 
-fn walk_nested_program(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), String> {
+fn walk_nested_program(
+    pair: Pair<Rule>,
+    body: &mut Vec<Statement>,
+    ctx: &mut CobolWalkerContext,
+) -> Result<(), String> {
     for child in pair.into_inner() {
         if child.as_rule() == Rule::nested_program_stmt {
-            if let Some(stmt) = walk_statement(child)? {
+            if let Some(stmt) = walk_statement(child, ctx)? {
                 body.push(stmt);
             }
         }
@@ -3164,7 +4174,8 @@ fn walk_class_body(pair: Pair<Rule>, members: &mut Vec<ClassMember>) -> Result<(
             Rule::data_division => {
                 // Class-level data division → fields
                 let mut field_stmts = Vec::new();
-                walk_data_division(child, &mut field_stmts)?;
+                let mut local_ctx = CobolWalkerContext::new();
+                walk_data_division(child, &mut field_stmts, &mut local_ctx)?;
                 for stmt in field_stmts {
                     if let StmtKind::VarDecl { declarations, .. } = &stmt.kind {
                         for decl in declarations {
@@ -3203,7 +4214,8 @@ fn walk_class_body(pair: Pair<Rule>, members: &mut Vec<ClassMember>) -> Result<(
                     match oc.as_rule() {
                         Rule::data_division => {
                             let mut field_stmts = Vec::new();
-                            walk_data_division(oc, &mut field_stmts)?;
+                            let mut local_ctx = CobolWalkerContext::new();
+                            walk_data_division(oc, &mut field_stmts, &mut local_ctx)?;
                             for stmt in field_stmts {
                                 if let StmtKind::VarDecl { declarations, .. } = &stmt.kind {
                                     for decl in declarations {
@@ -3254,6 +4266,7 @@ fn walk_method_def(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut is_override = false;
     let mut is_property_get = false;
     let mut is_property_set = false;
+    let mut method_ctx = CobolWalkerContext::new();
 
     for child in children {
         match child.as_rule() {
@@ -3283,7 +4296,7 @@ fn walk_method_def(pair: Pair<Rule>) -> Result<Statement, String> {
                 // Method-local data → VarDecls in the body
                 for md in child.into_inner() {
                     if md.as_rule() == Rule::data_item {
-                        walk_data_item(md, &mut body)?;
+                        walk_data_item(md, &mut body, &mut method_ctx)?;
                     }
                 }
             }
@@ -3301,7 +4314,7 @@ fn walk_method_def(pair: Pair<Rule>) -> Result<Statement, String> {
                             }
                         }
                         Rule::statement_list => {
-                            walk_statement_list(mp, &mut body)?;
+                            walk_statement_list(mp, &mut body, &method_ctx)?;
                         }
                         _ => {}
                     }
@@ -3447,9 +4460,58 @@ fn walk_method_signature(pair: Pair<Rule>) -> Result<InterfaceMember, String> {
 // Conditions
 // ════════════════════════════════════════════════════════════════════════════
 
-fn walk_condition(pair: Pair<Rule>) -> Result<Expression, String> {
+fn walk_condition(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Expression, String> {
     let inner = pair.into_inner().next().ok_or("empty condition")?;
-    walk_or_condition(inner)
+    Ok(rewrite_condition_names(walk_or_condition(inner)?, ctx))
+}
+
+fn rewrite_condition_names(expr: Expression, ctx: &CobolWalkerContext) -> Expression {
+    let span = expr.span;
+    let kind = match expr.kind {
+        ExprKind::Ident(name) => {
+            return ctx.condition_expr(&name)
+                .map(|resolved| Expression::with_span(resolved.kind, span))
+                .unwrap_or_else(|| Expression::with_span(ExprKind::Ident(name), span));
+        }
+        ExprKind::Binary { op, left, right } => ExprKind::Binary {
+            op,
+            left: Box::new(rewrite_condition_names(*left, ctx)),
+            right: Box::new(rewrite_condition_names(*right, ctx)),
+        },
+        ExprKind::Unary { op, expr } => ExprKind::Unary {
+            op,
+            expr: Box::new(rewrite_condition_names(*expr, ctx)),
+        },
+        ExprKind::Call { callee, args, optional } => ExprKind::Call {
+            callee: Box::new(rewrite_condition_names(*callee, ctx)),
+            args: args.into_iter().map(|arg| Argument {
+                value: rewrite_condition_names(arg.value, ctx),
+                ..arg
+            }).collect(),
+            optional,
+        },
+        ExprKind::Member { object, field, null_safe } => ExprKind::Member {
+            object: Box::new(rewrite_condition_names(*object, ctx)),
+            field,
+            null_safe,
+        },
+        ExprKind::Index { object, index, null_safe } => ExprKind::Index {
+            object: Box::new(rewrite_condition_names(*object, ctx)),
+            index: Box::new(rewrite_condition_names(*index, ctx)),
+            null_safe,
+        },
+        ExprKind::Ternary { cond, then, else_ } => ExprKind::Ternary {
+            cond: Box::new(rewrite_condition_names(*cond, ctx)),
+            then: Box::new(rewrite_condition_names(*then, ctx)),
+            else_: Box::new(rewrite_condition_names(*else_, ctx)),
+        },
+        ExprKind::NullCoalesce { left, right } => ExprKind::NullCoalesce {
+            left: Box::new(rewrite_condition_names(*left, ctx)),
+            right: Box::new(rewrite_condition_names(*right, ctx)),
+        },
+        other => other,
+    };
+    Expression::with_span(kind, span)
 }
 
 fn walk_or_condition(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -3601,12 +4663,17 @@ fn walk_sign_condition_test(pair: Pair<Rule>, expr: Expression) -> Result<Expres
 }
 
 fn parse_comparison_op(pair: Pair<Rule>) -> BinOp {
-    let children: Vec<Pair<Rule>> = pair.into_inner().collect();
-    let text = children.iter().map(|c| c.as_str().to_uppercase()).collect::<Vec<_>>().join(" ");
-    let is_negated = children.iter().any(|c| c.as_rule() == Rule::kw_not);
+    let raw_text = pair.as_str().trim().to_uppercase();
+    let children: Vec<Pair<Rule>> = pair.clone().into_inner().collect();
+    let text = if children.is_empty() {
+        raw_text.replace("\t", " ")
+    } else {
+        children.iter().map(|c| c.as_str().to_uppercase()).collect::<Vec<_>>().join(" ")
+    };
+    let is_negated = raw_text.contains(" NOT ") || raw_text.starts_with("NOT ") || children.iter().any(|c| c.as_rule() == Rule::kw_not);
 
-    // Check for symbolic operators first
-    let raw_text = children.iter().map(|c| c.as_str()).collect::<String>();
+    // Check for symbolic operators first. Pest does not emit literal operator
+    // tokens like `<` and `<=` as child pairs, so use the outer span text.
     if raw_text.contains(">=") { return BinOp::GtEq; }
     if raw_text.contains("<=") { return BinOp::LtEq; }
     if raw_text.contains(">") { return if is_negated { BinOp::LtEq } else { BinOp::Gt }; }
@@ -3788,11 +4855,38 @@ fn walk_function_call(pair: Pair<Rule>) -> Result<Expression, String> {
 
     let mut func_name = String::new();
     let mut args: Vec<Argument> = Vec::new();
+    let mut subscript_or_refmod: Option<Pair<Rule>> = None;
 
     for child in children {
         match child.as_rule() {
             Rule::function_name => {
                 func_name = child.as_str().to_uppercase();
+            }
+            Rule::function_call_args => {
+                for arg_child in child.into_inner() {
+                    match arg_child.as_rule() {
+                        Rule::func_args => {
+                            for func_arg in arg_child.into_inner() {
+                                match func_arg.as_rule() {
+                                    Rule::expression => {
+                                        args.push(Argument::positional(walk_expression(func_arg)?));
+                                    }
+                                    Rule::atom => {
+                                        args.push(Argument::positional(walk_atom(func_arg)?));
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        Rule::expression => {
+                            args.push(Argument::positional(walk_expression(arg_child)?));
+                        }
+                        Rule::atom => {
+                            args.push(Argument::positional(walk_atom(arg_child)?));
+                        }
+                        _ => {}
+                    }
+                }
             }
             Rule::arg_list => {
                 for ac in child.into_inner() {
@@ -3805,15 +4899,24 @@ fn walk_function_call(pair: Pair<Rule>) -> Result<Expression, String> {
                 // FUNCTION name atom atom ... (alternate syntax without parens)
                 args.push(Argument::positional(walk_atom(child)?));
             }
+            Rule::subscript_or_refmod => {
+                subscript_or_refmod = Some(child);
+            }
             _ => {}
         }
     }
 
-    Ok(Expression::new(ExprKind::Call {
+    let mut expr = Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident(&func_name)),
         args,
         optional: false,
-    }))
+    });
+
+    if let Some(sub_pair) = subscript_or_refmod {
+        expr = apply_cobol_subscript_or_refmod(expr, sub_pair)?;
+    }
+
+    Ok(expr)
 }
 
 // ── NEW expression (OO COBOL) ──────────────────────────────────────────────
@@ -3886,64 +4989,7 @@ fn walk_qualified_ident(pair: Pair<Rule>) -> Result<Expression, String> {
 
     // Handle subscript or reference modification
     if let Some(sub_pair) = subscript {
-        let sub_children: Vec<Pair<Rule>> = sub_pair.into_inner().collect();
-
-        // Check if it's reference modification (has a colon)
-        let has_colon = sub_children.iter().any(|c| c.as_str().contains(':'));
-
-        // Count expressions to differentiate
-        let expr_children: Vec<&Pair<Rule>> = sub_children.iter()
-            .filter(|c| c.as_rule() == Rule::expression)
-            .collect();
-
-        if has_colon || (expr_children.len() >= 1 && sub_children.iter().any(|c| c.as_str() == ":")) {
-            // Reference modification: name(start:length)
-            // → __refmod(name, start - 1, length)
-            let start_expr = if !expr_children.is_empty() {
-                walk_expression(expr_children[0].clone())?
-            } else {
-                Expression::int(1)
-            };
-            let length_expr = if expr_children.len() >= 2 {
-                walk_expression(expr_children[1].clone())?
-            } else {
-                Expression::int(0) // No length = rest of string
-            };
-
-            // Adjust 1-indexed to 0-indexed: start - 1
-            let adjusted_start = binary(BinOp::Sub, start_expr, Expression::int(1));
-
-            expr = Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::ident("__refmod")),
-                args: vec![
-                    Argument::positional(expr),
-                    Argument::positional(adjusted_start),
-                    Argument::positional(length_expr),
-                ],
-                optional: false,
-            });
-        } else if !expr_children.is_empty() {
-            // Subscript: name(index) → name[index - 1]
-            let index_expr = walk_expression(expr_children[0].clone())?;
-            // COBOL is 1-indexed, subtract 1
-            let adjusted_index = binary(BinOp::Sub, index_expr, Expression::int(1));
-            expr = Expression::new(ExprKind::Index {
-                object: Box::new(expr),
-                index: Box::new(adjusted_index),
-                null_safe: false,
-            });
-
-            // Handle multi-dimensional subscripts: name(i, j)
-            for extra in expr_children.iter().skip(1) {
-                let extra_idx = walk_expression((*extra).clone())?;
-                let adjusted = binary(BinOp::Sub, extra_idx, Expression::int(1));
-                expr = Expression::new(ExprKind::Index {
-                    object: Box::new(expr),
-                    index: Box::new(adjusted),
-                    null_safe: false,
-                });
-            }
-        }
+        expr = apply_cobol_subscript_or_refmod(expr, sub_pair)?;
     }
 
     // Handle qualification: field OF group → group.field
@@ -3953,6 +4999,114 @@ fn walk_qualified_ident(pair: Pair<Rule>) -> Result<Expression, String> {
             field: name,
             null_safe: false,
         });
+    }
+
+    Ok(expr)
+}
+
+fn walk_data_target_expr(pair: Pair<Rule>) -> Result<Expression, String> {
+    match pair.as_rule() {
+        Rule::data_target => {
+            let children: Vec<Pair<Rule>> = pair.into_inner().collect();
+
+            let mut name = String::new();
+            let mut subscript: Option<Pair<Rule>> = None;
+            let mut qualification: Option<String> = None;
+
+            for child in &children {
+                match child.as_rule() {
+                    Rule::ident_name | Rule::kw_sd => {
+                        if name.is_empty() {
+                            name = child.as_str().to_string();
+                        }
+                    }
+                    Rule::subscript_or_refmod => {
+                        subscript = Some(child.clone());
+                    }
+                    Rule::qualification => {
+                        for q in child.clone().into_inner() {
+                            if q.as_rule() == Rule::ident_name {
+                                qualification = Some(q.as_str().to_string());
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            let mut expr = Expression::ident(&name);
+
+            if let Some(sub_pair) = subscript {
+                expr = apply_cobol_subscript_or_refmod(expr, sub_pair)?;
+            }
+
+            if let Some(parent) = qualification {
+                expr = Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident(&parent)),
+                    field: name,
+                    null_safe: false,
+                });
+            }
+
+            Ok(expr)
+        }
+        Rule::ident_name | Rule::kw_sd => Ok(Expression::ident(pair.as_str())),
+        Rule::qualified_ident => walk_qualified_ident(pair),
+        _ => Err(format!("COBOL walker: expected data_target, got {:?}", pair.as_rule())),
+    }
+}
+
+fn apply_cobol_subscript_or_refmod(mut expr: Expression, sub_pair: Pair<Rule>) -> Result<Expression, String> {
+    let sub_children: Vec<Pair<Rule>> = sub_pair.into_inner().collect();
+
+    let has_colon = sub_children.iter().any(|c| c.as_str().contains(':'));
+    let expr_children: Vec<&Pair<Rule>> = sub_children.iter()
+        .filter(|c| c.as_rule() == Rule::expression)
+        .collect();
+
+    if has_colon || (expr_children.len() >= 1 && sub_children.iter().any(|c| c.as_str() == ":")) {
+        let start_expr = if !expr_children.is_empty() {
+            walk_expression(expr_children[0].clone())?
+        } else {
+            Expression::int(1)
+        };
+        let length_expr = if expr_children.len() >= 2 {
+            walk_expression(expr_children[1].clone())?
+        } else {
+            Expression::int(0)
+        };
+
+        let adjusted_start = binary(BinOp::Sub, start_expr, Expression::int(1));
+
+        return Ok(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__refmod")),
+            args: vec![
+                Argument::positional(expr),
+                Argument::positional(adjusted_start),
+                Argument::positional(length_expr),
+            ],
+            optional: false,
+        }));
+    }
+
+    if !expr_children.is_empty() {
+        let index_expr = walk_expression(expr_children[0].clone())?;
+        let adjusted_index = binary(BinOp::Sub, index_expr, Expression::int(1));
+        expr = Expression::new(ExprKind::Index {
+            object: Box::new(expr),
+            index: Box::new(adjusted_index),
+            null_safe: false,
+        });
+
+        for extra in expr_children.iter().skip(1) {
+            let extra_idx = walk_expression((*extra).clone())?;
+            let adjusted = binary(BinOp::Sub, extra_idx, Expression::int(1));
+            expr = Expression::new(ExprKind::Index {
+                object: Box::new(expr),
+                index: Box::new(adjusted),
+                null_safe: false,
+            });
+        }
     }
 
     Ok(expr)
@@ -4059,9 +5213,41 @@ fn walk_string_literal(pair: &Pair<Rule>) -> Result<Expression, String> {
     }
 }
 
+fn string_literal_value(pair: &Pair<Rule>) -> String {
+    let raw = pair.as_str();
+    if raw.len() >= 2 {
+        raw[1..raw.len() - 1].to_string()
+    } else {
+        String::new()
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Helper functions
 // ════════════════════════════════════════════════════════════════════════════
+
+/// Create a binary expression.
+fn cobol_name_key(name: &str) -> String {
+    name.trim().to_ascii_uppercase()
+}
+
+fn cobol_data_item_level(pair: &Pair<Rule>) -> u32 {
+    match pair.as_rule() {
+        Rule::data_item => pair.clone()
+            .into_inner()
+            .find_map(|child| match child.as_rule() {
+                Rule::regular_data_item => Some(cobol_data_item_level(&child)),
+                _ => None,
+            })
+            .unwrap_or(0),
+        Rule::regular_data_item => pair.clone()
+            .into_inner()
+            .find(|child| child.as_rule() == Rule::level_number)
+            .and_then(|child| child.as_str().trim().parse::<u32>().ok())
+            .unwrap_or(0),
+        _ => 0,
+    }
+}
 
 /// Create a binary expression.
 fn binary(op: BinOp, left: Expression, right: Expression) -> Expression {

@@ -74,6 +74,15 @@ impl Bundle {
             )?;
             let blocks = expanded.blocks.clone();
             (normalize_php_source_for_parser(&expanded.into_code()), Some(blocks))
+        } else if self.language.name == "cobol" {
+            (
+                self.sources
+                    .iter()
+                    .map(|s| rewrite_cobol_assign_paths(&s.code, &s.path))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                None,
+            )
         } else {
             (
                 self.sources.iter()
@@ -533,6 +542,55 @@ fn absolutize_path(path: &Path) -> PathBuf {
             .unwrap_or_else(|_| PathBuf::from("."))
             .join(path)
     }
+}
+
+fn rewrite_cobol_assign_paths(source: &str, source_path: &Path) -> String {
+    if !source.to_ascii_uppercase().contains("ASSIGN TO") {
+        return source.to_string();
+    }
+
+    let base_dir = absolutize_path(source_path)
+        .parent()
+        .unwrap_or(Path::new("."))
+        .to_path_buf();
+
+    source
+        .split_inclusive('\n')
+        .map(|line| rewrite_cobol_assign_path_line(line, &base_dir))
+        .collect()
+}
+
+fn rewrite_cobol_assign_path_line(line: &str, base_dir: &Path) -> String {
+    let uppercase = line.to_ascii_uppercase();
+    let Some(assign_idx) = uppercase.find("ASSIGN TO") else {
+        return line.to_string();
+    };
+
+    let search_start = assign_idx + "ASSIGN TO".len();
+    let Some((quote_offset, quote)) = line[search_start..]
+        .char_indices()
+        .find(|(_, ch)| *ch == '\'' || *ch == '"')
+    else {
+        return line.to_string();
+    };
+
+    let literal_start = search_start + quote_offset + quote.len_utf8();
+    let Some(literal_end_rel) = line[literal_start..].find(quote) else {
+        return line.to_string();
+    };
+    let literal_end = literal_start + literal_end_rel;
+    let raw_path = &line[literal_start..literal_end];
+    let candidate = Path::new(raw_path);
+    if candidate.is_absolute() || raw_path.contains("://") {
+        return line.to_string();
+    }
+
+    let resolved = base_dir.join(candidate);
+    let mut rewritten = String::with_capacity(line.len() + resolved.as_os_str().len());
+    rewritten.push_str(&line[..literal_start]);
+    rewritten.push_str(&resolved.to_string_lossy());
+    rewritten.push_str(&line[literal_end..]);
+    rewritten
 }
 
 fn resolve_php_include_path(source_path: &Path, resolved: &str) -> PathBuf {
@@ -2086,6 +2144,44 @@ mod tests {
             temp_root.to_string_lossy().into_owned(),
             entry_path.to_string_lossy().into_owned(),
         ]);
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn cobol_bundle_rewrites_assign_to_paths_relative_to_source() {
+        let temp_root = std::env::temp_dir().join(format!("vybex_cobol_bundle_assign_to_{}", uuid::Uuid::new_v4()));
+        let data_dir = temp_root.join("fixtures");
+        std::fs::create_dir_all(&data_dir).expect("create temp dirs");
+
+        let entry_path = data_dir.join("entry.cbl");
+        let entry_src = r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT CUSTOMER-FILE ASSIGN TO "customers.dat".
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-DUMMY PIC X.
+PROCEDURE DIVISION.
+    DISPLAY "ok".
+    STOP RUN.
+"#;
+        std::fs::write(&entry_path, entry_src).expect("write entry");
+
+        let lang = crate::languages::find_by_name("cobol").expect("cobol language");
+        let bundle = Bundle {
+            name: "entry".to_string(),
+            language: lang,
+            sources: vec![SourceFile { path: entry_path.clone(), code: entry_src.to_string() }],
+            wasm_files: vec![],
+            entry_point: EntryPoint::Auto,
+        };
+
+        let combined = rewrite_cobol_assign_paths(&bundle.sources[0].code, &bundle.sources[0].path);
+        assert!(combined.contains(&format!("ASSIGN TO \"{}\"", data_dir.join("customers.dat").to_string_lossy())));
 
         let _ = std::fs::remove_dir_all(&temp_root);
     }

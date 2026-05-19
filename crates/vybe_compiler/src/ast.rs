@@ -349,6 +349,22 @@ pub enum StmtKind {
         file_number: Expression,
         variable: String,
     },
+    StartFile {
+        file_number: Expression,
+        key_index: usize,
+        key_value: Expression,
+        relation: FileKeyRelation,
+    },
+    InputRecordFile {
+        file_number: Expression,
+        variables: Vec<String>,
+        key_index: Option<usize>,
+        key_value: Option<Expression>,
+    },
+    RewriteRecordFile {
+        file_number: Expression,
+        items: Vec<Expression>,
+    },
 
     // ── Module system (JS) ───────────────────────────────────────────────
 
@@ -902,6 +918,15 @@ pub enum ScopeDeclKind { Global, Nonlocal }
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FileMode { Input, Output, Append, Binary, Random }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FileKeyRelation {
+    Equal,
+    Greater,
+    GreaterOrEqual,
+    Less,
+    LessOrEqual,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExportName {
     pub name: String,
@@ -1081,6 +1106,16 @@ fn statement_has_yield(stmt: &Statement) -> bool {
         StmtKind::CloseFile(expr) => expr.as_ref().map_or(false, expr_has_yield),
         StmtKind::PrintFile { file_number, items }
         | StmtKind::WriteFile { file_number, items } => {
+            expr_has_yield(file_number) || items.iter().any(expr_has_yield)
+        }
+        StmtKind::StartFile { file_number, key_value, .. } => {
+            expr_has_yield(file_number) || expr_has_yield(key_value)
+        }
+        StmtKind::InputRecordFile { file_number, key_value, .. } => {
+            expr_has_yield(file_number)
+                || key_value.as_ref().map_or(false, expr_has_yield)
+        }
+        StmtKind::RewriteRecordFile { file_number, items } => {
             expr_has_yield(file_number) || items.iter().any(expr_has_yield)
         }
         StmtKind::ReDim { bounds, .. } => bounds.iter().any(expr_has_yield),
