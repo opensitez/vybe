@@ -36,7 +36,7 @@ end program test
 
 #[test]
 fn subroutine_with_args() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     integer :: a, b, c
     a = 3
@@ -51,6 +51,7 @@ contains
     end subroutine add_nums
 end program test
 "#);
+    assert_eq!(out, ["7"]);
 }
 
 #[test]
@@ -65,6 +66,21 @@ contains
     end function cube
 end program test
 "#);
+}
+
+#[test]
+fn function_name_result_runtime() {
+    let out = run_prints(r#"
+program test
+    print *, cube(3)
+contains
+    integer function cube(n)
+        integer, intent(in) :: n
+        cube = n * n * n
+    end function cube
+end program test
+"#);
+    assert_eq!(out, ["27"]);
 }
 
 #[test]

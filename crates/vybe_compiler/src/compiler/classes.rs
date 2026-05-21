@@ -6,10 +6,74 @@
 //! crate-private for the `dotnet_register` bridge.
 
 use super::*;
+use crate::compiler::ArrayBindingMetadata;
 use crate::common::classes::{BaseCall, NormalConstructor, NormalMethod};
 use crate::scope::UpvalueDesc;
 
 impl Compiler {
+    fn array_default_element_expr(type_hint: Option<&str>) -> Expression {
+        match type_hint
+            .map(str::trim)
+            .and_then(|hint| hint.strip_suffix("()"))
+            .map(Self::normalize_type_hint)
+            .as_deref()
+        {
+            Some("integer") | Some("int") | Some("int32") | Some("longint") | Some("real")
+            | Some("double") | Some("float") | Some("single") | Some("decimal")
+            | Some("long") | Some("int64") | Some("short") | Some("int16")
+            | Some("uint") | Some("uint32") | Some("ulong") | Some("uint64")
+            | Some("ushort") | Some("uint16") | Some("byte") | Some("sbyte")
+            | Some("char") => Expression::new(ExprKind::Lit(Literal::Int(0))),
+            Some("boolean") | Some("bool") => Expression::new(ExprKind::Lit(Literal::Bool(false))),
+            Some(type_hint) if Self::is_string_type_hint(type_hint) => Expression::string(""),
+            _ => Expression::null(),
+        }
+    }
+
+    fn array_bounds_extent_expr(bounds: &[Expression]) -> Option<Expression> {
+        let mut iter = bounds.iter().cloned();
+        let first = iter.next()?;
+        Some(iter.fold(first, |acc, bound| {
+            Expression::new(ExprKind::Binary {
+                op: BinOp::Mul,
+                left: Box::new(acc),
+                right: Box::new(bound),
+            })
+        }))
+    }
+
+    fn emit_class_field_initializer(
+        &mut self,
+        owner_slot: u16,
+        field_name: &str,
+        type_hint: Option<&str>,
+        init: Option<&Expression>,
+        array_bounds: Option<&[Expression]>,
+        is_value_type: bool,
+        line: u32,
+    ) -> Result<(), String> {
+        common::classes::emit_init_field_start(self.chunk(), owner_slot, line);
+        if let Some(init_expr) = init {
+            self.compile_expr(init_expr)?;
+        } else if let Some(extent) = array_bounds.and_then(Self::array_bounds_extent_expr) {
+            let init_expr = Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("Array")),
+                args: vec![
+                    Argument::positional(extent),
+                    Argument::positional(Self::array_default_element_expr(type_hint)),
+                ],
+                optional: false,
+            });
+            self.compile_expr(&init_expr)?;
+        } else if is_value_type {
+            self.emit_default_value_for_type_hint(type_hint);
+        } else {
+            self.emit(Op::NULL);
+        }
+        common::classes::emit_init_field_end(self.chunk(), field_name, line);
+        Ok(())
+    }
+
     fn class_requires_form_identity_stamp(&self, parent: &Option<String>) -> bool {
         let mut current = parent.clone().map(|name| self.canon(&name));
         let mut visited = std::collections::HashSet::new();
@@ -37,6 +101,91 @@ impl Compiler {
         self.emit_const(Value::String(Arc::from(stamped_name.as_str())));
         self.emit_host_call(set_property, 3);
         self.emit(Op::DROP);
+    }
+
+    fn emit_store_super_ref(&mut self, this_slot: u16, parent_name: &str) {
+        self.emit_u16(Op::LOCAL_GET, this_slot);
+        self.emit_var_get(parent_name);
+        let super_key = self.str_const("__super");
+        self.emit_u16(Op::STRUCT_SET, super_key);
+        self.emit(Op::DROP);
+    }
+
+    fn captured_name_for_upvalue(&self, scope_idx: usize, upvalue_idx: u8) -> Option<String> {
+        let upvalue = self.scopes.get(scope_idx)?.upvalues.get(upvalue_idx as usize)?;
+        let parent_scope_idx = scope_idx.checked_sub(1)?;
+        if upvalue.is_local {
+            self.scopes
+                .get(parent_scope_idx)?
+                .locals
+                .iter()
+                .find(|local| local.slot == upvalue.index as u16)
+                .map(|local| local.name.clone())
+        } else {
+            self.captured_name_for_upvalue(parent_scope_idx, upvalue.index)
+        }
+    }
+
+    fn emit_ref_func_with_captures(&mut self, func_idx: usize, capture_names: &[String]) -> Result<(), String> {
+        let line = self.line;
+        common::functions::emit_ref_func(&mut self.chunks[self.current], func_idx, capture_names.len() as u8, line);
+        for capture_name in capture_names {
+            if let Some(slot) = self.scope().resolve(capture_name).or_else(|| self.scope().resolve_ci(capture_name)) {
+                self.chunks[self.current].emit(1, line);
+                self.chunks[self.current].emit(slot as u8, line);
+                continue;
+            }
+            if self.scopes.len() > 1 {
+                if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, capture_name) {
+                    self.chunks[self.current].emit(0, line);
+                    self.chunks[self.current].emit(uv, line);
+                    continue;
+                }
+            }
+            return Err(format!("failed to resolve captured class method binding '{capture_name}'"));
+        }
+        Ok(())
+    }
+
+    fn emit_bind_instance_method_with_aliases(
+        &mut self,
+        this_slot: u16,
+        method_name: &str,
+        method_chunk_idx: usize,
+        capture_names: &[String],
+        rest_fixed_count: Option<u8>,
+        bind_receiver: bool,
+    ) -> Result<(), String> {
+        let receiver_key = self.str_const("__vybe_method_receiver");
+        let rest_key = self.str_const("__vybe_rest_fixed_arity");
+
+        let mut bind_names = vec![method_name.to_string()];
+        for &alias in common::classes::cross_language_aliases(method_name) {
+            if alias != method_name {
+                bind_names.push(alias.to_string());
+            }
+        }
+
+        for bind_name in bind_names {
+            self.emit_u16(Op::LOCAL_GET, this_slot);
+            self.emit_ref_func_with_captures(method_chunk_idx, capture_names)?;
+            if bind_receiver {
+                self.emit(Op::DUP);
+                self.emit_u16(Op::LOCAL_GET, this_slot);
+                self.emit_u16(Op::STRUCT_SET, receiver_key);
+                self.emit(Op::DROP);
+            }
+            if let Some(fixed_count) = rest_fixed_count {
+                self.emit(Op::DUP);
+                self.emit_const(Value::F64(fixed_count as f64));
+                self.emit_u16(Op::STRUCT_SET, rest_key);
+                self.emit(Op::DROP);
+            }
+            let method_key = self.str_const(&bind_name);
+            self.emit_u16(Op::STRUCT_SET, method_key);
+            self.emit(Op::DROP);
+        }
+        Ok(())
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -107,10 +256,32 @@ impl Compiler {
         // function decls compose.
         let saved_label_base = self.function_label_base;
         self.function_label_base = self.label_depth;
+        let saved_fn = self.current_func_name.take();
+        self.current_func_name = Some(name.to_string());
 
         // Define params
         for p in params {
             self.define_local_typed(&p.name, p.type_hint.clone());
+            let normalized_type_hint = p
+                .type_hint
+                .as_deref()
+                .map(Compiler::normalize_type_hint);
+            if normalized_type_hint
+                .as_deref()
+                .is_some_and(|type_hint| type_hint.ends_with("()"))
+                || normalized_type_hint
+                    .as_deref()
+                    .is_some_and(|type_hint| type_hint.ends_with("()"))
+            {
+                self.record_array_binding(
+                    &p.name,
+                    ArrayBindingMetadata {
+                        is_fixed: false,
+                        type_hint: p.type_hint.clone(),
+                        pascal_bounds: p.type_hint.as_deref().and_then(|type_hint| self.pascal_array_type_hint_metadata(type_hint)),
+                    },
+                );
+            }
             // Default parameters: ECMA-262 §15.2.3 — only `undefined`
             // triggers the default (not `null`). The VM now pads
             // missing positional args with `Undefined`, distinct from
@@ -131,6 +302,7 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
                 self.patch_jump(has_val);
             }
+            self.maybe_initialize_fortran_out_param(p);
         }
 
         let generator_control_slot = is_generator.then(|| self.define_local("__generator_entry_control"));
@@ -156,10 +328,8 @@ impl Compiler {
             .filter_map(|param| self.scope().resolve(&param.name))
             .collect();
 
-        let saved_fn = self.current_func_name.take();
         let saved_rs = self.current_result_slot.take();
         let saved_ref_out = self.current_ref_out_params.take();
-        self.current_func_name = Some(name.to_string());
         self.current_result_slot = result_slot;
         self.current_ref_out_params = (!ref_out_slots.is_empty()).then_some(ref_out_slots);
 
@@ -175,8 +345,34 @@ impl Compiler {
         } else {
             None
         };
+        if async_try.is_some() {
+            self.active_async_try_depth += 1;
+        }
 
-        for s in body { self.compile_stmt(s)?; }
+        if self.profile.name == "fortran" {
+            for statement in body {
+                if matches!(&statement.kind, StmtKind::VarDecl { .. }) {
+                    self.compile_stmt(statement)?;
+                }
+            }
+            for statement in body {
+                if matches!(&statement.kind, StmtKind::FunctionDecl { .. }) {
+                    self.compile_stmt(statement)?;
+                }
+            }
+            for statement in body {
+                if matches!(&statement.kind, StmtKind::VarDecl { .. } | StmtKind::FunctionDecl { .. }) {
+                    continue;
+                }
+                self.compile_stmt(statement)?;
+            }
+        } else {
+            for statement in body { self.compile_stmt(statement)?; }
+        }
+
+        if async_try.is_some() {
+            self.active_async_try_depth = self.active_async_try_depth.saturating_sub(1);
+        }
 
         if let Some(catch_jump) = async_try {
             let line = self.line;
@@ -187,7 +383,6 @@ impl Compiler {
             let chunk = &mut self.chunks[self.current];
             crate::emitter::errors::emit_try_end(chunk, line);
             // After try_end, the body completed normally. Wrap with
-            // Promise.resolve(undefined) since no value was left.
             chunk.emit_op(Op::UNDEFINED, line);
             let resolve_idx = self.import("ecma:promise", "resolve");
             self.emit_host_call(resolve_idx, 1);
@@ -323,16 +518,16 @@ impl Compiler {
         // for auto-properties. Reads NormalClass directly; no longer
         // iterates the reconstructed member list.
         let mut fields: Vec<String> = Vec::new();
-        let mut field_inits: Vec<(String, Option<String>, Option<Expression>)> = Vec::new();
-        let mut static_field_inits: Vec<(String, Option<Expression>)> = Vec::new();
+        let mut field_inits: Vec<(String, Option<String>, Option<Expression>, Option<Vec<Expression>>)> = Vec::new();
+        let mut static_field_inits: Vec<(String, Option<String>, Option<Expression>, Option<Vec<Expression>>)> = Vec::new();
         for f in &class.instance_fields {
             let fname = self.canon(&f.name);
             fields.push(fname.clone());
-            field_inits.push((fname, f.type_hint.clone(), f.init.clone()));
+            field_inits.push((fname, f.type_hint.clone(), f.init.clone(), f.array_bounds.clone()));
         }
         for f in &class.static_fields {
             let fname = self.canon(&f.name);
-            static_field_inits.push((fname, f.init.clone()));
+            static_field_inits.push((fname, f.type_hint.clone(), f.init.clone(), f.array_bounds.clone()));
         }
         for p in &class.properties {
             // Auto-properties get a backing field named like the property;
@@ -341,12 +536,12 @@ impl Compiler {
             if let Some(auto_field_name) = &p.auto_field {
                 let pname_canon = self.canon(auto_field_name);
                 if p.is_static {
-                    if !static_field_inits.iter().any(|(n, _)| n == &pname_canon) {
-                        static_field_inits.push((pname_canon, None));
+                    if !static_field_inits.iter().any(|(n, _, _, _)| n == &pname_canon) {
+                        static_field_inits.push((pname_canon, None, None, None));
                     }
                 } else if !fields.contains(&pname_canon) {
                     fields.push(pname_canon.clone());
-                    field_inits.push((pname_canon, None, None));
+                    field_inits.push((pname_canon, None, None, None));
                 }
             }
         }
@@ -359,7 +554,7 @@ impl Compiler {
                 let fname = self.canon(ename);
                 if !fields.contains(&fname) {
                     fields.push(fname.clone());
-                    field_inits.push((fname, None, None));
+                    field_inits.push((fname, None, None, None));
                 }
             }
         }
@@ -367,7 +562,7 @@ impl Compiler {
         // Store field list for implicit self resolution
         let static_field_names: Vec<String> = static_field_inits
             .iter()
-            .map(|(n, _)| n.clone())
+            .map(|(n, _, _, _)| n.clone())
             .collect();
         let mut instance_field_types: HashMap<String, String> = class.instance_fields.iter().filter_map(|f| {
             f.type_hint.as_ref().map(|t| (self.canon(&f.name), Self::normalize_type_hint(t)))
@@ -455,6 +650,7 @@ impl Compiler {
         // Compile methods (including constructor body)
         // (name, chunk_idx, is_ctor, is_static)
         let mut method_chunks: Vec<(String, usize, bool, bool)> = Vec::new();
+        let mut method_capture_name_map: HashMap<usize, Vec<String>> = HashMap::new();
         let saved_class = self.current_class.take();
         let saved_implicit = self.current_class_implicit_self;
         self.current_class = Some(name.to_string());
@@ -583,12 +779,34 @@ impl Compiler {
             cc.static_local_bindings.push(HashMap::new());
             let saved = cc.current;
             cc.current = ci;
+            let saved_fn = cc.current_func_name.take();
+            cc.current_func_name = Some(bound_name.clone());
 
             if !uses_js_this && !is_static_init && (!is_static || cc.profile.name == "php") {
                 cc.define_local(&self_kw);
             }
             for p in &user_params {
                 cc.define_local_typed(&p.name, p.type_hint.clone());
+                let normalized_type_hint = p
+                    .type_hint
+                    .as_deref()
+                    .map(Compiler::normalize_type_hint);
+                if normalized_type_hint
+                    .as_deref()
+                    .is_some_and(|type_hint| type_hint.ends_with("()"))
+                    || normalized_type_hint
+                        .as_deref()
+                        .is_some_and(|type_hint| type_hint.ends_with("()"))
+                {
+                    cc.record_array_binding(
+                        &p.name,
+                        ArrayBindingMetadata {
+                            is_fixed: false,
+                            type_hint: p.type_hint.clone(),
+                            pascal_bounds: p.type_hint.as_deref().and_then(|type_hint| cc.pascal_array_type_hint_metadata(type_hint)),
+                        },
+                    );
+                }
             }
             if !uses_js_this && !is_static_init && (!is_static || cc.profile.name == "php") {
                 if class.explicit_self_param {
@@ -608,11 +826,9 @@ impl Compiler {
                 .filter(|param| matches!(param.pass_by, PassBy::Ref | PassBy::Out))
                 .filter_map(|param| cc.scope().resolve(&param.name))
                 .collect();
-            let saved_fn = cc.current_func_name.take();
             let saved_rs = cc.current_result_slot.take();
             let saved_ref_out = cc.current_ref_out_params.take();
             let saved_member_static = cc.current_member_is_static;
-            cc.current_func_name = Some(bound_name.clone());
             cc.current_result_slot = None;
             cc.current_ref_out_params = (!ref_out_slots.is_empty()).then_some(ref_out_slots);
             cc.current_member_is_static = is_static;
@@ -682,9 +898,17 @@ impl Compiler {
 
             let locals = cc.scope().next_slot.max(cc.chunks[ci].local_count);
             cc.chunks[ci].local_count = locals;
+            let method_scope_idx = cc.scopes.len() - 1;
+            let capture_names: Vec<String> = cc.scopes[method_scope_idx]
+                .upvalues
+                .iter()
+                .enumerate()
+                .filter_map(|(index, _)| cc.captured_name_for_upvalue(method_scope_idx, index as u8))
+                .collect();
             cc.scopes.pop();
             cc.static_local_bindings.pop();
             cc.current = saved;
+            method_capture_name_map.insert(ci, capture_names);
             if let Some(pending) = cc.pending_classes.get_mut(name) {
                 let overloads = if is_static {
                     &mut pending.static_method_overloads
@@ -983,20 +1207,36 @@ impl Compiler {
                         let prop = mname.strip_prefix("__set_").unwrap_or(mname);
                         common::classes::emit_bind_setter(self.chunk(), this_slot, prop, *mci, line);
                     } else {
-                        if self.is_js_profile() {
-                            common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, method_rest_fixed_count(*mci), line);
-                        } else {
-                            common::classes::emit_bind_bound_method_with_aliases(self.chunk(), this_slot, mname, *mci, method_rest_fixed_count(*mci), line);
-                        }
+                        let capture_names = method_capture_name_map.get(mci).map(Vec::as_slice).unwrap_or(&[]);
+                        self.emit_bind_instance_method_with_aliases(
+                            this_slot,
+                            mname,
+                            *mci,
+                            capture_names,
+                            method_rest_fixed_count(*mci),
+                            !self.is_js_profile(),
+                        )?;
                     }
                 }
                 common::classes::emit_constructor_return(self.chunk(), this_slot, line);
             } else {
                 let is_child = parent.is_some();
-                let parent_ctor_is_bound = parent.as_ref().is_some_and(|parent_name| {
+                let parent_ctor_is_bound = if let Some(parent_name) = parent {
                     let pname = self.canon(parent_name);
-                    self.defined_globals.contains(&pname) || self.defined_classes.contains(&pname)
-                });
+                    let has_local = self.scope().resolve(parent_name)
+                        .or_else(|| if self.case_sensitive { None } else { self.scope().resolve_ci(parent_name) })
+                        .is_some();
+                    let has_upvalue = self.scopes.len() > 1
+                        && self.resolve_upvalue(self.scopes.len() - 1, parent_name).is_some();
+                    let has_static_local = self.static_local_binding(parent_name).is_some();
+                    has_local
+                        || has_upvalue
+                        || has_static_local
+                        || self.defined_globals.contains(&pname)
+                        || self.defined_classes.contains(&pname)
+                } else {
+                    false
+                };
                 if is_child {
                     self.emit(Op::NULL);
                     self.emit_u16(Op::LOCAL_SET, this_slot);
@@ -1016,10 +1256,9 @@ impl Compiler {
                         if let Some(bargs) = base_args {
                             if let Some(parent_name) = parent {
                                 if parent_ctor_is_bound {
-                                    let pname = self.canon(parent_name);
-                                    self.emit_var_get(&pname);
+                                    self.emit_var_get(parent_name);
                                     for a in *bargs { self.compile_expr(a)?; }
-                                    self.emit_u8(Op::CALL, bargs.len() as u8);
+                                    self.emit_u8(Op::CALL_REF, bargs.len() as u8);
                                     self.emit_u16(Op::LOCAL_SET, this_slot);
                                     self.emit(Op::DROP);
                                 } else {
@@ -1030,9 +1269,8 @@ impl Compiler {
                         } else if auto_base_needed {
                             if let Some(parent_name) = parent {
                                 if parent_ctor_is_bound {
-                                    let pname = self.canon(parent_name);
-                                    self.emit_var_get(&pname);
-                                    self.emit_u8(Op::CALL, 0);
+                                    self.emit_var_get(parent_name);
+                                    self.emit_u8(Op::CALL_REF, 0);
                                     self.emit_u16(Op::LOCAL_SET, this_slot);
                                     self.emit(Op::DROP);
                                 } else {
@@ -1043,14 +1281,41 @@ impl Compiler {
                         }
                     } else if let Some(parent_name) = parent {
                         if parent_ctor_is_bound {
-                            let pname = self.canon(parent_name);
-                            self.emit_var_get(&pname);
-                            for i in 0..user_arity {
-                                self.emit_u16(Op::LOCAL_GET, i as u16);
+                            self.emit_var_get(parent_name);
+                            if synthesized_forward_args {
+                                let parent_ctor_slot = self.define_local(&format!("__{}_parent_ctor", helper_name));
+                                self.emit_u16(Op::LOCAL_SET, parent_ctor_slot);
+                                self.emit(Op::DROP);
+                                let mut done_jumps = Vec::new();
+                                for count in (1..=IMPLICIT_CTOR_FORWARD_ARGS).rev() {
+                                    self.emit_u16(Op::LOCAL_GET, (count - 1) as u16);
+                                    self.emit(Op::REF_IS_NULL);
+                                    let next = self.emit_jump(Op::BR_IF_TRUE);
+                                    self.emit_u16(Op::LOCAL_GET, parent_ctor_slot);
+                                    for arg_index in 0..count {
+                                        self.emit_u16(Op::LOCAL_GET, arg_index as u16);
+                                    }
+                                    self.emit_u8(Op::CALL_REF, count);
+                                    self.emit_u16(Op::LOCAL_SET, this_slot);
+                                    self.emit(Op::DROP);
+                                    done_jumps.push(self.emit_jump(Op::BR));
+                                    self.patch_jump(next);
+                                }
+                                self.emit_u16(Op::LOCAL_GET, parent_ctor_slot);
+                                self.emit_u8(Op::CALL_REF, 0);
+                                self.emit_u16(Op::LOCAL_SET, this_slot);
+                                self.emit(Op::DROP);
+                                for jump in done_jumps {
+                                    self.patch_jump(jump);
+                                }
+                            } else {
+                                for i in 0..user_arity {
+                                    self.emit_u16(Op::LOCAL_GET, i as u16);
+                                }
+                                self.emit_u8(Op::CALL_REF, user_arity);
+                                self.emit_u16(Op::LOCAL_SET, this_slot);
+                                self.emit(Op::DROP);
                             }
-                            self.emit_u8(Op::CALL_REF, user_arity);
-                            self.emit_u16(Op::LOCAL_SET, this_slot);
-                            self.emit(Op::DROP);
                         } else {
                             let canon_name = self.canon(name);
                             common::classes::emit_new_typed_object(self.chunk(), this_slot, &canon_name, line);
@@ -1083,18 +1348,16 @@ impl Compiler {
                             self.patch_jump(skip);
                         }
 
-                        for (fname, type_hint, init) in &field_inits {
-                            if let Some(init_expr) = init {
-                                common::classes::emit_init_field_start(self.chunk(), this_slot, line);
-                                self.compile_expr(init_expr)?;
-                                common::classes::emit_init_field_end(self.chunk(), fname, line);
-                            } else if class.is_value_type {
-                                common::classes::emit_init_field_start(self.chunk(), this_slot, line);
-                                self.emit_default_value_for_type_hint(type_hint.as_deref());
-                                common::classes::emit_init_field_end(self.chunk(), fname, line);
-                            } else {
-                                common::classes::emit_init_field_null(self.chunk(), this_slot, fname, line);
-                            }
+                        for (fname, type_hint, init, array_bounds) in &field_inits {
+                            self.emit_class_field_initializer(
+                                this_slot,
+                                fname,
+                                type_hint.as_deref(),
+                                init.as_ref(),
+                                array_bounds.as_deref(),
+                                class.is_value_type,
+                                line,
+                            )?;
                         }
 
                         if let Some(parent_name) = parent {
@@ -1102,7 +1365,7 @@ impl Compiler {
                             for method_name in &instance_method_names {
                                 common::classes::emit_save_base_method(self.chunk(), this_slot, method_name, line);
                             }
-                            common::classes::emit_store_super(self.chunk(), this_slot, &pname, line);
+                            self.emit_store_super_ref(this_slot, &pname);
                         }
 
                         for (mname, mci, _, _) in &instance_methods {
@@ -1113,11 +1376,15 @@ impl Compiler {
                                 let prop = mname.strip_prefix("__set_").unwrap_or(mname);
                                 common::classes::emit_bind_setter(self.chunk(), this_slot, prop, *mci, line);
                             } else {
-                                if self.is_js_profile() {
-                                    common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, method_rest_fixed_count(*mci), line);
-                                } else {
-                                    common::classes::emit_bind_bound_method_with_aliases(self.chunk(), this_slot, mname, *mci, method_rest_fixed_count(*mci), line);
-                                }
+                                let capture_names = method_capture_name_map.get(mci).map(Vec::as_slice).unwrap_or(&[]);
+                                self.emit_bind_instance_method_with_aliases(
+                                    this_slot,
+                                    mname,
+                                    *mci,
+                                    capture_names,
+                                    method_rest_fixed_count(*mci),
+                                    !self.is_js_profile(),
+                                )?;
                             }
                         }
 
@@ -1180,18 +1447,18 @@ impl Compiler {
                             for method_name in &instance_method_names {
                                 common::classes::emit_save_base_method(self.chunk(), this_slot, method_name, line);
                             }
-                            common::classes::emit_store_super(self.chunk(), this_slot, &pname, line);
+                            self.emit_store_super_ref(this_slot, &pname);
                         }
-                        for (fname, type_hint, init) in &field_inits {
-                            if let Some(init_expr) = init {
-                                common::classes::emit_init_field_start(self.chunk(), this_slot, line);
-                                self.compile_expr(init_expr)?;
-                                common::classes::emit_init_field_end(self.chunk(), fname, line);
-                            } else if class.is_value_type {
-                                common::classes::emit_init_field_start(self.chunk(), this_slot, line);
-                                self.emit_default_value_for_type_hint(type_hint.as_deref());
-                                common::classes::emit_init_field_end(self.chunk(), fname, line);
-                            }
+                        for (fname, type_hint, init, array_bounds) in &field_inits {
+                            self.emit_class_field_initializer(
+                                this_slot,
+                                fname,
+                                type_hint.as_deref(),
+                                init.as_ref(),
+                                array_bounds.as_deref(),
+                                class.is_value_type,
+                                line,
+                            )?;
                         }
                         for (mname, mci, _, _) in &instance_methods {
                             if mname.starts_with("__get_") {
@@ -1201,11 +1468,15 @@ impl Compiler {
                                 let prop = mname.strip_prefix("__set_").unwrap_or(mname);
                                 common::classes::emit_bind_setter(self.chunk(), this_slot, prop, *mci, line);
                             } else {
-                                if self.is_js_profile() {
-                                    common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, method_rest_fixed_count(*mci), line);
-                                } else {
-                                    common::classes::emit_bind_bound_method_with_aliases(self.chunk(), this_slot, mname, *mci, method_rest_fixed_count(*mci), line);
-                                }
+                                let capture_names = method_capture_name_map.get(mci).map(Vec::as_slice).unwrap_or(&[]);
+                                self.emit_bind_instance_method_with_aliases(
+                                    this_slot,
+                                    mname,
+                                    *mci,
+                                    capture_names,
+                                    method_rest_fixed_count(*mci),
+                                    !self.is_js_profile(),
+                                )?;
                             }
                         }
                         let user_body = &body_stmts[preamble_end..];
@@ -1225,18 +1496,16 @@ impl Compiler {
                 } else {
                     let canon_name = self.canon(name);
                     common::classes::emit_new_typed_object(self.chunk(), this_slot, &canon_name, line);
-                    for (fname, type_hint, init) in &field_inits {
-                        if let Some(init_expr) = init {
-                            common::classes::emit_init_field_start(self.chunk(), this_slot, line);
-                            self.compile_expr(init_expr)?;
-                            common::classes::emit_init_field_end(self.chunk(), fname, line);
-                        } else if class.is_value_type {
-                            common::classes::emit_init_field_start(self.chunk(), this_slot, line);
-                            self.emit_default_value_for_type_hint(type_hint.as_deref());
-                            common::classes::emit_init_field_end(self.chunk(), fname, line);
-                        } else {
-                            common::classes::emit_init_field_null(self.chunk(), this_slot, fname, line);
-                        }
+                    for (fname, type_hint, init, array_bounds) in &field_inits {
+                        self.emit_class_field_initializer(
+                            this_slot,
+                            fname,
+                            type_hint.as_deref(),
+                            init.as_ref(),
+                            array_bounds.as_deref(),
+                            class.is_value_type,
+                            line,
+                        )?;
                     }
                     for (mname, mci, _, _) in &instance_methods {
                         if mname.starts_with("__get_") {
@@ -1246,11 +1515,15 @@ impl Compiler {
                             let prop = mname.strip_prefix("__set_").unwrap_or(mname);
                             common::classes::emit_bind_setter(self.chunk(), this_slot, prop, *mci, line);
                         } else {
-                            if self.is_js_profile() {
-                                common::classes::emit_bind_method_with_aliases(self.chunk(), this_slot, mname, *mci, method_rest_fixed_count(*mci), line);
-                            } else {
-                                common::classes::emit_bind_bound_method_with_aliases(self.chunk(), this_slot, mname, *mci, method_rest_fixed_count(*mci), line);
-                            }
+                            let capture_names = method_capture_name_map.get(mci).map(Vec::as_slice).unwrap_or(&[]);
+                            self.emit_bind_instance_method_with_aliases(
+                                this_slot,
+                                mname,
+                                *mci,
+                                capture_names,
+                                method_rest_fixed_count(*mci),
+                                !self.is_js_profile(),
+                            )?;
                         }
                     }
                     if self.is_js_profile() {
@@ -1313,9 +1586,10 @@ impl Compiler {
             self.define_local(&format!("__ctor_arg_{}", i));
         }
         let line = self.line;
+        let js_ctor_relaxes_min_arity = self.is_js_profile();
         let helper_for_count = |count: usize| {
             ctor_helpers.iter()
-                .filter(|(arity, min_arity, _, _)| count >= *min_arity && count <= *arity)
+            .filter(|(arity, min_arity, _, _)| count <= *arity && (js_ctor_relaxes_min_arity || count >= *min_arity))
                 .min_by_key(|(arity, _, _, _)| *arity)
         };
         for count in (1..=ctor_arity as usize).rev() {
@@ -1398,10 +1672,20 @@ impl Compiler {
         }
 
         // Initialize static fields on the constructor object
-        for (fname, init) in &static_field_inits {
+        for (fname, type_hint, init, array_bounds) in &static_field_inits {
             self.emit_u16(Op::LOCAL_GET, ctor_local);
             if let Some(init_expr) = init {
                 self.compile_expr(init_expr)?;
+            } else if let Some(extent) = array_bounds.as_deref().and_then(Self::array_bounds_extent_expr) {
+                let init_expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("Array")),
+                    args: vec![
+                        Argument::positional(extent),
+                        Argument::positional(Self::array_default_element_expr(type_hint.as_deref())),
+                    ],
+                    optional: false,
+                });
+                self.compile_expr(&init_expr)?;
             } else {
                 self.emit(Op::NULL);
             }
@@ -1421,7 +1705,7 @@ impl Compiler {
         }
 
         let own_static_member_names: Vec<String> = static_field_inits.iter()
-            .map(|(fname, _)| fname.clone())
+            .map(|(fname, _, _, _)| fname.clone())
             .chain(static_const_names.iter().cloned())
             .collect();
 

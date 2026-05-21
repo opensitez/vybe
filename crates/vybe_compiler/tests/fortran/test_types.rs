@@ -165,3 +165,24 @@ program test
 end program test
 "#);
 }
+
+#[test]
+fn derived_type_procedure_component_decl() {
+    compile_ok(r#"
+program test
+    implicit none
+    abstract interface
+        function rhs_func(t) result(v)
+            real, intent(in) :: t
+            real :: v
+        end function rhs_func
+    end interface
+
+    type :: CallbackBox
+        procedure(rhs_func), pointer, nopass :: fn
+    end type CallbackBox
+
+    print *, "ok"
+end program test
+"#);
+}

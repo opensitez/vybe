@@ -5810,6 +5810,7 @@ fn parse_interface_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     params,
                     return_type: None,
                     is_sub: true,
+                    signature_source: None,
                 });
             }
             Rule::interface_function => {
@@ -5829,6 +5830,7 @@ fn parse_interface_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     params,
                     return_type: ret,
                     is_sub: false,
+                    signature_source: None,
                 });
             }
             Rule::interface_property => {

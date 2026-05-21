@@ -282,6 +282,7 @@ pub fn emit_len(chunks: &mut [Chunk], current: usize, line: u32) {
     c.emit_op(Op::DUP, line);                     // [v, v]
     c.emit_op(Op::REF_IS_STRING, line);            // [v, is_string]
     let to_str = c.emit_jump(Op::BR_IF_TRUE, line); // consumes bool
+
     // Not a string — try array length first. Map-backed PHP arrays report
     // 0 here, so fall back to map.size and finally Object.keys(v).length
     // only in that zero-length case.

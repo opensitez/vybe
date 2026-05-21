@@ -254,7 +254,7 @@ var_attribute = {
 intent_spec = { kw_in ~ kw_out? | kw_out | kw_inout }
 
 dimension_spec_list = { dimension_spec ~ ("," ~ dimension_spec)* }
-dimension_spec = { ".." | expression? ~ ":" ~ expression? | expression | ":" }
+dimension_spec = { "*" | ".." | expression? ~ ":" ~ expression? | expression | ":" }
 
 var_declarator_list = { var_declarator ~ ("," ~ var_declarator)* }
 
@@ -322,7 +322,7 @@ type_attribute = {
   | kw_sequence
 }
 
-type_member = { var_declaration | sequence_statement | private_statement | NEWLINE | COMMENT }
+type_member = { var_declaration | procedure_decl | sequence_statement | private_statement | NEWLINE | COMMENT }
 sequence_statement = { kw_sequence }
 private_statement = { kw_private }
 
@@ -333,13 +333,15 @@ type_bound_procedure = {
   | kw_final ~ "::" ~ identifier ~ ("," ~ identifier)* ~ (NEWLINE | ";")
 }
 tbp_attribute = { kw_deferred | kw_pass ~ ("(" ~ identifier ~ ")")? | kw_nopass | kw_public | kw_private | kw_non_overridable }
-tbp_binding = { identifier ~ ("=>" ~ identifier)? }
+tbp_binding = { designator_name ~ ("=>" ~ designator_name)? }
+designator_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+tbp_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
 // ── Interface ──────────────────────────────────────────────────────────────
 
 interface_decl = {
     kw_interface ~ interface_designator? ~ (NEWLINE | ";")
-    ~ (subroutine_decl | function_decl
+    ~ (subroutine_decl | function_decl | procedure_decl
         | kw_module ~ kw_procedure ~ "::"? ~ identifier ~ ("," ~ identifier)* ~ (NEWLINE | ";")
         | kw_procedure ~ "::"? ~ identifier ~ ("," ~ identifier)* ~ (NEWLINE | ";")
         | NEWLINE | COMMENT)*
@@ -384,6 +386,8 @@ single_statement = _{
   | expression_statement
 }
 
+inline_statement_list = { statement ~ (";" ~ statement)* }
+
 // ── Do loop ────────────────────────────────────────────────────────────────
 
 // Named DO loops: `label: do i = 1, n ... end do label`. The label
@@ -392,15 +396,21 @@ single_statement = _{
 // just confirms the matching close. `cycle label` / `exit label`
 // inherit the same identifier as a target.
 do_statement = {
-    (loop_label ~ ":")? ~ kw_do ~ identifier ~ "=" ~ expression ~ "," ~ expression ~ ("," ~ expression)? ~ (NEWLINE | ";")
-    ~ line*
-    ~ kw_end ~ kw_do ~ identifier?
+    (loop_label ~ ":")? ~ kw_do ~ identifier ~ "=" ~ expression ~ "," ~ expression ~ ("," ~ expression)? ~ NEWLINE
+        ~ line*
+        ~ kw_end ~ kw_do ~ identifier?
+    | (loop_label ~ ":")? ~ kw_do ~ identifier ~ "=" ~ expression ~ "," ~ expression ~ ("," ~ expression)? ~ ";" ~ inline_statement_list ~ ";" ~ kw_end ~ kw_do ~ identifier?
+    | (loop_label ~ ":")? ~ kw_do ~ NEWLINE
+        ~ line*
+        ~ kw_end ~ kw_do ~ identifier?
+    | (loop_label ~ ":")? ~ kw_do ~ ";" ~ inline_statement_list ~ ";" ~ kw_end ~ kw_do ~ identifier?
 }
 
 do_while_statement = {
-    (loop_label ~ ":")? ~ kw_do ~ kw_while ~ "(" ~ expression ~ ")" ~ (NEWLINE | ";")
+    (loop_label ~ ":")? ~ kw_do ~ kw_while ~ "(" ~ expression ~ ")" ~ NEWLINE
     ~ line*
     ~ kw_end ~ kw_do ~ identifier?
+  | (loop_label ~ ":")? ~ kw_do ~ kw_while ~ "(" ~ expression ~ ")" ~ ";" ~ inline_statement_list ~ ";" ~ kw_end ~ kw_do ~ identifier?
 }
 
 // `do concurrent ([type-spec ::] index = lower:upper[:stride] [, ...] [, mask])
@@ -644,7 +654,7 @@ enumerator_value = { identifier ~ ("=" ~ expression)? }
 // `abstract interface ... end interface` — F2003 abstract interface.
 abstract_interface_decl = {
     kw_abstract ~ kw_interface ~ identifier? ~ (NEWLINE | ";")
-    ~ (subroutine_decl | function_decl | NEWLINE | COMMENT)*
+    ~ (subroutine_decl | function_decl | procedure_decl | NEWLINE | COMMENT)*
     ~ kw_end ~ kw_interface ~ identifier?
 }
 
@@ -686,12 +696,12 @@ write_spec = { "*" | identifier ~ "=" ~ (expression | "*") | expression }
 
 allocate_statement = { kw_allocate ~ "(" ~ alloc_item ~ ("," ~ alloc_item)* ~ ")" }
 deallocate_statement = { kw_deallocate ~ "(" ~ identifier ~ ("," ~ identifier)* ~ ")" }
-alloc_item = { identifier ~ "(" ~ dimension_spec_list ~ ")" }
+alloc_item = { identifier ~ ("(" ~ dimension_spec_list ~ ")")? }
 
 // ── Call / Return / Cycle / Exit / Stop ────────────────────────────────────
 
 call_statement = {
-    kw_call ~ identifier ~ ("%" ~ identifier)* ~ ("(" ~ argument_list? ~ ")")?
+    kw_call ~ identifier ~ ("%" ~ designator_name)* ~ ("(" ~ argument_list? ~ ")")?
 }
 
 return_statement = { kw_return ~ expression? }
@@ -714,9 +724,8 @@ assignment_statement = {
 }
 
 member_or_index = {
-    "%" ~ identifier
-  | "(" ~ expression ~ ("," ~ expression)* ~ ")"
-  | "(" ~ expression ~ ":" ~ expression? ~ ")"
+        "%" ~ designator_name
+    | "(" ~ argument_list? ~ ")"
   | "[" ~ expression ~ ("," ~ expression)* ~ "]"
 }
 
@@ -781,7 +790,7 @@ primary_atom = {
 // already handles the first `(args)` after a bare identifier, so postfix
 // only needs to chain further accesses (`f(x)%field`, `obj%method(a)`).
 postfix_op = {
-    "%" ~ identifier
+        "%" ~ designator_name
   | "(" ~ argument_list? ~ ")"
   | "[" ~ argument_list ~ "]"
 }

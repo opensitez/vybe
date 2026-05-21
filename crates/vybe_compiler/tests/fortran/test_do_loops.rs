@@ -93,3 +93,9 @@ fn do_exit_with_sum() {
     let out = run_prints("program t\ninteger :: i, s\ns = 0\ndo i = 1, 100\ns = s + i\nif (s > 50) exit\nend do\nprint *, s\nend program t\n");
     assert_eq!(out, vec!["55"]);
 }
+
+#[test]
+fn bare_do_loop_exits() {
+    let out = run_prints("program t\ninteger :: i\ni = 0\ndo\ni = i + 1\nif (i >= 3) exit\nend do\nprint *, i\nend program t\n");
+    assert_eq!(out, vec!["3"]);
+}

@@ -74,6 +74,11 @@ pub struct Statement {
     pub span: Span,
 }
 
+#[derive(Debug, Clone)]
+pub struct RecordFieldFormat {
+    pub decimal_places: usize,
+}
+
 impl Statement {
     pub fn new(kind: StmtKind) -> Self { Self { kind, span: Span::default() } }
     pub fn with_span(kind: StmtKind, span: Span) -> Self { Self { kind, span } }
@@ -364,6 +369,7 @@ pub enum StmtKind {
     RewriteRecordFile {
         file_number: Expression,
         items: Vec<Expression>,
+        field_formats: Vec<Option<RecordFieldFormat>>,
     },
 
     // ── Module system (JS) ───────────────────────────────────────────────
@@ -480,6 +486,7 @@ pub enum InterfaceMember {
         params: Vec<Param>,
         return_type: Option<String>,
         is_sub: bool,
+        signature_source: Option<String>,
     },
     Property {
         name: String,
@@ -501,6 +508,16 @@ pub enum InterfaceMember {
 pub struct Expression {
     pub kind: ExprKind,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArrayIndexSemantics {
+    pub first_index: i64,
+}
+
+impl ArrayIndexSemantics {
+    pub const ZERO_BASED: Self = Self { first_index: 0 };
+    pub const ONE_BASED: Self = Self { first_index: 1 };
 }
 
 impl Expression {
@@ -1115,7 +1132,7 @@ fn statement_has_yield(stmt: &Statement) -> bool {
             expr_has_yield(file_number)
                 || key_value.as_ref().map_or(false, expr_has_yield)
         }
-        StmtKind::RewriteRecordFile { file_number, items } => {
+        StmtKind::RewriteRecordFile { file_number, items, .. } => {
             expr_has_yield(file_number) || items.iter().any(expr_has_yield)
         }
         StmtKind::ReDim { bounds, .. } => bounds.iter().any(expr_has_yield),
@@ -1219,4 +1236,37 @@ fn case_condition_has_yield(condition: &CaseCondition) -> bool {
         CaseCondition::Value(expr) | CaseCondition::Comparison { expr, .. } => expr_has_yield(expr),
         CaseCondition::Range { from, to } => expr_has_yield(from) || expr_has_yield(to),
     }
+}
+
+pub fn normalize_array_index_operand(
+    index: Expression,
+    semantics: ArrayIndexSemantics,
+) -> Expression {
+    match index.kind {
+        ExprKind::Slice { lower, upper, step } => Expression::with_span(
+            ExprKind::Slice {
+                lower: lower.map(|expr| Box::new(normalize_array_subscript(*expr, semantics))),
+                upper,
+                step,
+            },
+            index.span,
+        ),
+        other => normalize_array_subscript(Expression::with_span(other, index.span), semantics),
+    }
+}
+
+fn normalize_array_subscript(index: Expression, semantics: ArrayIndexSemantics) -> Expression {
+    if semantics.first_index == 0 {
+        return index;
+    }
+
+    let span = index.span;
+    Expression::with_span(
+        ExprKind::Binary {
+            left: Box::new(index),
+            op: BinOp::Sub,
+            right: Box::new(Expression::int(semantics.first_index)),
+        },
+        span,
+    )
 }

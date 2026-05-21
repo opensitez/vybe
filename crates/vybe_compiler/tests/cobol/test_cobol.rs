@@ -136,6 +136,31 @@ PROCEDURE DIVISION.
 "#);
 }
 
+#[test]
+fn occurs_table_runtime_element_and_iteration() {
+    let output = run_prints(r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TABLES-RUNTIME.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-ITEM PIC 9(4) OCCURS 3 TIMES.
+01 WS-I PIC 9 VALUE 1.
+01 WS-SUM PIC 9(4) VALUE 0.
+PROCEDURE DIVISION.
+    MOVE 10 TO WS-ITEM(1).
+    MOVE 20 TO WS-ITEM(2).
+    MOVE 30 TO WS-ITEM(3).
+    DISPLAY WS-ITEM(1).
+    PERFORM VARYING WS-I FROM 1 BY 1 UNTIL WS-I > 3
+        ADD WS-ITEM(WS-I) TO WS-SUM
+    END-PERFORM.
+    DISPLAY WS-SUM.
+    STOP RUN.
+"#);
+
+    assert_eq!(output, vec!["10".to_string(), "60".to_string()]);
+}
+
 // ═══════════════════════════════════════════════════════════
 // ARITHMETIC
 // ═══════════════════════════════════════════════════════════

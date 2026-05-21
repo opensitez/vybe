@@ -132,7 +132,6 @@ typename      = { emit = "intrinsic:classname",            min_args = 1, max_arg
 
 # ── Array operations ─────────────────────────────────────────────────────────
 
-setlength     = { emit = "host:ecma:array:newWithLength",  min_args = 2, max_args = 2 }
 append        = { emit = "host:ecma:array:push",           min_args = 2, max_args = 2 }
 sort          = { emit = "stdlib:sort_in_place",          min_args = 1, max_args = 1 }
 reverse       = { emit = "host:ecma:array:reverse",        min_args = 1, max_args = 1 }

@@ -185,9 +185,23 @@ struct StaticLocalBinding {
 }
 
 #[derive(Debug, Clone)]
+struct PascalArrayDimensionMetadata {
+    first_index: i64,
+    length: usize,
+    uses_char_ordinal: bool,
+}
+
+#[derive(Debug, Clone)]
+struct PascalArrayBoundsMetadata {
+    is_fixed: bool,
+    dimensions: Vec<PascalArrayDimensionMetadata>,
+}
+
+#[derive(Debug, Clone)]
 struct ArrayBindingMetadata {
     is_fixed: bool,
     type_hint: Option<String>,
+    pascal_bounds: Option<PascalArrayBoundsMetadata>,
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -325,6 +339,11 @@ pub struct Compiler {
     active_finally_blocks: Vec<FinallyAction>,
     /// Nesting depth of the catch body currently being compiled.
     catch_depth: usize,
+    /// JS async-function wrapper try depth currently active for the
+    /// function body being compiled. Explicit returns inside that body
+    /// must emit matching TRY_END opcodes before RETURN so the VM does
+    /// not retain stale handlers from the callee frame.
+    active_async_try_depth: usize,
 }
 
 /// §16.2.1.3 wildcard — `import * as alias from "module"`.
@@ -545,6 +564,7 @@ impl Compiler {
             module_exports: HashMap::new(),
             active_finally_blocks: Vec::new(),
             catch_depth: 0,
+            active_async_try_depth: 0,
             uses_proxy: false,
         }
     }
@@ -610,6 +630,108 @@ impl Compiler {
                     }
                 }
                 _ => {}
+            }
+        }
+    }
+
+    fn predeclare_interface_signatures_in_body(&mut self, body: &[Statement]) {
+        for stmt in body {
+            self.predeclare_interface_signatures_in_stmt(stmt);
+        }
+    }
+
+    fn predeclare_interface_signatures_in_stmt(&mut self, stmt: &Statement) {
+        match &stmt.kind {
+            StmtKind::Block(body)
+            | StmtKind::NamespaceDecl { body, .. }
+            | StmtKind::FunctionDecl { body, .. } => {
+                self.predeclare_interface_signatures_in_body(body);
+            }
+            StmtKind::InterfaceDecl { members, .. } => {
+                self.register_interface_method_signatures(members);
+            }
+            StmtKind::ClassDecl { members, .. }
+            | StmtKind::StructDecl { members, .. }
+            | StmtKind::ModuleDecl { members, .. } => {
+                self.predeclare_interface_signatures_in_members(members);
+            }
+            _ => {}
+        }
+    }
+
+    fn predeclare_interface_signatures_in_members(&mut self, members: &[ClassMember]) {
+        for member in members {
+            match member {
+                ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+                    self.predeclare_interface_signatures_in_stmt(stmt);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn register_interface_method_signatures(&mut self, members: &[InterfaceMember]) {
+        for member in members {
+            let InterfaceMember::Method {
+                name,
+                params,
+                return_type,
+                signature_source,
+                ..
+            } = member else {
+                continue;
+            };
+
+            let canonical = self.canon(name);
+            if let Some(source_name) = signature_source.as_ref() {
+                let source_canonical = self.canon(source_name);
+                if let Some(source_modes) = self.function_param_modes.get(&source_canonical).cloned() {
+                    self.function_param_modes
+                        .entry(canonical.clone())
+                        .or_insert(source_modes);
+                }
+                if let Some(min_arity) = self.function_min_arity.get(&source_canonical).copied() {
+                    self.function_min_arity.entry(canonical.clone()).or_insert(min_arity);
+                }
+                if let Some(signatures) = self.function_signatures.get(&source_canonical).cloned() {
+                    self.function_signatures
+                        .entry(canonical.clone())
+                        .or_insert(signatures);
+                }
+                if let Some(source_return_type) = self.function_return_types.get(&source_canonical).cloned() {
+                    self.function_return_types
+                        .entry(canonical)
+                        .or_insert(source_return_type);
+                }
+                continue;
+            }
+
+            self.function_param_modes
+                .entry(canonical.clone())
+                .or_insert_with(|| params.iter().map(|param| param.pass_by).collect());
+            self.function_min_arity
+                .entry(canonical.clone())
+                .or_insert_with(|| {
+                    params
+                        .iter()
+                        .take_while(|param| param.default.is_none() && !param.is_rest)
+                        .count()
+                });
+
+            let signature = CallSignature::from_params(params);
+            let signatures = self.function_signatures.entry(canonical.clone()).or_default();
+            if !signatures.iter().any(|existing| {
+                existing.param_names == signature.param_names
+                    && existing.min_arity == signature.min_arity
+                    && existing.has_rest == signature.has_rest
+            }) {
+                signatures.push(signature);
+            }
+
+            if let Some(return_type) = return_type.as_ref() {
+                self.function_return_types
+                    .entry(canonical)
+                    .or_insert_with(|| return_type.clone());
             }
         }
     }
@@ -736,6 +858,7 @@ impl Compiler {
         }
 
         self.predeclare_type_names(&merged_body, None);
+        self.predeclare_interface_signatures_in_body(&merged_body);
         self.reserve_runtime_global_names();
         let shared_global_names = self.shared_global_names.clone();
         for name in shared_global_names {
@@ -942,8 +1065,25 @@ impl Compiler {
                     }
                 }
                 ClassMember::Method(stmt) => {
-                    if let StmtKind::FunctionDecl { name: method_name, .. } = &stmt.kind {
-                        module_static_methods.push(self.canon(method_name));
+                    if let StmtKind::FunctionDecl { name: method_name, params, return_type, .. } = &stmt.kind {
+                        let method_canon = self.canon(method_name);
+                        module_static_methods.push(method_canon.clone());
+                        self.function_param_modes
+                            .entry(method_canon.clone())
+                            .or_insert_with(|| params.iter().map(|param| param.pass_by).collect());
+                        self.function_min_arity
+                            .entry(method_canon.clone())
+                            .or_insert_with(|| {
+                                params
+                                    .iter()
+                                    .take_while(|param| param.default.is_none() && !param.is_rest)
+                                    .count()
+                            });
+                        if let Some(return_type) = return_type.clone() {
+                            self.function_return_types
+                                .entry(method_canon)
+                                .or_insert(return_type);
+                        }
                     }
                 }
                 ClassMember::NestedType(stmt) => {
@@ -1102,10 +1242,10 @@ impl Compiler {
         }
     }
 
-    fn parse_pascal_array_bound_token(token: &str) -> Option<i64> {
+    fn parse_pascal_array_bound_token(token: &str) -> Option<(i64, bool)> {
         let trimmed = token.trim();
         if let Ok(value) = trimmed.parse::<i64>() {
-            return Some(value);
+            return Some((value, false));
         }
 
         if trimmed.starts_with('\'') && trimmed.ends_with('\'') && trimmed.len() >= 3 {
@@ -1113,14 +1253,14 @@ impl Compiler {
             let unescaped = inner.replace("''", "'");
             let mut chars = unescaped.chars();
             if let (Some(ch), None) = (chars.next(), chars.next()) {
-                return Some(ch as i64);
+                return Some((ch as i64, true));
             }
         }
 
         None
     }
 
-    fn pascal_array_type_hint_metadata(&self, type_hint: &str) -> Option<(bool, usize)> {
+    fn pascal_array_type_hint_metadata(&self, type_hint: &str) -> Option<PascalArrayBoundsMetadata> {
         let trimmed = type_hint.trim().trim_end_matches('?').trim();
         let lowered = trimmed.to_ascii_lowercase();
         if !lowered.starts_with("array") {
@@ -1128,19 +1268,66 @@ impl Compiler {
         }
 
         let Some(bracket_start) = trimmed.find('[') else {
-            return Some((false, 0));
+            return Some(PascalArrayBoundsMetadata {
+                is_fixed: false,
+                dimensions: Vec::new(),
+            });
         };
         let bracket_end = trimmed[bracket_start + 1..].find(']')? + bracket_start + 1;
-        let first_dim = trimmed[bracket_start + 1..bracket_end].split(',').next()?.trim();
-        let (lower, upper) = first_dim.split_once("..")?;
-        let lower = Self::parse_pascal_array_bound_token(lower)?;
-        let upper = Self::parse_pascal_array_bound_token(upper)?;
-        let length = if upper >= lower {
-            (upper - lower + 1) as usize
+        let mut dimensions = Vec::new();
+        for dim in trimmed[bracket_start + 1..bracket_end].split(',').map(str::trim).filter(|dim| !dim.is_empty()) {
+            let (lower, upper) = dim.split_once("..")?;
+            let (lower, lower_is_char) = Self::parse_pascal_array_bound_token(lower)?;
+            let (upper, upper_is_char) = Self::parse_pascal_array_bound_token(upper)?;
+            if lower_is_char != upper_is_char {
+                return None;
+            }
+            let length = if upper >= lower {
+                (upper - lower + 1) as usize
+            } else {
+                0
+            };
+            dimensions.push(PascalArrayDimensionMetadata {
+                first_index: lower,
+                length,
+                uses_char_ordinal: lower_is_char,
+            });
+        }
+        Some(PascalArrayBoundsMetadata {
+            is_fixed: !dimensions.is_empty(),
+            dimensions,
+        })
+    }
+
+    fn pascal_ordinal_index_expr(index: Expression) -> Expression {
+        Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("Ord")),
+            args: vec![Argument::positional(index)],
+            optional: false,
+        })
+    }
+
+    fn pascal_indexed_type_hint(type_hint: &str) -> Option<String> {
+        let trimmed = type_hint.trim().trim_end_matches('?').trim();
+        if !trimmed.to_ascii_lowercase().starts_with("array") {
+            return None;
+        }
+
+        let bracket_start = trimmed.find('[')?;
+        let bracket_end = trimmed[bracket_start + 1..].find(']')? + bracket_start + 1;
+        let dims = trimmed[bracket_start + 1..bracket_end].trim();
+        let after_bracket = trimmed[bracket_end + 1..].trim();
+        let of_pos = after_bracket.to_ascii_lowercase().find("of")?;
+        let element_type = after_bracket[of_pos + 2..].trim();
+        if element_type.is_empty() {
+            return None;
+        }
+
+        if let Some((_, remaining_dims)) = dims.split_once(',') {
+            Some(format!("array[{}] of {}", remaining_dims.trim(), element_type))
         } else {
-            0
-        };
-        Some((true, length))
+            Some(element_type.to_string())
+        }
     }
 
     fn collect_reflection_metadata(&mut self, body: &[Statement]) {
@@ -2222,8 +2409,17 @@ impl Compiler {
                 self.line,
             );
         }
+        if self.current_chunk_is_js_async() {
+            for _ in 0..self.active_async_try_depth {
+                self.emit(Op::TRY_END);
+            }
+        }
         self.emit_return();
         Ok(())
+    }
+
+    fn current_chunk_is_js_async(&self) -> bool {
+        self.is_js_profile() && self.chunks[self.current].is_async
     }
 
     /// Same as `define_local` but with a type hint — sugar around
@@ -2390,7 +2586,7 @@ impl Compiler {
             | Some("ushort") | Some("uint16") | Some("byte") | Some("sbyte")
             | Some("char") => self.emit(Op::F64_CONST_0),
             Some("boolean") | Some("bool") => self.emit(Op::FALSE),
-            Some("string") | Some("system.string") => self.emit_const(Value::String(Arc::from(""))),
+            Some(type_hint) if Self::is_string_type_hint(type_hint) => self.emit_const(Value::String(Arc::from(""))),
             _ => self.emit(Op::NULL),
         }
     }
@@ -2400,6 +2596,9 @@ impl Compiler {
         normalized == "string"
             || normalized == "system.string"
             || normalized.ends_with(".string")
+            || normalized == "character"
+            || normalized.starts_with("character(")
+            || normalized.starts_with("character*")
     }
 
     fn is_numeric_type_hint(type_hint: &str) -> bool {
@@ -2411,6 +2610,153 @@ impl Compiler {
                 | "uint" | "uint32" | "ulong" | "uint64"
                 | "ushort" | "uint16" | "byte" | "sbyte"
         )
+    }
+
+    fn fortran_out_param_ctor_name(type_hint: &str) -> Option<String> {
+        let normalized = Self::normalize_type_hint(type_hint);
+        if normalized.ends_with("()")
+            || Self::is_numeric_type_hint(&normalized)
+            || Self::is_string_type_hint(&normalized)
+            || matches!(normalized.as_str(), "boolean" | "bool")
+        {
+            return None;
+        }
+
+        if let Some(inner) = normalized
+            .strip_prefix("type(")
+            .and_then(|inner| inner.strip_suffix(')'))
+        {
+            return Some(inner.trim().to_string());
+        }
+
+        if let Some(inner) = normalized
+            .strip_prefix("class(")
+            .and_then(|inner| inner.strip_suffix(')'))
+        {
+            return Some(inner.trim().to_string());
+        }
+
+        Some(normalized)
+    }
+
+    fn maybe_initialize_fortran_out_param(&mut self, param: &Param) {
+        if self.profile.name != "fortran" || param.pass_by != PassBy::Out {
+            return;
+        }
+
+        let Some(type_hint) = param.type_hint.as_deref() else {
+            return;
+        };
+        let Some(ctor_name) = Self::fortran_out_param_ctor_name(type_hint) else {
+            return;
+        };
+        let Some(slot) = self.scope().resolve(&param.name) else {
+            return;
+        };
+        if !(self.defined_classes.contains(&ctor_name)
+            || self.defined_globals.contains(&ctor_name)
+            || self.profile.lookup_known_type(&ctor_name).is_some())
+        {
+            return;
+        }
+
+        self.emit_u16(Op::LOCAL_GET, slot);
+        self.emit(Op::REF_IS_NULL);
+        let skip_init = self.emit_jump(Op::BR_IF_FALSE);
+
+        if let Some((module, func)) = self
+            .profile
+            .lookup_known_type(&ctor_name)
+            .map(|(module, func)| (module.to_string(), func.to_string()))
+        {
+            let idx = self.import(&module, &func);
+            self.emit_host_call(idx, 0);
+        } else {
+            let idx = self.global_name_const_idx(&ctor_name);
+            self.emit_u16(Op::GLOBAL_GET, idx);
+            self.emit_u8(Op::CALL_REF, 0);
+        }
+        self.emit_u16(Op::LOCAL_SET, slot);
+        self.emit(Op::DROP);
+
+        self.patch_jump(skip_init);
+    }
+
+    fn can_instantiate_fortran_ctor_name(&self, ctor_name: &str) -> bool {
+        self.defined_classes.contains(ctor_name)
+            || self.defined_globals.contains(ctor_name)
+            || self.profile.lookup_known_type(ctor_name).is_some()
+    }
+
+    fn emit_fortran_ctor_call(&mut self, ctor_name: &str) {
+        if let Some((module, func)) = self
+            .profile
+            .lookup_known_type(ctor_name)
+            .map(|(module, func)| (module.to_string(), func.to_string()))
+        {
+            let idx = self.import(&module, &func);
+            self.emit_host_call(idx, 0);
+        } else {
+            let idx = self.global_name_const_idx(ctor_name);
+            self.emit_u16(Op::GLOBAL_GET, idx);
+            self.emit_u8(Op::CALL_REF, 0);
+        }
+    }
+
+    fn fortran_allocate_ctor_name(&self, target: &Expression) -> Option<String> {
+        let type_hint = self.infer_expr_type_hint(target)?;
+        let normalized = Self::normalize_type_hint(&type_hint);
+        let element_hint = normalized.strip_suffix("()").unwrap_or(normalized.as_str()).trim();
+        let ctor_name = Self::fortran_out_param_ctor_name(element_hint)?;
+        self.can_instantiate_fortran_ctor_name(&ctor_name)
+            .then_some(ctor_name)
+    }
+
+    fn emit_fortran_allocated_array(&mut self, dim_slots: &[u16], ctor_name: Option<&str>) {
+        let line = self.line;
+        self.emit_u16(Op::LOCAL_GET, dim_slots[0]);
+        common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
+        let array_slot = self.define_local("__fortran_alloc_array");
+        self.emit_u16(Op::LOCAL_SET, array_slot);
+        self.emit(Op::DROP);
+
+        if dim_slots.len() == 1 && ctor_name.is_none() {
+            self.emit_u16(Op::LOCAL_GET, array_slot);
+            return;
+        }
+
+        let idx_slot = self.define_local("__fortran_alloc_idx");
+        self.emit_const(Value::F64(0.0));
+        self.emit_u16(Op::LOCAL_SET, idx_slot);
+        self.emit(Op::DROP);
+
+        let loop_top = self.chunks[self.current].current_offset();
+        self.emit_u16(Op::LOCAL_GET, idx_slot);
+        self.emit_u16(Op::LOCAL_GET, dim_slots[0]);
+        self.emit(Op::DYN_LT);
+        let loop_exit = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, array_slot);
+        self.emit_u16(Op::LOCAL_GET, idx_slot);
+        if dim_slots.len() > 1 {
+            self.emit_fortran_allocated_array(&dim_slots[1..], ctor_name);
+        } else if let Some(ctor_name) = ctor_name {
+            self.emit_fortran_ctor_call(ctor_name);
+        } else {
+            self.emit(Op::NULL);
+        }
+        common::collections::emit_set(&mut self.chunks, self.current, line);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, idx_slot);
+        self.emit_const(Value::F64(1.0));
+        self.emit(Op::F64_ADD);
+        self.emit_u16(Op::LOCAL_SET, idx_slot);
+        self.emit(Op::DROP);
+        self.emit_loop(loop_top);
+        self.patch_jump(loop_exit);
+
+        self.emit_u16(Op::LOCAL_GET, array_slot);
     }
 
     fn expr_prefers_numeric_add(&self, expr: &Expression) -> bool {
@@ -2449,6 +2795,9 @@ impl Compiler {
     }
 
     fn emit_assignment_type_coercion_for_ident(&mut self, name: &str) {
+        if self.lookup_array_binding(name).is_some() {
+            return;
+        }
         let Some(type_hint) = self.lookup_var_type_hint(name).map(str::to_string) else {
             return;
         };
@@ -2461,10 +2810,13 @@ impl Compiler {
             "integer" | "int" | "int32" | "longint" | "long" | "int64"
             | "short" | "int16" | "uint" | "uint32" | "ulong" | "uint64"
             | "ushort" | "uint16" | "byte" | "sbyte" => {
-                common::convert::emit_parse_int(self.chunk(), line);
+                let number_idx = self.import("ecma:number", "Number");
+                self.emit_host_call(number_idx, 1);
+                common::convert::emit_to_int(self.chunk(), line);
             }
-            "real" | "double" | "float" | "single" | "decimal" | "char" => {
-                common::convert::emit_parse_float(self.chunk(), line);
+            "real" | "double" | "float" | "single" | "decimal" => {
+                let number_idx = self.import("ecma:number", "Number");
+                self.emit_host_call(number_idx, 1);
             }
             _ => {}
         }
@@ -2590,6 +2942,18 @@ impl Compiler {
             self.emit_assignment_type_coercion_for_ident(variable);
             self.emit_var_set(variable);
         }
+    }
+
+    fn emit_record_rewrite_field_format(&mut self, field_format: Option<&RecordFieldFormat>) {
+        let Some(field_format) = field_format else {
+            return;
+        };
+
+        let number_idx = self.import("ecma:number", "Number");
+        let to_fixed_idx = self.import("ecma:number", "toFixed");
+        self.emit_host_call(number_idx, 1);
+        self.emit_const(Value::F64(field_format.decimal_places as f64));
+        self.emit_host_call(to_fixed_idx, 2);
     }
 
     fn vb_fixed_string_len(type_hint: &str) -> Option<i32> {
@@ -2843,7 +3207,7 @@ impl Compiler {
     }
 
     fn compile_collection_key(&mut self, owner: &Expression, key: &Expression) -> Result<(), String> {
-        self.compile_expr(key)?;
+        self.compile_array_index_operand_for_owner(owner, key)?;
         if self.expr_uses_case_insensitive_string_keys(owner) {
             let line = self.line;
             common::strings::emit_to_lower(self.chunk(), line);
@@ -3033,6 +3397,9 @@ impl Compiler {
             return false;
         }
         let lower = normalized.to_ascii_lowercase();
+        if lower.starts_with("procedure(") || lower == "procedure" {
+            return true;
+        }
         let leaf = lower.rsplit('.').next().unwrap_or(lower.as_str());
         let bare = leaf
             .split('<')
@@ -3118,6 +3485,142 @@ impl Compiler {
     fn lookup_array_binding(&self, name: &str) -> Option<&ArrayBindingMetadata> {
         let key = self.array_binding_key(name);
         self.array_bindings.get(&key).or_else(|| self.array_bindings.get(&self.canon(name)))
+    }
+
+    fn pascal_array_index_bounds_for_owner(&self, owner: &Expression) -> Option<PascalArrayBoundsMetadata> {
+        if self.profile.name != "pascal" {
+            return None;
+        }
+
+        if let ExprKind::Ident(name) = &owner.kind {
+            if let Some(bounds) = self.lookup_array_binding(name).and_then(|binding| binding.pascal_bounds.clone()) {
+                return Some(bounds);
+            }
+        }
+
+        self.infer_expr_type_hint(owner)
+            .as_deref()
+            .and_then(|type_hint| self.pascal_array_type_hint_metadata(type_hint))
+    }
+
+    fn profile_array_index_semantics(&self) -> Option<ArrayIndexSemantics> {
+        match self.profile.name.as_str() {
+            _ => None,
+        }
+    }
+
+    fn normalized_array_index_operand_for_owner(&self, owner: &Expression, index: Expression) -> Expression {
+        if let Some(bounds) = self.pascal_array_index_bounds_for_owner(owner) {
+            if let Some(dimension) = bounds.dimensions.first() {
+                let normalized_index = if dimension.uses_char_ordinal {
+                    Self::pascal_ordinal_index_expr(index)
+                } else {
+                    index
+                };
+                return normalize_array_index_operand(
+                    normalized_index,
+                    ArrayIndexSemantics {
+                        first_index: dimension.first_index,
+                    },
+                );
+            }
+        }
+
+        if let Some(semantics) = self.profile_array_index_semantics() {
+            return normalize_array_index_operand(index, semantics);
+        }
+
+        index
+    }
+
+    fn compile_array_index_operand(&mut self, index: &Expression) -> Result<(), String> {
+        if let Some(semantics) = self.profile_array_index_semantics() {
+            let normalized = normalize_array_index_operand(index.clone(), semantics);
+            self.compile_expr(&normalized)
+        } else {
+            self.compile_expr(index)
+        }
+    }
+
+    fn compile_array_index_operand_for_owner(&mut self, owner: &Expression, index: &Expression) -> Result<(), String> {
+        let normalized = self.normalized_array_index_operand_for_owner(owner, index.clone());
+        self.compile_expr(&normalized)
+    }
+
+    fn compile_setlength(&mut self, target: &Expression, len_expr: &Expression) -> Result<(), String> {
+        let line = self.line;
+        let old_slot = self.define_local("__setlength_old");
+        let new_len_slot = self.define_local("__setlength_new_len");
+        let new_slot = self.define_local("__setlength_new");
+        let copy_len_slot = self.define_local("__setlength_copy_len");
+        let idx_slot = self.define_local("__setlength_idx");
+
+        self.compile_expr(target)?;
+        self.emit_u16(Op::LOCAL_SET, old_slot);
+        self.emit(Op::DROP);
+
+        self.compile_expr(len_expr)?;
+        self.emit_u16(Op::LOCAL_SET, new_len_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, new_len_slot);
+        common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
+        self.emit_u16(Op::LOCAL_SET, new_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, old_slot);
+        self.emit(Op::REF_IS_ARRAY);
+        let skip_copy = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, old_slot);
+        common::collections::emit_len(&mut self.chunks, self.current, line);
+        self.emit_u16(Op::LOCAL_GET, new_len_slot);
+        common::math::emit_min(self.chunk(), line);
+        self.emit_u16(Op::LOCAL_SET, copy_len_slot);
+        self.emit(Op::DROP);
+
+        self.emit(Op::I32_CONST_0);
+        self.emit_u16(Op::LOCAL_SET, idx_slot);
+        self.emit(Op::DROP);
+
+        let copy_block = self.chunk().emit_block(line);
+        let (copy_loop, _) = self.chunk().emit_loop_s(line);
+        self.emit_u16(Op::LOCAL_GET, idx_slot);
+        self.emit_u16(Op::LOCAL_GET, copy_len_slot);
+        self.emit(Op::DYN_LT);
+        self.emit(Op::DYN_NOT);
+        self.chunk().emit_br_if(1, line);
+
+        self.emit_u16(Op::LOCAL_GET, new_slot);
+        self.emit_u16(Op::LOCAL_GET, idx_slot);
+        self.emit_u16(Op::LOCAL_GET, old_slot);
+        self.emit_u16(Op::LOCAL_GET, idx_slot);
+        common::collections::emit_get(&mut self.chunks, self.current, line);
+        common::collections::emit_set(&mut self.chunks, self.current, line);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, idx_slot);
+        self.emit_const(Value::F64(1.0));
+        self.emit(Op::DYN_ADD);
+        self.emit_u16(Op::LOCAL_SET, idx_slot);
+        self.emit(Op::DROP);
+        self.chunk().emit_br(0, line);
+        self.chunk().emit_end(line);
+        self.chunk().patch_loop(copy_loop);
+        self.chunk().emit_end(line);
+        self.chunk().patch_block(copy_block);
+
+        self.patch_jump(skip_copy);
+
+        self.emit_u16(Op::LOCAL_GET, new_slot);
+        if let ExprKind::Ident(name) = &target.kind {
+            self.emit_var_set(name);
+        } else {
+            self.compile_assign_target(target)?;
+        }
+
+        self.emit(Op::NULL);
+        Ok(())
     }
 
     fn ensure_static_local_binding(
@@ -3219,12 +3722,147 @@ impl Compiler {
         Ok(())
     }
 
+    fn emit_pascal_fixed_array_initializer(&mut self, dimensions: &[PascalArrayDimensionMetadata]) -> Result<(), String> {
+        let line = self.line;
+        if dimensions.is_empty() {
+            self.emit(Op::NULL);
+            return Ok(());
+        }
+
+        self.emit_const(Value::F64(dimensions[0].length as f64));
+
+        if dimensions.len() == 1 {
+            common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
+            return Ok(());
+        }
+
+        let len_slot = self.define_local("__pascal_md_len");
+        self.emit_u16(Op::LOCAL_SET, len_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, len_slot);
+        common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
+        let array_slot = self.define_local("__pascal_md_array");
+        self.emit_u16(Op::LOCAL_SET, array_slot);
+        self.emit(Op::DROP);
+
+        let index_slot = self.define_local("__pascal_md_index");
+        self.emit(Op::F64_CONST_0);
+        self.emit_u16(Op::LOCAL_SET, index_slot);
+        self.emit(Op::DROP);
+
+        let fill_block = self.chunk().emit_block(line);
+        let (fill_loop, _) = self.chunk().emit_loop_s(line);
+        self.emit_u16(Op::LOCAL_GET, index_slot);
+        self.emit_u16(Op::LOCAL_GET, len_slot);
+        self.emit(Op::DYN_LT);
+        self.emit(Op::DYN_NOT);
+        self.chunk().emit_br_if(1, line);
+
+        self.emit_u16(Op::LOCAL_GET, array_slot);
+        self.emit_u16(Op::LOCAL_GET, index_slot);
+        self.emit_pascal_fixed_array_initializer(&dimensions[1..])?;
+        common::collections::emit_set(&mut self.chunks, self.current, line);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, index_slot);
+        self.emit_const(Value::F64(1.0));
+        self.emit(Op::DYN_ADD);
+        self.emit_u16(Op::LOCAL_SET, index_slot);
+        self.emit(Op::DROP);
+        self.chunk().emit_br(0, line);
+        self.chunk().emit_end(line);
+        self.chunk().patch_loop(fill_loop);
+        self.chunk().emit_end(line);
+        self.chunk().patch_block(fill_block);
+
+        self.emit_u16(Op::LOCAL_GET, array_slot);
+        Ok(())
+    }
+
+    fn emit_fortran_fixed_array_initializer(&mut self, bounds: &[Expression]) -> Result<(), String> {
+        let line = self.line;
+        if bounds.is_empty() {
+            self.emit(Op::NULL);
+            return Ok(());
+        }
+
+        self.compile_expr(&bounds[0])?;
+
+        if bounds.len() == 1 {
+            common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
+            return Ok(());
+        }
+
+        let len_slot = self.define_local("__fortran_md_len");
+        self.emit_u16(Op::LOCAL_SET, len_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, len_slot);
+        common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
+        let array_slot = self.define_local("__fortran_md_array");
+        self.emit_u16(Op::LOCAL_SET, array_slot);
+        self.emit(Op::DROP);
+
+        let index_slot = self.define_local("__fortran_md_index");
+        self.emit(Op::F64_CONST_0);
+        self.emit_u16(Op::LOCAL_SET, index_slot);
+        self.emit(Op::DROP);
+
+        let fill_block = self.chunk().emit_block(line);
+        let (fill_loop, _) = self.chunk().emit_loop_s(line);
+        self.emit_u16(Op::LOCAL_GET, index_slot);
+        self.emit_u16(Op::LOCAL_GET, len_slot);
+        self.emit(Op::DYN_LT);
+        self.emit(Op::DYN_NOT);
+        self.chunk().emit_br_if(1, line);
+
+        self.emit_u16(Op::LOCAL_GET, array_slot);
+        self.emit_u16(Op::LOCAL_GET, index_slot);
+        self.emit_fortran_fixed_array_initializer(&bounds[1..])?;
+        common::collections::emit_set(&mut self.chunks, self.current, line);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, index_slot);
+        self.emit_const(Value::F64(1.0));
+        self.emit(Op::DYN_ADD);
+        self.emit_u16(Op::LOCAL_SET, index_slot);
+        self.emit(Op::DROP);
+        self.chunk().emit_br(0, line);
+        self.chunk().emit_end(line);
+        self.chunk().patch_loop(fill_loop);
+        self.chunk().emit_end(line);
+        self.chunk().patch_block(fill_block);
+
+        self.emit_u16(Op::LOCAL_GET, array_slot);
+        Ok(())
+    }
+
+    fn is_fortran_fixed_array_synth_init(expr: &Expression) -> bool {
+        matches!(
+            &expr.kind,
+            ExprKind::Call { callee, args, optional: false }
+                if matches!(&callee.kind, ExprKind::Ident(name) if name == "Array")
+                    && args.len() == 2
+                    && matches!(args[1].value.kind, ExprKind::Lit(Literal::Int(0)))
+        )
+    }
+
     fn emit_var_decl_initializer_value(&mut self, decl: &VarDeclarator, resolved_type_hint: Option<&str>) -> Result<(), String> {
         if let Some(ref init_expr) = decl.init {
-            self.compile_expr_with_value_copy(init_expr)?;
-            self.maybe_promote_pascal_array_literal_to_set(decl.type_hint.as_deref(), init_expr);
+            if self.profile.name == "fortran"
+                && decl.array_bounds.as_ref().is_some_and(|bounds| !bounds.is_empty())
+                && Self::is_fortran_fixed_array_synth_init(init_expr)
+            {
+                self.emit_fortran_fixed_array_initializer(decl.array_bounds.as_ref().expect("checked non-empty bounds"))?;
+            } else {
+                self.compile_expr_with_value_copy(init_expr)?;
+                self.maybe_promote_pascal_array_literal_to_set(decl.type_hint.as_deref(), init_expr);
+            }
         } else if let Some(ref bounds) = decl.array_bounds {
-            if self.profile.name == "vb" && bounds.len() > 1 {
+            if self.profile.name == "fortran" {
+                self.emit_fortran_fixed_array_initializer(bounds)?;
+            } else if self.profile.name == "vb" && bounds.len() > 1 {
                 self.emit_vb_fixed_array_initializer(bounds)?;
             } else if let Some(size_expr) = bounds.first() {
                 let line = self.line;
@@ -3241,10 +3879,19 @@ impl Compiler {
                 .or_else(|| decl.type_hint.as_deref().map(|type_hint| self.resolve_source_type_alias(type_hint)));
             let effective_type_hint = resolved_type_hint.as_deref().or(decl.type_hint.as_deref());
 
-            if let Some((_, length)) = effective_type_hint.and_then(|type_hint| self.pascal_array_type_hint_metadata(type_hint)) {
-                let line = self.line;
-                self.emit_const(Value::F64(length as f64));
-                common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
+            if let Some(metadata) = effective_type_hint
+                .and_then(|type_hint| self.pascal_array_type_hint_metadata(type_hint))
+                .filter(|metadata| metadata.is_fixed)
+            {
+                if metadata.dimensions.len() > 1 {
+                    self.emit_pascal_fixed_array_initializer(&metadata.dimensions)?;
+                } else if let Some(dimension) = metadata.dimensions.first() {
+                    let line = self.line;
+                    self.emit_const(Value::F64(dimension.length as f64));
+                    common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
+                } else {
+                    self.emit(Op::NULL);
+                }
             } else if effective_type_hint.and_then(Self::vb_fixed_string_len).is_some() {
                 self.emit_const(Value::String(Arc::from("")));
             } else if let Some(type_name) = decl
@@ -3261,7 +3908,7 @@ impl Compiler {
                         self.emit(Op::F64_CONST_0);
                     }
                     Some("boolean") | Some("bool") => self.emit(Op::FALSE),
-                    Some("string") => self.emit_const(Value::String(Arc::from(""))),
+                    Some(type_hint) if Self::is_string_type_hint(type_hint) => self.emit_const(Value::String(Arc::from(""))),
                     _ => self.emit(Op::NULL),
                 }
             }
@@ -3530,7 +4177,10 @@ impl Compiler {
                 .infer_expr_type_hint(object)
                 .and_then(|type_hint| {
                     let trimmed = type_hint.trim().trim_end_matches('?').trim();
-                    trimmed.strip_suffix("()").map(str::to_string)
+                    trimmed
+                        .strip_suffix("()")
+                        .map(str::to_string)
+                        .or_else(|| Self::pascal_indexed_type_hint(trimmed))
                 }),
             ExprKind::Member { object, field, .. } => {
                 if let Some(type_hint) = self.infer_vb_runtime_member_type_hint(expr) {
@@ -3568,6 +4218,16 @@ impl Compiler {
     }
 
     fn user_value_type_name_from_hint(&self, type_hint: &str) -> Option<String> {
+        if let Some(class_name) = self.resolve_pending_class_name_for_type_hint(type_hint) {
+            if self
+                .pending_classes
+                .get(&class_name)
+                .is_some_and(|pending| pending.is_value_type)
+            {
+                return Some(class_name);
+            }
+        }
+
         let resolved = self.resolve_source_type_alias(type_hint);
         let trimmed = resolved.trim().trim_end_matches('?').trim();
         for candidate in [
@@ -3600,6 +4260,35 @@ impl Compiler {
             _ => self
                 .infer_expr_type_hint(expr)
                 .and_then(|type_hint| self.user_value_type_name_from_hint(&type_hint)),
+        }
+    }
+
+    fn expr_is_array_like(&self, expr: &Expression) -> bool {
+        if self
+            .infer_expr_type_hint(expr)
+            .as_deref()
+            .map(Self::normalize_type_hint)
+            .is_some_and(|type_hint| type_hint.ends_with("()") && !Self::is_callable_type_hint(&type_hint))
+        {
+            return true;
+        }
+
+        match &expr.kind {
+            ExprKind::Array(_) => true,
+            ExprKind::Ident(name) => self.lookup_array_binding(name).is_some(),
+            ExprKind::Index { object, index, .. } => {
+                matches!(index.kind, ExprKind::Slice { .. }) && self.expr_is_array_like(object)
+            }
+            ExprKind::Call { callee, .. } => {
+                matches!(&callee.kind, ExprKind::Ident(name)
+                    if matches!(self.canon(name).as_str(), "array" | "str_split" | "str_getcsv"))
+            }
+            ExprKind::Binary { op, left, right }
+                if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Pow) =>
+            {
+                self.expr_is_array_like(left) || self.expr_is_array_like(right)
+            }
+            _ => false,
         }
     }
 
@@ -3797,6 +4486,24 @@ impl Compiler {
             }
         }
         Ok(())
+    }
+
+    fn emit_array_clone_from_stack(&mut self) {
+        let source_slot = self.define_local("__array_clone_src");
+        let len_slot = self.define_local("__array_clone_len");
+
+        self.emit_u16(Op::LOCAL_SET, source_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, source_slot);
+        common::collections::emit_len(&mut self.chunks, self.current, self.line);
+        self.emit_u16(Op::LOCAL_SET, len_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, source_slot);
+        self.emit_const(Value::F64(0.0));
+        self.emit_u16(Op::LOCAL_GET, len_slot);
+        common::collections::emit_slice(&mut self.chunks, self.current, self.line);
     }
 
     fn emit_user_value_type_clone_from_stack(&mut self, type_name: &str) {
@@ -4618,6 +5325,50 @@ impl Compiler {
 
             // ── Assignment ──────────────────────────────────────────────
             StmtKind::Assign { targets, value } => {
+                if self.profile.name == "fortran" {
+                    if let [target] = targets.as_slice() {
+                        let is_whole_array_target = matches!(target.kind, ExprKind::Ident(_) | ExprKind::Member { .. })
+                            && self.expr_is_array_like(target);
+                        if is_whole_array_target {
+                            let line = self.line;
+                            let value_slot = self.define_local("__fortran_array_fill_value");
+                            self.compile_expr(value)?;
+                            self.emit_u16(Op::LOCAL_SET, value_slot);
+                            self.emit(Op::DROP);
+
+                            if !self.expr_is_array_like(value) {
+                                self.emit_u16(Op::LOCAL_GET, value_slot);
+                                self.emit(Op::REF_IS_ARRAY);
+                                let value_is_runtime_array = self.emit_jump(Op::BR_IF_TRUE);
+
+                                self.compile_expr(target)?;
+                                let array_slot = self.define_local("__fortran_array_fill_target");
+                                self.emit_u16(Op::LOCAL_SET, array_slot);
+                                self.emit(Op::DROP);
+
+                                self.emit_u16(Op::LOCAL_GET, array_slot);
+                                self.emit_u16(Op::LOCAL_GET, value_slot);
+                                self.emit_const(Value::I32(0));
+                                self.emit_const(Value::I32(i32::MAX));
+                                common::collections::emit_fill(&mut self.chunks, self.current, line);
+                                self.compile_assign_target(target)?;
+                                let done = self.emit_jump(Op::BR);
+
+                                self.patch_jump(value_is_runtime_array);
+                                self.emit_u16(Op::LOCAL_GET, value_slot);
+                                self.emit_array_clone_from_stack();
+                                self.compile_assign_target(target)?;
+                                self.patch_jump(done);
+                                return Ok(());
+                            }
+
+                            self.emit_u16(Op::LOCAL_GET, value_slot);
+                            self.emit_array_clone_from_stack();
+                            self.compile_assign_target(target)?;
+                            return Ok(());
+                        }
+                    }
+                }
                 if targets.len() == 1 {
                     if let ExprKind::Ident(name) = &targets[0].kind {
                         let binding_key = self.canon(name);
@@ -5444,8 +6195,15 @@ impl Compiler {
                 } else if let Some(rs) = self.current_result_slot {
                     // ResultSlot return: return the result slot value
                     self.emit_u16(Op::LOCAL_GET, rs);
+                } else if self.current_chunk_is_js_async() {
+                    self.emit(Op::UNDEFINED);
                 } else {
                     self.emit(Op::NULL);
+                }
+
+                if self.current_chunk_is_js_async() {
+                    let resolve_idx = self.import("ecma:promise", "resolve");
+                    self.emit_host_call(resolve_idx, 1);
                 }
                 self.emit_return_through_finally(1)?;
             }
@@ -5546,7 +6304,14 @@ impl Compiler {
                 // loudly rather than silently picking a legacy path.
                 let span = stmt.span.clone();
                 crate::common::classes::emit::emit_class_from_ast(
-                    self, span, &cname, effective_parents, interfaces, members, modifiers, false,
+                    self,
+                    span,
+                    &cname,
+                    effective_parents,
+                    interfaces,
+                    members,
+                    modifiers,
+                    self.profile.name == "fortran",
                 )?;
             }
 
@@ -6204,6 +6969,10 @@ impl Compiler {
                 self.emit_const(Value::Bool(false));
                 self.emit(Op::ARRAY_SET);
                 self.emit(Op::DROP);
+
+                self.emit_global_map_set_null("__vb_record_rows_by_handle", file_slot);
+                self.emit_global_map_set_null("__vb_record_next_index_by_handle", file_slot);
+                self.emit_global_map_set_null("__vb_record_current_index_by_handle", file_slot);
             }
             StmtKind::CloseFile(file_num) => {
                 let path_map_key = self.shared_global_slot("__vb_file_path_by_handle");
@@ -6232,6 +7001,10 @@ impl Compiler {
                     self.emit_const(Value::Bool(false));
                     self.emit(Op::ARRAY_SET);
                     self.emit(Op::DROP);
+
+                    self.emit_global_map_set_null("__vb_record_rows_by_handle", file_slot);
+                    self.emit_global_map_set_null("__vb_record_next_index_by_handle", file_slot);
+                    self.emit_global_map_set_null("__vb_record_current_index_by_handle", file_slot);
                 } else {
                     self.emit(Op::NULL);
                     let idx = self.import("wasi:filesystem", "closeFile");
@@ -6256,11 +7029,24 @@ impl Compiler {
             StmtKind::InputFile { file_number, variables } => {
                 let file_slot = self.define_local("__vb_input_file_number");
                 let values_slot = self.define_local("__vb_input_values");
+                let rows_slot = self.define_local("__vb_input_rows");
+                let len_slot = self.define_local("__vb_input_len");
+                let idx_slot = self.define_local("__vb_input_idx");
                 let eof_map_key = self.shared_global_slot("__vb_file_eof_by_handle");
 
                 self.compile_expr(file_number)?;
                 self.emit_u16(Op::LOCAL_SET, file_slot);
                 self.emit(Op::DROP);
+
+                self.emit_record_rows_cache(file_slot, rows_slot, len_slot);
+                self.emit_global_map_get_into_local("__vb_record_next_index_by_handle", file_slot, idx_slot);
+                self.emit_u16(Op::LOCAL_GET, idx_slot);
+                self.emit(Op::REF_IS_NULL);
+                let have_idx = self.emit_jump(Op::BR_IF_FALSE);
+                self.emit(Op::I32_CONST_0);
+                self.emit_u16(Op::LOCAL_SET, idx_slot);
+                self.emit(Op::DROP);
+                self.patch_jump(have_idx);
 
                 self.emit_u16(Op::LOCAL_GET, file_slot);
                 let idx = self.import("wasi:filesystem", "inputFile");
@@ -6284,20 +7070,40 @@ impl Compiler {
                 self.emit_ensure_global_map("__vb_file_eof_by_handle");
                 self.emit_u16(Op::GLOBAL_GET, eof_map_key);
                 self.emit_u16(Op::LOCAL_GET, file_slot);
-                self.emit_u16(Op::LOCAL_GET, values_slot);
-                self.emit_const(Value::F64(0.0));
-                self.emit(Op::ARRAY_GET);
-                self.emit(Op::REF_IS_NULL);
+                self.emit_u16(Op::LOCAL_GET, idx_slot);
+                self.emit(Op::I32_CONST_1);
+                self.emit(Op::I32_ADD);
+                self.emit_u16(Op::LOCAL_SET, idx_slot);
+                self.emit(Op::DROP);
+
+                self.emit_global_map_set_from_local("__vb_record_next_index_by_handle", file_slot, idx_slot);
+
+                self.emit_u16(Op::LOCAL_GET, idx_slot);
+                self.emit_u16(Op::LOCAL_GET, len_slot);
+                self.emit(Op::DYN_GE);
                 self.emit(Op::ARRAY_SET);
                 self.emit(Op::DROP);
             }
             StmtKind::LineInput { file_number, variable } => {
                 let file_slot = self.define_local("__vb_line_input_file_number");
+                let rows_slot = self.define_local("__vb_line_input_rows");
+                let len_slot = self.define_local("__vb_line_input_len");
+                let idx_slot = self.define_local("__vb_line_input_idx");
                 let eof_map_key = self.shared_global_slot("__vb_file_eof_by_handle");
 
                 self.compile_expr(file_number)?;
                 self.emit_u16(Op::LOCAL_SET, file_slot);
                 self.emit(Op::DROP);
+
+                self.emit_record_rows_cache(file_slot, rows_slot, len_slot);
+                self.emit_global_map_get_into_local("__vb_record_next_index_by_handle", file_slot, idx_slot);
+                self.emit_u16(Op::LOCAL_GET, idx_slot);
+                self.emit(Op::REF_IS_NULL);
+                let have_idx = self.emit_jump(Op::BR_IF_FALSE);
+                self.emit(Op::I32_CONST_0);
+                self.emit_u16(Op::LOCAL_SET, idx_slot);
+                self.emit(Op::DROP);
+                self.patch_jump(have_idx);
 
                 self.emit_u16(Op::LOCAL_GET, file_slot);
                 let idx = self.import("wasi:filesystem", "lineInput");
@@ -6307,7 +7113,17 @@ impl Compiler {
                 self.emit_ensure_global_map("__vb_file_eof_by_handle");
                 self.emit_u16(Op::GLOBAL_GET, eof_map_key);
                 self.emit_u16(Op::LOCAL_GET, file_slot);
-                self.emit_const(Value::Bool(true));
+                self.emit_u16(Op::LOCAL_GET, idx_slot);
+                self.emit(Op::I32_CONST_1);
+                self.emit(Op::I32_ADD);
+                self.emit_u16(Op::LOCAL_SET, idx_slot);
+                self.emit(Op::DROP);
+
+                self.emit_global_map_set_from_local("__vb_record_next_index_by_handle", file_slot, idx_slot);
+
+                self.emit_u16(Op::LOCAL_GET, idx_slot);
+                self.emit_u16(Op::LOCAL_GET, len_slot);
+                self.emit(Op::DYN_GE);
                 self.emit(Op::ARRAY_SET);
                 self.emit(Op::DROP);
             }
@@ -6488,7 +7304,7 @@ impl Compiler {
                     self.patch_jump(done);
                 }
             }
-            StmtKind::RewriteRecordFile { file_number, items } => {
+            StmtKind::RewriteRecordFile { file_number, items, field_formats } => {
                 let line = self.line;
                 let file_slot = self.define_local("__vb_rewrite_file_number");
                 let rows_slot = self.define_local("__vb_rewrite_rows");
@@ -6510,8 +7326,9 @@ impl Compiler {
                 let done = self.emit_jump(Op::BR);
                 self.patch_jump(has_current);
 
-                for item in items {
+                for (index, item) in items.iter().enumerate() {
                     self.compile_expr(item)?;
+                    self.emit_record_rewrite_field_format(field_formats.get(index).and_then(|format| format.as_ref()));
                 }
                 common::collections::emit_array_new(&mut self.chunks, self.current, items.len() as u16, line);
                 self.emit_u16(Op::LOCAL_SET, items_slot);
@@ -7189,14 +8006,19 @@ impl Compiler {
                         .as_deref()
                         .is_some_and(|type_hint| self.pascal_array_type_hint_metadata(type_hint).is_some())
                 {
+                    let array_type_hint = resolved_type_hint.clone().or_else(|| inferred_type_hint.clone());
+                    let pascal_bounds = array_type_hint
+                        .as_deref()
+                        .and_then(|type_hint| self.pascal_array_type_hint_metadata(type_hint));
                     let is_fixed = decl.array_bounds.as_ref().is_some_and(|bounds| !bounds.is_empty())
                         || resolved_type_hint
                             .as_deref()
                             .and_then(|type_hint| self.pascal_array_type_hint_metadata(type_hint))
-                            .is_some_and(|(is_fixed, _)| is_fixed);
+                            .is_some_and(|metadata| metadata.is_fixed);
                     self.record_array_binding(name, ArrayBindingMetadata {
                         is_fixed,
-                        type_hint: resolved_type_hint.clone().or_else(|| inferred_type_hint.clone()),
+                        type_hint: array_type_hint,
+                        pascal_bounds,
                     });
                 }
                 // Top-level vars → globals.
@@ -7534,7 +8356,13 @@ impl Compiler {
                         return Ok(());
                     }
 
-                    if self.expr_user_value_type_name(object).is_some() {
+                    let needs_value_type_writeback = self.expr_user_value_type_name(object).is_some()
+                        || (self.profile.name == "fortran"
+                            && self
+                                .lookup_var_type_hint(obj_name)
+                                .and_then(|type_hint| self.resolve_pending_class_name_for_type_hint(type_hint))
+                                .is_some());
+                    if needs_value_type_writeback {
                         let value_tmp = self.define_local("__tmp");
                         let obj_tmp = self.define_local("__value_type_member_obj");
                         self.emit_u16(Op::LOCAL_SET, value_tmp);
@@ -7672,6 +8500,135 @@ impl Compiler {
                 self.emit(Op::DROP);
             }
             ExprKind::Index { object, index, .. } => {
+                if self.profile.name == "fortran" {
+                    if let ExprKind::Slice { lower, upper, step } = &index.kind {
+                        if step.is_none() {
+                            let line = self.line;
+                            let value_tmp = self.define_local("__fortran_slice_value");
+                            let obj_tmp = self.define_local("__fortran_slice_obj");
+                            let start_tmp = self.define_local("__fortran_slice_start");
+                            let end_tmp = self.define_local("__fortran_slice_end");
+                            let count_tmp = self.define_local("__fortran_slice_count");
+                            let replacement_tmp = self.define_local("__fortran_slice_replacement");
+                            let string_value_tmp = self.define_local("__fortran_slice_string_value");
+
+                            self.emit_u16(Op::LOCAL_SET, value_tmp); self.emit(Op::DROP);
+
+                            self.compile_expr(object)?;
+                            self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+
+                            if let Some(lower) = lower {
+                                self.compile_expr(lower)?;
+                            } else {
+                                self.emit(Op::I32_CONST_0);
+                            }
+                            self.emit_u16(Op::LOCAL_SET, start_tmp); self.emit(Op::DROP);
+
+                            if let Some(upper) = upper {
+                                self.compile_expr(upper)?;
+                            } else {
+                                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                                common::collections::emit_len(&mut self.chunks, self.current, line);
+                            }
+                            self.emit_u16(Op::LOCAL_SET, end_tmp); self.emit(Op::DROP);
+
+                            self.emit_u16(Op::LOCAL_GET, end_tmp);
+                            self.emit_u16(Op::LOCAL_GET, start_tmp);
+                            self.emit(Op::I32_SUB);
+                            self.emit_u16(Op::LOCAL_SET, count_tmp); self.emit(Op::DROP);
+
+                            let known_string_object = self
+                                .infer_expr_type_hint(object)
+                                .as_deref()
+                                .is_some_and(Self::is_string_type_hint);
+                            let string_path = if known_string_object {
+                                self.emit_jump(Op::BR)
+                            } else {
+                                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                                self.emit(Op::REF_IS_STRING);
+                                self.emit_jump(Op::BR_IF_TRUE)
+                            };
+
+                            self.emit_u16(Op::LOCAL_GET, value_tmp);
+                            self.emit(Op::REF_IS_ARRAY);
+                            let value_is_array = self.emit_jump(Op::BR_IF_TRUE);
+
+                            self.emit_u16(Op::LOCAL_GET, count_tmp);
+                            common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
+                            self.emit(Op::DUP);
+                            self.emit_u16(Op::LOCAL_GET, value_tmp);
+                            self.emit_const(Value::I32(0));
+                            self.emit_u16(Op::LOCAL_GET, count_tmp);
+                            common::collections::emit_fill(&mut self.chunks, self.current, line);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_SET, replacement_tmp); self.emit(Op::DROP);
+                            let replacement_done = self.emit_jump(Op::BR);
+
+                            self.patch_jump(value_is_array);
+                            self.emit_u16(Op::LOCAL_GET, value_tmp);
+                            self.emit_u16(Op::LOCAL_SET, replacement_tmp); self.emit(Op::DROP);
+                            self.patch_jump(replacement_done);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::LOCAL_GET, start_tmp);
+                            self.emit_u16(Op::LOCAL_GET, count_tmp);
+                            common::collections::emit_remove_range(&mut self.chunks, self.current, line);
+                            self.emit(Op::DROP);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::LOCAL_GET, start_tmp);
+                            self.emit_u16(Op::LOCAL_GET, replacement_tmp);
+                            common::collections::emit_insert_range(&mut self.chunks, self.current, line);
+                            self.emit(Op::DROP);
+                            let slice_assign_done = self.emit_jump(Op::BR);
+
+                            self.patch_jump(string_path);
+
+                            let to_string = self.import("ecma:string", "String");
+                            let pad_end = self.import("ecma:string", "padEnd");
+
+                            self.emit_u16(Op::LOCAL_GET, value_tmp);
+                            self.emit_host_call(to_string, 1);
+                            self.emit_u16(Op::LOCAL_SET, string_value_tmp); self.emit(Op::DROP);
+
+                            self.emit_u16(Op::LOCAL_GET, string_value_tmp);
+                            common::strings::emit_length(self.chunk(), line);
+                            self.emit_u16(Op::LOCAL_GET, count_tmp);
+                            self.emit(Op::DYN_GT);
+                            let no_truncate = self.emit_jump(Op::BR_IF_FALSE);
+
+                            self.emit_u16(Op::LOCAL_GET, string_value_tmp);
+                            self.emit(Op::I32_CONST_0);
+                            self.emit_u16(Op::LOCAL_GET, count_tmp);
+                            common::strings::emit_substring(self.chunk(), line);
+                            self.emit_u16(Op::LOCAL_SET, string_value_tmp); self.emit(Op::DROP);
+
+                            self.patch_jump(no_truncate);
+
+                            self.emit_u16(Op::LOCAL_GET, string_value_tmp);
+                            self.emit_u16(Op::LOCAL_GET, count_tmp);
+                            self.emit_const(Value::String(Arc::from(" ")));
+                            self.emit_host_call(pad_end, 3);
+                            self.emit_u16(Op::LOCAL_SET, string_value_tmp); self.emit(Op::DROP);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit(Op::I32_CONST_0);
+                            self.emit_u16(Op::LOCAL_GET, start_tmp);
+                            common::strings::emit_substring(self.chunk(), line);
+                            self.emit_u16(Op::LOCAL_GET, string_value_tmp);
+                            common::strings::emit_str_concat(self.chunk(), line);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::LOCAL_GET, end_tmp);
+                            self.emit_const(Value::I32(i32::MAX));
+                            common::strings::emit_substring(self.chunk(), line);
+                            common::strings::emit_str_concat(self.chunk(), line);
+                            self.compile_assign_target(object)?;
+
+                            self.patch_jump(slice_assign_done);
+                            return Ok(());
+                        }
+                    }
+                }
                 if self.is_python_profile() {
                     if let ExprKind::Slice { lower, upper, step } = &index.kind {
                         if step.is_none() {
@@ -7803,6 +8760,55 @@ impl Compiler {
                         }
                     }
                 }
+                if self.profile.name == "fortran" {
+                    if let ExprKind::Member { object: recv, field, null_safe } = &object.kind {
+                        if !*null_safe {
+                            let recv_tmp = self.define_local("__fortran_index_member_recv");
+                            let coll_tmp = self.define_local("__fortran_index_member_coll");
+                            let key_tmp = self.define_local("__fortran_index_member_key");
+                            let field_name = self.canon(field);
+                            let field_idx = self.str_const(&field_name);
+
+                            self.compile_expr(recv)?;
+                            self.emit_u16(Op::LOCAL_SET, recv_tmp);
+                            self.emit(Op::DROP);
+
+                            self.emit_u16(Op::LOCAL_GET, recv_tmp);
+                            self.emit_u16(Op::STRUCT_GET, field_idx);
+                            self.emit_u16(Op::LOCAL_SET, coll_tmp);
+                            self.emit(Op::DROP);
+
+                            self.compile_array_index_operand_for_owner(object, index)?;
+                            self.emit_u16(Op::LOCAL_SET, key_tmp);
+                            self.emit(Op::DROP);
+
+                            self.emit_u16(Op::LOCAL_GET, coll_tmp);
+                            self.emit_u16(Op::LOCAL_GET, key_tmp);
+                            self.emit_u16(Op::LOCAL_GET, tmp);
+                            common::collections::emit_set(&mut self.chunks, self.current, line);
+                            self.emit(Op::DROP);
+
+                            self.emit_u16(Op::LOCAL_GET, recv_tmp);
+                            self.emit_u16(Op::LOCAL_GET, coll_tmp);
+                            self.emit_u16(Op::STRUCT_SET, field_idx);
+                            self.emit(Op::DROP);
+
+                            if let ExprKind::Ident(recv_name) = &recv.kind {
+                                let needs_value_type_writeback = self.expr_user_value_type_name(recv).is_some()
+                                    || self
+                                        .lookup_var_type_hint(recv_name)
+                                        .and_then(|type_hint| self.resolve_pending_class_name_for_type_hint(type_hint))
+                                        .is_some();
+                                if needs_value_type_writeback {
+                                    self.emit_u16(Op::LOCAL_GET, recv_tmp);
+                                    self.emit_var_set(recv_name);
+                                }
+                            }
+
+                            return Ok(());
+                        }
+                    }
+                }
                 if is_append {
                     self.compile_expr(object)?;
                     self.emit_autoderef_pointer_cell();
@@ -7844,7 +8850,7 @@ impl Compiler {
                 } else {
                     self.compile_expr(object)?;
                     self.emit_autoderef_pointer_cell();
-                    self.compile_expr(index)?;
+                    self.compile_array_index_operand_for_owner(object, index)?;
                     if self.is_php_profile() {
                         let key_tmp = self.define_local("__php_idx_key");
                         let obj_tmp = self.define_local("__php_idx_obj");
@@ -7981,15 +8987,16 @@ impl Compiler {
                     }
                 }
             }
-            // VB: arr(idx) = val — Call used as index because () is both call and index
+            // VB/Pascal: arr(idx) = val — Call used as index because () can
+            // represent indexed access in those frontends.
             ExprKind::Call { callee, args, .. } if args.len() == 1 => {
-                // VB `arr(idx) = val` — Call used as index-set because () is
-                // both call and index in VB syntax. Route through
-                // ecma:array.set per Phase D.
+                // Route the subscript through the owner-aware normalization
+                // path so Pascal char-bound arrays and other declaration-
+                // relative indices match the read path.
                 let tmp = self.define_local("__tmp");
                 self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
                 self.compile_expr(callee)?;
-                self.compile_expr(&args[0].value)?;
+                self.compile_array_index_operand_for_owner(callee, &args[0].value)?;
                 self.emit_u16(Op::LOCAL_GET, tmp);
                 let l = self.line;
                 common::collections::emit_set(&mut self.chunks, self.current, l);
@@ -8162,6 +9169,42 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, t_b);
     }
 
+    fn emit_php_relational_compare(&mut self, compare_op: Op) {
+        let t_b = self.define_local("__php_rel_cmp_b");
+        let t_a = self.define_local("__php_rel_cmp_a");
+        self.emit_u16(Op::LOCAL_SET, t_b); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, t_a); self.emit(Op::DROP);
+
+        self.maybe_unbox_php_datetime_slot(t_a);
+        self.maybe_unbox_php_datetime_slot(t_b);
+
+        self.emit_u16(Op::LOCAL_GET, t_a);
+        self.emit(Op::REF_TYPEOF);
+        self.emit_const(Value::String(Arc::from("string")));
+        self.emit(Op::DYN_EQ);
+        let fallback_a = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, t_b);
+        self.emit(Op::REF_TYPEOF);
+        self.emit_const(Value::String(Arc::from("string")));
+        self.emit(Op::DYN_EQ);
+        let fallback_b = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, t_a);
+        self.emit_u16(Op::LOCAL_GET, t_b);
+        self.emit(Op::STR_COMPARE);
+        self.emit_const(Value::I32(0));
+        self.emit(compare_op);
+        let done = self.emit_jump(Op::BR);
+
+        self.patch_jump(fallback_a);
+        self.patch_jump(fallback_b);
+        self.emit_u16(Op::LOCAL_GET, t_a);
+        self.emit_u16(Op::LOCAL_GET, t_b);
+        self.emit(compare_op);
+        self.patch_jump(done);
+    }
+
     fn emit_pascal_relational_compare(&mut self, compare_op: Op) {
         let t_b = self.define_local("__pas_cmp_b");
         let t_a = self.define_local("__pas_cmp_a");
@@ -8207,6 +9250,63 @@ impl Compiler {
         self.emit_to_primitive("default");
     }
 
+    fn emit_js_add(&mut self) {
+        let rhs_slot = self.define_local("__js_add_rhs");
+        let lhs_slot = self.define_local("__js_add_lhs");
+        self.emit_u16(Op::LOCAL_SET, rhs_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_SET, lhs_slot); self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, lhs_slot);
+        self.emit(Op::REF_TYPEOF);
+        self.emit_const(Value::String(Arc::from("string")));
+        self.emit(Op::DYN_EQ);
+        let check_rhs_string = self.emit_jump(Op::BR_IF_FALSE);
+        let lhs_string = self.emit_jump(Op::BR);
+
+        self.patch_jump(check_rhs_string);
+        self.emit_u16(Op::LOCAL_GET, rhs_slot);
+        self.emit(Op::REF_TYPEOF);
+        self.emit_const(Value::String(Arc::from("string")));
+        self.emit(Op::DYN_EQ);
+        let numeric_path = self.emit_jump(Op::BR_IF_FALSE);
+        let rhs_string = self.emit_jump(Op::BR);
+
+        self.patch_jump(lhs_string);
+        self.patch_jump(rhs_string);
+        let tostring_global = self.str_const("__vybe_tostring");
+        self.emit_u16(Op::GLOBAL_GET, tostring_global);
+        self.emit_u16(Op::LOCAL_GET, lhs_slot);
+        self.emit_u8(Op::CALL_REF, 1);
+        self.emit_u16(Op::GLOBAL_GET, tostring_global);
+        self.emit_u16(Op::LOCAL_GET, rhs_slot);
+        self.emit_u8(Op::CALL_REF, 1);
+        self.emit(Op::STR_CONCAT);
+        let done = self.emit_jump(Op::BR);
+
+        self.patch_jump(numeric_path);
+        self.emit_u16(Op::LOCAL_GET, lhs_slot);
+        self.emit(Op::REF_IS_UNDEFINED);
+        let lhs_defined = self.emit_jump(Op::BR_IF_FALSE);
+        self.emit_const(Value::F64(f64::NAN));
+        let lhs_nan_done = self.emit_jump(Op::BR);
+
+        self.patch_jump(lhs_defined);
+        self.emit_u16(Op::LOCAL_GET, rhs_slot);
+        self.emit(Op::REF_IS_UNDEFINED);
+        let rhs_defined = self.emit_jump(Op::BR_IF_FALSE);
+        self.emit_const(Value::F64(f64::NAN));
+        let rhs_nan_done = self.emit_jump(Op::BR);
+
+        self.patch_jump(rhs_defined);
+        self.emit_u16(Op::LOCAL_GET, lhs_slot);
+        self.emit_u16(Op::LOCAL_GET, rhs_slot);
+        self.emit(Op::DYN_ADD);
+
+        self.patch_jump(lhs_nan_done);
+        self.patch_jump(rhs_nan_done);
+        self.patch_jump(done);
+    }
+
     fn compile_binop(&mut self, op: &BinOp) {
         match op {
             BinOp::Add => {
@@ -8226,6 +9326,8 @@ impl Compiler {
                     // valueOf, class instances).
                     if self.is_js_profile() {
                         self.coerce_top_two_to_default_primitive();
+                        self.emit_js_add();
+                        return;
                     }
                     self.emit(Op::DYN_ADD);
                 } else {
@@ -8301,7 +9403,7 @@ impl Compiler {
             }
             BinOp::Lt => {
                 if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
-                else if self.is_php_profile() { self.coerce_top_two_php_datetime_for_compare(); }
+                else if self.is_php_profile() { self.emit_php_relational_compare(Op::DYN_LT); return; }
                 if self.profile.name == "pascal" { self.emit_pascal_relational_compare(Op::DYN_LT); }
                 else if self.is_js_profile() || self.is_php_profile() { self.emit(Op::DYN_LT); }
                 else {
@@ -8315,7 +9417,7 @@ impl Compiler {
             },
             BinOp::Gt => {
                 if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
-                else if self.is_php_profile() { self.coerce_top_two_php_datetime_for_compare(); }
+                else if self.is_php_profile() { self.emit_php_relational_compare(Op::DYN_GT); return; }
                 if self.profile.name == "pascal" { self.emit_pascal_relational_compare(Op::DYN_GT); }
                 else if self.is_js_profile() || self.is_php_profile() { self.emit(Op::DYN_GT); }
                 else {
@@ -8329,7 +9431,7 @@ impl Compiler {
             },
             BinOp::LtEq => {
                 if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
-                else if self.is_php_profile() { self.coerce_top_two_php_datetime_for_compare(); }
+                else if self.is_php_profile() { self.emit_php_relational_compare(Op::DYN_LE); return; }
                 if self.profile.name == "pascal" { self.emit_pascal_relational_compare(Op::DYN_LE); }
                 else if self.is_js_profile() || self.is_php_profile() { self.emit(Op::DYN_LE); }
                 else {
@@ -8343,7 +9445,7 @@ impl Compiler {
             },
             BinOp::GtEq => {
                 if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
-                else if self.is_php_profile() { self.coerce_top_two_php_datetime_for_compare(); }
+                else if self.is_php_profile() { self.emit_php_relational_compare(Op::DYN_GE); return; }
                 if self.profile.name == "pascal" { self.emit_pascal_relational_compare(Op::DYN_GE); }
                 else if self.is_js_profile() || self.is_php_profile() { self.emit(Op::DYN_GE); }
                 else {
@@ -8364,16 +9466,16 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, left_slot);
                 self.emit_u16(Op::LOCAL_GET, right_slot);
                 if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
-                else if self.is_php_profile() { self.coerce_top_two_php_datetime_for_compare(); }
-                if self.profile.name == "pascal" { self.emit_pascal_relational_compare(Op::DYN_LT); }
+                else if self.is_php_profile() { self.emit_php_relational_compare(Op::DYN_LT); }
+                else if self.profile.name == "pascal" { self.emit_pascal_relational_compare(Op::DYN_LT); }
                 else { self.emit(Op::DYN_LT); }
                 let lt_true = self.emit_jump(Op::BR_IF_TRUE);
 
                 self.emit_u16(Op::LOCAL_GET, left_slot);
                 self.emit_u16(Op::LOCAL_GET, right_slot);
                 if self.is_js_profile() { self.coerce_top_two_to_primitive(); }
-                else if self.is_php_profile() { self.coerce_top_two_php_datetime_for_compare(); }
-                if self.profile.name == "pascal" { self.emit_pascal_relational_compare(Op::DYN_GT); }
+                else if self.is_php_profile() { self.emit_php_relational_compare(Op::DYN_GT); }
+                else if self.profile.name == "pascal" { self.emit_pascal_relational_compare(Op::DYN_GT); }
                 else { self.emit(Op::DYN_GT); }
                 let gt_true = self.emit_jump(Op::BR_IF_TRUE);
 
@@ -8953,6 +10055,15 @@ impl Compiler {
             }
         }
 
+        if name.eq_ignore_ascii_case("setlength") {
+            if args.len() >= 2 {
+                self.compile_setlength(args[0], args[1])?;
+            } else {
+                self.emit(Op::NULL);
+            }
+            return Ok(true);
+        }
+
         // ── Component Model host-call resolution (qualified name → host fn) ──
         //
         // A qualified identifier whose first segment matches the profile's
@@ -9067,6 +10178,196 @@ impl Compiler {
             return Ok(true);
         }
 
+        if name.eq_ignore_ascii_case("__fortran_max") {
+            if args.len() >= 2 {
+                self.compile_expr(args[0])?;
+                self.compile_expr(args[1])?;
+                common::math::emit_max(self.chunk(), line);
+            } else {
+                self.emit(Op::NULL);
+            }
+            return Ok(true);
+        }
+        if name.eq_ignore_ascii_case("__fortran_min") {
+            if args.len() >= 2 {
+                self.compile_expr(args[0])?;
+                self.compile_expr(args[1])?;
+                common::math::emit_min(self.chunk(), line);
+            } else {
+                self.emit(Op::NULL);
+            }
+            return Ok(true);
+        }
+        if name.eq_ignore_ascii_case("__fortran_emit") || name.eq_ignore_ascii_case("__fortran_emitln") {
+            let flush = name.eq_ignore_ascii_case("__fortran_emitln");
+            let text_slot = self.define_local(if flush { "__fortran_emitln_text" } else { "__fortran_emit_text" });
+            if let Some(arg) = args.first() {
+                self.compile_expr(arg)?;
+            } else {
+                self.compile_expr(&Expression::string(""))?;
+            }
+            self.emit_u16(Op::LOCAL_SET, text_slot);
+            self.emit(Op::DROP);
+
+            self.emit_var_get("__vybe_fortran_io_buffer");
+            self.emit_u16(Op::LOCAL_GET, text_slot);
+            common::strings::emit_str_concat(self.chunk(), line);
+
+            if flush {
+                let message_slot = self.define_local("__fortran_emitln_message");
+                self.emit_u16(Op::LOCAL_SET, message_slot);
+                self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, message_slot);
+                let idx = self.import("wasi:cli", "log");
+                common::io::emit_print_with_import(self.chunk(), idx, 1, line);
+
+                self.compile_expr(&Expression::string(""))?;
+                self.emit_var_set("__vybe_fortran_io_buffer");
+            } else {
+                self.emit_var_set("__vybe_fortran_io_buffer");
+                self.emit(Op::NULL);
+            }
+            return Ok(true);
+        }
+
+        if name.eq_ignore_ascii_case("kind") {
+            self.emit_const(Value::I32(8));
+            return Ok(true);
+        }
+        if name.eq_ignore_ascii_case("allocate") {
+            for arg in args {
+                match &arg.kind {
+                    ExprKind::Call { callee, args: dims, .. } if !dims.is_empty() => {
+                        if self.profile.name == "fortran" {
+                            let mut dim_slots = Vec::with_capacity(dims.len());
+                            for (index, dim) in dims.iter().enumerate() {
+                                self.compile_expr(&dim.value)?;
+                                let slot = self.define_local(&format!("__fortran_alloc_dim_{index}"));
+                                self.emit_u16(Op::LOCAL_SET, slot);
+                                self.emit(Op::DROP);
+                                dim_slots.push(slot);
+                            }
+
+                            let ctor_name = self.fortran_allocate_ctor_name(callee);
+                            self.emit_fortran_allocated_array(&dim_slots, ctor_name.as_deref());
+                            self.compile_assign_target(callee)?;
+                        } else {
+                            self.compile_expr(&dims[0].value)?;
+                            common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
+                            self.compile_assign_target(callee)?;
+                        }
+                    }
+                    _ => {
+                        if self.profile.name == "fortran" {
+                            if let Some(ctor_name) = self.fortran_allocate_ctor_name(arg) {
+                                self.emit_fortran_ctor_call(&ctor_name);
+                            } else {
+                                self.emit(Op::NULL);
+                            }
+                            self.compile_assign_target(arg)?;
+                        }
+                    }
+                }
+            }
+            self.emit(Op::NULL);
+            return Ok(true);
+        }
+        if name.eq_ignore_ascii_case("deallocate") {
+            for arg in args {
+                match &arg.kind {
+                    ExprKind::Call { callee, .. } => {
+                        self.emit(Op::NULL);
+                        self.compile_assign_target(callee)?;
+                    }
+                    _ => {
+                        self.emit(Op::NULL);
+                        self.compile_assign_target(arg)?;
+                    }
+                }
+            }
+            self.emit(Op::NULL);
+            return Ok(true);
+        }
+        if name.eq_ignore_ascii_case("present") {
+            if let Some(arg) = args.first() {
+                self.compile_expr(arg)?;
+                self.emit(Op::REF_IS_NULL);
+                self.emit(Op::DYN_NOT);
+            } else {
+                self.emit(Op::FALSE);
+            }
+            return Ok(true);
+        }
+        if name.eq_ignore_ascii_case("sum") {
+            if let Some(arg) = args.first() {
+                self.compile_expr(arg)?;
+                common::collections::emit_sum(&mut self.chunks, self.current, line);
+            } else {
+                self.emit(Op::NULL);
+            }
+            return Ok(true);
+        }
+        if name.eq_ignore_ascii_case("minval") {
+            if let Some(arg) = args.first() {
+                self.compile_expr(arg)?;
+                common::collections::emit_pymin(&mut self.chunks, self.current, line);
+            } else {
+                self.emit(Op::NULL);
+            }
+            return Ok(true);
+        }
+        if name.eq_ignore_ascii_case("maxval") {
+            if let Some(arg) = args.first() {
+                self.compile_expr(arg)?;
+                common::collections::emit_pymax(&mut self.chunks, self.current, line);
+            } else {
+                self.emit(Op::NULL);
+            }
+            return Ok(true);
+        }
+        if name.eq_ignore_ascii_case("nint") {
+            if let Some(arg) = args.first() {
+                self.compile_expr(arg)?;
+                common::math::emit_round(self.chunk(), line);
+                common::convert::emit_to_int(self.chunk(), line);
+            } else {
+                self.emit(Op::NULL);
+            }
+            return Ok(true);
+        }
+        if name.eq_ignore_ascii_case("size") {
+            if let Some(arg) = args.first() {
+                self.compile_expr(arg)?;
+                common::collections::emit_len(&mut self.chunks, self.current, line);
+            } else {
+                self.emit(Op::NULL);
+            }
+            return Ok(true);
+        }
+        if self.profile.name == "fortran" && name.eq_ignore_ascii_case("array_join") {
+            if args.len() >= 2 {
+                self.compile_expr(args[0])?;
+                self.compile_expr(args[1])?;
+                common::collections::emit_join(&mut self.chunks, self.current, line);
+            } else {
+                self.emit(Op::NULL);
+            }
+            return Ok(true);
+        }
+        if self.profile.name == "fortran" && name.eq_ignore_ascii_case("str_getcsv") {
+            for arg in args {
+                self.compile_expr(arg)?;
+            }
+            crate::languages::php::emitter::string_adapter::emit_str_getcsv(
+                &mut self.chunks,
+                self.current,
+                args.len() as u8,
+                line,
+            );
+            return Ok(true);
+        }
+
         // Canonical builtins — language-agnostic dispatch via compiler_common::canonical.
         // Walkers normalize language-specific syntax (arr.Length, len(arr), Length(arr),
         // arr.size, etc.) to canonical dunder names (__len__, __str__, etc.).
@@ -9076,9 +10377,14 @@ impl Compiler {
             // Special case: __str__ uses stdlib via global, not host import
             if matches!(canonical_op, common::canonical::CanonicalOp::Str) {
                 if let Some(arg) = args.first() {
+                    self.compile_expr(arg)?;
+                    let arg_slot = self.define_local("__canonical_str_arg");
+                    self.emit_u16(Op::LOCAL_SET, arg_slot);
+                    self.emit(Op::DROP);
+
                     let tostring_global = self.str_const("__vybe_tostring");
                     self.emit_u16(Op::GLOBAL_GET, tostring_global);
-                    self.compile_expr(arg)?;
+                    self.emit_u16(Op::LOCAL_GET, arg_slot);
                     self.emit_u8(Op::CALL_REF, 1);
                     return Ok(true);
                 }
@@ -9466,16 +10772,11 @@ impl Compiler {
             "high" => { self.compile_expr(args[0])?; common::strings::emit_length(self.chunk(), line); self.emit_const(Value::F64(1.0)); self.emit(Op::F64_SUB); }
             "low" => { self.emit_const(Value::F64(0.0)); }
             "setlength" => {
-                if let Some(first) = args.first() {
-                    if let ExprKind::Ident(var) = &first.kind {
-                        let var = var.clone();
-                        if args.len() > 1 { self.compile_expr(args[1])?; }
-                        let idx = self.import("ecma:array", "newWithLength");
-                        self.emit_host_call(idx, 1);
-                        self.emit_var_set(&var);
-                    }
+                if args.len() >= 2 {
+                    self.compile_setlength(args[0], args[1])?;
+                } else {
+                    self.emit(Op::NULL);
                 }
-                self.emit(Op::NULL);
             }
             "trim_start" => { self.compile_expr(args[0])?; common::strings::emit_trim_start(self.chunk(), line); }
             "trim_end" => { self.compile_expr(args[0])?; common::strings::emit_trim_end(self.chunk(), line); }
@@ -9545,8 +10846,25 @@ impl Compiler {
             }
             "str_compare" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::STR_COMPARE); } }
             "str_split" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::STR_SPLIT); } }
+            "str_getcsv" => {
+                for arg in args {
+                    self.compile_expr(arg)?;
+                }
+                crate::languages::php::emitter::string_adapter::emit_str_getcsv(
+                    &mut self.chunks,
+                    self.current,
+                    args.len() as u8,
+                    line,
+                );
+            }
             "str_repeat" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::STR_REPEAT); } }
-            "array_join" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; { let l = self.line; common::collections::emit_join(&mut self.chunks, self.current, l); } } }
+            "array_join" => {
+                if args.len() >= 2 {
+                    self.compile_expr(args[0])?;
+                    self.compile_expr(args[1])?;
+                    { let l = self.line; common::collections::emit_join(&mut self.chunks, self.current, l); }
+                }
+            }
             // setTimeout/setInterval — emit Op::SET_TIMER directly. Old JS
             // compiler did this inline; the profile now routes through
             // `opcode:set_timer` so the dispatch lives here.
@@ -9664,6 +10982,126 @@ impl Compiler {
     }
 
     /// Emit a multi-opcode intrinsic sequence.
+    fn emit_fortran_scan_like(&mut self, args: &[&Expression], invert_match: bool) -> Result<(), String> {
+        let line = self.line;
+        if args.len() < 2 {
+            self.emit(Op::NULL);
+            return Ok(());
+        }
+
+        let source_slot = self.define_local("__fortran_scan_source");
+        let set_slot = self.define_local("__fortran_scan_set");
+        let back_slot = self.define_local("__fortran_scan_back");
+        let len_slot = self.define_local("__fortran_scan_len");
+        let index_slot = self.define_local("__fortran_scan_index");
+
+        self.compile_expr(args[0])?;
+        self.emit_u16(Op::LOCAL_SET, source_slot);
+        self.emit(Op::DROP);
+
+        self.compile_expr(args[1])?;
+        self.emit_u16(Op::LOCAL_SET, set_slot);
+        self.emit(Op::DROP);
+
+        if let Some(back_arg) = args.get(2) {
+            self.compile_expr(back_arg)?;
+            self.emit(Op::DYN_TO_BOOL);
+        } else {
+            self.emit(Op::FALSE);
+        }
+        self.emit_u16(Op::LOCAL_SET, back_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, source_slot);
+        common::strings::emit_length(self.chunk(), line);
+        self.emit_u16(Op::LOCAL_SET, len_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, back_slot);
+        let forward_path = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, len_slot);
+        self.emit(Op::I32_CONST_1);
+        self.emit(Op::I32_SUB);
+        self.emit_u16(Op::LOCAL_SET, index_slot);
+        self.emit(Op::DROP);
+
+        let back_loop = self.current_offset();
+        self.emit_u16(Op::LOCAL_GET, index_slot);
+        self.emit(Op::I32_CONST_0);
+        self.emit(Op::DYN_LT);
+        let back_not_found = self.emit_jump(Op::BR_IF_TRUE);
+
+        self.emit_u16(Op::LOCAL_GET, set_slot);
+        self.emit_u16(Op::LOCAL_GET, source_slot);
+        self.emit_u16(Op::LOCAL_GET, index_slot);
+        self.emit(Op::STR_CHAR_AT);
+        self.emit(Op::STR_CONTAINS);
+        if invert_match {
+            self.emit(Op::DYN_NOT);
+        }
+        let back_continue = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, index_slot);
+        self.emit_const(Value::I32(1));
+        self.emit(Op::I32_ADD);
+        let back_done = self.emit_jump(Op::BR);
+
+        self.patch_jump(back_continue);
+        self.emit_u16(Op::LOCAL_GET, index_slot);
+        self.emit(Op::I32_CONST_1);
+        self.emit(Op::I32_SUB);
+        self.emit_u16(Op::LOCAL_SET, index_slot);
+        self.emit(Op::DROP);
+        self.emit_loop(back_loop);
+
+        self.patch_jump(back_not_found);
+        self.emit(Op::I32_CONST_0);
+        let back_zero_done = self.emit_jump(Op::BR);
+
+        self.patch_jump(forward_path);
+        self.emit(Op::I32_CONST_0);
+        self.emit_u16(Op::LOCAL_SET, index_slot);
+        self.emit(Op::DROP);
+
+        let forward_loop = self.current_offset();
+        self.emit_u16(Op::LOCAL_GET, index_slot);
+        self.emit_u16(Op::LOCAL_GET, len_slot);
+        self.emit(Op::DYN_GE);
+        let forward_not_found = self.emit_jump(Op::BR_IF_TRUE);
+
+        self.emit_u16(Op::LOCAL_GET, set_slot);
+        self.emit_u16(Op::LOCAL_GET, source_slot);
+        self.emit_u16(Op::LOCAL_GET, index_slot);
+        self.emit(Op::STR_CHAR_AT);
+        self.emit(Op::STR_CONTAINS);
+        if invert_match {
+            self.emit(Op::DYN_NOT);
+        }
+        let forward_continue = self.emit_jump(Op::BR_IF_FALSE);
+
+        self.emit_u16(Op::LOCAL_GET, index_slot);
+        self.emit_const(Value::I32(1));
+        self.emit(Op::I32_ADD);
+        let forward_done = self.emit_jump(Op::BR);
+
+        self.patch_jump(forward_continue);
+        self.emit_u16(Op::LOCAL_GET, index_slot);
+        self.emit(Op::I32_CONST_1);
+        self.emit(Op::I32_ADD);
+        self.emit_u16(Op::LOCAL_SET, index_slot);
+        self.emit(Op::DROP);
+        self.emit_loop(forward_loop);
+
+        self.patch_jump(forward_not_found);
+        self.emit(Op::I32_CONST_0);
+
+        self.patch_jump(back_done);
+        self.patch_jump(back_zero_done);
+        self.patch_jump(forward_done);
+        Ok(())
+    }
+
     fn emit_intrinsic(&mut self, name: &str, args: &[&Expression]) -> Result<(), String> {
         let line = self.line;
         match name {
@@ -10709,6 +12147,55 @@ impl Compiler {
                 } else {
                     self.emit(Op::NULL);
                 }
+            }
+            "fortran_index" => {
+                if args.len() >= 2 {
+                    let source_slot = self.define_local("__fortran_index_source");
+                    let search_slot = self.define_local("__fortran_index_search");
+                    let back_slot = self.define_local("__fortran_index_back");
+
+                    self.compile_expr(args[0])?;
+                    self.emit_u16(Op::LOCAL_SET, source_slot);
+                    self.emit(Op::DROP);
+
+                    self.compile_expr(args[1])?;
+                    self.emit_u16(Op::LOCAL_SET, search_slot);
+                    self.emit(Op::DROP);
+
+                    if let Some(back_arg) = args.get(2) {
+                        self.compile_expr(back_arg)?;
+                        self.emit(Op::DYN_TO_BOOL);
+                    } else {
+                        self.emit(Op::FALSE);
+                    }
+                    self.emit_u16(Op::LOCAL_SET, back_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, back_slot);
+                    let forward_path = self.emit_jump(Op::BR_IF_FALSE);
+
+                    self.emit_u16(Op::LOCAL_GET, source_slot);
+                    self.emit_u16(Op::LOCAL_GET, search_slot);
+                    common::strings::emit_last_index_of(self.chunk(), line);
+                    let done = self.emit_jump(Op::BR);
+
+                    self.patch_jump(forward_path);
+                    self.emit_u16(Op::LOCAL_GET, source_slot);
+                    self.emit_u16(Op::LOCAL_GET, search_slot);
+                    common::strings::emit_index_of(self.chunk(), line);
+                    self.patch_jump(done);
+
+                    self.emit_const(Value::I32(1));
+                    self.emit(Op::I32_ADD);
+                } else {
+                    self.emit(Op::NULL);
+                }
+            }
+            "fortran_scan" => {
+                self.emit_fortran_scan_like(args, false)?;
+            }
+            "fortran_verify" => {
+                self.emit_fortran_scan_like(args, true)?;
             }
             "replace" => {
                 if args.len() >= 3 {

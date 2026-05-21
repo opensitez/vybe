@@ -1373,6 +1373,7 @@ fn walk_interface_method(pair: Pair<Rule>, is_sub: bool) -> Result<InterfaceMemb
         params,
         return_type,
         is_sub,
+        signature_source: None,
     })
 }
 
@@ -2296,6 +2297,9 @@ fn walk_for_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let (var_name, type_hint, start_expr) = walk_for_binding(binding)?;
     let end_expr = walk_expression(parts.remove(0))?; // end expression
     let body_stmt = walk_statement(parts.remove(0))?; // body statement
+    let use_char_ordinal_loop = type_hint.as_deref().is_some_and(|hint| hint.eq_ignore_ascii_case("char"))
+        || pascal_expr_is_char_like(&start_expr)
+        || pascal_expr_is_char_like(&end_expr);
 
     let init = if let Some(type_hint) = type_hint {
         Statement::new(StmtKind::VarDecl {
@@ -2317,20 +2321,59 @@ fn walk_for_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     let cond = Expression::new(ExprKind::Binary {
         op: if is_downto { BinOp::GtEq } else { BinOp::LtEq },
-        left: Box::new(Expression::ident(&var_name)),
-        right: Box::new(end_expr),
+        left: Box::new(if use_char_ordinal_loop {
+            pascal_ord_call(Expression::ident(&var_name))
+        } else {
+            Expression::ident(&var_name)
+        }),
+        right: Box::new(if use_char_ordinal_loop {
+            pascal_ord_call(end_expr.clone())
+        } else {
+            end_expr.clone()
+        }),
     });
 
-    let update = Expression::new(ExprKind::Binary {
-        op: if is_downto { BinOp::Sub } else { BinOp::Add },
-        left: Box::new(Expression::ident(&var_name)),
-        right: Box::new(Expression::int(1)),
-    });
     let update_assign = Expression::new(ExprKind::Assign {
         target: Box::new(Expression::ident(&var_name)),
-        value: Box::new(update),
+        value: Box::new(if use_char_ordinal_loop {
+            pascal_chr_call(Expression::new(ExprKind::Binary {
+                op: if is_downto { BinOp::Sub } else { BinOp::Add },
+                left: Box::new(pascal_ord_call(Expression::ident(&var_name))),
+                right: Box::new(Expression::int(1)),
+            }))
+        } else {
+            Expression::new(ExprKind::Binary {
+                op: if is_downto { BinOp::Sub } else { BinOp::Add },
+                left: Box::new(Expression::ident(&var_name)),
+                right: Box::new(Expression::int(1)),
+            })
+        }),
     });
 
+
+fn pascal_expr_is_char_like(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Char(_)) => true,
+        ExprKind::Lit(Literal::Str(value)) => value.chars().count() == 1,
+        _ => false,
+    }
+}
+
+fn pascal_ord_call(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("Ord")),
+        args: vec![Argument::positional(expr)],
+        optional: false,
+    })
+}
+
+fn pascal_chr_call(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("Chr")),
+        args: vec![Argument::positional(expr)],
+        optional: false,
+    })
+}
     Ok(StmtKind::For {
         init: Some(Box::new(init)),
         cond: Some(cond),
@@ -3065,17 +3108,28 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
     }
 
     if op_src.starts_with('[') {
-        // Index access: arr[i]
-        let index_expr = parts.into_iter()
-            .find(|p| p.as_rule() == Rule::expression)
+        // Index access: arr[i] or arr[i, j]
+        let index_exprs = parts.into_iter()
+            .flat_map(|p| {
+                if p.as_rule() == Rule::array_index_list {
+                    p.into_inner().collect::<Vec<_>>()
+                } else {
+                    vec![p]
+                }
+            })
+            .filter(|p| p.as_rule() == Rule::expression)
             .map(walk_expression)
-            .transpose()?
-            .unwrap_or_else(|| Expression::int(0));
-        return Ok(Expression::new(ExprKind::Index {
-            object: Box::new(expr),
-            index: Box::new(index_expr),
-            null_safe: false,
-        }));
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut indexed = expr;
+        for index_expr in index_exprs {
+            indexed = Expression::new(ExprKind::Index {
+                object: Box::new(indexed),
+                index: Box::new(index_expr),
+                null_safe: false,
+            });
+        }
+        return Ok(indexed);
     }
 
     if op_src.starts_with('<') && parts.iter().all(|p| p.as_rule() != Rule::arg_list) {

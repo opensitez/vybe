@@ -63,12 +63,13 @@ pub fn normalize_class(
 
     for member in members {
         match member {
-            ClassMember::Field { name: fname, type_hint, init, modifiers, .. } => {
+            ClassMember::Field { name: fname, type_hint, init, modifiers, array_bounds, .. } => {
                 let field = NormalField {
                     span: span.clone(),
                     name: fname.clone(),
                     type_hint: type_hint.clone(),
                     init: init.clone(),
+                    array_bounds: array_bounds.clone(),
                     access: access_for_js(fname),
                     readonly: false, // JS doesn't have readonly at class field level
                 };

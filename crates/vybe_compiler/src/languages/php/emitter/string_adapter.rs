@@ -53,6 +53,7 @@ pub fn emit_echo_stringify(chunks: &mut [Chunk], current: usize, _argc: u8, line
     let ty_slot = alloc_local(chunk);
     let s_slot = alloc_local(chunk);
     let len_slot = alloc_local(chunk);
+    let tostring_slot = alloc_local(chunk);
 
     lset(chunk, v_slot, line);
 
@@ -155,6 +156,25 @@ pub fn emit_echo_stringify(chunks: &mut [Chunk], current: usize, _argc: u8, line
     let after_f64 = chunk.emit_jump(Op::BR, line);
     chunk.patch_jump(not_f64);
 
+    lget(chunk, v_slot, line);
+    let to_string_key = chunk.add_constant(Value::String(Arc::from("__toString")));
+    chunk.emit_op_u16(Op::STRUCT_GET, to_string_key, line);
+    lset(chunk, tostring_slot, line);
+
+    lget(chunk, tostring_slot, line);
+    chunk.emit_op(Op::REF_TYPEOF, line);
+    push_str(chunk, "function", line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let no_tostring = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    lget(chunk, tostring_slot, line);
+    lget(chunk, v_slot, line);
+    chunk.emit_op(Op::CALL_REF, line);
+    chunk.emit(1u8, line);
+    let after_tostring = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(no_tostring);
+
     push_str(chunk, "", line);
     lget(chunk, v_slot, line);
     chunk.emit_op(Op::DYN_ADD, line);
@@ -163,6 +183,7 @@ pub fn emit_echo_stringify(chunks: &mut [Chunk], current: usize, _argc: u8, line
     chunk.patch_jump(after_bool);
     chunk.patch_jump(after_string);
     chunk.patch_jump(after_f64);
+    chunk.patch_jump(after_tostring);
 }
 
 // ── ucwords ────────────────────────────────────────────────────────
@@ -1786,7 +1807,9 @@ pub fn emit_str_getcsv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
 
     coerce_to_str(chunk, line);
     lset(chunk, s_slot, line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    let _ = chunk;
+    crate::emitter::collections::emit_array_new(chunks, current, 0, line);
+    let chunk = &mut chunks[current];
     lset(chunk, out_slot, line);
     push_str(chunk, "", line);
     lset(chunk, cur_slot, line);

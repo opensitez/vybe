@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── Constructor syntax ────────────────────────────────────────
 
@@ -91,7 +91,7 @@ end program test
 
 #[test]
 fn type_bound_subroutine() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     type :: Counter
         integer :: n = 0
@@ -115,6 +115,55 @@ contains
     end function get
 end program test
 "#);
+    assert_eq!(out, vec!["2"]);
+}
+
+#[test]
+fn subroutine_populates_derived_type_out_param() {
+    let out = run_prints(r#"
+program test
+    type :: Counter
+        integer :: n = 0
+    end type Counter
+    type(Counter) :: c
+    call fill(c)
+    print *, c%n
+contains
+    subroutine fill(counter)
+        type(Counter), intent(out) :: counter
+        counter%n = 7
+    end subroutine fill
+end program test
+"#);
+    assert_eq!(out, vec!["7"]);
+}
+
+#[test]
+fn assumed_shape_intrinsics_populate_derived_type_out_param() {
+    let out = run_prints(r#"
+program test
+    type :: Stats
+        integer :: n = 0
+        real :: lo = 0.0
+        real :: hi = 0.0
+    end type Stats
+    real :: a(3) = [1.0, 2.0, 3.0]
+    type(Stats) :: s
+    call fill(a, s)
+    print *, s%n
+    print *, s%lo
+    print *, s%hi
+contains
+    subroutine fill(data, result)
+        real, intent(in) :: data(:)
+        type(Stats), intent(out) :: result
+        result%n = size(data)
+        result%lo = minval(data)
+        result%hi = maxval(data)
+    end subroutine fill
+end program test
+"#);
+    assert_eq!(out, vec!["3", "1", "3"]);
 }
 
 #[test]
@@ -258,7 +307,7 @@ end program test
 
 #[test]
 fn allocatable_type_array() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     type :: Node
         integer :: value
@@ -267,9 +316,12 @@ program test
     allocate(nodes(5))
     nodes(1)%value = 42
     print *, nodes(1)%value
+    nodes(5)%value = 9
+    print *, nodes(5)%value
     deallocate(nodes)
 end program test
 "#);
+    assert_eq!(out, ["42", "9"]);
 }
 
 // ── Type comparison and assignment ────────────────────────────

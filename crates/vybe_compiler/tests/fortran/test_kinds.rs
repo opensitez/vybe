@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── Integer kinds ─────────────────────────────────────────────
 
@@ -109,6 +109,12 @@ fn double_literal() {
 #[test]
 fn double_literal_exponent() {
     compile_ok("program t\n  real(kind=8) :: d = 1.23d+10\n  print *, d\nend program t\n");
+}
+
+#[test]
+fn kind_intrinsic_double_literal_runtime() {
+    let out = run_prints("program t\n  integer, parameter :: dp = kind(1.0d0)\n  print *, dp\nend program t\n");
+    assert_eq!(out, vec!["8"]);
 }
 
 // ── Selected kind queries ─────────────────────────────────────

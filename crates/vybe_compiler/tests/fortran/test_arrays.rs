@@ -29,6 +29,28 @@ end program test
 }
 
 #[test]
+fn array_2d_runtime_element_and_iteration() {
+    let out = run_prints(r#"
+program test
+    integer :: m(3,3)
+    integer :: i, j, total
+    total = 0
+    do i = 1, 3
+        do j = 1, 3
+            m(i,j) = i * 10 + j
+            total = total + m(i,j)
+        end do
+    end do
+    print *, m(1,1)
+    print *, m(3,2)
+    print *, total
+end program test
+"#);
+
+    assert_eq!(out, ["11", "32", "198"]);
+}
+
+#[test]
 fn array_3d() {
     compile_ok(r#"
 program test
@@ -99,16 +121,57 @@ end program test
 }
 
 #[test]
-fn alloc_2d() {
-    compile_ok(r#"
+fn alloc_1d_runtime_index_write_and_size() {
+    let out = run_prints(r#"
 program test
-    real, allocatable :: m(:,:)
+    integer, allocatable :: v(:)
+    allocate(v(3))
+    v(1) = 7
+    v(2) = 8
+    v(3) = 9
+    print *, v(1)
+    print *, v(2)
+    print *, v(3)
+    print *, size(v)
+end program test
+"#);
+    assert_eq!(out, ["7", "8", "9", "3"]);
+}
+
+#[test]
+fn allocatable_member_runtime_index_write_and_size() {
+    let out = run_prints(r#"
+program test
+    type :: state
+        integer, allocatable :: v(:)
+    end type state
+    type(state) :: value
+
+    allocate(value%v(2))
+    value%v(1) = 4
+    value%v(2) = 6
+    print *, value%v(1)
+    print *, value%v(2)
+    print *, size(value%v)
+end program test
+"#);
+    assert_eq!(out, ["4", "6", "2"]);
+}
+
+#[test]
+fn alloc_2d() {
+    let out = run_prints(r#"
+program test
+    integer, allocatable :: m(:,:)
     allocate(m(3,3))
-    m(1,1) = 1.0
+    m(1,1) = 7
+    m(3,3) = 9
     print *, m(1,1)
+    print *, m(3,3)
     deallocate(m)
 end program test
 "#);
+    assert_eq!(out, ["7", "9"]);
 }
 
 // ── Array slicing ─────────────────────────────────────────────
@@ -139,26 +202,115 @@ end program test
 
 #[test]
 fn slice_from_start() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     integer :: a(5) = [1, 2, 3, 4, 5]
     integer :: b(3)
     b = a(:3)
     print *, b(1)
+    print *, b(3)
 end program test
 "#);
+    assert_eq!(out, vec!["1", "3"]);
 }
 
 #[test]
 fn slice_to_end() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     integer :: a(5) = [1, 2, 3, 4, 5]
     integer :: b(3)
     b = a(3:)
     print *, b(1)
+    print *, b(3)
 end program test
 "#);
+    assert_eq!(out, vec!["3", "5"]);
+}
+
+#[test]
+fn recursive_slice_argument_shrinks_bounds() {
+    let out = run_prints(r#"
+recursive subroutine trim_tail(arr)
+    integer, intent(in) :: arr(:)
+    integer :: n
+    n = size(arr)
+    print *, n
+    if (n <= 1) return
+    call trim_tail(arr(2:))
+end subroutine trim_tail
+
+program test
+    integer :: a(3) = [1, 2, 3]
+    call trim_tail(a)
+end program test
+"#);
+    assert_eq!(out, vec!["3", "2", "1"]);
+}
+
+#[test]
+fn whole_array_scalar_assignment_runtime() {
+    let out = run_prints(r#"
+program test
+    real :: a(3)
+    a = 2.5
+    print *, a(1)
+    print *, a(3)
+end program test
+"#);
+    assert_eq!(out, vec!["2.5", "2.5"]);
+}
+
+#[test]
+fn whole_array_assignment_copies_values_runtime() {
+    let out = run_prints(r#"
+program test
+    integer :: source(4) = [1, 2, 3, 4]
+    integer, allocatable :: copy(:)
+
+    allocate(copy(4))
+    copy = source
+    copy(2) = 99
+
+    print *, source(2)
+    print *, copy(2)
+end program test
+"#);
+    assert_eq!(out, vec!["2", "99"]);
+}
+
+#[test]
+fn slice_assignment_runtime() {
+    let out = run_prints(r#"
+program test
+    integer :: a(5) = [1, 2, 3, 4, 5]
+
+    a(2:4) = [20, 30, 40]
+
+    print *, a(1)
+    print *, a(2)
+    print *, a(4)
+    print *, a(5)
+end program test
+"#);
+    assert_eq!(out, vec!["1", "20", "40", "5"]);
+}
+
+#[test]
+fn read_only_array_param_function_works_in_expression_runtime() {
+    let out = run_prints(r#"
+program test
+    real :: data(3) = [1.1, 1.5, 3.0]
+    print *, first_value(data) + 1.0
+contains
+    real function first_value(values) result(out)
+        real, intent(in) :: values(:)
+        real :: out
+        out = values(1)
+    end function first_value
+end program test
+"#);
+    assert_eq!(out, vec!["2.1"]);
 }
 
 // ── Array constructors ────────────────────────────────────────
@@ -166,6 +318,64 @@ end program test
 #[test]
 fn array_constructor_literal() {
     compile_ok("program t\n  integer :: a(3) = [1, 2, 3]\n  print *, a(2)\nend program t\n");
+}
+
+#[test]
+fn assumed_size_parameter_array_runtime_is_one_based() {
+    let out = run_prints(r#"
+program test
+    integer, parameter :: data(*) = [5, 3, 8, 1]
+    integer :: i
+    do i = 1, size(data)
+        print *, data(i)
+    end do
+end program test
+"#);
+    assert_eq!(out, ["5", "3", "8", "1"]);
+}
+
+#[test]
+fn type_bound_subroutine_populates_allocatable_array() {
+    let out = run_prints(r#"
+program test
+    type :: list
+    contains
+        procedure :: fill
+    end type list
+    type(list) :: value
+    integer, allocatable :: arr(:)
+
+    call value%fill(arr)
+    print *, arr(1)
+    print *, arr(2)
+    print *, arr(3)
+
+contains
+    subroutine fill(self, arr)
+        class(list), intent(in) :: self
+        integer, allocatable, intent(out) :: arr(:)
+        allocate(arr(3))
+        arr(1) = 5
+        arr(2) = 3
+        arr(3) = 8
+    end subroutine fill
+end program test
+"#);
+    assert_eq!(out, ["5", "3", "8"]);
+}
+
+#[test]
+fn top_level_deallocate_nulls_allocatable_array() {
+    let out = run_prints(r#"
+program test
+    integer, allocatable :: arr(:)
+    allocate(arr(2))
+    arr(1) = 5
+    deallocate(arr)
+    print *, allocated(arr)
+end program test
+"#);
+    assert_eq!(out, ["false"]);
 }
 
 #[test]
@@ -246,12 +456,13 @@ end program test
 
 #[test]
 fn intrinsic_size() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     integer :: a(7) = [1,2,3,4,5,6,7]
     print *, size(a)
 end program test
 "#);
+    assert_eq!(out, vec!["7"]);
 }
 
 #[test]

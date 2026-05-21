@@ -5,6 +5,8 @@ use vybe_bytecode::opcode::Op;
 
 const VB_FILE_PATH_BY_HANDLE: &str = "__vb_file_path_by_handle";
 const VB_FILE_EOF_BY_HANDLE: &str = "__vb_file_eof_by_handle";
+const VB_RECORD_ROWS_BY_HANDLE: &str = "__vb_record_rows_by_handle";
+const VB_RECORD_NEXT_INDEX_BY_HANDLE: &str = "__vb_record_next_index_by_handle";
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     let slot = chunk.local_count;
@@ -203,13 +205,65 @@ pub fn emit_vb_eof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
         let chunk = &mut chunks[current];
         alloc_local(chunk)
     };
+    let next_slot = {
+        let chunk = &mut chunks[current];
+        alloc_local(chunk)
+    };
+    let rows_slot = {
+        let chunk = &mut chunks[current];
+        alloc_local(chunk)
+    };
+    let len_slot = {
+        let chunk = &mut chunks[current];
+        alloc_local(chunk)
+    };
     let eof_map_slot = ensure_global_map(chunks, current, VB_FILE_EOF_BY_HANDLE, line);
+    let next_map_slot = ensure_global_map(chunks, current, VB_RECORD_NEXT_INDEX_BY_HANDLE, line);
+    let rows_map_slot = ensure_global_map(chunks, current, VB_RECORD_ROWS_BY_HANDLE, line);
 
     {
         let chunk = &mut chunks[current];
         lset(chunk, handle_slot, line);
-        emit_array_get_const_index(chunk, eof_map_slot, 0.0, line);
-        chunk.emit_op(Op::DROP, line);
+        lget(chunk, next_map_slot, line);
+        lget(chunk, handle_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        lset(chunk, next_slot, line);
+
+        lget(chunk, rows_map_slot, line);
+        lget(chunk, handle_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        lset(chunk, rows_slot, line);
+
+        lget(chunk, next_slot, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+    }
+
+    let fallback = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, rows_slot, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+    }
+    let fallback_rows = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, rows_slot, line);
+    }
+    crate::emitter::collections::emit_len(chunks, current, line);
+    {
+        let chunk = &mut chunks[current];
+        lset(chunk, len_slot, line);
+        lget(chunk, next_slot, line);
+        lget(chunk, len_slot, line);
+        chunk.emit_op(Op::DYN_GE, line);
+    }
+    let done = chunks[current].emit_jump(Op::BR, line);
+
+    chunks[current].patch_jump(fallback);
+    chunks[current].patch_jump(fallback_rows);
+
+    {
+        let chunk = &mut chunks[current];
         lget(chunk, eof_map_slot, line);
         lget(chunk, handle_slot, line);
         chunk.emit_op(Op::ARRAY_GET, line);
@@ -223,10 +277,11 @@ pub fn emit_vb_eof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
         chunk.emit_op(Op::DROP, line);
     }
     push_const(&mut chunks[current], Value::Bool(false), line);
-    let done = chunks[current].emit_jump(Op::BR, line);
+    let fallback_done = chunks[current].emit_jump(Op::BR, line);
 
     chunks[current].patch_jump(has_value);
     chunks[current].patch_jump(done);
+    chunks[current].patch_jump(fallback_done);
 }
 
 pub fn emit_vb_shell_pid(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

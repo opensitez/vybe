@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── Pointer declarations ──────────────────────────────────────
 
@@ -207,7 +207,7 @@ end program test
 }
 
 #[test] fn allocatable_in_type() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     type :: DynList
         integer, allocatable :: items(:)
@@ -218,9 +218,30 @@ program test
     list%items(1) = 100
     list%count = 1
     print *, list%items(1)
+    print *, list%count
     deallocate(list%items)
 end program test
 "#);
+    assert_eq!(out, ["100", "1"]);
+}
+
+#[test] fn allocatable_2d_in_type_runtime() {
+    let out = run_prints(r#"
+program test
+    type :: NeighborGrid
+        integer, allocatable :: cells(:,:)
+    end type NeighborGrid
+    type(NeighborGrid) :: grid
+
+    allocate(grid%cells(2,3))
+    grid%cells(1,1) = 5
+    grid%cells(2,3) = 8
+    print *, grid%cells(1,1)
+    print *, grid%cells(2,3)
+    deallocate(grid%cells)
+end program test
+"#);
+    assert_eq!(out, ["5", "8"]);
 }
 
 // ── SOURCE= and MOLD= in ALLOCATE (Fortran 2003) ─────────────

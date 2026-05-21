@@ -103,6 +103,7 @@ pub struct NormalField {
     pub name: String,
     pub type_hint: Option<String>,
     pub init: Option<Expression>,
+    pub array_bounds: Option<Vec<Expression>>,
     pub access: Access,
     pub readonly: bool,
 }

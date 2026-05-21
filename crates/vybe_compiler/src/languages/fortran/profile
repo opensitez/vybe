@@ -68,14 +68,23 @@ random_number = { emit = "host:ecma:math:random",          min_args = 0, max_arg
 # ── String functions ─────────────────────────────────────────────────────────
 
 len           = { emit = "common:strings.length",          min_args = 1, max_args = 1 }
+size          = { emit = "opcode:array_length",            min_args = 1, max_args = 1 }
 len_trim      = { emit = "common:fortran.len_trim",        min_args = 1, max_args = 1 }
 trim          = { emit = "opcode:str_trim_end",            min_args = 1, max_args = 1 }
 adjustl       = { emit = "opcode:str_trim_start",          min_args = 1, max_args = 1 }
 adjustr       = { emit = "opcode:str_trim_end",            min_args = 1, max_args = 1 }
 char          = { emit = "host:ecma:string:fromCharCode",  min_args = 1, max_args = 1 }
 ichar         = { emit = "host:ecma:string:charCodeAt",    min_args = 1, max_args = 1 }
-index         = { emit = "opcode:str_index_of",            min_args = 2, max_args = 2 }
+index         = { emit = "intrinsic:fortran_index",       min_args = 2, max_args = 3 }
+scan          = { emit = "intrinsic:fortran_scan",        min_args = 2, max_args = 3 }
+verify        = { emit = "intrinsic:fortran_verify",      min_args = 2, max_args = 3 }
+str_split     = { emit = "host:ecma:string:split",        min_args = 2, max_args = 2 }
+str_getcsv    = { emit = "intrinsic:str_getcsv",          min_args = 1, max_args = 4 }
 repeat        = { emit = "opcode:str_repeat",              min_args = 2, max_args = 2 }
+to_upper      = { emit = "opcode:str_to_upper",            min_args = 1, max_args = 1 }
+to_lower      = { emit = "opcode:str_to_lower",            min_args = 1, max_args = 1 }
+array_join    = { emit = "intrinsic:array_join",          min_args = 2, max_args = 2 }
+sprintf       = { emit = "stdlib:sprintf",               min_args = 1, max_args = 255 }
 
 # ── Misc ─────────────────────────────────────────────────────────────────────
 
@@ -86,6 +95,11 @@ stop          = { emit = "noop",                           min_args = 0, max_arg
 # ────────────────────────────────────────────────────────────────────────────
 
 [value_methods]
+
+[array_methods]
+map      = "__array_map"
+reduce   = "__array_reduce"
+flatMap  = "__array_flat_map"
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACE CONSTANTS

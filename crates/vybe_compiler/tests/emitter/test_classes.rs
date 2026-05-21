@@ -142,7 +142,7 @@ fn register_type_adds_entry() {
 #[test]
 fn emit_attach_static_method_sets_on_constructor() {
     let mut chunk = Chunk::new("test");
-    classes::emit_attach_static_method(&mut chunk, 2, "create", 5, 0);
+    classes::emit_attach_static_method(&mut chunk, 2, "create", 5, None, None, 0);
     let has_create = chunk.constants.iter().any(|c| matches!(c, Value::String(s) if s.as_ref() == "create"));
     assert!(has_create, "Should have 'create' constant for static method");
 }

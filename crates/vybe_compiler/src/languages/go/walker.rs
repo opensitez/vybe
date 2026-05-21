@@ -2851,6 +2851,7 @@ fn walk_interface_type(name: String, pair: Pair<Rule>) -> Result<Statement, Stri
                     params,
                     return_type,
                     is_sub: false,
+                    signature_source: None,
                 });
             }
         }

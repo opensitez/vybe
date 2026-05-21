@@ -4839,6 +4839,11 @@ fn build_js_get_method(imports: &mut Chunk) -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, 2, 0);
     c.emit_op(Op::REF_IS_NULL, 0);
+    let cur_not_null = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_br(1, 0);
+    c.patch_jump(cur_not_null);
+    c.emit_op_u16(Op::LOCAL_GET, 2, 0);
+    c.emit_op(Op::REF_IS_UNDEFINED, 0);
     c.emit_br_if(1, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, 2, 0);
@@ -4850,6 +4855,11 @@ fn build_js_get_method(imports: &mut Chunk) -> Chunk {
     let missing_p = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, 3, 0);
     c.emit_op(Op::REF_IS_NULL, 0);
+    let method_not_null = c.emit_jump(Op::BR_IF_FALSE, 0);
+    c.emit_br(0, 0);
+    c.patch_jump(method_not_null);
+    c.emit_op_u16(Op::LOCAL_GET, 3, 0);
+    c.emit_op(Op::REF_IS_UNDEFINED, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, 3, 0);
     c.emit_op(Op::RETURN, 0);

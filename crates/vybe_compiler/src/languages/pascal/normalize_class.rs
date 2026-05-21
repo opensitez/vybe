@@ -99,12 +99,13 @@ pub fn normalize_class(
 
     for member in members {
         match member {
-            ClassMember::Field { name: fname, type_hint, init, modifiers: m, .. } => {
+            ClassMember::Field { name: fname, type_hint, init, modifiers: m, array_bounds, .. } => {
                 let field = NormalField {
                     span: span.clone(),
                     name: fname.clone(),
                     type_hint: type_hint.clone(),
                     init: init.clone(),
+                    array_bounds: array_bounds.clone(),
                     access: Access::Public,
                     readonly: m.is_readonly,
                 };

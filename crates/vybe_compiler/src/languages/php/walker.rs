@@ -1856,7 +1856,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     _ => {}
                 }
             }
-            Rule::identifier if name.is_empty() => name = p.as_str().to_string(),
+            Rule::identifier | Rule::method_ident if name.is_empty() => name = p.as_str().to_string(),
             Rule::qualified_name => {
                 if first_qualified && has_extends {
                     parents.push(p.as_str().to_string());
@@ -1903,7 +1903,7 @@ fn walk_interface_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::identifier if name.is_empty() => name = p.as_str().to_string(),
+            Rule::identifier | Rule::method_ident if name.is_empty() => name = p.as_str().to_string(),
             Rule::qualified_name => parents.push(p.as_str().to_string()),
             Rule::class_constant => {
                 deferred.push(p);
@@ -1948,7 +1948,7 @@ fn walk_trait_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::identifier if name.is_empty() => name = p.as_str().to_string(),
+            Rule::identifier | Rule::method_ident if name.is_empty() => name = p.as_str().to_string(),
             Rule::use_trait | Rule::class_constant | Rule::property_declaration
                 | Rule::method_declaration | Rule::empty_statement => {
                 deferred_members.push(p);
@@ -1990,7 +1990,7 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     // First pass: extract name + simple metadata (no expression walks yet).
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::identifier if name.is_empty() => name = p.as_str().to_string(),
+            Rule::identifier | Rule::method_ident if name.is_empty() => name = p.as_str().to_string(),
             Rule::identifier => backing_type = Some(p.as_str().to_string()),
             Rule::qualified_name => interfaces.push(p.as_str().to_string()),
             Rule::enum_case | Rule::class_constant | Rule::method_declaration | Rule::use_trait => {
@@ -2358,6 +2358,8 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
             | Rule::logic_or_expression
             | Rule::logic_and_expression
             | Rule::bit_or_expression
+            | Rule::bit_xor_expression
+            | Rule::bit_and_expression
             | Rule::equality_expression
             | Rule::comparison_expression
             | Rule::shift_expression
@@ -2652,7 +2654,14 @@ fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
     let mut inner = pair.into_inner().peekable();
     let mut left = walk_expression(inner.next().unwrap())?;
     while let Some(op_pair) = inner.next() {
-        let op_str = op_pair.as_str().to_string();
+        let op_str = match op_pair.as_rule() {
+            Rule::logic_or_op => "||".to_string(),
+            Rule::logic_and_op => "&&".to_string(),
+            Rule::bit_or_op => "|".to_string(),
+            Rule::bit_xor_op => "^".to_string(),
+            Rule::bit_and_op => "&".to_string(),
+            _ => op_pair.as_str().to_string(),
+        };
         let right_pair = match inner.next() {
             Some(p) => p,
             None => break,

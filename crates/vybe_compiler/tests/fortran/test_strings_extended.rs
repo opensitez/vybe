@@ -4,46 +4,60 @@ use super::helpers::{compile_ok, run_prints};
 
 #[test]
 fn index_found() {
-    compile_ok("program t\ncharacter(len=20) :: s = 'hello world'\nprint *, index(s, 'world')\nend program t\n");
+    let out = run_prints("program t\ncharacter(len=20) :: s = 'hello world'\nprint *, index(s, 'world')\nend program t\n");
+    assert_eq!(out, ["7"]);
 }
 
 #[test]
 fn index_not_found() {
-    compile_ok("program t\ncharacter(len=20) :: s = 'hello world'\nprint *, index(s, 'xyz')\nend program t\n");
+    let out = run_prints("program t\ncharacter(len=20) :: s = 'hello world'\nprint *, index(s, 'xyz')\nend program t\n");
+    assert_eq!(out, ["0"]);
 }
 
 #[test]
 fn index_from_back() {
-    compile_ok("program t\ncharacter(len=20) :: s = 'abcabc'\nprint *, index(s, 'bc', .true.)\nend program t\n");
+    let out = run_prints("program t\ncharacter(len=20) :: s = 'abcabc'\nprint *, index(s, 'bc', .true.)\nend program t\n");
+    assert_eq!(out, ["5"]);
+}
+
+#[test]
+fn count_occurrences_runtime() {
+    let out = run_prints("program t\nprint *, count_occurrences('the quick brown fox jumps over the lazy dog', 'the')\ncontains\npure function count_occurrences(s, sub) result(n)\ncharacter(len=*), intent(in) :: s, sub\ninteger :: n, pos, start, lsub\nn = 0\nlsub = len_trim(sub)\nif (lsub == 0) return\nstart = 1\ndo\n    pos = index(s(start:), trim(sub))\n    if (pos == 0) exit\n    n = n + 1\n    start = start + pos + lsub - 1\nend do\nend function count_occurrences\nend program t\n");
+    assert_eq!(out, ["2"]);
 }
 
 // ── SCAN — find first char in set ────────────────────────────
 
 #[test]
 fn scan_found() {
-    compile_ok("program t\ncharacter(len=10) :: s = 'hello'\nprint *, scan(s, 'aeiou')\nend program t\n");
+    let out = run_prints("program t\ncharacter(len=10) :: s = 'hello'\nprint *, scan(s, 'aeiou')\nend program t\n");
+    assert_eq!(out, ["2"]);
 }
 
 #[test]
 fn scan_not_found() {
-    compile_ok("program t\ncharacter(len=10) :: s = 'bcdfg'\nprint *, scan(s, 'aeiou')\nend program t\n");
+    let out = run_prints("program t\ncharacter(len=10) :: s = 'bcdfg'\nprint *, scan(s, 'aeiou')\nend program t\n");
+    assert_eq!(out, ["0"]);
 }
 
 #[test]
 fn scan_back() {
-    compile_ok("program t\ncharacter(len=10) :: s = 'hello'\nprint *, scan(s, 'aeiou', .true.)\nend program t\n");
+    let out = run_prints("program t\ncharacter(len=10) :: s = 'hello'\nprint *, scan(s, 'aeiou', .true.)\nend program t\n");
+    assert_eq!(out, ["5"]);
 }
 
 // ── VERIFY — find first char NOT in set ──────────────────────
 
 #[test]
 fn verify_all_in_set() {
-    compile_ok("program t\ncharacter(len=10) :: s = 'aabbcc'\nprint *, verify(s, 'abc')\nend program t\n");
+    let out = run_prints("program t\ncharacter(len=10) :: s = 'aabbcc'\nprint *, verify(s, 'abc')\nend program t\n");
+    assert_eq!(out, ["0"]);
 }
 
 #[test]
 fn verify_not_in_set() {
-    compile_ok("program t\ncharacter(len=10) :: s = 'hello'\nprint *, verify(s, 'aeiou')\nend program t\n");
+    let out = run_prints("program t\ncharacter(len=10) :: s = 'hello'\nprint *, verify(s, 'aeiou')\nend program t\n");
+    assert_eq!(out, ["1"]);
 }
 
 // ── ADJUSTR — right-adjust ────────────────────────────────────
@@ -74,6 +88,12 @@ fn char_slice_from_start() {
 #[test]
 fn char_slice_to_end() {
     compile_ok("program t\ncharacter(len=10) :: s = 'hello'\ncharacter(len=5) :: sub\nsub = s(3:)\nprint *, trim(sub)\nend program t\n");
+}
+
+#[test]
+fn char_slice_assignment_runtime() {
+    let out = run_prints("program t\ncharacter(len=5) :: s = 'abcde'\ns(2:4) = 'XYZ'\nprint *, trim(s)\nend program t\n");
+    assert_eq!(out, ["aXYZe"]);
 }
 
 // ── LEN / LEN_TRIM ───────────────────────────────────────────
@@ -110,6 +130,54 @@ fn ichar_a() {
 #[test]
 fn char_from_code() {
     compile_ok("program t\ncharacter :: c\nc = char(72)\nprint *, c\nend program t\n");
+}
+
+#[test]
+fn to_upper_and_to_lower_runtime() {
+    let out = run_prints("program t\ncharacter(len=5) :: s = 'AbCdE'\nprint *, to_upper(s)\nprint *, to_lower(s)\nend program t\n");
+    assert_eq!(out, ["ABCDE", "abcde"]);
+}
+
+#[test]
+fn local_function_string_slice_runtime() {
+    let out = run_prints("program t\nprint *, trim(str_upper('ab'))\ncontains\npure function str_upper(s) result(u)\ncharacter(len=*), intent(in) :: s\ncharacter(len=len(s)) :: u\ninteger :: i\ndo i = 1, len(s)\n    u(i:i) = s(i:i)\nend do\nend function str_upper\nend program t\n");
+    assert_eq!(out, ["ab"]);
+}
+
+#[test]
+fn shared_str_split_runtime() {
+    let out = run_prints("program t\ncharacter(len=256), allocatable :: tokens(:)\ntokens = str_split('alpha:beta:gamma', ':')\nprint *, size(tokens)\nprint *, trim(tokens(1))\nprint *, trim(tokens(3))\nend program t\n");
+    assert_eq!(out, ["3", "alpha", "gamma"]);
+}
+
+#[test]
+fn shared_str_split_direct_index_runtime() {
+    let out = run_prints("program t\nprint *, trim(str_split('alpha:beta:gamma', ':')(1))\nprint *, trim(str_split('alpha:beta:gamma', ':')(3))\nend program t\n");
+    assert_eq!(out, ["alpha", "gamma"]);
+}
+
+#[test]
+fn shared_array_join_runtime() {
+    let out = run_prints("program t\ncharacter(len=256), allocatable :: tokens(:)\ntokens = str_split('alpha:beta:gamma', ':')\nprint *, trim(array_join(tokens, ' | '))\nend program t\n");
+    assert_eq!(out, ["alpha | beta | gamma"]);
+}
+
+#[test]
+fn shared_array_join_direct_runtime() {
+    let out = run_prints("program t\nprint *, trim(array_join(str_split('alpha:beta:gamma', ':'), ' | '))\nend program t\n");
+    assert_eq!(out, ["alpha | beta | gamma"]);
+}
+
+#[test]
+fn shared_str_getcsv_runtime() {
+    let out = run_prints("program t\ncharacter(len=256), allocatable :: fields(:)\nfields = str_getcsv('\"Smith, John\",42,\"New York\",\"Engineer, Senior\",95000.50')\nprint *, size(fields)\nprint *, trim(fields(1))\nprint *, trim(fields(4))\nprint *, trim(fields(5))\nend program t\n");
+    assert_eq!(out, ["5", "Smith, John", "Engineer, Senior", "95000.50"]);
+}
+
+#[test]
+fn shared_str_getcsv_direct_runtime() {
+    let out = run_prints("program t\nprint *, size(str_getcsv('\"Smith, John\",42,\"New York\",\"Engineer, Senior\",95000.50'))\nend program t\n");
+    assert_eq!(out, ["5"]);
 }
 
 // ── Lexicographic comparison ──────────────────────────────────

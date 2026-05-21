@@ -63,3 +63,23 @@ fn print_negative() {
     let out = run_prints("program t\nprint *, -10\nend program t\n");
     assert_eq!(out, vec!["-10"]);
 }
+
+#[test]
+fn print_explicit_format_omits_descriptor_literal() {
+    let out = run_prints("program t\nprint \"(a, i0)\", \"Tree size = \", 12\nend program t\n");
+    assert_eq!(out, vec!["Tree size = 12"]);
+}
+
+#[test]
+fn write_advance_no_buffers_single_line() {
+    let out = run_prints(
+        "program t\nwrite(*, \"(a)\", advance=\"no\") \"[\"\nwrite(*, \"(i0, a)\", advance=\"no\") 3, \", \"\nwrite(*, \"(i0, a)\", advance=\"no\") 5, \"]\"\nwrite(*, *)\nend program t\n",
+    );
+    assert_eq!(out, vec!["[3, 5]"]);
+}
+
+#[test]
+fn max_inside_addition_keeps_outer_operand() {
+    let out = run_prints("program t\nprint *, 1 + max(0, 0)\nend program t\n");
+    assert_eq!(out, vec!["1"]);
+}

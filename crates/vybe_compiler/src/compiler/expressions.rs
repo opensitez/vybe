@@ -6,6 +6,71 @@
 use super::*;
 
 impl Compiler {
+    fn try_compile_fortran_array_binary_operator(
+        &mut self,
+        op: &BinOp,
+        left: &Expression,
+        right: &Expression,
+    ) -> Result<bool, String> {
+        if self.profile.name != "fortran" {
+            return Ok(false);
+        }
+        if !matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Pow) {
+            return Ok(false);
+        }
+
+        let left_is_array = self.expr_is_array_like(left);
+        let right_is_array = self.expr_is_array_like(right);
+        if !left_is_array && !right_is_array {
+            return Ok(false);
+        }
+
+        let line = self.line;
+        let left_slot = self.define_local("__fortran_array_binop_left");
+        self.compile_expr(left)?;
+        self.emit_u16(Op::LOCAL_SET, left_slot);
+        self.emit(Op::DROP);
+
+        let right_slot = self.define_local("__fortran_array_binop_right");
+        self.compile_expr(right)?;
+        self.emit_u16(Op::LOCAL_SET, right_slot);
+        self.emit(Op::DROP);
+
+        let iter_slot = if left_is_array { left_slot } else { right_slot };
+        let result_slot = self.define_local("__fortran_array_binop_result");
+        let idx_slot = self.define_local("__fortran_array_binop_idx");
+
+        common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+        self.emit_u16(Op::LOCAL_SET, result_slot);
+        self.emit(Op::DROP);
+
+        let state = common::loops::emit_for_in_start(&mut self.chunks, self.current, iter_slot, idx_slot, line);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, result_slot);
+        if left_is_array {
+            self.emit_u16(Op::LOCAL_GET, left_slot);
+            self.emit_u16(Op::LOCAL_GET, idx_slot);
+            common::collections::emit_get(&mut self.chunks, self.current, line);
+        } else {
+            self.emit_u16(Op::LOCAL_GET, left_slot);
+        }
+        if right_is_array {
+            self.emit_u16(Op::LOCAL_GET, right_slot);
+            self.emit_u16(Op::LOCAL_GET, idx_slot);
+            common::collections::emit_get(&mut self.chunks, self.current, line);
+        } else {
+            self.emit_u16(Op::LOCAL_GET, right_slot);
+        }
+        self.compile_binop(op);
+        common::collections::emit_push(&mut self.chunks, self.current, line);
+        self.emit(Op::DROP);
+
+        common::loops::emit_for_in_end(&mut self.chunks, self.current, idx_slot, state, line);
+        self.emit_u16(Op::LOCAL_GET, result_slot);
+        Ok(true)
+    }
+
     // ════════════════════════════════════════════════════════════════════════
     // Expression compilation
     // ════════════════════════════════════════════════════════════════════════
@@ -464,6 +529,17 @@ impl Compiler {
                         _ => {}
                     }
                 }
+                if let (Some(function_name), Some(result_slot)) = (self.current_func_name.as_ref(), self.current_result_slot) {
+                    let matches = if self.case_sensitive {
+                        name == function_name
+                    } else {
+                        name.eq_ignore_ascii_case(function_name)
+                    };
+                    if matches {
+                        self.emit_u16(Op::LOCAL_GET, result_slot);
+                        return Ok(());
+                    }
+                }
                 // Local variable / parameter takes priority over implicit self field
                 let is_local = self.scope().resolve(name).is_some()
                     || (!self.case_sensitive && self.scope().resolve_ci(name).is_some())
@@ -522,6 +598,19 @@ impl Compiler {
 
             // ── This / Super ────────────────────────────────────────────
             ExprKind::This => {
+                if self.is_js_profile()
+                    && self.current_class.is_some()
+                    && self.current_func_name.as_deref() != Some("<lambda>")
+                    && self
+                        .current_func_name
+                        .as_deref()
+                        .is_some_and(|name| !name.eq_ignore_ascii_case(&self.profile.constructor_name))
+                {
+                    let idx = self.str_const("__js_this");
+                    self.emit_u16(Op::GLOBAL_GET, idx);
+                    return Ok(());
+                }
+
                 let self_kw = &self.profile.self_keyword;
                 if let Some(slot) = self.scope().resolve(self_kw)
                     .or_else(|| self.scope().resolve_ci(self_kw))
@@ -535,6 +624,13 @@ impl Compiler {
                     let kw = self.profile.self_keyword.clone();
                     if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, &kw) {
                         self.emit_u8(Op::UPVALUE_GET, uv);
+                    } else if self.is_js_profile() {
+                        if let Some(uv) = self.resolve_upvalue(self.scopes.len() - 1, "__js_this") {
+                            self.emit_u8(Op::UPVALUE_GET, uv);
+                        } else {
+                            let idx = self.str_const("__js_this");
+                            self.emit_u16(Op::GLOBAL_GET, idx);
+                        }
                     } else if self.is_js_profile() {
                         let idx = self.str_const("__js_this");
                         self.emit_u16(Op::GLOBAL_GET, idx);
@@ -583,19 +679,43 @@ impl Compiler {
 
                 // Short-circuit for And/Or
                 if *op == BinOp::And {
-                    self.compile_expr(left)?;
-                    let line = self.line;
-                    let skip = common::expressions::emit_and_start(&mut self.chunks[self.current], line);
-                    self.compile_expr(right)?;
-                    common::expressions::emit_short_circuit_end(&mut self.chunks[self.current], skip);
+                    if self.is_php_profile() {
+                        self.compile_expr(left)?;
+                        self.emit_condition_truthiness_from_stack();
+                        let false_path = self.emit_jump(Op::BR_IF_FALSE);
+                        self.compile_expr(right)?;
+                        self.emit_condition_truthiness_from_stack();
+                        let done = self.emit_jump(Op::BR);
+                        self.patch_jump(false_path);
+                        self.emit(Op::FALSE);
+                        self.patch_jump(done);
+                    } else {
+                        self.compile_expr(left)?;
+                        let line = self.line;
+                        let skip = common::expressions::emit_and_start(&mut self.chunks[self.current], line);
+                        self.compile_expr(right)?;
+                        common::expressions::emit_short_circuit_end(&mut self.chunks[self.current], skip);
+                    }
                     return Ok(());
                 }
                 if *op == BinOp::Or {
-                    self.compile_expr(left)?;
-                    let line = self.line;
-                    let skip = common::expressions::emit_or_start(&mut self.chunks[self.current], line);
-                    self.compile_expr(right)?;
-                    common::expressions::emit_short_circuit_end(&mut self.chunks[self.current], skip);
+                    if self.is_php_profile() {
+                        self.compile_expr(left)?;
+                        self.emit_condition_truthiness_from_stack();
+                        let true_path = self.emit_jump(Op::BR_IF_TRUE);
+                        self.compile_expr(right)?;
+                        self.emit_condition_truthiness_from_stack();
+                        let done = self.emit_jump(Op::BR);
+                        self.patch_jump(true_path);
+                        self.emit(Op::TRUE);
+                        self.patch_jump(done);
+                    } else {
+                        self.compile_expr(left)?;
+                        let line = self.line;
+                        let skip = common::expressions::emit_or_start(&mut self.chunks[self.current], line);
+                        self.compile_expr(right)?;
+                        common::expressions::emit_short_circuit_end(&mut self.chunks[self.current], skip);
+                    }
                     return Ok(());
                 }
                 // NullCoalesce as binary op
@@ -668,6 +788,9 @@ impl Compiler {
                 if self.try_compile_dotnet_datetime_timespan_binary_operator(op, left, right)? {
                     return Ok(());
                 }
+                if self.try_compile_fortran_array_binary_operator(op, left, right)? {
+                    return Ok(());
+                }
 
                 if self.profile.name == "csharp"
                     && *op == BinOp::Div
@@ -677,6 +800,16 @@ impl Compiler {
                     self.compile_expr(left)?;
                     self.compile_expr(right)?;
                     self.compile_binop(&BinOp::IDiv);
+                    return Ok(());
+                }
+
+                if self.is_php_profile() && *op == BinOp::Concat {
+                    let line = self.line;
+                    self.compile_expr(left)?;
+                    self.emit_common("php.echo_stringify", 1, line);
+                    self.compile_expr(right)?;
+                    self.emit_common("php.echo_stringify", 1, line);
+                    self.compile_binop(op);
                     return Ok(());
                 }
 
@@ -814,7 +947,7 @@ impl Compiler {
                     {
                         self.compile_expr(callee)?;
                         for arg in args {
-                            self.compile_expr(&arg.value)?;
+                            self.compile_array_index_operand_for_owner(callee, &arg.value)?;
                             let line = self.line;
                             common::collections::emit_get(&mut self.chunks, self.current, line);
                         }
@@ -1100,17 +1233,30 @@ impl Compiler {
                         self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, val_slot);
                         self.emit(Op::REF_IS_NULL);
-                        let have_direct = self.emit_jump(Op::BR_IF_FALSE);
+                        let val_not_null = self.emit_jump(Op::BR_IF_FALSE);
                         let lookup = self.str_const("__vybe_js_get_method");
+                        let end_lookup = self.emit_jump(Op::BR);
+                        self.patch_jump(val_not_null);
+                        self.emit_u16(Op::LOCAL_GET, val_slot);
+                        self.emit(Op::REF_IS_UNDEFINED);
+                        let have_direct = self.emit_jump(Op::BR_IF_FALSE);
                         self.emit_u16(Op::GLOBAL_GET, lookup);
 
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
                         self.emit_const(Value::String(Arc::from(field_name.as_str())));
                         self.emit_u8(Op::CALL_REF, 2);
-                        let end_lookup = self.emit_jump(Op::BR);
+                        let end_lookup_undefined = self.emit_jump(Op::BR);
+                        self.patch_jump(end_lookup);
+                        self.emit_u16(Op::GLOBAL_GET, lookup);
+
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit_const(Value::String(Arc::from(field_name.as_str())));
+                        self.emit_u8(Op::CALL_REF, 2);
+                        let end_lookup_null = self.emit_jump(Op::BR);
                         self.patch_jump(have_direct);
                         self.emit_u16(Op::LOCAL_GET, val_slot);
-                        self.patch_jump(end_lookup);
+                        self.patch_jump(end_lookup_null);
+                        self.patch_jump(end_lookup_undefined);
                         self.patch_jump(end);
                     } else {
                         self.compile_expr(object)?;
@@ -1153,16 +1299,28 @@ impl Compiler {
                         self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, val_slot);
                         self.emit(Op::REF_IS_NULL);
-                        let have_direct = self.emit_jump(Op::BR_IF_FALSE);
+                        let val_not_null = self.emit_jump(Op::BR_IF_FALSE);
                         let lookup = self.str_const("__vybe_js_get_method");
+                        let end = self.emit_jump(Op::BR);
+                        self.patch_jump(val_not_null);
+                        self.emit_u16(Op::LOCAL_GET, val_slot);
+                        self.emit(Op::REF_IS_UNDEFINED);
+                        let have_direct = self.emit_jump(Op::BR_IF_FALSE);
                         self.emit_u16(Op::GLOBAL_GET, lookup);
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
                         self.emit_const(Value::String(Arc::from(field_name.as_str())));
                         self.emit_u8(Op::CALL_REF, 2);
-                        let end = self.emit_jump(Op::BR);
+                        let end_undefined = self.emit_jump(Op::BR);
+                        self.patch_jump(end);
+                        self.emit_u16(Op::GLOBAL_GET, lookup);
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit_const(Value::String(Arc::from(field_name.as_str())));
+                        self.emit_u8(Op::CALL_REF, 2);
+                        let end_null = self.emit_jump(Op::BR);
                         self.patch_jump(have_direct);
                         self.emit_u16(Op::LOCAL_GET, val_slot);
-                        self.patch_jump(end);
+                        self.patch_jump(end_null);
+                        self.patch_jump(end_undefined);
                         // Restore the caller's __js_this — value already
                         // on stack as the access result.
                         let result_slot = self.define_local("__js_member_result");
@@ -1177,6 +1335,52 @@ impl Compiler {
                     ExprKind::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
                     _ => self.infer_expr_type_hint(object),
                 };
+
+                if self.profile.name == "pascal" && !*null_safe {
+                    if let Some(class_name) = receiver_type_hint
+                        .as_deref()
+                        .and_then(|type_hint| self.resolve_pending_class_name_for_type_hint(type_hint))
+                    {
+                        let member_name = self.canon(field);
+                        let zero_arg_instance_method = self
+                            .pending_classes
+                            .get(&class_name)
+                            .is_some_and(|pending| {
+                                !pending.fields.iter().any(|name| name == &member_name)
+                                    && pending
+                                        .instance_method_overloads
+                                        .get(&member_name)
+                                        .is_some_and(|overloads| {
+                                            overloads.iter().any(|overload| {
+                                                overload.signature.min_arity == 0
+                                                    && !overload.signature.has_rest
+                                            })
+                                        })
+                            });
+                        if zero_arg_instance_method {
+                            self.compile_expr(object)?;
+                            let obj_slot = self
+                                .scope()
+                                .resolve("__pascal_member_obj")
+                                .unwrap_or_else(|| self.define_local("__pascal_member_obj"));
+                            self.emit_u16(Op::LOCAL_SET, obj_slot);
+                            self.emit(Op::DROP);
+                            let prop = self.str_const(&member_name);
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            self.emit_u16(Op::STRUCT_GET, prop);
+                            let fn_slot = self
+                                .scope()
+                                .resolve("__pascal_member_fn")
+                                .unwrap_or_else(|| self.define_local("__pascal_member_fn"));
+                            self.emit_u16(Op::LOCAL_SET, fn_slot);
+                            self.emit(Op::DROP);
+                            self.emit_u16(Op::LOCAL_GET, fn_slot);
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            self.emit_u8(Op::CALL_REF, 1);
+                            return Ok(());
+                        }
+                    }
+                }
 
                 let receiver_is_nullable = receiver_type_hint
                     .as_deref()
@@ -1598,25 +1802,47 @@ impl Compiler {
                     self.compile_expr(object)?;
                     let line = self.line;
                     if step.is_none() {
-                        let obj_slot = self.define_local("__py_index_slice_obj");
-                        self.emit_u16(Op::LOCAL_SET, obj_slot);
-                        self.emit(Op::DROP);
+                        if self.profile.name == "fortran" {
+                            let obj_slot = self.define_local("__fortran_index_slice_obj");
+                            self.emit_u16(Op::LOCAL_SET, obj_slot);
+                            self.emit(Op::DROP);
 
-                        self.emit_u16(Op::LOCAL_GET, obj_slot);
-                        if let Some(l) = lower {
-                            self.compile_expr(l)?;
-                        } else {
-                            self.emit(Op::I32_CONST_0);
-                        }
-                        if let Some(u) = upper {
-                            self.compile_expr(u)?;
-                        } else {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
-                            common::collections::emit_len(&mut self.chunks, self.current, line);
+                            if let Some(l) = lower {
+                                self.compile_expr(l)?;
+                            } else {
+                                self.emit(Op::I32_CONST_0);
+                            }
+                            if let Some(u) = upper {
+                                self.compile_expr(u)?;
+                            } else {
+                                self.emit_u16(Op::LOCAL_GET, obj_slot);
+                                common::collections::emit_len(&mut self.chunks, self.current, line);
+                            }
+                            common::collections::emit_stdlib_call(
+                                &mut self.chunks, self.current, "__vybe_slice", 3, line,
+                            );
+                        } else {
+                            let obj_slot = self.define_local("__py_index_slice_obj");
+                            self.emit_u16(Op::LOCAL_SET, obj_slot);
+                            self.emit(Op::DROP);
+
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            if let Some(l) = lower {
+                                self.compile_expr(l)?;
+                            } else {
+                                self.emit(Op::I32_CONST_0);
+                            }
+                            if let Some(u) = upper {
+                                self.compile_expr(u)?;
+                            } else {
+                                self.emit_u16(Op::LOCAL_GET, obj_slot);
+                                common::collections::emit_len(&mut self.chunks, self.current, line);
+                            }
+                            common::collections::emit_stdlib_call(
+                                &mut self.chunks, self.current, "__vybe_slice", 3, line,
+                            );
                         }
-                        common::collections::emit_stdlib_call(
-                            &mut self.chunks, self.current, "__vybe_slice", 3, line,
-                        );
                     } else {
                         let step_const = step.as_ref().and_then(|expr| match &expr.kind {
                             ExprKind::Lit(Literal::Int(n)) => Some(*n),
@@ -1800,7 +2026,7 @@ impl Compiler {
                 } else {
                     self.compile_expr(object)?;
                     self.emit_autoderef_pointer_cell();
-                    self.compile_expr(index)?;
+                    self.compile_array_index_operand_for_owner(object, index)?;
                     if self.profile.negative_index_wraps {
                         self.emit_negative_index_wrap();
                     }
@@ -2190,7 +2416,15 @@ impl Compiler {
 
             // ── Lambda ──────────────────────────────────────────────────
             ExprKind::Lambda { params, body, captures, .. } => {
-                self.compile_lambda(params, body, captures)?;
+                if self.is_js_profile() {
+                    let mut lexical_captures = captures.clone();
+                    if !lexical_captures.iter().any(|capture| capture == "__js_this" || capture == "&__js_this") {
+                        lexical_captures.push("__js_this".to_string());
+                    }
+                    self.compile_lambda(params, body, &lexical_captures)?;
+                } else {
+                    self.compile_lambda(params, body, captures)?;
+                }
             }
 
             // ── Array literal ───────────────────────────────────────────
@@ -3274,9 +3508,7 @@ impl Compiler {
                                 }
                                 return Ok(());
                             }
-                            let pname = self.canon(&parent_name);
-                            let pidx = self.str_const(&pname);
-                            self.emit_u16(Op::GLOBAL_GET, pidx);
+                            self.emit_var_get(&parent_name);
                             for a in args { self.compile_expr(&a.value)?; }
                             self.emit_u8(Op::CALL_REF, args.len() as u8);
                             if let Some(slot) = self.scope().resolve(&self_kw).or_else(|| self.scope().resolve_ci(&self_kw)) {
@@ -3470,11 +3702,19 @@ impl Compiler {
 
             // ── ClassExpr (JS) ──────────────────────────────────────────
             ExprKind::ClassExpr { name, parent, members } => {
-                let class_name = name.clone().unwrap_or_else(|| "__anonymous_class".to_string());
-                let parent_name: Option<String> = if let Some(p) = parent {
-                    if let ExprKind::Ident(n) = &p.kind { Some(n.clone()) } else { None }
-                } else { None };
+                let class_name = name.clone().unwrap_or_else(|| format!("__anonymous_class_{}", self.chunks.len()));
                 let class_name = self.canon(&class_name);
+                let parent_name: Option<String> = if let Some(p) = parent {
+                    let synth_parent = self.canon(&format!("__extends_{}_{}", class_name, self.chunks.len()));
+                    self.defined_globals.insert(synth_parent.clone());
+                    self.compile_expr(p)?;
+                    let parent_idx = self.global_name_const_idx(&synth_parent);
+                    self.emit_u16(Op::GLOBAL_SET, parent_idx);
+                    self.emit(Op::DROP);
+                    Some(synth_parent)
+                } else {
+                    None
+                };
                 self.defined_globals.insert(class_name.clone());
                 let parents: Vec<String> = parent_name.into_iter().collect();
                 crate::common::classes::emit::emit_class_from_ast(

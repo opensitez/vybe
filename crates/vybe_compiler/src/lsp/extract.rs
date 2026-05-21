@@ -197,10 +197,12 @@ fn extract_class_member(member: &ClassMember, out: &mut Vec<Symbol>) {
 
 fn extract_interface_member(member: &InterfaceMember, out: &mut Vec<Symbol>) {
     match member {
-        InterfaceMember::Method { name, params, return_type, .. } => {
+        InterfaceMember::Method { name, params, return_type, signature_source, .. } => {
             let param_str = format_params(params);
             let detail = if let Some(rt) = return_type {
                 format!("({}): {}", param_str, rt)
+            } else if let Some(source) = signature_source {
+                format!("({}) -> {}", param_str, source)
             } else {
                 format!("({})", param_str)
             };

@@ -5,8 +5,20 @@
 //! This shim preserves that shape so the shared class compiler can
 //! consume Fortran derived types.
 
-use crate::ast::{ClassMember, ClassModifiers, Span, StmtKind};
+use crate::ast::{Argument, ClassMember, ClassModifiers, ExprKind, Expression, Literal, Span, StmtKind};
 use crate::common::classes::{from_method_stmt, Access, BaseCall, NormalClass, NormalConstructor, NormalField};
+
+fn synthesize_fixed_array_init(bounds: &[Expression]) -> Option<Expression> {
+    let size = bounds.first()?.clone();
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("Array")),
+        args: vec![
+            Argument::positional(size),
+            Argument::positional(Expression::new(ExprKind::Lit(Literal::Int(0)))),
+        ],
+        optional: false,
+    }))
+}
 
 pub fn normalize_class(
     span: Span,
@@ -25,12 +37,27 @@ pub fn normalize_class(
 
     for member in members {
         match member {
-            ClassMember::Field { name: field_name, type_hint, init, modifiers: field_modifiers, .. } => {
+            ClassMember::Field {
+                name: field_name,
+                type_hint,
+                init,
+                modifiers: field_modifiers,
+                array_bounds,
+                ..
+            } => {
+                let normalized_type_hint = type_hint.as_ref().map(|hint| {
+                    if array_bounds.is_some() && !hint.trim_end().ends_with("()") {
+                        format!("{}()", hint.trim())
+                    } else {
+                        hint.clone()
+                    }
+                });
                 let field = NormalField {
                     span: span.clone(),
                     name: field_name.clone(),
-                    type_hint: type_hint.clone(),
-                    init: init.clone(),
+                    type_hint: normalized_type_hint,
+                    init: init.clone().or_else(|| array_bounds.as_deref().and_then(synthesize_fixed_array_init)),
+                    array_bounds: array_bounds.clone(),
                     access: Access::Public,
                     readonly: field_modifiers.is_readonly,
                 };
@@ -84,9 +111,9 @@ pub fn normalize_class(
         is_abstract: modifiers.is_abstract,
         is_sealed: modifiers.is_sealed,
         is_partial: modifiers.is_partial,
-        is_value_type: false,
-        explicit_self_param: false,
-        implicit_self_fields: true,
+        is_value_type: true,
+        explicit_self_param: true,
+        implicit_self_fields: false,
         instance_fields,
         static_fields,
         instance_methods,

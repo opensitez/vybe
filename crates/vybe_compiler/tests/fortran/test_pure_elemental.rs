@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── PURE functions ────────────────────────────────────────────
 
@@ -276,6 +276,26 @@ contains
     end subroutine maybe
 end program test
 "#);
+}
+
+#[test]
+fn optional_present_check_runtime() {
+    let out = run_prints(r#"
+program test
+    call maybe(3)
+    call maybe(3, 4)
+contains
+    subroutine maybe(n, extra)
+        integer, intent(in) :: n
+        integer, intent(in), optional :: extra
+        integer :: total
+        total = n
+        if (present(extra)) total = total + extra
+        print *, total
+    end subroutine maybe
+end program test
+"#);
+    assert_eq!(out, vec!["3", "7"]);
 }
 
 // ── INTENT (more cases) ───────────────────────────────────────

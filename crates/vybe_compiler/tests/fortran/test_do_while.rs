@@ -39,6 +39,16 @@ end program test
 "#);
 }
 
+#[test] fn do_while_inline_body() {
+    compile_ok(r#"
+program test
+    integer :: i = 0
+    do while (i < 3); i = i + 1; end do
+    print *, i
+end program test
+"#);
+}
+
 #[test] fn do_while_condition_false_initially() {
     compile_ok(r#"
 program test

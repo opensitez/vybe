@@ -77,6 +77,7 @@ fn normalize_from_ast_legacy(
                 type_hint,
                 init,
                 modifiers,
+                array_bounds,
                 ..
             } => {
                 let field = NormalField {
@@ -84,6 +85,7 @@ fn normalize_from_ast_legacy(
                     name: name.clone(),
                     type_hint: type_hint.clone(),
                     init: init.clone(),
+                    array_bounds: array_bounds.clone(),
                     access: access_from_visibility(modifiers.visibility),
                     readonly: modifiers.is_readonly,
                 };

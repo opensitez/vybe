@@ -5752,6 +5752,7 @@ fn walk_interface_member(pair: Pair<Rule>) -> Result<InterfaceMember, String> {
             params,
             return_type: type_hint,
             is_sub,
+            signature_source: None,
         })
     } else {
         Ok(InterfaceMember::Property {

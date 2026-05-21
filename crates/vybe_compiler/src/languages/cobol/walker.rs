@@ -10,8 +10,8 @@
 //! - **PERFORM UNTIL** means "loop while condition is FALSE". The walker
 //!   negates the condition so the downstream compiler sees a regular While.
 //!
-//! - **1-indexed arrays**: COBOL arrays start at 1. The walker subtracts 1
-//!   from all subscript indices.
+//! - **1-indexed arrays**: COBOL arrays start at 1. The walker routes
+//!   subscripts through the shared array normalization helper.
 //!
 //! - **Paragraphs → FunctionDecl**: Each paragraph in the procedure
 //!   division becomes a zero-parameter FunctionDecl.
@@ -38,10 +38,13 @@ use std::collections::HashMap;
 use crate::ast::*;
 use super::{CobolParser, Rule};
 
+const COBOL_ARRAY_INDEXING: ArrayIndexSemantics = ArrayIndexSemantics::ONE_BASED;
+
 #[derive(Clone)]
 struct CobolRecordField {
     name: String,
     numeric: bool,
+    decimal_places: usize,
 }
 
 #[derive(Clone)]
@@ -99,6 +102,10 @@ impl CobolWalkerContext {
     fn bind_record_name(&mut self, file_name: &str, record_name: &str, record_fields: Vec<CobolRecordField>) {
         let file_key = cobol_name_key(file_name);
         let record_key = cobol_name_key(record_name);
+        let record_fields = self.merge_record_fields(
+            self.record_fields.get(&record_key).map(Vec::as_slice).unwrap_or(&[]),
+            &record_fields,
+        );
         self.record_to_file.insert(record_key, file_key.clone());
         self.record_fields.insert(cobol_name_key(record_name), record_fields.clone());
         if let Some(binding) = self.file_bindings.get_mut(&file_key) {
@@ -108,13 +115,46 @@ impl CobolWalkerContext {
     }
 
     fn bind_record_fields_for_record(&mut self, record_name: &str, record_fields: Vec<CobolRecordField>) {
-        self.record_fields.insert(cobol_name_key(record_name), record_fields.clone());
-        let Some(file_key) = self.record_to_file.get(&cobol_name_key(record_name)).cloned() else {
+        let record_key = cobol_name_key(record_name);
+        let record_fields = self.merge_record_fields(
+            self.record_fields.get(&record_key).map(Vec::as_slice).unwrap_or(&[]),
+            &record_fields,
+        );
+        self.record_fields.insert(record_key.clone(), record_fields.clone());
+        let Some(file_key) = self.record_to_file.get(&record_key).cloned() else {
             return;
         };
         if let Some(binding) = self.file_bindings.get_mut(&file_key) {
             binding.record_fields = record_fields;
         }
+    }
+
+    fn merge_record_fields(
+        &self,
+        existing: &[CobolRecordField],
+        incoming: &[CobolRecordField],
+    ) -> Vec<CobolRecordField> {
+        if existing.is_empty() {
+            return incoming.to_vec();
+        }
+
+        incoming
+            .iter()
+            .map(|field| {
+                let Some(previous) = existing
+                    .iter()
+                    .find(|existing_field| existing_field.name.eq_ignore_ascii_case(&field.name))
+                else {
+                    return field.clone();
+                };
+
+                CobolRecordField {
+                    name: field.name.clone(),
+                    numeric: field.numeric || previous.numeric,
+                    decimal_places: field.decimal_places.max(previous.decimal_places),
+                }
+            })
+            .collect()
     }
 
     fn bind_group_layout_for_name(&mut self, group_name: &str, layout: Vec<Expression>) {
@@ -645,6 +685,7 @@ fn collect_cobol_record_fields(pair: Pair<Rule>, fields: &mut Vec<CobolRecordFie
                     numeric: cobol_type_hint(pic_str.as_deref(), usage_str.as_deref())
                         .as_deref()
                         .is_some_and(|hint| hint != "String" && hint != "Boolean"),
+                    decimal_places: pic_fractional_digits(pic_str.as_deref().unwrap_or_default()),
                 });
             }
 
@@ -1450,6 +1491,7 @@ fn collect_object_record_fields(props: &[ObjectProperty], fields: &mut Vec<Cobol
             fields.push(CobolRecordField {
                 name: name.clone(),
                 numeric: !matches!(value.kind, ExprKind::Lit(Literal::Str(_))),
+                decimal_places: 0,
             });
         }
     }
@@ -1508,6 +1550,10 @@ fn pic_integer_digits(pic: &str) -> usize {
     count_pic_markers_before_decimal(pic, &['9', 'Z', '*'])
 }
 
+fn pic_fractional_digits(pic: &str) -> usize {
+    count_pic_markers_after_decimal(pic, &['9', 'Z', '*'])
+}
+
 fn count_pic_markers_before_decimal(pic: &str, markers: &[char]) -> usize {
     let upper = pic.trim().to_ascii_uppercase();
     let chars: Vec<char> = upper.chars().collect();
@@ -1519,6 +1565,40 @@ fn count_pic_markers_before_decimal(pic: &str, markers: &[char]) -> usize {
         if ch == 'V' || ch == '.' {
             break;
         }
+        if markers.contains(&ch) {
+            let mut repeat = 1usize;
+            if index + 1 < chars.len() && chars[index + 1] == '(' {
+                let mut cursor = index + 2;
+                let mut digits = String::new();
+                while cursor < chars.len() && chars[cursor] != ')' {
+                    digits.push(chars[cursor]);
+                    cursor += 1;
+                }
+                if cursor < chars.len() && chars[cursor] == ')' {
+                    repeat = digits.parse::<usize>().unwrap_or(1);
+                    index = cursor;
+                }
+            }
+            count += repeat;
+        }
+        index += 1;
+    }
+
+    count
+}
+
+fn count_pic_markers_after_decimal(pic: &str, markers: &[char]) -> usize {
+    let upper = pic.trim().to_ascii_uppercase();
+    let chars: Vec<char> = upper.chars().collect();
+    let Some(mut index) = chars.iter().position(|ch| *ch == 'V' || *ch == '.') else {
+        return 0;
+    };
+
+    index += 1;
+    let mut count = 0;
+
+    while index < chars.len() {
+        let ch = chars[index];
         if markers.contains(&ch) {
             let mut repeat = 1usize;
             if index + 1 < chars.len() && chars[index + 1] == '(' {
@@ -2906,8 +2986,8 @@ fn walk_move_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind
                 if child.as_rule() == Rule::expression {
                     src_expr = Some(walk_expression(child)?);
                 }
-            } else if let Some(target_name) = extract_data_target_name(child.clone()) {
-                targets.push(Expression::ident(&target_name));
+            } else if let Some(target_expr) = walk_assignment_target_expr(child.clone())? {
+                targets.push(target_expr);
             }
         }
 
@@ -2923,6 +3003,24 @@ fn extract_data_target_name(pair: Pair<Rule>) -> Option<String> {
             pair.into_inner().find_map(extract_data_target_name)
         }
         _ => None,
+    }
+}
+
+fn walk_assignment_target_expr(pair: Pair<Rule>) -> Result<Option<Expression>, String> {
+    match pair.as_rule() {
+        Rule::data_target => Ok(Some(walk_data_target_expr(pair)?)),
+        Rule::move_target | Rule::giving_clause | Rule::remainder_clause => {
+            for child in pair.into_inner() {
+                if let Some(target) = walk_assignment_target_expr(child)? {
+                    return Ok(Some(target));
+                }
+            }
+            Ok(None)
+        }
+        Rule::ident_name | Rule::ident_or_keyword | Rule::kw_sd => {
+            Ok(Some(Expression::ident(pair.as_str())))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -4711,6 +4809,12 @@ fn walk_rewrite_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtK
                 .iter()
                 .map(|field| Expression::ident(&field.name))
                 .collect(),
+            field_formats: record_fields
+                .iter()
+                .map(|field| field.numeric.then_some(RecordFieldFormat {
+                    decimal_places: field.decimal_places,
+                }))
+                .collect(),
         })
     } else {
         return walk_write_stmt(fallback_pair, ctx);
@@ -5376,6 +5480,7 @@ fn walk_method_signature(pair: Pair<Rule>) -> Result<InterfaceMember, String> {
         params,
         return_type: return_type.clone(),
         is_sub: return_type.is_none(),
+        signature_source: None,
     })
 }
 
@@ -5999,7 +6104,7 @@ fn apply_cobol_subscript_or_refmod(mut expr: Expression, sub_pair: Pair<Rule>) -
             Expression::int(0)
         };
 
-        let adjusted_start = binary(BinOp::Sub, start_expr, Expression::int(1));
+        let adjusted_start = normalize_array_index_operand(start_expr, COBOL_ARRAY_INDEXING);
 
         return Ok(Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__refmod")),
@@ -6014,7 +6119,7 @@ fn apply_cobol_subscript_or_refmod(mut expr: Expression, sub_pair: Pair<Rule>) -
 
     if !expr_children.is_empty() {
         let index_expr = walk_expression(expr_children[0].clone())?;
-        let adjusted_index = binary(BinOp::Sub, index_expr, Expression::int(1));
+        let adjusted_index = normalize_array_index_operand(index_expr, COBOL_ARRAY_INDEXING);
         expr = Expression::new(ExprKind::Index {
             object: Box::new(expr),
             index: Box::new(adjusted_index),
@@ -6023,7 +6128,7 @@ fn apply_cobol_subscript_or_refmod(mut expr: Expression, sub_pair: Pair<Rule>) -
 
         for extra in expr_children.iter().skip(1) {
             let extra_idx = walk_expression((*extra).clone())?;
-            let adjusted = binary(BinOp::Sub, extra_idx, Expression::int(1));
+            let adjusted = normalize_array_index_operand(extra_idx, COBOL_ARRAY_INDEXING);
             expr = Expression::new(ExprKind::Index {
                 object: Box::new(expr),
                 index: Box::new(adjusted),

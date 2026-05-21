@@ -1,4 +1,5 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
+use vybe_compiler::ast::{ClassMember, StmtKind, Visibility};
 
 // ── Abstract types and deferred procedures ────────────────────
 
@@ -21,6 +22,86 @@ abstract interface
     end function area_iface
 end interface
 "#);
+}
+
+#[test]
+fn abstract_type_attributes_are_preserved_in_ast() {
+    let module = vybe_compiler::languages::fortran::parse(r#"
+module shapes
+    implicit none
+
+    type :: Base
+    end type Base
+
+    type, abstract, extends(Base), private :: Shape
+    contains
+        procedure(area_iface), deferred, private, non_overridable :: area
+    end type Shape
+
+    abstract interface
+        function area_iface(self) result(a)
+            import Shape
+            class(Shape), intent(in) :: self
+            real :: a
+        end function area_iface
+    end interface
+end module shapes
+"#).expect("parse failed");
+
+    let (parents, modifiers, members) = module
+        .body
+        .iter()
+        .find_map(|statement| match &statement.kind {
+            StmtKind::ModuleDecl { members, .. } => members.iter().find_map(|member| match member {
+                ClassMember::NestedType(stmt) => match &stmt.kind {
+                    StmtKind::ClassDecl {
+                        name,
+                        parents,
+                        modifiers,
+                        members,
+                        ..
+                    } if name.eq_ignore_ascii_case("Shape") => Some((parents, modifiers, members)),
+                    _ => None,
+                },
+                _ => None,
+            }),
+            _ => None,
+        })
+        .expect("missing Shape declaration");
+
+    assert_eq!(parents, &["Base".to_string()]);
+    assert_eq!(modifiers.visibility, Visibility::Private);
+    assert!(modifiers.is_abstract);
+
+    let method_names: Vec<&str> = members
+        .iter()
+        .filter_map(|member| match member {
+            ClassMember::Method(stmt) => match &stmt.kind {
+                StmtKind::FunctionDecl { name, .. } => Some(name.as_str()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert!(method_names.contains(&"area"));
+    assert!(!method_names.contains(&"area_iface"));
+
+    let area_modifiers = members
+        .iter()
+        .find_map(|member| match member {
+            ClassMember::Method(stmt) => match &stmt.kind {
+                StmtKind::FunctionDecl { name, modifiers, .. } if name.eq_ignore_ascii_case("area") => {
+                    Some(modifiers)
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("missing area binding");
+
+    assert_eq!(area_modifiers.visibility, Visibility::Private);
+    assert!(area_modifiers.is_abstract);
+    assert!(area_modifiers.is_not_overridable);
 }
 
 #[test] fn abstract_type_extended() {
@@ -61,6 +142,52 @@ program test
     print *, c%area()
 end program test
 "#);
+}
+
+#[test] fn type_bound_procedure_allows_keyword_binding_name() {
+    let out = run_prints(r#"
+program test
+    type :: stats_result
+        integer :: n = 12
+    contains
+        procedure :: print => print_stats
+    end type stats_result
+
+    type(stats_result) :: stats
+    call stats%print()
+contains
+    subroutine print_stats(self)
+        class(stats_result), intent(in) :: self
+        print *, "n =", self%n
+    end subroutine print_stats
+end program test
+"#);
+    assert_eq!(out, ["n = 12"]);
+}
+
+#[test]
+fn type_bound_generic_binding_alias_runs() {
+    let out = run_prints(r#"
+program test
+    type :: Counter
+        integer :: n = 4
+    contains
+        procedure :: doubled_impl
+        generic :: doubled => doubled_impl
+    end type Counter
+
+    type(Counter) :: value
+    print *, value%doubled()
+contains
+    integer function doubled_impl(self) result(v)
+        class(Counter), intent(in) :: self
+        integer :: v
+        v = self%n * 2
+    end function doubled_impl
+end program test
+"#);
+
+    assert_eq!(out, ["8"]);
 }
 
 #[test] fn deferred_binding() {

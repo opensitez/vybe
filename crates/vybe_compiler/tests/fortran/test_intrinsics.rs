@@ -46,6 +46,39 @@ end program test
 }
 
 #[test]
+fn sum_array_runtime() {
+    let out = run_prints(r#"
+program test
+    integer :: a(4) = [1, 2, 3, 4]
+    print *, sum(a)
+end program test
+"#);
+    assert_eq!(out, vec!["10"]);
+}
+
+#[test]
+fn minval_maxval_array_runtime() {
+    let out = run_prints(r#"
+program test
+    integer :: a(4) = [7, 3, 9, 4]
+    print *, minval(a)
+    print *, maxval(a)
+end program test
+"#);
+    assert_eq!(out, vec!["3", "9"]);
+}
+
+#[test]
+fn nint_runtime() {
+    let out = run_prints(r#"
+program test
+    print *, nint(2.6)
+end program test
+"#);
+    assert_eq!(out, vec!["3"]);
+}
+
+#[test]
 fn trig_functions() {
     compile_ok(r#"
 program test

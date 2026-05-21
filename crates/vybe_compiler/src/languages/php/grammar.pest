@@ -375,7 +375,7 @@ type_atom = {
 // ── Class declarations ───────────────────────────────────────────────────────
 
 class_declaration = {
-    attribute_group* ~ class_modifier* ~ kw_class ~ identifier
+    attribute_group* ~ class_modifier* ~ kw_class ~ method_ident
     ~ (kw_extends ~ qualified_name)?
     ~ (kw_implements ~ qualified_name ~ ("," ~ qualified_name)*)?
     ~ "{" ~ class_member* ~ "}"
@@ -384,13 +384,13 @@ class_declaration = {
 class_modifier = { kw_abstract | kw_final | kw_readonly }
 
 interface_declaration = {
-    attribute_group* ~ kw_interface ~ identifier
+    attribute_group* ~ kw_interface ~ method_ident
     ~ (kw_extends ~ qualified_name ~ ("," ~ qualified_name)*)?
     ~ "{" ~ class_member* ~ "}"
 }
 
 trait_declaration = {
-    attribute_group* ~ kw_trait ~ identifier
+    attribute_group* ~ kw_trait ~ method_ident
     ~ "{" ~ class_member* ~ "}"
 }
 
@@ -439,7 +439,11 @@ class_constant = {
 }
 
 property_declaration = {
-    attribute_group* ~ (asymmetric_set_modifier | member_modifier)* ~ type_annotation? ~ simple_variable ~ ("=" ~ expression)? ~ (property_hook_block | ";")
+    attribute_group* ~ (asymmetric_set_modifier | member_modifier)* ~ type_annotation?
+    ~ (
+        simple_variable ~ ("=" ~ expression)? ~ ("," ~ simple_variable ~ ("=" ~ expression)?)* ~ ";"
+        | simple_variable ~ property_hook_block
+    )
 }
 
 asymmetric_set_modifier = {
@@ -476,7 +480,7 @@ member_modifier = {
 // ── Enum (PHP 8.1+) ──────────────────────────────────────────────────────────
 
 enum_declaration = {
-    attribute_group* ~ kw_enum ~ identifier ~ (":" ~ identifier)?
+    attribute_group* ~ kw_enum ~ method_ident ~ (":" ~ identifier)?
     ~ (kw_implements ~ qualified_name ~ ("," ~ qualified_name)*)?
     ~ "{" ~ enum_member* ~ "}"
 }
@@ -649,15 +653,25 @@ logic_and_expression = {
 
 logic_and_op = { "&&" }
 
-// Bitwise OR / XOR / AND collapsed to one level (like JS)
+// Keep PHP bitwise operators separate from logical `&&` / `||` so
+// single-char `&` and `|` are tokenized distinctly.
 bit_or_expression = {
-    equality_expression ~ (bitwise_op ~ equality_expression)*
+    bit_xor_expression ~ (bit_or_op ~ bit_xor_expression)*
 }
 
-bitwise_op = { "|" | "^" | bit_and_op }
-// `&` would clash with reference-by-`&` in arg lists if used loose;
-// pest disambiguates by context here.
-bit_and_op = { "&" }
+bit_or_op = { "|" ~ !"|" }
+
+bit_xor_expression = {
+    bit_and_expression ~ (bit_xor_op ~ bit_and_expression)*
+}
+
+bit_xor_op = { "^" }
+
+bit_and_expression = {
+    equality_expression ~ (bit_and_op ~ equality_expression)*
+}
+
+bit_and_op = { "&" ~ !"&" }
 
 equality_expression = {
     comparison_expression ~ (eq_op ~ comparison_expression)*
@@ -787,7 +801,7 @@ primary_expression = {
     | kw_self
     | kw_parent
     | kw_static
-    | method_ident
+    | identifier
 }
 
 // PHP 8.0: throw is now an expression as well as a statement.
@@ -804,7 +818,7 @@ literal = {
 
 new_expression = {
     kw_new ~ (anonymous_class | kw_static | kw_self | kw_parent
-              | qualified_name | variable | "(" ~ expression ~ ")")
+              | qualified_name | method_ident | variable | "(" ~ expression ~ ")")
         ~ ("(" ~ arg_list? ~ ")")?
 }
 

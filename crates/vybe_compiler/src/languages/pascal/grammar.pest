@@ -172,8 +172,9 @@ interface_procedure = { ^"procedure" ~ method_sig_body }
 interface_function = { ^"function" ~ method_sig_body }
 interface_property_decl = { ^"property" ~ property_def }
 
-// Array type: `array[lo..hi] of Type` or `array of Type`
-array_type = { ^"array" ~ ("[" ~ expression ~ ".." ~ expression ~ "]")? ~ ^"of" ~ type_ref }
+// Array type: `array[lo..hi] of Type`, `array[lo..hi, lo2..hi2] of Type`, or `array of Type`
+array_type = { ^"array" ~ ("[" ~ array_dimension ~ ("," ~ array_dimension)* ~ "]")? ~ ^"of" ~ type_ref }
+array_dimension = { expression ~ ".." ~ expression }
 
 // Pointer type: `^TypeName`
 pointer_type = { "^" ~ type_ref }
@@ -309,7 +310,7 @@ procedural_type = {
 
 // Inline array of: `array[...] of Type` or `array of Type`
 array_type_ref = {
-    ^"array" ~ ("[" ~ (!"}" ~ !"]" ~ ANY)* ~ "]")? ~ ^"of" ~ type_ref
+    ^"array" ~ ("[" ~ array_dimension ~ ("," ~ array_dimension)* ~ "]")? ~ ^"of" ~ type_ref
 }
 
 set_type_ref = { ^"set" ~ ^"of" ~ type_ref }
@@ -538,12 +539,14 @@ postfix = { primary ~ postfix_op* }
 postfix_op = {
     "." ~ identifier ~ generic_args? ~ arg_list   // method call: obj.Method<T>(args)
     | "." ~ identifier                  // field access: obj.Field
-    | "[" ~ expression ~ "]"            // index: arr[i]
+    | "[" ~ array_index_list ~ "]"      // index: arr[i] or arr[i, j]
     | "^"                               // dereference: ptr^
     | generic_args                       // generic instantiation: TBox<T>.Create(...)
     | generic_args ~ arg_list           // generic call: F<T>(args)
     | arg_list                          // function call: F(args)
 }
+
+array_index_list = { expression ~ ("," ~ expression)* }
 
 // Generic-instantiation argument list at the call site.
 // Captured-and-discarded by the walker — type erasure.

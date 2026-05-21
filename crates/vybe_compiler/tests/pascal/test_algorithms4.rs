@@ -221,6 +221,37 @@ begin
 end."#), &["2 3 5 7 11 13 17 19 "]);
 }
 
+#[test] fn fixed_array_nonzero_lower_bound_keeps_declared_length() {
+    assert_eq!(run_pascal(r#"program T;
+var arr: array[2..4] of Integer;
+    i: Integer;
+begin
+  for i := 2 to 4 do
+    arr[i] := i * 10;
+  WriteLn(Length(arr));
+  WriteLn(arr[2]);
+  WriteLn(arr[4]);
+end."#), &["3", "20", "40"]);
+}
+
+#[test] fn multidim_nonzero_lower_bounds_element_and_iteration() {
+    assert_eq!(run_pascal(r#"program T;
+var grid: array[1..2, 3..4] of Integer;
+    row, col, total: Integer;
+begin
+  total := 0;
+  for row := 1 to 2 do
+    for col := 3 to 4 do
+    begin
+      grid[row, col] := row * 100 + col;
+      total := total + grid[row, col];
+    end;
+  WriteLn(grid[1, 3]);
+  WriteLn(grid[2, 4]);
+  WriteLn(total);
+end."#), &["103", "204", "614"]);
+}
+
 // ===================================================================
 // TWO POINTER TECHNIQUE
 // ===================================================================
