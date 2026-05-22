@@ -180,6 +180,44 @@ end program test
 "#);
 }
 
+#[test]
+fn pointer_dummy_allocation_preserves_null_entry() {
+        let out = run_prints(r#"
+module m
+    implicit none
+
+    type :: node
+        integer :: value = 0
+        type(node), pointer :: next => null()
+    end type node
+contains
+    subroutine ensure_value(item, value)
+        type(node), pointer, intent(inout) :: item
+        integer, intent(in) :: value
+
+        if (.not. associated(item)) then
+            allocate(item)
+            item%value = value
+            nullify(item%next)
+        end if
+    end subroutine ensure_value
+end module m
+
+program test
+    use m
+    implicit none
+    type(node), pointer :: head => null()
+
+    call ensure_value(head, 5)
+    print *, associated(head)
+    if (associated(head)) then
+        print *, head%value
+    end if
+end program test
+"#);
+        assert_eq!(out, vec!["true", "5"]);
+}
+
 // ── Allocatable with pointer-like semantics ───────────────────
 
 #[test] fn allocatable_scalar() {

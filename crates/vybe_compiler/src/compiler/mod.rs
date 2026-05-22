@@ -95,7 +95,7 @@ struct PendingMethodOverload {
 }
 
 #[derive(Debug, Clone)]
-struct CallSignature {
+pub(crate) struct CallSignature {
     param_names: Vec<String>,
     min_arity: usize,
     has_rest: bool,
@@ -204,6 +204,13 @@ struct ArrayBindingMetadata {
     pascal_bounds: Option<PascalArrayBoundsMetadata>,
 }
 
+#[derive(Debug, Clone)]
+struct FortranInterfaceOverload {
+    target_name: String,
+    min_arity: usize,
+    param_types: Vec<Option<String>>,
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Compiler
 // ════════════════════════════════════════════════════════════════════════════
@@ -229,10 +236,13 @@ pub struct Compiler {
     shared_global_names: Vec<String>,
     defined_functions: HashSet<String>,
     function_param_modes: HashMap<String, Vec<PassBy>>,
+    function_param_types: HashMap<String, Vec<Option<String>>>,
     function_min_arity: HashMap<String, usize>,
     function_signatures: HashMap<String, Vec<CallSignature>>,
     rest_fixed_arities: BTreeSet<u8>,
     function_return_types: HashMap<String, String>,
+    fortran_interface_overloads: HashMap<String, Vec<FortranInterfaceOverload>>,
+    fortran_operator_overloads: HashMap<String, Vec<FortranInterfaceOverload>>,
     constructor_signatures: HashMap<String, Vec<CallSignature>>,
     defined_classes: HashSet<String>,
     /// Names of methods defined on any user class — used to avoid value method
@@ -522,10 +532,13 @@ impl Compiler {
             shared_global_names: Vec::new(),
             defined_functions: HashSet::new(),
             function_param_modes: HashMap::new(),
+            function_param_types: HashMap::new(),
             function_min_arity: HashMap::new(),
             function_signatures: HashMap::new(),
             rest_fixed_arities: BTreeSet::new(),
             function_return_types: HashMap::new(),
+            fortran_interface_overloads: HashMap::new(),
+            fortran_operator_overloads: HashMap::new(),
             constructor_signatures: HashMap::new(),
             defined_classes: HashSet::new(),
             defined_class_methods: HashSet::new(),
@@ -647,8 +660,8 @@ impl Compiler {
             | StmtKind::FunctionDecl { body, .. } => {
                 self.predeclare_interface_signatures_in_body(body);
             }
-            StmtKind::InterfaceDecl { members, .. } => {
-                self.register_interface_method_signatures(members);
+            StmtKind::InterfaceDecl { name, members, .. } => {
+                self.register_interface_method_signatures(name, members);
             }
             StmtKind::ClassDecl { members, .. }
             | StmtKind::StructDecl { members, .. }
@@ -670,7 +683,10 @@ impl Compiler {
         }
     }
 
-    fn register_interface_method_signatures(&mut self, members: &[InterfaceMember]) {
+    fn register_interface_method_signatures(&mut self, interface_name: &str, members: &[InterfaceMember]) {
+        let interface_canonical = self.canon(interface_name);
+        let operator_symbol = self.fortran_interface_operator_symbol(interface_name);
+
         for member in members {
             let InterfaceMember::Method {
                 name,
@@ -682,58 +698,262 @@ impl Compiler {
                 continue;
             };
 
-            let canonical = self.canon(name);
+            let target_name = signature_source.as_ref().unwrap_or(name);
+            let target_canonical = self.canon(target_name);
+            let canonical_names = if self.profile.name == "fortran" && !interface_name.is_empty() {
+                vec![target_canonical.clone(), interface_canonical.clone()]
+            } else {
+                vec![self.canon(name)]
+            };
+
             if let Some(source_name) = signature_source.as_ref() {
                 let source_canonical = self.canon(source_name);
-                if let Some(source_modes) = self.function_param_modes.get(&source_canonical).cloned() {
+                for canonical in &canonical_names {
+                    if let Some(source_modes) = self.function_param_modes.get(&source_canonical).cloned() {
+                        self.function_param_modes
+                            .entry(canonical.clone())
+                            .or_insert(source_modes);
+                    }
+                    if let Some(source_types) = self.function_param_types.get(&source_canonical).cloned() {
+                        self.function_param_types
+                            .entry(canonical.clone())
+                            .or_insert(source_types);
+                    }
+                    if let Some(min_arity) = self.function_min_arity.get(&source_canonical).copied() {
+                        self.function_min_arity.entry(canonical.clone()).or_insert(min_arity);
+                    }
+                    if let Some(signatures) = self.function_signatures.get(&source_canonical).cloned() {
+                        self.function_signatures
+                            .entry(canonical.clone())
+                            .or_insert(signatures);
+                    }
+                    if let Some(source_return_type) = self.function_return_types.get(&source_canonical).cloned() {
+                        self.function_return_types
+                            .entry(canonical.clone())
+                            .or_insert(source_return_type);
+                    }
+                }
+            } else {
+                let param_modes: Vec<PassBy> = params.iter().map(|param| param.pass_by).collect();
+                let param_types: Vec<Option<String>> = params.iter().map(|param| param.type_hint.clone()).collect();
+                let min_arity = params
+                    .iter()
+                    .take_while(|param| param.default.is_none() && !param.is_rest)
+                    .count();
+                let signature = CallSignature::from_params(params);
+
+                for canonical in &canonical_names {
                     self.function_param_modes
                         .entry(canonical.clone())
-                        .or_insert(source_modes);
-                }
-                if let Some(min_arity) = self.function_min_arity.get(&source_canonical).copied() {
-                    self.function_min_arity.entry(canonical.clone()).or_insert(min_arity);
-                }
-                if let Some(signatures) = self.function_signatures.get(&source_canonical).cloned() {
-                    self.function_signatures
+                        .or_insert_with(|| param_modes.clone());
+                    self.function_param_types
                         .entry(canonical.clone())
-                        .or_insert(signatures);
+                        .or_insert_with(|| param_types.clone());
+                    self.function_min_arity
+                        .entry(canonical.clone())
+                        .or_insert(min_arity);
+
+                    let signatures = self.function_signatures.entry(canonical.clone()).or_default();
+                    if !signatures.iter().any(|existing| {
+                        existing.param_names == signature.param_names
+                            && existing.min_arity == signature.min_arity
+                            && existing.has_rest == signature.has_rest
+                    }) {
+                        signatures.push(signature.clone());
+                    }
+
+                    if let Some(return_type) = return_type.as_ref() {
+                        self.function_return_types
+                            .entry(canonical.clone())
+                            .or_insert_with(|| return_type.clone());
+                    }
                 }
-                if let Some(source_return_type) = self.function_return_types.get(&source_canonical).cloned() {
-                    self.function_return_types
-                        .entry(canonical)
-                        .or_insert(source_return_type);
+            }
+
+            if self.profile.name == "fortran" && !interface_name.is_empty() {
+                let overload = FortranInterfaceOverload {
+                    target_name: target_canonical,
+                    min_arity: params
+                        .iter()
+                        .take_while(|param| param.default.is_none() && !param.is_rest)
+                        .count(),
+                    param_types: params.iter().map(|param| param.type_hint.clone()).collect(),
+                };
+
+                if let Some(symbol) = operator_symbol.as_ref() {
+                    let overloads = self.fortran_operator_overloads.entry(symbol.clone()).or_default();
+                    if !overloads.iter().any(|existing| existing.target_name == overload.target_name) {
+                        overloads.push(overload);
+                    }
+                } else {
+                    let overloads = self
+                        .fortran_interface_overloads
+                        .entry(interface_canonical.clone())
+                        .or_default();
+                    if !overloads.iter().any(|existing| existing.target_name == overload.target_name) {
+                        overloads.push(overload);
+                    }
                 }
+            }
+        }
+    }
+
+    fn fortran_interface_operator_symbol(&self, name: &str) -> Option<String> {
+        let trimmed = name.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        if !lower.starts_with("operator(") || !trimmed.ends_with(')') {
+            return None;
+        }
+        let start = trimmed.find('(')? + 1;
+        let end = trimmed.rfind(')')?;
+        Some(trimmed[start..end].trim().to_string())
+    }
+
+    fn normalize_fortran_dispatch_type(&self, type_hint: &str) -> String {
+        let resolved = self.resolve_source_type_alias(type_hint);
+        let normalized = Self::normalize_type_hint(&resolved);
+        let trimmed = normalized.trim();
+
+        if let Some(inner) = trimmed
+            .strip_prefix("type(")
+            .and_then(|rest| rest.strip_suffix(')'))
+            .or_else(|| trimmed.strip_prefix("class(").and_then(|rest| rest.strip_suffix(')')))
+        {
+            return self.canon(inner.trim());
+        }
+
+        if trimmed == "int" || trimmed.starts_with("integer") {
+            return "integer".to_string();
+        }
+        if matches!(trimmed, "real" | "float" | "double" | "double precision")
+            || trimmed.starts_with("real(")
+        {
+            return "real".to_string();
+        }
+        if trimmed == "bool" || trimmed.starts_with("logical") {
+            return "logical".to_string();
+        }
+
+        self.canon(trimmed)
+    }
+
+    fn fortran_overload_target_param_types(&self, overload: &FortranInterfaceOverload) -> Vec<Option<String>> {
+        self.function_param_types
+            .get(&overload.target_name)
+            .cloned()
+            .filter(|param_types| !param_types.is_empty())
+            .unwrap_or_else(|| overload.param_types.clone())
+    }
+
+    fn resolve_fortran_overload_target_with_fallback(
+        &self,
+        overloads: &[FortranInterfaceOverload],
+        arg_exprs: &[Expression],
+        allow_unknown_fallback: bool,
+    ) -> Option<String> {
+        let arg_types: Vec<Option<String>> = arg_exprs
+            .iter()
+            .map(|expr| self.infer_expr_type_hint(expr).map(|hint| self.normalize_fortran_dispatch_type(&hint)))
+            .collect();
+        let has_known_arg_types = arg_types.iter().any(Option::is_some);
+
+        let mut best: Option<(&FortranInterfaceOverload, usize)> = None;
+        let mut ambiguous = false;
+
+        for overload in overloads {
+            if arg_exprs.len() < overload.min_arity {
                 continue;
             }
 
-            self.function_param_modes
-                .entry(canonical.clone())
-                .or_insert_with(|| params.iter().map(|param| param.pass_by).collect());
-            self.function_min_arity
-                .entry(canonical.clone())
-                .or_insert_with(|| {
-                    params
-                        .iter()
-                        .take_while(|param| param.default.is_none() && !param.is_rest)
-                        .count()
-                });
-
-            let signature = CallSignature::from_params(params);
-            let signatures = self.function_signatures.entry(canonical.clone()).or_default();
-            if !signatures.iter().any(|existing| {
-                existing.param_names == signature.param_names
-                    && existing.min_arity == signature.min_arity
-                    && existing.has_rest == signature.has_rest
-            }) {
-                signatures.push(signature);
+            let param_types = self.fortran_overload_target_param_types(overload);
+            if !param_types.is_empty() && param_types.len() != arg_exprs.len() {
+                continue;
             }
 
-            if let Some(return_type) = return_type.as_ref() {
-                self.function_return_types
-                    .entry(canonical)
-                    .or_insert_with(|| return_type.clone());
+            let mut score = 0usize;
+            let mut compatible = true;
+            for (arg_type, param_type) in arg_types.iter().zip(param_types.iter()) {
+                let Some(param_type) = param_type.as_ref() else {
+                    continue;
+                };
+                let param_key = self.normalize_fortran_dispatch_type(param_type);
+                let Some(arg_key) = arg_type.as_ref() else {
+                    continue;
+                };
+                if arg_key == &param_key {
+                    score += 2;
+                    continue;
+                }
+                compatible = false;
+                break;
+            }
+
+            if !compatible {
+                continue;
+            }
+
+            match best {
+                None => {
+                    best = Some((overload, score));
+                    ambiguous = false;
+                }
+                Some((_, best_score)) if score > best_score => {
+                    best = Some((overload, score));
+                    ambiguous = false;
+                }
+                Some((_, best_score)) if score == best_score => {
+                    ambiguous = true;
+                }
+                _ => {}
             }
         }
+
+        if let Some((overload, _)) = best {
+            if !ambiguous || overloads.len() == 1 {
+                return Some(overload.target_name.clone());
+            }
+        }
+
+        (allow_unknown_fallback && !has_known_arg_types && overloads.len() == 1)
+            .then(|| overloads[0].target_name.clone())
+    }
+
+    fn resolve_fortran_overload_target(
+        &self,
+        overloads: &[FortranInterfaceOverload],
+        arg_exprs: &[Expression],
+    ) -> Option<String> {
+        self.resolve_fortran_overload_target_with_fallback(overloads, arg_exprs, true)
+    }
+
+    pub(super) fn resolve_fortran_interface_target(
+        &self,
+        name: &str,
+        arg_exprs: &[Expression],
+    ) -> Option<String> {
+        (self.profile.name == "fortran")
+            .then(|| self.canon(name))
+            .and_then(|canonical| self.fortran_interface_overloads.get(&canonical))
+            .and_then(|overloads| self.resolve_fortran_overload_target(overloads, arg_exprs))
+    }
+
+    pub(super) fn resolve_fortran_operator_target(
+        &self,
+        op: &BinOp,
+        arg_exprs: &[Expression],
+    ) -> Option<String> {
+        let symbol = match op {
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div => "/",
+            BinOp::Pow => "**",
+            _ => return None,
+        };
+
+        self.fortran_operator_overloads
+            .get(symbol)
+            .and_then(|overloads| self.resolve_fortran_overload_target_with_fallback(overloads, arg_exprs, false))
     }
 
     fn reserve_runtime_global_names(&mut self) {
@@ -1096,6 +1316,9 @@ impl Compiler {
                         _ => None,
                     } {
                         module_nested_types.push(type_name);
+                    }
+                    if let StmtKind::InterfaceDecl { name, members, .. } = &stmt.kind {
+                        self.register_interface_method_signatures(name, members);
                     }
                 }
                 _ => {}
@@ -3899,8 +4122,17 @@ impl Compiler {
                 .as_deref()
                 .and_then(|type_hint| self.user_value_type_name_from_hint(type_hint))
             {
-                let idx = self.str_const(&type_name);
+                let ctor_global = {
+                    let overload = format!("{}$arity0", type_name);
+                    if self.defined_globals.contains(&overload) {
+                        overload
+                    } else {
+                        type_name.clone()
+                    }
+                };
+                let idx = self.str_const(&ctor_global);
                 self.emit_u16(Op::GLOBAL_GET, idx);
+                self.emit_u8(Op::CALL_REF, 0);
                 return Ok(());
             } else {
                 match effective_type_hint.map(|s| s.to_lowercase()).as_deref() {
@@ -4105,6 +4337,7 @@ impl Compiler {
             ExprKind::Lit(Literal::Bool(_)) => Some("bool".into()),
             ExprKind::Lit(Literal::Char(_)) => Some("char".into()),
             ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
+            ExprKind::Unary { op: UnaryOp::Neg | UnaryOp::Pos, expr } => self.infer_expr_type_hint(expr),
             ExprKind::RefOf(place) => {
                 let pointee_type = match place.as_ref() {
                     PlaceExpr::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
@@ -4517,6 +4750,14 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, source_slot);
         self.emit(Op::DROP);
 
+        self.emit_u16(Op::LOCAL_GET, source_slot);
+        self.emit(Op::REF_IS_NULL);
+        let source_is_null = self.emit_jump(Op::BR_IF_TRUE);
+
+        self.emit_u16(Op::LOCAL_GET, source_slot);
+        self.emit(Op::REF_IS_UNDEFINED);
+        let source_is_undefined = self.emit_jump(Op::BR_IF_TRUE);
+
         let clone_slot = self.define_local("__value_type_clone");
         let line = self.line;
         common::classes::emit_new_typed_object(self.chunk(), clone_slot, type_name, line);
@@ -4531,6 +4772,17 @@ impl Compiler {
         }
 
         self.emit_u16(Op::LOCAL_GET, clone_slot);
+        let done = self.emit_jump(Op::BR);
+
+        self.patch_jump(source_is_null);
+        self.emit_u16(Op::LOCAL_GET, source_slot);
+        let null_done = self.emit_jump(Op::BR);
+
+        self.patch_jump(source_is_undefined);
+        self.emit_u16(Op::LOCAL_GET, source_slot);
+
+        self.patch_jump(done);
+        self.patch_jump(null_done);
     }
 
     fn expr_is_known_string_receiver(&self, expr: &Expression) -> bool {
@@ -7058,8 +7310,8 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, values_slot);
                     self.emit_const(Value::F64(index as f64));
                     self.emit(Op::ARRAY_GET);
-                    self.emit_assignment_type_coercion_for_ident(variable);
-                    self.emit_var_set(variable);
+                    self.emit_assignment_type_coercion_for_target(variable);
+                    self.compile_assign_target(variable)?;
                 }
 
                 if variables.is_empty() {
@@ -7519,6 +7771,8 @@ impl Compiler {
                             let is_array_idx = self.import("ecma:array", "isArray");
                             self.chunk().emit_op_u16(Op::CALL_IMPORT, is_array_idx, line);
                             self.chunk().emit(1, line);
+                            self.emit(Op::I32_CONST_0);
+                            self.emit(Op::DYN_NE);
                             let array_path = self.emit_jump(Op::BR_IF_TRUE);
 
                             self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -8406,6 +8660,44 @@ impl Compiler {
                 let tmp = self.define_local("__tmp");
                 self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
                 let field_name = self.canon(field);
+                if self.profile.name == "fortran" {
+                    if let ExprKind::Index { object: collection_owner, index, .. } = &object.kind {
+                        let line = self.line;
+                        let coll_tmp = self.define_local("__fortran_index_member_coll");
+                        let key_tmp = self.define_local("__fortran_index_member_key");
+                        let elem_tmp = self.define_local("__fortran_index_member_elem");
+                        let field_idx = self.str_const(&field_name);
+
+                        self.compile_expr(collection_owner)?;
+                        self.emit_u16(Op::LOCAL_SET, coll_tmp);
+                        self.emit(Op::DROP);
+
+                        self.compile_array_index_operand_for_owner(collection_owner, index)?;
+                        self.emit_u16(Op::LOCAL_SET, key_tmp);
+                        self.emit(Op::DROP);
+
+                        self.emit_u16(Op::LOCAL_GET, coll_tmp);
+                        self.emit_u16(Op::LOCAL_GET, key_tmp);
+                        common::collections::emit_get(&mut self.chunks, self.current, line);
+                        self.emit_u16(Op::LOCAL_SET, elem_tmp);
+                        self.emit(Op::DROP);
+
+                        self.emit_u16(Op::LOCAL_GET, elem_tmp);
+                        self.emit_u16(Op::LOCAL_GET, tmp);
+                        self.emit_u16(Op::STRUCT_SET, field_idx);
+                        self.emit(Op::DROP);
+
+                        self.emit_u16(Op::LOCAL_GET, coll_tmp);
+                        self.emit_u16(Op::LOCAL_GET, key_tmp);
+                        self.emit_u16(Op::LOCAL_GET, elem_tmp);
+                        common::collections::emit_set(&mut self.chunks, self.current, line);
+                        self.emit(Op::DROP);
+
+                        self.emit_u16(Op::LOCAL_GET, coll_tmp);
+                        self.compile_assign_target(collection_owner)?;
+                        return Ok(());
+                    }
+                }
                 if matches!(self.profile.name.as_str(), "csharp" | "vb") {
                     self.compile_expr(object)?;
                     self.emit_autoderef_pointer_cell();
@@ -8628,6 +8920,34 @@ impl Compiler {
                             return Ok(());
                         }
                     }
+
+                    if matches!(&object.kind, ExprKind::Index { .. }) {
+                        let line = self.line;
+                        let value_tmp = self.define_local("__fortran_nested_index_value");
+                        let coll_tmp = self.define_local("__fortran_nested_index_coll");
+                        let key_tmp = self.define_local("__fortran_nested_index_key");
+
+                        self.emit_u16(Op::LOCAL_SET, value_tmp);
+                        self.emit(Op::DROP);
+
+                        self.compile_expr(object)?;
+                        self.emit_u16(Op::LOCAL_SET, coll_tmp);
+                        self.emit(Op::DROP);
+
+                        self.compile_array_index_operand_for_owner(object, index)?;
+                        self.emit_u16(Op::LOCAL_SET, key_tmp);
+                        self.emit(Op::DROP);
+
+                        self.emit_u16(Op::LOCAL_GET, coll_tmp);
+                        self.emit_u16(Op::LOCAL_GET, key_tmp);
+                        self.emit_u16(Op::LOCAL_GET, value_tmp);
+                        common::collections::emit_set(&mut self.chunks, self.current, line);
+                        self.emit(Op::DROP);
+
+                        self.emit_u16(Op::LOCAL_GET, coll_tmp);
+                        self.compile_assign_target(object)?;
+                        return Ok(());
+                    }
                 }
                 if self.is_python_profile() {
                     if let ExprKind::Slice { lower, upper, step } = &index.kind {
@@ -8793,17 +9113,8 @@ impl Compiler {
                             self.emit_u16(Op::STRUCT_SET, field_idx);
                             self.emit(Op::DROP);
 
-                            if let ExprKind::Ident(recv_name) = &recv.kind {
-                                let needs_value_type_writeback = self.expr_user_value_type_name(recv).is_some()
-                                    || self
-                                        .lookup_var_type_hint(recv_name)
-                                        .and_then(|type_hint| self.resolve_pending_class_name_for_type_hint(type_hint))
-                                        .is_some();
-                                if needs_value_type_writeback {
-                                    self.emit_u16(Op::LOCAL_GET, recv_tmp);
-                                    self.emit_var_set(recv_name);
-                                }
-                            }
+                            self.emit_u16(Op::LOCAL_GET, recv_tmp);
+                            self.compile_assign_target(recv)?;
 
                             return Ok(());
                         }
@@ -8881,6 +9192,8 @@ impl Compiler {
                         let is_array_idx = self.import("ecma:array", "isArray");
                         self.chunk().emit_op_u16(Op::CALL_IMPORT, is_array_idx, line);
                         self.chunk().emit(1, line);
+                        self.emit(Op::I32_CONST_0);
+                        self.emit(Op::DYN_NE);
                         let array_path = self.emit_jump(Op::BR_IF_TRUE);
 
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -9348,7 +9661,15 @@ impl Compiler {
             },
             BinOp::IDiv => { self.emit(Op::F64_DIV); let l = self.line; common::math::emit_trunc(self.chunk(), l); }
             BinOp::FloorDiv => { self.emit(Op::F64_DIV); let l = self.line; common::math::emit_floor(self.chunk(), l); }
-            BinOp::Mod => { let idx = self.import("ecma:math", "fmod"); let l = self.line; common::expressions::emit_f64_mod_with_import(self.chunk(), idx, l); },
+            BinOp::Mod => {
+                let l = self.line;
+                if self.is_python_profile() {
+                    common::math::emit_python_floor_mod(self.chunk(), l);
+                } else {
+                    let idx = self.import("ecma:math", "fmod");
+                    common::expressions::emit_f64_mod_with_import(self.chunk(), idx, l);
+                }
+            },
             BinOp::Pow => { let l = self.line; common::math::emit_pow(self.chunk(), l); }
             BinOp::Eq => self.emit(Op::DYN_EQ),
             BinOp::NotEq => self.emit(Op::DYN_NE),
@@ -9556,6 +9877,8 @@ impl Compiler {
                     let is_array = self.import("ecma:array", "isArray");
                     self.chunk().emit_op_u16(Op::CALL_IMPORT, is_array, l);
                     self.chunk().emit(1, l);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit(Op::DYN_NE);
                     let array_path = self.emit_jump(Op::BR_IF_TRUE);
 
                     self.emit_u16(Op::LOCAL_GET, t_y);
@@ -9643,6 +9966,8 @@ impl Compiler {
                     let is_array = self.import("ecma:array", "isArray");
                     self.chunk().emit_op_u16(Op::CALL_IMPORT, is_array, l);
                     self.chunk().emit(1, l);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit(Op::DYN_NE);
                     let array_path = self.emit_jump(Op::BR_IF_TRUE);
 
                     self.emit_u16(Op::LOCAL_GET, t_y);
@@ -10231,6 +10556,45 @@ impl Compiler {
             return Ok(true);
         }
 
+        if name.eq_ignore_ascii_case("__fortran_rewind") {
+            let file_slot = self.define_local("__fortran_rewind_file");
+            let path_slot = self.define_local("__fortran_rewind_path");
+
+            if let Some(arg) = args.first() {
+                self.compile_expr(arg)?;
+            } else {
+                self.emit_const(Value::I32(0));
+            }
+            self.emit_u16(Op::LOCAL_SET, file_slot);
+            self.emit(Op::DROP);
+
+            self.emit_global_map_get_into_local("__vb_file_path_by_handle", file_slot, path_slot);
+
+            self.emit_u16(Op::LOCAL_GET, file_slot);
+            let close_idx = self.import("wasi:filesystem", "closeFile");
+            self.emit_host_call(close_idx, 1);
+            self.emit(Op::DROP);
+
+            self.emit_u16(Op::LOCAL_GET, path_slot);
+            self.emit_const(Value::String(Arc::from("Input")));
+            self.emit_u16(Op::LOCAL_GET, file_slot);
+            let open_idx = self.import("wasi:filesystem", "openFile");
+            self.emit_host_call(open_idx, 3);
+            self.emit(Op::DROP);
+
+            self.emit_global_map_set_const("__vb_file_eof_by_handle", file_slot, Value::Bool(false));
+            self.emit_global_map_set_null("__vb_record_rows_by_handle", file_slot);
+            self.emit_global_map_set_null("__vb_record_next_index_by_handle", file_slot);
+            self.emit_global_map_set_null("__vb_record_current_index_by_handle", file_slot);
+            self.emit(Op::NULL);
+            return Ok(true);
+        }
+
+        if name.eq_ignore_ascii_case("__fortran_namelist_decl") {
+            self.emit(Op::NULL);
+            return Ok(true);
+        }
+
         if name.eq_ignore_ascii_case("kind") {
             self.emit_const(Value::I32(8));
             return Ok(true);
@@ -10345,6 +10709,13 @@ impl Compiler {
             }
             return Ok(true);
         }
+        if self.profile.name == "fortran" && name.eq_ignore_ascii_case("matmul") {
+            for arg in args {
+                self.compile_expr(arg)?;
+            }
+            self.emit_common("fortran.matmul", args.len() as u8, line);
+            return Ok(true);
+        }
         if self.profile.name == "fortran" && name.eq_ignore_ascii_case("array_join") {
             if args.len() >= 2 {
                 self.compile_expr(args[0])?;
@@ -10365,6 +10736,18 @@ impl Compiler {
                 args.len() as u8,
                 line,
             );
+            return Ok(true);
+        }
+        if self.profile.name == "fortran" && name.eq_ignore_ascii_case("this_image") {
+            self.emit_const(Value::I32(1));
+            return Ok(true);
+        }
+        if self.profile.name == "fortran" && name.eq_ignore_ascii_case("num_images") {
+            self.emit_const(Value::I32(1));
+            return Ok(true);
+        }
+        if self.profile.name == "fortran" && name.eq_ignore_ascii_case("co_sum") {
+            self.emit(Op::NULL);
             return Ok(true);
         }
 

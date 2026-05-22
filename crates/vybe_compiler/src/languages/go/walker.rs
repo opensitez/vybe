@@ -2895,12 +2895,15 @@ fn go_named_receiver_type(type_name: &str) -> Option<String> {
 // ── Statements ─────────────────────────────────────────────────────────────────────────
 
 fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
+    let span = to_span(&pair);
     let rule = pair.as_rule();
     if rule == Rule::statement {
         if let Some(inner) = pair.into_inner().next() {
-            return walk_statement(inner);
+            let mut s = walk_statement(inner)?;
+            if s.span.start_line == 0 { s.span = span; }
+            return Ok(s);
         }
-        return Ok(Statement::new(StmtKind::Empty));
+        return Ok(Statement::with_span(StmtKind::Empty, span));
     }
 
     let kind = match rule {
@@ -2929,7 +2932,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         Rule::send_statement => walk_send_stmt(pair)?,
         _ => StmtKind::Empty,
     };
-    Ok(Statement::new(kind))
+    Ok(Statement::with_span(kind, span))
 }
 
 fn walk_defer_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -4772,4 +4775,11 @@ fn go_binding_name(pattern: &BindingPattern) -> Option<String> {
             _ => None,
         }),
     }
+}
+
+fn to_span(pair: &Pair<Rule>) -> Span {
+    let s = pair.as_span();
+    let (sl, sc) = s.start_pos().line_col();
+    let (el, ec) = s.end_pos().line_col();
+    Span { start_line: sl as u32, start_col: sc as u32, end_line: el as u32, end_col: ec as u32 }
 }

@@ -5679,7 +5679,7 @@ fn parse_input_file_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut variables = Vec::new();
     for p in inner {
         if p.as_rule() == Rule::identifier {
-            variables.push(p.as_str().to_string());
+            variables.push(Expression::ident(p.as_str()));
         }
     }
     Ok(Statement::with_span(StmtKind::InputFile { file_number, variables }, span))
@@ -5964,35 +5964,6 @@ fn parse_structure_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     }
 
     Ok(Statement::with_span(StmtKind::StructDecl { name, interfaces, members, visibility, decorators: vec![] }, span))
-}
-
-fn parse_delegate_decl(pair: Pair<Rule>, is_sub: bool) -> Result<Statement, String> {
-    let span = to_span(&pair);
-    let inner = pair.into_inner();
-    let mut visibility = Visibility::Public;
-    let mut name = String::new();
-    let mut parameters = Vec::new();
-    let mut return_type: Option<String> = None;
-
-    for p in inner {
-        match p.as_rule() {
-            Rule::identifier => name = p.as_str().to_string(),
-            Rule::param_list => parameters = parse_param_list(p)?,
-            Rule::type_name => return_type = Some(p.as_str().to_string()),
-            Rule::visibility_modifier => {
-                visibility = parse_visibility(p.as_str());
-            }
-            _ => {}
-        }
-    }
-
-    Ok(Statement::with_span(StmtKind::DelegateDecl {
-        name,
-        params: parameters,
-        return_type,
-        is_sub,
-        visibility,
-    }, span))
 }
 
 fn parse_event_decl_to_member(pair: Pair<Rule>) -> Result<ClassMember, String> {

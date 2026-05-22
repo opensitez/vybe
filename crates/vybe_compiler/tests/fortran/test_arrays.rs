@@ -139,6 +139,52 @@ end program test
 }
 
 #[test]
+fn allocatable_assignment_from_array_function_result() {
+    let out = run_prints(r#"
+program test
+    real, allocatable :: v(:)
+    allocate(v(3))
+    v = values()
+    print *, v(1)
+    print *, v(2)
+    print *, v(3)
+contains
+    pure function values() result(a)
+        real :: a(3)
+        a(1) = 1.0
+        a(2) = 2.0
+        a(3) = 3.0
+    end function values
+end program test
+"#);
+    assert_eq!(out, ["1", "2", "3"]);
+}
+
+#[test]
+fn allocatable_assignment_from_elemental_array_call() {
+    let out = run_prints(r#"
+program test
+    integer, parameter :: n = 4
+    integer, parameter :: indices(*) = [(i, i = 1, n)]
+    real, allocatable :: w(:)
+    allocate(w(n))
+    w = sample_window(indices, n)
+    print *, w(1)
+    print *, w(2)
+    print *, w(3)
+    print *, w(4)
+contains
+    elemental pure function sample_window(i, n) result(w)
+        integer, intent(in) :: i, n
+        real :: w
+        w = real(i) / real(n)
+    end function sample_window
+end program test
+"#);
+    assert_eq!(out, ["0.25", "0.5", "0.75", "1"]);
+}
+
+#[test]
 fn allocatable_member_runtime_index_write_and_size() {
     let out = run_prints(r#"
 program test
@@ -607,40 +653,82 @@ end program test
 
 #[test]
 fn dot_product_basic() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     integer :: a(3) = [1, 2, 3]
     integer :: b(3) = [4, 5, 6]
     print *, dot_product(a, b)
 end program test
 "#);
+    assert_eq!(out, vec!["32"]);
 }
 
 #[test]
 fn matmul_basic() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
-    integer :: a(2,2) = reshape([1,2,3,4],[2,2])
-    integer :: b(2,2) = reshape([5,6,7,8],[2,2])
+    integer :: a(2,2), b(2,2), ident(2,2)
     integer :: c(2,2)
-    c = matmul(a, b)
+    a(1,1) = 1
+    a(1,2) = 2
+    a(2,1) = 3
+    a(2,2) = 4
+    ident = 0
+    ident(1,1) = 1
+    ident(2,2) = 1
+    c = matmul(a, ident)
     print *, c(1,1)
+    print *, c(1,2)
+    print *, c(2,1)
+    print *, c(2,2)
 end program test
 "#);
+    assert_eq!(out, vec!["1", "2", "3", "4"]);
 }
 
 // ── TRANSPOSE ────────────────────────────────────────────────
 
 #[test]
 fn transpose_basic() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
-    integer :: a(2,3) = reshape([1,2,3,4,5,6],[2,3])
+    integer :: a(2,3)
     integer :: b(3,2)
+    a(1,1) = 1
+    a(1,2) = 2
+    a(1,3) = 3
+    a(2,1) = 4
+    a(2,2) = 5
+    a(2,3) = 6
     b = transpose(a)
     print *, b(1,1)
+    print *, b(3,2)
 end program test
 "#);
+    assert_eq!(out, vec!["1", "6"]);
+}
+
+#[test]
+fn multidimensional_slice_runtime() {
+    let out = run_prints(r#"
+program test
+    integer :: a(4,4)
+    integer :: b(2,2)
+
+    a = 0
+    a(2,2) = 11
+    a(2,3) = 12
+    a(3,2) = 21
+    a(3,3) = 22
+
+    b = a(2:3, 2:3)
+    print *, b(1,1)
+    print *, b(1,2)
+    print *, b(2,1)
+    print *, b(2,2)
+end program test
+"#);
+    assert_eq!(out, vec!["11", "12", "21", "22"]);
 }
 
 // ── Passing arrays to subroutines ────────────────────────────
@@ -662,7 +750,7 @@ end program test
 
 #[test]
 fn array_function_result() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     integer :: a(3) = [10, 20, 30]
     print *, total(a)
@@ -674,4 +762,5 @@ contains
     end function
 end program test
 "#);
+    assert_eq!(out, vec!["60"]);
 }

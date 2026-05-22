@@ -788,6 +788,9 @@ impl Compiler {
                 if self.try_compile_dotnet_datetime_timespan_binary_operator(op, left, right)? {
                     return Ok(());
                 }
+                if self.try_compile_fortran_interface_binary_operator(op, left, right)? {
+                    return Ok(());
+                }
                 if self.try_compile_fortran_array_binary_operator(op, left, right)? {
                     return Ok(());
                 }
@@ -3565,15 +3568,26 @@ impl Compiler {
             }
 
             // ── Comprehension (Python) ──────────────────────────────────
-            ExprKind::Comprehension { kind: _, element, generators } => {
-                // Simplified: compile as loop building an array
+            ExprKind::Comprehension { kind, element, generators } => {
+                use crate::ast::ComprehensionKind;
                 let line = self.line;
-                common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+                let is_dict = *kind == ComprehensionKind::Dict;
+                let is_set  = *kind == ComprehensionKind::Set;
+
+                // Build the accumulator: dict → Object, set/list/gen → Array
+                if is_dict {
+                    common::dict::emit_new(&mut self.chunks, self.current, line);
+                } else {
+                    common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+                }
                 let result_slot = self.define_local("__comp_result");
                 self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
 
-                // Only handle the first generator for simplicity
-                if let Some(generator) = generators.first() {
+                use crate::emitter::loops::LoopState;
+                // Compile each generator (nested for-clauses)
+                let mut cond_skips: Vec<usize> = Vec::new();
+                let mut loop_info: Vec<(u16, LoopState)> = Vec::new();
+                for generator in generators.iter() {
                     self.compile_expr(&generator.iter)?;
                     let arr_slot = self.define_local("__comp_iter");
                     self.emit_u16(Op::LOCAL_SET, arr_slot); self.emit(Op::DROP);
@@ -3581,7 +3595,6 @@ impl Compiler {
                     let lp = common::loops::emit_for_in_start(
                         &mut self.chunks, self.current, arr_slot, idx_slot, line,
                     );
-                    // Bind loop var
                     let var_name = match &generator.target.kind {
                         ExprKind::Ident(n) => n.clone(),
                         _ => "__comp_var".to_string(),
@@ -3589,29 +3602,66 @@ impl Compiler {
                     let var_slot = self.define_local(&var_name);
                     self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
 
-                    // Check conditions
-                    let mut cond_skip = None;
                     for cond_expr in &generator.conditions {
                         self.compile_expr(cond_expr)?;
                         self.emit(Op::DYN_TO_BOOL);
-                        cond_skip = Some(self.emit_jump(Op::BR_IF_FALSE));
+                        cond_skips.push(self.emit_jump(Op::BR_IF_FALSE));
                     }
+                    loop_info.push((idx_slot, lp));
+                }
 
-                    // Push element via ecma:array.push.
+                // Emit the body
+                if is_dict {
+                    // element is Array([key, val]); store into dict and track __keys
+                    if let ExprKind::Array(kv) = &element.kind {
+                        if kv.len() == 2 {
+                            let key_expr = &kv[0].value;
+                            let val_expr = &kv[1].value;
+                            // Compile key and save a copy for __keys tracking
+                            self.compile_expr(key_expr)?;
+                            let key_slot = self.define_local("__comp_key");
+                            self.emit_u16(Op::LOCAL_SET, key_slot); self.emit(Op::DROP);
+                            // [dict, key, val] → ARRAY_SET → drops from stack
+                            self.emit_u16(Op::LOCAL_GET, result_slot);
+                            self.emit_u16(Op::LOCAL_GET, key_slot);
+                            self.compile_expr(val_expr)?;
+                            let l = self.line;
+                            common::collections::emit_set(&mut self.chunks, self.current, l);
+                            self.emit(Op::DROP);
+                            // Track key in __keys so len() works
+                            self.emit_u16(Op::LOCAL_GET, result_slot);
+                            let keys_key = self.str_const("__keys");
+                            self.emit_u16(Op::STRUCT_GET, keys_key);
+                            self.emit_u16(Op::LOCAL_GET, key_slot);
+                            let l = self.line;
+                            common::collections::emit_push(&mut self.chunks, self.current, l);
+                            self.emit(Op::DROP);
+                        }
+                    }
+                } else {
                     self.emit_u16(Op::LOCAL_GET, result_slot);
                     self.compile_expr(element)?;
                     let l = self.line;
                     common::collections::emit_push(&mut self.chunks, self.current, l);
                     self.emit(Op::DROP);
+                }
 
-                    if let Some(skip) = cond_skip { self.patch_jump(skip); }
-
+                // Patch condition skips before closing loops
+                for skip in cond_skips { self.patch_jump(skip); }
+                // Close loops in reverse order
+                for (idx_slot, lp) in loop_info.into_iter().rev() {
                     common::loops::emit_for_in_end(
                         &mut self.chunks, self.current, idx_slot, lp, line,
                     );
                 }
 
                 self.emit_u16(Op::LOCAL_GET, result_slot);
+
+                // Set comprehension: convert Array → Set via ecma:set.fromIterable
+                if is_set {
+                    let idx = self.import("ecma:set", "fromIterable");
+                    self.emit_host_call(idx, 1);
+                }
             }
 
             // ── Slice (Python) ──────────────────────────────────────────
@@ -3983,6 +4033,47 @@ impl Compiler {
         if negate_result {
             self.emit(Op::DYN_NOT);
         }
+        Ok(true)
+    }
+
+    fn try_compile_fortran_interface_binary_operator(
+        &mut self,
+        op: &BinOp,
+        left: &Expression,
+        right: &Expression,
+    ) -> Result<bool, String> {
+        if self.profile.name != "fortran" {
+            return Ok(false);
+        }
+
+        let arg_exprs = vec![left.clone(), right.clone()];
+        let Some(target_name) = self.resolve_fortran_operator_target(op, &arg_exprs) else {
+            return Ok(false);
+        };
+
+        let callee = if let Some(module_name) = self.enum_members.get(&self.canon(&target_name)).cloned() {
+            let target_canon = self.canon(&target_name);
+            let prefers_direct_module_global = self
+                .pending_classes
+                .get(&module_name)
+                .is_some_and(|pending| pending.static_method_names.iter().any(|member| member == &target_canon));
+            if prefers_direct_module_global {
+                Expression::ident(&target_name)
+            } else {
+                Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident(&module_name)),
+                    field: target_name.clone(),
+                    null_safe: false,
+                })
+            }
+        } else {
+            Expression::ident(&target_name)
+        };
+        let args = vec![
+            Argument::positional(left.clone()),
+            Argument::positional(right.clone()),
+        ];
+        self.compile_call(&callee, &args)?;
         Ok(true)
     }
 

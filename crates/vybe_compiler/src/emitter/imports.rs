@@ -55,9 +55,21 @@ pub fn resolve_common_import(name: &str) -> Option<CommonImport> {
         "parsefloat" | "cdbl" | "float" | "to_f" | "floatval"
             => Some(CommonImport::Host("ecma:number", "Number")),
 
+        // Direct numeric formatting helpers used by frontend adapters
+        // (notably Fortran formatted I/O) to avoid routing through a
+        // JS-level sprintf polyfill.
+        "tofixed" => Some(CommonImport::Host("ecma:number", "toFixed")),
+        "toexponential" => Some(CommonImport::Host("ecma:number", "toExponential")),
+        "toprecision" => Some(CommonImport::Host("ecma:number", "toPrecision")),
+
         // String coercion — §22.1.1.1 ToString.
         "tostring" | "str" | "to_s" | "strval" | "cstr"
             => Some(CommonImport::Host("ecma:string", "String")),
+
+        "padstart" | "padleft"
+            => Some(CommonImport::Host("ecma:string", "padStart")),
+        "padend" | "padright"
+            => Some(CommonImport::Host("ecma:string", "padEnd")),
 
         // JS: isNaN, isFinite — same name across languages
         "isnan"    => Some(CommonImport::Host("ecma:number", "isNaN")),

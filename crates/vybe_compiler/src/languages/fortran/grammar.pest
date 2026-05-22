@@ -100,20 +100,30 @@ statement = _{
 program_unit = {
     kw_program ~ identifier ~ (NEWLINE | ";")
     ~ line*
-    ~ kw_end_program ~ identifier?
+    ~ program_unit_end
 }
 
-kw_end_program = { kw_end ~ kw_program }
+program_unit_end = {
+    kw_end ~ kw_program ~ identifier?
+    | kw_endprogram_named
+    | kw_endprogram
+}
+kw_end_program = { kw_endprogram | kw_end ~ kw_program }
 
 // ── Module unit ────────────────────────────────────────────────────────────
 
 module_unit = {
     kw_module ~ identifier ~ (NEWLINE | ";")
     ~ line*
-    ~ kw_end_module ~ identifier?
+    ~ module_unit_end
 }
 
-kw_end_module = { kw_end ~ kw_module }
+module_unit_end = {
+    kw_end ~ kw_module ~ identifier?
+    | kw_endmodule_named
+    | kw_endmodule
+}
+kw_end_module = { kw_endmodule | kw_end ~ kw_module }
 
 // ── Use statement ──────────────────────────────────────────────────────────
 
@@ -168,7 +178,7 @@ import_statement = {
 select_type_statement = {
     kw_select ~ kw_type ~ "(" ~ (identifier ~ "=>")? ~ expression ~ ")" ~ (NEWLINE | ";")
     ~ select_type_clause*
-    ~ kw_end ~ kw_select ~ identifier?
+    ~ kw_end_select ~ identifier?
 }
 select_type_clause = {
     kw_type ~ kw_is ~ "(" ~ identifier ~ ")" ~ (NEWLINE | ";") ~ line*
@@ -180,7 +190,7 @@ select_type_clause = {
 select_rank_statement = {
     kw_select ~ kw_rank ~ "(" ~ (identifier ~ "=>")? ~ expression ~ ")" ~ (NEWLINE | ";")
     ~ select_rank_clause*
-    ~ kw_end ~ kw_select ~ identifier?
+    ~ kw_end_select ~ identifier?
 }
 select_rank_clause = {
     kw_rank ~ "(" ~ (expression | "*") ~ ")" ~ (NEWLINE | ";") ~ line*
@@ -281,7 +291,13 @@ codimension_spec = { expression ~ ":" ~ "*" | expression? ~ ":" ~ expression? | 
 subroutine_decl = {
     proc_prefix* ~ kw_subroutine ~ identifier ~ ("(" ~ param_list? ~ ")")? ~ proc_suffix* ~ (NEWLINE | ";")
     ~ line*
-    ~ kw_end ~ kw_subroutine ~ identifier?
+    ~ subroutine_end
+}
+
+subroutine_end = {
+    kw_end ~ kw_subroutine ~ identifier?
+    | kw_endsubroutine_named
+    | kw_endsubroutine
 }
 
 // ── Function ───────────────────────────────────────────────────────────────
@@ -289,7 +305,13 @@ subroutine_decl = {
 function_decl = {
     proc_prefix* ~ type_spec? ~ proc_prefix* ~ kw_function ~ identifier ~ "(" ~ param_list? ~ ")" ~ proc_suffix* ~ (NEWLINE | ";")
     ~ line*
-    ~ kw_end ~ kw_function ~ identifier?
+    ~ function_end
+}
+
+function_end = {
+    kw_end ~ kw_function ~ identifier?
+    | kw_endfunction_named
+    | kw_endfunction
 }
 
 // Procedure prefix qualifiers (F2003/F2008): `pure`, `elemental`, `recursive`, `module`, `impure`, `non_recursive`.
@@ -313,7 +335,13 @@ type_decl = {
     kw_type ~ ("," ~ type_attribute)* ~ "::"? ~ identifier ~ ("(" ~ identifier ~ ("," ~ identifier)* ~ ")")? ~ (NEWLINE | ";")
     ~ type_member*
     ~ (kw_contains ~ (NEWLINE | ";") ~ type_bound_procedure*)?
-    ~ kw_end ~ kw_type ~ identifier?
+    ~ type_end
+}
+
+type_end = {
+    kw_end ~ kw_type ~ identifier?
+    | kw_endtype_named
+    | kw_endtype
 }
 
 type_attribute = {
@@ -345,7 +373,12 @@ interface_decl = {
         | kw_module ~ kw_procedure ~ "::"? ~ identifier ~ ("," ~ identifier)* ~ (NEWLINE | ";")
         | kw_procedure ~ "::"? ~ identifier ~ ("," ~ identifier)* ~ (NEWLINE | ";")
         | NEWLINE | COMMENT)*
-    ~ kw_end ~ kw_interface ~ interface_designator?
+    ~ interface_end
+}
+
+interface_end = {
+    kw_end ~ kw_interface ~ interface_designator?
+  | kw_endinterface ~ (WHITESPACE+ ~ interface_designator)?
 }
 interface_designator = {
     kw_operator ~ "(" ~ operator ~ ")"
@@ -364,12 +397,12 @@ if_statement = {
     ~ line*
     ~ elseif_clause*
     ~ else_clause?
-    ~ kw_end ~ kw_if
+    ~ (kw_end ~ kw_if | ^"endif")
   | kw_if ~ "(" ~ expression ~ ")" ~ single_statement
 }
 
 elseif_clause = {
-    kw_else ~ kw_if ~ "(" ~ expression ~ ")" ~ kw_then ~ (NEWLINE | ";")
+        (kw_elseif | kw_else ~ kw_if) ~ "(" ~ expression ~ ")" ~ kw_then ~ (NEWLINE | ";")
     ~ line*
 }
 
@@ -398,19 +431,19 @@ inline_statement_list = { statement ~ (";" ~ statement)* }
 do_statement = {
     (loop_label ~ ":")? ~ kw_do ~ identifier ~ "=" ~ expression ~ "," ~ expression ~ ("," ~ expression)? ~ NEWLINE
         ~ line*
-        ~ kw_end ~ kw_do ~ identifier?
-    | (loop_label ~ ":")? ~ kw_do ~ identifier ~ "=" ~ expression ~ "," ~ expression ~ ("," ~ expression)? ~ ";" ~ inline_statement_list ~ ";" ~ kw_end ~ kw_do ~ identifier?
+        ~ kw_end_do ~ identifier?
+    | (loop_label ~ ":")? ~ kw_do ~ identifier ~ "=" ~ expression ~ "," ~ expression ~ ("," ~ expression)? ~ ";" ~ inline_statement_list ~ ";" ~ kw_end_do ~ identifier?
     | (loop_label ~ ":")? ~ kw_do ~ NEWLINE
         ~ line*
-        ~ kw_end ~ kw_do ~ identifier?
-    | (loop_label ~ ":")? ~ kw_do ~ ";" ~ inline_statement_list ~ ";" ~ kw_end ~ kw_do ~ identifier?
+        ~ kw_end_do ~ identifier?
+    | (loop_label ~ ":")? ~ kw_do ~ ";" ~ inline_statement_list ~ ";" ~ kw_end_do ~ identifier?
 }
 
 do_while_statement = {
     (loop_label ~ ":")? ~ kw_do ~ kw_while ~ "(" ~ expression ~ ")" ~ NEWLINE
     ~ line*
-    ~ kw_end ~ kw_do ~ identifier?
-  | (loop_label ~ ":")? ~ kw_do ~ kw_while ~ "(" ~ expression ~ ")" ~ ";" ~ inline_statement_list ~ ";" ~ kw_end ~ kw_do ~ identifier?
+    ~ kw_end_do ~ identifier?
+  | (loop_label ~ ":")? ~ kw_do ~ kw_while ~ "(" ~ expression ~ ")" ~ ";" ~ inline_statement_list ~ ";" ~ kw_end_do ~ identifier?
 }
 
 // `do concurrent ([type-spec ::] index = lower:upper[:stride] [, ...] [, mask])
@@ -419,7 +452,7 @@ do_while_statement = {
 do_concurrent_statement = {
     (loop_label ~ ":")? ~ kw_do ~ kw_concurrent ~ "(" ~ concurrent_header ~ ")" ~ concurrent_locality* ~ (NEWLINE | ";")
     ~ line*
-    ~ kw_end ~ kw_do ~ identifier?
+    ~ kw_end_do ~ identifier?
 }
 concurrent_header = {
     concurrent_index ~ ("," ~ concurrent_index)* ~ ("," ~ expression)?
@@ -439,7 +472,7 @@ concurrent_locality = {
 forall_statement = {
     kw_forall ~ "(" ~ forall_triplet ~ ("," ~ forall_triplet)* ~ ("," ~ expression)? ~ ")"
     ~ (
-        (NEWLINE | ";") ~ line* ~ kw_end ~ kw_forall
+                (NEWLINE | ";") ~ line* ~ (kw_end ~ kw_forall | ^"endforall")
       | assignment_statement
     )
 }
@@ -452,7 +485,7 @@ where_statement = {
     kw_where ~ "(" ~ expression ~ ")" ~ (
         (NEWLINE | ";") ~ line*
         ~ (kw_elsewhere ~ ("(" ~ expression ~ ")")? ~ (NEWLINE | ";") ~ line*)*
-        ~ kw_end ~ kw_where
+        ~ (kw_end ~ kw_where | ^"endwhere")
       | assignment_statement
     )
 }
@@ -463,14 +496,14 @@ where_statement = {
 block_statement = {
     (loop_label ~ ":")? ~ kw_block ~ (NEWLINE | ";")
     ~ line*
-    ~ kw_end ~ kw_block ~ identifier?
+    ~ kw_end_block ~ identifier?
 }
 
 // Fortran 2003 ASSOCIATE — alias an expression as a name in a scope.
 associate_statement = {
     kw_associate ~ "(" ~ associate_binding ~ ("," ~ associate_binding)* ~ ")" ~ (NEWLINE | ";")
     ~ line*
-    ~ kw_end ~ kw_associate
+    ~ (kw_end ~ kw_associate | ^"endassociate")
 }
 associate_binding = { identifier ~ "=>" ~ expression }
 
@@ -478,7 +511,7 @@ associate_binding = { identifier ~ "=>" ~ expression }
 change_team_statement = {
     kw_change ~ kw_team ~ "(" ~ expression ~ ("," ~ argument)* ~ ")" ~ (NEWLINE | ";")
     ~ line*
-    ~ kw_end ~ kw_team
+    ~ (kw_end ~ kw_team | ^"endteam")
 }
 
 // ── F77 legacy / control-flow ─────────────────────────────────────────────
@@ -568,7 +601,7 @@ format_string = @{ "'" ~ (!"'" ~ ANY)* ~ "'" | "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 block_data_unit = {
     kw_block ~ kw_data ~ identifier? ~ (NEWLINE | ";")
     ~ line*
-    ~ kw_end ~ (kw_block ~ kw_data)? ~ identifier?
+    ~ kw_end_block_data ~ identifier?
 }
 
 // `ENTRY name(args)` — F77 alternate-entry form.
@@ -618,7 +651,7 @@ notify_statement = {
 critical_statement = {
     (loop_label ~ ":")? ~ kw_critical ~ ("(" ~ stat_clause ~ ("," ~ stat_clause)* ~ ")")? ~ (NEWLINE | ";")
     ~ line*
-    ~ kw_end ~ kw_critical ~ identifier?
+    ~ kw_end_critical ~ identifier?
 }
 
 lock_statement = {
@@ -637,14 +670,14 @@ error_stop_statement = {
 submodule_unit = {
     kw_submodule ~ "(" ~ identifier ~ (":" ~ identifier)? ~ ")" ~ identifier ~ (NEWLINE | ";")
     ~ line*
-    ~ kw_end ~ (kw_submodule)? ~ identifier?
+    ~ kw_end_submodule ~ identifier?
 }
 
 // `enum, bind(c) ; enumerator :: A, B = 5 ; end enum` — F2003 enums.
 enum_statement = {
     kw_enum ~ ("," ~ kw_bind ~ "(" ~ identifier ~ ")")? ~ (NEWLINE | ";")
     ~ enumerator_decl*
-    ~ kw_end ~ kw_enum
+    ~ kw_end_enum
 }
 enumerator_decl = {
     kw_enumerator ~ "::"? ~ enumerator_value ~ ("," ~ enumerator_value)* ~ (NEWLINE | ";")
@@ -655,7 +688,7 @@ enumerator_value = { identifier ~ ("=" ~ expression)? }
 abstract_interface_decl = {
     kw_abstract ~ kw_interface ~ identifier? ~ (NEWLINE | ";")
     ~ (subroutine_decl | function_decl | procedure_decl | NEWLINE | COMMENT)*
-    ~ kw_end ~ kw_interface ~ identifier?
+    ~ interface_end
 }
 
 loop_label = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
@@ -665,7 +698,7 @@ loop_label = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 select_case_statement = {
     kw_select ~ kw_case ~ "(" ~ expression ~ ")" ~ (NEWLINE | ";")
     ~ case_block*
-    ~ kw_end ~ kw_select
+    ~ (kw_end ~ kw_select | ^"endselect")
 }
 
 case_block = {
@@ -687,7 +720,7 @@ write_statement = {
 }
 
 read_statement = {
-    kw_read ~ "(" ~ write_spec ~ ("," ~ write_spec)* ~ ")" ~ identifier? ~ ("," ~ identifier)*
+    kw_read ~ "(" ~ write_spec ~ ("," ~ write_spec)* ~ ")" ~ expression? ~ ("," ~ expression)*
 }
 
 write_spec = { "*" | identifier ~ "=" ~ (expression | "*") | expression }
@@ -888,12 +921,18 @@ identifier = @{ !strict_keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_
 // expression context would make the grammar ambiguous belong here.
 strict_keyword = _{
     ( ^"program" | ^"end" | ^"module" | ^"use"
+    | ^"endprogram" | ^"endmodule"
     | ^"subroutine" | ^"function"
+    | ^"endsubroutine" | ^"endfunction"
     | ^"if" | ^"then" | ^"else" | ^"elseif" | ^"endif" | ^"enddo" | ^"do" | ^"while"
-    | ^"select" | ^"case"
+    | ^"select" | ^"case" | ^"endselect"
     | ^"print" | ^"write" | ^"read" | ^"call" | ^"return" | ^"yield"
     | ^"cycle" | ^"exit" | ^"stop"
-    | ^"interface" | ^"type"
+    | ^"interface" | ^"endinterface" | ^"type" | ^"endtype"
+    | ^"forall" | ^"endforall" | ^"where" | ^"endwhere"
+    | ^"associate" | ^"endassociate" | ^"block" | ^"endblock"
+    | ^"critical" | ^"endcritical" | ^"submodule" | ^"endsubmodule"
+    | ^"enum" | ^"endenum" | ^"team" | ^"endteam" | ^"blockdata" | ^"endblockdata"
     ) ~ !(ASCII_ALPHANUMERIC | "_")
 }
 
@@ -901,6 +940,10 @@ strict_keyword = _{
 
 kw_program    = @{ ^"program"    ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_end        = @{ ^"end"        ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_endprogram = { ^"endprogram" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_endprogram_named = @{ ^"endprogram" ~ (" " | "\t")+ ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+kw_endmodule  = { ^"endmodule"  ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_endmodule_named = @{ ^"endmodule" ~ (" " | "\t")+ ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 kw_module     = @{ ^"module"     ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_use        = @{ ^"use"        ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_only       = @{ ^"only"       ~ !(ASCII_ALPHANUMERIC | "_") }
@@ -908,7 +951,11 @@ kw_implicit   = @{ ^"implicit"   ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_none       = @{ ^"none"       ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_contains   = @{ ^"contains"   ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_subroutine = @{ ^"subroutine" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_endsubroutine = { ^"endsubroutine" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_endsubroutine_named = @{ ^"endsubroutine" ~ (" " | "\t")+ ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 kw_function   = @{ ^"function"   ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_endfunction = { ^"endfunction" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_endfunction_named = @{ ^"endfunction" ~ (" " | "\t")+ ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 kw_result     = @{ ^"result"     ~ !(ASCII_ALPHANUMERIC | "_") }
 
 // Type keywords
@@ -920,15 +967,21 @@ kw_complex    = @{ ^"complex"    ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_character  = @{ ^"character"  ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_logical    = @{ ^"logical"    ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_type       = @{ ^"type"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_endtype    = { ^"endtype"    ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_endtype_named = @{ ^"endtype" ~ (" " | "\t")+ ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 kw_len        = @{ ^"len"        ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_kind       = @{ ^"kind"       ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_class      = @{ ^"class"      ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_null       = @{ ^"null"       ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_forall     = @{ ^"forall"     ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_endforall  = { ^"endforall"  ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_where      = @{ ^"where"      ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_endwhere   = { ^"endwhere"   ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_elsewhere  = @{ ^"elsewhere"  ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_block      = @{ ^"block"      ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_endblock   = { ^"endblock"   ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_associate  = @{ ^"associate"  ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_endassociate = { ^"endassociate" ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_goto       = @{ ^"goto"       ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_go         = @{ ^"go"         ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_to         = @{ ^"to"         ~ !(ASCII_ALPHANUMERIC | "_") }
@@ -946,6 +999,7 @@ kw_all        = @{ ^"all"        ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_images     = @{ ^"images"     ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_memory     = @{ ^"memory"     ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_team       = @{ ^"team"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_endteam    = { ^"endteam"    ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_change     = @{ ^"change"     ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_deferred   = @{ ^"deferred"   ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_pass       = @{ ^"pass"       ~ !(ASCII_ALPHANUMERIC | "_") }
@@ -975,11 +1029,14 @@ kw_non_intrinsic = @{ ^"non_intrinsic" ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_assignment = @{ ^"assignment" ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_rank       = @{ ^"rank"       ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_critical   = @{ ^"critical"   ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_endcritical = { ^"endcritical" ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_lock       = @{ ^"lock"       ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_unlock     = @{ ^"unlock"     ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_error      = @{ ^"error"      ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_submodule  = @{ ^"submodule"  ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_endsubmodule = { ^"endsubmodule" ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_enum       = @{ ^"enum"       ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_endenum    = { ^"endenum"    ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_enumerator = @{ ^"enumerator" ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_bind       = @{ ^"bind"       ~ !(ASCII_ALPHANUMERIC | "_") }
 
@@ -1007,11 +1064,15 @@ kw_name       = @{ ^"name"       ~ !(ASCII_ALPHANUMERIC | "_") }
 
 // Control flow
 kw_if         = @{ ^"if"         ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_endif      = { ^"endif"      ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_elseif     = { ^"elseif"     ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_then       = @{ ^"then"       ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_else       = @{ ^"else"       ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_do         = @{ ^"do"         ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_enddo      = { ^"enddo"      ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_while      = @{ ^"while"      ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_select     = @{ ^"select"     ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_endselect  = { ^"endselect"  ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_case       = @{ ^"case"       ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_default    = @{ ^"default"    ~ !(ASCII_ALPHANUMERIC | "_") }
 
@@ -1032,10 +1093,30 @@ kw_deallocate = @{ ^"deallocate" ~ !(ASCII_ALPHANUMERIC | "_") }
 
 // OO/interface
 kw_interface  = @{ ^"interface"  ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_endinterface = { ^"endinterface" ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_operator   = @{ ^"operator"   ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_abstract   = @{ ^"abstract"   ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_extends    = @{ ^"extends"    ~ !(ASCII_ALPHANUMERIC | "_") }
 kw_procedure  = @{ ^"procedure"  ~ !(ASCII_ALPHANUMERIC | "_") }
+
+kw_end_if = { kw_endif | kw_end ~ kw_if }
+kw_end_do = { kw_enddo | kw_end ~ kw_do }
+kw_end_select = { kw_endselect | kw_end ~ kw_select }
+kw_end_subroutine = { kw_endsubroutine | kw_end ~ kw_subroutine }
+kw_end_function = { kw_endfunction | kw_end ~ kw_function }
+kw_end_type = { kw_endtype | kw_end ~ kw_type }
+kw_end_interface = { kw_endinterface | kw_end ~ kw_interface }
+kw_end_forall = { kw_endforall | kw_end ~ kw_forall }
+kw_end_where = { kw_endwhere | kw_end ~ kw_where }
+kw_end_block = { kw_endblock | kw_end ~ kw_block }
+kw_end_associate = { kw_endassociate | kw_end ~ kw_associate }
+kw_end_team = { kw_endteam | kw_end ~ kw_team }
+kw_end_critical = { kw_endcritical | kw_end ~ kw_critical }
+kw_end_submodule = { kw_endsubmodule | kw_end ~ kw_submodule }
+kw_end_enum = { kw_endenum | kw_end ~ kw_enum }
+kw_end_block_data = { kw_endblockdata | kw_end ~ (kw_block ~ kw_data)? }
+
+kw_endblockdata = { ^"endblockdata" ~ !(ASCII_ALPHANUMERIC | "_") }
 
 // Logical literal operators (case-insensitive dotted)
 kw_or_dot     = @{ ^".or."  }

@@ -16,12 +16,14 @@ fn nint_round_down() {
 
 #[test]
 fn aint_truncate() {
-    compile_ok("program t\nreal :: x\nx = aint(3.9)\nprint *, x\nend program t\n");
+    let out = run_prints("program t\nreal :: x\nx = aint(3.9)\nprint *, x\nend program t\n");
+    assert_eq!(out, ["3"]);
 }
 
 #[test]
 fn anint_nearest() {
-    compile_ok("program t\nreal :: x\nx = anint(3.5)\nprint *, x\nend program t\n");
+    let out = run_prints("program t\nreal :: x\nx = anint(3.5)\nprint *, x\nend program t\n");
+    assert_eq!(out, ["4"]);
 }
 
 #[test]
@@ -37,6 +39,22 @@ fn real_convert() {
 }
 
 #[test]
+fn real_convert_with_kind_arg() {
+    let out = run_prints(
+        "program t\ninteger, parameter :: dp = kind(1.0d0)\nprint *, real(7, dp)\nend program t\n",
+    );
+    assert_eq!(out, ["7"]);
+}
+
+#[test]
+fn real_convert_with_kind_arg_in_internal_function() {
+    let out = run_prints(
+        "program t\ninteger, parameter :: dp = kind(1.0d0)\nprint *, sample(7)\ncontains\npure function sample(s) result(r)\ninteger, intent(in) :: s\nreal(dp) :: r\nr = real(s, dp)\nend function sample\nend program t\n",
+    );
+    assert_eq!(out, ["7"]);
+}
+
+#[test]
 fn dble_convert() {
     compile_ok("program t\ndouble precision :: d\nd = dble(3)\nprint *, d\nend program t\n");
 }
@@ -45,12 +63,14 @@ fn dble_convert() {
 
 #[test]
 fn sign_pos_to_neg() {
-    compile_ok("program t\nprint *, sign(5, -1)\nend program t\n");
+    let out = run_prints("program t\nprint *, sign(5, -1)\nend program t\n");
+    assert_eq!(out, ["-5"]);
 }
 
 #[test]
 fn sign_neg_to_pos() {
-    compile_ok("program t\nprint *, sign(-5, 1)\nend program t\n");
+    let out = run_prints("program t\nprint *, sign(-5, 1)\nend program t\n");
+    assert_eq!(out, ["5"]);
 }
 
 #[test]
@@ -62,12 +82,14 @@ fn sign_real() {
 
 #[test]
 fn dim_positive() {
-    compile_ok("program t\nprint *, dim(10, 3)\nend program t\n");
+    let out = run_prints("program t\nprint *, dim(10, 3)\nend program t\n");
+    assert_eq!(out, ["7"]);
 }
 
 #[test]
 fn dim_zero() {
-    compile_ok("program t\nprint *, dim(3, 10)\nend program t\n");
+    let out = run_prints("program t\nprint *, dim(3, 10)\nend program t\n");
+    assert_eq!(out, ["0"]);
 }
 
 // ── MODULO ───────────────────────────────────────────────────
@@ -80,24 +102,28 @@ fn modulo_positive() {
 
 #[test]
 fn modulo_negative() {
-    compile_ok("program t\nprint *, modulo(-1, 5)\nend program t\n");
+    let out = run_prints("program t\nprint *, modulo(-1, 5)\nend program t\n");
+    assert_eq!(out, ["4"]);
 }
 
 // ── Trig — more functions ────────────────────────────────────
 
 #[test]
 fn asin_zero() {
-    compile_ok("program t\nreal :: x\nx = asin(0.0)\nprint *, x\nend program t\n");
+    let out = run_prints("program t\nreal :: x\nx = asin(0.0)\nprint *, x\nend program t\n");
+    assert_eq!(out, ["0"]);
 }
 
 #[test]
 fn acos_one() {
-    compile_ok("program t\nreal :: x\nx = acos(1.0)\nprint *, x\nend program t\n");
+    let out = run_prints("program t\nreal :: x\nx = acos(1.0)\nprint *, x\nend program t\n");
+    assert_eq!(out, ["0"]);
 }
 
 #[test]
 fn atan_zero() {
-    compile_ok("program t\nreal :: x\nx = atan(0.0)\nprint *, x\nend program t\n");
+    let out = run_prints("program t\nreal :: x\nx = atan(0.0)\nprint *, x\nend program t\n");
+    assert_eq!(out, ["0"]);
 }
 
 #[test]
@@ -107,31 +133,36 @@ fn atan2_basic() {
 
 #[test]
 fn tan_zero() {
-    compile_ok("program t\nreal :: x\nx = tan(0.0)\nprint *, x\nend program t\n");
+    let out = run_prints("program t\nreal :: x\nx = tan(0.0)\nprint *, x\nend program t\n");
+    assert_eq!(out, ["0"]);
 }
 
 // ── Hyperbolic ────────────────────────────────────────────────
 
 #[test]
 fn sinh_zero() {
-    compile_ok("program t\nreal :: x\nx = sinh(0.0)\nprint *, x\nend program t\n");
+    let out = run_prints("program t\nreal :: x\nx = sinh(0.0)\nprint *, x\nend program t\n");
+    assert_eq!(out, ["0"]);
 }
 
 #[test]
 fn cosh_zero() {
-    compile_ok("program t\nreal :: x\nx = cosh(0.0)\nprint *, x\nend program t\n");
+    let out = run_prints("program t\nreal :: x\nx = cosh(0.0)\nprint *, x\nend program t\n");
+    assert_eq!(out, ["1"]);
 }
 
 #[test]
 fn tanh_zero() {
-    compile_ok("program t\nreal :: x\nx = tanh(0.0)\nprint *, x\nend program t\n");
+    let out = run_prints("program t\nreal :: x\nx = tanh(0.0)\nprint *, x\nend program t\n");
+    assert_eq!(out, ["0"]);
 }
 
 // ── Power and log ────────────────────────────────────────────
 
 #[test]
 fn log10_100() {
-    compile_ok("program t\nreal :: x\nx = log10(100.0)\nprint *, x\nend program t\n");
+    let out = run_prints("program t\nreal :: x\nx = log10(100.0)\nprint *, x\nend program t\n");
+    assert_eq!(out, ["2"]);
 }
 
 #[test]
@@ -173,42 +204,50 @@ fn abs_real() {
 
 #[test]
 fn iand_basic() {
-    compile_ok("program t\nprint *, iand(255, 15)\nend program t\n");
+    let out = run_prints("program t\nprint *, iand(255, 15)\nend program t\n");
+    assert_eq!(out, ["15"]);
 }
 
 #[test]
 fn ior_basic() {
-    compile_ok("program t\nprint *, ior(240, 15)\nend program t\n");
+    let out = run_prints("program t\nprint *, ior(240, 15)\nend program t\n");
+    assert_eq!(out, ["255"]);
 }
 
 #[test]
 fn ieor_basic() {
-    compile_ok("program t\nprint *, ieor(255, 15)\nend program t\n");
+    let out = run_prints("program t\nprint *, ieor(255, 15)\nend program t\n");
+    assert_eq!(out, ["240"]);
 }
 
 #[test]
 fn ishft_left() {
-    compile_ok("program t\nprint *, ishft(1, 4)\nend program t\n");
+    let out = run_prints("program t\nprint *, ishft(1, 4)\nend program t\n");
+    assert_eq!(out, ["16"]);
 }
 
 #[test]
 fn ishft_right() {
-    compile_ok("program t\nprint *, ishft(256, -4)\nend program t\n");
+    let out = run_prints("program t\nprint *, ishft(256, -4)\nend program t\n");
+    assert_eq!(out, ["16"]);
 }
 
 #[test]
 fn ibset_bit() {
-    compile_ok("program t\nprint *, ibset(0, 3)\nend program t\n");
+    let out = run_prints("program t\nprint *, ibset(0, 3)\nend program t\n");
+    assert_eq!(out, ["8"]);
 }
 
 #[test]
 fn ibclr_bit() {
-    compile_ok("program t\nprint *, ibclr(15, 0)\nend program t\n");
+    let out = run_prints("program t\nprint *, ibclr(15, 0)\nend program t\n");
+    assert_eq!(out, ["14"]);
 }
 
 #[test]
 fn not_basic() {
-    compile_ok("program t\ninteger :: x\nx = not(0)\nprint *, x\nend program t\n");
+    let out = run_prints("program t\ninteger :: x\nx = not(0)\nprint *, x\nend program t\n");
+    assert_eq!(out, ["-1"]);
 }
 
 // ── Type / kind intrinsics ────────────────────────────────────
@@ -292,10 +331,12 @@ end program test
 
 #[test]
 fn merge_basic() {
-    compile_ok("program t\nprint *, merge(1, 0, .true.)\nend program t\n");
+    let out = run_prints("program t\nprint *, merge(1, 0, .true.)\nend program t\n");
+    assert_eq!(out, ["1"]);
 }
 
 #[test]
 fn merge_false() {
-    compile_ok("program t\nprint *, merge(1, 0, .false.)\nend program t\n");
+    let out = run_prints("program t\nprint *, merge(1, 0, .false.)\nend program t\n");
+    assert_eq!(out, ["0"]);
 }

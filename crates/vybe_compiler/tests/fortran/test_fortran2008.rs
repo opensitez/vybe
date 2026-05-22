@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── BLOCK construct ───────────────────────────────────────────
 
@@ -78,7 +78,7 @@ end program test
 // ── DO CONCURRENT (Fortran 2008) ──────────────────────────────
 
 #[test] fn do_concurrent_basic() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     integer :: a(10)
     do concurrent (i = 1:10)
@@ -87,10 +87,11 @@ program test
     print *, a(3)
 end program test
 "#);
+    assert_eq!(out, vec!["9"]);
 }
 
 #[test] fn do_concurrent_2d() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     real :: m(4,4)
     do concurrent (i = 1:4, j = 1:4)
@@ -99,10 +100,11 @@ program test
     print *, m(2,3)
 end program test
 "#);
+    assert_eq!(out, vec!["6"]);
 }
 
 #[test] fn do_concurrent_mask() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     integer :: a(10)
     a = 0
@@ -112,6 +114,7 @@ program test
     print *, a(4)
 end program test
 "#);
+    assert_eq!(out, vec!["4"]);
 }
 
 #[test] fn do_concurrent_locality() {
@@ -248,7 +251,7 @@ end program test
 // ── Internal subprogram as actual argument ────────────────────
 
 #[test] fn internal_proc_as_arg() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     integer :: result
     result = apply(3, double_it)
@@ -273,6 +276,7 @@ contains
     end function double_it
 end program test
 "#);
+    assert_eq!(out, vec!["6"]);
 }
 
 // ── FINDLOC (Fortran 2008) ────────────────────────────────────

@@ -907,6 +907,7 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
 
         // ── Fortran `max(a, b, c, ...)` / `min(a, b, c, ...)` — variadic.
         // Pure WASM (chained f64.max / f64.min); no host calls.
+        "fortran.matmul" => crate::emitter::fortran::math_adapter::emit_fortran_matmul(chunks, current, argc, line),
         "fortran.max" => crate::emitter::fortran::math_adapter::emit_fortran_max(chunks, current, argc, line),
         "fortran.min" => crate::emitter::fortran::math_adapter::emit_fortran_min(chunks, current, argc, line),
         "fortran.len_trim" => crate::emitter::fortran::string_adapter::emit_fortran_len_trim(chunks, current, line),

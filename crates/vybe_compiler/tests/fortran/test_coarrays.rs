@@ -1,15 +1,16 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── Coarray declarations ───────────────────────────────────────
 
 #[test] fn coarray_scalar_decl() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     integer :: x[*]
     x = 42
     print *, x
 end program test
 "#);
+    assert_eq!(out, vec!["42"]);
 }
 
 #[test] fn coarray_real_decl() {
@@ -67,23 +68,25 @@ end program test
 // ── THIS_IMAGE() intrinsic ────────────────────────────────────
 
 #[test] fn this_image_basic() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     integer :: me
     me = this_image()
     print *, me
 end program test
 "#);
+    assert_eq!(out, vec!["1"]);
 }
 
 #[test] fn this_image_in_conditional() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     if (this_image() == 1) then
         print *, 'image 1'
     end if
 end program test
 "#);
+    assert_eq!(out, vec!["image 1"]);
 }
 
 #[test] fn this_image_with_coarray() {
@@ -101,19 +104,21 @@ end program test
 // ── NUM_IMAGES() intrinsic ────────────────────────────────────
 
 #[test] fn num_images_basic() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     print *, num_images()
 end program test
 "#);
+    assert_eq!(out, vec!["1"]);
 }
 
 #[test] fn num_images_requested() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     print *, num_images(requested=.true.)
 end program test
 "#);
+    assert_eq!(out, vec!["1"]);
 }
 
 // ── IMAGE_INDEX() intrinsic ───────────────────────────────────
@@ -141,7 +146,7 @@ end program test
 // ── SYNC ALL ─────────────────────────────────────────────────
 
 #[test] fn sync_all_basic() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     integer :: x[*]
     x = this_image() * 10
@@ -149,10 +154,11 @@ program test
     print *, x
 end program test
 "#);
+    assert_eq!(out, vec!["10"]);
 }
 
 #[test] fn sync_all_with_stat() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     integer :: stat
     sync all (stat=stat)
@@ -160,17 +166,19 @@ program test
     print *, 'synced'
 end program test
 "#);
+    assert_eq!(out, vec!["synced"]);
 }
 
 // ── SYNC IMAGES ──────────────────────────────────────────────
 
 #[test] fn sync_images_star() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     sync images (*)
     print *, 'done'
 end program test
 "#);
+    assert_eq!(out, vec!["done"]);
 }
 
 #[test] fn sync_images_specific() {
@@ -189,7 +197,7 @@ end program test
 // ── SYNC MEMORY ──────────────────────────────────────────────
 
 #[test] fn sync_memory_basic() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     integer :: x[*]
     x = 0
@@ -198,6 +206,7 @@ program test
     print *, x
 end program test
 "#);
+    assert_eq!(out, vec!["1"]);
 }
 
 // ── SYNC TEAM ────────────────────────────────────────────────
@@ -217,7 +226,7 @@ end program test
 // ── CO_SUM collective ─────────────────────────────────────────
 
 #[test] fn co_sum_scalar_int() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     integer :: x
     x = this_image()
@@ -225,10 +234,11 @@ program test
     if (this_image() == 1) print *, x
 end program test
 "#);
+    assert_eq!(out, vec!["1"]);
 }
 
 #[test] fn co_sum_array() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     integer :: a(3)
     a = this_image()
@@ -236,26 +246,29 @@ program test
     print *, a(1)
 end program test
 "#);
+    assert_eq!(out, vec!["1"]);
 }
 
 #[test] fn co_sum_result_image() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     real :: x = 1.0
     call co_sum(x, result_image=1)
     if (this_image() == 1) print *, x
 end program test
 "#);
+    assert_eq!(out, vec!["1"]);
 }
 
 #[test] fn co_sum_with_stat() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 program test
     integer :: x = 5, stat
     call co_sum(x, stat=stat)
     print *, x
 end program test
 "#);
+    assert_eq!(out, vec!["5"]);
 }
 
 // ── CO_MAX collective ─────────────────────────────────────────

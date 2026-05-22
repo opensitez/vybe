@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── Module with constants and functions ───────────────────────
 
@@ -89,7 +89,7 @@ end program test
 
 #[test]
 fn module_exports_type() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 module geometry
     implicit none
     type :: Vector2D
@@ -111,11 +111,12 @@ program test
     print *, length(v)
 end program test
 "#);
+    assert_eq!(out, vec!["5"]);
 }
 
 #[test]
 fn module_type_with_procedure() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 module animals
     implicit none
     type :: Dog
@@ -137,6 +138,7 @@ program test
     call d%speak()
 end program test
 "#);
+    assert_eq!(out, vec!["Woof! I am Rex"]);
 }
 
 // ── Module with SAVE attribute ────────────────────────────────
@@ -202,7 +204,7 @@ end program test
 
 #[test]
 fn interface_operator() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 module vectors
     implicit none
     type :: Vec
@@ -229,6 +231,7 @@ program test
     print *, v3%x
 end program test
 "#);
+    assert_eq!(out, vec!["4"]);
 }
 
 #[test]
@@ -257,7 +260,7 @@ end program test
 
 #[test]
 fn operator_plus_type() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 module complex_mod
     implicit none
     type :: MyComplex
@@ -284,11 +287,12 @@ program test
     print *, c%re
 end program test
 "#);
+    assert_eq!(out, vec!["4"]);
 }
 
 #[test]
 fn operator_multiply() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 module vec_mod
     implicit none
     type :: Vec3
@@ -314,13 +318,14 @@ program test
     print *, r%x
 end program test
 "#);
+    assert_eq!(out, vec!["2"]);
 }
 
 // ── Generic interfaces ────────────────────────────────────────
 
 #[test]
 fn generic_interface() {
-    compile_ok(r#"
+    let out = run_prints(r#"
 module generic_mod
     implicit none
     interface my_abs
@@ -342,9 +347,10 @@ end module generic_mod
 program test
     use generic_mod
     print *, my_abs(-5)
-    print *, my_abs(-3.14)
+    print *, int(my_abs(-3.14))
 end program test
 "#);
+    assert_eq!(out, vec!["5", "3"]);
 }
 
 // ── ASSOCIATE construct ────────────────────────────────────────

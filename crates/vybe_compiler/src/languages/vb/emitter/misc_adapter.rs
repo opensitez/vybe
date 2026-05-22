@@ -72,12 +72,6 @@ fn ensure_global_map(chunks: &mut [Chunk], current: usize, name: &str, line: u32
     slot
 }
 
-fn emit_array_get_const_index(chunk: &mut Chunk, array_slot: u16, index: f64, line: u32) {
-    lget(chunk, array_slot, line);
-    push_const(chunk, Value::F64(index), line);
-    chunk.emit_op(Op::ARRAY_GET, line);
-}
-
 pub fn emit_vb_dir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc == 0 {
         push_const(&mut chunks[current], Value::String(Arc::from("")), line);

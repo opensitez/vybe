@@ -348,7 +348,7 @@ pub enum StmtKind {
     },
     InputFile {
         file_number: Expression,
-        variables: Vec<String>,
+        variables: Vec<Expression>,
     },
     LineInput {
         file_number: Expression,

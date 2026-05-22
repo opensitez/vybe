@@ -46,5 +46,6 @@ mod test_forall_advanced;
 mod test_character_arrays;
 mod test_submodules_advanced;
 mod test_hollerith;
+mod test_keyword_forms;
 mod test_do_while;
 mod test_where_advanced;

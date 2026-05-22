@@ -65,6 +65,20 @@ impl Compiler {
                 optional: false,
             });
             self.compile_expr(&init_expr)?;
+        } else if let Some(type_name) = type_hint
+            .and_then(|type_hint| self.user_value_type_name_from_hint(type_hint))
+        {
+            let ctor_global = {
+                let overload = format!("{}$arity0", type_name);
+                if self.defined_globals.contains(&overload) {
+                    overload
+                } else {
+                    type_name.clone()
+                }
+            };
+            let idx = self.str_const(&ctor_global);
+            self.emit_u16(Op::GLOBAL_GET, idx);
+            self.emit_u8(Op::CALL_REF, 0);
         } else if is_value_type {
             self.emit_default_value_for_type_hint(type_hint);
         } else {
@@ -203,6 +217,10 @@ impl Compiler {
         self.function_param_modes.insert(
             cname.clone(),
             params.iter().map(|param| param.pass_by).collect(),
+        );
+        self.function_param_types.insert(
+            cname.clone(),
+            params.iter().map(|param| param.type_hint.clone()).collect(),
         );
         self.function_min_arity.insert(
             cname.clone(),

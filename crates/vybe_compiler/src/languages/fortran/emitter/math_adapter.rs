@@ -4,8 +4,252 @@
 //! intrinsics. Composes pure WASM `f64.max` / `f64.min` opcodes —
 //! no host calls.
 
-use vybe_bytecode::Chunk;
+use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
+
+fn alloc_local(chunk: &mut Chunk) -> u16 {
+    let slot = chunk.local_count;
+    chunk.local_count = slot + 1;
+    slot
+}
+
+fn push_const(chunk: &mut Chunk, value: Value, line: u32) {
+    let idx = chunk.add_constant(value);
+    chunk.emit_op_u16(Op::CONST, idx, line);
+}
+
+fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
+fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+}
+
+fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
+    let idx = chunks[0].add_import(module.to_string(), name.to_string());
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
+    chunk.emit(argc, line);
+}
+
+fn emit_numeric_zero(chunk: &mut Chunk, line: u32) {
+    push_const(chunk, Value::F64(0.0), line);
+}
+
+fn emit_numeric_one(chunk: &mut Chunk, line: u32) {
+    push_const(chunk, Value::F64(1.0), line);
+}
+
+fn emit_numeric_coerce_from_top(chunk: &mut Chunk, line: u32) {
+    emit_numeric_zero(chunk, line);
+    chunk.emit_op(Op::DYN_ADD, line);
+}
+
+fn emit_array_get_into_slot(chunk: &mut Chunk, array_slot: u16, index_slot: u16, out_slot: u16, line: u32) {
+    lget(chunk, array_slot, line);
+    lget(chunk, index_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    lset(chunk, out_slot, line);
+}
+
+fn emit_increment_slot(chunk: &mut Chunk, slot: u16, line: u32) {
+    lget(chunk, slot, line);
+    emit_numeric_one(chunk, line);
+    chunk.emit_op(Op::DYN_ADD, line);
+    lset(chunk, slot, line);
+}
+
+pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    if argc != 2 {
+        for _ in 0..argc {
+            chunk.emit_op(Op::DROP, line);
+        }
+        chunk.emit_op(Op::NULL, line);
+        return;
+    }
+
+    let right_slot = alloc_local(chunk);
+    let left_slot = alloc_local(chunk);
+    let result_slot = alloc_local(chunk);
+    let left_len_slot = alloc_local(chunk);
+    let right_len_slot = alloc_local(chunk);
+    let right_first_slot = alloc_local(chunk);
+    let right_is_matrix_slot = alloc_local(chunk);
+    let col_count_slot = alloc_local(chunk);
+    let i_slot = alloc_local(chunk);
+    let row_slot = alloc_local(chunk);
+    let row_len_slot = alloc_local(chunk);
+    let row_result_slot = alloc_local(chunk);
+    let j_slot = alloc_local(chunk);
+    let k_slot = alloc_local(chunk);
+    let acc_slot = alloc_local(chunk);
+    let left_value_slot = alloc_local(chunk);
+    let right_value_slot = alloc_local(chunk);
+    let right_row_slot = alloc_local(chunk);
+
+    lset(chunk, right_slot, line);
+    lset(chunk, left_slot, line);
+
+    lget(chunk, left_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, left_len_slot, line);
+
+    lget(chunk, right_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, right_len_slot, line);
+
+    lget(chunk, left_len_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "vybe:js-array", "newWithLength", 1, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, result_slot, line);
+
+    emit_numeric_zero(chunk, line);
+    lset(chunk, right_is_matrix_slot, line);
+    emit_numeric_zero(chunk, line);
+    lset(chunk, col_count_slot, line);
+
+    lget(chunk, right_len_slot, line);
+    emit_numeric_zero(chunk, line);
+    chunk.emit_op(Op::DYN_GT, line);
+    let right_empty = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    emit_numeric_zero(chunk, line);
+    lset(chunk, k_slot, line);
+    emit_array_get_into_slot(chunk, right_slot, k_slot, right_first_slot, line);
+    lget(chunk, right_first_slot, line);
+    chunk.emit_op(Op::REF_IS_ARRAY, line);
+    lset(chunk, right_is_matrix_slot, line);
+
+    lget(chunk, right_is_matrix_slot, line);
+    let right_vector = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    lget(chunk, right_first_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, col_count_slot, line);
+    chunk.patch_jump(right_vector);
+    chunk.patch_jump(right_empty);
+
+    emit_numeric_zero(chunk, line);
+    lset(chunk, i_slot, line);
+
+    let outer_loop = chunk.current_offset();
+    lget(chunk, i_slot, line);
+    lget(chunk, left_len_slot, line);
+    chunk.emit_op(Op::DYN_LT, line);
+    let outer_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    emit_array_get_into_slot(chunk, left_slot, i_slot, row_slot, line);
+    lget(chunk, row_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, row_len_slot, line);
+
+    lget(chunk, right_is_matrix_slot, line);
+    let vector_branch = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    lget(chunk, col_count_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "vybe:js-array", "newWithLength", 1, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, row_result_slot, line);
+    emit_numeric_zero(chunk, line);
+    lset(chunk, j_slot, line);
+
+    let col_loop = chunk.current_offset();
+    lget(chunk, j_slot, line);
+    lget(chunk, col_count_slot, line);
+    chunk.emit_op(Op::DYN_LT, line);
+    let col_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    emit_numeric_zero(chunk, line);
+    lset(chunk, acc_slot, line);
+    emit_numeric_zero(chunk, line);
+    lset(chunk, k_slot, line);
+
+    let dot_loop = chunk.current_offset();
+    lget(chunk, k_slot, line);
+    lget(chunk, row_len_slot, line);
+    chunk.emit_op(Op::DYN_LT, line);
+    let dot_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    emit_array_get_into_slot(chunk, row_slot, k_slot, left_value_slot, line);
+    emit_array_get_into_slot(chunk, right_slot, k_slot, right_row_slot, line);
+    emit_array_get_into_slot(chunk, right_row_slot, j_slot, right_value_slot, line);
+
+    lget(chunk, acc_slot, line);
+    lget(chunk, left_value_slot, line);
+    emit_numeric_coerce_from_top(chunk, line);
+    lget(chunk, right_value_slot, line);
+    emit_numeric_coerce_from_top(chunk, line);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, acc_slot, line);
+
+    emit_increment_slot(chunk, k_slot, line);
+    chunk.emit_loop(dot_loop, line);
+    chunk.patch_jump(dot_exit);
+
+    lget(chunk, row_result_slot, line);
+    lget(chunk, j_slot, line);
+    lget(chunk, acc_slot, line);
+    chunk.emit_op(Op::ARRAY_SET, line);
+    chunk.emit_op(Op::DROP, line);
+
+    emit_increment_slot(chunk, j_slot, line);
+    chunk.emit_loop(col_loop, line);
+    chunk.patch_jump(col_exit);
+
+    lget(chunk, result_slot, line);
+    lget(chunk, i_slot, line);
+    lget(chunk, row_result_slot, line);
+    chunk.emit_op(Op::ARRAY_SET, line);
+    chunk.emit_op(Op::DROP, line);
+    let row_done = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(vector_branch);
+
+    emit_numeric_zero(chunk, line);
+    lset(chunk, acc_slot, line);
+    emit_numeric_zero(chunk, line);
+    lset(chunk, k_slot, line);
+
+    let vec_dot_loop = chunk.current_offset();
+    lget(chunk, k_slot, line);
+    lget(chunk, row_len_slot, line);
+    chunk.emit_op(Op::DYN_LT, line);
+    let vec_dot_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    emit_array_get_into_slot(chunk, row_slot, k_slot, left_value_slot, line);
+    emit_array_get_into_slot(chunk, right_slot, k_slot, right_value_slot, line);
+
+    lget(chunk, acc_slot, line);
+    lget(chunk, left_value_slot, line);
+    emit_numeric_coerce_from_top(chunk, line);
+    lget(chunk, right_value_slot, line);
+    emit_numeric_coerce_from_top(chunk, line);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, acc_slot, line);
+
+    emit_increment_slot(chunk, k_slot, line);
+    chunk.emit_loop(vec_dot_loop, line);
+    chunk.patch_jump(vec_dot_exit);
+
+    lget(chunk, result_slot, line);
+    lget(chunk, i_slot, line);
+    lget(chunk, acc_slot, line);
+    chunk.emit_op(Op::ARRAY_SET, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.patch_jump(row_done);
+    emit_increment_slot(chunk, i_slot, line);
+    chunk.emit_loop(outer_loop, line);
+    chunk.patch_jump(outer_exit);
+
+    lget(chunk, result_slot, line);
+}
 
 /// Fortran `max(a, b, c, ...)` — variadic.
 /// Stack on entry: `[arg0, arg1, ..., argN-1]` (argc args).

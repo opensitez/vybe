@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── COMPLEX declarations ──────────────────────────────────────
 
@@ -15,6 +15,14 @@ use super::helpers::compile_ok;
 #[test] fn cmplx_one_arg() { compile_ok("program t\n  complex :: z\n  z = cmplx(5.0)\n  print *, z\nend program t\n"); }
 #[test] fn cmplx_from_int() { compile_ok("program t\n  complex :: z\n  integer :: a = 3, b = 4\n  z = cmplx(a, b)\n  print *, z\nend program t\n"); }
 #[test] fn cmplx_kind() { compile_ok("program t\n  complex(kind=8) :: z\n  z = cmplx(1.0, 2.0, kind=8)\n  print *, z\nend program t\n"); }
+
+#[test]
+fn cmplx_runtime_real_and_imag_parts() {
+    let out = run_prints(
+        "program t\n  complex :: z\n  z = cmplx(3.0, 4.0)\n  print *, real(z)\n  print *, aimag(z)\nend program t\n",
+    );
+    assert_eq!(out, ["3", "4"]);
+}
 
 // ── REAL and AIMAG ─────────────────────────────────────────────
 
@@ -37,6 +45,14 @@ end program test
 
 #[test] fn conjg_basic() { compile_ok("program t\n  complex :: z = (3.0, 4.0)\n  complex :: c\n  c = conjg(z)\n  print *, c\nend program t\n"); }
 #[test] fn conjg_pure_real() { compile_ok("program t\n  complex :: z = (5.0, 0.0)\n  print *, conjg(z)\nend program t\n"); }
+
+#[test]
+fn conjg_runtime_real_and_imag_parts() {
+    let out = run_prints(
+        "program t\n  complex :: z, c\n  z = cmplx(3.0, 4.0)\n  c = conjg(z)\n  print *, real(c)\n  print *, aimag(c)\nend program t\n",
+    );
+    assert_eq!(out, ["3", "-4"]);
+}
 
 // ── ABS of complex ─────────────────────────────────────────────
 
@@ -116,6 +132,38 @@ program test
     print *, r
 end program test
 "#);
+}
+
+#[test]
+fn complex_array_scalar_division_runtime() {
+    let out = run_prints(
+        "program t\n  complex :: x(2)\n  x(1) = cmplx(2.0, 4.0)\n  x(2) = cmplx(6.0, 8.0)\n  x = x / 2.0\n  print *, real(x(1))\n  print *, aimag(x(1))\n  print *, real(x(2))\n  print *, aimag(x(2))\nend program t\n",
+    );
+    assert_eq!(out, ["1", "2", "3", "4"]);
+}
+
+#[test]
+fn complex_kinded_array_scalar_parts_runtime() {
+    let out = run_prints(
+        "program t\n  integer, parameter :: dp = kind(1.0d0)\n  complex(dp) :: x(2)\n  x(1) = cmplx(2.0_dp, 4.0_dp, dp)\n  x(2) = cmplx(6.0_dp, 8.0_dp, dp)\n  print *, nint(real(x(1)))\n  print *, nint(aimag(x(1)))\n  print *, nint(real(x(2)))\n  print *, nint(aimag(x(2)))\nend program t\n",
+    );
+    assert_eq!(out, ["2", "4", "6", "8"]);
+}
+
+#[test]
+fn complex_array_abs_maxval_runtime() {
+    let out = run_prints(
+        "program t\n  complex :: x(2)\n  x(1) = cmplx(3.0, 4.0)\n  x(2) = cmplx(1.0, 2.0)\n  print *, maxval(abs(x))\nend program t\n",
+    );
+    assert_eq!(out, ["5"]);
+}
+
+#[test]
+fn complex_slice_real_kind_abs_maxval_runtime() {
+    let out = run_prints(
+        "program t\n  integer, parameter :: dp = kind(1.0d0)\n  complex(dp) :: a(4), b(4)\n  a(1) = cmplx(1.0_dp, 0.0_dp, dp)\n  a(2) = cmplx(0.5_dp, 0.0_dp, dp)\n  a(3) = cmplx(0.0_dp, 0.0_dp, dp)\n  a(4) = cmplx(0.0_dp, 0.0_dp, dp)\n  b = a\n  print *, maxval(abs(real(a(1:4), dp) - real(b(1:4), dp)))\nend program t\n",
+    );
+    assert_eq!(out, ["0"]);
 }
 
 // ── Complex intrinsics ────────────────────────────────────────

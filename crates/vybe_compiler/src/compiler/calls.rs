@@ -404,16 +404,24 @@ fn resolves_to_static_container_method(
     }
 
     let head_name = class_parts.first().map(String::as_str).unwrap_or("");
-    if compiler.scope().resolve(head_name).is_some()
-        || compiler.scope().resolve_ci(head_name).is_some()
-        || compiler.lookup_var_type_hint(head_name).is_some()
-    {
-        return false;
-    }
-
     let full_canon = compiler.canon(&class_parts.join("."));
     let short_canon = compiler.canon(class_parts.last().map(String::as_str).unwrap_or(""));
     let method_canon = compiler.canon(field);
+
+    // If the head resolves to a known class (even if it's also in scope as a global variable —
+    // Python and similar languages register class names as both), check whether the field is
+    // actually a static method on that class before bailing out on the scope check.
+    // This lets `C.add(2, 3)` dispatch as a static call when `add` is `@staticmethod`.
+    let head_is_known_class = compiler.defined_classes.contains(full_canon.as_str())
+        || compiler.defined_classes.contains(short_canon.as_str());
+
+    if !head_is_known_class
+        && (compiler.scope().resolve(head_name).is_some()
+            || compiler.scope().resolve_ci(head_name).is_some()
+            || compiler.lookup_var_type_hint(head_name).is_some())
+    {
+        return false;
+    }
 
     [full_canon, short_canon]
         .into_iter()
@@ -426,6 +434,13 @@ fn resolves_to_static_container_method(
                     .unwrap_or(false)
         })
 }
+
+    fn has_explicit_constructor_signature(compiler: &Compiler, class_name: &str) -> bool {
+        compiler
+        .constructor_signatures
+        .get(class_name)
+        .is_some_and(|signatures| !signatures.is_empty())
+    }
 
 fn is_numeric_overload_type(type_hint: &str) -> bool {
     matches!(
@@ -474,28 +489,90 @@ fn resolve_go_pending_instance_method_owner(
 }
 
 impl Compiler {
-    fn fortran_member_call_writeback_name(&self, object: &Expression) -> Option<String> {
-        if self.profile.name != "fortran" {
-            return None;
-        }
-        let ExprKind::Ident(name) = &object.kind else {
-            return None;
-        };
-        self.lookup_var_type_hint(name)
-            .and_then(|type_hint| self.resolve_pending_class_name_for_type_hint(type_hint))
-            .map(|_| name.clone())
-    }
-
     fn emit_fortran_member_receiver_writeback(&mut self, object: &Expression, receiver_slot: u16) {
-        let Some(name) = self.fortran_member_call_writeback_name(object) else {
+        if self.profile.name != "fortran" {
             return;
-        };
+        }
         let result_slot = self.define_local("__fortran_member_call_result");
         self.emit_u16(Op::LOCAL_SET, result_slot);
         self.emit(Op::DROP);
         self.emit_u16(Op::LOCAL_GET, receiver_slot);
-        self.emit_var_set(&name);
+        if self.compile_assign_target(object).is_err() {
+            self.emit(Op::DROP);
+        }
         self.emit_u16(Op::LOCAL_GET, result_slot);
+    }
+
+    fn try_compile_fortran_derived_type_constructor(
+        &mut self,
+        name: &str,
+        args: &[Argument],
+    ) -> Result<bool, String> {
+        if self.profile.name != "fortran" || self.has_accessible_local_binding(name) {
+            return Ok(false);
+        }
+
+        let class_name = self.canon(name);
+        let Some(pending) = self.pending_classes.get(&class_name) else {
+            return Ok(false);
+        };
+        if !pending.is_value_type || has_explicit_constructor_signature(self, &class_name) {
+            return Ok(false);
+        }
+        let fields = pending.fields.clone();
+        if args.iter().any(|arg| arg.spread) {
+            return Ok(false);
+        }
+
+        let ctor_global = format!("{}$arity0", class_name);
+        if self.defined_globals.contains(&ctor_global) {
+            self.emit_var_get(&ctor_global);
+        } else {
+            self.emit_var_get(name);
+        }
+        self.emit_u8(Op::CALL_REF, 0);
+
+        let obj_slot = self.define_local("__fortran_type_ctor_obj");
+        self.emit_u16(Op::LOCAL_SET, obj_slot);
+        self.emit(Op::DROP);
+
+        let mut positional_index = 0usize;
+        for (index, arg) in args.iter().enumerate() {
+            let field_name = if let Some(field_name) = arg.name.as_ref() {
+                self.canon(field_name)
+            } else {
+                let Some(field_name) = fields.get(positional_index).cloned() else {
+                    return Err(format!(
+                        "Fortran type constructor '{}' received too many positional arguments",
+                        name
+                    ));
+                };
+                positional_index += 1;
+                field_name
+            };
+
+            if !fields.iter().any(|field| field == &field_name) {
+                return Err(format!(
+                    "Fortran type constructor '{}' has no field named '{}'",
+                    name,
+                    field_name
+                ));
+            }
+
+            self.compile_expr_with_value_copy(&arg.value)?;
+            let value_slot = self.define_local(&format!("__fortran_type_ctor_arg_{}", index));
+            self.emit_u16(Op::LOCAL_SET, value_slot);
+            self.emit(Op::DROP);
+
+            let field_idx = self.str_const(&field_name);
+            self.emit_u16(Op::LOCAL_GET, obj_slot);
+            self.emit_u16(Op::LOCAL_GET, value_slot);
+            self.emit_u16(Op::STRUCT_SET, field_idx);
+            self.emit(Op::DROP);
+        }
+
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        Ok(true)
     }
 
     fn resolve_php_autoload_callback_class_global(&self, class_name: &str) -> Option<String> {
@@ -736,12 +813,10 @@ impl Compiler {
             if user_modes.iter().any(|mode| matches!(mode, PassBy::Ref | PassBy::Out)) {
                 let mut arg_slots = Vec::with_capacity(args.len());
                 for (index, arg) in args.iter().enumerate() {
-                    match user_modes.get(index).copied().unwrap_or(PassBy::Value) {
-                        PassBy::Out => self.compile_out_call_arg(arg)?,
-                        PassBy::Ref | PassBy::Const | PassBy::Value => {
-                            self.compile_expr_with_value_copy(&arg.value)?;
-                        }
-                    }
+                    self.compile_ref_aware_call_arg(
+                        arg,
+                        user_modes.get(index).copied().unwrap_or(PassBy::Value),
+                    )?;
                     let arg_slot = self.define_local(&format!("__direct_instance_method_arg_{}", index));
                     self.emit_u16(Op::LOCAL_SET, arg_slot);
                     self.emit(Op::DROP);
@@ -966,6 +1041,26 @@ impl Compiler {
             self.emit(Op::NULL);
         }
         Ok(())
+    }
+
+    fn compile_ref_aware_call_arg(&mut self, arg: &Argument, mode: PassBy) -> Result<(), String> {
+        match mode {
+            PassBy::Out => self.compile_out_call_arg(arg)?,
+            PassBy::Ref | PassBy::Const if self.profile.name == "fortran" => {
+                self.compile_expr(&arg.value)?;
+            }
+            PassBy::Ref | PassBy::Const | PassBy::Value => self.compile_expr_with_value_copy(&arg.value)?,
+        }
+        Ok(())
+    }
+
+    fn mode_needs_ref_aware_call_handling(&self, mode: PassBy) -> bool {
+        matches!(mode, PassBy::Ref | PassBy::Out)
+            || (self.profile.name == "fortran" && matches!(mode, PassBy::Const))
+    }
+
+    fn mode_needs_call_writeback(&self, mode: PassBy) -> bool {
+        matches!(mode, PassBy::Ref | PassBy::Out)
     }
 
     fn emit_normal_call_from_args_array(&mut self, callee_slot: u16, receiver_slot: Option<u16>, args_slot: u16, known_len: Option<usize>) {
@@ -2257,23 +2352,6 @@ impl Compiler {
                 }
             }
         }
-
-        // ── ESM host-module import binding ──────────────────────────
-        //
-        // `import { createServer } from "wasi:http"` binds
-        // `createServer` locally. Calling it here emits a direct
-        // `CALL_IMPORT` against the recorded (module, fn) pair — the
-        // import statement itself is the compile-time declaration.
-        if let ExprKind::Ident(name) = &callee.kind {
-            let key = self.canon(name);
-            if let Some((module, func)) = self.host_import_bindings.get(&key).cloned() {
-                for a in &arg_exprs { self.compile_expr(a)?; }
-                let idx = self.import(&module, &func);
-                self.emit_host_call(idx, arg_exprs.len() as u8);
-                return Ok(());
-            }
-        }
-
         if let ExprKind::Member { object, field, .. } = &callee.kind {
             if resolves_to_static_container_method(self, object, field) {
                 self.compile_expr(object)?;
@@ -2501,12 +2579,10 @@ impl Compiler {
                         if param_modes.iter().any(|mode| matches!(mode, PassBy::Ref | PassBy::Out)) {
                             let mut arg_slots = Vec::with_capacity(args.len());
                             for (index, arg) in args.iter().enumerate() {
-                                match param_modes.get(index).copied().unwrap_or(PassBy::Value) {
-                                    PassBy::Out => self.compile_out_call_arg(arg)?,
-                                    PassBy::Ref | PassBy::Const | PassBy::Value => {
-                                        self.compile_expr_with_value_copy(&arg.value)?;
-                                    }
-                                }
+                                self.compile_ref_aware_call_arg(
+                                    arg,
+                                    param_modes.get(index).copied().unwrap_or(PassBy::Value),
+                                )?;
                                 let arg_slot = self.define_local(&format!("__early_static_call_arg_{}", index));
                                 self.emit_u16(Op::LOCAL_SET, arg_slot);
                                 self.emit(Op::DROP);
@@ -2987,14 +3063,10 @@ impl Compiler {
                             if param_modes.iter().any(|mode| matches!(mode, PassBy::Ref | PassBy::Out)) {
                                 let mut arg_slots = Vec::with_capacity(args.len());
                                 for (index, arg) in args.iter().enumerate() {
-                                    match param_modes.get(index).copied().unwrap_or(PassBy::Value) {
-                                        PassBy::Out => self.compile_out_call_arg(arg)?,
-                                        PassBy::Ref | PassBy::Const | PassBy::Value => {
-                                            if !matches!(param_modes.get(index), Some(PassBy::Out)) {
-                                                self.compile_expr_with_value_copy(&arg.value)?;
-                                            }
-                                        }
-                                    }
+                                    self.compile_ref_aware_call_arg(
+                                        arg,
+                                        param_modes.get(index).copied().unwrap_or(PassBy::Value),
+                                    )?;
                                     let arg_slot = self.define_local(&format!("__js_static_call_arg_{}", index));
                                     self.emit_u16(Op::LOCAL_SET, arg_slot);
                                     self.emit(Op::DROP);
@@ -3080,14 +3152,10 @@ impl Compiler {
                         if param_modes.iter().any(|mode| matches!(mode, PassBy::Ref | PassBy::Out)) {
                             let mut arg_slots = Vec::with_capacity(args.len());
                             for (index, arg) in args.iter().enumerate() {
-                                match param_modes.get(index).copied().unwrap_or(PassBy::Value) {
-                                    PassBy::Out => self.compile_out_call_arg(arg)?,
-                                    PassBy::Ref | PassBy::Const | PassBy::Value => {
-                                        if !matches!(param_modes.get(index), Some(PassBy::Out)) {
-                                            self.compile_expr_with_value_copy(&arg.value)?;
-                                        }
-                                    }
-                                }
+                                self.compile_ref_aware_call_arg(
+                                    arg,
+                                    param_modes.get(index).copied().unwrap_or(PassBy::Value),
+                                )?;
                                 let arg_slot = self.define_local(&format!("__static_call_arg_{}", index));
                                 self.emit_u16(Op::LOCAL_SET, arg_slot);
                                 self.emit(Op::DROP);
@@ -4887,12 +4955,10 @@ impl Compiler {
                         if user_modes.iter().any(|mode| matches!(mode, PassBy::Ref | PassBy::Out)) {
                             let mut arg_slots = Vec::with_capacity(args.len());
                             for (index, arg) in args.iter().enumerate() {
-                                match user_modes.get(index).copied().unwrap_or(PassBy::Value) {
-                                    PassBy::Out => self.compile_out_call_arg(arg)?,
-                                    PassBy::Ref | PassBy::Const | PassBy::Value => {
-                                        self.compile_expr_with_value_copy(&arg.value)?;
-                                    }
-                                }
+                                self.compile_ref_aware_call_arg(
+                                    arg,
+                                    user_modes.get(index).copied().unwrap_or(PassBy::Value),
+                                )?;
                                 let arg_slot = self.define_local(&format!("__member_fast_arg_{}", index));
                                 self.emit_u16(Op::LOCAL_SET, arg_slot);
                                 self.emit(Op::DROP);
@@ -5331,12 +5397,10 @@ impl Compiler {
                         if user_modes.iter().any(|mode| matches!(mode, PassBy::Ref | PassBy::Out)) {
                             let mut arg_slots = Vec::with_capacity(args.len());
                             for (index, arg) in args.iter().enumerate() {
-                                match user_modes.get(index).copied().unwrap_or(PassBy::Value) {
-                                    PassBy::Out => self.compile_out_call_arg(arg)?,
-                                    PassBy::Ref | PassBy::Const | PassBy::Value => {
-                                        self.compile_expr_with_value_copy(&arg.value)?;
-                                    }
-                                }
+                                self.compile_ref_aware_call_arg(
+                                    arg,
+                                    user_modes.get(index).copied().unwrap_or(PassBy::Value),
+                                )?;
                                 let arg_slot = self.define_local(&format!("__member_call_arg_{}", index));
                                 self.emit_u16(Op::LOCAL_SET, arg_slot);
                                 self.emit(Op::DROP);
@@ -5399,12 +5463,25 @@ impl Compiler {
 
         // ── Simple call: name(args) / expr(args) ────────────────────
         if let ExprKind::Ident(name) = &callee.kind {
+            if self.try_compile_fortran_derived_type_constructor(name, args)? {
+                return Ok(());
+            }
+
             let rest_signature = self
                 .function_signatures
                 .get(&self.canon(name))
                 .and_then(|signatures| self.select_call_signature(signatures, args))
                 .filter(|signature| signature.has_rest)
                 .cloned();
+
+            // ── ESM host-module import binding ──────────────────────────
+            let key = self.canon(name);
+            if let Some((module, func)) = self.host_import_bindings.get(&key).cloned() {
+                for a in &arg_exprs { self.compile_expr(a)?; }
+                let idx = self.import(&module, &func);
+                self.emit_host_call(idx, arg_exprs.len() as u8);
+                return Ok(());
+            }
 
             if self.is_php_profile()
                 && (name.eq_ignore_ascii_case("exit") || name.eq_ignore_ascii_case("die"))
@@ -5458,12 +5535,10 @@ impl Compiler {
                             if param_modes.iter().any(|mode| matches!(mode, PassBy::Ref | PassBy::Out)) {
                                 let mut arg_slots = Vec::with_capacity(args.len());
                                 for (index, arg) in args.iter().enumerate() {
-                                    match param_modes.get(index).copied().unwrap_or(PassBy::Value) {
-                                        PassBy::Out => self.compile_out_call_arg(arg)?,
-                                        PassBy::Ref | PassBy::Const | PassBy::Value => {
-                                            self.compile_expr_with_value_copy(&arg.value)?;
-                                        }
-                                    }
+                                    self.compile_ref_aware_call_arg(
+                                        arg,
+                                        param_modes.get(index).copied().unwrap_or(PassBy::Value),
+                                    )?;
                                     let arg_slot = self.define_local(&format!("__bare_static_call_arg_{}", index));
                                     self.emit_u16(Op::LOCAL_SET, arg_slot);
                                     self.emit(Op::DROP);
@@ -5520,8 +5595,32 @@ impl Compiler {
                 }
             }
 
+            let fortran_arg_exprs: Vec<Expression> = arg_exprs.iter().cloned().cloned().collect();
+            if !self.has_accessible_local_binding(name) {
+                if let Some(target_name) = self.resolve_fortran_interface_target(name, &fortran_arg_exprs) {
+                let callee = if let Some(module_name) = self.enum_members.get(&self.canon(&target_name)).cloned() {
+                    Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::ident(&module_name)),
+                        field: target_name.clone(),
+                        null_safe: false,
+                    })
+                } else {
+                    Expression::ident(&target_name)
+                };
+                self.compile_call(&callee, args)?;
+                return Ok(());
+                }
+            }
+
+            let canonical_name = self.canon(name);
+            let is_known_module_static = self
+                .enum_members
+                .get(&canonical_name)
+                .and_then(|module_name| self.pending_classes.get(module_name))
+                .is_some_and(|pending| pending.static_method_names.iter().any(|member| member == &canonical_name));
             let is_known_func = self.defined_functions.contains(name)
-                || (!self.case_sensitive && self.defined_functions.iter().any(|g| g.eq_ignore_ascii_case(name)));
+                || (!self.case_sensitive && self.defined_functions.iter().any(|g| g.eq_ignore_ascii_case(name)))
+                || is_known_module_static;
             if !is_known_func && self.try_compile_builtin(name, &arg_exprs)? {
                 return Ok(());
             }
@@ -5934,17 +6033,21 @@ impl Compiler {
                 return Ok(());
             }
             if let Some(param_modes) = self.function_param_modes.get(&self.canon(name)).cloned() {
-                if param_modes.iter().any(|mode| matches!(mode, PassBy::Ref | PassBy::Out)) {
+                let needs_ref_aware_args = param_modes
+                    .iter()
+                    .copied()
+                    .any(|mode| self.mode_needs_ref_aware_call_handling(mode));
+                let needs_packed_result = param_modes
+                    .iter()
+                    .copied()
+                    .any(|mode| self.mode_needs_call_writeback(mode));
+                if needs_ref_aware_args {
                     let mut arg_slots = Vec::with_capacity(args.len());
                     for (index, arg) in args.iter().enumerate() {
-                        match param_modes.get(index).copied().unwrap_or(PassBy::Value) {
-                            PassBy::Out => self.compile_out_call_arg(arg)?,
-                            PassBy::Ref | PassBy::Const | PassBy::Value => {
-                                if !matches!(param_modes.get(index), Some(PassBy::Out)) {
-                                    self.compile_expr_with_value_copy(&arg.value)?;
-                                }
-                            }
-                        }
+                        self.compile_ref_aware_call_arg(
+                            arg,
+                            param_modes.get(index).copied().unwrap_or(PassBy::Value),
+                        )?;
 
                         let arg_slot = self.define_local(&format!("__direct_call_arg_{}", index));
                         self.emit_u16(Op::LOCAL_SET, arg_slot);
@@ -5977,12 +6080,20 @@ impl Compiler {
                     self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
                     self.patch_jump(call_done);
 
+                    if !needs_packed_result {
+                        return Ok(());
+                    }
+
                     let pack_slot = self.define_local("__ref_call_pack");
                     self.emit_u16(Op::LOCAL_SET, pack_slot);
                     self.emit(Op::DROP);
                     let mut ref_out_index = 1usize;
                     for (index, arg) in args.iter().enumerate() {
-                        if !matches!(param_modes.get(index), Some(PassBy::Ref | PassBy::Out)) {
+                        if !param_modes
+                            .get(index)
+                            .copied()
+                            .is_some_and(|mode| self.mode_needs_call_writeback(mode))
+                        {
                             continue;
                         }
                         self.emit_u16(Op::LOCAL_GET, pack_slot);
@@ -7885,11 +7996,18 @@ impl Compiler {
             self.define_local_typed(capture_name, capture_type.clone());
         }
 
+        // Compile the actual lambda body inside the factory. The inner lambda
+        // upvalue-captures the factory's locals (the by-value captures, including
+        // __js_this). compile_lambda_direct emits REF_FUNC into the factory chunk,
+        // leaving the function reference on the factory's operand stack.
         self.compile_lambda_direct(params, body)?;
-        self.emit(Op::RETURN);
 
-        let locals = self.scope().next_slot.max(self.chunks[factory_idx].local_count);
-        self.chunks[factory_idx].local_count = locals;
+        // Emit RETURN so the factory returns the function reference it just built.
+        let line = self.line;
+        self.chunks[factory_idx].emit_op(Op::RETURN, line);
+
+        // Collect upvalues AFTER body compilation — the body may have referenced
+        // outer-scope variables, registering them as factory upvalues.
         let uvs = self.scopes.last().unwrap().upvalues.clone();
         self.scopes.pop();
         self.current = saved;

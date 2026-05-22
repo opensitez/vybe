@@ -161,10 +161,64 @@ fn derived_type_allocatable_array_field_supports_rk4_array_math() {
 }
 
 #[test]
+fn nested_allocatable_member_index_assignment_writes_back_receiver() {
+    let out = run_prints(
+        "program test\n  type :: field2d\n    real, allocatable :: data(:,:)\n  contains\n    procedure :: init => field_init\n  end type field2d\n  type :: state_t\n    type(field2d) :: h\n  end type state_t\n  type(state_t) :: state\n  call state%h%init(3, 4)\n  state%h%data(2, 3) = 42.0\n  state%h%data(1, 1) = -7.5\n  print *, state%h%data(2, 3)\n  print *, state%h%data(1, 1)\ncontains\n  subroutine field_init(self, nx, ny)\n    class(field2d), intent(inout) :: self\n    integer, intent(in) :: nx, ny\n    allocate(self%data(nx, ny))\n    self%data = 0.0\n  end subroutine field_init\nend program test\n",
+    );
+
+    assert_eq!(out, ["42", "-7.5"]);
+}
+
+#[test]
 fn multidimensional_scalar_broadcast_preserves_row_slices() {
     let out = run_prints(
         "program test\n  integer :: i\n  real :: trajectory(4, 5)\n  trajectory = 0.0\n  trajectory(2, :) = [3.0, -2.0, 7.0, 1.5, 4.0]\n  i = 1\n  print *, trajectory(2)\n  print *, trajectory(2, 1)\n  print *, minval(trajectory(i + 1, 1:5))\n  print *, maxval(trajectory(i + 1, 1:5))\nend program test\n",
     );
 
     assert_eq!(out, ["3,-2,7,1.5,4", "3", "-2", "7"]);
+}
+
+#[test]
+fn multidimensional_array_math_preserves_nested_shape() {
+    let out = run_prints(
+        "program test\n  real, allocatable :: a(:,:), b(:,:), c(:,:)\n  allocate(a(2,2), b(2,2), c(2,2))\n  a = 1.0\n  b = 2.0\n  c = a + b\n  print *, c(1,1)\n  print *, c(2,2)\n  print *, sum(c)\nend program test\n",
+    );
+
+    assert_eq!(out, ["3", "3", "12"]);
+}
+
+#[test]
+fn multidimensional_member_array_reductions_cover_all_elements() {
+    let out = run_prints(
+        "program test\n  type :: field2d\n    real, allocatable :: data(:,:)\n  contains\n    procedure :: init => field_init\n  end type\n  type(field2d) :: h, u\n  call h%init(2,2)\n  call u%init(2,2)\n  h%data = 3.0\n  u%data = 4.0\n  print *, size(h%data)\n  print *, maxval(h%data * u%data)\n  print *, sum(h%data * u%data)\ncontains\n  subroutine field_init(self, nx, ny)\n    class(field2d), intent(inout) :: self\n    integer, intent(in) :: nx, ny\n    allocate(self%data(nx, ny))\n    self%data = 0.0\n  end subroutine field_init\nend program test\n",
+    );
+
+    assert_eq!(out, ["4", "12", "48"]);
+}
+
+#[test]
+fn explicit_shape_parameter_whole_array_unary_assignment_preserves_shape() {
+    let out = run_prints(
+        "program test\n  real :: a(2,2), b(2,2)\n  call foo(a, b)\n  print *, sum(a)\n  print *, sum(b)\ncontains\n  subroutine foo(a, b)\n    real, intent(out) :: a(2,2)\n    real, intent(out) :: b(2,2)\n    a = 4.0\n    b = -a\n  end subroutine foo\nend program test\n",
+    );
+
+    assert_eq!(out, ["16", "-16"]);
+}
+
+#[test]
+fn explicit_shape_vector_parameter_unary_assignment_preserves_values() {
+    let out = run_prints(
+        "program test\n  real :: a(4), b(4)\n  call foo(a, b)\n  print *, sum(a)\n  print *, sum(b)\ncontains\n  subroutine foo(a, b)\n    real, intent(out) :: a(4)\n    real, intent(out) :: b(4)\n    a = 4.0\n    b = -a\n  end subroutine foo\nend program test\n",
+    );
+
+    assert_eq!(out, ["16", "-16"]);
+}
+
+#[test]
+fn allocatable_member_array_copy_preserves_values() {
+    let out = run_prints(
+        "program test\n  type :: box\n    integer :: n\n    real, allocatable :: y(:)\n  contains\n    procedure :: init => box_init\n    procedure :: copy => box_copy\n  end type\n  type(box) :: a, b\n  call a%init(3)\n  a%y = [1.0, 2.0, 3.0]\n  call b%copy(a)\n  print *, sum(b%y)\ncontains\n  subroutine box_init(self, n)\n    class(box), intent(inout) :: self\n    integer, intent(in) :: n\n    self%n = n\n    allocate(self%y(n))\n    self%y = 0.0\n  end subroutine box_init\n  subroutine box_copy(self, other)\n    class(box), intent(inout) :: self\n    type(box), intent(in) :: other\n    self%n = other%n\n    if (allocated(self%y)) deallocate(self%y)\n    allocate(self%y(other%n))\n    self%y = other%y\n  end subroutine box_copy\nend program test\n",
+    );
+
+    assert_eq!(out, ["6"]);
 }

@@ -5112,23 +5112,6 @@ fn walk_run_unit_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })))
 }
 
-// ── Nested program ──────────────────────────────────────────────────────────
-
-fn walk_nested_program(
-    pair: Pair<Rule>,
-    body: &mut Vec<Statement>,
-    ctx: &mut CobolWalkerContext,
-) -> Result<(), String> {
-    for child in pair.into_inner() {
-        if child.as_rule() == Rule::nested_program_stmt {
-            if let Some(stmt) = walk_statement(child, ctx)? {
-                body.push(stmt);
-            }
-        }
-    }
-    Ok(())
-}
-
 // ── EXEC body extraction ────────────────────────────────────────────────────
 
 fn extract_exec_body(pair: &Pair<Rule>) -> String {

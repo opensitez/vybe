@@ -69,6 +69,19 @@ end program test
 }
 
 #[test]
+fn formatted_array_print_ignores_unused_repeat_descriptors() {
+    let out = run_prints(r#"
+program test
+    real(8) :: a(2)
+    a(1) = 1.25d0
+    a(2) = 2.5d0
+    print '(4f10.4)', a
+end program test
+"#);
+    assert_eq!(out, vec!["1.2500 2.5000"]);
+}
+
+#[test]
 fn write_basic() {
     compile_ok(r#"
 program test

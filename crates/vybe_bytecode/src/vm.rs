@@ -1133,7 +1133,14 @@ impl VM {
     }
 
     pub(crate) fn execute(&mut self) -> Result<Value, VMError> {
-        self.execute_until(0)
+        self.execute_until(0).map_err(|e| {
+            if e.call_stack.is_empty() {
+                let stack = self.capture_call_stack();
+                e.with_stack(stack)
+            } else {
+                e
+            }
+        })
     }
 }
 
