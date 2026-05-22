@@ -15,6 +15,7 @@ pub mod math;
 pub mod convert;
 pub mod io;
 pub mod collections;
+pub mod channels;
 pub mod classes;
 pub mod loops;
 pub mod errors;

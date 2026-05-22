@@ -4,7 +4,9 @@
 //! by language walkers) and emits bytecode via `crate::emitter::*`,
 //! with no language-specific branching.
 //!
+//! - `channels` — shared channel AST lowering helpers.
 //! - `classes` — class normalisation (see `classnormalization.md`).
 
+pub mod channels;
 pub mod classes;
 pub mod events;

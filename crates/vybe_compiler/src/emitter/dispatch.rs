@@ -23,7 +23,7 @@
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
-use crate::emitter::{collections, dict, python, strings, threading};
+use crate::emitter::{channels, collections, dict, python, strings, threading};
 
 /// Handle common ops that need only a chunk and line.
 /// Returns `true` if `name` was recognized and emitted, `false` otherwise.
@@ -106,6 +106,13 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         "collections.sum" => collections::emit_sum(chunks, current, line),
         "collections.min" => collections::emit_pymin(chunks, current, line),
         "collections.max" => collections::emit_pymax(chunks, current, line),
+
+        // ── Channel ops ──
+        "channels.send" => channels::emit_send(chunks, current, line),
+        "channels.receive" => channels::emit_receive(chunks, current, line),
+        "channels.len" => channels::emit_len(chunks, current, line),
+        "channels.cap" => channels::emit_cap(chunks, current, line),
+        "channels.close" => channels::emit_close(chunks, current, line),
 
         // ── Python adapters ──
         "python.extend" => python::collections_adapter::emit_extend(chunks, current, line),

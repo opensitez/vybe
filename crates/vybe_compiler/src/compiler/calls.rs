@@ -4660,13 +4660,34 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_GET, prop);
                 let fn_tmp = self.define_local("__fn");
                 self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
+                let receiver_key = self.str_const("__vybe_method_receiver");
                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
-                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                self.emit_u16(Op::STRUCT_GET, receiver_key);
+                let receiver_slot = self.define_local("__member_call_receiver");
+                self.emit_u16(Op::LOCAL_SET, receiver_slot);
+                self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, receiver_slot);
+                self.emit(Op::REF_IS_NULL);
+                let no_receiver_null = self.emit_jump(Op::BR_IF_TRUE);
+                self.emit_u16(Op::LOCAL_GET, receiver_slot);
+                self.emit(Op::REF_IS_UNDEFINED);
+                let no_receiver = self.emit_jump(Op::BR_IF_TRUE);
+                self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                self.emit_u16(Op::LOCAL_GET, receiver_slot);
                 for a in &arg_exprs { self.compile_expr(a)?; }
                 self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                let done = self.emit_jump(Op::BR);
+                self.patch_jump(no_receiver_null);
+                self.patch_jump(no_receiver);
+                self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                for a in &arg_exprs { self.compile_expr(a)?; }
+                self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                self.patch_jump(done);
                 self.patch_jump(end);
                 return Ok(());
             }
+
+            let receiver_key = self.str_const("__vybe_method_receiver");
 
             let php_generator_end = if self.is_php_profile() {
                 self.emit_php_generator_method_dispatch(obj_tmp, &field_name, &arg_exprs)?
@@ -4726,6 +4747,11 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_GET, prop);
                 let fn_tmp = self.define_local("__fn");
                 self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                self.emit_u16(Op::STRUCT_GET, receiver_key);
+                let receiver_slot = self.define_local("__member_fast_receiver");
+                self.emit_u16(Op::LOCAL_SET, receiver_slot);
+                self.emit(Op::DROP);
                 if self.is_js_profile() {
                     let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                     for (index, arg) in arg_exprs.iter().enumerate() {
@@ -4971,7 +4997,7 @@ impl Compiler {
                                 arg_slots.push(arg_slot);
                             }
 
-                            self.emit_call_ref_with_arg_slots(fn_tmp, Some(obj_tmp), &arg_slots);
+                            self.emit_call_ref_with_arg_slots(fn_tmp, Some(receiver_slot), &arg_slots);
 
                             let pack_slot = self.define_local("__member_fast_ref_call_pack");
                             self.emit_u16(Op::LOCAL_SET, pack_slot);
@@ -4990,7 +5016,17 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, pack_slot);
                             self.emit_const(Value::F64(0.0));
                             common::collections::emit_get(&mut self.chunks, self.current, self.line);
+                            self.emit_u16(Op::LOCAL_GET, receiver_slot);
+                            self.emit(Op::REF_IS_NULL);
+                            let skip_writeback_null = self.emit_jump(Op::BR_IF_TRUE);
+                            self.emit_u16(Op::LOCAL_GET, receiver_slot);
+                            self.emit(Op::REF_IS_UNDEFINED);
+                            let skip_writeback = self.emit_jump(Op::BR_IF_TRUE);
                             self.emit_fortran_member_receiver_writeback(object, obj_tmp);
+                            let writeback_done = self.emit_jump(Op::BR);
+                            self.patch_jump(skip_writeback_null);
+                            self.patch_jump(skip_writeback);
+                            self.patch_jump(writeback_done);
                         } else {
                             let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                             for (index, arg) in arg_exprs.iter().enumerate() {
@@ -5000,8 +5036,18 @@ impl Compiler {
                                 self.emit(Op::DROP);
                                 arg_slots.push(arg_slot);
                             }
-                            self.emit_call_ref_with_arg_slots(fn_tmp, Some(obj_tmp), &arg_slots);
+                            self.emit_call_ref_with_arg_slots(fn_tmp, Some(receiver_slot), &arg_slots);
+                            self.emit_u16(Op::LOCAL_GET, receiver_slot);
+                            self.emit(Op::REF_IS_NULL);
+                            let skip_writeback_null = self.emit_jump(Op::BR_IF_TRUE);
+                            self.emit_u16(Op::LOCAL_GET, receiver_slot);
+                            self.emit(Op::REF_IS_UNDEFINED);
+                            let skip_writeback = self.emit_jump(Op::BR_IF_TRUE);
                             self.emit_fortran_member_receiver_writeback(object, obj_tmp);
+                            let writeback_done = self.emit_jump(Op::BR);
+                            self.patch_jump(skip_writeback_null);
+                            self.patch_jump(skip_writeback);
+                            self.patch_jump(writeback_done);
                         }
                     } else {
                         let mut arg_slots = Vec::with_capacity(arg_exprs.len());
@@ -5012,8 +5058,18 @@ impl Compiler {
                             self.emit(Op::DROP);
                             arg_slots.push(arg_slot);
                         }
-                        self.emit_call_ref_with_arg_slots(fn_tmp, Some(obj_tmp), &arg_slots);
+                        self.emit_call_ref_with_arg_slots(fn_tmp, Some(receiver_slot), &arg_slots);
+                        self.emit_u16(Op::LOCAL_GET, receiver_slot);
+                        self.emit(Op::REF_IS_NULL);
+                        let skip_writeback_null = self.emit_jump(Op::BR_IF_TRUE);
+                        self.emit_u16(Op::LOCAL_GET, receiver_slot);
+                        self.emit(Op::REF_IS_UNDEFINED);
+                        let skip_writeback = self.emit_jump(Op::BR_IF_TRUE);
                         self.emit_fortran_member_receiver_writeback(object, obj_tmp);
+                        let writeback_done = self.emit_jump(Op::BR);
+                        self.patch_jump(skip_writeback_null);
+                        self.patch_jump(skip_writeback);
+                        self.patch_jump(writeback_done);
                     }
                 }
                 if let Some(done) = primitive_tostring_done {
@@ -5099,6 +5155,7 @@ impl Compiler {
             }
 
             self.emit_u16(Op::LOCAL_GET, obj_tmp);
+            self.emit_autoderef_pointer_cell();
             self.emit_u16(Op::STRUCT_GET, prop);
             let fn_tmp = self.define_local("__fn");
             self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
@@ -5321,6 +5378,7 @@ impl Compiler {
                     &overload.signature,
                 )?;
             } else {
+                let receiver_slot = obj_tmp;
                 if self.is_js_profile() {
                     self.emit_u16(Op::LOCAL_GET, fn_tmp);
                     self.emit(Op::REF_IS_NULL);
@@ -5412,7 +5470,7 @@ impl Compiler {
                                 self.emit(Op::DROP);
                                 arg_slots.push(arg_slot);
                             }
-                            self.emit_call_ref_with_arg_slots(fn_tmp, Some(obj_tmp), &arg_slots);
+                            self.emit_call_ref_with_arg_slots(fn_tmp, Some(receiver_slot), &arg_slots);
 
                             let pack_slot = self.define_local("__member_call_ref_pack");
                             self.emit_u16(Op::LOCAL_SET, pack_slot);
@@ -5431,7 +5489,17 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, pack_slot);
                             self.emit_const(Value::F64(0.0));
                             common::collections::emit_get(&mut self.chunks, self.current, self.line);
+                            self.emit_u16(Op::LOCAL_GET, receiver_slot);
+                            self.emit(Op::REF_IS_NULL);
+                            let skip_writeback_null = self.emit_jump(Op::BR_IF_TRUE);
+                            self.emit_u16(Op::LOCAL_GET, receiver_slot);
+                            self.emit(Op::REF_IS_UNDEFINED);
+                            let skip_writeback = self.emit_jump(Op::BR_IF_TRUE);
                             self.emit_fortran_member_receiver_writeback(object, obj_tmp);
+                            let writeback_done = self.emit_jump(Op::BR);
+                            self.patch_jump(skip_writeback_null);
+                            self.patch_jump(skip_writeback);
+                            self.patch_jump(writeback_done);
                         } else {
                             let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                             for (index, arg) in arg_exprs.iter().enumerate() {
@@ -5441,8 +5509,18 @@ impl Compiler {
                                 self.emit(Op::DROP);
                                 arg_slots.push(arg_slot);
                             }
-                            self.emit_call_ref_with_arg_slots(fn_tmp, Some(obj_tmp), &arg_slots);
+                            self.emit_call_ref_with_arg_slots(fn_tmp, Some(receiver_slot), &arg_slots);
+                            self.emit_u16(Op::LOCAL_GET, receiver_slot);
+                            self.emit(Op::REF_IS_NULL);
+                            let skip_writeback_null = self.emit_jump(Op::BR_IF_TRUE);
+                            self.emit_u16(Op::LOCAL_GET, receiver_slot);
+                            self.emit(Op::REF_IS_UNDEFINED);
+                            let skip_writeback = self.emit_jump(Op::BR_IF_TRUE);
                             self.emit_fortran_member_receiver_writeback(object, obj_tmp);
+                            let writeback_done = self.emit_jump(Op::BR);
+                            self.patch_jump(skip_writeback_null);
+                            self.patch_jump(skip_writeback);
+                            self.patch_jump(writeback_done);
                         }
                     } else {
                         let mut arg_slots = Vec::with_capacity(arg_exprs.len());
@@ -5453,8 +5531,18 @@ impl Compiler {
                             self.emit(Op::DROP);
                             arg_slots.push(arg_slot);
                         }
-                        self.emit_call_ref_with_arg_slots(fn_tmp, Some(obj_tmp), &arg_slots);
+                        self.emit_call_ref_with_arg_slots(fn_tmp, Some(receiver_slot), &arg_slots);
+                        self.emit_u16(Op::LOCAL_GET, receiver_slot);
+                        self.emit(Op::REF_IS_NULL);
+                        let skip_writeback_null = self.emit_jump(Op::BR_IF_TRUE);
+                        self.emit_u16(Op::LOCAL_GET, receiver_slot);
+                        self.emit(Op::REF_IS_UNDEFINED);
+                        let skip_writeback = self.emit_jump(Op::BR_IF_TRUE);
                         self.emit_fortran_member_receiver_writeback(object, obj_tmp);
+                        let writeback_done = self.emit_jump(Op::BR);
+                        self.patch_jump(skip_writeback_null);
+                        self.patch_jump(skip_writeback);
+                        self.patch_jump(writeback_done);
                     }
                 }
             }

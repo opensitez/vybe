@@ -138,6 +138,7 @@ statement = {
     | return_statement
     | break_statement
     | continue_statement
+    | fallthrough_statement
     | goto_statement
     | defer_statement
     | go_statement
@@ -153,13 +154,13 @@ statement = {
 
 empty_statement = { ";" }
 
-labeled_statement = { ident_name ~ ":" ~ statement }
+labeled_statement = { ident_name ~ ":" ~ !("=") ~ statement? }
 
 block_statement = { "{" ~ statement_list ~ "}" }
 
 statement_list = { (statement ~ ";"?)* }
 
-expression_statement = { expression ~ ";"? }
+expression_statement = { expression }
 
 // assignment before expression_statement; assign_op covers "="
 assignment_statement = {
@@ -185,7 +186,7 @@ inc_dec_statement = {
 // ── If statement ────────────────────────────────────────────────────────────
 
 if_statement = {
-    "if" ~ if_init? ~ expression ~ block_statement ~ else_clause?
+    "if" ~ if_init? ~ if_expression ~ block_statement ~ else_clause?
 }
 
 // if_init: short statement before the condition (not followed by ";" literally —
@@ -209,8 +210,16 @@ expr_switch_stmt = {
 }
 
 switch_init = _{
-    short_var_declaration
-    | assignment_statement
+    switch_short_var_init
+    | switch_assignment_init
+}
+
+switch_short_var_init = {
+    ident_list ~ ":=" ~ expression_list ~ ";"
+}
+
+switch_assignment_init = {
+    expression_list ~ assign_op ~ expression_list ~ ";"
 }
 
 expr_case_clause = {
@@ -245,7 +254,7 @@ select_comm_clause = {
 }
 
 select_send_clause = {
-    expression ~ "<-" ~ expression
+    primary ~ "<-" ~ expression
 }
 
 select_receive_clause = {
@@ -255,11 +264,23 @@ select_receive_clause = {
 kw_default = @{ "default" ~ !(ASCII_ALPHANUMERIC | "_") }
 
 type_switch_stmt = {
-    "switch" ~ type_switch_guard ~ "{" ~ type_case_clause* ~ "}"
+    "switch" ~ switch_init? ~ type_switch_guard ~ "{" ~ type_case_clause* ~ "}"
 }
 
 type_switch_guard = {
-    (ident_name ~ ":=")? ~ primary ~ "." ~ "(" ~ "type" ~ ")"
+    (ident_name ~ ":=")? ~ type_switch_subject ~ "." ~ "(" ~ "type" ~ ")"
+}
+
+type_switch_subject = {
+    operand ~ type_switch_postfix*
+}
+
+type_switch_postfix = _{
+    selector
+    | index
+    | three_index_slice
+    | two_index_slice
+    | call
 }
 
 type_case_clause = {
@@ -311,7 +332,7 @@ for_inc_dec = { primary ~ ("++" | "--") }
 for_assign_nosemi = { expression_list ~ assign_op ~ expression_list }
 
 range_clause = {
-    (ident_list ~ ":=" | expression_list ~ "=")? ~ "range" ~ expression ~ block_statement
+    (ident_list ~ (":=" | "=") | expression_list ~ "=")? ~ "range" ~ range_expression ~ block_statement
 }
 
 // ── Jump statements ─────────────────────────────────────────────────────────
@@ -319,6 +340,7 @@ range_clause = {
 return_statement = { "return" ~ expression_list? ~ ";"? }
 break_statement    = { "break"    ~ ident_name? ~ ";"? }
 continue_statement = { "continue" ~ ident_name? ~ ";"? }
+fallthrough_statement = { "fallthrough" ~ ";"? }
 goto_statement     = { "goto"     ~ ident_name  ~ ";"? }
 
 // ── Defer / Go ──────────────────────────────────────────────────────────────
@@ -328,16 +350,30 @@ go_statement    = { "go"    ~ expression ~ ";"? }
 
 // ── Send statement ──────────────────────────────────────────────────────────
 
-send_statement = { expression ~ "<-" ~ expression ~ ";"? }
+send_statement = { primary ~ "<-" ~ expression ~ ";"? }
 
 // ── Expressions ─────────────────────────────────────────────────────────────
 // Flat precedence chain — walker uses op.as_str() to determine the operator.
 
 expression = { unary_expression ~ (binary_op ~ unary_expression)* }
 
+if_expression = { if_unary_expression ~ (binary_op ~ if_unary_expression)* }
+
+range_expression = { range_unary_expression ~ (binary_op ~ range_unary_expression)* }
+
 unary_expression = {
     unary_op ~ unary_expression
     | primary
+}
+
+if_unary_expression = {
+    unary_op ~ if_unary_expression
+    | if_primary
+}
+
+range_unary_expression = {
+    unary_op ~ range_unary_expression
+    | range_primary
 }
 
 // atomic so word-boundary works for identifier-adjacent ops
@@ -360,6 +396,14 @@ primary = {
     operand ~ postfix_op*
 }
 
+if_primary = {
+    if_operand ~ postfix_op*
+}
+
+range_primary = {
+    range_operand ~ postfix_op*
+}
+
 postfix_op = _{
     selector
     | index
@@ -373,13 +417,38 @@ operand = {
     literal
     | "(" ~ expression ~ ")"
     | slice_conversion
+    | interface_conversion
     | composite_literal
     | function_literal
     | ident_name
 }
 
+if_operand = {
+    literal
+    | "(" ~ expression ~ ")"
+    | slice_conversion
+    | interface_conversion
+    | function_literal
+    | ident_name
+    | composite_literal
+}
+
+range_operand = {
+    literal
+    | "(" ~ expression ~ ")"
+    | slice_conversion
+    | interface_conversion
+    | function_literal
+    | ident_name
+    | composite_literal
+}
+
 slice_conversion = {
     "[]" ~ ident_name ~ "(" ~ expression ~ ")"
+}
+
+interface_conversion = {
+    interface_type ~ "(" ~ expression ~ ")"
 }
 
 selector       = { "." ~ ident_name }

@@ -85,6 +85,11 @@ uses_normalize_class = false
 "len"             = { emit = "common:collections.length",      min_args = 1, max_args = 1 }
 "cap"             = { emit = "common:collections.length",      min_args = 1, max_args = 1 }
 "append"          = { emit = "common:collections.push",        min_args = 2, max_args = 255 }
+"__vybe_channel_send"    = { emit = "common:channels.send",    min_args = 2, max_args = 2 }
+"__vybe_channel_receive" = { emit = "common:channels.receive", min_args = 1, max_args = 1 }
+"__vybe_channel_len"     = { emit = "common:channels.len",     min_args = 1, max_args = 1 }
+"__vybe_channel_cap"     = { emit = "common:channels.cap",     min_args = 1, max_args = 1 }
+"__vybe_channel_close"   = { emit = "common:channels.close",   min_args = 1, max_args = 1 }
 "__go_fixed_array_clone" = { emit = "common:collections.clone", min_args = 1, max_args = 1 }
 "__go_fixed_array_equal" = { emit = "common:collections.sequence_equal", min_args = 2, max_args = 2 }
 "make"            = { emit = "host:ecma:array:from",           min_args = 1, max_args = 3 }

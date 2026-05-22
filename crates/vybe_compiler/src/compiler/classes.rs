@@ -46,7 +46,7 @@ impl Compiler {
     fn array_default_element_expr(type_hint: Option<&str>) -> Expression {
         match type_hint
             .map(str::trim)
-            .and_then(|hint| hint.strip_suffix("()"))
+            .map(|hint| hint.strip_suffix("()").unwrap_or(hint))
             .map(Self::normalize_type_hint)
             .as_deref()
         {
@@ -84,19 +84,23 @@ impl Compiler {
         is_value_type: bool,
         line: u32,
     ) -> Result<(), String> {
-        common::classes::emit_init_field_start(self.chunk(), owner_slot, line);
+        let value_slot = self.define_local("__field_init_value");
         if let Some(init_expr) = init {
             self.compile_expr(init_expr)?;
         } else if let Some(extent) = array_bounds.and_then(Self::array_bounds_extent_expr) {
-            let init_expr = Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::ident("Array")),
-                args: vec![
-                    Argument::positional(extent),
-                    Argument::positional(Self::array_default_element_expr(type_hint)),
-                ],
-                optional: false,
-            });
-            self.compile_expr(&init_expr)?;
+            if let Some(init_expr) = type_hint.and_then(Self::fixed_array_zero_expr) {
+                self.compile_expr(&init_expr)?;
+            } else {
+                let init_expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("Array")),
+                    args: vec![
+                        Argument::positional(extent),
+                        Argument::positional(Self::array_default_element_expr(type_hint)),
+                    ],
+                    optional: false,
+                });
+                self.compile_expr(&init_expr)?;
+            }
         } else if let Some(init_expr) = type_hint.and_then(Self::fixed_array_zero_expr) {
             self.compile_expr(&init_expr)?;
         } else if let Some(type_name) = type_hint
@@ -118,6 +122,11 @@ impl Compiler {
         } else {
             self.emit(Op::NULL);
         }
+        self.emit_u16(Op::LOCAL_SET, value_slot);
+        self.emit(Op::DROP);
+
+        common::classes::emit_init_field_start(self.chunk(), owner_slot, line);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
         common::classes::emit_init_field_end(self.chunk(), field_name, line);
         Ok(())
     }
