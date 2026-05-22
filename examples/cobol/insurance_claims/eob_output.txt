@@ -8,8 +8,8 @@ PLAN PAYS: 0  MEMBER RESPONSIBILITY: 153
 CLAIM ID: CLM-2024-002  MEMBER: Smith John  DATE: 20240115
 PROVIDER: Downtown Dental Group  PROCEDURE: 99205000  STATUS: A
 Billed: 200.00  Allowed: 160  Not Covered: 
-Deductible: 0  Coinsurance: 0  Copay: 0
-PLAN PAYS: 160  MEMBER RESPONSIBILITY: 0
+Deductible: 160  Coinsurance: 0  Copay: 50.00
+PLAN PAYS: 0  MEMBER RESPONSIBILITY: 210
 --------------------------------------------------------------------------------
 CLAIM ID: CLM-2024-003  MEMBER: Johnson Mary  DATE: 20240105
 PROVIDER: Acme Medical Center  PROCEDURE: 99201000  STATUS: A
