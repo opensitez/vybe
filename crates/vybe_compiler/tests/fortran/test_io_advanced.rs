@@ -20,7 +20,7 @@ fn write_fmt_scientific_nested_reduction_runtime() {
     let out = run_prints(
         "program t\n  integer, parameter :: dp = kind(1.0d0)\n  complex(dp) :: spectrum(4), signal(4)\n  spectrum = [cmplx(1.0_dp, 0.0_dp, dp), cmplx(2.0_dp, 0.0_dp, dp), cmplx(3.0_dp, 0.0_dp, dp), cmplx(4.0_dp, 0.0_dp, dp)]\n  signal = [cmplx(1.0_dp, 0.0_dp, dp), cmplx(2.0_dp, 0.0_dp, dp), cmplx(3.0_dp, 0.0_dp, dp), cmplx(4.001_dp, 0.0_dp, dp)]\n  print '(A, ES10.3)', 'delta=', &\n      maxval(abs(real(spectrum(1:4), dp) - real(signal(1:4), dp)))\nend program t\n",
     );
-    assert_eq!(out, ["delta= 0.000e0"]);
+    assert_eq!(out, ["delta= 1.000e-3"]);
 }
 #[test] fn write_fmt_general() { compile_ok("program t\n  write(*, '(G12.4)') 3.14\nend program t\n"); }
 #[test] fn write_fmt_tab() { compile_ok("program t\n  write(*, '(A, 5X, A)') 'left', 'right'\nend program t\n"); }
