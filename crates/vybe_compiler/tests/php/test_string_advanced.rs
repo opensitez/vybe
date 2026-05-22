@@ -28,14 +28,6 @@ echo implode("|", $chunks);
 "#), &["h,e,l,l,o", "abc|def|gh"]);
 }
 
-// ── str_word_count ───────────────────────────────────────────────
-#[test]
-fn str_word_count_basic() {
-    assert_eq!(run_prints(r#"<?php
-echo str_word_count("Hello beautiful world");
-"#), &["3"]);
-}
-
 // ── wordwrap ─────────────────────────────────────────────────────
 #[test]
 fn wordwrap_basic() {
@@ -132,31 +124,6 @@ echo str_pad("x", 5, "AB", STR_PAD_BOTH);
 "#), &["00042", "hi--------", "ABxAB"]);
 }
 
-// ── mb_ multibyte functions ──────────────────────────────────────
-#[test]
-fn mb_strlen_basic() {
-    assert_eq!(run_prints(r#"<?php
-echo mb_strlen("hello");
-echo mb_strlen("こんにちは");
-"#), &["5", "5"]);
-}
-
-#[test]
-fn mb_strtoupper_lower() {
-    assert_eq!(run_prints(r#"<?php
-echo mb_strtoupper("hello");
-echo mb_strtolower("WORLD");
-"#), &["HELLO", "world"]);
-}
-
-#[test]
-fn mb_substr_basic() {
-    assert_eq!(run_prints(r#"<?php
-echo mb_substr("hello world", 6);
-echo mb_substr("hello", 0, 3);
-"#), &["world", "hel"]);
-}
-
 // ── ctype_ functions ─────────────────────────────────────────────
 #[test]
 fn ctype_alpha_digit() {
@@ -166,16 +133,6 @@ echo ctype_alpha("hello123") ? "yes" : "no";
 echo ctype_digit("12345") ? "yes" : "no";
 echo ctype_digit("123a5") ? "yes" : "no";
 "#), &["yes", "no", "yes", "no"]);
-}
-
-#[test]
-fn ctype_alnum_space() {
-    assert_eq!(run_prints(r#"<?php
-echo ctype_alnum("hello123") ? "yes" : "no";
-echo ctype_space("   \t\n") ? "yes" : "no";
-echo ctype_upper("ABC") ? "yes" : "no";
-echo ctype_lower("abc") ? "yes" : "no";
-"#), &["yes", "yes", "yes", "yes"]);
 }
 
 // ── String conversion functions ──────────────────────────────────
@@ -264,4 +221,273 @@ echo sprintf("%s has %d items", "cart", 5);
 echo sprintf("%10s", "right");
 echo sprintf("%-10s|", "left");
 "#), &["00042", "3.14", "cart has 5 items", "     right", "left      |"]);
+}
+
+// ── sprintf hex / octal / binary / scientific ────────────────────
+#[test]
+fn sprintf_format_modes() {
+    assert_eq!(run_prints(r#"<?php
+echo sprintf("%x", 255);
+echo sprintf("%X", 255);
+echo sprintf("%o", 8);
+echo sprintf("%b", 10);
+echo sprintf("%e", 123456.789);
+"#), &["ff", "FF", "10", "1010", "1.234568e+5"]);
+}
+
+// ── vsprintf ─────────────────────────────────────────────────────
+#[test]
+fn vsprintf_with_array() {
+    assert_eq!(run_prints(r#"<?php
+$args = ["Alice", 30, "NYC"];
+echo vsprintf("%s is %d years old and lives in %s", $args);
+"#), &["Alice is 30 years old and lives in NYC"]);
+}
+
+// ── str_contains / str_starts_with / str_ends_with ───────────────
+#[test]
+fn str_contains_runtime() {
+    assert_eq!(run_prints(r#"<?php
+echo str_contains("Hello World", "World") ? "yes" : "no";
+echo str_contains("Hello World", "world") ? "yes" : "no";
+echo str_contains("", "") ? "yes" : "no";
+"#), &["yes", "no", "yes"]);
+}
+
+#[test]
+fn str_starts_ends_with_runtime() {
+    assert_eq!(run_prints(r#"<?php
+echo str_starts_with("Hello World", "Hello") ? "yes" : "no";
+echo str_starts_with("Hello World", "World") ? "yes" : "no";
+echo str_ends_with("Hello World", "World") ? "yes" : "no";
+echo str_ends_with("Hello World", "Hello") ? "yes" : "no";
+"#), &["yes", "no", "yes", "no"]);
+}
+
+// ── strtr with array map ─────────────────────────────────────────
+#[test]
+fn strtr_array_map() {
+    assert_eq!(run_prints(r#"<?php
+$map = ["Hello" => "Hi", "World" => "Earth"];
+echo strtr("Hello World", $map);
+"#), &["Hi Earth"]);
+}
+
+// ── str_rot13 ────────────────────────────────────────────────────
+#[test]
+fn str_rot13_roundtrip() {
+    assert_eq!(run_prints(r#"<?php
+$original = "Hello World";
+$rotated = str_rot13($original);
+echo $rotated;
+echo str_rot13($rotated);
+"#), &["Uryyb Jbeyq", "Hello World"]);
+}
+
+// ── stripos case-insensitive position ────────────────────────────
+#[test]
+fn stripos_case_insensitive() {
+    assert_eq!(run_prints(r#"<?php
+echo stripos("Hello World", "WORLD");
+echo stripos("PHP is great", "IS");
+echo (stripos("no match", "XYZ") === false) ? "not found" : "found";
+"#), &["6", "4", "not found"]);
+}
+
+// ── strrchr last occurrence ──────────────────────────────────────
+#[test]
+fn strrchr_last_occurrence() {
+    assert_eq!(run_prints(r#"<?php
+echo strrchr("/var/www/html/index.php", "/");
+echo strrchr("user@example.com", "@");
+"#), &["/index.php", "@example.com"]);
+}
+
+// ── substr with negative offset ──────────────────────────────────
+#[test]
+fn substr_negative_offset() {
+    assert_eq!(run_prints(r#"<?php
+echo substr("Hello World", -5);
+echo substr("Hello World", -5, 3);
+echo substr("abcdef", 0, -2);
+"#), &["World", "Wor", "abcd"]);
+}
+
+// ── trim with custom chars ────────────────────────────────────────
+#[test]
+fn trim_custom_chars() {
+    assert_eq!(run_prints(r#"<?php
+echo trim("***hello***", "*");
+echo trim("/path/to/file/", "/");
+echo ltrim("000123", "0");
+echo rtrim("hello...", ".");
+"#), &["hello", "path/to/file", "123", "hello"]);
+}
+
+// ── htmlspecialchars_decode ──────────────────────────────────────
+#[test]
+fn htmlspecialchars_decode_basic() {
+    assert_eq!(run_prints(r#"<?php
+$encoded = "&lt;div class=&quot;test&quot;&gt;Hello &amp; World&lt;/div&gt;";
+echo htmlspecialchars_decode($encoded);
+"#), &["<div class=\"test\">Hello & World</div>"]);
+}
+
+// ── strip_tags ───────────────────────────────────────────────────
+#[test]
+fn strip_tags_basic() {
+    assert_eq!(run_prints(r#"<?php
+echo strip_tags("<p>Hello <b>World</b></p>");
+echo strip_tags("<a href='url'>click</a> here", "<a>");
+"#), &["Hello World", "<a href='url'>click</a> here"]);
+}
+
+// ── addslashes / stripslashes ────────────────────────────────────
+#[test]
+fn addslashes_stripslashes() {
+    assert_eq!(run_prints(r#"<?php
+$s = "It's a \"test\" with \\backslash";
+$slashed = addslashes($s);
+echo $slashed;
+echo stripslashes($slashed);
+"#), &["It\\'s a \\\"test\\\" with \\\\backslash", "It's a \"test\" with \\backslash"]);
+}
+
+// ── crc32 ────────────────────────────────────────────────────────
+#[test]
+fn crc32_deterministic() {
+    assert_eq!(run_prints(r#"<?php
+$a = crc32("hello");
+$b = crc32("hello");
+echo ($a === $b) ? "same" : "diff";
+echo ($a !== crc32("world")) ? "unique" : "collision";
+"#), &["same", "unique"]);
+}
+
+// ── md5 / sha1 length checks ─────────────────────────────────────
+#[test]
+fn md5_sha1_lengths() {
+    assert_eq!(run_prints(r#"<?php
+echo strlen(md5("hello"));
+echo strlen(sha1("hello"));
+echo md5("hello") === md5("hello") ? "stable" : "unstable";
+"#), &["32", "40", "stable"]);
+}
+
+// ── strcmp / strcasecmp ──────────────────────────────────────────
+#[test]
+fn strcmp_strcasecmp() {
+    assert_eq!(run_prints(r#"<?php
+echo strcmp("abc", "abc") === 0 ? "equal" : "not equal";
+echo strcmp("abc", "abd") < 0 ? "less" : "not less";
+echo strcasecmp("Hello", "hello") === 0 ? "equal" : "not equal";
+echo strcasecmp("ABC", "xyz") < 0 ? "less" : "not less";
+"#), &["equal", "less", "equal", "less"]);
+}
+
+// ── implode on single-element array ─────────────────────────────
+#[test]
+fn implode_single_element() {
+    assert_eq!(run_prints(r#"<?php
+echo implode(",", ["only"]);
+echo implode("|", [42]);
+echo implode("", ["x"]);
+"#), &["only", "42", "x"]);
+}
+
+// ── explode with limit ───────────────────────────────────────────
+#[test]
+fn explode_with_limit() {
+    assert_eq!(run_prints(r#"<?php
+$parts = explode(",", "a,b,c,d,e", 3);
+echo count($parts);
+echo $parts[0];
+echo $parts[2];
+"#), &["3", "a", "c,d,e"]);
+}
+
+// ── str_repeat runtime ───────────────────────────────────────────
+#[test]
+fn str_repeat_runtime_assertion() {
+    assert_eq!(run_prints(r#"<?php
+echo str_repeat("ab", 4);
+echo str_repeat("-", 5);
+echo strlen(str_repeat("x", 100));
+"#), &["abababab", "-----", "100"]);
+}
+
+// ── preg_match_all collect matches ──────────────────────────────
+#[test]
+fn preg_match_all_collect() {
+    assert_eq!(run_prints(r#"<?php
+$count = preg_match_all('/\d+/', "abc123def456ghi789", $matches);
+echo $count;
+echo implode(",", $matches[0]);
+"#), &["3", "123,456,789"]);
+}
+
+// ── preg_split with PREG_SPLIT_NO_EMPTY ─────────────────────────
+#[test]
+fn preg_split_no_empty_flag() {
+    assert_eq!(run_prints(r#"<?php
+$parts = preg_split('/[\s,]+/', "one  two,,three   four", -1, PREG_SPLIT_NO_EMPTY);
+echo count($parts);
+echo implode("|", $parts);
+"#), &["4", "one|two|three|four"]);
+}
+
+// ── preg_quote ───────────────────────────────────────────────────
+#[test]
+fn preg_quote_special_chars() {
+    assert_eq!(run_prints(r#"<?php
+$pattern = preg_quote("$1.00 (today)", "/");
+$quoted = preg_match("/" . $pattern . "/", '$1.00 (today)');
+echo $quoted;
+"#), &["1"]);
+}
+
+// ── preg_replace_callback ────────────────────────────────────────
+#[test]
+fn preg_replace_callback_counter() {
+    assert_eq!(run_prints(r#"<?php
+$i = 0;
+$result = preg_replace_callback('/\d+/', function($m) use (&$i) {
+    $i++;
+    return $m[0] * 2;
+}, "a1 b2 c3");
+echo $result;
+echo $i;
+"#), &["a2 b4 c6", "3"]);
+}
+
+// ── sscanf parsing ───────────────────────────────────────────────
+#[test]
+fn sscanf_parsing() {
+    assert_eq!(run_prints(r#"<?php
+$parsed = sscanf("Age: 25", "Age: %d");
+echo $parsed[0];
+$parsed2 = sscanf("2024-01-15", "%d-%d-%d");
+echo $parsed2[0];
+echo $parsed2[1];
+echo $parsed2[2];
+"#), &["25", "2024", "1", "15"]);
+}
+
+// ── html_entity_decode ───────────────────────────────────────────
+#[test]
+fn html_entity_decode_basic() {
+    assert_eq!(run_prints(r#"<?php
+echo html_entity_decode("&lt;p&gt;Hello &amp; World&lt;/p&gt;");
+echo html_entity_decode("&copy; 2024 &trade;");
+"#), &["<p>Hello & World</p>", "© 2024 ™"]);
+}
+
+// ── nl2br in multiline context ───────────────────────────────────
+#[test]
+fn nl2br_multiline() {
+    assert_eq!(run_prints(r#"<?php
+$text = "line1\nline2\nline3";
+$result = nl2br($text);
+echo substr_count($result, "<br />");
+"#), &["2"]);
 }

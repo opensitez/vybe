@@ -367,3 +367,195 @@ echo $name;
 echo $age;
 "#), &["Alice", "30"]);
 }
+
+// ── array_fill_keys ──────────────────────────────────────────────
+#[test]
+fn array_fill_keys_basic() {
+    assert_eq!(run_prints(r#"<?php
+$keys = ["foo", "bar", "baz"];
+$a = array_fill_keys($keys, 0);
+echo $a["foo"];
+echo $a["bar"];
+echo $a["baz"];
+echo count($a);
+"#), &["0", "0", "0", "3"]);
+}
+
+// ── array_diff_assoc (extended) ──────────────────────────────────
+#[test]
+fn array_intersect_assoc_basic() {
+    assert_eq!(run_prints(r#"<?php
+$a = ["a" => 1, "b" => 2, "c" => 3];
+$b = ["a" => 1, "b" => 99, "c" => 3];
+$result = array_intersect_assoc($a, $b);
+echo implode(",", array_keys($result));
+echo implode(",", $result);
+"#), &["a,c", "1,3"]);
+}
+
+// ── in_array strict mode ─────────────────────────────────────────
+#[test]
+fn in_array_strict_type_check() {
+    assert_eq!(run_prints(r#"<?php
+$a = [1, 2, 3, "4", "5"];
+echo in_array("1", $a, true)  ? "yes" : "no";
+echo in_array(1,   $a, true)  ? "yes" : "no";
+echo in_array("4", $a, true)  ? "yes" : "no";
+"#), &["no", "yes", "yes"]);
+}
+
+// ── array_search strict ──────────────────────────────────────────
+#[test]
+fn array_search_strict_mode() {
+    assert_eq!(run_prints(r#"<?php
+$a = ["10", "20", "30"];
+$k = array_search(20, $a, true);
+echo ($k === false) ? "not found" : $k;
+$k2 = array_search("20", $a, true);
+echo $k2;
+"#), &["not found", "1"]);
+}
+
+// ── range with float step ────────────────────────────────────────
+#[test]
+fn range_float_step() {
+    assert_eq!(run_prints(r#"<?php
+$r = range(0, 1, 0.25);
+echo count($r);
+echo $r[0];
+echo $r[4];
+"#), &["5", "0", "1"]);
+}
+
+// ── natsort natural ordering ─────────────────────────────────────
+#[test]
+fn natsort_natural_order() {
+    assert_eq!(run_prints(r#"<?php
+$a = ["img12", "img10", "img2", "img1"];
+natsort($a);
+echo implode(",", $a);
+"#), &["img1,img2,img10,img12"]);
+}
+
+// ── uksort by key ────────────────────────────────────────────────
+#[test]
+fn uksort_custom_key_compare() {
+    assert_eq!(run_prints(r#"<?php
+$a = ["banana" => 1, "apple" => 2, "cherry" => 3];
+uksort($a, fn($a, $b) => strcmp($a, $b));
+echo implode(",", array_keys($a));
+"#), &["apple,banana,cherry"]);
+}
+
+// ── array_map with null callback (zip) ──────────────────────────
+#[test]
+fn array_map_null_callback_zip() {
+    assert_eq!(run_prints(r#"<?php
+$a = [1, 2, 3];
+$b = ["a", "b", "c"];
+$zipped = array_map(null, $a, $b);
+foreach ($zipped as $pair) {
+    echo $pair[0] . $pair[1];
+}
+"#), &["1a", "2b", "3c"]);
+}
+
+// ── array_keys with search value ─────────────────────────────────
+#[test]
+fn array_keys_with_search_value() {
+    assert_eq!(run_prints(r#"<?php
+$a = ["a" => 1, "b" => 2, "c" => 1, "d" => 3, "e" => 1];
+$keys = array_keys($a, 1);
+echo implode(",", $keys);
+"#), &["a,c,e"]);
+}
+
+// ── array_merge vs + operator ────────────────────────────────────
+#[test]
+fn array_merge_vs_plus_operator() {
+    assert_eq!(run_prints(r#"<?php
+$a = ["a" => 1, "b" => 2];
+$b = ["b" => 20, "c" => 30];
+$merged = array_merge($a, $b);
+echo $merged["b"];
+$union = $a + $b;
+echo $union["b"];
+echo $union["c"];
+"#), &["20", "2", "30"]);
+}
+
+// ── multidimensional usort ───────────────────────────────────────
+#[test]
+fn usort_by_nested_field() {
+    assert_eq!(run_prints(r#"<?php
+$people = [
+    ["name" => "Charlie", "age" => 30],
+    ["name" => "Alice",   "age" => 25],
+    ["name" => "Bob",     "age" => 28],
+];
+usort($people, fn($a, $b) => $a["age"] - $b["age"]);
+foreach ($people as $p) {
+    echo $p["name"];
+}
+"#), &["Alice", "Bob", "Charlie"]);
+}
+
+// ── array_reduce to string ───────────────────────────────────────
+#[test]
+fn array_reduce_to_string() {
+    assert_eq!(run_prints(r#"<?php
+$words = ["Hello", "beautiful", "world"];
+$sentence = array_reduce($words, fn($carry, $w) => $carry === "" ? $w : "$carry $w", "");
+echo $sentence;
+"#), &["Hello beautiful world"]);
+}
+
+// ── list() skip elements ─────────────────────────────────────────
+#[test]
+fn list_skip_elements() {
+    assert_eq!(run_prints(r#"<?php
+$a = [10, 20, 30, 40];
+[0 => $first, 3 => $last] = $a;
+echo $first;
+echo $last;
+"#), &["10", "40"]);
+}
+
+// ── array_column with null value column (index map) ──────────────
+#[test]
+fn array_column_null_value_index_map() {
+    assert_eq!(run_prints(r#"<?php
+$records = [
+    ["id" => "u1", "name" => "Alice", "score" => 90],
+    ["id" => "u2", "name" => "Bob",   "score" => 85],
+];
+$indexed = array_column($records, null, "id");
+echo $indexed["u1"]["name"];
+echo $indexed["u2"]["score"];
+"#), &["Alice", "85"]);
+}
+
+// ── arsort preserves keys ────────────────────────────────────────
+#[test]
+fn arsort_preserves_keys() {
+    assert_eq!(run_prints(r#"<?php
+$a = ["x" => 5, "y" => 1, "z" => 3];
+arsort($a);
+echo implode(",", array_keys($a));
+echo implode(",", $a);
+"#), &["x,z,y", "5,3,1"]);
+}
+
+// ── array_replace replaces recursively via array_replace_recursive
+#[test]
+fn array_replace_recursive_deep() {
+    assert_eq!(run_prints(r#"<?php
+$base = ["a" => ["x" => 1, "y" => 2], "b" => 10];
+$over = ["a" => ["y" => 99, "z" => 3]];
+$result = array_replace_recursive($base, $over);
+echo $result["a"]["x"];
+echo $result["a"]["y"];
+echo $result["a"]["z"];
+echo $result["b"];
+"#), &["1", "99", "3", "10"]);
+}

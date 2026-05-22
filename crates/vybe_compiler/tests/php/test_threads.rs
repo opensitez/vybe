@@ -52,7 +52,10 @@ thread_join($t2);
 "#); }
 
 // ── Fiber + Thread combination ──────────────────────────────
-#[test] fn fiber_in_thread() { compile_ok(r#"<?php
+#[test] fn fiber_in_thread() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| compile_ok(r#"<?php
 $thread = thread_create(function() {
     $fiber = new Fiber(function() {
         Fiber::suspend('from thread fiber');
@@ -63,4 +66,8 @@ $thread = thread_create(function() {
     return $fiber->getReturn();
 });
 $result = thread_join($thread);
-"#); }
+"#))
+        .unwrap()
+        .join()
+        .unwrap();
+}

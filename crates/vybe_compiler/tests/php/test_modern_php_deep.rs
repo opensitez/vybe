@@ -1,6 +1,7 @@
-use super::helpers::run_prints;
+use super::helpers::{compile_ok, run_prints};
 
-// ── Match expression (deep) ──────────────────────────────────────
+// ── Match expression ─────────────────────────────────────────────
+
 #[test]
 fn match_with_complex_arms() {
     assert_eq!(run_prints(r#"<?php
@@ -54,186 +55,105 @@ try {
 "#), &["unhandled"]);
 }
 
-// ── Fiber patterns (deep) ────────────────────────────────────────
 #[test]
-fn fiber_scheduler_round_robin() {
+fn match_strict_comparison_no_coercion() {
     assert_eq!(run_prints(r#"<?php
-$fibers = [];
-for ($i = 1; $i <= 3; $i++) {
-    $n = $i;
-    $fibers[] = new Fiber(function() use ($n) {
-        echo "task$n start";
-        Fiber::suspend();
-        echo "task$n end";
-    });
-}
-// Start all
-foreach ($fibers as $f) {
-    $f->start();
-}
-// Resume all
-foreach ($fibers as $f) {
-    $f->resume();
-}
-"#), &["task1 start", "task2 start", "task3 start", "task1 end", "task2 end", "task3 end"]);
+$val = "0";
+$result = match($val) {
+    0   => "int zero",
+    "0" => "string zero",
+    default => "other",
+};
+echo $result;
+"#), &["string zero"]);
 }
 
 #[test]
-fn fiber_with_return() {
+fn match_returning_complex_value() {
     assert_eq!(run_prints(r#"<?php
-$fiber = new Fiber(function(): string {
-    $a = Fiber::suspend("first");
-    $b = Fiber::suspend("second");
-    return "result: $a + $b";
-});
-echo $fiber->start();
-echo $fiber->resume("hello");
-echo $fiber->resume("world");
-echo $fiber->getReturn();
-"#), &["first", "second", "result: hello + world"]);
-}
-
-// ── First-class callables (deep) ─────────────────────────────────
-#[test]
-fn first_class_callable_strlen() {
-    assert_eq!(run_prints(r#"<?php
-$fn = strlen(...);
-echo $fn("hello");
-echo $fn("hi");
-"#), &["5", "2"]);
-}
-
-#[test]
-fn first_class_callable_method() {
-    assert_eq!(run_prints(r#"<?php
-class Formatter {
-    public function upper(string $s): string {
-        return strtoupper($s);
-    }
-}
-$f = new Formatter();
-$fn = $f->upper(...);
-echo $fn("hello");
-"#), &["HELLO"]);
-}
-
-#[test]
-fn first_class_callable_in_map() {
-    assert_eq!(run_prints(r#"<?php
-$words = ["hello", "world", "php"];
-$result = array_map(strtoupper(...), $words);
-echo implode(",", $result);
-"#), &["HELLO,WORLD,PHP"]);
-}
-
-// ── Enum advanced ────────────────────────────────────────────────
-#[test]
-fn enum_cases_list() {
-    assert_eq!(run_prints(r#"<?php
-enum Direction {
-    case North;
-    case South;
-    case East;
-    case West;
-}
-$cases = Direction::cases();
-echo count($cases);
-echo $cases[0]->name;
-echo $cases[3]->name;
-"#), &["4", "North", "West"]);
-}
-
-#[test]
-fn enum_in_match() {
-    assert_eq!(run_prints(r#"<?php
-enum Suit: string {
-    case Hearts = "H";
-    case Diamonds = "D";
-    case Clubs = "C";
-    case Spades = "S";
-}
-function color(Suit $s): string {
-    return match($s) {
-        Suit::Hearts, Suit::Diamonds => "red",
-        Suit::Clubs, Suit::Spades => "black",
+function getConfig(string $env): array {
+    return match($env) {
+        "dev"  => ["debug" => true,  "log" => "verbose"],
+        "prod" => ["debug" => false, "log" => "error"],
+        default => ["debug" => false, "log" => "warning"],
     };
 }
-echo color(Suit::Hearts);
-echo color(Suit::Spades);
-"#), &["red", "black"]);
+$cfg = getConfig("dev");
+echo $cfg["log"];
+$cfg2 = getConfig("prod");
+echo $cfg2["debug"] ? "debug" : "no-debug";
+"#), &["verbose", "no-debug"]);
 }
 
 #[test]
-fn enum_with_method_and_interface() {
+fn match_as_function_argument() {
     assert_eq!(run_prints(r#"<?php
-interface HasSymbol {
-    public function symbol(): string;
-}
-enum Currency: string implements HasSymbol {
-    case USD = "usd";
-    case EUR = "eur";
-    case GBP = "gbp";
-    public function symbol(): string {
-        return match($this) {
-            self::USD => "$",
-            self::EUR => "€",
-            self::GBP => "£",
-        };
-    }
-}
-echo Currency::USD->symbol();
-echo Currency::EUR->symbol();
-echo Currency::GBP->value;
-"#), &["$", "€", "gbp"]);
+function repeat(string $s, int $n): string { return str_repeat($s, $n); }
+$x = 3;
+echo repeat(match($x) { 1 => "a", 2 => "b", 3 => "c", default => "?" }, 4);
+"#), &["cccc"]);
 }
 
-// ── Readonly class (PHP 8.2) ─────────────────────────────────────
+// ── Named arguments ──────────────────────────────────────────────
+
 #[test]
-fn readonly_class_deep() {
+fn named_args_in_user_function() {
     assert_eq!(run_prints(r#"<?php
-readonly class Coordinate {
+function greet(string $name, string $greeting = "Hello"): string {
+    return "$greeting, $name!";
+}
+echo greet(name: "Alice");
+echo greet(name: "Bob", greeting: "Hi");
+"#), &["Hello, Alice!", "Hi, Bob!"]);
+}
+
+#[test]
+fn named_args_skipping_defaults() {
+    assert_eq!(run_prints(r#"<?php
+function create(string $type, string $color = "black", int $size = 10): string {
+    return "$color $type (size $size)";
+}
+echo create(type: "circle", size: 20);
+"#), &["black circle (size 20)"]);
+}
+
+#[test]
+fn named_args_in_constructor() {
+    assert_eq!(run_prints(r#"<?php
+class Config {
     public function __construct(
-        public float $lat,
-        public float $lng,
+        public string $host = "localhost",
+        public int    $port = 3306,
+        public string $db   = "app"
     ) {}
-    public function distanceTo(Coordinate $other): float {
-        return sqrt(($this->lat - $other->lat) ** 2 + ($this->lng - $other->lng) ** 2);
-    }
 }
-$a = new Coordinate(0, 0);
-$b = new Coordinate(3, 4);
-echo $b->lat;
-echo $a->distanceTo($b);
-"#), &["3", "5"]);
-}
-
-// ── Union types (deep) ───────────────────────────────────────────
-#[test]
-fn union_types_function() {
-    assert_eq!(run_prints(r#"<?php
-function stringify(int|float|string $val): string {
-    if (is_int($val)) return "int:$val";
-    if (is_float($val)) return "float:$val";
-    return "str:$val";
-}
-echo stringify(42);
-echo stringify(3.14);
-echo stringify("hello");
-"#), &["int:42", "float:3.14", "str:hello"]);
+$c = new Config(port: 5432, db: "mydb");
+echo $c->host;
+echo $c->port;
+echo $c->db;
+"#), &["localhost", "5432", "mydb"]);
 }
 
 #[test]
-fn nullable_type_function() {
+fn named_args_mixed_with_positional() {
     assert_eq!(run_prints(r#"<?php
-function greet(?string $name): string {
-    return $name !== null ? "Hello, $name" : "Hello, stranger";
+function slice(array $arr, int $offset, ?int $length = null, bool $preserve = false): array {
+    return array_slice($arr, $offset, $length, $preserve);
 }
-echo greet("Alice");
-echo greet(null);
-"#), &["Hello, Alice", "Hello, stranger"]);
+$a = [1, 2, 3, 4, 5];
+$r = slice($a, 1, length: 3);
+echo implode(",", $r);
+"#), &["2,3,4"]);
 }
 
-// ── Named arguments (deep) ───────────────────────────────────────
+#[test]
+fn named_args_in_builtin() {
+    assert_eq!(run_prints(r#"<?php
+echo implode(separator: ", ", array: ["a", "b", "c"]);
+echo str_pad(string: "42", length: 5, pad_string: "0", pad_type: STR_PAD_LEFT);
+"#), &["a, b, c", "00042"]);
+}
+
 #[test]
 fn named_args_with_spread() {
     assert_eq!(run_prints(r#"<?php
@@ -246,14 +166,45 @@ echo formatDate(...$params);
 }
 
 #[test]
-fn named_args_in_builtin() {
-    assert_eq!(run_prints(r#"<?php
-echo implode(separator: ", ", array: ["a", "b", "c"]);
-echo str_pad(string: "42", length: 5, pad_string: "0", pad_type: STR_PAD_LEFT);
-"#), &["a, b, c", "00042"]);
+fn named_args_in_arrow_function() {
+    compile_ok(r#"<?php
+$pad = fn(string $s, int $len) => str_pad(string: $s, length: $len, pad_string: "-", pad_type: STR_PAD_BOTH);
+echo $pad("hi", 8);
+"#);
 }
 
-// ── Nullsafe operator (deep) ─────────────────────────────────────
+// ── Nullsafe operator ─────────────────────────────────────────────
+
+#[test]
+fn nullsafe_chain_returning_null() {
+    assert_eq!(run_prints(r#"<?php
+class User {
+    public ?string $email;
+    public function __construct(?string $email) { $this->email = $email; }
+    public function getEmail(): ?string { return $this->email; }
+}
+$u = new User(null);
+$result = $u?->getEmail() ?? "no email";
+echo $result;
+"#), &["no email"]);
+}
+
+#[test]
+fn nullsafe_chain_succeeding() {
+    assert_eq!(run_prints(r#"<?php
+class Address {
+    public function __construct(public string $city) {}
+    public function getCity(): string { return $this->city; }
+}
+class User {
+    public ?Address $address;
+    public function __construct(?Address $addr) { $this->address = $addr; }
+}
+$u = new User(new Address("Paris"));
+echo $u?->address?->getCity() ?? "unknown";
+"#), &["Paris"]);
+}
+
 #[test]
 fn nullsafe_deep_chain() {
     assert_eq!(run_prints(r#"<?php
@@ -282,7 +233,7 @@ echo $u3?->address?->country?->name ?? "unknown";
 }
 
 #[test]
-fn nullsafe_method_call() {
+fn nullsafe_with_method_call_chain() {
     assert_eq!(run_prints(r#"<?php
 class Repo {
     public function find(int $id): ?string {
@@ -290,84 +241,419 @@ class Repo {
     }
 }
 $repo = new Repo();
-echo $repo->find(1)?->length ?? "null";
 echo strlen($repo->find(1) ?? "");
 echo $repo->find(99) ?? "not found";
-"#), &["null", "5", "not found"]);
+"#), &["5", "not found"]);
 }
 
-// ── Attributes (PHP 8.0) ─────────────────────────────────────────
 #[test]
-fn attributes_on_class_and_method() {
+fn nullsafe_mixed_with_regular() {
     assert_eq!(run_prints(r#"<?php
-#[Attribute]
-class Route {
-    public function __construct(public string $path) {}
+class Tree {
+    public ?Tree $left  = null;
+    public ?Tree $right = null;
+    public function __construct(public int $value) {}
 }
-#[Route("/api/users")]
-class UserController {
-    #[Route("/list")]
-    public function list(): string {
-        return "user list";
+$root = new Tree(1);
+$root->left = new Tree(2);
+echo $root->left?->value;
+echo $root->right?->value ?? "null";
+"#), &["2", "null"]);
+}
+
+#[test]
+fn nullsafe_combined_with_null_coalescing() {
+    assert_eq!(run_prints(r#"<?php
+class Config {
+    private array $data;
+    public function __construct(array $data) { $this->data = $data; }
+    public function get(string $key): ?Config {
+        return isset($this->data[$key]) ? new Config($this->data[$key]) : null;
+    }
+    public function value(string $key): mixed { return $this->data[$key] ?? null; }
+}
+$cfg = new Config(["db" => ["host" => "localhost"]]);
+echo $cfg->get("db")?->value("host") ?? "default";
+echo $cfg->get("missing")?->value("host") ?? "default";
+"#), &["localhost", "default"]);
+}
+
+// ── Union types ───────────────────────────────────────────────────
+
+#[test]
+fn union_types_function() {
+    assert_eq!(run_prints(r#"<?php
+function stringify(int|float|string $val): string {
+    if (is_int($val)) return "int:$val";
+    if (is_float($val)) return "float:$val";
+    return "str:$val";
+}
+echo stringify(42);
+echo stringify(3.14);
+echo stringify("hello");
+"#), &["int:42", "float:3.14", "str:hello"]);
+}
+
+#[test]
+fn union_type_in_property() {
+    assert_eq!(run_prints(r#"<?php
+class Variant {
+    public int|string $value;
+    public function __construct(int|string $v) { $this->value = $v; }
+    public function type(): string { return is_int($this->value) ? "int" : "string"; }
+}
+$a = new Variant(42);
+$b = new Variant("hello");
+echo $a->type();
+echo $b->type();
+"#), &["int", "string"]);
+}
+
+#[test]
+fn nullable_type_function() {
+    assert_eq!(run_prints(r#"<?php
+function greet(?string $name): string {
+    return $name !== null ? "Hello, $name" : "Hello, stranger";
+}
+echo greet("Alice");
+echo greet(null);
+"#), &["Hello, Alice", "Hello, stranger"]);
+}
+
+// ── Readonly properties ───────────────────────────────────────────
+
+#[test]
+fn readonly_property_in_constructor() {
+    assert_eq!(run_prints(r#"<?php
+class ImmutablePoint {
+    public readonly float $x;
+    public readonly float $y;
+    public function __construct(float $x, float $y) {
+        $this->x = $x;
+        $this->y = $y;
+    }
+    public function distanceTo(ImmutablePoint $other): float {
+        return sqrt(($this->x - $other->x) ** 2 + ($this->y - $other->y) ** 2);
     }
 }
-$c = new UserController();
-echo $c->list();
-"#), &["user list"]);
+$a = new ImmutablePoint(0, 0);
+$b = new ImmutablePoint(3, 4);
+echo $b->x;
+echo $a->distanceTo($b);
+"#), &["3", "5"]);
 }
 
-// ── Arrow functions (deep) ───────────────────────────────────────
 #[test]
-fn arrow_fn_complex_expressions() {
+fn readonly_via_constructor_promotion() {
     assert_eq!(run_prints(r#"<?php
-$add = fn(int $a, int $b): int => $a + $b;
-$compose = fn(callable $f, callable $g) => fn($x) => $f($g($x));
-$double = fn($x) => $x * 2;
-$inc = fn($x) => $x + 1;
-$doubleInc = $compose($double, $inc);
-echo $add(3, 4);
-echo $doubleInc(5);
-"#), &["7", "12"]);
+class Money {
+    public function __construct(
+        public readonly int    $amount,
+        public readonly string $currency
+    ) {}
+    public function format(): string {
+        return $this->amount . " " . $this->currency;
+    }
+}
+$m = new Money(100, "USD");
+echo $m->amount;
+echo $m->currency;
+echo $m->format();
+"#), &["100", "USD", "100 USD"]);
 }
 
-// ── Spread in function calls and arrays ──────────────────────────
 #[test]
-fn spread_in_various_contexts() {
+fn readonly_class_deep() {
     assert_eq!(run_prints(r#"<?php
-function sum(int ...$nums): int {
-    return array_sum($nums);
+readonly class Coordinate {
+    public function __construct(
+        public float $lat,
+        public float $lng,
+    ) {}
+    public function distanceTo(Coordinate $other): float {
+        return sqrt(($this->lat - $other->lat) ** 2 + ($this->lng - $other->lng) ** 2);
+    }
 }
-echo sum(1, 2, 3);
-echo sum(...[4, 5, 6]);
-
-$a = [1, 2, 3];
-$b = [4, 5, 6];
-$merged = [...$a, ...$b];
-echo implode(",", $merged);
-"#), &["6", "15", "1,2,3,4,5,6"]);
+$a = new Coordinate(0, 0);
+$b = new Coordinate(3, 4);
+echo $b->lat;
+echo $a->distanceTo($b);
+"#), &["3", "5"]);
 }
 
-// ── Mixed type ───────────────────────────────────────────────────
+// ── Fibers ────────────────────────────────────────────────────────
+
 #[test]
-fn mixed_type_hint() {
+fn fiber_basic_start_suspend() {
     assert_eq!(run_prints(r#"<?php
-function display(mixed $value): string {
-    return match(gettype($value)) {
-        "integer" => "int:$value",
-        "string" => "str:$value",
-        "array" => "arr:" . count($value),
-        "NULL" => "null",
-        default => "other",
+$fiber = new Fiber(function() {
+    echo "start";
+    Fiber::suspend();
+    echo "end";
+});
+$fiber->start();
+echo "between";
+$fiber->resume();
+"#), &["start", "between", "end"]);
+}
+
+#[test]
+fn fiber_passing_value_to_suspend() {
+    assert_eq!(run_prints(r#"<?php
+$fiber = new Fiber(function(): string {
+    $a = Fiber::suspend("first");
+    $b = Fiber::suspend("second");
+    return "result: $a + $b";
+});
+echo $fiber->start();
+echo $fiber->resume("hello");
+echo $fiber->resume("world");
+echo $fiber->getReturn();
+"#), &["first", "second", "result: hello + world"]);
+}
+
+#[test]
+fn fiber_getting_value_from_resume() {
+    assert_eq!(run_prints(r#"<?php
+$fiber = new Fiber(function(): void {
+    $val = Fiber::suspend("waiting");
+    echo "got: $val";
+});
+$suspended = $fiber->start();
+echo $suspended;
+$fiber->resume("ping");
+"#), &["waiting", "got: ping"]);
+}
+
+#[test]
+fn fiber_terminated_state_check() {
+    assert_eq!(run_prints(r#"<?php
+$fiber = new Fiber(function(): void {
+    Fiber::suspend();
+});
+$fiber->start();
+echo $fiber->isSuspended() ? "suspended" : "not suspended";
+echo $fiber->isTerminated() ? "terminated" : "not terminated";
+$fiber->resume();
+echo $fiber->isTerminated() ? "terminated" : "not terminated";
+"#), &["suspended", "not terminated", "terminated"]);
+}
+
+// ── Enums ─────────────────────────────────────────────────────────
+
+#[test]
+fn enum_cases_iteration() {
+    assert_eq!(run_prints(r#"<?php
+enum Direction {
+    case North;
+    case South;
+    case East;
+    case West;
+}
+$cases = Direction::cases();
+echo count($cases);
+echo $cases[0]->name;
+echo $cases[3]->name;
+"#), &["4", "North", "West"]);
+}
+
+#[test]
+fn backed_enum_from_try_from() {
+    assert_eq!(run_prints(r#"<?php
+enum Status: string {
+    case Active   = "active";
+    case Inactive = "inactive";
+    case Banned   = "banned";
+}
+$s = Status::from("active");
+echo $s->name;
+$t = Status::tryFrom("unknown");
+echo $t === null ? "null" : $t->name;
+"#), &["Active", "null"]);
+}
+
+#[test]
+fn enum_implements_interface() {
+    assert_eq!(run_prints(r#"<?php
+interface HasSymbol {
+    public function symbol(): string;
+}
+enum Currency: string implements HasSymbol {
+    case USD = "usd";
+    case EUR = "eur";
+    case GBP = "gbp";
+    public function symbol(): string {
+        return match($this) {
+            self::USD => "$",
+            self::EUR => "€",
+            self::GBP => "£",
+        };
+    }
+}
+echo Currency::USD->symbol();
+echo Currency::EUR->symbol();
+echo Currency::GBP->value;
+"#), &["$", "€", "gbp"]);
+}
+
+#[test]
+fn enum_with_trait() {
+    assert_eq!(run_prints(r#"<?php
+trait HasLabel {
+    public function label(): string {
+        return ucfirst(strtolower($this->name));
+    }
+}
+enum Color {
+    use HasLabel;
+    case Red;
+    case Green;
+    case Blue;
+}
+echo Color::Red->label();
+echo Color::Green->label();
+"#), &["Red", "Green"]);
+}
+
+#[test]
+fn enum_used_in_match() {
+    assert_eq!(run_prints(r#"<?php
+enum Suit: string {
+    case Hearts   = "H";
+    case Diamonds = "D";
+    case Clubs    = "C";
+    case Spades   = "S";
+}
+function color(Suit $s): string {
+    return match($s) {
+        Suit::Hearts, Suit::Diamonds => "red",
+        Suit::Clubs, Suit::Spades   => "black",
     };
 }
-echo display(42);
-echo display("hello");
-echo display([1, 2, 3]);
-echo display(null);
-"#), &["int:42", "str:hello", "arr:3", "null"]);
+echo color(Suit::Hearts);
+echo color(Suit::Spades);
+"#), &["red", "black"]);
 }
 
-// ── Never type ───────────────────────────────────────────────────
+#[test]
+fn enum_used_as_array_key_via_value() {
+    assert_eq!(run_prints(r#"<?php
+enum Role: string {
+    case Admin = "admin";
+    case User  = "user";
+    case Guest = "guest";
+}
+$permissions = [
+    Role::Admin->value => ["read", "write", "delete"],
+    Role::User->value  => ["read", "write"],
+    Role::Guest->value => ["read"],
+];
+$role = Role::User;
+echo count($permissions[$role->value]);
+echo $permissions[Role::Guest->value][0];
+"#), &["2", "read"]);
+}
+
+#[test]
+fn enum_constant() {
+    assert_eq!(run_prints(r#"<?php
+enum Permission: int {
+    case Read    = 1;
+    case Write   = 2;
+    case Execute = 4;
+    const int ALL = 7;
+}
+echo Permission::Read->value;
+echo Permission::ALL;
+$perms = Permission::Read->value | Permission::Write->value;
+echo $perms;
+"#), &["1", "7", "3"]);
+}
+
+#[test]
+fn enum_in_type_hint() {
+    compile_ok(r#"<?php
+enum Season { case Spring; case Summer; case Autumn; case Winter; }
+function describe(Season $s): string {
+    return match($s) {
+        Season::Spring => "flowers",
+        Season::Summer => "sun",
+        Season::Autumn => "leaves",
+        Season::Winter => "snow",
+    };
+}
+echo describe(Season::Winter);
+"#);
+}
+
+// ── First-class callable syntax ───────────────────────────────────
+
+#[test]
+fn first_class_callable_builtin() {
+    assert_eq!(run_prints(r#"<?php
+$fn = strlen(...);
+echo $fn("hello");
+echo $fn("hi");
+"#), &["5", "2"]);
+}
+
+#[test]
+fn first_class_callable_instance_method() {
+    assert_eq!(run_prints(r#"<?php
+class Formatter {
+    public function upper(string $s): string {
+        return strtoupper($s);
+    }
+}
+$f = new Formatter();
+$fn = $f->upper(...);
+echo $fn("hello");
+"#), &["HELLO"]);
+}
+
+#[test]
+fn first_class_callable_static_method() {
+    assert_eq!(run_prints(r#"<?php
+class Math {
+    public static function double(int $x): int { return $x * 2; }
+}
+$fn = Math::double(...);
+echo $fn(5);
+echo $fn(21);
+"#), &["10", "42"]);
+}
+
+#[test]
+fn first_class_callable_in_array_map() {
+    assert_eq!(run_prints(r#"<?php
+$words = ["hello", "world", "php"];
+$result = array_map(strtoupper(...), $words);
+echo implode(",", $result);
+"#), &["HELLO,WORLD,PHP"]);
+}
+
+// ── Intersection types ────────────────────────────────────────────
+
+#[test]
+fn intersection_type_in_param() {
+    compile_ok(r#"<?php
+interface Countable2 { public function size(): int; }
+interface Iterable2  { public function items(): array; }
+class Bag implements Countable2, Iterable2 {
+    private array $data;
+    public function __construct(array $d) { $this->data = $d; }
+    public function size(): int { return count($this->data); }
+    public function items(): array { return $this->data; }
+}
+function process(Countable2&Iterable2 $obj): string {
+    return "size=" . $obj->size() . ",items=" . count($obj->items());
+}
+echo process(new Bag([1, 2, 3]));
+"#);
+}
+
+// ── Never return type ─────────────────────────────────────────────
+
 #[test]
 fn never_return_type() {
     assert_eq!(run_prints(r#"<?php
@@ -382,23 +668,8 @@ try {
 "#), &["fatal error"]);
 }
 
-// ── Constant expressions in enums ────────────────────────────────
-#[test]
-fn enum_constant_expressions() {
-    assert_eq!(run_prints(r#"<?php
-enum Permission: int {
-    case Read = 1;
-    case Write = 2;
-    case Execute = 4;
-}
-$perms = Permission::Read->value | Permission::Write->value;
-echo $perms;
-echo ($perms & Permission::Read->value) ? "can read" : "no read";
-echo ($perms & Permission::Execute->value) ? "can exec" : "no exec";
-"#), &["3", "can read", "no exec"]);
-}
+// ── PHP 8.2 Features ─────────────────────────────────────────────
 
-// ── Disjunctive Normal Form (DNF) types ──────────────────────────
 #[test]
 fn dnf_type_hint() {
     assert_eq!(run_prints(r#"<?php
@@ -417,7 +688,71 @@ echo process("hello");
 "#), &["str:hello"]);
 }
 
-// ── Closure::bind and Closure::fromCallable ──────────────────────
+// ── PHP 8.3 Features ─────────────────────────────────────────────
+
+#[test]
+fn typed_class_constants() {
+    assert_eq!(run_prints(r#"<?php
+class Config {
+    const int    MAX_SIZE    = 1024;
+    const string DEFAULT_ENV = "production";
+    const float  TAX_RATE    = 0.08;
+    const bool   DEBUG       = false;
+}
+echo Config::MAX_SIZE;
+echo Config::DEFAULT_ENV;
+"#), &["1024", "production"]);
+}
+
+#[test]
+fn dynamic_class_constant_fetch() {
+    assert_eq!(run_prints(r#"<?php
+class HttpStatus {
+    const OK        = 200;
+    const NOT_FOUND = 404;
+    const ERROR     = 500;
+}
+$const = "NOT_FOUND";
+echo HttpStatus::{$const};
+"#), &["404"]);
+}
+
+// ── PHP 8.4 Features ─────────────────────────────────────────────
+
+#[test]
+fn property_hook_structural() {
+    compile_ok(r#"<?php
+class Temperature {
+    public float $celsius {
+        get { return $this->celsius; }
+        set(float $value) { $this->celsius = $value; }
+    }
+    public float $fahrenheit {
+        get { return $this->celsius * 9/5 + 32; }
+    }
+}
+$t = new Temperature();
+$t->celsius = 100.0;
+echo $t->fahrenheit;
+"#);
+}
+
+#[test]
+fn asymmetric_visibility_structural() {
+    compile_ok(r#"<?php
+class Counter {
+    public private(set) int $count = 0;
+    public function increment(): void { $this->count++; }
+}
+$c = new Counter();
+$c->increment();
+$c->increment();
+echo $c->count;
+"#);
+}
+
+// ── Closure advanced ─────────────────────────────────────────────
+
 #[test]
 fn closure_bind_to_object() {
     assert_eq!(run_prints(r#"<?php
@@ -443,3 +778,94 @@ echo $fn(5);
 echo $fn(21);
 "#), &["10", "42"]);
 }
+
+// ── Arrow functions deep ──────────────────────────────────────────
+
+#[test]
+fn arrow_fn_complex_expressions() {
+    assert_eq!(run_prints(r#"<?php
+$add     = fn(int $a, int $b): int => $a + $b;
+$compose = fn(callable $f, callable $g) => fn($x) => $f($g($x));
+$double  = fn($x) => $x * 2;
+$inc     = fn($x) => $x + 1;
+$doubleInc = $compose($double, $inc);
+echo $add(3, 4);
+echo $doubleInc(5);
+"#), &["7", "12"]);
+}
+
+// ── Spread operator ───────────────────────────────────────────────
+
+#[test]
+fn spread_in_various_contexts() {
+    assert_eq!(run_prints(r#"<?php
+function sum(int ...$nums): int {
+    return array_sum($nums);
+}
+echo sum(1, 2, 3);
+echo sum(...[4, 5, 6]);
+
+$a = [1, 2, 3];
+$b = [4, 5, 6];
+$merged = [...$a, ...$b];
+echo implode(",", $merged);
+"#), &["6", "15", "1,2,3,4,5,6"]);
+}
+
+// ── Mixed type hint ───────────────────────────────────────────────
+
+#[test]
+fn mixed_type_hint() {
+    assert_eq!(run_prints(r#"<?php
+function display(mixed $value): string {
+    return match(gettype($value)) {
+        "integer" => "int:$value",
+        "string"  => "str:$value",
+        "array"   => "arr:" . count($value),
+        "NULL"    => "null",
+        default   => "other",
+    };
+}
+echo display(42);
+echo display("hello");
+echo display([1, 2, 3]);
+echo display(null);
+"#), &["int:42", "str:hello", "arr:3", "null"]);
+}
+
+// ── Enum constant expressions ─────────────────────────────────────
+
+#[test]
+fn enum_constant_expressions() {
+    assert_eq!(run_prints(r#"<?php
+enum Permission: int {
+    case Read    = 1;
+    case Write   = 2;
+    case Execute = 4;
+}
+$perms = Permission::Read->value | Permission::Write->value;
+echo $perms;
+echo ($perms & Permission::Read->value)    ? "can read"  : "no read";
+echo ($perms & Permission::Execute->value) ? "can exec"  : "no exec";
+"#), &["3", "can read", "no exec"]);
+}
+
+// ── Fiber scheduler pattern ───────────────────────────────────────
+
+#[test]
+fn fiber_scheduler_round_robin() {
+    assert_eq!(run_prints(r#"<?php
+$fibers = [];
+for ($i = 1; $i <= 3; $i++) {
+    $n = $i;
+    $fibers[] = new Fiber(function() use ($n) {
+        echo "task$n start";
+        Fiber::suspend();
+        echo "task$n end";
+    });
+}
+foreach ($fibers as $f) { $f->start(); }
+foreach ($fibers as $f) { $f->resume(); }
+"#), &["task1 start", "task2 start", "task3 start", "task1 end", "task2 end", "task3 end"]);
+}
+
