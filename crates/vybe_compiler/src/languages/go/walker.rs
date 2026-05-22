@@ -1418,7 +1418,10 @@ fn normalize_go_expr(
             }
 
             if call_name.as_deref() == Some("append") && !next_args.is_empty() {
-                let mut result = next_args[0].value.clone();
+                let mut result = Expression::new(ExprKind::NullCoalesce {
+                    left: Box::new(next_args[0].value.clone()),
+                    right: Box::new(Expression::new(ExprKind::Array(Vec::new()))),
+                });
                 for arg in next_args.iter().skip(1) {
                     let rhs = if arg.spread {
                         arg.value.clone()

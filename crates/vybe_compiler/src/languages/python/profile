@@ -43,6 +43,7 @@ input           = { emit = "host:wasi:cli:readLine",        min_args = 0, max_ar
 # ── Type conversion ──────────────────────────────────────────────────────────
 
 int             = { emit = "intrinsic:cint",        min_args = 1, max_args = 2 }
+parseInt        = { emit = "host:ecma:number:parseInt",   min_args = 2, max_args = 2 }
 float           = { emit = "host:ecma:number:Number",        min_args = 1, max_args = 1 }
 str             = { emit = "host:ecma:string:String",        min_args = 1, max_args = 1 }
 bool            = { emit = "opcode:dyn_to_bool",            min_args = 1, max_args = 1 }
@@ -82,8 +83,6 @@ next            = { emit = "stdlib:pynext",                 min_args = 1, max_ar
 abs             = { emit = "opcode:f64_abs",                min_args = 1, max_args = 1 }
 round           = { emit = "opcode:f64_nearest",            min_args = 1, max_args = 2 }
 pow             = { emit = "host:ecma:math:pow",            min_args = 2, max_args = 3 }
-divmod          = { emit = "host:ecma:math:divmod",         min_args = 2, max_args = 2 }
-
 # ── Math module ──────────────────────────────────────────────────────────────
 
 "math.sqrt"     = { emit = "opcode:f64_sqrt",               min_args = 1, max_args = 1 }

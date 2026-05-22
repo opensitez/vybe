@@ -107,6 +107,11 @@ fn preprocess_indentation(source: &str) -> String {
                 indent_stack.pop();
                 result.push('\u{21E4}'); // DEDENT
             }
+            // After popping, if indent is above the new top, it's a new block level
+            if indent > *indent_stack.last().unwrap() {
+                indent_stack.push(indent);
+                result.push('\u{21E5}'); // INDENT
+            }
         }
 
         result.push_str(line);
@@ -526,7 +531,10 @@ fn walk_class_def(pair: Pair<Rule>, _decorators: Vec<Expression>) -> Result<Stmt
 }
 
 fn stmts_to_class_members(stmts: Vec<Statement>) -> Vec<ClassMember> {
-    let mut members = Vec::new();
+    let mut members: Vec<ClassMember> = Vec::new();
+    // Track Property member index by name so @x.setter can find the getter.
+    let mut property_indices: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::FunctionDecl { name, params, body, modifiers, is_async, .. } => {
@@ -541,26 +549,99 @@ fn stmts_to_class_members(stmts: Vec<Statement>) -> Vec<ClassMember> {
                         initializer_target: crate::ast::ConstructorInitializerTarget::Base,
                         visibility: Visibility::Public,
                     });
-                } else {
-                    // Method — keep `self`/`cls` param; compiler strips via
-                    // `NormalClass.explicit_self_param`.
-                    let is_static = params.first().map_or(true, |p| p.name != "self");
-                    let mut mods = modifiers.clone();
-                    mods.is_static = is_static;
-                    members.push(ClassMember::Method(Box::new(Statement::new(
-                        StmtKind::FunctionDecl {
-                            name: name.clone(),
-                            params: params.clone(),
-                            return_type: None,
-                            body: body.clone(),
-                            modifiers: mods,
-                            handles: Vec::new(),
-                            is_async: *is_async,
-                            is_generator: false,
-                            is_sub: false,
-                        }
-                    ))));
+                    continue;
                 }
+
+                // Check for @property decorator → build Property getter
+                let has_property = modifiers.decorators.iter().any(|d| matches!(&d.kind, ExprKind::Ident(n) if n == "property"));
+                if has_property {
+                    let idx = members.len();
+                    members.push(ClassMember::Property {
+                        name: name.clone(),
+                        type_hint: None,
+                        getter: Some(body.clone()),
+                        setter: None,
+                        is_auto: false,
+                        modifiers: Modifiers::default(),
+                    });
+                    property_indices.insert(name.clone(), idx);
+                    continue;
+                }
+
+                // Check for @x.setter or @x.deleter → add to existing Property
+                let setter_target = modifiers.decorators.iter().find_map(|d| {
+                    if let ExprKind::Member { object, field, .. } = &d.kind {
+                        if field == "setter" {
+                            if let ExprKind::Ident(prop_name) = &object.kind {
+                                return Some((prop_name.clone(), "setter"));
+                            }
+                        }
+                    }
+                    None
+                });
+                if let Some((prop_name, "setter")) = setter_target {
+                    if let Some(&prop_idx) = property_indices.get(&prop_name) {
+                        if let ClassMember::Property { setter, .. } = &mut members[prop_idx] {
+                            // Second param (after self) is the value param
+                            let value_param = params.iter().nth(1).cloned().unwrap_or(Param {
+                                name: "value".to_string(),
+                                type_hint: None,
+                                default: None,
+                                pass_by: PassBy::Value,
+                                is_rest: false,
+                                is_kwargs: false,
+                                is_optional: false,
+                                is_nullable: false,
+                            });
+                            *setter = Some(crate::ast::PropertySetter {
+                                param: value_param,
+                                body: body.clone(),
+                            });
+                        }
+                    }
+                    continue;
+                }
+
+                // Method — keep `self`/`cls` param; compiler strips via
+                // `NormalClass.explicit_self_param`.
+                let has_staticmethod = modifiers.decorators.iter().any(|d| matches!(&d.kind, ExprKind::Ident(n) if n == "staticmethod"));
+                // For @staticmethod, prepend a dummy "self" so that
+                // explicit_self_param's skip(1) removes the dummy, keeping
+                // the real params intact. Without this, skip(1) would drop
+                // the first real param (e.g. `a` in `def add(a, b)`).
+                let final_params = if has_staticmethod {
+                    let dummy = Param {
+                        name: "self".to_string(),
+                        type_hint: None,
+                        default: None,
+                        pass_by: PassBy::Value,
+                        is_rest: false,
+                        is_kwargs: false,
+                        is_optional: false,
+                        is_nullable: false,
+                    };
+                    let mut p = vec![dummy];
+                    p.extend_from_slice(params);
+                    p
+                } else {
+                    params.clone()
+                };
+                let is_static = has_staticmethod || final_params.first().map_or(true, |p| p.name != "self");
+                let mut mods = modifiers.clone();
+                mods.is_static = is_static;
+                members.push(ClassMember::Method(Box::new(Statement::new(
+                    StmtKind::FunctionDecl {
+                        name: name.clone(),
+                        params: final_params,
+                        return_type: None,
+                        body: body.clone(),
+                        modifiers: mods,
+                        handles: Vec::new(),
+                        is_async: *is_async,
+                        is_generator: false,
+                        is_sub: false,
+                    }
+                ))));
             }
             StmtKind::Assign { targets, value } => {
                 // Class-level assignment → static Field (Python class variables)
@@ -1286,7 +1367,14 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
     match pair.as_rule() {
         // ── Literals ────────────────────────────────────────────────────
         Rule::numeric_literal => parse_number(pair.as_str()),
-        Rule::string_literal => Ok(ExprKind::Lit(Literal::Str(parse_python_string(pair.as_str())))),
+        Rule::string_literal => {
+            let raw = pair.as_str();
+            if is_bytes_prefix(raw) {
+                Ok(parse_bytes_literal(raw))
+            } else {
+                Ok(ExprKind::Lit(Literal::Str(parse_python_string(raw))))
+            }
+        }
         Rule::string_concat => {
             // Implicit string concatenation: "a" "b" → "ab"
             let mut result = String::new();
@@ -1595,11 +1683,17 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let children: Vec<Pair<Rule>> = chain.into_inner().collect();
             if children.is_empty() {
                 // No-arg call: foo()
-                expr = Expression::new(ExprKind::Call {
-                    callee: Box::new(expr),
-                    args: Vec::new(),
-                    optional: false,
-                });
+                // Python `super()` → ExprKind::Super so the compiler's
+                // existing super.method() dispatch takes over.
+                if matches!(&expr.kind, ExprKind::Ident(n) if n == "super") {
+                    expr = Expression::new(ExprKind::Super);
+                } else {
+                    expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(expr),
+                        args: Vec::new(),
+                        optional: false,
+                    });
+                }
             } else {
                 let first_child = &children[0];
                 match first_child.as_rule() {
@@ -1623,6 +1717,74 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                 continue;
                             }
                         }
+                        // Python `super(Type, self)` explicit 2-arg form → ExprKind::Super
+                        if matches!(&expr.kind, ExprKind::Ident(n) if n == "super") {
+                            if args.len() == 0 || args.len() == 2 {
+                                expr = Expression::new(ExprKind::Super);
+                                continue;
+                            }
+                        }
+
+                        // Python-specific: rewrite builtins that differ from JS semantics.
+                        if let ExprKind::Ident(name) = &expr.kind {
+                            match name.as_str() {
+                                "divmod" if args.len() == 2 => {
+                                    // divmod(a, b) → [a // b, a % b]
+                                    let a = args[0].value.clone();
+                                    let b = args[1].value.clone();
+                                    expr = Expression::new(ExprKind::Array(vec![
+                                        ArrayElement { key: None, spread: false, by_ref: false,
+                                            value: Expression::new(ExprKind::Binary {
+                                                op: BinOp::FloorDiv,
+                                                left: Box::new(a.clone()),
+                                                right: Box::new(b.clone()),
+                                            }),
+                                        },
+                                        ArrayElement { key: None, spread: false, by_ref: false,
+                                            value: Expression::new(ExprKind::Binary {
+                                                op: BinOp::Mod,
+                                                left: Box::new(a),
+                                                right: Box::new(b),
+                                            }),
+                                        },
+                                    ]));
+                                    continue;
+                                }
+                                "int" if args.len() == 2 => {
+                                    // int(s, base) → parseInt(s, base)
+                                    expr = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::new(ExprKind::Ident("parseInt".into()))),
+                                        args,
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "isinstance" if args.len() == 2 => {
+                                    if let ExprKind::Ident(type_name) = &args[1].value.kind {
+                                        if type_name == "int" {
+                                            // isinstance(x, int) → typeof x === "number" || typeof x === "boolean"
+                                            // because bool is a subtype of int in Python
+                                            let x = args[0].value.clone();
+                                            expr = Expression::new(ExprKind::Binary {
+                                                op: BinOp::Or,
+                                                left: Box::new(Expression::new(ExprKind::Binary {
+                                                    op: BinOp::StrictEq,
+                                                    left: Box::new(Expression::new(ExprKind::TypeOf(Box::new(x.clone())))),
+                                                    right: Box::new(Expression::string("number")),
+                                                })),
+                                                right: Box::new(Expression::new(ExprKind::Binary {
+                                                    op: BinOp::StrictEq,
+                                                    left: Box::new(Expression::new(ExprKind::TypeOf(Box::new(x)))),
+                                                    right: Box::new(Expression::string("boolean")),
+                                                })),
+                                            });
+                                            continue;
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
                         expr = Expression::new(ExprKind::Call {
                             callee: Box::new(expr),
                             args,
@@ -1631,11 +1793,17 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     }
                     Rule::identifier => {
                         let field = first_child.as_str().to_string();
-                        expr = Expression::new(ExprKind::Member {
-                            object: Box::new(expr),
-                            field,
-                            null_safe: false,
-                        });
+                        if field == "__dict__" {
+                            // Python `obj.__dict__` → the object itself.
+                            // Vybe stores instance/class properties in Object.properties,
+                            // so ARRAY_GET on the object finds the same keys.
+                        } else {
+                            expr = Expression::new(ExprKind::Member {
+                                object: Box::new(expr),
+                                field,
+                                null_safe: false,
+                            });
+                        }
                     }
                     Rule::subscript => {
                         let index = walk_subscript_expr(children.into_iter().next().unwrap())?;
@@ -1803,56 +1971,66 @@ fn walk_dict_or_set(pair: Pair<Rule>) -> Result<ExprKind, String> {
         return Ok(ExprKind::Object(Vec::new()));
     }
 
-    // Check for dict_comp_or_rest, set_comp_or_rest
-    // Dispatch based on what children we have
-    let _exprs: Vec<Expression> = Vec::new();
-    let mut is_dict = false;
-    let mut _has_comp = false;
+    // ── Set comprehension: expression ~ set_comp_or_rest(comp_clause+) ──
+    // e.g. {x % 2 for x in range(6)}
+    if inner.len() >= 2 && inner[1].as_rule() == Rule::set_comp_or_rest {
+        let set_inner: Vec<Pair<Rule>> = inner[1].clone().into_inner().collect();
+        let has_comp = set_inner.iter().any(|p| p.as_rule() == Rule::comp_clause);
+        if has_comp {
+            let element = walk_expression(inner[0].clone())?;
+            let generators = set_inner.into_iter()
+                .filter(|p| p.as_rule() == Rule::comp_clause)
+                .map(walk_comp_clause)
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(ExprKind::Comprehension {
+                kind: ComprehensionKind::Set,
+                element: Box::new(element),
+                generators,
+            });
+        }
+    }
 
+    // ── Dict comprehension: expr ~ expr ~ dict_comp_or_rest(comp_clause+) ──
+    // e.g. {x: x * x for x in range(4)}
+    if inner.len() >= 3 && inner[2].as_rule() == Rule::dict_comp_or_rest {
+        let comp_inner: Vec<Pair<Rule>> = inner[2].clone().into_inner().collect();
+        let has_comp = comp_inner.iter().any(|p| p.as_rule() == Rule::comp_clause);
+        if has_comp && is_expression_rule(inner[0].as_rule()) && is_expression_rule(inner[1].as_rule()) {
+            let key = walk_expression(inner[0].clone())?;
+            let val = walk_expression(inner[1].clone())?;
+            // Encode key-value as a 2-element array so the compiler can unpack it.
+            let element = Expression::new(ExprKind::Array(vec![
+                ArrayElement { key: None, spread: false, by_ref: false, value: key },
+                ArrayElement { key: None, spread: false, by_ref: false, value: val },
+            ]));
+            let generators = comp_inner.into_iter()
+                .filter(|p| p.as_rule() == Rule::comp_clause)
+                .map(walk_comp_clause)
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(ExprKind::Comprehension {
+                kind: ComprehensionKind::Dict,
+                element: Box::new(element),
+                generators,
+            });
+        }
+    }
+
+    // ── Dict literal or set literal ──────────────────────────────────────
+    let mut is_dict = false;
     for p in &inner {
         match p.as_rule() {
             Rule::dict_comp_or_rest | Rule::dict_rest | Rule::dict_entry => is_dict = true,
-            Rule::set_comp_or_rest => {}
-            Rule::comp_clause => _has_comp = true,
             _ => {}
         }
     }
 
     if is_dict {
-        // Dict or dict comprehension
-        // Collect key-value pairs
         let mut props = Vec::new();
         let mut i = 0;
-        let items: Vec<Pair<Rule>> = inner;
-
-        while i < items.len() {
-            match items[i].as_rule() {
-                Rule::dict_comp_or_rest => {
-                    let comp_inner: Vec<Pair<Rule>> = items[i].clone().into_inner().collect();
-                    if comp_inner.iter().any(|p| p.as_rule() == Rule::comp_clause) {
-                        // Dict comprehension — but we'd need the key/value from before
-                        // This is complex, return simplified for now
-                        _has_comp = true;
-                    } else {
-                        for de in comp_inner {
-                            if de.as_rule() == Rule::dict_entry {
-                                let is_spread = de.as_str().trim_start().starts_with("**");
-                                let entry_inner: Vec<Pair<Rule>> = de.into_inner().collect();
-                                if is_spread {
-                                    if let Some(expr) = entry_inner.first() {
-                                        props.push(ObjectProperty::Spread(walk_expression(expr.clone())?));
-                                    }
-                                } else if entry_inner.len() >= 2 {
-                                    let key = walk_expression(entry_inner[0].clone())?;
-                                    let val = walk_expression(entry_inner[1].clone())?;
-                                    props.push(ObjectProperty::KeyValue { key, value: val });
-                                }
-                            }
-                        }
-                    }
-                }
-                Rule::dict_rest => {
-                    for de in items[i].clone().into_inner() {
+        while i < inner.len() {
+            match inner[i].as_rule() {
+                Rule::dict_comp_or_rest | Rule::dict_rest => {
+                    for de in inner[i].clone().into_inner() {
                         if de.as_rule() == Rule::dict_entry {
                             let is_spread = de.as_str().trim_start().starts_with("**");
                             let entry_inner: Vec<Pair<Rule>> = de.into_inner().collect();
@@ -1868,16 +2046,16 @@ fn walk_dict_or_set(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         }
                     }
                 }
-                _ if is_expression_rule(items[i].as_rule()) => {
-                    let key = walk_expression(items[i].clone())?;
+                _ if is_expression_rule(inner[i].as_rule()) => {
+                    let key = walk_expression(inner[i].clone())?;
                     if i == 0 && text.starts_with("**") {
                         props.push(ObjectProperty::Spread(key));
                         i += 1;
                         continue;
                     }
                     i += 1;
-                    if i < items.len() && is_expression_rule(items[i].as_rule()) {
-                        let val = walk_expression(items[i].clone())?;
+                    if i < inner.len() && is_expression_rule(inner[i].as_rule()) {
+                        let val = walk_expression(inner[i].clone())?;
                         props.push(ObjectProperty::KeyValue { key, value: val });
                     }
                 }
@@ -1885,11 +2063,10 @@ fn walk_dict_or_set(pair: Pair<Rule>) -> Result<ExprKind, String> {
             }
             i += 1;
         }
-
         return Ok(ExprKind::Object(props));
     }
 
-    // Set
+    // Set literal: {1, 2, 3}
     let mut elements = Vec::new();
     for item in inner {
         match item.as_rule() {
@@ -2162,6 +2339,22 @@ fn parse_number(s: &str) -> Result<ExprKind, String> {
     } else {
         Ok(ExprKind::Lit(Literal::Int(s.parse().unwrap_or(0))))
     }
+}
+
+fn is_bytes_prefix(s: &str) -> bool {
+    let lc = s.to_ascii_lowercase();
+    lc.starts_with("b'") || lc.starts_with("b\"") ||
+    lc.starts_with("rb'") || lc.starts_with("rb\"") ||
+    lc.starts_with("br'") || lc.starts_with("br\"")
+}
+
+fn parse_bytes_literal(s: &str) -> ExprKind {
+    let content = parse_python_string(s);
+    let elements = content.bytes().map(|b| ArrayElement {
+        key: None, spread: false, by_ref: false,
+        value: Expression::new(ExprKind::Lit(Literal::Int(b as i64))),
+    }).collect();
+    ExprKind::Array(elements)
 }
 
 fn parse_python_string(s: &str) -> String {
