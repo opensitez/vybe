@@ -33,6 +33,7 @@ macro_rules! compile_cases {
 
 run_cases! {
     embedded_field_explicit_access_runtime => ("package main; import \"fmt\"; type inner struct { count int }; type outer struct { inner }; func main() { value := outer{inner: inner{count: 7}}; fmt.Println(value.inner.count); }", vec!["7"]),
+    embedded_field_promotion_runtime => ("package main; import \"fmt\"; type inner struct { count int }; type outer struct { inner }; func main() { value := outer{inner: inner{count: 7}}; fmt.Println(value.count); }", vec!["7"]),
     embedded_method_promotion_runtime => ("package main; import \"fmt\"; type inner struct{}; func (inner) label() string { return \"ok\" }; type outer struct { inner }; func main() { value := outer{}; fmt.Println(value.label()); }", vec!["ok"]),
     embedded_field_shadow_runtime => ("package main; import \"fmt\"; type inner struct { name string }; type outer struct { inner; name string }; func main() { value := outer{inner: inner{name: \"inner\"}, name: \"outer\"}; fmt.Println(value.name); fmt.Println(value.inner.name); }", vec!["outer", "inner"]),
     zero_value_embedded_struct_runtime => ("package main; import \"fmt\"; type inner struct { count int }; type outer struct { inner }; func main() { var value outer; fmt.Println(value.count); }", vec!["0"]),
@@ -60,7 +61,6 @@ run_cases! {
 }
 
 compile_cases! {
-    embedded_field_promotion_compile => "package main; type inner struct { count int }; type outer struct { inner }; func main() { value := outer{inner: inner{count: 7}}; _ = value.count }",
     empty_struct_value_compile => "package main; type marker struct{}; func main() { _ = marker{} }",
     recursive_struct_pointer_compile => "package main; type node struct { next *node }; func main() { var n node; _ = n }",
     embedded_pointer_field_compile => "package main; type inner struct { count int }; type outer struct { *inner }; func main() { _ = outer{} }",

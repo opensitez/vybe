@@ -2037,39 +2037,17 @@ fn build_rotate(imports: &mut Chunk) -> Chunk {
 fn build_array_copy(imports: &mut Chunk) -> Chunk {
     let mut c = Chunk::new("__stdlib_array_copy");
     c.arity = 3;
-    c.local_count = 4; // src(0), dst(1), count(2), i(3)
+    c.local_count = 3; // src(0), dst(1), count(2)
     let src = 0u16;
     let dst = 1;
     let count = 2;
-    let i = 3;
 
-    c.emit_op(Op::I32_CONST_0, 0);
-    c.emit_op_u16(Op::LOCAL_SET, i, 0); c.emit_op(Op::DROP, 0);
-
-    let block_p = c.emit_block(0);
-    let (loop_p, _) = c.emit_loop_s(0);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op_u16(Op::LOCAL_GET, count, 0);
-    c.emit_op(Op::DYN_LT, 0);
-    c.emit_op(Op::DYN_NOT, 0);
-    c.emit_br_if(1, 0);
-
-    // dst[i] = src[i]
     c.emit_op_u16(Op::LOCAL_GET, dst, 0);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
+    c.emit_op(Op::I32_CONST_0, 0);
     c.emit_op_u16(Op::LOCAL_GET, src, 0);
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::ARRAY_GET, 0);
-    c.emit_op(Op::ARRAY_SET, 0); c.emit_op(Op::DROP, 0);
-
-    c.emit_op_u16(Op::LOCAL_GET, i, 0);
-    c.emit_op(Op::I32_CONST_1, 0);
-    c.emit_op(Op::I32_ADD, 0);
-    c.emit_op_u16(Op::LOCAL_SET, i, 0); c.emit_op(Op::DROP, 0);
-
-    c.emit_br(0, 0);
-    c.emit_end(0); c.patch_loop(loop_p);
-    c.emit_end(0); c.patch_block(block_p);
+    c.emit_op(Op::I32_CONST_0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, count, 0);
+    c.emit_op(Op::ARRAY_COPY, 0);
 
     // .NET Array.Copy returns void
     c.emit_op(Op::NULL, 0);

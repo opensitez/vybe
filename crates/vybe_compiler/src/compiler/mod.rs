@@ -4451,6 +4451,18 @@ impl Compiler {
     }
 
     fn user_value_type_name_from_hint(&self, type_hint: &str) -> Option<String> {
+        let resolved = self.resolve_source_type_alias(type_hint);
+        let trimmed = resolved.trim().trim_end_matches('?').trim();
+        if trimmed.starts_with('*')
+            || trimmed.starts_with('^')
+            || trimmed.starts_with("[]")
+            || trimmed.starts_with("map[")
+            || trimmed.starts_with("chan ")
+            || trimmed.starts_with("func(")
+        {
+            return None;
+        }
+
         if let Some(class_name) = self.resolve_pending_class_name_for_type_hint(type_hint) {
             if self
                 .pending_classes
@@ -4461,8 +4473,6 @@ impl Compiler {
             }
         }
 
-        let resolved = self.resolve_source_type_alias(type_hint);
-        let trimmed = resolved.trim().trim_end_matches('?').trim();
         for candidate in [
             Some(trimmed),
             trimmed.rsplit('.').next().filter(|segment| *segment != trimmed),

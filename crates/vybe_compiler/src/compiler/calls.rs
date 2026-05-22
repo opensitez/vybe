@@ -1529,6 +1529,12 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, receiver_slot);
         }
 
+        if fixed_count == 0 && args.len() == 1 && args[0].spread {
+            self.compile_expr(&args[0].value)?;
+            self.emit_u8(Op::CALL_REF, argc as u8);
+            return Ok(());
+        }
+
         if args.iter().any(|arg| arg.spread) {
             let line = self.line;
             let args_slot = self.emit_flat_call_args_array(args, "__packed_rest_call_args")?;

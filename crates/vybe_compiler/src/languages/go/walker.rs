@@ -96,8 +96,26 @@ struct GoNormalizeEnv {
     value_types: HashMap<String, String>,
     fixed_arrays: HashMap<String, String>,
     slice_caps: HashMap<String, Expression>,
+    slice_views: HashMap<String, GoSliceViewInfo>,
+    struct_infos: HashMap<String, GoStructInfo>,
+    named_types: HashMap<String, String>,
     type_names: HashSet<String>,
     return_type: Option<String>,
+}
+
+#[derive(Clone)]
+struct GoSliceViewInfo {
+    base: Expression,
+    start: Expression,
+    end: Option<Expression>,
+}
+
+#[derive(Clone, Default)]
+struct GoStructInfo {
+    member_names: HashSet<String>,
+    method_names: HashSet<String>,
+    member_types: HashMap<String, String>,
+    embedded_fields: Vec<(String, String)>,
 }
 
 #[derive(Default)]
@@ -115,12 +133,17 @@ fn normalize_go_module(mut module: Module) -> Module {
     module.body = merge_go_struct_decls(&module.body);
     let signatures = collect_go_function_signatures(&module.body);
     let globals = collect_go_global_fixed_arrays(&module.body, &signatures);
+    let struct_infos = collect_go_struct_infos(&module.body);
+    let named_types = collect_go_named_types(&module.body);
     let type_names = collect_go_type_names(&module.body);
     let mut state = GoNormalizeState::default();
     let mut env = GoNormalizeEnv {
         value_types: HashMap::new(),
         fixed_arrays: globals.clone(),
         slice_caps: HashMap::new(),
+        slice_views: HashMap::new(),
+        struct_infos,
+        named_types,
         type_names,
         return_type: None,
     };
@@ -188,22 +211,58 @@ fn collect_go_type_names(body: &[Statement]) -> HashSet<String> {
             | StmtKind::ClassDecl { name, .. } => {
                 type_names.insert(name.clone());
             }
-            StmtKind::VarDecl { declarations, kind } if *kind == VarDeclKind::Let => {
-                for decl in declarations {
-                    let BindingPattern::Ident(name) = &decl.pattern else {
-                        continue;
-                    };
-                    if matches!(decl.init.as_ref().map(|expr| &expr.kind), Some(ExprKind::Lit(Literal::Str(_))))
-                        && decl.type_hint.is_none()
-                    {
-                        type_names.insert(name.clone());
-                    }
+            _ => {
+                if let Some((name, _)) = go_extract_named_type_marker(stmt) {
+                    type_names.insert(name);
                 }
             }
-            _ => {}
         }
     }
     type_names
+}
+
+fn collect_go_named_types(body: &[Statement]) -> HashMap<String, String> {
+    let mut named_types = HashMap::new();
+    for stmt in body {
+        if let Some((name, underlying)) = go_extract_named_type_marker(stmt) {
+            named_types.insert(name, underlying);
+        }
+    }
+    named_types
+}
+
+fn collect_go_struct_infos(body: &[Statement]) -> HashMap<String, GoStructInfo> {
+    let mut infos = HashMap::new();
+    for stmt in body {
+        let StmtKind::StructDecl { name, members, .. } = &stmt.kind else {
+            continue;
+        };
+        let info = infos.entry(name.clone()).or_insert_with(GoStructInfo::default);
+        for member in members {
+            match member {
+                ClassMember::Field { name, type_hint, .. } => {
+                    info.member_names.insert(name.clone());
+                    if let Some(type_name) = type_hint.clone() {
+                        info.member_types.insert(name.clone(), type_name.clone());
+                        if go_embedded_field_name(&type_name).as_deref() == Some(name.as_str()) {
+                            info.embedded_fields.push((name.clone(), type_name));
+                        }
+                    }
+                }
+                ClassMember::Method(stmt) => {
+                    if let StmtKind::FunctionDecl { name, return_type, .. } = &stmt.kind {
+                        info.member_names.insert(name.clone());
+                        info.method_names.insert(name.clone());
+                        if let Some(type_name) = return_type.clone() {
+                            info.member_types.insert(name.clone(), type_name);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    infos
 }
 
 fn merge_go_struct_decls(body: &[Statement]) -> Vec<Statement> {
@@ -428,6 +487,23 @@ fn go_extract_named_result_marker(stmt: &Statement) -> Option<Param> {
         is_optional: false,
         is_nullable: false,
     })
+}
+
+fn go_extract_named_type_marker(stmt: &Statement) -> Option<(String, String)> {
+    let StmtKind::Expr(expr) = &stmt.kind else {
+        return None;
+    };
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(callee.kind, ExprKind::Ident(ref name) if name == "__go_named_type") || args.len() != 2 {
+        return None;
+    }
+    let ExprKind::Lit(Literal::Str(name)) = &args[0].value.kind else {
+        return None;
+    };
+    let type_name = go_type_name_from_expr(&args[1].value)?;
+    Some((name.clone(), type_name))
 }
 
 fn go_lower_named_result_body(
@@ -906,6 +982,9 @@ fn normalize_go_statement(
                 value_types: env.value_types.clone(),
                 fixed_arrays: env.fixed_arrays.clone(),
                 slice_caps: env.slice_caps.clone(),
+                slice_views: env.slice_views.clone(),
+                struct_infos: env.struct_infos.clone(),
+                named_types: env.named_types.clone(),
                 type_names: env.type_names.clone(),
                 return_type: return_type.clone(),
             };
@@ -963,6 +1042,15 @@ fn normalize_go_statement(
                         .type_hint
                         .as_deref()
                         .map(go_zero_value_expr);
+                } else if next_decl.init.is_none() {
+                    if let Some(type_name) = next_decl.type_hint.as_deref() {
+                        if let Some(underlying) = env.named_types.get(type_name) {
+                            next_decl.init = Some(Expression::new(ExprKind::Cast {
+                                expr: Box::new(go_zero_value_expr(underlying)),
+                                type_name: type_name.to_string(),
+                            }));
+                        }
+                    }
                 } else if let Some(init_expr) = next_decl.init.take() {
                     next_decl.init = Some(go_wrap_fixed_array_copy(init_expr, env, signatures));
                 }
@@ -973,8 +1061,33 @@ fn normalize_go_statement(
                 if let Some((name, type_name)) = go_decl_binding_type(&next_decl, env, signatures) {
                     env.value_types.insert(name, type_name);
                 }
-                if let Some((name, cap_expr)) = go_decl_slice_capacity_binding(decl, env, signatures, state) {
-                    env.slice_caps.insert(name, cap_expr);
+                if let Some(name) = go_binding_name(&next_decl.pattern) {
+                    if let Some(view) = next_decl
+                        .init
+                        .as_ref()
+                        .and_then(|init| go_expr_slice_view(init, env))
+                    {
+                        if go_slice_view_is_self_referential(&view, &name) {
+                            env.slice_views.remove(&name);
+                        } else {
+                            env.slice_views.insert(name.clone(), view);
+                        }
+                    } else {
+                        env.slice_views.remove(&name);
+                    }
+                    if let Some(cap_expr) = decl
+                        .init
+                        .as_ref()
+                        .and_then(|init| go_make_slice_capacity_expr(init, env, signatures, state))
+                        .or_else(|| {
+                            next_decl
+                                .init
+                                .as_ref()
+                                .and_then(|init| go_bound_slice_capacity_expr(init, env))
+                        })
+                    {
+                        env.slice_caps.insert(name, cap_expr);
+                    }
                 }
                 normalized.push(next_decl);
             }
@@ -984,6 +1097,7 @@ fn normalize_go_statement(
                 kind: kind.clone(),
             })]
         }
+        StmtKind::Expr(_) if go_extract_named_type_marker(stmt).is_some() => Vec::new(),
         StmtKind::Expr(expr) => vec![Statement::new(StmtKind::Expr(normalize_go_expr(
             expr, env, signatures, state,
         )))],
@@ -995,7 +1109,18 @@ fn normalize_go_statement(
                     if let Some(type_name) = go_expr_type_hint(&next_value, env, signatures) {
                         env.value_types.insert(name.clone(), type_name);
                     }
-                    if let Some(cap_expr) = go_make_slice_capacity_expr(value, env, signatures, state) {
+                    if let Some(view) = go_expr_slice_view(&next_value, env) {
+                        if go_slice_view_is_self_referential(&view, name) {
+                            env.slice_views.remove(name);
+                        } else {
+                            env.slice_views.insert(name.clone(), view);
+                        }
+                    } else {
+                        env.slice_views.remove(name);
+                    }
+                    if let Some(cap_expr) = go_make_slice_capacity_expr(value, env, signatures, state)
+                        .or_else(|| go_bound_slice_capacity_expr(&next_value, env))
+                    {
                         env.slice_caps.insert(name.clone(), cap_expr);
                     }
                 }
@@ -1112,7 +1237,9 @@ fn normalize_go_statement(
             is_async,
         } => {
             let next_iter = normalize_go_expr(iter, env, signatures, state);
-            if *of && go_expr_is_fixed_array(&next_iter, env, signatures) {
+            if *of && go_expr_type_hint(&next_iter, env, signatures).as_deref() == Some("string") {
+                lower_go_string_range(var, key.as_deref(), next_iter, body, env, signatures, state)
+            } else if *of && go_expr_is_fixed_array(&next_iter, env, signatures) {
                 lower_go_fixed_array_range(var, key.as_deref(), next_iter, body, env, signatures, state)
             } else {
                 vec![Statement::new(StmtKind::ForIn {
@@ -1221,6 +1348,12 @@ fn normalize_go_expr(
     state: &mut GoNormalizeState,
 ) -> Expression {
     match &expr.kind {
+        ExprKind::Ident(name) => env
+            .slice_views
+            .get(name)
+            .cloned()
+            .map(go_materialize_slice_view)
+            .unwrap_or_else(|| expr.clone()),
         ExprKind::Binary { op, left, right } => {
             let next_left = normalize_go_expr(left, env, signatures, state);
             let next_right = normalize_go_expr(right, env, signatures, state);
@@ -1285,11 +1418,15 @@ fn normalize_go_expr(
             object,
             field,
             null_safe,
-        } => Expression::new(ExprKind::Member {
-            object: Box::new(normalize_go_expr(object, env, signatures, state)),
-            field: field.clone(),
-            null_safe: *null_safe,
-        }),
+        } => {
+            let next_object = normalize_go_expr(object, env, signatures, state);
+            let rewritten = go_rewrite_promoted_member_access(next_object, field, *null_safe, env, signatures);
+            rewritten.unwrap_or_else(|| Expression::new(ExprKind::Member {
+                object: Box::new(normalize_go_expr(object, env, signatures, state)),
+                field: field.clone(),
+                null_safe: *null_safe,
+            }))
+        }
         ExprKind::Index {
             object,
             index,
@@ -1297,6 +1434,9 @@ fn normalize_go_expr(
         } => {
             let next_object = normalize_go_expr(object, env, signatures, state);
             let next_index = normalize_go_expr(index, env, signatures, state);
+            if let Some(rewritten) = go_rewrite_slice_view_index(&next_object, next_index.clone(), env) {
+                return rewritten;
+            }
             if go_expr_type_hint(&next_object, env, signatures).as_deref() == Some("string") {
                 go_member_call(next_object, "charCodeAt", vec![next_index])
             } else if let Some(value_type) = go_expr_type_hint(&next_object, env, signatures)
@@ -1345,6 +1485,16 @@ fn normalize_go_expr(
                     }
                 })
                 .collect::<Vec<_>>();
+
+            if let Some(rewritten_call) = go_rewrite_named_type_method_call(
+                &next_callee,
+                &next_args,
+                *optional,
+                env,
+                signatures,
+            ) {
+                return rewritten_call;
+            }
 
             let call_name = go_expr_call_name(&next_callee);
 
@@ -1402,19 +1552,14 @@ fn normalize_go_expr(
 
             if call_name.as_deref() == Some("copy") && next_args.len() >= 2 {
                 let target = next_args[0].value.clone();
-                let clone = go_member_call(next_args[1].value.clone(), "slice", Vec::new());
-                let value = if let Some(type_name) = go_expr_type_hint(&target, env, signatures) {
-                    Expression::new(ExprKind::Cast {
-                        expr: Box::new(clone),
-                        type_name,
-                    })
-                } else {
-                    clone
-                };
-                return Expression::new(ExprKind::Assign {
-                    target: Box::new(target),
-                    value: Box::new(value),
-                });
+                let source = next_args[1].value.clone();
+                return go_lower_copy_expr(
+                    target,
+                    source,
+                    go_expr_type_hint(&next_args[0].value, env, signatures),
+                    go_expr_type_hint(&next_args[1].value, env, signatures),
+                    state,
+                );
             }
 
             if call_name.as_deref() == Some("append") && !next_args.is_empty() {
@@ -1540,6 +1685,9 @@ fn normalize_go_expr(
                 value_types: env.value_types.clone(),
                 fixed_arrays: env.fixed_arrays.clone(),
                 slice_caps: env.slice_caps.clone(),
+                slice_views: env.slice_views.clone(),
+                struct_infos: env.struct_infos.clone(),
+                named_types: env.named_types.clone(),
                 type_names: env.type_names.clone(),
                 return_type: None,
             };
@@ -1696,6 +1844,129 @@ fn lower_go_fixed_array_range(
     vec![Statement::new(StmtKind::Block(vec![iter_decl, for_stmt]))]
 }
 
+fn lower_go_string_range(
+    var: &str,
+    key: Option<&str>,
+    iter: Expression,
+    body: &[Statement],
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+    state: &mut GoNormalizeState,
+) -> Vec<Statement> {
+    let iter_name = fresh_go_temp(state, "__go_range_str");
+    let index_name = fresh_go_temp(state, "__go_range_idx");
+
+    let iter_decl = Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(iter_name.clone()),
+            type_hint: Some("string".to_string()),
+            init: Some(iter),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    });
+
+    let mut body_env = env.clone();
+    body_env.value_types.insert(iter_name.clone(), "string".to_string());
+
+    let mut lowered_body = Vec::new();
+    match key {
+        Some(key_name) => {
+            if key_name != "_" {
+                lowered_body.extend(normalize_go_statement(
+                    &Statement::new(StmtKind::VarDecl {
+                        declarations: vec![VarDeclarator {
+                            pattern: BindingPattern::Ident(key_name.to_string()),
+                            type_hint: Some("int".to_string()),
+                            init: Some(Expression::ident(&index_name)),
+                            array_bounds: None,
+                            with_events: false,
+                        }],
+                        kind: VarDeclKind::Let,
+                    }),
+                    &mut body_env,
+                    signatures,
+                    state,
+                ));
+            }
+            if var != "_" {
+                lowered_body.extend(normalize_go_statement(
+                    &Statement::new(StmtKind::VarDecl {
+                        declarations: vec![VarDeclarator {
+                            pattern: BindingPattern::Ident(var.to_string()),
+                            type_hint: Some("int".to_string()),
+                            init: Some(go_member_call(
+                                Expression::ident(&iter_name),
+                                "charCodeAt",
+                                vec![Expression::ident(&index_name)],
+                            )),
+                            array_bounds: None,
+                            with_events: false,
+                        }],
+                        kind: VarDeclKind::Let,
+                    }),
+                    &mut body_env,
+                    signatures,
+                    state,
+                ));
+            }
+        }
+        None => {
+            if var != "_" {
+                lowered_body.extend(normalize_go_statement(
+                    &Statement::new(StmtKind::VarDecl {
+                        declarations: vec![VarDeclarator {
+                            pattern: BindingPattern::Ident(var.to_string()),
+                            type_hint: Some("int".to_string()),
+                            init: Some(Expression::ident(&index_name)),
+                            array_bounds: None,
+                            with_events: false,
+                        }],
+                        kind: VarDeclKind::Let,
+                    }),
+                    &mut body_env,
+                    signatures,
+                    state,
+                ));
+            }
+        }
+    }
+
+    for stmt in body {
+        lowered_body.extend(normalize_go_statement(stmt, &mut body_env, signatures, state));
+    }
+
+    let for_stmt = Statement::new(StmtKind::For {
+        init: Some(Box::new(Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(index_name.clone()),
+                type_hint: Some("int".to_string()),
+                init: Some(Expression::int(0)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Let,
+        }))),
+        cond: Some(Expression::new(ExprKind::Binary {
+            op: BinOp::Lt,
+            left: Box::new(Expression::ident(&index_name)),
+            right: Box::new(go_builtin_call("len", vec![Expression::ident(&iter_name)])),
+        })),
+        update: Some(Expression::new(ExprKind::Assign {
+            target: Box::new(Expression::ident(&index_name)),
+            value: Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(Expression::ident(&index_name)),
+                right: Box::new(Expression::int(1)),
+            })),
+        })),
+        body: lowered_body,
+    });
+
+    vec![Statement::new(StmtKind::Block(vec![iter_decl, for_stmt]))]
+}
+
 fn fresh_go_temp(state: &mut GoNormalizeState, prefix: &str) -> String {
     let name = format!("{}{}", prefix, state.next_temp);
     state.next_temp += 1;
@@ -1734,6 +2005,193 @@ fn go_builtin_call(name: &str, args: Vec<Expression>) -> Expression {
     })
 }
 
+fn go_copy_count_expr(target: Expression, source: Expression) -> Expression {
+    let target_len = go_builtin_call("len", vec![target]);
+    let source_len = go_builtin_call("len", vec![source]);
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::Lt,
+            left: Box::new(target_len.clone()),
+            right: Box::new(source_len.clone()),
+        })),
+        then: Box::new(target_len),
+        else_: Box::new(source_len),
+    })
+}
+
+fn go_add_expr(left: Expression, right: Expression) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Add,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
+}
+
+fn go_materialize_slice_view(view: GoSliceViewInfo) -> Expression {
+    let mut args = vec![view.start];
+    if let Some(end) = view.end {
+        args.push(end);
+    }
+    go_member_call(view.base, "slice", args)
+}
+
+fn go_slice_view_index_expr(view: GoSliceViewInfo, index: Expression) -> Expression {
+    Expression::new(ExprKind::Index {
+        object: Box::new(view.base),
+        index: Box::new(go_add_expr(view.start, index)),
+        null_safe: false,
+    })
+}
+
+fn go_rewrite_slice_view_index(
+    object: &Expression,
+    index: Expression,
+    env: &GoNormalizeEnv,
+) -> Option<Expression> {
+    go_expr_slice_view(object, env).map(|view| go_slice_view_index_expr(view, index))
+}
+
+fn go_expr_slice_view(expr: &Expression, env: &GoNormalizeEnv) -> Option<GoSliceViewInfo> {
+    match &expr.kind {
+        ExprKind::Ident(name) => env.slice_views.get(name).cloned(),
+        ExprKind::Call { callee, args, .. } => {
+            let ExprKind::Member { object, field, .. } = &callee.kind else {
+                return None;
+            };
+            if field != "slice" {
+                return None;
+            }
+
+            let parent = go_expr_slice_view(object, env);
+            let parent_start = parent
+                .as_ref()
+                .map(|view| view.start.clone())
+                .unwrap_or_else(|| Expression::int(0));
+            let start = go_add_expr(
+                parent_start.clone(),
+                args.first().map(|arg| arg.value.clone()).unwrap_or_else(|| Expression::int(0)),
+            );
+            let end = if let Some(end_arg) = args.get(1) {
+                Some(go_add_expr(parent_start, end_arg.value.clone()))
+            } else {
+                parent.as_ref().and_then(|view| view.end.clone())
+            };
+
+            Some(GoSliceViewInfo {
+                base: parent.map(|view| view.base).unwrap_or_else(|| object.as_ref().clone()),
+                start,
+                end,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn go_slice_view_is_self_referential(view: &GoSliceViewInfo, name: &str) -> bool {
+    matches!(&view.base.kind, ExprKind::Ident(base_name) if base_name == name)
+}
+
+fn go_lower_copy_expr(
+    target: Expression,
+    source: Expression,
+    target_type: Option<String>,
+    source_type: Option<String>,
+    state: &mut GoNormalizeState,
+) -> Expression {
+    let target_name = fresh_go_temp(state, "__go_copy_dst");
+    let source_name = fresh_go_temp(state, "__go_copy_src");
+    let count_name = fresh_go_temp(state, "__go_copy_count");
+    let index_name = fresh_go_temp(state, "__go_copy_idx");
+
+    let count_expr = go_copy_count_expr(Expression::ident(&target_name), Expression::ident(&source_name));
+    let loop_cond = Expression::new(ExprKind::Binary {
+        op: BinOp::Lt,
+        left: Box::new(Expression::ident(&index_name)),
+        right: Box::new(Expression::ident(&count_name)),
+    });
+    let loop_update = Expression::new(ExprKind::Assign {
+        target: Box::new(Expression::ident(&index_name)),
+        value: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::Add,
+            left: Box::new(Expression::ident(&index_name)),
+            right: Box::new(Expression::int(1)),
+        })),
+    });
+    let loop_body = vec![Statement::new(StmtKind::Expr(Expression::new(ExprKind::Assign {
+        target: Box::new(Expression::new(ExprKind::Index {
+            object: Box::new(Expression::ident(&target_name)),
+            index: Box::new(Expression::ident(&index_name)),
+            null_safe: false,
+        })),
+        value: Box::new(Expression::new(ExprKind::Index {
+            object: Box::new(Expression::ident(&source_name)),
+            index: Box::new(Expression::ident(&index_name)),
+            null_safe: false,
+        })),
+    })))];
+
+    let mut body = vec![
+        Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(target_name.clone()),
+                type_hint: target_type,
+                init: Some(target),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Let,
+        }),
+        Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(source_name.clone()),
+                type_hint: source_type,
+                init: Some(source),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Let,
+        }),
+        Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(count_name.clone()),
+                type_hint: Some("int".to_string()),
+                init: Some(count_expr),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Let,
+        }),
+        Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(index_name.clone()),
+                type_hint: Some("int".to_string()),
+                init: Some(Expression::int(0)),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Let,
+        }),
+        Statement::new(StmtKind::For {
+            init: None,
+            cond: Some(loop_cond),
+            update: Some(loop_update),
+            body: loop_body,
+        }),
+    ];
+    body.push(Statement::new(StmtKind::Return(Some(Expression::ident(&count_name)))));
+
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Lambda {
+            params: Vec::new(),
+            body: LambdaBody::Block(body),
+            is_async: false,
+            captures: Vec::new(),
+        })),
+        args: Vec::new(),
+        optional: false,
+    })
+}
+
 fn go_expr_to_place(expr: &Expression) -> Option<PlaceExpr> {
     match &expr.kind {
         ExprKind::Ident(name) => Some(PlaceExpr::Ident(name.clone())),
@@ -1760,11 +2218,18 @@ fn normalize_go_lvalue_expr(
     state: &mut GoNormalizeState,
 ) -> Expression {
     match &expr.kind {
-        ExprKind::Index { object, index, null_safe } => Expression::new(ExprKind::Index {
-            object: Box::new(normalize_go_expr(object, env, signatures, state)),
-            index: Box::new(normalize_go_expr(index, env, signatures, state)),
-            null_safe: *null_safe,
-        }),
+        ExprKind::Ident(name) => Expression::ident(name),
+        ExprKind::Index { object, index, null_safe } => {
+            let next_object = normalize_go_expr(object, env, signatures, state);
+            let next_index = normalize_go_expr(index, env, signatures, state);
+            go_rewrite_slice_view_index(&next_object, next_index.clone(), env).unwrap_or_else(|| {
+                Expression::new(ExprKind::Index {
+                    object: Box::new(next_object),
+                    index: Box::new(next_index),
+                    null_safe: *null_safe,
+                })
+            })
+        }
         ExprKind::Assign { target, value } => Expression::new(ExprKind::Assign {
             target: Box::new(normalize_go_lvalue_expr(target, env, signatures, state)),
             value: Box::new(normalize_go_expr(value, env, signatures, state)),
@@ -1915,6 +2380,8 @@ fn go_expr_type_hint(
                     .trim()
                     .to_string()
             }),
+        ExprKind::Member { object, field, .. } => go_expr_type_hint(object, env, signatures)
+            .and_then(|type_name| go_resolve_struct_member_type(&type_name, field, env, &mut HashSet::new())),
         ExprKind::IsType { .. } => Some("bool".to_string()),
         ExprKind::Index { object, .. } => go_expr_type_hint(object, env, signatures)
             .and_then(|type_name| {
@@ -1985,6 +2452,115 @@ fn go_expr_call_name(expr: &Expression) -> Option<String> {
         }
         _ => None,
     }
+}
+
+fn go_struct_lookup_name(type_name: &str) -> Option<String> {
+    go_named_receiver_type(type_name)
+}
+
+fn go_resolve_struct_member_path(
+    type_name: &str,
+    member: &str,
+    env: &GoNormalizeEnv,
+    seen: &mut HashSet<String>,
+) -> Option<Vec<String>> {
+    let lookup = go_struct_lookup_name(type_name)?;
+    if !seen.insert(lookup.clone()) {
+        return None;
+    }
+    let info = env.struct_infos.get(&lookup)?;
+    if info.member_names.contains(member) {
+        return Some(vec![member.to_string()]);
+    }
+    for (embedded_name, embedded_type) in &info.embedded_fields {
+        if let Some(mut tail) = go_resolve_struct_member_path(embedded_type, member, env, seen) {
+            let mut path = vec![embedded_name.clone()];
+            path.append(&mut tail);
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn go_resolve_struct_member_type(
+    type_name: &str,
+    member: &str,
+    env: &GoNormalizeEnv,
+    seen: &mut HashSet<String>,
+) -> Option<String> {
+    let lookup = go_struct_lookup_name(type_name)?;
+    if !seen.insert(lookup.clone()) {
+        return None;
+    }
+    let info = env.struct_infos.get(&lookup)?;
+    if let Some(type_name) = info.member_types.get(member) {
+        return Some(type_name.clone());
+    }
+    for (_, embedded_type) in &info.embedded_fields {
+        if let Some(type_name) = go_resolve_struct_member_type(embedded_type, member, env, seen) {
+            return Some(type_name);
+        }
+    }
+    None
+}
+
+fn go_rewrite_promoted_member_access(
+    object: Expression,
+    field: &str,
+    null_safe: bool,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    let receiver_type = go_expr_type_hint(&object, env, signatures)?;
+    let path = go_resolve_struct_member_path(&receiver_type, field, env, &mut HashSet::new())?;
+    if path.len() <= 1 {
+        return None;
+    }
+
+    let mut expr = object;
+    for segment in path {
+        expr = Expression::new(ExprKind::Member {
+            object: Box::new(expr),
+            field: segment,
+            null_safe,
+        });
+    }
+    Some(expr)
+}
+
+fn go_rewrite_named_type_method_call(
+    callee: &Expression,
+    args: &[Argument],
+    optional: bool,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let receiver_type = go_expr_type_hint(object, env, signatures)?;
+    let lookup = go_struct_lookup_name(&receiver_type)?;
+    if !env.named_types.contains_key(&lookup) {
+        return None;
+    }
+    let info = env.struct_infos.get(&lookup)?;
+    if !info.method_names.contains(field) {
+        return None;
+    }
+
+    let mut rewritten_args = Vec::with_capacity(args.len() + 1);
+    rewritten_args.push(Argument::positional((**object).clone()));
+    rewritten_args.extend(args.iter().cloned());
+
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(Expression::ident(&lookup)),
+            field: field.clone(),
+            null_safe: false,
+        })),
+        args: rewritten_args,
+        optional,
+    }))
 }
 
 fn go_is_neg_one_expr(expr: &Expression) -> bool {
@@ -2094,6 +2670,14 @@ fn go_normalize_type_conversion(
     env: &GoNormalizeEnv,
     signatures: &HashMap<String, GoFunctionSignature>,
 ) -> Expression {
+    if let Some(underlying) = env.named_types.get(type_name).filter(|underlying| underlying.as_str() != type_name) {
+        let normalized = go_normalize_type_conversion(underlying, expr, env, signatures);
+        return Expression::new(ExprKind::Cast {
+            expr: Box::new(normalized),
+            type_name: type_name.to_string(),
+        });
+    }
+
     if go_is_integer_type(type_name) {
         let int_expr = go_builtin_call("__go_to_int", vec![expr]);
         if type_name == "int" {
@@ -2383,6 +2967,13 @@ fn go_named_result_marker_stmt(name: &str, type_name: &str) -> Statement {
     )))
 }
 
+fn go_named_type_marker_stmt(name: &str, type_name: &str) -> Statement {
+    Statement::new(StmtKind::Expr(go_builtin_call(
+        "__go_named_type",
+        vec![Expression::string(name), go_type_arg_expr(type_name.to_string())],
+    )))
+}
+
 fn walk_parameter_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
     let mut params = Vec::new();
     for inner in pair.into_inner() {
@@ -2406,7 +2997,7 @@ fn walk_parameter_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                         is_rest = true;
                         for v_inner in p_inner.into_inner() {
                             if v_inner.as_rule() == Rule::type_annotation {
-                                type_hint = Some(walk_type(v_inner));
+                                type_hint = Some(format!("[]{}", walk_type(v_inner)));
                             }
                         }
                     }
@@ -2749,18 +3340,10 @@ fn walk_type_decl(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
                     }
                 }
 
-                // Type alias — just create a variable with the type name
+                // Keep named-type metadata in a marker statement so it does not
+                // create a runtime binding that shadows generated type methods.
                 if !type_str.is_empty() && !name.is_empty() {
-                    return Ok(Some(Statement::new(StmtKind::VarDecl {
-                        declarations: vec![VarDeclarator {
-                            pattern: BindingPattern::Ident(name),
-                            init: Some(Expression::new(ExprKind::Lit(Literal::Str(type_str)))),
-                            type_hint: None,
-                            array_bounds: None,
-                            with_events: false,
-                        }],
-                        kind: VarDeclKind::Let,
-                    })));
+                    return Ok(Some(go_named_type_marker_stmt(&name, &type_str)));
                 }
             }
             Rule::type_group => {
@@ -2812,7 +3395,9 @@ fn walk_struct_type(name: String, pair: Pair<Rule>) -> Result<Statement, String>
                     init: None,
                     modifiers: Modifiers::default(),
                     with_events: false,
-                    array_bounds: None,
+                    array_bounds: field_type
+                        .as_deref()
+                        .and_then(go_fixed_array_bounds_exprs),
                 });
             }
         }
@@ -3039,24 +3624,30 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 
     if targets.len() > 1 {
-        let patterns = targets
-            .iter()
-            .map(|target| match &target.kind {
-                ExprKind::Ident(name) => {
-                    ArrayPatternElem::Pattern(BindingPattern::Ident(name.clone()), None)
-                }
-                _ => ArrayPatternElem::Hole,
-            })
-            .collect();
         let value = if values.len() == 1 {
             values.into_iter().next().unwrap()
         } else {
             Expression::new(ExprKind::Tuple(values))
         };
+        if targets.iter().all(|target| matches!(target.kind, ExprKind::Ident(_))) && !matches!(value.kind, ExprKind::Tuple(_)) {
+            let patterns = targets
+                .iter()
+                .map(|target| match &target.kind {
+                    ExprKind::Ident(name) => {
+                        ArrayPatternElem::Pattern(BindingPattern::Ident(name.clone()), None)
+                    }
+                    _ => ArrayPatternElem::Hole,
+                })
+                .collect();
+            return Ok(StmtKind::Assign {
+                targets: vec![Expression::new(ExprKind::Destructure(
+                    DestructurePattern::Array(patterns),
+                ))],
+                value,
+            });
+        }
         return Ok(StmtKind::Assign {
-            targets: vec![Expression::new(ExprKind::Destructure(
-                DestructurePattern::Array(patterns),
-            ))],
+            targets: vec![Expression::new(ExprKind::Tuple(targets))],
             value,
         });
     }
@@ -3977,7 +4568,7 @@ fn walk_primary(pair: Pair<Rule>) -> Result<Expression, String> {
                                         val = Some(walk_expression(expr_inner)?);
                                     } else if expr_inner.as_rule() == Rule::type_annotation {
                                         val = Some(go_type_arg_expr(walk_type(expr_inner)));
-                                    } else if expr_inner.as_str() == "..." {
+                                    } else if expr_inner.as_rule() == Rule::spread_suffix {
                                         spread = true;
                                     }
                                 }
@@ -4144,6 +4735,11 @@ fn walk_literal(pair: Pair<Rule>) -> Result<Expression, String> {
             Rule::nil_literal => {
                 return Ok(Expression::new(ExprKind::Lit(Literal::Null)));
             }
+            Rule::rune_literal => {
+                let rune = unquote(inner.as_str());
+                let code = rune.chars().next().map(|ch| ch as i64).unwrap_or(0);
+                return Ok(Expression::new(ExprKind::Lit(Literal::Int(code))));
+            }
             _ => {}
         }
     }
@@ -4249,6 +4845,22 @@ fn go_array_head(type_name: &str) -> Option<(&str, &str)> {
 fn go_array_element_type(type_name: &str) -> Option<String> {
     let (_, tail) = go_array_head(type_name)?;
     (!tail.is_empty()).then(|| tail.to_string())
+}
+
+fn go_fixed_array_bounds_exprs(type_name: &str) -> Option<Vec<Expression>> {
+    let mut remaining = type_name.trim();
+    let mut bounds = Vec::new();
+
+    while let Some((head, tail)) = go_array_head(remaining) {
+        let head = head.trim();
+        if head.is_empty() || head == "..." {
+            return None;
+        }
+        bounds.push(Expression::int(head.parse::<i64>().ok()?));
+        remaining = tail.trim();
+    }
+
+    (!bounds.is_empty()).then_some(bounds)
 }
 
 fn go_fixed_array_len(type_name: &str, inferred_len: usize) -> Option<usize> {
@@ -4751,20 +5363,46 @@ fn go_make_slice_capacity_expr(
     Some(normalize_go_expr(&cap_arg.value, env, signatures, state))
 }
 
-fn go_decl_slice_capacity_binding(
-    decl: &VarDeclarator,
-    env: &GoNormalizeEnv,
-    signatures: &HashMap<String, GoFunctionSignature>,
-    state: &mut GoNormalizeState,
-) -> Option<(String, Expression)> {
-    let name = go_binding_name(&decl.pattern)?;
-    let cap = go_make_slice_capacity_expr(decl.init.as_ref()?, env, signatures, state)?;
-    Some((name, cap))
+fn go_bound_slice_capacity_expr(expr: &Expression, env: &GoNormalizeEnv) -> Option<Expression> {
+    if let Some(cap) = go_expr_capacity_hint(expr, env) {
+        return Some(cap);
+    }
+
+    match &expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            if go_expr_call_name(callee).as_deref() != Some("make") {
+                return None;
+            }
+            let type_name = args.first().and_then(|arg| go_type_name_from_expr(&arg.value))?;
+            if !go_is_slice_type(&type_name) {
+                return None;
+            }
+            Some(args.get(2).or_else(|| args.get(1))?.value.clone())
+        }
+        ExprKind::Cast { expr, type_name } if go_is_slice_type(type_name) => {
+            go_bound_slice_capacity_expr(expr, env)
+        }
+        ExprKind::Array(elements) => Some(Expression::int(elements.len() as i64)),
+        _ => None,
+    }
 }
 
 fn go_expr_capacity_hint(expr: &Expression, env: &GoNormalizeEnv) -> Option<Expression> {
+    if let Some(view) = go_expr_slice_view(expr, env) {
+        let base_cap = go_expr_capacity_hint(&view.base, env)?;
+        return Some(Expression::new(ExprKind::Binary {
+            op: BinOp::Sub,
+            left: Box::new(base_cap),
+            right: Box::new(view.start),
+        }));
+    }
     match &expr.kind {
-        ExprKind::Ident(name) => env.slice_caps.get(name).cloned(),
+        ExprKind::Ident(name) => env.slice_caps.get(name).cloned().or_else(|| {
+            env.fixed_arrays
+                .get(name)
+                .and_then(|type_name| go_fixed_array_len(type_name, 0))
+                .map(|len| Expression::int(len as i64))
+        }),
         ExprKind::Array(elements) => Some(Expression::int(elements.len() as i64)),
         _ => None,
     }

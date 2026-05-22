@@ -34,6 +34,7 @@ macro_rules! compile_cases {
 run_cases! {
     range_over_slice_sum_runtime => ("package main; import \"fmt\"; func main() { total := 0; for _, value := range []int{1, 2, 3} { total += value }; fmt.Println(total); }", vec!["6"]),
     range_over_array_sum_runtime => ("package main; import \"fmt\"; func main() { total := 0; for _, value := range [3]int{2, 3, 4} { total += value }; fmt.Println(total); }", vec!["9"]),
+    range_over_string_runes_sum_runtime => ("package main; import \"fmt\"; func main() { total := 0; for _, value := range \"AB\" { total += int(value) }; fmt.Println(total); }", vec!["131"]),
     range_over_slice_of_strings_count_runtime => ("package main; import \"fmt\"; func main() { count := 0; for _, value := range []string{\"go\", \"vybe\"} { count += len(value) }; fmt.Println(count); }", vec!["6"]),
     range_over_map_sum_values_runtime => ("package main; import \"fmt\"; func main() { values := map[string]int{\"a\": 2, \"b\": 5}; total := 0; for _, value := range values { total += value }; fmt.Println(total); }", vec!["7"]),
     range_over_slice_index_sum_runtime => ("package main; import \"fmt\"; func main() { total := 0; for index := range []int{4, 5, 6} { total += index }; fmt.Println(total); }", vec!["3"]),
@@ -60,7 +61,6 @@ run_cases! {
 }
 
 compile_cases! {
-    range_over_string_runes_compile => "package main; func main() { total := 0; for _, value := range \"AB\" { total += int(value) }; _ = total }",
     range_over_channel_compile => "package main; func main() { ch := make(chan int); for value := range ch { _ = value } }",
     range_over_string_blank_identifier_compile => "package main; func main() { for _, value := range \"go\" { _ = value } }",
     range_over_map_key_value_compile => "package main; func main() { values := map[string]int{\"a\": 1}; for key, value := range values { _, _ = key, value } }",

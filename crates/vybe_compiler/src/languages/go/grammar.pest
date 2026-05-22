@@ -84,7 +84,7 @@ type_declaration = {
 type_group = { "(" ~ (type_spec ~ ";"?)* ~ ")" }
 
 type_spec = {
-    ident_name ~ type_annotation ~ ";"?
+    ident_name ~ ("=" ~ type_annotation | type_annotation) ~ ";"?
 }
 
 // ── Function declarations ───────────────────────────────────────────────────
@@ -389,7 +389,8 @@ three_index_slice = { "[" ~ expression? ~ ":" ~ expression ~ ":" ~ expression ~ 
 type_assertion = { "." ~ "(" ~ type_annotation ~ ")" }
 call           = { "(" ~ argument_list? ~ ")" }
 argument_list  = { argument ~ ("," ~ argument)* ~ ","? }
-argument       = { (expression | type_annotation) ~ "..."? }
+spread_suffix  = { "..." }
+argument       = { (expression | type_annotation) ~ spread_suffix? }
 
 // ── Literals ────────────────────────────────────────────────────────────────
 

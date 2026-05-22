@@ -11,6 +11,38 @@ use crate::common::classes::{BaseCall, NormalConstructor, NormalMethod};
 use crate::scope::UpvalueDesc;
 
 impl Compiler {
+    fn fixed_array_zero_expr(type_hint: &str) -> Option<Expression> {
+        let trimmed = type_hint.trim();
+        if !trimmed.starts_with('[') {
+            return None;
+        }
+
+        let close = trimmed.find(']')?;
+        let head = trimmed.get(1..close)?.trim();
+        if head.is_empty() || head == "..." {
+            return None;
+        }
+
+        let len = head.parse::<usize>().ok()?;
+        let element_type = trimmed.get(close + 1..)?.trim();
+        let element_expr = Self::fixed_array_zero_expr(element_type)
+            .unwrap_or_else(|| Self::array_default_element_expr(Some(element_type)));
+
+        Some(Expression::new(ExprKind::Cast {
+            expr: Box::new(Expression::new(ExprKind::Array(
+                (0..len)
+                    .map(|_| ArrayElement {
+                        key: None,
+                        value: element_expr.clone(),
+                        spread: false,
+                        by_ref: false,
+                    })
+                    .collect(),
+            ))),
+            type_name: trimmed.to_string(),
+        }))
+    }
+
     fn array_default_element_expr(type_hint: Option<&str>) -> Expression {
         match type_hint
             .map(str::trim)
@@ -64,6 +96,8 @@ impl Compiler {
                 ],
                 optional: false,
             });
+            self.compile_expr(&init_expr)?;
+        } else if let Some(init_expr) = type_hint.and_then(Self::fixed_array_zero_expr) {
             self.compile_expr(&init_expr)?;
         } else if let Some(type_name) = type_hint
             .and_then(|type_hint| self.user_value_type_name_from_hint(type_hint))
