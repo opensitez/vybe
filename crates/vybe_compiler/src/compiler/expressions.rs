@@ -3408,14 +3408,20 @@ impl Compiler {
             ExprKind::YieldFrom(inner) => {
                 // ECMA-262 §15.5 `yield*`: drain the inner iterable,
                 // re-yielding each value through the enclosing
-                // generator. Uses the WASM stack-switching `GEN_NEXT`
-                // (pops cont → pushes value+has_more) then `SUSPEND 0`
-                // for the per-value yield.
+                // generator. Continuations use WASM stack-switching
+                // `GEN_NEXT`; plain iterables are first drained through
+                // the shared collection surface and yielded value-by-value.
                 self.compile_expr(inner)?;
                 let gen_slot = self.define_local("__yield_star_gen");
                 let val_slot = self.define_local("__yield_star_val");
                 let has_more_slot = self.define_local("__yield_star_has_more");
                 self.emit_u16(Op::LOCAL_SET, gen_slot); self.emit(Op::DROP);
+
+                self.emit_u16(Op::LOCAL_GET, gen_slot);
+                let is_gen_idx = self.import("ecma:value", "isGenerator");
+                self.emit_host_call(is_gen_idx, 1);
+                let not_generator = self.emit_jump(Op::BR_IF_FALSE);
+
                 let loop_start = self.chunks[self.current].code.len();
                 self.emit_u16(Op::LOCAL_GET, gen_slot);
                 self.emit(Op::GEN_NEXT);
@@ -3435,6 +3441,41 @@ impl Compiler {
                 // generator's completion value. `GEN_NEXT` leaves that
                 // final value in `val_slot` on the terminating step.
                 self.emit_u16(Op::LOCAL_GET, val_slot);
+                let done = self.emit_jump(Op::BR);
+
+                self.patch_jump(not_generator);
+                self.emit_u16(Op::LOCAL_GET, gen_slot);
+                common::collections::emit_iter_values(&mut self.chunks, self.current, self.line);
+                let iter_slot = self.define_local("__yield_star_iter");
+                let idx_slot = self.define_local("__yield_star_idx");
+                let len_slot = self.define_local("__yield_star_len");
+                self.emit_u16(Op::LOCAL_SET, iter_slot); self.emit(Op::DROP);
+
+                self.emit_const(Value::F64(0.0));
+                self.emit_u16(Op::LOCAL_SET, idx_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, iter_slot);
+                let line = self.line;
+                common::collections::emit_array_length(self.chunk(), line);
+                self.emit_u16(Op::LOCAL_SET, len_slot); self.emit(Op::DROP);
+
+                let iter_loop_start = self.chunks[self.current].code.len();
+                self.emit_u16(Op::LOCAL_GET, idx_slot);
+                self.emit_u16(Op::LOCAL_GET, len_slot);
+                self.emit(Op::DYN_LT);
+                let iter_exit = self.emit_jump(Op::BR_IF_FALSE);
+                self.emit_u16(Op::LOCAL_GET, iter_slot);
+                self.emit_u16(Op::LOCAL_GET, idx_slot);
+                self.emit(Op::ARRAY_GET);
+                self.emit_u16(Op::SUSPEND, 0);
+                self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, idx_slot);
+                self.emit_const(Value::F64(1.0));
+                self.emit(Op::F64_ADD);
+                self.emit_u16(Op::LOCAL_SET, idx_slot); self.emit(Op::DROP);
+                self.chunks[self.current].emit_loop(iter_loop_start, line);
+                self.patch_jump(iter_exit);
+                self.emit(Op::NULL);
+                self.patch_jump(done);
             }
 
             // ── AddressOf (VB) ──────────────────────────────────────────

@@ -529,8 +529,22 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         // `STR_TO_LOWER`, `STR_PAD_*`) and `ecma:string.{encode,decode}URIComponent`.
         "php.ucwords"
             => crate::emitter::php::string_adapter::emit_ucwords(chunks, current, argc, line),
+        "php.addslashes"
+            => crate::emitter::php::string_adapter::emit_addslashes(chunks, current, argc, line),
+        "php.stripslashes"
+            => crate::emitter::php::string_adapter::emit_stripslashes(chunks, current, argc, line),
+        "php.str_rot13"
+            => crate::emitter::php::string_adapter::emit_str_rot13(chunks, current, argc, line),
+        "php.md5"
+            => crate::emitter::php::string_adapter::emit_md5(chunks, current, argc, line),
+        "php.crc32"
+            => crate::emitter::php::string_adapter::emit_crc32(chunks, current, argc, line),
         "php.str_split"
             => crate::emitter::php::string_adapter::emit_str_split(chunks, current, argc, line),
+        "php.explode"
+            => crate::emitter::php::string_adapter::emit_explode(chunks, current, argc, line),
+        "php.sscanf"
+            => crate::emitter::php::string_adapter::emit_sscanf(chunks, current, argc, line),
         "php.str_pad"
             => crate::emitter::php::string_adapter::emit_str_pad(chunks, current, argc, line),
         "php.substr_count"
@@ -545,6 +559,12 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::php::string_adapter::emit_strstr(chunks, current, argc, line),
         "php.stristr"
             => crate::emitter::php::string_adapter::emit_stristr(chunks, current, argc, line),
+        "php.strip_tags"
+            => crate::emitter::php::string_adapter::emit_strip_tags(chunks, current, argc, line),
+        "php.strrchr"
+            => crate::emitter::php::string_adapter::emit_strrchr(chunks, current, argc, line),
+        "php.nl2br"
+            => crate::emitter::php::string_adapter::emit_nl2br(chunks, current, argc, line),
         "php.urlencode"
             => crate::emitter::php::string_adapter::emit_urlencode(chunks, current, argc, line),
         "php.rawurlencode"
@@ -557,6 +577,10 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::php::string_adapter::emit_htmlspecialchars(chunks, current, argc, line),
         "php.htmlentities"
             => crate::emitter::php::string_adapter::emit_htmlentities(chunks, current, argc, line),
+        "php.htmlspecialchars_decode"
+            => crate::emitter::php::string_adapter::emit_htmlspecialchars_decode(chunks, current, argc, line),
+        "php.html_entity_decode"
+            => crate::emitter::php::string_adapter::emit_html_entity_decode(chunks, current, argc, line),
         "php.bin2hex"
             => crate::emitter::php::string_adapter::emit_bin2hex(chunks, current, argc, line),
         "php.hex2bin"
@@ -631,6 +655,10 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::php::array_adapter::emit_array_filter(chunks, current, argc, line),
         "php.array_walk_recursive"
             => crate::emitter::php::array_adapter::emit_array_walk_recursive(chunks, current, argc, line),
+        "php.array_fill"
+            => crate::emitter::php::array_adapter::emit_array_fill(chunks, current, argc, line),
+        "php.array_fill_keys"
+            => crate::emitter::php::array_adapter::emit_array_fill_keys(chunks, current, argc, line),
         "php.count"
             => crate::emitter::php::array_adapter::emit_php_count(chunks, current, argc, line),
         "php.json_encode"
@@ -663,10 +691,16 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::php::array_adapter::emit_array_diff_key(chunks, current, argc, line),
         "php.array_diff_assoc"
             => crate::emitter::php::array_adapter::emit_array_diff_assoc(chunks, current, argc, line),
+        "php.array_intersect_assoc"
+            => crate::emitter::php::array_adapter::emit_array_intersect_assoc(chunks, current, argc, line),
         "php.array_intersect_key"
             => crate::emitter::php::array_adapter::emit_array_intersect_key(chunks, current, argc, line),
         "php.array_replace"
             => crate::emitter::php::array_adapter::emit_array_replace(chunks, current, argc, line),
+        "php.array_replace_recursive"
+            => crate::emitter::php::array_adapter::emit_array_replace_recursive(chunks, current, argc, line),
+        "php.iterator_to_array"
+            => crate::emitter::php::array_adapter::emit_iterator_to_array(chunks, current, argc, line),
         "php.asort"
             => crate::emitter::php::array_adapter::emit_php_asort(chunks, current, argc, line),
         "php.arsort"

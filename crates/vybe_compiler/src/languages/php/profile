@@ -45,6 +45,9 @@ print               = { emit = "print",                      min_args = 1, max_a
 print_r             = { emit = "print",                      min_args = 1, max_args = 2 }
 var_dump            = { emit = "print",                      min_args = 1, max_args = 255 }
 printf              = { emit = "intrinsic:php_printf",       min_args = 1, max_args = 255 }
+vprintf             = { emit = "intrinsic:php_vprintf",      min_args = 2, max_args = 2 }
+vsprintf            = { emit = "intrinsic:php_vsprintf",     min_args = 2, max_args = 2 }
+sscanf              = { emit = "common:php.sscanf",          min_args = 2, max_args = 2 }
 __php_dynamic_include = { emit = "host:vybe:php:dynamic_include", min_args = 2, max_args = 2 }
 readline            = { emit = "host:wasi:cli:readLine",     min_args = 0, max_args = 1 }
 error_log           = { emit = "host:wasi:cli:error",        min_args = 1, max_args = 4 }
@@ -54,6 +57,7 @@ error_log           = { emit = "host:wasi:cli:error",        min_args = 1, max_a
 strlen              = { emit = "opcode:str_length",          min_args = 1, max_args = 1 }
 strtolower          = { emit = "opcode:str_to_lower",        min_args = 1, max_args = 1 }
 strtoupper          = { emit = "opcode:str_to_upper",        min_args = 1, max_args = 1 }
+strcmp              = { emit = "opcode:str_compare",         min_args = 2, max_args = 2 }
 strcoll             = { emit = "opcode:str_compare",         min_args = 2, max_args = 2 }
 trim                = { emit = "common:php.trim",            min_args = 1, max_args = 2 }
 ltrim               = { emit = "common:php.ltrim",           min_args = 1, max_args = 2 }
@@ -95,10 +99,16 @@ mb_strtoupper       = { emit = "opcode:str_to_upper",        min_args = 1, max_a
 strrev              = { emit = "opcode:str_reverse",         min_args = 1, max_args = 1 }
 strrpos             = { emit = "opcode:str_last_index_of",   min_args = 2, max_args = 3 }
 strripos            = { emit = "opcode:str_last_index_of",   min_args = 2, max_args = 3 }
+strrchr             = { emit = "common:php.strrchr",         min_args = 2, max_args = 2 }
+md5                 = { emit = "common:php.md5",             min_args = 1, max_args = 1 }
+crc32               = { emit = "common:php.crc32",           min_args = 1, max_args = 1 }
 # `ucfirst` / `lcfirst` walker-rewritten to the `s.charAt(0).toX() + s.slice(1)`
 # composition. Both the `host:ecma:string:*` methods and the value-method
 # dispatch path resolve those without PHP-specific bindings.
 ucwords             = { emit = "common:php.ucwords",         min_args = 1, max_args = 2 }
+addslashes          = { emit = "common:php.addslashes",      min_args = 1, max_args = 1 }
+stripslashes        = { emit = "common:php.stripslashes",    min_args = 1, max_args = 1 }
+str_rot13           = { emit = "common:php.str_rot13",       min_args = 1, max_args = 1 }
 str_split           = { emit = "common:php.str_split",       min_args = 1, max_args = 2 }
 str_pad             = { emit = "common:php.str_pad",         min_args = 2, max_args = 4 }
 substr_count        = { emit = "common:php.substr_count",    min_args = 2, max_args = 4 }
@@ -107,8 +117,12 @@ str_ireplace        = { emit = "common:php.str_ireplace",    min_args = 3, max_a
 str_word_count      = { emit = "common:php.str_word_count",  min_args = 1, max_args = 3 }
 strstr              = { emit = "common:php.strstr",          min_args = 2, max_args = 3 }
 stristr             = { emit = "common:php.stristr",         min_args = 2, max_args = 3 }
+strip_tags          = { emit = "common:php.strip_tags",      min_args = 1, max_args = 2 }
 htmlspecialchars    = { emit = "common:php.htmlspecialchars", min_args = 1, max_args = 4 }
 htmlentities        = { emit = "common:php.htmlentities",    min_args = 1, max_args = 4 }
+htmlspecialchars_decode = { emit = "common:php.htmlspecialchars_decode", min_args = 1, max_args = 4 }
+html_entity_decode  = { emit = "common:php.html_entity_decode", min_args = 1, max_args = 3 }
+nl2br               = { emit = "common:php.nl2br",           min_args = 1, max_args = 2 }
 urlencode           = { emit = "common:php.urlencode",       min_args = 1, max_args = 1 }
 rawurlencode        = { emit = "common:php.rawurlencode",    min_args = 1, max_args = 1 }
 urldecode           = { emit = "common:php.urldecode",       min_args = 1, max_args = 1 }
@@ -126,6 +140,8 @@ levenshtein         = { emit = "common:php.levenshtein",     min_args = 2, max_a
 similar_text        = { emit = "common:php.similar_text",    min_args = 2, max_args = 3 }
 metaphone           = { emit = "common:php.metaphone",       min_args = 1, max_args = 2 }
 version_compare     = { emit = "intrinsic:php_version_compare", min_args = 2, max_args = 3 }
+abs                 = { emit = "opcode:f64_abs",             min_args = 1, max_args = 1 }
+round               = { emit = "host:ecma:math:round",      min_args = 1, max_args = 1 }
 
 # Array → delimited string. PHP `implode($glue, $array)` and `join` (alias).
 # Backed by compiler_common::collections::join, which every other language
@@ -141,8 +157,8 @@ strtr               = { emit = "intrinsic:strtr",            min_args = 2, max_a
 dir                 = { emit = "common:php.dir",            min_args = 1, max_args = 1 }
 __php_dir_read      = { emit = "common:php.dir_read",       min_args = 1, max_args = 1 }
 __php_dir_close     = { emit = "common:php.dir_close",      min_args = 1, max_args = 1 }
-# String split — direct STR_SPLIT opcode.
-explode             = { emit = "opcode:str_split",           min_args = 2, max_args = 3 }
+# String split — PHP limit semantics need an adapter for the 3-arg form.
+explode             = { emit = "common:php.explode",        min_args = 2, max_args = 3 }
 # `file($path)` returns the file as an array of lines. stdlib chunk
 # composing wasi:filesystem:readFile + STR_SPLIT on "\n".
 file                = { emit = "common:php.file",           min_args = 1, max_args = 3 }
@@ -308,8 +324,14 @@ array_slice         = { emit = "intrinsic:php_array_slice",        min_args = 2,
 array_merge         = { emit = "opcode:array_concat",              min_args = 1, max_args = 255 }
 range               = { emit = "intrinsic:php_range",              min_args = 2, max_args = 3 }
 array_map           = { emit = "common:php.array_map",             min_args = 2, max_args = 2 }
+zip                 = { emit = "stdlib:zip",                       min_args = 2, max_args = 255 }
 array_filter        = { emit = "common:php.array_filter",          min_args = 1, max_args = 3 }
 array_walk_recursive = { emit = "common:php.array_walk_recursive", min_args = 2, max_args = 3 }
+array_fill          = { emit = "common:php.array_fill",            min_args = 3, max_args = 3 }
+array_fill_keys     = { emit = "common:php.array_fill_keys",       min_args = 2, max_args = 2 }
+array_intersect_assoc = { emit = "common:php.array_intersect_assoc", min_args = 2, max_args = 2 }
+array_replace_recursive = { emit = "common:php.array_replace_recursive", min_args = 2, max_args = 2 }
+iterator_to_array   = { emit = "common:php.iterator_to_array",     min_args = 1, max_args = 2 }
 # These stay on `opcode:array_*` because they dispatch through
 # `emit_builtin_opcode` which has the variadic-aware per-arg logic
 # (PHP `array_push($a, v1, v2, ...)`, `array_merge($a, $b, $c, ...)`).
@@ -351,8 +373,8 @@ sort                = { emit = "stdlib:sort_in_place",            min_args = 1, 
 rsort               = { emit = "intrinsic:php_rsort",             min_args = 1, max_args = 2 }
 usort               = { emit = "stdlib:sort_with_comparator",     min_args = 2, max_args = 2 }
 array_unique        = { emit = "stdlib:uniq",                     min_args = 1, max_args = 2 }
-# `array_fill` / `array_product` walker-rewritten to JS-shape:
-# `Array($count, $val)` and `$arr.reduce((a,b) => a*b, 1)`.
+# `array_product` walker-rewritten to JS-shape:
+# `$arr.reduce((a,b) => a*b, 1)`.
 
 # Multi-step / assoc-only PHP helpers — bundled as JS-source stdlib
 # chunks (polyfills/php_arrays.js). Each polyfill is a few lines of JS

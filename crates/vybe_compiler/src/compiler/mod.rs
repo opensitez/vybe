@@ -12030,6 +12030,73 @@ impl Compiler {
                     common::strings::emit_length(self.chunk(), line);
                 }
             }
+            "php_vprintf" => {
+                if args.len() < 2 {
+                    self.emit_const(Value::I32(0));
+                } else {
+                    let global_name = Self::stdlib_global_name("sprintf");
+                    let name_idx = self.str_const(&global_name);
+                    let result_slot = self.define_local("__php_vprintf_result");
+                    let log_idx = self.import("wasi:cli", "log");
+                    let callee_slot = self.define_local("__php_vprintf_fn");
+                    let synthetic_args = vec![
+                        Argument::positional((**args.first().unwrap()).clone()),
+                        Argument {
+                            name: None,
+                            value: (**args.get(1).unwrap()).clone(),
+                            by_ref: false,
+                            spread: true,
+                        },
+                    ];
+                    let signature = CallSignature {
+                        param_names: vec![String::new(), String::new()],
+                        min_arity: 1,
+                        has_rest: true,
+                    };
+
+                    self.emit_u16(Op::GLOBAL_GET, name_idx);
+                    self.emit_u16(Op::LOCAL_SET, callee_slot);
+                    self.emit(Op::DROP);
+                    self.emit_known_rest_call_from_local(callee_slot, None, &synthetic_args, &signature)?;
+                    self.emit_u16(Op::LOCAL_SET, result_slot);
+                    self.emit(Op::DROP);
+
+                    self.emit_u16(Op::LOCAL_GET, result_slot);
+                    self.emit_common("php.echo_stringify", 1, line);
+                    common::io::emit_print_with_import(self.chunk(), log_idx, 1, line);
+
+                    self.emit_u16(Op::LOCAL_GET, result_slot);
+                    common::strings::emit_length(self.chunk(), line);
+                }
+            }
+            "php_vsprintf" => {
+                if args.len() < 2 {
+                    self.emit_const(Value::String(Arc::from("")));
+                } else {
+                    let global_name = Self::stdlib_global_name("sprintf");
+                    let name_idx = self.str_const(&global_name);
+                    let callee_slot = self.define_local("__php_vsprintf_fn");
+                    let synthetic_args = vec![
+                        Argument::positional((**args.first().unwrap()).clone()),
+                        Argument {
+                            name: None,
+                            value: (**args.get(1).unwrap()).clone(),
+                            by_ref: false,
+                            spread: true,
+                        },
+                    ];
+                    let signature = CallSignature {
+                        param_names: vec![String::new(), String::new()],
+                        min_arity: 1,
+                        has_rest: true,
+                    };
+
+                    self.emit_u16(Op::GLOBAL_GET, name_idx);
+                    self.emit_u16(Op::LOCAL_SET, callee_slot);
+                    self.emit(Op::DROP);
+                    self.emit_known_rest_call_from_local(callee_slot, None, &synthetic_args, &signature)?;
+                }
+            }
             "php_register_shutdown_function" => {
                 for arg in args {
                     self.compile_expr(arg)?;
@@ -12114,6 +12181,9 @@ impl Compiler {
                 if args.len() >= 2 {
                     let str_slot = self.define_local("__php_substr_s");
                     let start_slot = self.define_local("__php_substr_start");
+                    let len_slot = self.define_local("__php_substr_len");
+                    let end_slot = self.define_local("__php_substr_end");
+                    let length_slot = self.define_local("__php_substr_length");
 
                     self.compile_expr(args[0])?;
                     self.emit_u16(Op::LOCAL_SET, str_slot); self.emit(Op::DROP);
@@ -12123,16 +12193,90 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, start_slot); self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, str_slot);
+                    common::strings::emit_length(self.chunk(), line);
+                    self.emit_u16(Op::LOCAL_SET, len_slot); self.emit(Op::DROP);
+
                     self.emit_u16(Op::LOCAL_GET, start_slot);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit(Op::DYN_LT);
+                    let nonneg_start = self.emit_jump(Op::BR_IF_FALSE);
+
+                    self.emit_u16(Op::LOCAL_GET, len_slot);
+                    self.emit_u16(Op::LOCAL_GET, start_slot);
+                    self.emit(Op::I32_ADD);
+                    self.emit_u16(Op::LOCAL_SET, start_slot); self.emit(Op::DROP);
+                    self.patch_jump(nonneg_start);
+
+                    self.emit_u16(Op::LOCAL_GET, start_slot);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit(Op::DYN_LT);
+                    let start_nonneg = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit_u16(Op::LOCAL_SET, start_slot); self.emit(Op::DROP);
+                    self.patch_jump(start_nonneg);
+
+                    self.emit_u16(Op::LOCAL_GET, start_slot);
+                    self.emit_u16(Op::LOCAL_GET, len_slot);
+                    self.emit(Op::DYN_GT);
+                    let start_within = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit_u16(Op::LOCAL_GET, len_slot);
+                    self.emit_u16(Op::LOCAL_SET, start_slot); self.emit(Op::DROP);
+                    self.patch_jump(start_within);
 
                     if args.len() >= 3 {
-                        self.emit_u16(Op::LOCAL_GET, start_slot);
                         self.compile_expr(args[2])?;
                         common::convert::emit_to_int(self.chunk(), line);
+                        self.emit_u16(Op::LOCAL_SET, length_slot); self.emit(Op::DROP);
+
+                        self.emit_u16(Op::LOCAL_GET, length_slot);
+                        self.emit(Op::I32_CONST_0);
+                        self.emit(Op::DYN_LT);
+                        let nonneg_length = self.emit_jump(Op::BR_IF_FALSE);
+
+                        self.emit_u16(Op::LOCAL_GET, len_slot);
+                        self.emit_u16(Op::LOCAL_GET, length_slot);
                         self.emit(Op::I32_ADD);
+                        self.emit_u16(Op::LOCAL_SET, end_slot); self.emit(Op::DROP);
+                        let length_done = self.emit_jump(Op::BR);
+
+                        self.patch_jump(nonneg_length);
+                        self.emit_u16(Op::LOCAL_GET, start_slot);
+                        self.emit_u16(Op::LOCAL_GET, length_slot);
+                        self.emit(Op::I32_ADD);
+                        self.emit_u16(Op::LOCAL_SET, end_slot); self.emit(Op::DROP);
+                        self.patch_jump(length_done);
                     } else {
-                        self.emit_const(Value::I32(i32::MAX));
+                        self.emit_u16(Op::LOCAL_GET, len_slot);
+                        self.emit_u16(Op::LOCAL_SET, end_slot); self.emit(Op::DROP);
                     }
+
+                    self.emit_u16(Op::LOCAL_GET, end_slot);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit(Op::DYN_LT);
+                    let end_nonneg = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit(Op::I32_CONST_0);
+                    self.emit_u16(Op::LOCAL_SET, end_slot); self.emit(Op::DROP);
+                    self.patch_jump(end_nonneg);
+
+                    self.emit_u16(Op::LOCAL_GET, end_slot);
+                    self.emit_u16(Op::LOCAL_GET, len_slot);
+                    self.emit(Op::DYN_GT);
+                    let end_within = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit_u16(Op::LOCAL_GET, len_slot);
+                    self.emit_u16(Op::LOCAL_SET, end_slot); self.emit(Op::DROP);
+                    self.patch_jump(end_within);
+
+                    self.emit_u16(Op::LOCAL_GET, end_slot);
+                    self.emit_u16(Op::LOCAL_GET, start_slot);
+                    self.emit(Op::DYN_LT);
+                    let end_after_start = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit_u16(Op::LOCAL_GET, start_slot);
+                    self.emit_u16(Op::LOCAL_SET, end_slot); self.emit(Op::DROP);
+                    self.patch_jump(end_after_start);
+
+                    self.emit_u16(Op::LOCAL_GET, str_slot);
+                    self.emit_u16(Op::LOCAL_GET, start_slot);
+                    self.emit_u16(Op::LOCAL_GET, end_slot);
 
                     common::strings::emit_substring(self.chunk(), line);
                 } else {
@@ -12302,21 +12446,8 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, step_slot); self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, step_slot);
-                    self.emit(Op::I32_CONST_0);
-                    self.emit(Op::DYN_LT);
-                    let positive_step = self.emit_jump(Op::BR_IF_FALSE);
-
                     self.emit_u16(Op::LOCAL_GET, end_slot);
-                    self.emit_const(Value::I32(1));
-                    self.emit(Op::I32_SUB);
-                    let stop_done = self.emit_jump(Op::BR);
-
-                    self.patch_jump(positive_step);
-                    self.emit_u16(Op::LOCAL_GET, end_slot);
-                    self.emit_const(Value::I32(1));
-                    self.emit(Op::I32_ADD);
-
-                    self.patch_jump(stop_done);
+                    self.emit(Op::DYN_ADD);
                     self.emit_u16(Op::LOCAL_SET, stop_slot); self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, start_slot);
