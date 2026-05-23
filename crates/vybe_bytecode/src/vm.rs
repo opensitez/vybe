@@ -27,7 +27,7 @@ pub enum ExecResult {
 /// Provides only the capabilities a host function needs:
 /// - Invoke VM callbacks (for LINQ, event handlers, etc.)
 /// - Access linear memory (for WASI filesystem, network, etc.)
-/// - Access user-defined host state (GUI queue, side effects, etc.)
+/// - Queue microtasks/timers through the event loop
 ///
 /// Does NOT expose: globals, stack, frames, bytecode, type registry.
 /// This matches the WASM security model (Wasmtime Caller<State>).
@@ -37,7 +37,18 @@ pub struct HostContext<'a> {
     invoker: Option<&'a mut dyn FnMut(&Value, &[Value]) -> Value>,
     /// Linear memory access (WASM MVP memory[0]).
     pub memory: Option<&'a mut [u8]>,
+    /// Event loop reference for queuing microtasks and timers.
+    /// Cloned from VM.event_loop — valid for the lifetime of the host call.
+    event_loop: Option<Rc<RefCell<EventLoop>>>,
+    /// Raw pointer to VM.last_exception — set by THROW when no handler matches.
+    /// Null when no VM is attached (HostContext::empty()).
+    last_exception_slot: *mut Option<Value>,
 }
+
+// SAFETY: HostContext is always created and used on the VM's owning thread.
+// The raw pointer to last_exception_slot is valid for the duration of the host
+// function call (same scope as the invoker lifetime bound by 'a).
+unsafe impl Send for HostContext<'_> {}
 
 impl<'a> HostContext<'a> {
     /// Call a VM function reference from host code.
@@ -50,9 +61,61 @@ impl<'a> HostContext<'a> {
         }
     }
 
+    /// Like invoke, but captures any exception thrown by the callback.
+    /// Returns Ok(value) on normal return or Err(thrown_value) on throw.
+    pub fn try_invoke(&mut self, func_ref: &Value, args: &[Value]) -> Result<Value, Value> {
+        // Clear any stale exception before the call.
+        unsafe {
+            if !self.last_exception_slot.is_null() {
+                *self.last_exception_slot = None;
+            }
+        }
+        let result = self.invoke(func_ref, args);
+        unsafe {
+            if !self.last_exception_slot.is_null() {
+                if let Some(exc) = (*self.last_exception_slot).take() {
+                    return Err(exc);
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    /// Queue a microtask (Promise reaction) to run after the current task.
+    /// ECMA-262 §27.2.1.3 EnqueueJob("PromiseJobs", ...).
+    pub fn queue_microtask(&mut self, callback: Value, value: Value) {
+        if let Some(ref el) = self.event_loop {
+            el.borrow_mut().queue_microtask(callback, value);
+        }
+    }
+
+    /// Queue a timer macrotask and return its cancellable ID.
+    /// HTML Living Standard §8.7 setTimeout semantics.
+    pub fn queue_timer(&mut self, callback: Value, delay_ms: f64) -> u64 {
+        if let Some(ref el) = self.event_loop {
+            el.borrow_mut().queue_timer_id(callback, delay_ms)
+        } else {
+            0
+        }
+    }
+
+    /// Cancel a previously scheduled timer by ID. Returns true if found.
+    pub fn cancel_timer(&mut self, id: u64) -> bool {
+        if let Some(ref el) = self.event_loop {
+            el.borrow_mut().cancel_timer(id)
+        } else {
+            false
+        }
+    }
+
     /// Create an empty context (for host functions that don't need callbacks).
     pub fn empty() -> Self {
-        HostContext { invoker: None, memory: None }
+        HostContext {
+            invoker: None,
+            memory: None,
+            event_loop: None,
+            last_exception_slot: std::ptr::null_mut(),
+        }
     }
 }
 
@@ -190,6 +253,10 @@ pub struct VM {
     pub label_stack: Vec<LabelEntry>,
     /// Callback invoker for host functions (cached allocation).
     pub(crate) callback_invoker: Option<Box<dyn FnMut(&Value, &[Value]) -> Value>>,
+    /// Last exception value thrown by a callback that had no handler.
+    /// Populated by the THROW opcode when no ExceptionHandler matches.
+    /// Consumed by HostContext::try_invoke to report the thrown value.
+    pub last_exception: Option<Value>,
     /// When true, enforce strict WASM isolation:
     /// - Module-scoped globals (prefixed by module name)
     /// - Per-module memory (separate linear memory per component)
@@ -290,6 +357,7 @@ impl VM {
             active_continuations: Vec::new(),
             label_stack: Vec::new(),
             callback_invoker: None,
+            last_exception: None,
             strict_isolation: false,
             module_prefix: None,
             case_aliases: HashMap::new(),
@@ -489,14 +557,20 @@ impl VM {
         // Instead, we pass raw pointers — this is safe because the HostContext
         // lifetime is strictly scoped within the host function call.
         let vm_ptr = self as *mut VM;
+        // Clone the Rc so host functions can queue microtasks/timers without
+        // holding a mutable borrow of the VM.
+        let el = self.event_loop.clone();
+        // Raw pointer to last_exception — safe: valid for host call duration.
+        let exc_ptr = &mut self.last_exception as *mut Option<Value>;
         HostContext {
             invoker: Some(unsafe {
                 // SAFETY: vm_ptr is valid for the duration of the host function call.
-                // The host function cannot outlive the call_import/call_value scope.
                 let vm_ref: &mut VM = &mut *vm_ptr;
                 vm_ref.get_invoker()
             }),
-            memory: None, // TODO: pass memory when needed
+            memory: None,
+            event_loop: Some(el),
+            last_exception_slot: exc_ptr,
         }
     }
 

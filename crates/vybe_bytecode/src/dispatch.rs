@@ -1594,6 +1594,8 @@ impl VM {
                         let f = self.frame_mut();
                         f.ip = handler.catch_ip;
                     } else {
+                        // Store the thrown value so HostContext::try_invoke can recover it.
+                        self.last_exception = Some(val.clone());
                         let stack = self.capture_call_stack();
                         return Err(VMError::new(format!("{}", val)).with_stack(stack));
                     }
@@ -3649,29 +3651,80 @@ impl VM {
                 _ if op == Op::PROMISE_SUSPEND => {
                     // Explicit JSPI suspend point. Like await, but can be inserted
                     // by the compiler for synchronous-looking code that calls async APIs.
+                    // ECMA-262 §25.6.1.3.2 Await:
+                    //   - fulfilled promise → unwrap and push value
+                    //   - rejected promise  → throw rejection reason (caught by enclosing try)
+                    //   - pending promise   → suspend fiber until settled
                     let val = self.pop();
                     if let Value::Object(ref obj) = val {
                         let o = obj.lock().unwrap();
-                        let is_pending = o.properties.get("__type")
-                            .map(|v| format!("{}", v) == "Promise")
-                            .unwrap_or(false)
-                            && o.properties.get("__state")
-                                .map(|v| format!("{}", v) == "pending")
-                                .unwrap_or(false);
-                        if is_pending {
-                            let promise_id = o.properties.get("__id")
-                                .map(|v| v.as_f64() as u64)
-                                .unwrap_or(0);
+                        let ty = o.properties.get("__type").map(|v| format!("{}", v)).unwrap_or_default();
+                        if ty == "Promise" {
+                            let state = o.properties.get("__state").map(|v| format!("{}", v)).unwrap_or_default();
+                            if state == "pending" {
+                                let promise_id = o.properties.get("__id")
+                                    .map(|v| v.as_f64() as u64)
+                                    .unwrap_or(0);
+                                drop(o);
+                                let fiber = self.save_fiber();
+                                self.event_loop.borrow_mut().suspend_fiber(promise_id, fiber);
+                                return Err(VMError::new(format!("__jspi__:{}", promise_id)));
+                            }
+                            let value = o.properties.get("__value").cloned().unwrap_or(Value::Null);
+                            if state == "rejected" {
+                                // await on a rejected promise throws the rejection reason.
+                                // Walk the exception handler stack exactly like THROW so
+                                // an enclosing try/catch in the wrapper function fires.
+                                drop(o);
+                                let mut matched_idx = None;
+                                for i in (0..self.exception_handlers.len()).rev() {
+                                    let handler = &self.exception_handlers[i];
+                                    if handler.tag == 0 {
+                                        matched_idx = Some(i);
+                                        break;
+                                    }
+                                    let tag_idx = handler.tag as usize;
+                                    let tag_name = self.chunks.get(0)
+                                        .and_then(|c| c.exception_tags.get(tag_idx))
+                                        .cloned()
+                                        .unwrap_or_default();
+                                    if !tag_name.is_empty()
+                                        && (self.test_type(&value, &tag_name.to_lowercase())
+                                            || self.exception_value_matches(&value, &tag_name))
+                                    {
+                                        matched_idx = Some(i);
+                                        break;
+                                    }
+                                }
+                                if let Some(idx) = matched_idx {
+                                    let handler = self.exception_handlers[idx].clone();
+                                    self.exception_handlers.truncate(idx);
+                                    while self.frames.len() > handler.frame_depth {
+                                        let base = self.frames.last().unwrap().base;
+                                        self.close_upvalues(base);
+                                        self.frames.pop();
+                                    }
+                                    self.stack.truncate(handler.stack_depth);
+                                    self.push(value)?;
+                                    let f = self.frame_mut();
+                                    f.ip = handler.catch_ip;
+                                } else {
+                                    self.last_exception = Some(value.clone());
+                                    let stack = self.capture_call_stack();
+                                    return Err(VMError::new(format!("{}", value)).with_stack(stack));
+                                }
+                                continue;
+                            }
+                            // fulfilled — unwrap and continue
                             drop(o);
-                            let fiber = self.save_fiber();
-                            self.event_loop.borrow_mut().suspend_fiber(promise_id, fiber);
-                            return Err(VMError::new(format!("__jspi__:{}", promise_id)));
+                            self.push(value)?;
+                        } else {
+                            drop(o);
+                            // Non-promise value — pass through as-is (spec: Await(v) = Await(Promise.resolve(v)))
+                            self.push(val)?;
                         }
-                        let resolved = o.properties.get("__value").cloned().unwrap_or(Value::Null);
-                        drop(o);
-                        self.push(resolved)?;
                     } else {
-                        // Not a promise — return value as-is
+                        // Primitive — pass through as-is
                         self.push(val)?;
                     }
                 }

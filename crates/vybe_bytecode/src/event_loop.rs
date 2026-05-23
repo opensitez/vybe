@@ -4,6 +4,9 @@
 //!   2. Drain microtask queue (Promise.then callbacks)
 //!   3. Process one macrotask (setTimeout callback)
 //!   4. Repeat until all queues empty
+//!
+//! Timer scheduling uses a monotonic clock (wasi:clocks/monotonic-clock
+//! semantics) so fire times are immune to wall-clock jumps.
 
 use std::collections::VecDeque;
 use crate::fiber::Fiber;
@@ -14,10 +17,12 @@ use crate::value::Value;
 pub enum Task {
     /// A suspended fiber waiting to resume with a value.
     ResumeFiber(Fiber),
-    /// A timer callback — function value + scheduled time (ms since epoch).
+    /// A timer callback — function value + scheduled fire time (ms, monotonic)
+    /// and a unique cancellable ID.
     Timer {
         callback: Value,
         fire_at_ms: f64,
+        id: u64,
     },
     /// A microtask — Promise.then/catch callback with a value.
     Microtask {
@@ -37,6 +42,8 @@ pub struct EventLoop {
     pub waiting_fibers: Vec<(u64, Fiber)>,  // (promise_id, fiber)
     /// Next promise ID.
     next_promise_id: u64,
+    /// Next timer ID (separate counter from promise IDs).
+    next_timer_id: u64,
 }
 
 impl EventLoop {
@@ -46,6 +53,7 @@ impl EventLoop {
             macrotasks: VecDeque::new(),
             waiting_fibers: Vec::new(),
             next_promise_id: 1,
+            next_timer_id: 1,
         }
     }
 
@@ -61,13 +69,42 @@ impl EventLoop {
         self.microtasks.push_back(Task::Microtask { callback, value });
     }
 
-    /// Schedule a macrotask (setTimeout callback).
+    /// Schedule a macrotask (setTimeout callback). Does not return an ID.
     pub fn queue_timer(&mut self, callback: Value, delay_ms: f64) {
+        let id = self.next_timer_id;
+        self.next_timer_id += 1;
         let now = current_time_ms();
         self.macrotasks.push_back(Task::Timer {
             callback,
             fire_at_ms: now + delay_ms,
+            id,
         });
+    }
+
+    /// Schedule a macrotask and return its cancellable ID.
+    /// Use this from setTimeout host functions.
+    pub fn queue_timer_id(&mut self, callback: Value, delay_ms: f64) -> u64 {
+        let id = self.next_timer_id;
+        self.next_timer_id += 1;
+        let now = current_time_ms();
+        self.macrotasks.push_back(Task::Timer {
+            callback,
+            fire_at_ms: now + delay_ms,
+            id,
+        });
+        id
+    }
+
+    /// Cancel a timer by ID. Returns true if the timer was found and removed.
+    pub fn cancel_timer(&mut self, id: u64) -> bool {
+        if let Some(pos) = self.macrotasks.iter().position(|t| {
+            matches!(t, Task::Timer { id: tid, .. } if *tid == id)
+        }) {
+            self.macrotasks.remove(pos);
+            true
+        } else {
+            false
+        }
     }
 
     /// Suspend a fiber — it will resume when the promise with the given ID resolves.
@@ -109,6 +146,7 @@ impl EventLoop {
     }
 
     /// Sleep until the next timer fires (or return immediately if microtasks pending).
+    /// Uses the monotonic clock for accurate scheduling.
     pub fn wait_for_next(&self) {
         if !self.microtasks.is_empty() || !self.waiting_fibers.is_empty() {
             return; // microtasks are processed immediately
@@ -119,15 +157,18 @@ impl EventLoop {
             let now = current_time_ms();
             if earliest > now {
                 let sleep_ms = (earliest - now) as u64;
+                // Native sleep — equivalent to wasi:clocks/monotonic-clock subscribe-duration.
                 std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
             }
         }
     }
 }
 
+/// Monotonic milliseconds since first call.
+/// Aligned with wasi:clocks/monotonic-clock semantics: values are only
+/// meaningful relative to each other, not as wall-clock timestamps.
 fn current_time_ms() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as f64
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let start = START.get_or_init(std::time::Instant::now);
+    start.elapsed().as_secs_f64() * 1000.0
 }
