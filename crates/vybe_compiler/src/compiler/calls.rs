@@ -1406,7 +1406,8 @@ impl Compiler {
         field: &str,
         arg_exprs: &[&Expression],
     ) -> Result<bool, String> {
-        if !self.expr_is_known_js_promise_like(object) {
+        let is_promise_like = self.expr_is_known_js_promise_like(object);
+        if !is_promise_like {
             return Ok(false);
         }
 

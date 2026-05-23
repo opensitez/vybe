@@ -1,10 +1,14 @@
 //! ECMA-262 §27.7 — Promise.
 //!
-//! Vybe's promise model is synchronous-by-default: a Promise is an Object
-//! stamped `__type=Promise` with `__state` ∈ {pending, fulfilled, rejected}
-//! and `__value` holding the resolved/rejected value. Async fan-out comes
-//! from JSPI (see `vybe_bytecode/src/jspi.rs`) — these host fns just
-//! construct the Promise objects in the appropriate state.
+//! Vybe's promise model is synchronous-by-default for already-settled
+//! promises, and defers via event-loop microtasks for pending ones.
+//! A Promise is an Object stamped `__type=Promise` with `__state` ∈
+//! {pending, fulfilled, rejected} and `__value` holding the settled value.
+//!
+//! Pending promises store reactions in `__pending_reactions` — an array of
+//! Objects `{ on_fulfilled, on_rejected, result_promise }`. When the promise
+//! settles (resolve/reject thunks fire), reactions are drained synchronously
+//! since the executor ran synchronously anyway.
 //!
 //! Spec sections covered:
 //!   §27.7.4.5 Promise.resolve(x)
@@ -21,20 +25,17 @@ use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::{Object, ObjectKind};
 
 pub fn register(vm: &mut VM) {
-    // Internal settle helpers — never called directly from user code,
-    // they're the targets the resolve/reject bound thunks dispatch to.
-    // Signature: (promise, value) — `promise` arrives via __bound_args.
-    vm.register_host_fn("ecma:promise", "__settle_fulfilled", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        settle(args, "fulfilled");
+    // Internal settle helpers — never called directly from user code.
+    // Signature: bound-args=[promise], runtime-arg=value.
+    vm.register_host_fn("ecma:promise", "__settle_fulfilled", Box::new(|ctx: &mut HostContext, args: &[Value]| {
+        settle_and_drain(ctx, args, "fulfilled");
         Value::Undefined
     }));
-    vm.register_host_fn("ecma:promise", "__settle_rejected", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        settle(args, "rejected");
+    vm.register_host_fn("ecma:promise", "__settle_rejected", Box::new(|ctx: &mut HostContext, args: &[Value]| {
+        settle_and_drain(ctx, args, "rejected");
         Value::Undefined
     }));
 
-    // Capture the settler host fn indices so `new` can build bound thunks
-    // without paying for a host_registry lookup on every Promise construction.
     let resolve_idx = vm.host_registry
         .get(&("ecma:promise".to_string(), "__settle_fulfilled".to_string()))
         .copied()
@@ -44,29 +45,31 @@ pub fn register(vm: &mut VM) {
         .copied()
         .expect("__settle_rejected just registered");
 
-    // `new Promise(executor)` — §27.7.3. Stamps the result Object as
-    // a pending Promise, then synchronously invokes `executor(resolve,
-    // reject)` where resolve/reject are bound HostFunction refs that
-    // mutate the captured promise. Bind state is carried via the
-    // `__bound_args` convention dispatched in vybe_bytecode/calls.rs.
     vm.register_host_fn("ecma:promise", "new", Box::new(move |ctx: &mut HostContext, args: &[Value]| {
-        // known_types-style construction: first arg is the executor
-        // (no separate `this` is pushed by the caller per this profile
-        // convention). Allocate the Promise object here, then run the
-        // executor synchronously.
         let executor = args.first().cloned().unwrap_or(Value::Undefined);
         let promise = make_promise("pending", Value::Undefined);
         if !matches!(executor, Value::Null | Value::Undefined) {
             let resolve_fn = bound_settler(resolve_idx, promise.clone());
-            let reject_fn = bound_settler(reject_idx, promise.clone());
+            let reject_fn  = bound_settler(reject_idx,  promise.clone());
             ctx.invoke(&executor, &[resolve_fn, reject_fn]);
         }
         promise
     }));
 
-    vm.register_host_fn("ecma:promise", "resolve", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+    vm.register_host_fn("ecma:promise", "resolve", Box::new(move |ctx: &mut HostContext, args: &[Value]| {
         let val = args.first().cloned().unwrap_or(Value::Undefined);
         if is_promise(&val) { return val; }
+        // Thenable assimilation per §27.2.1.3.2 PromiseResolve.
+        if let Some(then_fn) = get_then_method(&val) {
+            let promise = make_promise("pending", Value::Undefined);
+            let resolve_fn = bound_settler(resolve_idx, promise.clone());
+            let reject_fn  = bound_settler(reject_idx,  promise.clone());
+            match ctx.try_invoke(&then_fn, &[resolve_fn, reject_fn.clone()]) {
+                Ok(_) => {}
+                Err(exc) => { mutate_promise_state(&promise, "rejected", exc); }
+            }
+            return promise;
+        }
         make_promise("fulfilled", val)
     }));
 
@@ -153,7 +156,7 @@ pub fn register(vm: &mut VM) {
                 }
                 let mut agg = Object::new();
                 agg.properties.insert("__type".into(), Value::String(Arc::from("AggregateError")));
-                agg.properties.insert("name".into(), Value::String(Arc::from("AggregateError")));
+                agg.properties.insert("name".into(),    Value::String(Arc::from("AggregateError")));
                 agg.properties.insert("message".into(), Value::String(Arc::from("All promises were rejected")));
                 agg.properties.insert("errors".into(), Value::Object(
                     Arc::new(Mutex::new(Object::new_array(errors)))
@@ -164,132 +167,233 @@ pub fn register(vm: &mut VM) {
         make_promise("rejected", Value::Undefined)
     }));
 
-    // Promise.try(callbackfn) — ES2024. Calls callbackfn synchronously,
-    // wraps the return value (or thrown error) in a Promise.
+    // Promise.try(callbackfn) — ES2024.
     vm.register_host_fn("ecma:promise", "try", Box::new(|ctx: &mut HostContext, args: &[Value]| {
         let cb = args.first().cloned().unwrap_or(Value::Undefined);
         if matches!(cb, Value::Null | Value::Undefined) {
             return make_promise("fulfilled", Value::Undefined);
         }
-        let result = ctx.invoke(&cb, &[]);
-        if is_promise(&result) { result } else { make_promise("fulfilled", result) }
+        match ctx.try_invoke(&cb, &[]) {
+            Ok(result) => {
+                if is_promise(&result) { result } else { make_promise("fulfilled", result) }
+            }
+            Err(exc) => make_promise("rejected", exc),
+        }
     }));
 
-    // Promise.withResolvers() — ES2024. Returns { promise, resolve, reject }.
-    // Without thenable plumbing the resolve/reject host-callable handles aren't
-    // useful; we return the shape with a pending promise + nulls so the
-    // identity check passes.
-    vm.register_host_fn("ecma:promise", "withResolvers", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+    // Promise.withResolvers() — ES2024. Returns { promise, resolve, reject }
+    // where resolve/reject are bound thunks that settle the promise.
+    vm.register_host_fn("ecma:promise", "withResolvers", Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
+        let promise = make_promise("pending", Value::Undefined);
+        let resolve_fn = bound_settler(resolve_idx, promise.clone());
+        let reject_fn  = bound_settler(reject_idx,  promise.clone());
         let mut obj = Object::new();
-        obj.properties.insert("promise".into(), make_promise("pending", Value::Undefined));
-        obj.properties.insert("resolve".into(), Value::Null);
-        obj.properties.insert("reject".into(), Value::Null);
+        obj.properties.insert("promise".into(), promise);
+        obj.properties.insert("resolve".into(), resolve_fn);
+        obj.properties.insert("reject".into(),  reject_fn);
         Value::Object(Arc::new(Mutex::new(obj)))
     }));
 
     // ── Prototype methods ─────────────────────────────────────────────
-    //
-    // Vybe promises settle synchronously (the executor runs to completion
-    // during `new Promise(executor)`), so `.then` / `.catch` / `.finally`
-    // can dispatch their callbacks inline without queuing a microtask.
-    // The `await` path uses Op::PROMISE_SUSPEND (JSPI) when the value is
-    // a still-pending promise; these instance methods cover the
-    // callback-style API surface.
 
-    // promise.then(onFulfilled, onRejected?) — §27.7.5.4. Returns a new
-    // Promise whose state mirrors the callback's return / throw.
+    // promise.then(onFulfilled, onRejected?) — §27.7.5.4.
     vm.register_host_fn("ecma:promise", "then", Box::new(|ctx: &mut HostContext, args: &[Value]| {
         let p = args.first().cloned().unwrap_or(Value::Undefined);
         let on_fulfilled = args.get(1).cloned().unwrap_or(Value::Undefined);
-        let on_rejected = args.get(2).cloned().unwrap_or(Value::Undefined);
-        let (state, value) = read_promise_state(&p);
-        match state.as_str() {
-            "fulfilled" => settle_callback(ctx, on_fulfilled, value, "fulfilled"),
-            "rejected" => {
-                if is_callable(&on_rejected) {
-                    settle_callback(ctx, on_rejected, value, "fulfilled")
-                } else {
-                    make_promise("rejected", value)
-                }
-            }
-            // Pending promises: forward as-is. Real spec queues a
-            // microtask; under the synchronous executor model the
-            // pending state only persists if the executor never settled,
-            // which means there's nothing to fire.
-            _ => p,
-        }
+        let on_rejected  = args.get(2).cloned().unwrap_or(Value::Undefined);
+        then_impl(ctx, p, on_fulfilled, on_rejected)
     }));
 
     // promise.catch(onRejected) — §27.7.5.1. Sugar for .then(undefined, onRejected).
     vm.register_host_fn("ecma:promise", "catch", Box::new(|ctx: &mut HostContext, args: &[Value]| {
         let p = args.first().cloned().unwrap_or(Value::Undefined);
         let on_rejected = args.get(1).cloned().unwrap_or(Value::Undefined);
-        let (state, value) = read_promise_state(&p);
-        match state.as_str() {
-            "rejected" => settle_callback(ctx, on_rejected, value, "fulfilled"),
-            "fulfilled" => p,
-            _ => p,
-        }
+        then_impl(ctx, p, Value::Undefined, on_rejected)
     }));
 
-    // promise.finally(onFinally) — §27.7.5.3. Calls onFinally with no
-    // args regardless of state, then forwards the original outcome.
+    // promise.finally(onFinally) — §27.7.5.3.
+    // Runs onFinally with no args; forwards original outcome unless the
+    // callback throws (in which case the throw becomes a rejection).
     vm.register_host_fn("ecma:promise", "finally", Box::new(|ctx: &mut HostContext, args: &[Value]| {
         let p = args.first().cloned().unwrap_or(Value::Undefined);
         let on_finally = args.get(1).cloned().unwrap_or(Value::Undefined);
-        if is_callable(&on_finally) {
-            ctx.invoke(&on_finally, &[]);
-        }
-        p
+        finally_impl(ctx, p, on_finally)
     }));
 }
 
-/// Polymorphic dispatch for Promise instance methods. Used by
-/// `ecma:value.invokeMethod` when the method-call shim sees a
-/// `__type=Promise` Object — mirrors the Date / RegExp pattern.
+/// Shared implementation for `dispatch_promise_method` and registered host fns.
 pub fn dispatch_promise_method(ctx: &mut HostContext, method: &str, args: &[Value]) -> Option<Value> {
     let result = match method {
         "then" => {
             let p = args.first().cloned().unwrap_or(Value::Undefined);
             let on_fulfilled = args.get(1).cloned().unwrap_or(Value::Undefined);
-            let on_rejected = args.get(2).cloned().unwrap_or(Value::Undefined);
-            let (state, value) = read_promise_state(&p);
-            match state.as_str() {
-                "fulfilled" => settle_callback(ctx, on_fulfilled, value, "fulfilled"),
-                "rejected" => {
-                    if is_callable(&on_rejected) {
-                        settle_callback(ctx, on_rejected, value, "fulfilled")
-                    } else {
-                        make_promise("rejected", value)
-                    }
-                }
-                _ => p,
-            }
+            let on_rejected  = args.get(2).cloned().unwrap_or(Value::Undefined);
+            then_impl(ctx, p, on_fulfilled, on_rejected)
         }
         "catch" => {
             let p = args.first().cloned().unwrap_or(Value::Undefined);
             let on_rejected = args.get(1).cloned().unwrap_or(Value::Undefined);
-            let (state, value) = read_promise_state(&p);
-            match state.as_str() {
-                "rejected" => settle_callback(ctx, on_rejected, value, "fulfilled"),
-                _ => p,
-            }
+            then_impl(ctx, p, Value::Undefined, on_rejected)
         }
         "finally" => {
             let p = args.first().cloned().unwrap_or(Value::Undefined);
             let on_finally = args.get(1).cloned().unwrap_or(Value::Undefined);
-            if is_callable(&on_finally) {
-                ctx.invoke(&on_finally, &[]);
-            }
-            p
+            finally_impl(ctx, p, on_finally)
         }
         _ => return None,
     };
     Some(result)
 }
 
-/// Pull `(state, value)` out of a Promise; defaults to fulfilled-with-self
-/// for non-promise inputs so `.then`/`.catch` are total functions.
+// ── Core implementations ───────────────────────────────────────────────────
+
+fn then_impl(ctx: &mut HostContext, p: Value, on_fulfilled: Value, on_rejected: Value) -> Value {
+    let (state, value) = read_promise_state(&p);
+    match state.as_str() {
+        "fulfilled" => settle_callback(ctx, on_fulfilled, value, "fulfilled"),
+        "rejected" => {
+            if is_callable(&on_rejected) {
+                settle_callback(ctx, on_rejected, value, "fulfilled")
+            } else {
+                make_promise("rejected", value)
+            }
+        }
+        // Pending: register a reaction to fire when the promise settles.
+        _ => {
+            let result_promise = make_promise("pending", Value::Undefined);
+            add_reaction(&p, on_fulfilled, on_rejected, result_promise.clone());
+            result_promise
+        }
+    }
+}
+
+fn finally_impl(ctx: &mut HostContext, p: Value, on_finally: Value) -> Value {
+    let (state, value) = read_promise_state(&p);
+    if !is_callable(&on_finally) {
+        return p;
+    }
+    match ctx.try_invoke(&on_finally, &[]) {
+        Err(exc) => make_promise("rejected", exc),
+        Ok(_) => {
+            // Forward the original outcome regardless of the callback's return.
+            match state.as_str() {
+                "fulfilled" => make_promise("fulfilled", value),
+                "rejected"  => make_promise("rejected",  value),
+                _           => p,
+            }
+        }
+    }
+}
+
+/// Invoke `cb(value)` and wrap the result as a Promise.
+/// If the callback throws, the result is a rejected Promise (§27.7.5.4 step 8.a.i).
+/// If the callback returns a Promise, adopt its state (step 8.b thenable assimilation).
+fn settle_callback(ctx: &mut HostContext, cb: Value, value: Value, fallback_state: &str) -> Value {
+    if !is_callable(&cb) {
+        return make_promise(fallback_state, value);
+    }
+    match ctx.try_invoke(&cb, &[value]) {
+        Err(exc)   => make_promise("rejected", exc),
+        Ok(result) => {
+            if is_promise(&result) { result }
+            else { make_promise("fulfilled", result) }
+        }
+    }
+}
+
+/// Register a reaction on a pending promise.
+/// Stored as an entry in `__pending_reactions` on the promise object.
+fn add_reaction(promise: &Value, on_fulfilled: Value, on_rejected: Value, result_promise: Value) {
+    let Value::Object(obj) = promise else { return };
+    let mut o = obj.lock().unwrap();
+    let reactions = o.properties
+        .entry("__pending_reactions".into())
+        .or_insert_with(|| Value::Object(Arc::new(Mutex::new(Object::new_array(vec![])))));
+    let reaction = {
+        let mut r = Object::new();
+        r.properties.insert("on_fulfilled".into(),  on_fulfilled);
+        r.properties.insert("on_rejected".into(),   on_rejected);
+        r.properties.insert("result_promise".into(), result_promise);
+        Value::Object(Arc::new(Mutex::new(r)))
+    };
+    if let Value::Object(arr) = reactions {
+        if let ObjectKind::Array(ref mut elems) = arr.lock().unwrap().kind {
+            elems.push(reaction);
+        }
+    }
+}
+
+/// Settle a promise and drain its pending reactions.
+/// Called by the `__settle_fulfilled` / `__settle_rejected` bound thunks.
+fn settle_and_drain(ctx: &mut HostContext, args: &[Value], state: &str) {
+    let promise = match args.first() { Some(p) => p.clone(), None => return };
+    let value   = args.get(1).cloned().unwrap_or(Value::Undefined);
+
+    // Settle the promise (no-op if already settled).
+    let reactions: Vec<Value> = {
+        let Value::Object(obj) = &promise else { return };
+        let mut o = obj.lock().unwrap();
+        let already = o.properties.get("__state")
+            .map(|v| format!("{}", v) != "pending")
+            .unwrap_or(false);
+        if already { return; }
+        o.properties.insert("__state".into(), Value::String(Arc::from(state)));
+        o.properties.insert("__value".into(), value.clone());
+        // Drain the reactions list before releasing the lock.
+        if let Some(Value::Object(arr)) = o.properties.remove("__pending_reactions") {
+            let mut a = arr.lock().unwrap();
+            if let ObjectKind::Array(ref mut elems) = a.kind {
+                std::mem::take(elems)
+            } else { vec![] }
+        } else { vec![] }
+    };
+
+    // Fire each reaction synchronously (the executor already ran synchronously).
+    for reaction in &reactions {
+        let Value::Object(r) = reaction else { continue };
+        let r = r.lock().unwrap();
+        let on_fulfilled  = r.properties.get("on_fulfilled").cloned().unwrap_or(Value::Undefined);
+        let on_rejected   = r.properties.get("on_rejected").cloned().unwrap_or(Value::Undefined);
+        let result_promise = r.properties.get("result_promise").cloned().unwrap_or(Value::Undefined);
+        drop(r);
+
+        let cb = if state == "fulfilled" { on_fulfilled } else { on_rejected };
+        let fallback = state;
+
+        let (settled_state, settled_value) = if is_callable(&cb) {
+            match ctx.try_invoke(&cb, &[value.clone()]) {
+                Err(exc)   => ("rejected".to_string(), exc),
+                Ok(result) => {
+                    if is_promise(&result) {
+                        let (s, v) = read_promise_state(&result);
+                        (s, v)
+                    } else {
+                        ("fulfilled".to_string(), result)
+                    }
+                }
+            }
+        } else {
+            (fallback.to_string(), value.clone())
+        };
+
+        // Mutate the result promise to reflect the outcome.
+        mutate_promise_state(&result_promise, &settled_state, settled_value);
+    }
+}
+
+/// Overwrite a promise's state/value in-place.
+fn mutate_promise_state(promise: &Value, state: &str, value: Value) {
+    if let Value::Object(obj) = promise {
+        let mut o = obj.lock().unwrap();
+        if o.properties.get("__type").map(|v| format!("{}", v)).as_deref() == Some("Promise") {
+            o.properties.insert("__state".into(), Value::String(Arc::from(state)));
+            o.properties.insert("__value".into(), value);
+        }
+    }
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
 fn read_promise_state(v: &Value) -> (String, Value) {
     if let Value::Object(obj) = v {
         let o = obj.lock().unwrap();
@@ -302,20 +406,6 @@ fn read_promise_state(v: &Value) -> (String, Value) {
     ("fulfilled".to_string(), v.clone())
 }
 
-/// Invoke `cb(value)` and wrap the result as a Promise. If the callback
-/// returns a Promise, adopt its state (matches §27.7.5.4 step 8.b
-/// thenable assimilation).
-fn settle_callback(ctx: &mut HostContext, cb: Value, value: Value, fallback_state: &str) -> Value {
-    if !is_callable(&cb) {
-        return make_promise(fallback_state, value);
-    }
-    let result = ctx.invoke(&cb, &[value]);
-    if is_promise(&result) {
-        return result;
-    }
-    make_promise("fulfilled", result)
-}
-
 fn is_callable(v: &Value) -> bool {
     matches!(v, Value::Object(o)
         if matches!(o.lock().unwrap().kind,
@@ -324,16 +414,12 @@ fn is_callable(v: &Value) -> bool {
 
 fn make_promise(state: &str, value: Value) -> Value {
     let mut obj = Object::new();
-    obj.properties.insert("__type".into(), Value::String(Arc::from("Promise")));
+    obj.properties.insert("__type".into(),  Value::String(Arc::from("Promise")));
     obj.properties.insert("__state".into(), Value::String(Arc::from(state)));
     obj.properties.insert("__value".into(), value);
     Value::Object(Arc::new(Mutex::new(obj)))
 }
 
-/// Build a bound HostFunction Value that calls into the given settler
-/// idx with `[promise]` prepended to the runtime args. Mirrors
-/// `bound_host_fn_ref` in `namespaces/mod.rs` but inlined to avoid the
-/// host_registry lookup since we already know the idx.
 fn bound_settler(idx: usize, promise: Value) -> Value {
     let mut obj = Object::new();
     obj.properties.insert("__bound_args".into(), Value::Object(
@@ -343,22 +429,19 @@ fn bound_settler(idx: usize, promise: Value) -> Value {
     Value::Object(Arc::new(Mutex::new(obj)))
 }
 
-/// Mutate the promise (args[0], from __bound_args) into the given
-/// terminal state with value (args[1]). No-op if already settled —
-/// §27.7.4.1.1 (only the first call wins).
-fn settle(args: &[Value], state: &str) {
-    let promise = match args.first() { Some(p) => p, None => return };
-    let value = args.get(1).cloned().unwrap_or(Value::Undefined);
-    if let Value::Object(obj) = promise {
-        let mut o = obj.lock().unwrap();
-        let already_settled = o.properties.get("__state")
-            .map(|v| format!("{}", v))
-            .map(|s| s != "pending")
-            .unwrap_or(false);
-        if already_settled { return; }
-        o.properties.insert("__state".into(), Value::String(Arc::from(state)));
-        o.properties.insert("__value".into(), value);
+/// Extract the `.then` method from a thenable object if it is callable.
+/// Returns `None` for non-objects, objects without `.then`, or non-callable `.then`.
+fn get_then_method(val: &Value) -> Option<Value> {
+    if let Value::Object(obj) = val {
+        let then_fn = {
+            let o = obj.lock().unwrap();
+            o.properties.get("then").cloned()
+        };
+        if let Some(f) = then_fn {
+            if is_callable(&f) { return Some(f); }
+        }
     }
+    None
 }
 
 fn is_promise(v: &Value) -> bool {

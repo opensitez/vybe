@@ -10,6 +10,20 @@ pub(crate) fn now_secs() -> u64 {
 }
 
 pub fn register(vm: &mut VM) {
+    // ── wasi:clocks/monotonic-clock — WASI 0.2 spec interface ───────────
+    // Returns nanoseconds since an arbitrary reference point (process start).
+    // Values are only meaningful relative to each other — use for scheduling.
+    // Mirrors proposals/WASI/proposals/clocks/wit/monotonic-clock.wit.
+    vm.register_host_fn("wasi:clocks/monotonic-clock", "now", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let start = START.get_or_init(std::time::Instant::now);
+        Value::F64(start.elapsed().as_nanos() as f64)
+    }));
+
+    vm.register_host_fn("wasi:clocks/monotonic-clock", "resolution", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+        Value::F64(1.0) // 1 nanosecond resolution
+    }));
+
     // ── wasi:clocks/wall-clock — WASI 0.2.11 spec interface ─────────────
     // The canonical WASI wall-clock primitive. Returns a `datetime` record
     // `{ seconds: u64, nanoseconds: u32 }` per the .wit at

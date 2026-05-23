@@ -195,13 +195,19 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
         chunk.emit_op(Op::DROP, line);
     }
 
-    // `stack` = "Name: message" for JS Error.stack compatibility.
-    // Stack: [obj]. Read message back, concat with prefix, stamp.
-    // `stack` = "Name: message" for JS Error.stack compatibility.
-    // Build from message (already on the object) by emitting the caller
-    // to do it — see the `stamp_error_stack` parameter pattern below.
-    // For now, stamp the `stack` field in the vybex compiler where we
-    // have access to local variables for the swap.
+    // constructor = { name: original } — so e.constructor.name works per ECMA-262 §20.5.3.
+    // Stack: [obj]
+    chunk.emit_op(Op::DUP, line);                                          // [obj, obj]
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);                            // [obj, obj, ctor]
+    chunk.emit_op(Op::DUP, line);                                          // [obj, obj, ctor, ctor]
+    let cn_val = chunk.add_constant(Value::String(Arc::from(original)));
+    chunk.emit_op_u16(Op::CONST, cn_val, line);                            // [obj, obj, ctor, ctor, name]
+    let cn_key = chunk.add_constant(Value::String(Arc::from("name")));
+    chunk.emit_op_u16(Op::STRUCT_SET, cn_key, line);                       // [obj, obj, ctor, ?]
+    chunk.emit_op(Op::DROP, line);                                         // [obj, obj, ctor]
+    let ctor_key = chunk.add_constant(Value::String(Arc::from("constructor")));
+    chunk.emit_op_u16(Op::STRUCT_SET, ctor_key, line);                     // [obj, ?]
+    chunk.emit_op(Op::DROP, line);                                         // [obj]
 }
 
 /// Emit type-dispatch for a single catch arm. The exception object is
