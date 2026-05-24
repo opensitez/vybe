@@ -674,6 +674,7 @@ pub enum ExprKind {
 pub enum Literal {
     Int(i64),
     Float(f64),
+    BigInt(i64),
     Str(String),
     Bool(bool),
     Char(char),
@@ -709,6 +710,7 @@ pub struct ObjectPatternProp {
     pub key: String,
     pub value: Option<BindingPattern>,
     pub default: Option<Expression>,
+    pub is_rest: bool,
 }
 
 #[derive(Debug, Clone)]

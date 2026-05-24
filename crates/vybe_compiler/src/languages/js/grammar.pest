@@ -412,6 +412,7 @@ primary = {
     | null_kw
     | undefined_kw
     | "..." ~ assignment_expression
+    | bigint_literal
     | numeric_literal
     | string_literal
     | regex_literal
@@ -434,11 +435,11 @@ arrow_body = { function_body | assignment_expression }
 // ── Function / Class expressions ────────────────────────────────────────────
 
 function_expression = {
-    "function" ~ ident_name? ~ "(" ~ param_list? ~ ")" ~ function_body
+    "function" ~ generator_marker? ~ ident_name? ~ "(" ~ param_list? ~ ")" ~ function_body
 }
 
 async_function_expression = {
-    async_kw ~ "function" ~ ident_name? ~ "(" ~ param_list? ~ ")" ~ function_body
+    async_kw ~ "function" ~ generator_marker? ~ ident_name? ~ "(" ~ param_list? ~ ")" ~ function_body
 }
 
 class_expression = {
@@ -448,9 +449,11 @@ class_expression = {
 // ── Array literal ───────────────────────────────────────────────────────────
 
 array_literal = {
-    "[" ~ eat_terminators ~ (array_element ~ eat_terminators ~ ("," ~ eat_terminators ~ array_element ~ eat_terminators)*)? ~ ","? ~ eat_terminators ~ "]"
+    "[" ~ eat_terminators ~ (array_slot ~ eat_terminators ~ ("," ~ eat_terminators ~ array_slot ~ eat_terminators)*)? ~ ","? ~ eat_terminators ~ "]"
 }
 
+array_slot = { array_element | array_elision }
+array_elision = { &"," }
 array_element = { "..." ~ assignment_expression | assignment_expression }
 
 // ── Object literal ──────────────────────────────────────────────────────────
@@ -502,6 +505,13 @@ hex_digits = _{ ASCII_HEX_DIGIT ~ (ASCII_HEX_DIGIT | "_" ~ ASCII_HEX_DIGIT)* }
 oct_digits = _{ ('0'..'7') ~ (('0'..'7') | "_" ~ ('0'..'7'))* }
 bin_digits = _{ ('0'..'1') ~ (('0'..'1') | "_" ~ ('0'..'1'))* }
 dec_digits = _{ ASCII_DIGIT ~ (ASCII_DIGIT | "_" ~ ASCII_DIGIT)* }
+
+bigint_literal = @{
+    ("0x" | "0X") ~ hex_digits ~ "n"
+    | ("0o" | "0O") ~ oct_digits ~ "n"
+    | ("0b" | "0B") ~ bin_digits ~ "n"
+    | dec_digits ~ "n"
+}
 
 numeric_literal = @{
     ("0x" | "0X") ~ hex_digits ~ !(ASCII_ALPHANUMERIC | "_")

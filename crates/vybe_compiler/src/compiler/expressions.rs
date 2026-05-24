@@ -504,6 +504,7 @@ impl Compiler {
                 match lit {
                     Literal::Int(n) => self.emit_const(Value::F64(*n as f64)),
                     Literal::Float(n) => self.emit_const(Value::F64(*n)),
+                    Literal::BigInt(n) => self.emit_const(Value::BigInt(*n)),
                     Literal::Str(s) => self.emit_const(Value::String(Arc::from(s.as_str()))),
                     Literal::Char(c) => self.emit_const(Value::String(Arc::from(c.to_string().as_str()))),
                     Literal::Bool(b) => if *b { self.emit(Op::TRUE) } else { self.emit(Op::FALSE) },
@@ -814,6 +815,79 @@ impl Compiler {
                     self.emit_common("php.echo_stringify", 1, line);
                     self.compile_binop(op);
                     return Ok(());
+                }
+
+                // BigInt arithmetic and comparisons via ecma:bigint host fns.
+                // These already exist and return Value::BigInt / Value::Bool.
+                // `infer_expr_type_hint` returns "bigint" for BigInt literals
+                // and for variables initialised with BigInt values.
+                if self.is_js_profile() {
+                    let left_is_bigint = self.infer_expr_type_hint(left)
+                        .as_deref() == Some("bigint");
+                    let right_is_bigint = self.infer_expr_type_hint(right)
+                        .as_deref() == Some("bigint");
+                    if left_is_bigint && right_is_bigint {
+                        let fn_name: Option<&str> = match op {
+                            BinOp::Add    => Some("add"),
+                            BinOp::Sub    => Some("sub"),
+                            BinOp::Mul    => Some("mul"),
+                            BinOp::Div    => Some("div"),
+                            BinOp::Mod    => Some("rem"),
+                            BinOp::BitAnd => Some("and"),
+                            BinOp::BitOr  => Some("or"),
+                            BinOp::BitXor => Some("xor"),
+                            BinOp::Shl    => Some("shl"),
+                            BinOp::Shr    => Some("shr"),
+                            BinOp::Eq | BinOp::StrictEq       => Some("eq"),
+                            BinOp::NotEq | BinOp::StrictNotEq => Some("ne"),
+                            BinOp::Lt     => Some("lt"),
+                            BinOp::LtEq   => Some("le"),
+                            BinOp::Gt     => Some("gt"),
+                            BinOp::GtEq   => Some("ge"),
+                            _ => None,
+                        };
+                        if let Some(name) = fn_name {
+                            let idx = self.import("ecma:bigint", name);
+                            self.compile_expr(left)?;
+                            self.compile_expr(right)?;
+                            self.emit_host_call(idx, 2);
+                            return Ok(());
+                        }
+                    } else if left_is_bigint || right_is_bigint {
+                        if matches!(op,
+                            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
+                            | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr
+                        ) {
+                            // §21.2.1.1: arithmetic between BigInt and non-BigInt throws TypeError.
+                            self.emit_const(Value::String(Arc::from("Cannot mix BigInt and other types, use explicit conversions")));
+                            let line = self.line;
+                            self.emit_js_exception_ctor_from_message_value("TypeError")?;
+                            common::errors::emit_throw(self.chunk(), line);
+                            return Ok(());
+                        } else if matches!(op,
+                            BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
+                        ) {
+                            // §7.2.13: BigInt == Number compares numerically.
+                            // ecma:bigint comparisons use to_bigint() on both sides, which handles
+                            // all numeric types (F64, I32, BigInt) correctly.
+                            let fn_name = match op {
+                                BinOp::Eq    => "eq",
+                                BinOp::NotEq => "ne",
+                                BinOp::Lt    => "lt",
+                                BinOp::LtEq  => "le",
+                                BinOp::Gt    => "gt",
+                                BinOp::GtEq  => "ge",
+                                _ => unreachable!(),
+                            };
+                            let idx = self.import("ecma:bigint", fn_name);
+                            self.compile_expr(left)?;
+                            self.compile_expr(right)?;
+                            self.emit_host_call(idx, 2);
+                            return Ok(());
+                        }
+                        // StrictEq / StrictNotEq with mixed types: fall through to compile_binop
+                        // (strict equality of different types returns false/true without coercion).
+                    }
                 }
 
                 self.compile_expr(left)?;
@@ -1973,12 +2047,95 @@ impl Compiler {
                     let obj_slot = self.define_local("__js_index_obj");
                     self.emit_u16(Op::LOCAL_SET, obj_slot);
                     self.emit(Op::DROP);
+                    let key_slot = self.define_local("__js_index_key");
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    self.compile_expr(index)?;
+                    match &index.kind {
+                        ExprKind::Member { object, field, null_safe: false }
+                            if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
+                                let fallback_key = match field.as_str() {
+                                    "iterator" => Some("iterator"),
+                                    "asyncIterator" => Some("asyncIterator"),
+                                    "toPrimitive" => Some("toprimitive"),
+                                    "hasInstance" => Some("hasinstance"),
+                                    _ => None,
+                                };
+                                if let Some(fallback_key) = fallback_key {
+                                    self.emit_const(Value::String(Arc::from(fallback_key)));
+                                } else {
+                                    self.compile_expr(index)?;
+                                }
+                            }
+                        _ => self.compile_expr(index)?,
+                    }
                     if self.profile.negative_index_wraps {
                         self.emit_negative_index_wrap();
                     }
+                    self.emit_u16(Op::LOCAL_SET, key_slot);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    self.emit_u16(Op::LOCAL_GET, key_slot);
                     { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+                    let val_slot = self.define_local("__js_index_val");
+                    self.emit_u16(Op::LOCAL_SET, val_slot);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, val_slot);
+                    self.emit(Op::REF_IS_NULL);
+                    let val_not_null = self.emit_jump(Op::BR_IF_FALSE);
+                    let lookup = self.str_const("__vybe_js_get_method");
+                    let end_lookup = self.emit_jump(Op::BR);
+                    self.patch_jump(val_not_null);
+                    self.emit_u16(Op::LOCAL_GET, val_slot);
+                    self.emit(Op::REF_IS_UNDEFINED);
+                    let have_direct = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit_u16(Op::GLOBAL_GET, lookup);
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    match &index.kind {
+                        ExprKind::Member { object, field, null_safe: false }
+                            if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
+                                let fallback_key = match field.as_str() {
+                                    "iterator" => Some("iterator"),
+                                    "asyncIterator" => Some("asyncIterator"),
+                                    "toPrimitive" => Some("toprimitive"),
+                                    "hasInstance" => Some("hasinstance"),
+                                    _ => None,
+                                };
+                                if let Some(fallback_key) = fallback_key {
+                                    self.emit_const(Value::String(Arc::from(fallback_key)));
+                                } else {
+                                    self.emit_u16(Op::LOCAL_GET, key_slot);
+                                }
+                            }
+                        _ => self.emit_u16(Op::LOCAL_GET, key_slot),
+                    }
+                    self.emit_u8(Op::CALL_REF, 2);
+                    let end_undefined = self.emit_jump(Op::BR);
+                    self.patch_jump(end_lookup);
+                    self.emit_u16(Op::GLOBAL_GET, lookup);
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    match &index.kind {
+                        ExprKind::Member { object, field, null_safe: false }
+                            if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
+                                let fallback_key = match field.as_str() {
+                                    "iterator" => Some("iterator"),
+                                    "asyncIterator" => Some("asyncIterator"),
+                                    "toPrimitive" => Some("toprimitive"),
+                                    "hasInstance" => Some("hasinstance"),
+                                    _ => None,
+                                };
+                                if let Some(fallback_key) = fallback_key {
+                                    self.emit_const(Value::String(Arc::from(fallback_key)));
+                                } else {
+                                    self.emit_u16(Op::LOCAL_GET, key_slot);
+                                }
+                            }
+                        _ => self.emit_u16(Op::LOCAL_GET, key_slot),
+                    }
+                    self.emit_u8(Op::CALL_REF, 2);
+                    let end_null = self.emit_jump(Op::BR);
+                    self.patch_jump(have_direct);
+                    self.emit_u16(Op::LOCAL_GET, val_slot);
+                    self.patch_jump(end_null);
+                    self.patch_jump(end_undefined);
                     self.patch_jump(end);
                 } else if matches!(self.profile.name.as_str(), "csharp" | "vb") {
                     self.compile_expr(object)?;
@@ -2027,6 +2184,119 @@ impl Compiler {
                         self.patch_jump(end);
                     }
                 } else {
+                    if self.is_js_profile() {
+                        self.compile_expr(object)?;
+                        let obj_slot = self.define_local("__js_index_obj");
+                        self.emit_u16(Op::LOCAL_SET, obj_slot);
+                        self.emit(Op::DROP);
+
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit(Op::REF_IS_NULL);
+                        let non_null = self.emit_jump(Op::BR_IF_FALSE);
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit(Op::REF_IS_UNDEFINED);
+                        let is_null = self.emit_jump(Op::BR_IF_FALSE);
+                        self.emit_const(Value::String(Arc::from("Cannot read properties of undefined")));
+                        let have_msg = self.emit_jump(Op::BR);
+                        self.patch_jump(is_null);
+                        self.emit_const(Value::String(Arc::from("Cannot read properties of null")));
+                        self.patch_jump(have_msg);
+                        self.emit_js_exception_ctor_from_message_value("TypeError")?;
+                        let line = self.line;
+                        common::errors::emit_throw(self.chunk(), line);
+                        self.patch_jump(non_null);
+
+                        let key_slot = self.define_local("__js_index_key");
+                        match &index.kind {
+                            ExprKind::Member { object, field, null_safe: false }
+                                if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
+                                    let fallback_key = match field.as_str() {
+                                        "iterator" => Some("iterator"),
+                                        "asyncIterator" => Some("asyncIterator"),
+                                        "toPrimitive" => Some("toprimitive"),
+                                        "hasInstance" => Some("hasinstance"),
+                                        _ => None,
+                                    };
+                                    if let Some(fallback_key) = fallback_key {
+                                        self.emit_const(Value::String(Arc::from(fallback_key)));
+                                    } else {
+                                        self.compile_array_index_operand_for_owner(object, index)?;
+                                    }
+                                }
+                            _ => self.compile_array_index_operand_for_owner(object, index)?,
+                        }
+                        if self.profile.negative_index_wraps {
+                            self.emit_negative_index_wrap();
+                        }
+                        self.emit_u16(Op::LOCAL_SET, key_slot);
+                        self.emit(Op::DROP);
+
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit_u16(Op::LOCAL_GET, key_slot);
+                        { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+                        let val_slot = self.define_local("__js_index_val");
+                        self.emit_u16(Op::LOCAL_SET, val_slot);
+                        self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, val_slot);
+                        self.emit(Op::REF_IS_NULL);
+                        let val_not_null = self.emit_jump(Op::BR_IF_FALSE);
+                        let lookup = self.str_const("__vybe_js_get_method");
+                        let end_lookup = self.emit_jump(Op::BR);
+                        self.patch_jump(val_not_null);
+                        self.emit_u16(Op::LOCAL_GET, val_slot);
+                        self.emit(Op::REF_IS_UNDEFINED);
+                        let have_direct = self.emit_jump(Op::BR_IF_FALSE);
+                        self.emit_u16(Op::GLOBAL_GET, lookup);
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        match &index.kind {
+                            ExprKind::Member { object, field, null_safe: false }
+                                if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
+                                    let fallback_key = match field.as_str() {
+                                        "iterator" => Some("iterator"),
+                                        "asyncIterator" => Some("asyncIterator"),
+                                        "toPrimitive" => Some("toprimitive"),
+                                        "hasInstance" => Some("hasinstance"),
+                                        _ => None,
+                                    };
+                                    if let Some(fallback_key) = fallback_key {
+                                        self.emit_const(Value::String(Arc::from(fallback_key)));
+                                    } else {
+                                        self.emit_u16(Op::LOCAL_GET, key_slot);
+                                    }
+                                }
+                            _ => self.emit_u16(Op::LOCAL_GET, key_slot),
+                        }
+                        self.emit_u8(Op::CALL_REF, 2);
+                        let end_undefined = self.emit_jump(Op::BR);
+                        self.patch_jump(end_lookup);
+                        self.emit_u16(Op::GLOBAL_GET, lookup);
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        match &index.kind {
+                            ExprKind::Member { object, field, null_safe: false }
+                                if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
+                                    let fallback_key = match field.as_str() {
+                                        "iterator" => Some("iterator"),
+                                        "asyncIterator" => Some("asyncIterator"),
+                                        "toPrimitive" => Some("toprimitive"),
+                                        "hasInstance" => Some("hasinstance"),
+                                        _ => None,
+                                    };
+                                    if let Some(fallback_key) = fallback_key {
+                                        self.emit_const(Value::String(Arc::from(fallback_key)));
+                                    } else {
+                                        self.emit_u16(Op::LOCAL_GET, key_slot);
+                                    }
+                                }
+                            _ => self.emit_u16(Op::LOCAL_GET, key_slot),
+                        }
+                        self.emit_u8(Op::CALL_REF, 2);
+                        let end_null = self.emit_jump(Op::BR);
+                        self.patch_jump(have_direct);
+                        self.emit_u16(Op::LOCAL_GET, val_slot);
+                        self.patch_jump(end_null);
+                        self.patch_jump(end_undefined);
+                        return Ok(());
+                    }
                     self.compile_expr(object)?;
                     self.emit_autoderef_pointer_cell();
                     self.compile_array_index_operand_for_owner(object, index)?;
@@ -2447,7 +2717,15 @@ impl Compiler {
                 //                `ecma:array.get/.set` which now
                 //                dispatch polymorphically on Map.
                 let line = self.line;
-                let has_keys = elements.iter().any(|e| e.key.is_some());
+                let is_js_profile = self.is_js_profile();
+                let is_js_array_elision = |elem: &ArrayElement| {
+                    is_js_profile
+                        && !elem.spread
+                        && matches!(&elem.key, Some(key) if matches!(key.kind, ExprKind::Lit(Literal::Int(-1))))
+                        && matches!(elem.value.kind, ExprKind::Lit(Literal::Undefined))
+                };
+                let has_keys = elements.iter().any(|e| e.key.is_some() && !is_js_array_elision(e));
+                let has_elisions = is_js_profile && elements.iter().any(is_js_array_elision);
 
                 if has_keys {
                     common::collections::emit_map_new(&mut self.chunks, self.current, line);
@@ -2494,10 +2772,24 @@ impl Compiler {
                         self.emit(Op::DROP);
                     }
                 } else {
-                    // All-unkeyed: use the array path (fast, small).
-                    common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
-                    for elem in elements {
-                        if elem.spread {
+                    if has_elisions {
+                        self.emit_const(Value::I32(elements.len() as i32));
+                        common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
+                        for (index, elem) in elements.iter().enumerate() {
+                            if is_js_array_elision(elem) {
+                                continue;
+                            }
+                            self.emit(Op::DUP);
+                            self.emit_const(Value::I32(index as i32));
+                            self.compile_expr(&elem.value)?;
+                            common::collections::emit_set(&mut self.chunks, self.current, line);
+                            self.emit(Op::DROP);
+                        }
+                    } else {
+                        // All-unkeyed: use the array path (fast, small).
+                        common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+                        for elem in elements {
+                            if elem.spread {
                             // Spread: `concat(current, other)` returns a NEW
                             // array which replaces the one on TOS. JS
                             // generators (Continuation values) can't be
@@ -2532,14 +2824,15 @@ impl Compiler {
                                 self.emit_u8(Op::CALL_REF, 1);
                                 self.patch_jump(done);
                             }
-                            common::collections::emit_concat(&mut self.chunks, self.current, line);
-                        } else {
+                                common::collections::emit_concat(&mut self.chunks, self.current, line);
+                            } else {
                             // DUP keeps the array on TOS; push returns the
                             // new length, which we drop.
-                            self.emit(Op::DUP);
-                            self.compile_expr(&elem.value)?;
-                            common::collections::emit_push(&mut self.chunks, self.current, line);
-                            self.emit(Op::DROP);
+                                self.emit(Op::DUP);
+                                self.compile_expr(&elem.value)?;
+                                common::collections::emit_push(&mut self.chunks, self.current, line);
+                                self.emit(Op::DROP);
+                            }
                         }
                     }
                 }
@@ -2690,6 +2983,14 @@ impl Compiler {
                                 }
                             } else {
                                 self.emit(Op::NULL);
+                            }
+                            // Set fn.name = key for Function.prototype.name support.
+                            if self.is_js_profile() {
+                                self.emit(Op::DUP);
+                                self.emit_const(Value::String(Arc::from(key.as_str())));
+                                let name_key = self.str_const("name");
+                                self.emit_u16(Op::STRUCT_SET, name_key);
+                                self.emit(Op::DROP);
                             }
                             let idx = self.str_const(key);
                             self.emit_u16(Op::STRUCT_SET, idx);

@@ -131,12 +131,17 @@ pub fn emit_for_in_start(chunks: &mut [Chunk], current: usize, arr_slot: u16, id
     let block_patch = chunks[current].emit_block(line);
     let (loop_patch, _) = chunks[current].emit_loop_s(line);
 
-    // while i < arr.length — direct WASM array.length, not the polymorphic
-    // string-or-array dispatch (which composes flat byte-offset jumps
-    // inside this structured loop body).
+    // while i < arr.length — use ecma:array.length (handles Array AND
+    // TypedArray) rather than the raw Op::ARRAY_LENGTH GC opcode which
+    // only handles ObjectKind::Array. This ensures HOF polyfills work
+    // uniformly for both plain arrays and typed-array receivers.
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    crate::emitter::collections::emit_array_length(&mut chunks[current], line);
+    {
+        let idx = chunks[0].add_import("ecma:array", "length");
+        chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
+        chunks[current].emit(1u8, line);
+    }
     chunks[current].emit_op(Op::DYN_LT, line);
     emit_loop_cond(chunks, current, line);
 
@@ -286,21 +291,25 @@ pub fn emit_reduce(chunks: &mut [Chunk], current: usize, fn_slot: u16, arr_slot:
     // block { loop {
     let state = emit_loop_start(chunks, current, line);
 
-    // while i < arr.length — direct WASM array.length, not the polymorphic
-    // dispatch.
+    // while i < arr.length — use ecma:array.length (handles TypedArray too).
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    crate::emitter::collections::emit_array_length(&mut chunks[current], line);
+    {
+        let idx = chunks[0].add_import("ecma:array", "length");
+        chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
+        chunks[current].emit(1u8, line);
+    }
     chunks[current].emit_op(Op::DYN_LT, line);
     emit_loop_cond(chunks, current, line);
 
-    // acc = fn(acc, arr[i])
+    // acc = fn(acc, arr[i], i)  — ECMA-262 §23.1.3.26: callback(acc, elem, index, array)
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, acc_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     crate::emitter::collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 3, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, acc_slot, line);
     chunks[current].emit_op(Op::DROP, line);
 

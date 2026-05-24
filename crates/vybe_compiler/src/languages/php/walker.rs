@@ -5534,6 +5534,7 @@ fn array_elements_to_destructure_pattern(elems: &[ArrayElement]) -> Option<Destr
                 key,
                 value: Some(value),
                 default: None,
+                is_rest: false,
             });
         }
         Some(DestructurePattern::Object(props))

@@ -56,10 +56,10 @@ prompt              = { emit = "host:wasi:cli:readLine",   min_args = 0, max_arg
 # ECMA host fn — that gap is tracked separately. Routing both names here
 # accepts a small semantics gap until the global variant is added.
 
-parseInt            = { emit = "host:ecma:number:parseInt",       min_args = 1, max_args = 2 }
-parseFloat          = { emit = "host:ecma:number:parseFloat",     min_args = 1, max_args = 1 }
-isNaN               = { emit = "host:ecma:number:isNaN",          min_args = 1, max_args = 1 }
-isFinite            = { emit = "host:ecma:number:isFinite",       min_args = 1, max_args = 1 }
+parseInt            = { emit = "host:ecma:number:parseInt",           min_args = 1, max_args = 2 }
+parseFloat          = { emit = "host:ecma:number:parseFloat",         min_args = 1, max_args = 1 }
+isNaN               = { emit = "host:ecma:number:globalIsNaN",        min_args = 1, max_args = 1 }
+isFinite            = { emit = "host:ecma:number:globalIsFinite",     min_args = 1, max_args = 1 }
 
 # ── Encoding ─────────────────────────────────────────────────────────────────
 
@@ -78,8 +78,8 @@ decodeURI               = { emit = "host:ecma:string:decodeURI",             min
 "Math.sqrt"         = { emit = "opcode:f64_sqrt",     min_args = 1, max_args = 1 }
 "Math.trunc"        = { emit = "opcode:f64_trunc",    min_args = 1, max_args = 1 }
 "Math.round"        = { emit = "opcode:f64_nearest",  min_args = 1, max_args = 1 }
-"Math.min"          = { emit = "opcode:f64_min",      min_args = 2, max_args = 2 }
-"Math.max"          = { emit = "opcode:f64_max",      min_args = 2, max_args = 2 }
+"Math.min"          = { emit = "host:ecma:math:minOf", min_args = 0, max_args = 255 }
+"Math.max"          = { emit = "host:ecma:math:maxOf", min_args = 0, max_args = 255 }
 
 # ── Math — host calls ───────────────────────────────────────────────────────
 
@@ -102,13 +102,15 @@ decodeURI               = { emit = "host:ecma:string:decodeURI",             min
 "Math.clz32"        = { emit = "host:ecma:math:clz32",    min_args = 1, max_args = 1 }
 "Math.fround"       = { emit = "host:ecma:math:fround",   min_args = 1, max_args = 1 }
 "Math.imul"         = { emit = "host:ecma:math:imul",     min_args = 2, max_args = 2 }
+"Math.expm1"        = { emit = "host:ecma:math:expm1",    min_args = 1, max_args = 1 }
+"Math.log1p"        = { emit = "host:ecma:math:log1p",    min_args = 1, max_args = 1 }
 
 # ── Number static methods ────────────────────────────────────────────────────
 
 "Number.parseInt"   = { emit = "host:ecma:number:parseInt",       min_args = 1, max_args = 2 }
 "Number.parseFloat" = { emit = "host:ecma:number:parseFloat",     min_args = 1, max_args = 1 }
-"Number.isNaN"      = { emit = "intrinsic:number_isnan",          min_args = 1, max_args = 1 }
-"Number.isFinite"   = { emit = "intrinsic:number_isfinite",       min_args = 1, max_args = 1 }
+"Number.isNaN"      = { emit = "host:ecma:number:isNaN",          min_args = 1, max_args = 1 }
+"Number.isFinite"   = { emit = "host:ecma:number:isFinite",       min_args = 1, max_args = 1 }
 "Number.isInteger"  = { emit = "intrinsic:number_isinteger",      min_args = 1, max_args = 1 }
 
 # ── Type coercion globals: Boolean(v), Number(v), String(v) ──────────────────
@@ -116,6 +118,11 @@ decodeURI               = { emit = "host:ecma:string:decodeURI",             min
 Boolean             = { emit = "host:ecma:boolean:Boolean",       min_args = 1, max_args = 1 }
 Number              = { emit = "host:ecma:number:Number",         min_args = 1, max_args = 1 }
 String              = { emit = "host:ecma:string:String",         min_args = 1, max_args = 1 }
+BigInt              = { emit = "host:ecma:bigint:BigInt",         min_args = 1, max_args = 1 }
+
+# ── BigInt static methods ────────────────────────────────────────────────────
+"BigInt.asIntN"     = { emit = "host:ecma:bigint:asIntN",        min_args = 2, max_args = 2 }
+"BigInt.asUintN"    = { emit = "host:ecma:bigint:asUintN",       min_args = 2, max_args = 2 }
 
 # ── String static methods ────────────────────────────────────────────────────
 
@@ -127,6 +134,30 @@ String              = { emit = "host:ecma:string:String",         min_args = 1, 
 "Array.isArray"     = { emit = "opcode:ref_is_array",             min_args = 1, max_args = 1 }
 "Array.from"        = { emit = "host:ecma:array:from",            min_args = 1, max_args = 3 }
 "Array.of"          = { emit = "host:ecma:array:of",              min_args = 0, max_args = 255 }
+
+# ── TypedArray static methods ─────────────────────────────────────────────────
+"Int8Array.from"           = { emit = "host:ecma:int8array:from",     min_args = 1, max_args = 3 }
+"Int8Array.of"             = { emit = "host:ecma:int8array:of",       min_args = 0, max_args = 255 }
+"Uint8Array.from"          = { emit = "host:ecma:uint8array:from",    min_args = 1, max_args = 3 }
+"Uint8Array.of"            = { emit = "host:ecma:uint8array:of",      min_args = 0, max_args = 255 }
+"Uint8ClampedArray.from"   = { emit = "host:ecma:uint8clamped:from",  min_args = 1, max_args = 3 }
+"Uint8ClampedArray.of"     = { emit = "host:ecma:uint8clamped:of",    min_args = 0, max_args = 255 }
+"Int16Array.from"          = { emit = "host:ecma:int16array:from",    min_args = 1, max_args = 3 }
+"Int16Array.of"            = { emit = "host:ecma:int16array:of",      min_args = 0, max_args = 255 }
+"Uint16Array.from"         = { emit = "host:ecma:uint16array:from",   min_args = 1, max_args = 3 }
+"Uint16Array.of"           = { emit = "host:ecma:uint16array:of",     min_args = 0, max_args = 255 }
+"Int32Array.from"          = { emit = "host:ecma:int32array:from",    min_args = 1, max_args = 3 }
+"Int32Array.of"            = { emit = "host:ecma:int32array:of",      min_args = 0, max_args = 255 }
+"Uint32Array.from"         = { emit = "host:ecma:uint32array:from",   min_args = 1, max_args = 3 }
+"Uint32Array.of"           = { emit = "host:ecma:uint32array:of",     min_args = 0, max_args = 255 }
+"Float32Array.from"        = { emit = "host:ecma:float32array:from",  min_args = 1, max_args = 3 }
+"Float32Array.of"          = { emit = "host:ecma:float32array:of",    min_args = 0, max_args = 255 }
+"Float64Array.from"        = { emit = "host:ecma:float64array:from",  min_args = 1, max_args = 3 }
+"Float64Array.of"          = { emit = "host:ecma:float64array:of",    min_args = 0, max_args = 255 }
+"BigInt64Array.from"       = { emit = "host:ecma:bigint64array:from", min_args = 1, max_args = 3 }
+"BigInt64Array.of"         = { emit = "host:ecma:bigint64array:of",   min_args = 0, max_args = 255 }
+"BigUint64Array.from"      = { emit = "host:ecma:biguint64array:from",min_args = 1, max_args = 3 }
+"BigUint64Array.of"        = { emit = "host:ecma:biguint64array:of",  min_args = 0, max_args = 255 }
 
 # ── Object static methods ────────────────────────────────────────────────────
 #
@@ -289,8 +320,11 @@ at            = { emit = "invoke:at",            min_args = 1, max_args = 1 }
 concat        = { emit = "invoke:concat",        min_args = 1, max_args = 255 }
 match         = { emit = "host:ecma:regexp:match",     min_args = 1, max_args = 1 }
 search        = { emit = "host:ecma:regexp:search",    min_args = 1, max_args = 1 }
-toString      = { emit = "invoke:toString",      min_args = 0, max_args = 0 }
-toFixed       = { emit = "host:ecma:number:toFixed",  min_args = 0, max_args = 1 }
+toString      = { emit = "invoke:toString",      min_args = 0, max_args = 1 }
+toFixed         = { emit = "host:ecma:number:toFixed",         min_args = 0, max_args = 1 }
+toExponential   = { emit = "host:ecma:number:toExponential",   min_args = 0, max_args = 1 }
+toPrecision     = { emit = "host:ecma:number:toPrecision",     min_args = 0, max_args = 1 }
+toLocaleString  = { emit = "host:ecma:number:toLocaleString",  min_args = 0, max_args = 2 }
 
 # Array instance methods — mutators only; polymorphic methods go through
 # `invoke:*` above. These are array-only per ECMA-262 so we emit the
@@ -305,6 +339,12 @@ unshift       = { emit = "host:ecma:array:unshift", min_args = 1, max_args = 255
 splice        = { emit = "host:ecma:array:splice",  min_args = 1, max_args = 255 }
 flat          = { emit = "host:ecma:array:flat",    min_args = 0, max_args = 1 }
 entries       = { emit = "host:ecma:array:entries",   min_args = 0, max_args = 0 }
+findLast      = { emit = "host:ecma:array:findLast",      min_args = 1, max_args = 1 }
+findLastIndex = { emit = "host:ecma:array:findLastIndex", min_args = 1, max_args = 1 }
+toReversed    = { emit = "host:ecma:array:toReversed",    min_args = 0, max_args = 0 }
+toSorted      = { emit = "host:ecma:array:toSorted",      min_args = 0, max_args = 1 }
+toSpliced     = { emit = "host:ecma:array:toSpliced",     min_args = 1, max_args = 255 }
+with          = { emit = "host:ecma:array:with",          min_args = 2, max_args = 2 }
 
 # Map/Set size property
 size              = { emit = "intrinsic:map_size",       min_args = 0, max_args = 0 }
@@ -635,9 +675,17 @@ module = "ecma:promise"
 "FinalizationRegistry" = ["ecma:finalization-registry", "new"]
 "ArrayBuffer"   = ["ecma:arraybuffer", "new"]
 "SharedArrayBuffer" = ["ecma:sharedarraybuffer", "new"]
-"Int32Array"    = ["ecma:int32array", "newWithLength"]
-"Float64Array"  = ["ecma:float64array", "newWithLength"]
-"Uint8Array"    = ["ecma:uint8array", "newWithLength"]
+"Int8Array"          = ["ecma:int8array",     "new"]
+"Uint8Array"         = ["ecma:uint8array",    "new"]
+"Uint8ClampedArray"  = ["ecma:uint8clamped",  "new"]
+"Int16Array"         = ["ecma:int16array",    "new"]
+"Uint16Array"        = ["ecma:uint16array",   "new"]
+"Int32Array"         = ["ecma:int32array",    "new"]
+"Uint32Array"        = ["ecma:uint32array",   "new"]
+"Float32Array"       = ["ecma:float32array",  "new"]
+"Float64Array"       = ["ecma:float64array",  "new"]
+"BigInt64Array"      = ["ecma:bigint64array", "new"]
+"BigUint64Array"     = ["ecma:biguint64array","new"]
 
 # ECMA-402 Intl classes — `new Intl.X(...)` resolves via the `Intl`
 # namespace properties (set up by `vybe_host::namespaces::intl`), but
@@ -693,6 +741,19 @@ module = "ecma:promise"
 "Number.POSITIVE_INFINITY" = "Infinity"
 "Number.NEGATIVE_INFINITY" = "-Infinity"
 "Number.NaN"            = "NaN"
+
+# ── TypedArray static BYTES_PER_ELEMENT constants ──────────────────────────
+"Int8Array.BYTES_PER_ELEMENT"         = 1
+"Uint8Array.BYTES_PER_ELEMENT"        = 1
+"Uint8ClampedArray.BYTES_PER_ELEMENT" = 1
+"Int16Array.BYTES_PER_ELEMENT"        = 2
+"Uint16Array.BYTES_PER_ELEMENT"       = 2
+"Int32Array.BYTES_PER_ELEMENT"        = 4
+"Uint32Array.BYTES_PER_ELEMENT"       = 4
+"Float32Array.BYTES_PER_ELEMENT"      = 4
+"Float64Array.BYTES_PER_ELEMENT"      = 8
+"BigInt64Array.BYTES_PER_ELEMENT"     = 8
+"BigUint64Array.BYTES_PER_ELEMENT"    = 8
 
 # ────────────────────────────────────────────────────────────────────────────
 # JS BUILTINS LIBRARY — compiled JS injected at startup

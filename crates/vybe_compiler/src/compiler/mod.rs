@@ -4333,6 +4333,7 @@ impl Compiler {
             ExprKind::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
             ExprKind::Lit(Literal::Int(_)) => Some("int".into()),
             ExprKind::Lit(Literal::Float(_)) => Some("double".into()),
+            ExprKind::Lit(Literal::BigInt(_)) => Some("bigint".into()),
             ExprKind::Lit(Literal::Str(_)) => Some("string".into()),
             ExprKind::Lit(Literal::Bool(_)) => Some("bool".into()),
             ExprKind::Lit(Literal::Char(_)) => Some("char".into()),
@@ -8430,7 +8431,35 @@ impl Compiler {
             BindingPattern::Object(props) => {
                 let obj_slot = self.define_local("__destruct_obj");
                 self.emit_u16(Op::LOCAL_SET, obj_slot); self.emit(Op::DROP);
+                // Collect non-rest named keys for rest exclusion.
+                let named_keys: Vec<String> = props.iter()
+                    .filter(|p| !p.is_rest)
+                    .map(|p| p.key.clone())
+                    .collect();
                 for prop in props {
+                    if prop.is_rest {
+                        // Build rest = Object.assign({}, src) then delete named keys.
+                        let new_idx = self.import("ecma:object", "new");
+                        self.emit_host_call(new_idx, 0);
+                        let rest_slot = self.define_local("__rest_obj");
+                        self.emit_u16(Op::LOCAL_SET, rest_slot); self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, rest_slot);
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        let assign_idx = self.import("ecma:object", "assign");
+                        self.emit_host_call(assign_idx, 2);
+                        self.emit(Op::DROP); // drop assign's return (target already in slot)
+                        for named in &named_keys {
+                            self.emit_u16(Op::LOCAL_GET, rest_slot);
+                            self.emit_const(Value::String(Arc::from(named.as_str())));
+                            let del_idx = self.import("ecma:object", "delete");
+                            self.emit_host_call(del_idx, 2);
+                            self.emit(Op::DROP); // drop bool result
+                        }
+                        self.emit_u16(Op::LOCAL_GET, rest_slot);
+                        let rest_var_slot = self.define_local(&prop.key);
+                        self.emit_u16(Op::LOCAL_SET, rest_var_slot); self.emit(Op::DROP);
+                        continue;
+                    }
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.emit_const(Value::String(Arc::from(prop.key.as_str())));
                     { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
@@ -8786,6 +8815,14 @@ impl Compiler {
                     self.chunk().emit(3, line);
                     self.emit(Op::DROP);
                     self.restore_js_this(saved_this);
+                    // globalThis.X = val also sets X in module global scope
+                    // so bare `X` references resolve (§19.3 global object semantics).
+                    if matches!(&object.kind, ExprKind::Ident(n) if n == "globalThis") {
+                        self.emit_u16(Op::LOCAL_GET, tmp);
+                        let g_idx = self.str_const(&field_name);
+                        self.emit_u16(Op::GLOBAL_SET, g_idx);
+                        self.emit(Op::DROP);
+                    }
                 } else {
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     let idx = self.str_const(&field_name);
@@ -9331,7 +9368,32 @@ impl Compiler {
                     DestructurePattern::Object(props) => {
                         let obj_slot = self.define_local("__destruct_obj");
                         self.emit_u16(Op::LOCAL_SET, obj_slot); self.emit(Op::DROP);
+                        let named_keys: Vec<String> = props.iter()
+                            .filter(|p| !p.is_rest)
+                            .map(|p| p.key.clone())
+                            .collect();
                         for prop in props {
+                            if prop.is_rest {
+                                let new_idx = self.import("ecma:object", "new");
+                                self.emit_host_call(new_idx, 0);
+                                let rest_slot = self.define_local("__rest_obj");
+                                self.emit_u16(Op::LOCAL_SET, rest_slot); self.emit(Op::DROP);
+                                self.emit_u16(Op::LOCAL_GET, rest_slot);
+                                self.emit_u16(Op::LOCAL_GET, obj_slot);
+                                let assign_idx = self.import("ecma:object", "assign");
+                                self.emit_host_call(assign_idx, 2);
+                                self.emit(Op::DROP);
+                                for named in &named_keys {
+                                    self.emit_u16(Op::LOCAL_GET, rest_slot);
+                                    self.emit_const(Value::String(Arc::from(named.as_str())));
+                                    let del_idx = self.import("ecma:object", "delete");
+                                    self.emit_host_call(del_idx, 2);
+                                    self.emit(Op::DROP);
+                                }
+                                self.emit_u16(Op::LOCAL_GET, rest_slot);
+                                self.emit_var_set(&prop.key);
+                                continue;
+                            }
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             self.emit_const(Value::String(Arc::from(prop.key.as_str())));
                             { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
@@ -10234,6 +10296,13 @@ impl Compiler {
 
     fn try_compile_builtin(&mut self, name: &str, args: &[&Expression]) -> Result<bool, String> {
         let line = self.line;
+
+        if self.is_js_profile() && name == "Object.groupBy" && args.len() == 2 {
+            self.compile_expr(args[0])?;  // arr → bottom
+            self.compile_expr(args[1])?;  // fn  → top
+            self.emit_object_group_by(line)?;
+            return Ok(true);
+        }
 
         if self.is_python_profile() && name == "globals" && args.is_empty() {
             common::dict::emit_new(&mut self.chunks, self.current, line);

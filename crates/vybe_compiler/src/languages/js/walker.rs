@@ -42,9 +42,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
 
     // Const-folding pass for computed method/property names that
     // reference a top-level string constant: `const X = "greet"` makes
-    // `class C { [X]() {…} }` resolvable to method name "greet" at
-    // compile time. Without this fold the method ends up bound under
-    // the literal text "X" and `obj.greet()` misses.
+    // `class C { [X]() {…} }` and `{ [X]() {…} }` resolvable to method
+    // name "greet" at compile time. Without this fold the method ends
+    // up bound under the literal text "X" and `obj.greet()` misses.
     //
     // Pure walker work — no compiler state, no AST extension. The fold
     // only fires when the computed key is a single identifier whose
@@ -83,30 +83,35 @@ fn fold_const_computed_names(body: &mut [Statement]) {
     }
 }
 
+fn js_array_elision_marker() -> ArrayElement {
+    ArrayElement {
+        key: Some(Expression::int(-1)),
+        value: Expression::new(ExprKind::Lit(Literal::Undefined)),
+        spread: false,
+        by_ref: false,
+    }
+}
+
 fn rewrite_class_method_names(
     stmt: &mut Statement,
     consts: &std::collections::HashMap<String, String>,
 ) {
     match &mut stmt.kind {
+        StmtKind::Expr(expr) => rewrite_expression_keys(expr, consts),
         StmtKind::ClassDecl { members, .. } => {
-            for m in members.iter_mut() {
-                if let ClassMember::Method(box_stmt) = m {
-                    if let StmtKind::FunctionDecl { name, .. } = &mut box_stmt.kind {
-                        if let Some(resolved) = consts.get(name.as_str()) {
-                            *name = resolved.clone();
-                        }
-                    }
-                }
-                if let ClassMember::Property { name, .. } = m {
-                    if let Some(resolved) = consts.get(name.as_str()) {
-                        *name = resolved.clone();
-                    }
-                }
-            }
+            rewrite_class_members(members, consts);
         }
         StmtKind::VarDecl { declarations, .. } => {
             for d in declarations.iter_mut() {
                 rewrite_pattern_keys(&mut d.pattern, consts);
+                if let Some(init) = d.init.as_mut() {
+                    rewrite_expression_keys(init, consts);
+                }
+            }
+        }
+        StmtKind::FunctionDecl { body, .. } => {
+            for stmt in body.iter_mut() {
+                rewrite_class_method_names(stmt, consts);
             }
         }
         StmtKind::Block(stmts) => {
@@ -116,6 +121,251 @@ fn rewrite_class_method_names(
         }
         _ => {}
     }
+}
+
+fn rewrite_class_members(
+    members: &mut [ClassMember],
+    consts: &std::collections::HashMap<String, String>,
+) {
+    for member in members.iter_mut() {
+        match member {
+            ClassMember::Field { init, .. } => {
+                if let Some(init) = init.as_mut() {
+                    rewrite_expression_keys(init, consts);
+                }
+            }
+            ClassMember::Method(box_stmt) => {
+                if let StmtKind::FunctionDecl { name, .. } = &mut box_stmt.kind {
+                    if let Some(resolved) = resolve_const_key(name, consts) {
+                        *name = resolved;
+                    }
+                }
+                rewrite_class_method_names(box_stmt, consts);
+            }
+            ClassMember::Constructor { body, base_args, .. } => {
+                if let Some(args) = base_args.as_mut() {
+                    for arg in args.iter_mut() {
+                        rewrite_expression_keys(arg, consts);
+                    }
+                }
+                for stmt in body.iter_mut() {
+                    rewrite_class_method_names(stmt, consts);
+                }
+            }
+            ClassMember::Property { name, getter, setter, .. } => {
+                if let Some(resolved) = resolve_const_key(name, consts) {
+                    *name = resolved;
+                }
+                if let Some(getter) = getter.as_mut() {
+                    for stmt in getter.iter_mut() {
+                        rewrite_class_method_names(stmt, consts);
+                    }
+                }
+                if let Some(setter) = setter.as_mut() {
+                    for stmt in setter.body.iter_mut() {
+                        rewrite_class_method_names(stmt, consts);
+                    }
+                }
+            }
+            ClassMember::Const { value, .. } => rewrite_expression_keys(value, consts),
+            ClassMember::NestedType(stmt) => rewrite_class_method_names(stmt, consts),
+            ClassMember::Event { .. } => {}
+        }
+    }
+}
+
+fn rewrite_expression_keys(
+    expr: &mut Expression,
+    consts: &std::collections::HashMap<String, String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::NullCoalesce { left, right }
+        | ExprKind::Assign { target: left, value: right }
+        | ExprKind::Walrus { target: left, value: right }
+        | ExprKind::Range { start: left, end: right, .. } => {
+            rewrite_expression_keys(left, consts);
+            rewrite_expression_keys(right, consts);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::RefLoad(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Spread(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr) => rewrite_expression_keys(expr, consts),
+        ExprKind::RefOf(place) => rewrite_place_expression(place, consts),
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_expression_keys(cond, consts);
+            rewrite_expression_keys(then, consts);
+            rewrite_expression_keys(else_, consts);
+        }
+        ExprKind::Member { object, .. } => rewrite_expression_keys(object, consts),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_expression_keys(object, consts);
+            rewrite_expression_keys(index, consts);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_expression_keys(callee, consts);
+            for arg in args.iter_mut() {
+                rewrite_expression_keys(&mut arg.value, consts);
+            }
+        }
+        ExprKind::New { class, args } => {
+            rewrite_expression_keys(class, consts);
+            for arg in args.iter_mut() {
+                rewrite_expression_keys(&mut arg.value, consts);
+            }
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(expr) => rewrite_expression_keys(expr, consts),
+            LambdaBody::Block(stmts) => {
+                for stmt in stmts.iter_mut() {
+                    rewrite_class_method_names(stmt, consts);
+                }
+            }
+        },
+        ExprKind::Array(elements) => {
+            for element in elements.iter_mut() {
+                if let Some(key) = element.key.as_mut() {
+                    rewrite_expression_keys(key, consts);
+                }
+                rewrite_expression_keys(&mut element.value, consts);
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items.iter_mut() {
+                rewrite_expression_keys(item, consts);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props.iter_mut() {
+                match prop {
+                    ObjectProperty::KeyValue { key, value } => {
+                        rewrite_expression_keys(key, consts);
+                        rewrite_expression_keys(value, consts);
+                    }
+                    ObjectProperty::Spread(expr) => rewrite_expression_keys(expr, consts),
+                    ObjectProperty::Method { key, value }
+                    | ObjectProperty::Accessor { key, value, .. } => {
+                        if let Some(resolved) = resolve_const_key(key, consts) {
+                            *key = resolved;
+                        }
+                        rewrite_class_method_names(value, consts);
+                    }
+                    ObjectProperty::Computed { key, value } => {
+                        rewrite_expression_keys(key, consts);
+                        rewrite_expression_keys(value, consts);
+                        if let ExprKind::Ident(name) = &key.kind {
+                            if let Some(resolved) = consts.get(name.as_str()) {
+                                *prop = ObjectProperty::KeyValue {
+                                    key: Expression::string(resolved),
+                                    value: value.clone(),
+                                };
+                            }
+                        }
+                    }
+                    ObjectProperty::Shorthand(_) => {}
+                }
+            }
+        }
+        ExprKind::Interpolation(parts) => {
+            for part in parts.iter_mut() {
+                match part {
+                    InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
+                        rewrite_expression_keys(expr, consts);
+                    }
+                    InterpolPart::Text(_) => {}
+                }
+            }
+        }
+        ExprKind::Yield(Some(expr)) => rewrite_expression_keys(expr, consts),
+        ExprKind::SuperCall { args, .. } => {
+            for arg in args.iter_mut() {
+                rewrite_expression_keys(&mut arg.value, consts);
+            }
+        }
+        ExprKind::ClassExpr { parent, members, .. } => {
+            if let Some(parent) = parent.as_mut() {
+                rewrite_expression_keys(parent, consts);
+            }
+            rewrite_class_members(members, consts);
+        }
+        ExprKind::FunctionExpr(stmt) => rewrite_class_method_names(stmt, consts),
+        ExprKind::StaticAccess { class, member } => {
+            rewrite_expression_keys(class, consts);
+            rewrite_expression_keys(member, consts);
+        }
+        ExprKind::Match { subject, arms } => {
+            rewrite_expression_keys(subject, consts);
+            for arm in arms.iter_mut() {
+                if let Some(conditions) = arm.conditions.as_mut() {
+                    for condition in conditions.iter_mut() {
+                        rewrite_expression_keys(condition, consts);
+                    }
+                }
+                rewrite_expression_keys(&mut arm.body, consts);
+            }
+        }
+        ExprKind::Slice { lower, upper, step } => {
+            if let Some(lower) = lower.as_mut() {
+                rewrite_expression_keys(lower, consts);
+            }
+            if let Some(upper) = upper.as_mut() {
+                rewrite_expression_keys(upper, consts);
+            }
+            if let Some(step) = step.as_mut() {
+                rewrite_expression_keys(step, consts);
+            }
+        }
+        ExprKind::Comprehension { element, generators, .. } => {
+            rewrite_expression_keys(element, consts);
+            for generator in generators.iter_mut() {
+                rewrite_expression_keys(&mut generator.iter, consts);
+                for cond in generator.conditions.iter_mut() {
+                    rewrite_expression_keys(cond, consts);
+                }
+            }
+        }
+        ExprKind::IsType { expr, .. } | ExprKind::Cast { expr, .. } => {
+            rewrite_expression_keys(expr, consts);
+        }
+        ExprKind::Yield(None)
+        | ExprKind::Lit(_)
+        | ExprKind::Ident(_)
+        | ExprKind::This
+        | ExprKind::Super
+        | ExprKind::DefaultOf(_)
+        | ExprKind::AddressOf(_)
+        | ExprKind::Destructure(_) => {}
+    }
+}
+
+fn rewrite_place_expression(
+    place: &mut PlaceExpr,
+    consts: &std::collections::HashMap<String, String>,
+) {
+    match place {
+        PlaceExpr::Member { object, .. } => rewrite_expression_keys(object, consts),
+        PlaceExpr::Index { object, index, .. } => {
+            rewrite_expression_keys(object, consts);
+            rewrite_expression_keys(index, consts);
+        }
+        PlaceExpr::Deref(expr) => rewrite_expression_keys(expr, consts),
+        PlaceExpr::Ident(_) => {}
+    }
+}
+
+fn resolve_const_key(
+    key: &str,
+    consts: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let trimmed = key
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim();
+    consts.get(trimmed).cloned()
 }
 
 fn rewrite_pattern_keys(
@@ -236,9 +486,13 @@ fn walk_binding_pattern(pair: Pair<Rule>) -> Result<BindingPattern, String> {
 }
 
 fn walk_object_pattern_prop(pair: Pair<Rule>) -> Result<ObjectPatternProp, String> {
+    let is_rest = pair.as_str().starts_with("...");
     let mut inner = pair.into_inner();
     let first = inner.next().ok_or("Empty object pattern prop")?;
     let key = first.as_str().to_string();
+    if is_rest {
+        return Ok(ObjectPatternProp { key, value: None, default: None, is_rest: true });
+    }
     let mut value = None;
     let mut default = None;
     for p in inner {
@@ -247,7 +501,7 @@ fn walk_object_pattern_prop(pair: Pair<Rule>) -> Result<ObjectPatternProp, Strin
             _ => default = Some(walk_expression(p)?),
         }
     }
-    Ok(ObjectPatternProp { key, value, default })
+    Ok(ObjectPatternProp { key, value, default, is_rest: false })
 }
 
 fn walk_array_pattern_elem(pair: Pair<Rule>) -> Result<ArrayPatternElem, String> {
@@ -408,10 +662,12 @@ fn walk_func_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut params = Vec::new();
     let mut body = Vec::new();
     let mut param_prologue = Vec::new();
+    let mut has_generator_marker = false;
 
     for p in inner {
         match p.as_rule() {
             Rule::ident_name => name = p.as_str().to_string(),
+            Rule::generator_marker => has_generator_marker = true,
             Rule::param_list => {
                 let (parsed_params, prologue) = walk_params_with_prologue(p)?;
                 params = parsed_params;
@@ -429,7 +685,7 @@ fn walk_func_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         body = full_body;
     }
 
-    let is_generator = body_contains_yield(&body);
+    let is_generator = has_generator_marker || body_contains_yield(&body);
     Ok(StmtKind::FunctionDecl {
         name,
         params,
@@ -1196,13 +1452,99 @@ fn walk_export(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
     let span = to_span(&pair);
-    let kind = walk_expr_kind(pair)?;
+    let kind = walk_expr_kind(collapse_passthrough_expression(pair)?)?;
     Ok(Expression::with_span(kind, span))
+}
+
+fn collapse_passthrough_expression(mut pair: Pair<Rule>) -> Result<Pair<Rule>, String> {
+    loop {
+        let next = match pair.as_rule() {
+            Rule::expression => {
+                let mut inner = pair.clone().into_inner().filter(|p| p.as_rule() != Rule::NEWLINE);
+                match (inner.next(), inner.next()) {
+                    (Some(first), None) => Some(first),
+                    _ => None,
+                }
+            }
+            Rule::assignment_expression
+            | Rule::conditional_expression
+            | Rule::logical_expr
+            | Rule::comparison
+            | Rule::additive
+            | Rule::multiplicative
+            | Rule::call_chain
+            | Rule::property_name
+            | Rule::computed_property_name => {
+                let mut inner = pair.clone().into_inner().filter(|p| p.as_rule() != Rule::NEWLINE);
+                match (inner.next(), inner.next()) {
+                    (Some(first), None) => Some(first),
+                    _ => None,
+                }
+            }
+            Rule::primary => match pair.as_str().trim() {
+                "true" | "false" | "null" | "undefined" | "this" | "super" => None,
+                _ => {
+                    let mut inner = pair.clone().into_inner();
+                    match (inner.next(), inner.next()) {
+                        (Some(first), None) => Some(first),
+                        _ => None,
+                    }
+                }
+            },
+            Rule::unary => {
+                let mut inner = pair.clone().into_inner();
+                match (inner.next(), inner.next()) {
+                    (Some(first), None) if first.as_rule() == Rule::postfix => Some(first),
+                    _ => None,
+                }
+            }
+            Rule::postfix => {
+                let mut inner = pair.clone().into_inner();
+                let first = inner.next();
+                let has_postfix = inner.any(|p| p.as_rule() == Rule::postfix_op);
+                match (first, has_postfix) {
+                    (Some(first), false) => Some(first),
+                    _ => None,
+                }
+            }
+            Rule::call_expression => {
+                let mut inner = pair.clone().into_inner();
+                let first = inner.next();
+                let has_chain = inner.any(|p| p.as_rule() == Rule::call_chain);
+                match (first, has_chain) {
+                    (Some(first), false) => Some(first),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+
+        match next {
+            Some(next_pair) => pair = next_pair,
+            None => return Ok(pair),
+        }
+    }
 }
 
 fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
     match pair.as_rule() {
         // Literals
+        Rule::bigint_literal => {
+            let raw = pair.as_str();
+            // strip `_` separators and trailing `n`
+            let s_owned: String = raw.chars().filter(|c| *c != '_').collect();
+            let s = s_owned.trim_end_matches('n');
+            let n = if s.starts_with("0x") || s.starts_with("0X") {
+                i64::from_str_radix(&s[2..], 16).map_err(|e| format!("{}", e))?
+            } else if s.starts_with("0o") || s.starts_with("0O") {
+                i64::from_str_radix(&s[2..], 8).map_err(|e| format!("{}", e))?
+            } else if s.starts_with("0b") || s.starts_with("0B") {
+                i64::from_str_radix(&s[2..], 2).map_err(|e| format!("{}", e))?
+            } else {
+                s.parse().unwrap_or(0)
+            };
+            Ok(ExprKind::Lit(Literal::BigInt(n)))
+        }
         Rule::numeric_literal => {
             // ES2021 numeric separator: strip `_` from digits before parsing
             let raw = pair.as_str();
@@ -1569,12 +1911,19 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         // Array literal
         Rule::array_literal => {
             let elements = pair.into_inner()
-                .filter(|p| p.as_rule() == Rule::array_element)
+                .filter(|p| p.as_rule() == Rule::array_slot)
                 .map(|p| {
-                    let src = p.as_str();
+                    let mut inner = p.into_inner();
+                    let Some(inner) = inner.next() else {
+                        return Ok(js_array_elision_marker());
+                    };
+                    if inner.as_rule() == Rule::array_elision {
+                        return Ok(js_array_elision_marker());
+                    }
+                    let src = inner.as_str();
                     let spread = src.trim_start().starts_with("...");
-                    let inner = p.into_inner().next().ok_or("Empty array element".to_string())?;
-                    let value = walk_expression(inner)?;
+                    let value_pair = inner.into_inner().next().ok_or("Empty array element".to_string())?;
+                    let value = walk_expression(value_pair)?;
                     Ok(ArrayElement { key: None, value, spread, by_ref: false })
                 })
                 .collect::<Result<Vec<_>, String>>()?;
@@ -1760,28 +2109,55 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 .map(walk_expression)
                 .transpose()?
                 .unwrap_or(Expression::new(ExprKind::Lit(Literal::Int(0))));
-            expr = Expression::new(ExprKind::Index {
-                object: Box::new(expr), index: Box::new(index_expr), null_safe: false,
-            });
+            // If the index is a well-known Symbol, lower to a Member access so
+            // obj[Symbol.iterator]() compiles as a normal method call.
+            if let Some(alias) = js_well_known_symbol_alias(&index_expr) {
+                expr = Expression::new(ExprKind::Member {
+                    object: Box::new(expr),
+                    field: alias.to_string(),
+                    null_safe: false,
+                });
+            } else {
+                expr = Expression::new(ExprKind::Index {
+                    object: Box::new(expr), index: Box::new(index_expr), null_safe: false,
+                });
+            }
         } else if chain_src.starts_with("`") {
             // Tagged template: tag`parts...${expr}...`
-            // Desugar to: tag(["part0", "part1", ...], expr0, expr1, ...)
+            // Desugar to: tag(Object.assign(cooked, {raw: [raw...]}), expr0, expr1, ...)
             if let Some(tmpl) = chain_inner.into_iter().find(|p| p.as_rule() == Rule::template_literal) {
-                let (parts, exprs) = walk_template_parts(tmpl)?;
+                let (parts, raw_parts, exprs) = walk_template_parts(tmpl)?;
                 let mut args: Vec<Argument> = Vec::new();
-                // First arg: array of string parts
-                let strings_array = Expression::new(ExprKind::Array(
-                    parts.into_iter().map(|s| {
-                        ArrayElement {
-                            key: None,
-                            value: Expression::new(ExprKind::Lit(Literal::Str(s))),
-                            spread: false,
-                            by_ref: false,
-                        }
-                    }).collect()
-                ));
-                args.push(Argument::positional(strings_array));
-                // Rest: expression values
+                let make_str_array = |ss: Vec<String>| {
+                    Expression::new(ExprKind::Array(ss.into_iter().map(|s| ArrayElement {
+                        key: None,
+                        value: Expression::new(ExprKind::Lit(Literal::Str(s))),
+                        spread: false,
+                        by_ref: false,
+                    }).collect()))
+                };
+                let cooked_array = make_str_array(parts);
+                let raw_array    = make_str_array(raw_parts);
+                // Object.assign(cooked, { raw: raw }) — sets .raw and returns the array
+                let raw_obj = Expression::new(ExprKind::Object(vec![
+                    ObjectProperty::KeyValue {
+                        key: Expression::string("raw"),
+                        value: raw_array,
+                    }
+                ]));
+                let strings_with_raw = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::ident("Object")),
+                        field: "assign".into(),
+                        null_safe: false,
+                    })),
+                    args: vec![
+                        Argument::positional(cooked_array),
+                        Argument::positional(raw_obj),
+                    ],
+                    optional: false,
+                });
+                args.push(Argument::positional(strings_with_raw));
                 for e in exprs {
                     args.push(Argument::positional(e));
                 }
@@ -1880,44 +2256,44 @@ fn desugar_variadic_concat(expr: Expression) -> Expression {
     expr
 }
 
-/// Walk a template_literal into (string_parts, expressions).
-/// `hello ${name}!` → (["hello ", "!"], [name])
-fn walk_template_parts(pair: Pair<Rule>) -> Result<(Vec<String>, Vec<Expression>), String> {
-    let mut parts: Vec<String> = Vec::new();
+/// Walk a template_literal into (cooked_parts, raw_parts, expressions).
+/// cooked has escape sequences processed; raw is the literal source text.
+fn walk_template_parts(pair: Pair<Rule>) -> Result<(Vec<String>, Vec<String>, Vec<Expression>), String> {
+    let mut cooked: Vec<String> = Vec::new();
+    let mut raw: Vec<String> = Vec::new();
     let mut exprs: Vec<Expression> = Vec::new();
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::template_full => {
                 let s = p.as_str();
-                // Strip leading ` and trailing `
                 let inner = &s[1..s.len()-1];
-                parts.push(unescape_template(inner));
+                raw.push(inner.to_string());
+                cooked.push(unescape_template(inner));
             }
             Rule::template_head => {
                 let s = p.as_str();
-                // Strip leading ` and trailing ${
                 let inner = &s[1..s.len()-2];
-                parts.push(unescape_template(inner));
+                raw.push(inner.to_string());
+                cooked.push(unescape_template(inner));
             }
             Rule::template_middle => {
                 let s = p.as_str();
-                // Strip leading } and trailing ${
                 let inner = &s[1..s.len()-2];
-                parts.push(unescape_template(inner));
+                raw.push(inner.to_string());
+                cooked.push(unescape_template(inner));
             }
             Rule::template_tail => {
                 let s = p.as_str();
-                // Strip leading } and trailing `
                 let inner = &s[1..s.len()-1];
-                parts.push(unescape_template(inner));
+                raw.push(inner.to_string());
+                cooked.push(unescape_template(inner));
             }
             _ => {
-                // Expression inside ${...}
                 exprs.push(walk_expression(p)?);
             }
         }
     }
-    Ok((parts, exprs))
+    Ok((cooked, raw, exprs))
 }
 
 fn unescape_template(s: &str) -> String {
@@ -1946,6 +2322,42 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
             null_safe: false,
         })
     }
+}
+
+fn js_well_known_symbol_alias_from_raw(name: &str) -> Option<&'static str> {
+    match name {
+        "Symbol.iterator"           => Some("iterator"),
+        "Symbol.asyncIterator"      => Some("asyncIterator"),
+        "Symbol.toPrimitive"        => Some("toprimitive"),
+        "Symbol.hasInstance"        => Some("hasinstance"),
+        "Symbol.toStringTag"        => Some("tostringtag"),
+        "Symbol.isConcatSpreadable" => Some("isconcatspreadable"),
+        "Symbol.species"            => Some("species"),
+        "Symbol.match"              => Some("symbolmatch"),
+        "Symbol.matchAll"           => Some("symbolmatchall"),
+        "Symbol.replace"            => Some("symbolreplace"),
+        "Symbol.search"             => Some("symbolsearch"),
+        "Symbol.split"              => Some("symbolsplit"),
+        "Symbol.unscopables"        => Some("unscopables"),
+        _ => None,
+    }
+}
+
+fn js_well_known_symbol_alias(expr: &Expression) -> Option<&'static str> {
+    let ExprKind::Member { object, field, null_safe } = &expr.kind else {
+        return None;
+    };
+    if *null_safe {
+        return None;
+    }
+    let ExprKind::Ident(name) = &object.kind else {
+        return None;
+    };
+    if name != "Symbol" {
+        return None;
+    }
+    let raw = format!("Symbol.{}", field);
+    js_well_known_symbol_alias_from_raw(&raw)
 }
 
 // JS method call canonicalization is intentionally minimal:
@@ -1983,6 +2395,12 @@ fn walk_object_property(pair: Pair<Rule>) -> Result<ObjectProperty, String> {
         let key_pair = inner.remove(0);
         let key = walk_expression(key_pair.into_inner().next().ok_or("Empty computed key")?)?;
         let value = walk_expression(inner.remove(0))?;
+        if let Some(alias) = js_well_known_symbol_alias(&key) {
+            return Ok(ObjectProperty::KeyValue {
+                key: Expression::string(alias),
+                value,
+            });
+        }
         return Ok(ObjectProperty::Computed { key, value });
     }
 
@@ -2091,10 +2509,7 @@ fn extract_property_name(pair: &Pair<Rule>) -> String {
                     .trim_end_matches(']')
                     .trim();
                 if let Some(rest) = inner_text.strip_prefix("Symbol.") {
-                    let name = rest.trim();
-                    if matches!(name, "iterator" | "asyncIterator" | "toPrimitive" | "hasInstance") {
-                        return format!("Symbol.{}", name);
-                    }
+                    return format!("Symbol.{}", rest.trim());
                 }
                 return inner_text.to_string();
             }
@@ -2205,13 +2620,9 @@ fn walk_object_method(mut inner: Vec<Pair<Rule>>) -> Result<ObjectProperty, Stri
     } else {
         key_pair.as_str().to_string()
     };
-    let key = match raw_key.as_str() {
-        "Symbol.iterator"      => "iterator".to_string(),
-        "Symbol.asyncIterator" => "asyncIterator".to_string(),
-        "Symbol.toPrimitive"   => "toprimitive".to_string(),
-        "Symbol.hasInstance"   => "hasinstance".to_string(),
-        _                      => raw_key,
-    };
+    let key = js_well_known_symbol_alias_from_raw(&raw_key)
+        .map(str::to_string)
+        .unwrap_or(raw_key);
     let mut params = Vec::new();
     let mut body = Vec::new();
     for p in inner {
