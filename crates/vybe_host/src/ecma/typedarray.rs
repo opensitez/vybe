@@ -61,7 +61,7 @@ const VARIANTS: &[(TypedElemKind, &str)] = &[
     (TypedElemKind::BigU64,    "ecma:biguint64array"),
 ];
 
-fn zero_value(elem: TypedElemKind) -> Value {
+pub(crate) fn zero_value(elem: TypedElemKind) -> Value {
     match elem {
         TypedElemKind::F32 | TypedElemKind::F64 => Value::F64(0.0),
         TypedElemKind::BigI64 | TypedElemKind::BigU64 => Value::I64(0),
@@ -87,7 +87,7 @@ fn is_typed_of(args: &[Value], idx: usize, want: TypedElemKind) -> Option<Arc<Mu
 /// below this view's extent — per ECMA-262 §23.2.3, length then
 /// reports the tracked view length, or 0 if the buffer has shrunk
 /// past this view's offset).
-fn ta_live_length(ta: &TypedArrayState) -> usize {
+pub(crate) fn ta_live_length(ta: &TypedArrayState) -> usize {
     let buf = ta.buffer.lock().unwrap();
     let bpe = ta.elem.bytes_per_element();
     if ta.byte_offset >= buf.len() { return 0; }
@@ -98,7 +98,7 @@ fn ta_live_length(ta: &TypedArrayState) -> usize {
 
 // ── Byte-level element access ─────────────────────────────────────────
 
-fn read_element(ta: &TypedArrayState, i: usize) -> Value {
+pub(crate) fn read_element(ta: &TypedArrayState, i: usize) -> Value {
     let bpe = ta.elem.bytes_per_element();
     let buf = ta.buffer.lock().unwrap();
     let abs = ta.byte_offset + i * bpe;
@@ -156,7 +156,7 @@ fn read_element(ta: &TypedArrayState, i: usize) -> Value {
 /// Coerce a caller-supplied value to the variant's element type per
 /// ECMA-262 §23.2.3 and write it at index `i`. Out-of-bounds writes
 /// are no-ops per spec (silent, not a trap).
-fn write_element(ta: &TypedArrayState, i: usize, v: &Value) {
+pub(crate) fn write_element(ta: &TypedArrayState, i: usize, v: &Value) {
     let bpe = ta.elem.bytes_per_element();
     let mut buf = ta.buffer.lock().unwrap();
     let abs = ta.byte_offset + i * bpe;
@@ -230,7 +230,7 @@ fn write_element(ta: &TypedArrayState, i: usize, v: &Value) {
 
 /// Allocate a fresh `length`-element typed array over a brand-new
 /// ArrayBuffer. The ArrayBuffer is hidden inside the view.
-fn new_typed_array(elem: TypedElemKind, length: usize) -> Value {
+pub(crate) fn new_typed_array(elem: TypedElemKind, length: usize) -> Value {
     let bpe = elem.bytes_per_element();
     let byte_length = length.saturating_mul(bpe);
     let bytes = Arc::new(Mutex::new(vec![0u8; byte_length]));
@@ -267,7 +267,7 @@ fn new_typed_array(elem: TypedElemKind, length: usize) -> Value {
 }
 
 /// Construct a view over an existing `ArrayBuffer`.
-fn new_view_over_buffer(
+pub(crate) fn new_view_over_buffer(
     elem: TypedElemKind,
     buffer_obj: Arc<Mutex<Object>>,
     byte_offset: usize,
@@ -308,6 +308,88 @@ pub fn register(vm: &mut VM) {
 
 fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
     // ── Construction ────────────────────────────────────────────────
+
+    // Unified constructor — dispatches on first-argument type, matching
+    // ECMA-262 §23.2.4 TypedArray(argument) overload resolution:
+    //   no arg / number  → new buffer of that length
+    //   ArrayBuffer      → view over it (byteOffset, length optional)
+    //   TypedArray       → copy-convert elements
+    //   Array / iterable → fill from elements
+    vm.register_host_fn(module, "new",
+        Box::new(move |_ctx, args| {
+            match args.first() {
+                None => new_typed_array(elem, 0),
+                Some(Value::I32(n)) => new_typed_array(elem, (*n).max(0) as usize),
+                Some(Value::F64(n)) => new_typed_array(elem, (*n as i64).max(0) as usize),
+                Some(Value::I64(n)) => new_typed_array(elem, (*n).max(0) as usize),
+                Some(Value::Object(src)) => {
+                    let kind_tag = {
+                        let o = src.lock().unwrap();
+                        match &o.kind {
+                            ObjectKind::ArrayBuffer(_) => 1,
+                            ObjectKind::TypedArray(_)  => 2,
+                            ObjectKind::Array(_)       => 3,
+                            _ => 0,
+                        }
+                    };
+                    match kind_tag {
+                        1 => {
+                            // ArrayBuffer view
+                            let buf_len = {
+                                let o = src.lock().unwrap();
+                                if let ObjectKind::ArrayBuffer(ref s) = o.kind {
+                                    s.bytes.lock().unwrap().len()
+                                } else { 0 }
+                            };
+                            let byte_offset = args.get(1).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
+                            let requested_len = args.get(2).map(|v| v.as_i32()).unwrap_or(-1);
+                            let bpe = elem.bytes_per_element();
+                            let default_len = if byte_offset < buf_len {
+                                (buf_len - byte_offset) / bpe
+                            } else { 0 };
+                            let length = if requested_len < 0 { default_len }
+                                         else { (requested_len as usize).min(default_len) };
+                            new_view_over_buffer(elem, src.clone(), byte_offset, length)
+                        }
+                        2 => {
+                            // Copy from another TypedArray
+                            let values: Vec<Value> = {
+                                let o = src.lock().unwrap();
+                                if let ObjectKind::TypedArray(ref ta) = o.kind {
+                                    let live = ta_live_length(ta);
+                                    (0..live).map(|i| read_element(ta, i)).collect()
+                                } else { Vec::new() }
+                            };
+                            let out = new_typed_array(elem, values.len());
+                            if let Value::Object(ref o) = out {
+                                let ol = o.lock().unwrap();
+                                if let ObjectKind::TypedArray(ref t) = ol.kind {
+                                    for (i, v) in values.iter().enumerate() { write_element(t, i, v); }
+                                }
+                            }
+                            out
+                        }
+                        3 => {
+                            // Fill from plain Array
+                            let values: Vec<Value> = {
+                                let o = src.lock().unwrap();
+                                if let ObjectKind::Array(ref elems) = o.kind { elems.clone() } else { Vec::new() }
+                            };
+                            let out = new_typed_array(elem, values.len());
+                            if let Value::Object(ref o) = out {
+                                let ol = o.lock().unwrap();
+                                if let ObjectKind::TypedArray(ref t) = ol.kind {
+                                    for (i, v) in values.iter().enumerate() { write_element(t, i, v); }
+                                }
+                            }
+                            out
+                        }
+                        _ => new_typed_array(elem, 0),
+                    }
+                }
+                _ => new_typed_array(elem, 0),
+            }
+        }));
 
     vm.register_host_fn(module, "newWithLength",
         Box::new(move |_ctx, args| {

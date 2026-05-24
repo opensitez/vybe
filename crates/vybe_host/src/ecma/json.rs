@@ -226,6 +226,9 @@ fn stringify_ordinary(o: &Object, visited: &mut HashSet<usize>) -> String {
     for (k, v) in &o.properties {
         // Skip internal __vybe_* bookkeeping properties.
         if k.starts_with("__") { continue; }
+        // ECMA-262 §25.5.2.5: Symbol-keyed properties are not serialized.
+        // Our VM stores them as "Symbol(<desc>)" string keys.
+        if k.starts_with("Symbol(") && k.ends_with(')') { continue; }
         // Skip undefined / function values per spec (omitted, not
         // serialized as "null").
         match v {

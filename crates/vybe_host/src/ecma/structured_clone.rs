@@ -109,7 +109,10 @@ fn clone_ordinary(src: &Arc<Mutex<Object>>, id: usize, seen: &mut HashMap<usize,
     let entries: Vec<(String, Value)> = {
         let s = src.lock().unwrap();
         s.properties.iter()
-            .filter(|(k, _)| !k.starts_with("__"))
+            .filter(|(k, _)| {
+                // Skip only __proto__ (prototype chain); keep __type, __time, etc.
+                k.as_str() != "__proto__"
+            })
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
     };
@@ -150,6 +153,7 @@ fn clone_map(src: &Arc<Mutex<Object>>, id: usize, seen: &mut HashMap<usize, Valu
     let mut target_obj = Object::new();
     target_obj.kind = ObjectKind::Map(indexmap::IndexMap::new());
     target_obj.properties.insert("size".into(), Value::I32(0));
+    target_obj.properties.insert("__type".into(), Value::String(Arc::from("Map")));
     let target_arc = Arc::new(Mutex::new(target_obj));
     let target_val = Value::Object(target_arc.clone());
     seen.insert(id, target_val.clone());
@@ -184,6 +188,7 @@ fn clone_set(src: &Arc<Mutex<Object>>, id: usize, seen: &mut HashMap<usize, Valu
     let mut target_obj = Object::new();
     target_obj.kind = ObjectKind::Set(indexmap::IndexSet::new());
     target_obj.properties.insert("size".into(), Value::I32(0));
+    target_obj.properties.insert("__type".into(), Value::String(Arc::from("Set")));
     let target_arc = Arc::new(Mutex::new(target_obj));
     let target_val = Value::Object(target_arc.clone());
     seen.insert(id, target_val.clone());

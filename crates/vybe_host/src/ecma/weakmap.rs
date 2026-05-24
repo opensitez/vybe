@@ -24,9 +24,9 @@ use std::sync::{Arc, Mutex};
 use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::VM;
 
-const WEAKMAP_TAG: &str = "__vybe_js_weakmap";
-const WEAKSET_TAG: &str = "__vybe_js_weakset";
-const WM_KEYS_PROP: &str = "__vybe_wm_keys";
+pub const WEAKMAP_TAG: &str = "__vybe_js_weakmap";
+pub const WEAKSET_TAG: &str = "__vybe_js_weakset";
+pub const WM_KEYS_PROP: &str = "__vybe_wm_keys";
 // Values live in the backing Array (ObjectKind::Array); keys live in a
 // parallel Array in the properties bag.
 
@@ -70,7 +70,7 @@ fn is_weakset(args: &[Value], idx: usize) -> Option<Arc<Mutex<Object>>> {
 
 /// WeakMap/WeakSet keys must be objects (spec trap on primitive keys).
 /// We match keys by Arc pointer identity, not value equality.
-fn key_ptr_find(keys: &[Value], key: &Value) -> Option<usize> {
+pub fn key_ptr_find(keys: &[Value], key: &Value) -> Option<usize> {
     if let Value::Object(key_arc) = key {
         for (i, k) in keys.iter().enumerate() {
             if let Value::Object(existing) = k {
@@ -92,7 +92,27 @@ pub fn register(vm: &mut VM) {
 
 fn register_weakmap(vm: &mut VM) {
     vm.register_host_fn("ecma:weakmap", "new",
-        Box::new(|_ctx, _args| new_weakmap()));
+        Box::new(|_ctx, args| {
+            let m = new_weakmap();
+            if let (Value::Object(mapobj), Some(Value::Object(src))) = (&m, args.first()) {
+                let s = src.lock().unwrap();
+                if let ObjectKind::Array(ref pairs) = s.kind {
+                    let pairs = pairs.clone();
+                    drop(s);
+                    for pair in pairs {
+                        if let Value::Object(p) = pair {
+                            let pl = p.lock().unwrap();
+                            if let ObjectKind::Array(ref kv) = pl.kind {
+                                if kv.len() >= 2 {
+                                    weakmap_set(mapobj, kv[0].clone(), kv[1].clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            m
+        }));
 
     vm.register_host_fn("ecma:weakmap", "fromIterable",
         Box::new(|_ctx, args| {
@@ -239,7 +259,27 @@ fn weakmap_set(mapobj: &Arc<Mutex<Object>>, key: Value, val: Value) {
 
 fn register_weakset(vm: &mut VM) {
     vm.register_host_fn("ecma:weakset", "new",
-        Box::new(|_ctx, _args| new_weakset()));
+        Box::new(|_ctx, args| {
+            let s = new_weakset();
+            if let (Value::Object(setobj), Some(Value::Object(src))) = (&s, args.first()) {
+                let srclock = src.lock().unwrap();
+                if let ObjectKind::Array(ref items) = srclock.kind {
+                    let items = items.clone();
+                    drop(srclock);
+                    let mut so = setobj.lock().unwrap();
+                    for item in items {
+                        if !matches!(item, Value::Object(_)) { continue; }
+                        if let ObjectKind::Array(ref vs) = so.kind {
+                            if key_ptr_find(vs, &item).is_some() { continue; }
+                        }
+                        if let ObjectKind::Array(ref mut vs) = so.kind {
+                            vs.push(item);
+                        }
+                    }
+                }
+            }
+            s
+        }));
 
     vm.register_host_fn("ecma:weakset", "fromIterable",
         Box::new(|_ctx, args| {

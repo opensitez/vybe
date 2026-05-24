@@ -80,6 +80,41 @@ pub fn register(vm: &mut VM) {
     set_prop(&math, "maxOf",       host_fn_ref(vm, "ecma:math", "maxOf"));
     set_prop(&math, "sumPrecise",  host_fn_ref(vm, "ecma:math", "sumPrecise"));
 
+    // ── TypedArrays — callable constructors + static properties ──────────
+    // Each variant is a callable host function (for `new Int8Array(...)`)
+    // AND carries static properties (`from`, `of`, `BYTES_PER_ELEMENT`).
+    const TYPED_ARRAY_GLOBALS: &[(&str, &str, i32)] = &[
+        ("Int8Array",         "ecma:int8array",     1),
+        ("Uint8Array",        "ecma:uint8array",    1),
+        ("Uint8ClampedArray", "ecma:uint8clamped",  1),
+        ("Int16Array",        "ecma:int16array",    2),
+        ("Uint16Array",       "ecma:uint16array",   2),
+        ("Int32Array",        "ecma:int32array",    4),
+        ("Uint32Array",       "ecma:uint32array",   4),
+        ("Float32Array",      "ecma:float32array",  4),
+        ("Float64Array",      "ecma:float64array",  8),
+        ("BigInt64Array",     "ecma:bigint64array", 8),
+        ("BigUint64Array",    "ecma:biguint64array",8),
+    ];
+    for (global_name, module, bpe) in TYPED_ARRAY_GLOBALS {
+        let ctor = host_fn_ref(vm, module, "new");
+        if !matches!(ctor, Value::Null) {
+            set_prop(&ctor, "from",              host_fn_ref(vm, module, "from"));
+            set_prop(&ctor, "of",                host_fn_ref(vm, module, "of"));
+            set_prop(&ctor, "BYTES_PER_ELEMENT", Value::I32(*bpe));
+            vm.globals.insert(global_name.to_string(), ctor);
+        }
+    }
+
+    // ── Object — namespace object for property-access feature detection ──
+    // The call path (Object.keys, Object.assign, etc.) uses CALL_IMPORT and
+    // never touches this global. This object exists so that property-access
+    // patterns like `Object.groupBy ?` (ES2024 feature detection) resolve to
+    // a truthy value instead of crashing on undefined. The actual groupBy
+    // implementation is a compile-time inline emitter in calls.rs.
+    let obj_ns = ensure_namespace(vm, &["Object"]);
+    set_prop(&obj_ns, "groupBy", Value::Bool(true));
+
     // ── globalThis — proper §19.3.1 singleton ──────────────────────
     // Pulls the shared process-global Object that `ecma:globalThis.get`
     // also returns, so identity holds across both access patterns.

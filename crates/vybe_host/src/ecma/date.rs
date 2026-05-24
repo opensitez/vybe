@@ -305,10 +305,33 @@ pub fn register(vm: &mut VM) {
             // No args (or just `this` from `New Date()` paths): wall-clock.now()
             0 => ms_of(Utc::now()),
             1 => {
-                // Single arg: either `this` from a New X path (Object) or
-                // a numeric ms / parseable string per §21.4.2.1.
+                // Single arg: either `this` from a New X path (plain Object),
+                // a spread array from `new Date(...args)` (Array Object),
+                // a numeric ms, or a parseable string per §21.4.2.1.
                 match args.first() {
-                    Some(Value::Object(_)) => ms_of(Utc::now()),
+                    Some(Value::Object(obj)) => {
+                        let o = obj.lock().unwrap();
+                        if let vybe_bytecode::value::ObjectKind::Array(elems) = &o.kind {
+                            // Spread args: new Date(...[year, month, day, ...])
+                            let y = elems.first().map(|v| v.as_f64() as i32).unwrap_or(1970);
+                            let m = elems.get(1).map(|v| v.as_f64() as u32 + 1).unwrap_or(1);
+                            let d = elems.get(2).map(|v| v.as_f64() as u32).unwrap_or(1);
+                            let h = elems.get(3).map(|v| v.as_f64() as u32).unwrap_or(0);
+                            let mn = elems.get(4).map(|v| v.as_f64() as u32).unwrap_or(0);
+                            let s = elems.get(5).map(|v| v.as_f64() as u32).unwrap_or(0);
+                            let mss = elems.get(6).map(|v| v.as_f64() as u32).unwrap_or(0);
+                            match (
+                                chrono::NaiveDate::from_ymd_opt(y, m, d),
+                                chrono::NaiveTime::from_hms_milli_opt(h, mn, s, mss),
+                            ) {
+                                (Some(nd), Some(nt)) => ms_of(chrono::TimeZone::from_utc_datetime(&chrono::Utc, &nd.and_time(nt))),
+                                _ => f64::NAN,
+                            }
+                        } else {
+                            // Plain Object `this` from .NET/VB New Date() path
+                            ms_of(Utc::now())
+                        }
+                    }
                     Some(Value::String(s)) => parse_natural(s.as_ref()),
                     Some(v) => v.as_f64(),
                     None => ms_of(Utc::now()),

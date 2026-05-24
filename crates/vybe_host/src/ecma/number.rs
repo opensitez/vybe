@@ -134,7 +134,21 @@ fn register_constants(vm: &mut VM) {
 // Non-Number arguments always return false. The global (unprefixed)
 // `isFinite` / `isNaN` coerce first; those live separately.
 
+fn to_f64_coerce(v: &Value) -> f64 {
+    match v {
+        Value::F64(n) => *n,
+        Value::I32(n) => *n as f64,
+        Value::I64(n) => *n as f64,
+        Value::Bool(b) => if *b { 1.0 } else { 0.0 },
+        Value::Null => 0.0,
+        Value::Undefined => f64::NAN,
+        Value::String(s) => s.trim().parse::<f64>().unwrap_or(f64::NAN),
+        _ => f64::NAN,
+    }
+}
+
 fn register_predicates(vm: &mut VM) {
+    // ecma:number:isFinite — STRICT, no coercion (Number.isFinite).
     vm.register_host_fn("ecma:number", "isFinite", Box::new(|_ctx, args| {
         match args.first() {
             Some(Value::F64(n)) => Value::Bool(n.is_finite()),
@@ -143,11 +157,24 @@ fn register_predicates(vm: &mut VM) {
         }
     }));
 
+    // ecma:number:isNaN — STRICT, no coercion (Number.isNaN).
     vm.register_host_fn("ecma:number", "isNaN", Box::new(|_ctx, args| {
         match args.first() {
             Some(Value::F64(n)) => Value::Bool(n.is_nan()),
             _ => Value::Bool(false),
         }
+    }));
+
+    // ecma:number:globalIsFinite — coerces (global isFinite).
+    vm.register_host_fn("ecma:number", "globalIsFinite", Box::new(|_ctx, args| {
+        let n = args.first().map(to_f64_coerce).unwrap_or(f64::NAN);
+        Value::Bool(n.is_finite())
+    }));
+
+    // ecma:number:globalIsNaN — coerces (global isNaN).
+    vm.register_host_fn("ecma:number", "globalIsNaN", Box::new(|_ctx, args| {
+        let n = args.first().map(to_f64_coerce).unwrap_or(f64::NAN);
+        Value::Bool(n.is_nan())
     }));
 
     vm.register_host_fn("ecma:number", "isInteger", Box::new(|_ctx, args| {
@@ -308,6 +335,18 @@ fn register_prototype(vm: &mut VM) {
             _ => Value::F64(0.0),
         }
     }));
+    vm.register_host_fn("ecma:number", "toLocaleString", Box::new(|_ctx, args| {
+        let n = match args.first() {
+            Some(Value::F64(f)) => *f,
+            Some(Value::I32(i)) => *i as f64,
+            _ => return Value::String(Arc::from("0")),
+        };
+        if n.is_finite() && n.fract() == 0.0 {
+            Value::String(Arc::from(format!("{}", n as i64).as_str()))
+        } else {
+            Value::String(Arc::from(format!("{}", n).as_str()))
+        }
+    }));
 
     vm.register_host_fn("ecma:number", "toExponential", Box::new(|_ctx, args| {
         let n = f_arg(args, 0).unwrap_or(0.0);
@@ -316,16 +355,43 @@ fn register_prototype(vm: &mut VM) {
             Some(Value::I32(d)) => *d as usize,
             _ => 6,
         };
-        s_val(&format!("{:.1$e}", n, digits))
+        let raw = format!("{:.1$e}", n, digits);
+        let parts: Vec<&str> = raw.splitn(2, 'e').collect();
+        if parts.len() == 2 {
+            let exp: i32 = parts[1].parse().unwrap_or(0);
+            let sign = if exp >= 0 { "+" } else { "" };
+            s_val(&format!("{}e{}{}", parts[0], sign, exp))
+        } else {
+            s_val(&raw)
+        }
     }));
 
     vm.register_host_fn("ecma:number", "toPrecision", Box::new(|_ctx, args| {
         let n = f_arg(args, 0).unwrap_or(0.0);
-        let precision = match args.get(1) {
+        let prec = match args.get(1) {
             Some(Value::F64(p)) => *p as usize,
             Some(Value::I32(p)) => *p as usize,
             _ => return s_val(&format!("{}", n)),
         };
-        s_val(&format!("{:.*e}", precision.saturating_sub(1), n))
+        if prec == 0 { return s_val(&format!("{}", n)); }
+        if n == 0.0 {
+            if prec <= 1 { return s_val("0"); }
+            return s_val(&format!("0.{:0<1$}", "", prec - 1));
+        }
+        let abs_n = n.abs();
+        let e = abs_n.log10().floor() as i32;
+        if e >= prec as i32 || e < -6 {
+            // exponential notation
+            let raw = format!("{:.1$e}", n, prec - 1);
+            let parts: Vec<&str> = raw.splitn(2, 'e').collect();
+            if parts.len() == 2 {
+                let exp: i32 = parts[1].parse().unwrap_or(0);
+                let sign = if exp >= 0 { "+" } else { "" };
+                return s_val(&format!("{}e{}{}", parts[0], sign, exp));
+            }
+            return s_val(&raw);
+        }
+        let decimal_places = ((prec as i32 - 1 - e).max(0)) as usize;
+        s_val(&format!("{:.1$}", n, decimal_places))
     }));
 }

@@ -47,6 +47,14 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("ecma:math", "tanh",  Box::new(|_ctx, a| Value::F64(f(a, 0).tanh())));
     vm.register_host_fn("ecma:math", "clamp", Box::new(|_ctx, a| Value::F64(f(a, 0).clamp(f(a, 1), f(a, 2)))));
     vm.register_host_fn("ecma:math", "clz32", Box::new(|_ctx, a| Value::F64((f(a, 0) as u32).leading_zeros() as f64)));
+    vm.register_host_fn("ecma:math", "fround", Box::new(|_ctx, a| Value::F64((f(a, 0) as f32) as f64)));
+    vm.register_host_fn("ecma:math", "imul",   Box::new(|_ctx, a| {
+        let x = f(a, 0) as i64 as i32;
+        let y = f(a, 1) as i64 as i32;
+        Value::F64(x.wrapping_mul(y) as f64)
+    }));
+    vm.register_host_fn("ecma:math", "expm1",  Box::new(|_ctx, a| Value::F64(f(a, 0).exp_m1())));
+    vm.register_host_fn("ecma:math", "log1p",  Box::new(|_ctx, a| Value::F64(f(a, 0).ln_1p())));
 
     // VB-specific math functions
     vm.register_host_fn("ecma:math", "fix",   Box::new(|_ctx, a| Value::F64(f(a, 0).trunc()))); // truncate toward zero

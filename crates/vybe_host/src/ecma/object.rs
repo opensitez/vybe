@@ -927,9 +927,35 @@ fn register_enumeration(vm: &mut VM) {
             Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
         }));
 
-    // getOwnPropertySymbols — we don't distinguish symbol vs string keys yet
+    // getOwnPropertySymbols — returns Value::Symbol for each key tracked in __sym_keys.
+    // Symbol-keyed props are stored as "Symbol(<desc>)" string keys; we recover
+    // the description and return the original Symbol so obj[syms[0]] round-trips.
     vm.register_host_fn("ecma:object", "getOwnPropertySymbols",
-        Box::new(|_ctx, _args| {
+        Box::new(|_ctx, args| {
+            if let Some(obj) = obj_of(args, 0) {
+                let o = obj.lock().unwrap();
+                let syms: Vec<Value> = match o.properties.get("__sym_keys") {
+                    Some(Value::Object(arr)) => {
+                        let a = arr.lock().unwrap();
+                        if let ObjectKind::Array(ref elems) = a.kind {
+                            elems.iter().filter_map(|e| {
+                                if let Value::String(s) = e {
+                                    // "Symbol(desc)" → desc
+                                    let raw = s.as_ref();
+                                    let desc = if raw.starts_with("Symbol(") && raw.ends_with(')') {
+                                        &raw["Symbol(".len()..raw.len()-1]
+                                    } else {
+                                        raw
+                                    };
+                                    Some(Value::Symbol(Arc::from(desc)))
+                                } else { None }
+                            }).collect()
+                        } else { Vec::new() }
+                    }
+                    _ => Vec::new(),
+                };
+                return Value::Object(Arc::new(Mutex::new(Object::new_array(syms))));
+            }
             Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
         }));
 

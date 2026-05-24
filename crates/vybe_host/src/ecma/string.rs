@@ -214,6 +214,10 @@ fn register_constructor(vm: &mut VM) {
                 return s_val("[object Object]");
             }
         }
+        // §7.1.17: BigInt ToString strips the `n` suffix
+        if let Value::BigInt(n) = v {
+            return s_val(&format!("{}", n));
+        }
         s_val(&format!("{}", v))
     }));
 }

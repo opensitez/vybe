@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 use crate::namespaces::receiver_host_fn_ref;
 use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::{HostContext, VM};
+use crate::ecma::typedarray::{ta_live_length, read_element, write_element};
 
 /// Shorthand: unwrap `args[idx]` as a JS Array. Returns `None` when
 /// the argument isn't an array-kind object. Handlers that require an
@@ -440,6 +441,18 @@ fn register_property_access(vm: &mut VM) {
                         };
                         m.insert(map_key, val);
                     }
+                    ObjectKind::TypedArray(ta) => {
+                        let numeric_idx = match &key {
+                            Value::I32(n) if *n >= 0 => Some(*n as usize),
+                            Value::I64(n) if *n >= 0 => Some(*n as usize),
+                            Value::F64(n) if n.fract() == 0.0 && *n >= 0.0 => Some(*n as usize),
+                            Value::String(s) => s.parse::<usize>().ok(),
+                            _ => None,
+                        };
+                        if let Some(idx) = numeric_idx {
+                            write_element(ta, idx, &val);
+                        }
+                    }
                     _ => {
                         let key_str = match &key {
                             Value::String(s) => s.to_string(),
@@ -668,10 +681,25 @@ fn register_mutators(vm: &mut VM) {
         "ecma:array",
         "reverse",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            if let Some(arr) = array_of(args, 0) {
-                let mut o = arr.lock().unwrap();
-                if let ObjectKind::Array(ref mut v) = o.kind {
-                    v.reverse();
+            if let Some(Value::Object(obj)) = args.first() {
+                let mut o = obj.lock().unwrap();
+                match &o.kind {
+                    ObjectKind::Array(_) => {
+                        if let ObjectKind::Array(ref mut v) = o.kind { v.reverse(); }
+                    }
+                    ObjectKind::TypedArray(ta) => {
+                        let live = ta_live_length(ta);
+                        let mut i = 0usize;
+                        let mut j = live.saturating_sub(1);
+                        while i < j {
+                            let a = read_element(ta, i);
+                            let b = read_element(ta, j);
+                            write_element(ta, i, &b);
+                            write_element(ta, j, &a);
+                            i += 1; j -= 1;
+                        }
+                    }
+                    _ => {}
                 }
             }
             args.first().cloned().unwrap_or(Value::Null)
@@ -686,10 +714,24 @@ fn register_mutators(vm: &mut VM) {
         "ecma:array",
         "sort",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            if let Some(arr) = array_of(args, 0) {
-                let mut o = arr.lock().unwrap();
-                if let ObjectKind::Array(ref mut v) = o.kind {
-                    v.sort_by(|a, b| format!("{}", a).cmp(&format!("{}", b)));
+            if let Some(Value::Object(obj)) = args.first() {
+                let o = obj.lock().unwrap();
+                match &o.kind {
+                    ObjectKind::Array(_) => {
+                        drop(o);
+                        let mut o = obj.lock().unwrap();
+                        if let ObjectKind::Array(ref mut v) = o.kind {
+                            v.sort_by(|a, b| format!("{}", a).cmp(&format!("{}", b)));
+                        }
+                    }
+                    ObjectKind::TypedArray(ta) => {
+                        let live = ta_live_length(ta);
+                        let mut values: Vec<Value> = (0..live).map(|i| read_element(ta, i)).collect();
+                        values.sort_by(|a, b| a.as_f64().partial_cmp(&b.as_f64())
+                            .unwrap_or(std::cmp::Ordering::Equal));
+                        for (i, v) in values.iter().enumerate() { write_element(ta, i, v); }
+                    }
+                    _ => {}
                 }
             }
             args.first().cloned().unwrap_or(Value::Null)
@@ -704,15 +746,26 @@ fn register_mutators(vm: &mut VM) {
             let val = args.get(1).cloned().unwrap_or(Value::Null);
             let start = args.get(2).map(|v| v.as_i32()).unwrap_or(0);
             let end = args.get(3).map(|v| v.as_i32()).unwrap_or(i32::MAX);
-            if let Some(arr) = array_of(args, 0) {
-                let mut o = arr.lock().unwrap();
-                if let ObjectKind::Array(ref mut v) = o.kind {
-                    let len = v.len() as i32;
-                    let s = start.max(0).min(len) as usize;
-                    let e = end.max(0).min(len) as usize;
-                    for i in s..e {
-                        v[i] = val.clone();
+            if let Some(Value::Object(obj)) = args.first() {
+                let o = obj.lock().unwrap();
+                match &o.kind {
+                    ObjectKind::Array(_) => {
+                        drop(o);
+                        let mut o = obj.lock().unwrap();
+                        if let ObjectKind::Array(ref mut v) = o.kind {
+                            let len = v.len() as i32;
+                            let s = start.max(0).min(len) as usize;
+                            let e = end.max(0).min(len) as usize;
+                            for i in s..e { v[i] = val.clone(); }
+                        }
                     }
+                    ObjectKind::TypedArray(ta) => {
+                        let live = ta_live_length(ta) as i32;
+                        let s = start.max(0).min(live) as usize;
+                        let e = end.max(0).min(live) as usize;
+                        for i in s..e { write_element(ta, i, &val); }
+                    }
+                    _ => {}
                 }
             }
             args.first().cloned().unwrap_or(Value::Null)
@@ -1004,6 +1057,10 @@ fn register_non_mutators(vm: &mut VM) {
                                     .collect()
                             }
                         }
+                        ObjectKind::TypedArray(ta) => {
+                            let live = ta_live_length(ta);
+                            (0..live).map(|i| format!("{}", read_element(ta, i))).collect()
+                        }
                         _ => Vec::new(),
                     }
                 }
@@ -1107,14 +1164,31 @@ fn register_non_mutators(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:array",
         "toSorted",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let compare_fn = args.get(1).cloned();
             if let Some(arr) = array_of(args, 0) {
-                let o = arr.lock().unwrap();
-                if let ObjectKind::Array(ref v) = o.kind {
-                    let mut out = v.clone();
+                let mut out = {
+                    let o = arr.lock().unwrap();
+                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { return make_array(Vec::new()); }
+                };
+                if let Some(cmp) = compare_fn.filter(|v| !matches!(v, Value::Undefined | Value::Null)) {
+                    let mut err: Option<Value> = None;
+                    out.sort_by(|a, b| {
+                        if err.is_some() { return std::cmp::Ordering::Equal; }
+                        match ctx.try_invoke(&cmp, &[a.clone(), b.clone()]) {
+                            Ok(v) => {
+                                let n = v.as_f64();
+                                if n < 0.0 { std::cmp::Ordering::Less }
+                                else if n > 0.0 { std::cmp::Ordering::Greater }
+                                else { std::cmp::Ordering::Equal }
+                            }
+                            Err(e) => { err = Some(e); std::cmp::Ordering::Equal }
+                        }
+                    });
+                } else {
                     out.sort_by(|a, b| format!("{}", a).cmp(&format!("{}", b)));
-                    return make_array(out);
                 }
+                return make_array(out);
             }
             make_array(Vec::new())
         }),
@@ -1243,15 +1317,23 @@ fn register_iteration(vm: &mut VM) {
         "ecma:array",
         "entries",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            if let Some(arr) = array_of(args, 0) {
-                let o = arr.lock().unwrap();
-                if let ObjectKind::Array(ref v) = o.kind {
-                    let out: Vec<Value> = v
-                        .iter()
-                        .enumerate()
-                        .map(|(i, e)| make_array(vec![Value::F64(i as f64), e.clone()]))
-                        .collect();
-                    return make_array_iterator(out);
+            if let Some(Value::Object(obj)) = args.first() {
+                let o = obj.lock().unwrap();
+                match &o.kind {
+                    ObjectKind::Array(v) => {
+                        let out: Vec<Value> = v.iter().enumerate()
+                            .map(|(i, e)| make_array(vec![Value::F64(i as f64), e.clone()]))
+                            .collect();
+                        return make_array_iterator(out);
+                    }
+                    ObjectKind::TypedArray(ta) => {
+                        let live = ta_live_length(ta);
+                        let out: Vec<Value> = (0..live)
+                            .map(|i| make_array(vec![Value::F64(i as f64), read_element(ta, i)]))
+                            .collect();
+                        return make_array_iterator(out);
+                    }
+                    _ => {}
                 }
             }
             make_array_iterator(Vec::new())
@@ -1651,13 +1733,8 @@ fn register_iteration(vm: &mut VM) {
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let start = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
             let del = args.get(2).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
-            let items: Vec<Value> = match args.get(3) {
-                Some(Value::Object(o)) => {
-                    let lock = o.lock().unwrap();
-                    if let ObjectKind::Array(ref v) = lock.kind { v.clone() } else { Vec::new() }
-                }
-                _ => Vec::new(),
-            };
+            // Items are individual args from index 3 onward (same as splice)
+            let items: Vec<Value> = args.get(3..).unwrap_or(&[]).to_vec();
             if let Some(arr) = array_of(args, 0) {
                 let snapshot: Vec<Value> = {
                     let o = arr.lock().unwrap();
