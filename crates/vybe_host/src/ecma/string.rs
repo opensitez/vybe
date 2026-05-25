@@ -22,7 +22,7 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 use vybe_bytecode::value::{Object, ObjectKind};
-use vybe_bytecode::{VM, Value};
+use vybe_bytecode::{HostContext, VM, Value};
 
 static STRING_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 
@@ -730,45 +730,97 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
         t[b'/' as usize] = 63;
         t
     };
-    let bytes: Vec<u8> = s.bytes().filter(|&b| b != b'=' && b != b'\n' && b != b'\r').collect();
+    let filtered: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    if filtered.len() % 4 == 1 {
+        return None;
+    }
     let mut result = Vec::new();
-    for chunk in bytes.chunks(4) {
-        if chunk.len() < 2 { break; }
-        let a = *DECODE.get(chunk[0] as usize)? as u32;
-        let b = *DECODE.get(chunk[1] as usize)? as u32;
-        if a == 255 || b == 255 { return None; }
-        result.push(((a << 2) | (b >> 4)) as u8);
-        if chunk.len() > 2 {
-            let c = *DECODE.get(chunk[2] as usize)? as u32;
-            if c == 255 { return None; }
-            result.push((((b & 0xF) << 4) | (c >> 2)) as u8);
-            if chunk.len() > 3 {
-                let d = *DECODE.get(chunk[3] as usize)? as u32;
-                if d == 255 { return None; }
-                result.push((((c & 0x3) << 6) | d) as u8);
-            }
+    for (chunk_index, chunk) in filtered.chunks(4).enumerate() {
+        if chunk.len() != 4 {
+            return None;
         }
+        let last_chunk = chunk_index + 1 == filtered.len() / 4;
+        let a = *chunk.first()?;
+        let b = *chunk.get(1)?;
+        if a >= 128 || b >= 128 || a == b'=' || b == b'=' {
+            return None;
+        }
+        let av = DECODE[a as usize] as u32;
+        let bv = DECODE[b as usize] as u32;
+        if av == 255 || bv == 255 {
+            return None;
+        }
+        let c = chunk[2];
+        let d = chunk[3];
+        if c == b'=' {
+            if d != b'=' || !last_chunk {
+                return None;
+            }
+            result.push(((av << 2) | (bv >> 4)) as u8);
+            continue;
+        }
+        if c >= 128 {
+            return None;
+        }
+        let cv = DECODE[c as usize] as u32;
+        if cv == 255 {
+            return None;
+        }
+        result.push(((av << 2) | (bv >> 4)) as u8);
+        result.push((((bv & 0xF) << 4) | (cv >> 2)) as u8);
+
+        if d == b'=' {
+            if !last_chunk {
+                return None;
+            }
+            continue;
+        }
+        if d >= 128 {
+            return None;
+        }
+        let dv = DECODE[d as usize] as u32;
+        if dv == 255 {
+            return None;
+        }
+        result.push((((cv & 0x3) << 6) | dv) as u8);
     }
     Some(result)
 }
 
+fn latin1_string(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| char::from(*byte)).collect()
+}
+
+fn throw_type_error(ctx: &mut HostContext, message: &str) {
+    ctx.throw_value(crate::ecma::error::new_error("TypeError", message));
+}
+
 fn register_base64(vm: &mut VM) {
     // btoa — base64-encode the input string's BYTES (treating it as
-    // Latin-1 per HTML spec; we use the UTF-8 bytes which matches
-    // most modern usage).
-    vm.register_host_fn("ecma:string", "btoa", Box::new(|_ctx, args| {
+    // Latin-1 per HTML spec).
+    vm.register_host_fn("ecma:string", "btoa", Box::new(|ctx, args| {
         let s = s_arg(args, 0);
-        s_val(&base64_encode(s.as_bytes()))
+        let mut bytes = Vec::with_capacity(s.chars().count());
+        for ch in s.chars() {
+            let code = ch as u32;
+            if code > 0xFF {
+                throw_type_error(ctx, "The string to be encoded contains characters outside of the Latin1 range");
+                return Value::Null;
+            }
+            bytes.push(code as u8);
+        }
+        s_val(&base64_encode(&bytes))
     }));
 
-    // atob — base64-decode and interpret bytes as a string. Returns
-    // null on malformed input (HTML spec throws DOMException; we
-    // degrade to null until exception dispatch is wired).
-    vm.register_host_fn("ecma:string", "atob", Box::new(|_ctx, args| {
+    // atob — base64-decode and interpret bytes as a Latin-1 string.
+    vm.register_host_fn("ecma:string", "atob", Box::new(|ctx, args| {
         let s = s_arg(args, 0);
         match base64_decode(&s) {
-            Some(bytes) => s_val(&String::from_utf8_lossy(&bytes)),
-            None => Value::Null,
+            Some(bytes) => s_val(&latin1_string(&bytes)),
+            None => {
+                throw_type_error(ctx, "The string to be decoded is not correctly encoded");
+                Value::Null
+            }
         }
     }));
 }

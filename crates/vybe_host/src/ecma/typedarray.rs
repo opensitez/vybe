@@ -259,6 +259,7 @@ pub(crate) fn new_typed_array(elem: TypedElemKind, length: usize) -> Value {
     };
     let mut obj = Object::new();
     obj.kind = ObjectKind::TypedArray(state);
+    obj.properties.insert("buffer".into(), Value::Object(buffer_obj.clone()));
     obj.properties.insert("length".into(), Value::I32(length as i32));
     obj.properties.insert("byteLength".into(), Value::I32(byte_length as i32));
     obj.properties.insert("byteOffset".into(), Value::I32(0));
@@ -291,6 +292,7 @@ pub(crate) fn new_view_over_buffer(
     };
     let mut obj = Object::new();
     obj.kind = ObjectKind::TypedArray(state);
+    obj.properties.insert("buffer".into(), Value::Object(buffer_obj.clone()));
     obj.properties.insert("length".into(), Value::I32(length as i32));
     obj.properties.insert("byteLength".into(), Value::I32((length * bpe) as i32));
     obj.properties.insert("byteOffset".into(), Value::I32(byte_offset as i32));

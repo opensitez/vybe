@@ -1010,7 +1010,7 @@ fn register_new_globals_types(vm: &mut VM) {
         let mut t = TypeDef::new("TextEncoder");
         for (method, fname) in &[("encode", "encode"), ("encodeInto", "encodeInto")] {
             if let Some(idx) = h(vm, "web:encoding", fname) {
-                t.methods.insert(method.to_string(), Method::HostFn(idx));
+                t.methods.insert(method.to_lowercase(), Method::HostFn(idx));
             }
         }
         t.parent = Some(0);

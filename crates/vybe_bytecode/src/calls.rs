@@ -10,12 +10,115 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use crate::error::VMError;
-use crate::value::{Function, Object, ObjectKind, Value};
+use crate::value::{Function, Object, ObjectKind, TypedArrayState, TypedElemKind, Value};
 use crate::vm::{
     VM, CallFrame, MAX_FRAMES,
 };
 
+fn typed_array_live_length(ta: &TypedArrayState) -> usize {
+    let buf = ta.buffer.lock().unwrap();
+    let bpe = ta.elem.bytes_per_element();
+    if ta.byte_offset >= buf.len() {
+        return 0;
+    }
+    let available_bytes = buf.len() - ta.byte_offset;
+    let available_elems = available_bytes / bpe;
+    ta.length.min(available_elems)
+}
+
+fn read_typed_array_element(ta: &TypedArrayState, index: usize) -> Value {
+    let bpe = ta.elem.bytes_per_element();
+    let buf = ta.buffer.lock().unwrap();
+    let abs = ta.byte_offset + index * bpe;
+    if abs + bpe > buf.len() {
+        return match ta.elem {
+            TypedElemKind::F32 | TypedElemKind::F64 => Value::F64(0.0),
+            TypedElemKind::BigI64 | TypedElemKind::BigU64 => Value::I64(0),
+            _ => Value::I32(0),
+        };
+    }
+    match ta.elem {
+        TypedElemKind::I8 => Value::I32(buf[abs] as i8 as i32),
+        TypedElemKind::U8 | TypedElemKind::U8Clamped => Value::I32(buf[abs] as i32),
+        TypedElemKind::I16 => Value::I32(i16::from_le_bytes([buf[abs], buf[abs + 1]]) as i32),
+        TypedElemKind::U16 => Value::I32(u16::from_le_bytes([buf[abs], buf[abs + 1]]) as i32),
+        TypedElemKind::I32 => {
+            let mut bytes = [0u8; 4];
+            bytes.copy_from_slice(&buf[abs..abs + 4]);
+            Value::I32(i32::from_le_bytes(bytes))
+        }
+        TypedElemKind::U32 => {
+            let mut bytes = [0u8; 4];
+            bytes.copy_from_slice(&buf[abs..abs + 4]);
+            Value::I32(u32::from_le_bytes(bytes) as i32)
+        }
+        TypedElemKind::F32 => {
+            let mut bytes = [0u8; 4];
+            bytes.copy_from_slice(&buf[abs..abs + 4]);
+            Value::F64(f32::from_le_bytes(bytes) as f64)
+        }
+        TypedElemKind::F64 => {
+            let mut bytes = [0u8; 8];
+            bytes.copy_from_slice(&buf[abs..abs + 8]);
+            Value::F64(f64::from_le_bytes(bytes))
+        }
+        TypedElemKind::BigI64 => {
+            let mut bytes = [0u8; 8];
+            bytes.copy_from_slice(&buf[abs..abs + 8]);
+            Value::I64(i64::from_le_bytes(bytes))
+        }
+        TypedElemKind::BigU64 => {
+            let mut bytes = [0u8; 8];
+            bytes.copy_from_slice(&buf[abs..abs + 8]);
+            Value::I64(u64::from_le_bytes(bytes) as i64)
+        }
+    }
+}
+
 impl VM {
+    pub(crate) fn raise_exception_value(&mut self, val: Value) -> Result<(), VMError> {
+        let mut matched_idx = None;
+        for i in (0..self.exception_handlers.len()).rev() {
+            let handler = &self.exception_handlers[i];
+            if handler.tag == 0 {
+                matched_idx = Some(i);
+                break;
+            }
+            let tag_idx = handler.tag as usize;
+            let tag_name = self.chunks.get(0)
+                .and_then(|c| c.exception_tags.get(tag_idx))
+                .cloned()
+                .unwrap_or_default();
+            if !tag_name.is_empty() {
+                let matches = self.test_type(&val, &tag_name.to_lowercase())
+                    || self.exception_value_matches(&val, &tag_name);
+                if matches {
+                    matched_idx = Some(i);
+                    break;
+                }
+            }
+        }
+
+        if let Some(idx) = matched_idx {
+            let handler = self.exception_handlers[idx].clone();
+            self.exception_handlers.truncate(idx);
+            while self.frames.len() > handler.frame_depth {
+                let base = self.frames.last().unwrap().base;
+                self.close_upvalues(base);
+                self.frames.pop();
+            }
+            self.stack.truncate(handler.stack_depth);
+            self.push(val)?;
+            let f = self.frame_mut();
+            f.ip = handler.catch_ip;
+            Ok(())
+        } else {
+            self.last_exception = Some(val.clone());
+            let stack = self.capture_call_stack();
+            Err(VMError::new(format!("{}", val)).with_stack(stack))
+        }
+    }
+
     pub(crate) fn try_dunder_binary(&mut self, obj: &Arc<Mutex<crate::value::Object>>, arg: &Value, dunder: &str) -> Option<Value> {
         let method = {
             let o = obj.lock().unwrap();
@@ -94,6 +197,10 @@ impl VM {
                             let mut ctx = self.make_host_context();
                             host_fn(&mut ctx, &args)
                         };
+                        if let Some(exc) = self.last_exception.take() {
+                            self.raise_exception_value(exc)?;
+                            return Ok(());
+                        }
                         self.push(result)?;
                     }
                     ObjectKind::Array(elems) => {
@@ -261,6 +368,24 @@ impl VM {
                         }
                     }
                 }
+                if let ObjectKind::TypedArray(ref ta) = ob.kind {
+                    if let Ok(idx) = name.parse::<usize>() {
+                        if idx < typed_array_live_length(ta) {
+                            return Ok(read_typed_array_element(ta, idx));
+                        }
+                    }
+                    match name {
+                        "buffer" => return Ok(Value::Object(ta.buffer_obj.clone())),
+                        "length" => return Ok(Value::I32(typed_array_live_length(ta) as i32)),
+                        "byteOffset" => return Ok(Value::I32(ta.byte_offset as i32)),
+                        "byteLength" => {
+                            let byte_length = typed_array_live_length(ta) * ta.elem.bytes_per_element();
+                            return Ok(Value::I32(byte_length as i32));
+                        }
+                        "BYTES_PER_ELEMENT" => return Ok(Value::I32(ta.elem.bytes_per_element() as i32)),
+                        _ => {}
+                    }
+                }
                 // 1b. Case-insensitive fallback for case-sensitive
                 // languages (C#, Dart) reading PascalCase fields
                 // (`btn.Location`) off an object whose setter-backed
@@ -319,7 +444,7 @@ impl VM {
             }
             Value::String(s) => {
                 if name == "length" {
-                    return Ok(Value::F64(s.len() as f64));
+                    return Ok(Value::F64(s.encode_utf16().count() as f64));
                 }
                 if let Some(tid) = self.type_registry.get_id("string") {
                     if let Some(method) = self.type_registry.resolve_method(tid, name) {

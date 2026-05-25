@@ -881,6 +881,10 @@ impl VM {
                                 let mut ctx = self.make_host_context();
                                 host_fn(&mut ctx, &args)
                             };
+                            if let Some(exc) = self.last_exception.take() {
+                                self.raise_exception_value(exc)?;
+                                continue;
+                            }
 
                             // JSPI: transparent async suspension
                             if let Value::Object(ref obj) = result {

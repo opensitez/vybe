@@ -1556,14 +1556,14 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let raw = pair.as_str();
             let s_owned: String = raw.chars().filter(|c| *c != '_').collect();
             let s = s_owned.as_str();
-            if s.contains('.') || s.contains('e') || s.contains('E') {
-                Ok(ExprKind::Lit(Literal::Float(s.parse().map_err(|e| format!("{}", e))?)))
-            } else if s.starts_with("0x") || s.starts_with("0X") {
+            if s.starts_with("0x") || s.starts_with("0X") {
                 Ok(ExprKind::Lit(Literal::Int(i64::from_str_radix(&s[2..], 16).map_err(|e| format!("{}", e))?)))
             } else if s.starts_with("0o") || s.starts_with("0O") {
                 Ok(ExprKind::Lit(Literal::Int(i64::from_str_radix(&s[2..], 8).map_err(|e| format!("{}", e))?)))
             } else if s.starts_with("0b") || s.starts_with("0B") {
                 Ok(ExprKind::Lit(Literal::Int(i64::from_str_radix(&s[2..], 2).map_err(|e| format!("{}", e))?)))
+            } else if s.contains('.') || s.contains('e') || s.contains('E') {
+                Ok(ExprKind::Lit(Literal::Float(s.parse().map_err(|e| format!("{}", e))?)))
             } else {
                 Ok(ExprKind::Lit(Literal::Int(s.parse().unwrap_or(0))))
             }

@@ -260,6 +260,12 @@ fn register_constructors(vm: &mut VM) {
                         ObjectKind::Array(ref elems) => {
                             out.extend(elems.iter().cloned());
                         }
+                        ObjectKind::TypedArray(ref ta) => {
+                            let live = crate::ecma::typedarray::ta_live_length(ta);
+                            for i in 0..live {
+                                out.push(crate::ecma::typedarray::read_element(ta, i));
+                            }
+                        }
                         // Map → Array of `[key, value]` pairs (§23.1.2.1).
                         ObjectKind::Map(ref m) => {
                             for (k, v) in m.iter() {
@@ -483,10 +489,10 @@ fn register_property_access(vm: &mut VM) {
                     ObjectKind::TypedArray(t) => Value::I32(t.length as i32),
                     _ => lock.properties.get("length")
                         .map(|v| Value::I32(v.as_i32()))
-                        .unwrap_or(Value::I32(0)),
+                        .unwrap_or(Value::Null),
                 };
             }
-            Value::I32(0)
+            Value::Null
         }),
     );
 

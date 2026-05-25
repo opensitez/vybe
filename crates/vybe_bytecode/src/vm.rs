@@ -81,6 +81,16 @@ impl<'a> HostContext<'a> {
         Ok(result)
     }
 
+    /// Raise a VM exception from host code so the surrounding JS/VM
+    /// try/catch path observes it like a bytecode THROW.
+    pub fn throw_value(&mut self, value: Value) {
+        unsafe {
+            if !self.last_exception_slot.is_null() {
+                *self.last_exception_slot = Some(value);
+            }
+        }
+    }
+
     /// Queue a microtask (Promise reaction) to run after the current task.
     /// ECMA-262 §27.2.1.3 EnqueueJob("PromiseJobs", ...).
     pub fn queue_microtask(&mut self, callback: Value, value: Value) {

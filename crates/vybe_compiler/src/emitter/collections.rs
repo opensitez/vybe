@@ -283,9 +283,9 @@ pub fn emit_len(chunks: &mut [Chunk], current: usize, line: u32) {
     c.emit_op(Op::REF_IS_STRING, line);            // [v, is_string]
     let to_str = c.emit_jump(Op::BR_IF_TRUE, line); // consumes bool
 
-    // Not a string — try array length first. Map-backed PHP arrays report
-    // 0 here, so fall back to map.size and finally Object.keys(v).length
-    // only in that zero-length case.
+    // Not a string — try array length first. A null result means the
+    // value wasn't array-like; a numeric 0 is a real empty length and
+    // must not fall through to Object.keys(...).length.
     c.emit_op(Op::DUP, line);
     emit_import_call(chunks, current, "ecma:array", "length", 1, line);
     let arr_len_slot = chunks[current].local_count;
@@ -294,9 +294,13 @@ pub fn emit_len(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_len_slot, line);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
-    chunks[current].emit_op(Op::DYN_NE, line);
-    let use_arr_len = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    let try_map_len = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_len_slot, line);
+    let use_arr_len = chunks[current].emit_jump(Op::BR, line);
+
+    chunks[current].patch_jump(try_map_len);
 
     chunks[current].emit_op(Op::DUP, line);
     emit_import_call(chunks, current, "ecma:map", "size", 1, line);

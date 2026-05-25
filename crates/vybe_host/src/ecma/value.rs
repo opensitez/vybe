@@ -30,7 +30,7 @@
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::{HostContext, VM};
-use crate::ecma::typedarray::{ta_live_length, read_element, write_element, new_view_over_buffer};
+use crate::ecma::typedarray::{new_typed_array, new_view_over_buffer, read_element, ta_live_length, write_element};
 use crate::ecma::weakmap::{WEAKMAP_TAG, WEAKSET_TAG, WM_KEYS_PROP, key_ptr_find as wm_key_ptr_find};
 
 fn make_array(elems: Vec<Value>) -> Value {
@@ -1722,10 +1722,21 @@ fn dispatch_typed_array(
                 let end = args.get(1).map(|v| v.as_i32()).unwrap_or(live);
                 let s = start.max(0).min(live) as usize;
                 let e = end.max(0).min(live) as usize;
-                let elems: Vec<Value> = (s..e).map(|i| read_element(ta, i)).collect();
-                return make_array(elems);
+                let values: Vec<Value> = (s..e).map(|i| read_element(ta, i)).collect();
+                let elem = ta.elem;
+                drop(o);
+                let out = new_typed_array(elem, values.len());
+                if let Value::Object(ref out_obj) = out {
+                    let out_locked = out_obj.lock().unwrap();
+                    if let ObjectKind::TypedArray(ref out_ta) = out_locked.kind {
+                        for (i, value) in values.iter().enumerate() {
+                            write_element(out_ta, i, value);
+                        }
+                    }
+                }
+                return out;
             }
-            make_array(Vec::new())
+            Value::Undefined
         }
         "forEach" => {
             let cb = args.first().cloned().unwrap_or(Value::Null);
