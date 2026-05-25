@@ -14,9 +14,9 @@
 //!
 //! See `JS_BUILTIN_CONVENTIONS.md` for marshaling rules.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use vybe_bytecode::value::{Object, ObjectKind, Value};
-use vybe_bytecode::VM;
+use vybe_bytecode::{HostContext, VM};
 
 /// Magic property name used to mark an object as frozen / sealed /
 /// non-extensible. Matches existing vybe:object module's convention.
@@ -26,6 +26,23 @@ const EXTENSIBLE_MARK: &str = "__vybe_extensible"; // absence means extensible
 const PROTO_KEY: &str = "__proto__";
 /// PHP-array next-int-key tracker. Used by `appendAutoKey`.
 const NEXT_INT_KEY: &str = "__vybe_next_int_key";
+
+static OBJECT_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+
+pub(crate) fn shared_object_prototype() -> Value {
+    let proto = OBJECT_PROTOTYPE.get_or_init(|| {
+        let mut obj = Object::new();
+        obj.properties.insert(PROTO_KEY.into(), Value::Null);
+        Arc::new(Mutex::new(obj))
+    });
+    Value::Object(proto.clone())
+}
+
+pub(crate) fn new_ordinary_object_with_proto() -> Value {
+    let mut obj = Object::new();
+    obj.properties.insert(PROTO_KEY.into(), shared_object_prototype());
+    Value::Object(Arc::new(Mutex::new(obj)))
+}
 
 fn is_object(v: &Value) -> bool {
     matches!(v, Value::Object(_))
@@ -164,6 +181,59 @@ fn proto_walk_get(obj: &Arc<Mutex<Object>>, key: &str) -> Option<Value> {
     }
 }
 
+fn proto_walk_invoke_getter(ctx: &mut HostContext, obj: &Arc<Mutex<Object>>, key: &str) -> Option<Value> {
+    let getter_key = format!("__get_{}", key);
+    let getter = proto_walk_get(obj, &getter_key)?;
+    let getter_arity = match &getter {
+        Value::Object(getter_obj) => {
+            let getter_guard = getter_obj.lock().unwrap();
+            match &getter_guard.kind {
+                ObjectKind::Function(func) => Some(func.arity),
+                ObjectKind::HostFunction(_) => Some(0),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    let receiver = Value::Object(obj.clone());
+    Some(match getter_arity {
+        Some(0) => ctx.invoke(&getter, &[]),
+        _ => ctx.invoke(&getter, &[receiver]),
+    })
+}
+
+fn object_to_string_tag(ctx: &mut HostContext, obj: &Arc<Mutex<Object>>) -> String {
+    if let Some(tag) = proto_walk_get(obj, "tostringtag")
+        .or_else(|| proto_walk_invoke_getter(ctx, obj, "tostringtag"))
+    {
+        match tag {
+            Value::String(text) if !text.is_empty() => return text.to_string(),
+            Value::Undefined | Value::Null => {}
+            other => return format!("{}", other),
+        }
+    }
+
+    let object = obj.lock().unwrap();
+    match &object.kind {
+        _ if matches!(object.properties.get("__type"), Some(Value::String(tag)) if !tag.is_empty()) => {
+            format!("{}", object.properties.get("__type").unwrap())
+        }
+        ObjectKind::Array(_) => "Array".to_string(),
+        ObjectKind::Map(_) => "Map".to_string(),
+        ObjectKind::Set(_) => "Set".to_string(),
+        ObjectKind::ArrayBuffer(_) => "ArrayBuffer".to_string(),
+        ObjectKind::TypedArray(_) => object
+            .properties
+            .get("__type")
+            .map(|value| format!("{}", value))
+            .filter(|tag| !tag.is_empty())
+            .unwrap_or_else(|| "TypedArray".to_string()),
+        ObjectKind::Function(_) | ObjectKind::HostFunction(_) => "Function".to_string(),
+        ObjectKind::ModuleNamespace => "Module".to_string(),
+        _ => "Object".to_string(),
+    }
+}
+
 pub fn register(vm: &mut VM) {
     register_construction(vm);
     register_access(vm);
@@ -181,7 +251,35 @@ pub fn register(vm: &mut VM) {
 fn register_construction(vm: &mut VM) {
     vm.register_host_fn("ecma:object", "new",
         Box::new(|_ctx, _args| {
-            Value::Object(Arc::new(Mutex::new(Object::new())))
+            new_ordinary_object_with_proto()
+        }));
+
+    vm.register_host_fn("ecma:object", "Object",
+        Box::new(|_ctx, args| {
+            match args.first().cloned().unwrap_or(Value::Undefined) {
+                Value::Null | Value::Undefined => new_ordinary_object_with_proto(),
+                value @ Value::Object(_) => value,
+                Value::Bool(value) => crate::ecma::boolean::boxed_boolean(value),
+                Value::String(text) => crate::ecma::string::boxed_string(text),
+                value @ Value::F64(_) | value @ Value::I32(_) | value @ Value::I64(_) => {
+                    crate::ecma::number::boxed_number(value)
+                }
+                Value::Symbol(desc) => {
+                    let mut obj = Object::new();
+                    obj.properties.insert("__type".into(), Value::String(Arc::from("Symbol")));
+                    obj.properties.insert("__primitive".into(), Value::Symbol(desc));
+                    obj.properties.insert(PROTO_KEY.into(), shared_object_prototype());
+                    Value::Object(Arc::new(Mutex::new(obj)))
+                }
+                Value::BigInt(value) => {
+                    let mut obj = Object::new();
+                    obj.properties.insert("__type".into(), Value::String(Arc::from("BigInt")));
+                    obj.properties.insert("__primitive".into(), Value::BigInt(value));
+                    obj.properties.insert(PROTO_KEY.into(), shared_object_prototype());
+                    Value::Object(Arc::new(Mutex::new(obj)))
+                }
+                _ => new_ordinary_object_with_proto(),
+            }
         }));
 
     // create(proto, propertiesDescriptor?) -> new obj
@@ -1379,9 +1477,10 @@ fn register_prototype_methods(vm: &mut VM) {
 
     // toString(): spec default is "[object Object]" for plain objects
     vm.register_host_fn("ecma:object", "toString",
-        Box::new(|_ctx, args| {
-            if is_object(args.first().unwrap_or(&Value::Null)) {
-                return Value::String(Arc::from("[object Object]"));
+        Box::new(|ctx, args| {
+            if let Some(obj) = obj_of(args, 0) {
+                let tag = object_to_string_tag(ctx, &obj);
+                return Value::String(Arc::from(format!("[object {}]", tag).as_str()));
             }
             Value::String(Arc::from(""))
         }));

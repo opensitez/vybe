@@ -139,6 +139,9 @@ fn rewrite_class_members(
                     if let Some(resolved) = resolve_const_key(name, consts) {
                         *name = resolved;
                     }
+                    if let Some(alias) = js_well_known_symbol_alias_from_raw(name) {
+                        *name = alias.to_string();
+                    }
                 }
                 rewrite_class_method_names(box_stmt, consts);
             }
@@ -155,6 +158,9 @@ fn rewrite_class_members(
             ClassMember::Property { name, getter, setter, .. } => {
                 if let Some(resolved) = resolve_const_key(name, consts) {
                     *name = resolved;
+                }
+                if let Some(alias) = js_well_known_symbol_alias_from_raw(name) {
+                    *name = alias.to_string();
                 }
                 if let Some(getter) = getter.as_mut() {
                     for stmt in getter.iter_mut() {
@@ -2625,8 +2631,10 @@ fn walk_object_method(mut inner: Vec<Pair<Rule>>) -> Result<ObjectProperty, Stri
         .unwrap_or(raw_key);
     let mut params = Vec::new();
     let mut body = Vec::new();
+    let mut is_async = false;
     for p in inner {
         match p.as_rule() {
+            Rule::async_kw => is_async = true,
             Rule::param_list => params = walk_params(p)?,
             Rule::param => params = vec![walk_param(p)?],
             Rule::function_body => body = walk_body(p)?,
@@ -2641,7 +2649,7 @@ fn walk_object_method(mut inner: Vec<Pair<Rule>>) -> Result<ObjectProperty, Stri
         body,
         modifiers: Modifiers::default(),
         handles: Vec::new(),
-        is_async: false,
+        is_async,
         is_generator,
         is_sub: false,
     });

@@ -582,12 +582,12 @@ impl Compiler {
         let mut field_inits: Vec<(String, Option<String>, Option<Expression>, Option<Vec<Expression>>)> = Vec::new();
         let mut static_field_inits: Vec<(String, Option<String>, Option<Expression>, Option<Vec<Expression>>)> = Vec::new();
         for f in &class.instance_fields {
-            let fname = self.canon(&f.name);
+            let fname = self.js_member_storage_name_for_class(&class.name, &f.name);
             fields.push(fname.clone());
             field_inits.push((fname, f.type_hint.clone(), f.init.clone(), f.array_bounds.clone()));
         }
         for f in &class.static_fields {
-            let fname = self.canon(&f.name);
+            let fname = self.js_member_storage_name_for_class(&class.name, &f.name);
             static_field_inits.push((fname, f.type_hint.clone(), f.init.clone(), f.array_bounds.clone()));
         }
         for p in &class.properties {
@@ -595,7 +595,7 @@ impl Compiler {
             // the runtime reads/writes through auto-emitted __get_/__set_
             // chunks bound later.
             if let Some(auto_field_name) = &p.auto_field {
-                let pname_canon = self.canon(auto_field_name);
+                let pname_canon = self.js_member_storage_name_for_class(&class.name, auto_field_name);
                 if p.is_static {
                     if !static_field_inits.iter().any(|(n, _, _, _)| n == &pname_canon) {
                         static_field_inits.push((pname_canon, None, None, None));
@@ -626,7 +626,12 @@ impl Compiler {
             .map(|(n, _, _, _)| n.clone())
             .collect();
         let mut instance_field_types: HashMap<String, String> = class.instance_fields.iter().filter_map(|f| {
-            f.type_hint.as_ref().map(|t| (self.canon(&f.name), Self::normalize_type_hint(t)))
+            f.type_hint.as_ref().map(|t| {
+                (
+                    self.js_member_storage_name_for_class(&class.name, &f.name),
+                    Self::normalize_type_hint(t),
+                )
+            })
         }).collect();
         for member in &class.raw_extra_members {
             match member {
@@ -666,7 +671,7 @@ impl Compiler {
             instance_member_names: class
                 .instance_methods
                 .iter()
-                .map(|method| method.canonical_name.clone())
+                .map(|method| self.js_member_storage_name_for_class(&class.name, &method.source_name))
                 .collect(),
             instance_pointer_method_names: class
                 .instance_methods
@@ -688,7 +693,7 @@ impl Compiler {
             static_method_names: class
                 .static_methods
                 .iter()
-                .map(|m| m.source_name.clone())
+                .map(|m| self.js_member_storage_name_for_class(&class.name, &m.source_name))
                 .collect(),
             instance_method_overloads: HashMap::new(),
             static_method_overloads: HashMap::new(),
@@ -728,8 +733,13 @@ impl Compiler {
             // call-site compilation) still hit. Canonical-name-only
             // lookups are a Phase 2b.3 concern.
             self.defined_class_methods.insert(self.canon(&m.source_name));
+            if let Some(private_name) = self.js_private_member_storage_name_for_class(&class.name, &m.source_name) {
+                self.defined_class_methods.insert(private_name);
+            }
             if let Some(arity) = uniform_tuple_return_arity(&m.body) {
-                let bound_name = if m.source_name.starts_with("Symbol.") && !m.canonical_name.is_empty() {
+                let bound_name = if let Some(private_name) = self.js_private_member_storage_name_for_class(&class.name, &m.source_name) {
+                    private_name
+                } else if m.source_name.starts_with("Symbol.") && !m.canonical_name.is_empty() {
                     m.canonical_name.clone()
                 } else {
                     self.canon(&m.source_name)
@@ -743,6 +753,9 @@ impl Compiler {
         }
         for p in &class.properties {
             self.defined_class_methods.insert(self.canon(&p.source_name));
+            if let Some(private_name) = self.js_private_member_storage_name_for_class(&class.name, &p.source_name) {
+                self.defined_class_methods.insert(private_name);
+            }
         }
 
 
@@ -777,7 +790,9 @@ impl Compiler {
                 .iter()
                 .map(|param| Compiler::normalize_type_hint(param.type_hint.as_deref().unwrap_or("object")))
                 .collect();
-            let bound_name = if mname.starts_with("Symbol.") && !m.canonical_name.is_empty() {
+            let bound_name = if let Some(private_name) = cc.js_private_member_storage_name_for_class(&class.name, mname) {
+                private_name
+            } else if mname.starts_with("Symbol.") && !m.canonical_name.is_empty() {
                 m.canonical_name.clone()
             } else {
                 cc.canon(mname)
@@ -1017,7 +1032,13 @@ impl Compiler {
         for p in &class.properties {
             // Auto-properties are handled as plain fields in pass-1.
             if p.auto_field.is_some() { continue; }
-            let pname_canon = self.canon(&p.source_name);
+            let pname_canon = if let Some(private_name) = self.js_private_member_storage_name_for_class(&class.name, &p.source_name) {
+                private_name
+            } else if !p.canonical_name.is_empty() {
+                p.canonical_name.clone()
+            } else {
+                self.canon(&p.source_name)
+            };
             let prop_is_static = p.is_static;
 
             if let Some(getter) = &p.getter {
@@ -1827,6 +1848,28 @@ impl Compiler {
                 line,
             );
             all_statics.push((mname.clone(), *mci));
+        }
+
+        if self.is_js_profile() {
+            for method in &class.static_methods {
+                if !method.source_name.starts_with('#') {
+                    continue;
+                }
+                let bound_name = self.js_member_storage_name_for_class(&class.name, &method.source_name);
+                if let Some((_, chunk_idx, _, _)) = method_chunks.iter().find(|(name, _, is_ctor, is_static)| {
+                    !*is_ctor && *is_static && name == &bound_name
+                }) {
+                    common::classes::emit_attach_static_method(
+                        self.chunk(),
+                        ctor_local,
+                        &bound_name,
+                        *chunk_idx,
+                        php_static_receiver,
+                        method_rest_fixed_count(*chunk_idx),
+                        line,
+                    );
+                }
+            }
         }
 
         // Synthetic static constructor hook from language walkers.

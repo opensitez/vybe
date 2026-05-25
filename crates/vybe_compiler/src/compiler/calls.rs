@@ -406,7 +406,6 @@ fn resolves_to_static_container_method(
     let head_name = class_parts.first().map(String::as_str).unwrap_or("");
     let full_canon = compiler.canon(&class_parts.join("."));
     let short_canon = compiler.canon(class_parts.last().map(String::as_str).unwrap_or(""));
-    let method_canon = compiler.canon(field);
 
     // If the head resolves to a known class (even if it's also in scope as a global variable —
     // Python and similar languages register class names as both), check whether the field is
@@ -426,6 +425,7 @@ fn resolves_to_static_container_method(
     [full_canon, short_canon]
         .into_iter()
         .any(|container_canon| {
+            let method_canon = compiler.js_member_storage_name_for_class(&container_canon, field);
             compiler.defined_classes.contains(&container_canon)
                 && compiler
                     .pending_classes
@@ -680,7 +680,7 @@ impl Compiler {
         let receiver_type = resolve_receiver_type_hint(self, object)?;
         let class_name = self.resolve_pending_class_name_for_type_hint(&receiver_type)?;
         let pending = self.pending_classes.get(&class_name)?;
-        let method_key = self.canon(field);
+        let method_key = self.js_member_storage_name_for_class(&class_name, field);
         let overloads = pending.instance_method_overloads.get(&method_key)?;
         self.match_method_overload(overloads, arg_exprs, require_multiple)
     }
@@ -726,11 +726,11 @@ impl Compiler {
         let Some(pending) = self.pending_classes.get(&class_name) else {
             return false;
         };
-        let method_key = self.canon(method_name);
+        let method_key = self.js_member_storage_name_for_class(&class_name, method_name);
         pending.static_method_overloads.contains_key(&method_key)
             || pending.instance_method_overloads.contains_key(&method_key)
-            || pending.static_method_names.iter().any(|name| self.canon(name) == method_key)
-            || pending.instance_member_names.iter().any(|name| self.canon(name) == method_key)
+            || pending.static_method_names.iter().any(|name| name == &method_key)
+            || pending.instance_member_names.iter().any(|name| name == &method_key)
     }
 
     fn direct_receiver_has_own_pending_method(&self, receiver: &Expression, method_name: &str) -> bool {
@@ -755,9 +755,9 @@ impl Compiler {
             return false;
         };
 
-        let method_key = self.canon(method_name);
+        let method_key = self.js_member_storage_name_for_class(&class_name, method_name);
         pending.instance_method_overloads.contains_key(&method_key)
-            || pending.instance_member_names.iter().any(|name| self.canon(name) == method_key)
+            || pending.instance_member_names.iter().any(|name| name == &method_key)
     }
 
     pub(super) fn resolve_static_method_overload_chunk_for_type(
@@ -766,9 +766,14 @@ impl Compiler {
         method_name: &str,
         arg_exprs: &[&Expression],
     ) -> Option<usize> {
-        let class_name = self.resolve_pending_class_name_for_type_hint(type_hint)?;
+        let class_name = self
+            .resolve_pending_class_name_for_type_hint(type_hint)
+            .or_else(|| {
+                let canon = self.canon(type_hint);
+                self.pending_classes.contains_key(&canon).then_some(canon)
+            })?;
         let pending = self.pending_classes.get(&class_name)?;
-        let method_key = self.canon(method_name);
+        let method_key = self.js_member_storage_name_for_class(&class_name, method_name);
         let overloads = pending
             .static_method_overloads
             .get(&method_key)
@@ -782,14 +787,34 @@ impl Compiler {
         method_name: &str,
         arg_exprs: &[&Expression],
     ) -> Option<PendingMethodOverload> {
-        let class_name = self.resolve_pending_class_name_for_type_hint(type_hint)?;
+        let class_name = self
+            .resolve_pending_class_name_for_type_hint(type_hint)
+            .or_else(|| {
+                let canon = self.canon(type_hint);
+                self.pending_classes.contains_key(&canon).then_some(canon)
+            })?;
         let pending = self.pending_classes.get(&class_name)?;
-        let method_key = self.canon(method_name);
+        let method_key = self.js_member_storage_name_for_class(&class_name, method_name);
         let overloads = pending
             .static_method_overloads
             .get(&method_key)
             .or_else(|| pending.instance_method_overloads.get(&method_key))?;
         self.match_method_overload(overloads, arg_exprs, false)
+    }
+
+    fn resolve_unique_static_method_chunk_for_class(
+        &self,
+        class_name: &str,
+        method_name: &str,
+    ) -> Option<usize> {
+        let class_name = self.canon(class_name);
+        let pending = self.pending_classes.get(&class_name)?;
+        let method_key = self.js_member_storage_name_for_class(&class_name, method_name);
+        let overloads = pending
+            .static_method_overloads
+            .get(&method_key)
+            .or_else(|| pending.instance_method_overloads.get(&method_key))?;
+        (overloads.len() == 1).then_some(overloads[0].chunk_idx)
     }
 
     fn emit_direct_instance_method_call(
@@ -1826,6 +1851,45 @@ impl Compiler {
             return Ok(());
         }
 
+        if self.is_js_profile() {
+            if let ExprKind::Ident(name) = &callee.kind {
+                if name == "String" {
+                    if let Some(arg) = args.first() {
+                        self.compile_expr(&arg.value)?;
+                        let idx = self.import("ecma:string", "String");
+                        self.emit_host_call(idx, 1);
+                    } else {
+                        self.emit_const(Value::String(Arc::from("")));
+                    }
+                    return Ok(());
+                }
+                if name == "Number" {
+                    if let Some(arg) = args.first() {
+                        self.compile_expr(&arg.value)?;
+                        let arg_slot = self.define_local("__js_number_arg");
+                        self.emit_u16(Op::LOCAL_SET, arg_slot);
+                        self.emit(Op::DROP);
+                        self.emit_u16(Op::LOCAL_GET, arg_slot);
+                        self.emit(Op::REF_TYPEOF);
+                        self.emit_const(Value::String(Arc::from("symbol")));
+                        self.emit(Op::DYN_EQ);
+                        let not_symbol = self.emit_jump(Op::BR_IF_FALSE);
+                        self.emit_const(Value::String(Arc::from("Cannot convert a Symbol value to a number")));
+                        self.emit_js_exception_ctor_from_message_value("TypeError")?;
+                        let line = self.line;
+                        common::errors::emit_throw(self.chunk(), line);
+                        self.patch_jump(not_symbol);
+                        self.emit_u16(Op::LOCAL_GET, arg_slot);
+                        let idx = self.import("ecma:number", "Number");
+                        self.emit_host_call(idx, 1);
+                    } else {
+                        self.emit_const(Value::F64(0.0));
+                    }
+                    return Ok(());
+                }
+            }
+        }
+
         if let ExprKind::Member { object, field, null_safe } = &callee.kind {
             if let Some(text) = self.resolve_reflection_string_member_expr(object) {
                 let rewritten = Expression::new(ExprKind::Member {
@@ -1835,7 +1899,6 @@ impl Compiler {
                 });
                 return self.compile_call(&rewritten, args);
             }
-
             if !null_safe
                 && field.eq_ignore_ascii_case("Deconstruct")
                 && args.iter().all(|arg| arg.by_ref)
@@ -1881,6 +1944,29 @@ impl Compiler {
         }
         if self.try_compile_dotnet_enum_call(callee, args)? {
             return Ok(());
+        }
+        if let ExprKind::Member { object, field, .. } = &callee.kind {
+            if field == "call" {
+                if let ExprKind::Member { object: to_string_target, field: to_string_field, .. } = &object.kind {
+                    if to_string_field == "toString" {
+                        if let ExprKind::Member { object: prototype_target, field: prototype_field, .. } = &to_string_target.kind {
+                            if prototype_field == "prototype" {
+                                if matches!(&prototype_target.kind, ExprKind::Ident(name) if name == "Object") {
+                                    let idx = self.import("ecma:object", "toString");
+                                    if let Some(arg) = args.first() {
+                                        self.compile_expr(&arg.value)?;
+                                        self.emit_host_call(idx, 1);
+                                    } else {
+                                        self.emit(Op::NULL);
+                                        self.emit_host_call(idx, 1);
+                                    }
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
         if self.try_compile_dotnet_zero_arg_tostring(callee, args)? {
             return Ok(());
@@ -2365,13 +2451,30 @@ impl Compiler {
                 let obj_tmp = self.define_local("__static_container_obj");
                 self.emit_u16(Op::LOCAL_SET, obj_tmp);
                 self.emit(Op::DROP);
-                self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                let method_idx = self.str_const(&self.canon(field));
-                self.emit_u16(Op::STRUCT_GET, method_idx);
                 let fn_tmp = self.define_local("__static_container_fn");
+                let class_canon = self.canon(&self.flatten_member_chain(object).join("."));
+                if self.is_js_profile() && field.starts_with('#') {
+                    if let Some(overload) = self.resolve_static_method_overload_for_type(&class_canon, field, &arg_exprs) {
+                        let line = self.line;
+                        self.emit_u16(Op::REF_FUNC, overload.chunk_idx as u16);
+                        self.chunk().emit(0, line);
+                    } else if let Some(chunk_idx) = self.resolve_unique_static_method_chunk_for_class(&class_canon, field) {
+                        let line = self.line;
+                        self.emit_u16(Op::REF_FUNC, chunk_idx as u16);
+                        self.chunk().emit(0, line);
+                    } else {
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        let method_name = self.js_member_storage_name_for_class(&class_canon, field);
+                        let method_idx = self.str_const(&method_name);
+                        self.emit_u16(Op::STRUCT_GET, method_idx);
+                    }
+                } else {
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    let method_idx = self.str_const(&self.canon(field));
+                    self.emit_u16(Op::STRUCT_GET, method_idx);
+                }
                 self.emit_u16(Op::LOCAL_SET, fn_tmp);
                 self.emit(Op::DROP);
-                let class_canon = self.canon(&self.flatten_member_chain(object).join("."));
                 if self.profile.name == "csharp" && args.len() == 1 && !args[0].spread {
                     if self.resolve_static_method_overload_for_type(&class_canon, field, &arg_exprs)
                         .is_some_and(|overload| overload.signature.has_rest)
@@ -3062,8 +3165,17 @@ impl Compiler {
                 let mut static_class_canon = None;
                 let head_name = class_parts.first().map(String::as_str).unwrap_or("");
 
+                if let Some(current_class) = self.current_class.clone() {
+                    if self.canon(head_name) == self.canon(&current_class)
+                        || class_parts.last().is_some_and(|part| self.canon(part) == self.canon(&current_class))
+                    {
+                        static_class_canon = Some(current_class);
+                    }
+                }
+
                 let full_canon = self.canon(&class_path);
-                if self.defined_classes.contains(&full_canon)
+                if static_class_canon.is_none()
+                    && (self.defined_classes.contains(&full_canon) || self.pending_classes.contains_key(&full_canon))
                     && self.scope().resolve(head_name).is_none()
                     && self.scope().resolve_ci(head_name).is_none()
                     && self.lookup_var_type_hint(head_name).is_none()
@@ -3074,7 +3186,7 @@ impl Compiler {
                 if static_class_canon.is_none() && class_parts.len() > 1 {
                     let short_name = class_parts.last().map(String::as_str).unwrap_or("");
                     let short_canon = self.canon(short_name);
-                    if self.defined_classes.contains(&short_canon)
+                    if (self.defined_classes.contains(&short_canon) || self.pending_classes.contains_key(&short_canon))
                         && self.scope().resolve(short_name).is_none()
                         && self.scope().resolve_ci(short_name).is_none()
                         && self.lookup_var_type_hint(short_name).is_none()
@@ -3085,21 +3197,33 @@ impl Compiler {
 
                 if let Some(canon) = static_class_canon {
                     if self.is_js_profile() {
+                        let method_name = self.js_member_storage_name_for_class(&canon, field);
                         let cls_idx = self.str_const(&canon);
                         self.emit_u16(Op::GLOBAL_GET, cls_idx);
                         let cls_tmp = self.scope().resolve("__static_cls")
                             .unwrap_or_else(|| self.define_local("__static_cls"));
                         self.emit_u16(Op::LOCAL_SET, cls_tmp); self.emit(Op::DROP);
-                        self.emit_u16(Op::LOCAL_GET, cls_tmp);
-                        let method_idx = self.str_const(&self.canon(field));
-                        self.emit_u16(Op::STRUCT_GET, method_idx);
                         let fn_tmp = self.scope().resolve("__static_fn")
                             .unwrap_or_else(|| self.define_local("__static_fn"));
+                        if field.starts_with('#') {
+                            if let Some(overload) = self.resolve_static_method_overload_for_type(&canon, field, &arg_exprs) {
+                                let line = self.line;
+                                self.emit_u16(Op::REF_FUNC, overload.chunk_idx as u16);
+                                self.chunk().emit(0, line);
+                            } else {
+                                self.emit_u16(Op::LOCAL_GET, cls_tmp);
+                                let method_idx = self.str_const(&method_name);
+                                self.emit_u16(Op::STRUCT_GET, method_idx);
+                            }
+                        } else {
+                            self.emit_u16(Op::LOCAL_GET, cls_tmp);
+                            let method_idx = self.str_const(&method_name);
+                            self.emit_u16(Op::STRUCT_GET, method_idx);
+                        }
                         self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
                         let saved_js_this = self.save_js_this("__js_prev_this_static_method");
                         self.emit_u16(Op::LOCAL_GET, cls_tmp);
                         self.set_js_this_from_stack();
-                        let method_name = self.canon(field);
                         let qualified_method = self.canon(&format!("{}.{}", canon, field));
                         if let Some(param_modes) = self
                             .function_param_modes
@@ -4234,6 +4358,76 @@ impl Compiler {
 
         // ── Method call: obj.method(args) ───────────────────────────
         if let ExprKind::Member { object, field, null_safe } = &callee.kind {
+            if self.js_private_member_access_forbidden(field) {
+                self.emit_js_private_access_denied(field)?;
+                return Ok(());
+            }
+            if self.is_js_profile() && field.starts_with('#') && !*null_safe {
+                self.compile_expr(object)?;
+                let obj_tmp = self.define_local("__js_private_call_obj");
+                self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
+
+                let fn_tmp = self.define_local("__js_private_call_fn");
+                let class_parts = self.flatten_member_chain(object);
+                let static_class_canon = if class_parts.is_empty() {
+                    None
+                } else {
+                    let full_canon = self.canon(&class_parts.join("."));
+                    let short_canon = self.canon(class_parts.last().map(String::as_str).unwrap_or(""));
+                    if let Some(current_class) = self.current_class.clone() {
+                        if class_parts.first().is_some_and(|part| self.canon(part) == self.canon(&current_class))
+                            || class_parts.last().is_some_and(|part| self.canon(part) == self.canon(&current_class))
+                        {
+                            Some(current_class)
+                        } else if self.defined_classes.contains(&full_canon) || self.pending_classes.contains_key(&full_canon) {
+                            Some(full_canon)
+                        } else if self.defined_classes.contains(&short_canon) || self.pending_classes.contains_key(&short_canon) {
+                            Some(short_canon)
+                        } else {
+                            None
+                        }
+                    } else if self.defined_classes.contains(&full_canon) || self.pending_classes.contains_key(&full_canon) {
+                        Some(full_canon)
+                    } else if self.defined_classes.contains(&short_canon) || self.pending_classes.contains_key(&short_canon) {
+                        Some(short_canon)
+                    } else {
+                        None
+                    }
+                };
+
+                if let Some(class_name) = static_class_canon {
+                    if let Some(overload) = self.resolve_static_method_overload_for_type(&class_name, field, &arg_exprs) {
+                        let line = self.line;
+                        self.emit_u16(Op::REF_FUNC, overload.chunk_idx as u16);
+                        self.chunk().emit(0, line);
+                        self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
+                    } else {
+                        let field_name = self.js_member_storage_name_for_class(&class_name, field);
+                        let prop = self.str_const(&field_name);
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit_u16(Op::STRUCT_GET, prop);
+                        self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
+                    }
+                } else {
+                    let field_name = self.js_member_storage_name_for_receiver(object, field);
+                    let prop = self.str_const(&field_name);
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_u16(Op::STRUCT_GET, prop);
+                    self.emit_u16(Op::LOCAL_SET, fn_tmp); self.emit(Op::DROP);
+                }
+
+                let saved_js_this = self.save_js_this("__js_prev_this_private_call");
+                self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                self.set_js_this_from_stack();
+                self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                for arg in &arg_exprs { self.compile_expr(arg)?; }
+                self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                let result_slot = self.define_local("__js_private_call_result");
+                self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
+                self.restore_js_this(saved_js_this);
+                self.emit_u16(Op::LOCAL_GET, result_slot);
+                return Ok(());
+            }
             if self.is_js_profile() {
                 if !*null_safe && self.try_compile_js_promise_chain_call(object, field, &arg_exprs)? {
                     return Ok(());
@@ -4243,7 +4437,7 @@ impl Compiler {
                 let obj_tmp = self.define_local("__js_obj");
                 self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
 
-                let method_name = self.canon(field);
+                let method_name = self.js_member_storage_name(field);
 
                 // Generator `.return(v)`: drive the shared generator
                 // return-control packet through RESUME so suspended
@@ -4658,7 +4852,60 @@ impl Compiler {
             self.reserve_local_slot(obj_tmp);
             self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
 
-            let field_name = self.canon(field);
+            if self.is_js_profile() && field.starts_with('#') && !*null_safe {
+                let class_parts = self.flatten_member_chain(object);
+                let class_name = if let Some(current_class) = self.current_class.clone() {
+                    if class_parts.first().is_some_and(|part| self.canon(part) == self.canon(&current_class))
+                        || class_parts.last().is_some_and(|part| self.canon(part) == self.canon(&current_class))
+                    {
+                        Some(current_class)
+                    } else if !class_parts.is_empty() {
+                        let full_canon = self.canon(&class_parts.join("."));
+                        let short_canon = self.canon(class_parts.last().map(String::as_str).unwrap_or(""));
+                        if self.pending_classes.contains_key(&full_canon) || self.defined_classes.contains(&full_canon) {
+                            Some(full_canon)
+                        } else if self.pending_classes.contains_key(&short_canon) || self.defined_classes.contains(&short_canon) {
+                            Some(short_canon)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else if !class_parts.is_empty() {
+                    let full_canon = self.canon(&class_parts.join("."));
+                    let short_canon = self.canon(class_parts.last().map(String::as_str).unwrap_or(""));
+                    if self.pending_classes.contains_key(&full_canon) || self.defined_classes.contains(&full_canon) {
+                        Some(full_canon)
+                    } else if self.pending_classes.contains_key(&short_canon) || self.defined_classes.contains(&short_canon) {
+                        Some(short_canon)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(class_name) = class_name {
+                    if let Some(chunk_idx) = self.resolve_unique_static_method_chunk_for_class(&class_name, field) {
+                        let saved_js_this = self.save_js_this("__js_prev_this_private_static_call");
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.set_js_this_from_stack();
+                        let line = self.line;
+                        self.emit_u16(Op::REF_FUNC, chunk_idx as u16);
+                        self.chunk().emit(0, line);
+                        for arg in &arg_exprs { self.compile_expr(arg)?; }
+                        self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                        let result_slot = self.define_local("__js_private_static_call_result");
+                        self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
+                        self.restore_js_this(saved_js_this);
+                        self.emit_u16(Op::LOCAL_GET, result_slot);
+                        return Ok(());
+                    }
+                }
+            }
+
+            let field_name = self.js_member_storage_name_for_receiver(object, field);
             let prop = self.str_const(&field_name);
 
             if self.profile.parens_for_index && !arg_exprs.is_empty() {
@@ -5022,7 +5269,17 @@ impl Compiler {
                         self.emit(Op::DROP);
                         arg_slots.push(arg_slot);
                     }
-                    self.emit_call_ref_with_arg_slots(fn_tmp, None, &arg_slots);
+                    if field == "toString" {
+                        let invoke = self.import("ecma:value", "invokeMethod");
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit_const(Value::String(Arc::from(field.as_str())));
+                        for slot in &arg_slots {
+                            self.emit_u16(Op::LOCAL_GET, *slot);
+                        }
+                        self.emit_host_call(invoke, (arg_slots.len() + 2) as u8);
+                    } else {
+                        self.emit_call_ref_with_arg_slots(fn_tmp, None, &arg_slots);
+                    }
                 } else {
                     if let Some(param_modes) = self.function_param_modes.get(&self.canon(field)).cloned() {
                         let receiver_param_offset = usize::from(param_modes.len() == args.len() + 1);
@@ -5447,7 +5704,7 @@ impl Compiler {
                     self.patch_jump(have_fn);
                     self.patch_jump(need_lookup_undefined);
                     self.patch_jump(need_lookup);
-                    let method_name = field.to_string();
+                    let method_name = field_name.clone();
                     let lookup = self.import("ecma:value", "getMethodForCall");
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     self.emit_const(Value::String(Arc::from(method_name.as_str())));
@@ -6326,6 +6583,20 @@ impl Compiler {
         // semantics as ECMA-262 §13.3.7 (CallMemberExpression).
         if self.is_js_profile() {
             if let ExprKind::Index { object, index, .. } = &callee.kind {
+                if arg_exprs.is_empty()
+                    && matches!(&object.kind, ExprKind::Array(_))
+                    && matches!(
+                        &index.kind,
+                        ExprKind::Member { object, field, null_safe: false }
+                            if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol")
+                                && field == "iterator"
+                    )
+                {
+                    self.compile_expr(object)?;
+                    let values_idx = self.import("ecma:array", "values");
+                    self.emit_host_call(values_idx, 1);
+                    return Ok(());
+                }
                 let obj_tmp = self.define_local("__js_idx_obj");
                 self.compile_expr(object)?;
                 self.emit_u16(Op::LOCAL_SET, obj_tmp); self.emit(Op::DROP);
@@ -6337,7 +6608,6 @@ impl Compiler {
                     ExprKind::Member { object, field, null_safe: false }
                         if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
                             let fallback_key = match field.as_str() {
-                                "iterator" if matches!(&object.kind, ExprKind::Ident(_)) && matches!(&callee.kind, ExprKind::Index { object, .. } if matches!(&object.kind, ExprKind::Array(_))) => Some("values"),
                                 "iterator" => Some("iterator"),
                                 "asyncIterator" => Some("asyncIterator"),
                                 "toPrimitive" => Some("toprimitive"),

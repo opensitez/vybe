@@ -136,6 +136,18 @@ fn test_invalid_pattern_returns_false() {
     assert_eq!(invoke("test", vec![r, s("anything")]), Value::Bool(false));
 }
 
+#[test]
+fn test_unicode_sets_rgi_emoji_matches_smiley() {
+    let r = invoke("new", vec![s("\\p{RGI_Emoji}"), s("v")]);
+    assert_eq!(invoke("test", vec![r, s("🙂")]), Value::Bool(true));
+}
+
+#[test]
+fn test_unicode_sets_rgi_emoji_rejects_ascii() {
+    let r = invoke("new", vec![s("\\p{RGI_Emoji}"), s("v")]);
+    assert_eq!(invoke("test", vec![r, s("A")]), Value::Bool(false));
+}
+
 // ── exec ─────────────────────────────────────────────────────────────
 
 #[test]
@@ -175,6 +187,14 @@ fn exec_named_groups_appear_in_groups_object() {
     let result = invoke("exec", vec![r, s("hello")]);
     let groups = obj_prop(&result, "groups");
     assert_eq!(as_string(&obj_prop(&groups, "word")), "hello");
+}
+
+#[test]
+fn exec_unicode_sets_rgi_emoji_returns_full_match() {
+    let r = invoke("new", vec![s("\\p{RGI_Emoji}"), s("v")]);
+    let result = invoke("exec", vec![r, s("A🙂B")]);
+    assert_eq!(array_strings(&result), vec!["🙂"]);
+    assert_eq!(obj_prop(&result, "index"), Value::I32(1));
 }
 
 // ── toString ─────────────────────────────────────────────────────────

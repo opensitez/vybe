@@ -118,6 +118,7 @@ decodeURI               = { emit = "host:ecma:string:decodeURI",             min
 Boolean             = { emit = "host:ecma:boolean:Boolean",       min_args = 1, max_args = 1 }
 Number              = { emit = "host:ecma:number:Number",         min_args = 1, max_args = 1 }
 String              = { emit = "host:ecma:string:String",         min_args = 1, max_args = 1 }
+Object              = { emit = "host:ecma:object:Object",         min_args = 0, max_args = 1 }
 BigInt              = { emit = "host:ecma:bigint:BigInt",         min_args = 1, max_args = 1 }
 
 # ── BigInt static methods ────────────────────────────────────────────────────
@@ -661,6 +662,10 @@ module = "ecma:promise"
 # ────────────────────────────────────────────────────────────────────────────
 
 [known_types]
+"Object"        = ["ecma:object", "Object"]
+"Boolean"       = ["ecma:boolean", "new"]
+"Number"        = ["ecma:number", "new"]
+"String"        = ["ecma:string", "new"]
 "Array"         = ["ecma:array", "new"]
 "Map"           = ["ecma:map", "new"]
 "Set"           = ["ecma:set", "new"]

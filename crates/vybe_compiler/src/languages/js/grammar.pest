@@ -465,7 +465,7 @@ object_literal = {
 object_property = {
     "..." ~ assignment_expression                                     // spread
     | computed_property_name ~ ":" ~ assignment_expression             // computed key
-    | property_name ~ "(" ~ param_list? ~ ")" ~ function_body         // method shorthand (before get/set to avoid get/set prefix match)
+    | async_kw? ~ property_name ~ "(" ~ param_list? ~ ")" ~ function_body // method shorthand (before get/set to avoid get/set prefix match)
     | "get" ~ property_name ~ "(" ~ ")" ~ function_body               // getter
     | "set" ~ property_name ~ "(" ~ param ~ ")" ~ function_body       // setter
     | property_name ~ ":" ~ assignment_expression                      // key: value

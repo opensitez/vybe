@@ -961,6 +961,7 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     let saved_this = 7;
     let js_this = c.add_constant(vybe_bytecode::Value::String(Arc::from("__js_this")));
     let iter_key = c.add_constant(vybe_bytecode::Value::String(Arc::from("iterator")));
+    let async_iter_key = c.add_constant(vybe_bytecode::Value::String(Arc::from("asyncIterator")));
     let iter_alt_key = c.add_constant(vybe_bytecode::Value::String(Arc::from("__iter__")));
     let next_key = c.add_constant(vybe_bytecode::Value::String(Arc::from("next")));
     let done_key = c.add_constant(vybe_bytecode::Value::String(Arc::from("done")));
@@ -1012,6 +1013,17 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::DROP, 0);
     c.emit_end(0); c.patch_block(try_alt);
 
+    let try_async = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, method, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_br_if(0, 0); // method already set → skip
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    c.emit_op_u16(Op::STRUCT_GET, async_iter_key, 0);
+    c.emit_op_u16(Op::LOCAL_SET, method, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_end(0); c.patch_block(try_async);
+
     // typeof method !== "function" → result = v, exit
     let has_method = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, method, 0);
@@ -1031,6 +1043,7 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, method, 0);
     c.emit_op_u8(Op::CALL_REF, 0, 0);
+    c.emit_op(Op::PROMISE_SUSPEND, 0);
     c.emit_op_u16(Op::LOCAL_SET, it, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -1096,6 +1109,7 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
 
     c.emit_op_u16(Op::LOCAL_GET, method, 0);
     c.emit_op_u8(Op::CALL_REF, 0, 0);
+    c.emit_op(Op::PROMISE_SUSPEND, 0);
     c.emit_op_u16(Op::LOCAL_SET, step, 0);
     c.emit_op(Op::DROP, 0);
 

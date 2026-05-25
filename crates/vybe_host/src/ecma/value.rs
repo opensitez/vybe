@@ -34,7 +34,9 @@ use crate::ecma::typedarray::{ta_live_length, read_element, write_element, new_v
 use crate::ecma::weakmap::{WEAKMAP_TAG, WEAKSET_TAG, WM_KEYS_PROP, key_ptr_find as wm_key_ptr_find};
 
 fn make_array(elems: Vec<Value>) -> Value {
-    Value::Object(Arc::new(Mutex::new(Object::new_array(elems))))
+    let mut obj = Object::new_array(elems);
+    obj.properties.insert("__type".into(), Value::String(Arc::from("Array")));
+    Value::Object(Arc::new(Mutex::new(obj)))
 }
 
 pub fn register(vm: &mut VM) {
@@ -61,6 +63,34 @@ pub fn register(vm: &mut VM) {
                     Value::F64(na + nb)
                 }
             }
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:value",
+        "abstractEq",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let a = args.first().cloned().unwrap_or(Value::Undefined);
+            let b = args.get(1).cloned().unwrap_or(Value::Undefined);
+            Value::Bool(abstract_loose_eq(ctx, &a, &b))
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:value",
+        "abstractNe",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let a = args.first().cloned().unwrap_or(Value::Undefined);
+            let b = args.get(1).cloned().unwrap_or(Value::Undefined);
+            Value::Bool(!abstract_loose_eq(ctx, &a, &b))
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:value",
+        "constructorOf",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            constructor_of(args.first().unwrap_or(&Value::Undefined))
         }),
     );
 
@@ -204,6 +234,7 @@ pub fn register(vm: &mut VM) {
 
 fn dispatch(ctx: &mut HostContext, receiver: &Value, method: &str, args: &[Value]) -> Value {
     match receiver {
+        Value::Bool(_) => dispatch_boolean(receiver, method, args),
         Value::F64(_) | Value::I32(_) | Value::I64(_) => dispatch_number(receiver, method, args),
         Value::String(_) => dispatch_string(ctx, receiver, method, args),
         Value::Symbol(desc) => match method {
@@ -256,6 +287,111 @@ fn dispatch(ctx: &mut HostContext, receiver: &Value, method: &str, args: &[Value
                 _ => dispatch_plain_object(ctx, obj.clone(), method, args),
             }
         }
+        _ => Value::Undefined,
+    }
+}
+
+fn abstract_loose_eq(ctx: &mut HostContext, a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Null, Value::Null) | (Value::Undefined, Value::Undefined) => true,
+        (Value::Null, Value::Undefined) | (Value::Undefined, Value::Null) => true,
+        (Value::Null, _) | (_, Value::Null) => false,
+        (Value::Undefined, _) | (_, Value::Undefined) => false,
+        (Value::Bool(x), Value::Bool(y)) => x == y,
+        (Value::F64(x), Value::F64(y)) => !x.is_nan() && !y.is_nan() && x == y,
+        (Value::I32(x), Value::I32(y)) => x == y,
+        (Value::I64(x), Value::I64(y)) => x == y,
+        (Value::F64(x), Value::I32(y)) => *x == *y as f64,
+        (Value::I32(x), Value::F64(y)) => *x as f64 == *y,
+        (Value::F64(x), Value::I64(y)) => *x == *y as f64,
+        (Value::I64(x), Value::F64(y)) => *x as f64 == *y,
+        (Value::String(x), Value::String(y)) => x == y,
+        (Value::Symbol(x), Value::Symbol(y)) => Arc::ptr_eq(x, y),
+        (Value::BigInt(x), Value::BigInt(y)) => x == y,
+        (Value::Bool(value), other) | (other, Value::Bool(value)) => {
+            let number = if *value { 1.0 } else { 0.0 };
+            abstract_loose_eq(ctx, &Value::F64(number), other)
+        }
+        (Value::String(text), Value::F64(number)) | (Value::F64(number), Value::String(text)) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                *number == 0.0
+            } else if let Ok(parsed) = trimmed.parse::<f64>() {
+                parsed == *number
+            } else {
+                false
+            }
+        }
+        (Value::String(text), Value::I32(number)) | (Value::I32(number), Value::String(text)) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                *number == 0
+            } else if let Ok(parsed) = trimmed.parse::<f64>() {
+                parsed == *number as f64
+            } else {
+                false
+            }
+        }
+        (Value::Object(x), Value::Object(y)) => Arc::ptr_eq(x, y),
+        (Value::Object(_), _) => {
+            let primitive = to_primitive(ctx, a, "default");
+            abstract_loose_eq(ctx, &primitive, b)
+        }
+        (_, Value::Object(_)) => {
+            let primitive = to_primitive(ctx, b, "default");
+            abstract_loose_eq(ctx, a, &primitive)
+        }
+        _ => false,
+    }
+}
+
+fn constructor_from_prototype(proto: Value) -> Value {
+    let Value::Object(obj) = proto else {
+        return Value::Undefined;
+    };
+    obj.lock()
+        .unwrap()
+        .properties
+        .get("constructor")
+        .cloned()
+        .unwrap_or(Value::Undefined)
+}
+
+fn constructor_of(value: &Value) -> Value {
+    match value {
+        Value::String(_) => constructor_from_prototype(crate::ecma::string::shared_string_prototype()),
+        Value::Bool(_) => constructor_from_prototype(crate::ecma::boolean::shared_boolean_prototype()),
+        Value::F64(_) | Value::I32(_) | Value::I64(_) => {
+            constructor_from_prototype(crate::ecma::number::shared_number_prototype())
+        }
+        Value::Object(obj) => {
+            let mut current = Some(obj.clone());
+            while let Some(node) = current {
+                let next = {
+                    let locked = node.lock().unwrap();
+                    if let Some(value) = locked.properties.get("constructor") {
+                        if !matches!(value, Value::Null | Value::Undefined) {
+                            return value.clone();
+                        }
+                    }
+                    locked.properties.get("__proto__").cloned()
+                };
+                current = match next {
+                    Some(Value::Object(parent)) => Some(parent),
+                    _ => None,
+                };
+            }
+            Value::Undefined
+        }
+        _ => Value::Undefined,
+    }
+}
+
+fn dispatch_boolean(receiver: &Value, method: &str, _args: &[Value]) -> Value {
+    let value = crate::ecma::boolean::to_boolean(receiver);
+    match method {
+        "toString" => Value::String(Arc::from(if value { "true" } else { "false" })),
+        "valueOf" => Value::Bool(value),
         _ => Value::Undefined,
     }
 }
@@ -474,6 +610,12 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             Value::String(Arc::from(s.repeat(n).as_str()))
         }
         "split" => {
+            if let Some(result) = args
+                .first()
+                .and_then(|value| invoke_string_symbol_hook(ctx, value, "symbolsplit", &[Value::String(s.clone())]))
+            {
+                return result;
+            }
             // ECMA-262 §22.1.3.20 — first arg can be a String OR a RegExp.
             // Detect the RegExp shape (object stamped __type=RegExp) and
             // dispatch through `ecma:regexp` for shared regex semantics.
@@ -516,6 +658,16 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             // spec the function is called with (match, ...captures, offset, input)
             // and its return value is the substitution.
             let replacement = args.get(1).cloned().unwrap_or(Value::Undefined);
+            if let Some(result) = args.first().and_then(|value| {
+                invoke_string_symbol_hook(
+                    ctx,
+                    value,
+                    "symbolreplace",
+                    &[Value::String(s.clone()), replacement.clone()],
+                )
+            }) {
+                return result;
+            }
             if let Some((pat, flags)) = regex_pattern(args.first()) {
                 let mut call_args = Vec::with_capacity(3);
                 call_args.push(Value::String(s.clone()));
@@ -556,6 +708,19 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             Value::String(Arc::from(s.replacen(find.as_str(), with.as_str(), 1).as_str()))
         }
         "replaceAll" => {
+            if let Some(result) = args.first().and_then(|value| {
+                invoke_string_symbol_hook(
+                    ctx,
+                    value,
+                    "symbolreplace",
+                    &[
+                        Value::String(s.clone()),
+                        args.get(1).cloned().unwrap_or(Value::Undefined),
+                    ],
+                )
+            }) {
+                return result;
+            }
             if let Some((pat, flags)) = regex_pattern(args.first()) {
                 let mut call_args = Vec::with_capacity(3);
                 call_args.push(Value::String(s.clone()));
@@ -627,6 +792,22 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
     }
 }
 
+fn invoke_string_symbol_hook(
+    ctx: &mut HostContext,
+    target: &Value,
+    key: &str,
+    args: &[Value],
+) -> Option<Value> {
+    let Value::Object(obj) = target else {
+        return None;
+    };
+    let method = lookup_method_via_proto(obj, key)?;
+    if matches!(method, Value::Null | Value::Undefined) {
+        return None;
+    }
+    Some(ctx.invoke(&method, args))
+}
+
 fn pad(s: &str, args: &[Value], start: bool) -> Value {
     let target = args.first().map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
     let pad_char = args
@@ -661,6 +842,18 @@ fn dispatch_array(
     args: &[Value],
 ) -> Value {
     match method {
+        "next" if is_array_iterator(&obj) => {
+            let mut o = obj.lock().unwrap();
+            let idx = o.properties.get("__index").map(|v| v.as_i32()).unwrap_or(0);
+            if let ObjectKind::Array(ref items) = o.kind {
+                if (idx as usize) < items.len() {
+                    let value = items[idx as usize].clone();
+                    o.properties.insert("__index".into(), Value::I32(idx + 1));
+                    return array_iterator_result(value, false);
+                }
+            }
+            array_iterator_result(Value::Undefined, true)
+        }
         "length" => {
             let o = obj.lock().unwrap();
             if let ObjectKind::Array(ref v) = o.kind {
@@ -734,15 +927,10 @@ fn dispatch_array(
                 }
             };
             for a in args {
-                match a {
-                    Value::Object(other) => {
-                        let lo = other.lock().unwrap();
-                        match &lo.kind {
-                            ObjectKind::Array(v) => out.extend(v.iter().cloned()),
-                            _ => out.push(a.clone()),
-                        }
-                    }
-                    _ => out.push(a.clone()),
+                if let Some(spread) = concat_spread_elements(a) {
+                    out.extend(spread);
+                } else {
+                    out.push(a.clone());
                 }
             }
             make_array(out)
@@ -1132,6 +1320,56 @@ fn dispatch_array(
         }
         _ => Value::Undefined,
     }
+}
+
+fn is_array_iterator(obj: &Arc<Mutex<Object>>) -> bool {
+    let o = obj.lock().unwrap();
+    matches!(o.properties.get("__type"), Some(Value::String(tag)) if tag.as_ref() == "ArrayIterator")
+}
+
+fn concat_spread_elements(value: &Value) -> Option<Vec<Value>> {
+    let Value::Object(obj) = value else {
+        return None;
+    };
+    let spreadable = lookup_method_via_proto(obj, "isconcatspreadable");
+    let should_spread = match spreadable {
+        Some(flag) => truthy(&flag),
+        None => {
+            let o = obj.lock().unwrap();
+            matches!(o.kind, ObjectKind::Array(_))
+        }
+    };
+    if !should_spread {
+        return None;
+    }
+    let o = obj.lock().unwrap();
+    match &o.kind {
+        ObjectKind::Array(v) => Some(v.clone()),
+        _ => {
+            let len = o
+                .properties
+                .get("length")
+                .map(|v| v.as_i32().max(0) as usize)
+                .unwrap_or(0);
+            let mut out = Vec::with_capacity(len);
+            for index in 0..len {
+                out.push(
+                    o.properties
+                        .get(&index.to_string())
+                        .cloned()
+                        .unwrap_or(Value::Undefined),
+                );
+            }
+            Some(out)
+        }
+    }
+}
+
+fn array_iterator_result(value: Value, done: bool) -> Value {
+    let mut obj = Object::new();
+    obj.properties.insert("value".into(), value);
+    obj.properties.insert("done".into(), Value::Bool(done));
+    Value::Object(Arc::new(Mutex::new(obj)))
 }
 
 fn v_len_after(o: &Object) -> i32 {
@@ -1768,6 +2006,18 @@ fn dispatch_plain_object(
         found
     };
     if let Some(fn_val) = cb {
+        let boxed_primitive = {
+            let o = obj.lock().unwrap();
+            o.properties.get("__primitive").cloned()
+        };
+        if let (Some(receiver), Value::Object(func_obj)) = (boxed_primitive, &fn_val) {
+            if matches!(func_obj.lock().unwrap().kind, ObjectKind::HostFunction(_)) {
+                let mut call_args = Vec::with_capacity(args.len() + 1);
+                call_args.push(receiver);
+                call_args.extend_from_slice(args);
+                return ctx.invoke(&fn_val, &call_args);
+            }
+        }
         return ctx.invoke(&fn_val, args);
     }
     // Type-tagged object fallback: known stamped-`__type` instances
@@ -1781,12 +2031,47 @@ fn dispatch_plain_object(
         o.properties.get("__type").map(|v| format!("{}", v))
     };
     if let Some(tag) = type_tag {
-        if tag == "Date" {
+        let primitive = {
+            let o = obj.lock().unwrap();
+            o.properties.get("__primitive").cloned()
+        };
+        if tag == "Boolean" {
+            if let Some(value) = primitive.as_ref() {
+                return dispatch_boolean(value, method, args);
+            }
+        } else if tag == "Number" {
+            if let Some(value) = primitive.as_ref() {
+                return dispatch_number(value, method, args);
+            }
+        } else if tag == "String" {
+            if let Some(value) = primitive.as_ref() {
+                return dispatch_string(ctx, value, method, args);
+            }
+        } else if tag == "Date" {
             let mut call_args = Vec::with_capacity(args.len() + 1);
             call_args.push(Value::Object(obj));
             call_args.extend_from_slice(args);
             if let Some(result) = crate::ecma::date::dispatch_date_method(method, &call_args) {
                 return result;
+            }
+        } else if tag == "BigInt" {
+            if let Some(Value::BigInt(value)) = primitive {
+                return dispatch_bigint(value, method, args);
+            }
+        } else if tag == "Symbol" {
+            if let Some(Value::Symbol(desc)) = primitive.as_ref() {
+                return match method {
+                    "toString" => Value::String(Arc::from(format!("Symbol({})", desc).as_str())),
+                    "valueOf" => Value::Symbol(Arc::clone(desc)),
+                    "description" => {
+                        if desc.is_empty() {
+                            Value::Undefined
+                        } else {
+                            Value::String(Arc::clone(desc))
+                        }
+                    }
+                    _ => Value::Undefined,
+                };
             }
         } else if tag == "RegExp" {
             let mut call_args = Vec::with_capacity(args.len() + 1);
@@ -1811,6 +2096,10 @@ fn lookup_method_for_call(receiver: &Value, method: &str) -> Value {
     let Value::Object(receiver_obj) = receiver else {
         return Value::Null;
     };
+
+    if method == "next" && is_array_iterator(receiver_obj) {
+        return Value::Null;
+    }
 
     let mut current = Some(receiver_obj.clone());
     while let Some(obj) = current {
@@ -1897,6 +2186,13 @@ fn js_instanceof(receiver: &Value, ctor: &Value) -> bool {
         }
         _ => None,
     };
+
+    if matches!(ctor_name.as_deref(), Some("Array")) {
+        let o = obj.lock().unwrap();
+        if matches!(o.kind, ObjectKind::Array(_)) {
+            return true;
+        }
+    }
 
     if let Some(name) = ctor_name.as_deref() {
         let matched_stamp = {
@@ -1999,11 +2295,25 @@ fn lookup_method_via_proto(obj: &Arc<Mutex<Object>>, key: &str) -> Option<Value>
 /// toString; in `string` hint order: toString then valueOf). Returns
 /// the first non-Object result; falls back to Display if neither
 /// callable yields a primitive.
-fn to_primitive(ctx: &mut HostContext, v: &Value, hint: &str) -> Value {
+pub(crate) fn to_primitive(ctx: &mut HostContext, v: &Value, hint: &str) -> Value {
     let obj = match v {
         Value::Object(o) => o.clone(),
         _ => return v.clone(),
     };
+    {
+        let o = obj.lock().unwrap();
+        if let ObjectKind::Array(elems) = &o.kind {
+            let joined = elems
+                .iter()
+                .map(|value| match value {
+                    Value::Null | Value::Undefined => String::new(),
+                    other => format!("{}", other),
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            return Value::String(Arc::from(joined.as_str()));
+        }
+    }
     // ECMA-262 §7.1.1: check [Symbol.toPrimitive] first (stored as "toprimitive")
     let tp = obj.lock().unwrap().properties.get("toprimitive").cloned();
     if let Some(tp_fn) = tp {
@@ -2032,6 +2342,15 @@ fn to_primitive(ctx: &mut HostContext, v: &Value, hint: &str) -> Value {
             _ => None,
         })
     };
+    if matches!(type_tag.as_deref(), Some("Boolean" | "Number" | "String" | "BigInt" | "Symbol")) {
+        let primitive = {
+            let o = obj.lock().unwrap();
+            o.properties.get("__primitive").cloned()
+        };
+        if let Some(value) = primitive {
+            return value;
+        }
+    }
     if type_tag.as_deref() == Some("Date") {
         let receiver = Value::Object(obj.clone());
         let prefer = if hint == "string" { ["toString", "valueOf"] } else { ["valueOf", "toString"] };

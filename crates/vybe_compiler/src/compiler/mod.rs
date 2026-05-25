@@ -2097,6 +2097,71 @@ impl Compiler {
         false
     }
 
+    fn js_private_member_storage_name_for_class(&self, owner_class: &str, field: &str) -> Option<String> {
+        if !self.is_js_profile() || !field.starts_with('#') {
+            return None;
+        }
+        Some(format!(
+            "__js_private_{}.{}",
+            self.canon(owner_class),
+            field.trim_start_matches('#')
+        ))
+    }
+
+    fn js_member_storage_name_for_class(&self, owner_class: &str, field: &str) -> String {
+        self.js_private_member_storage_name_for_class(owner_class, field)
+            .unwrap_or_else(|| self.canon(field))
+    }
+
+    fn js_member_storage_name(&self, field: &str) -> String {
+        self.current_class
+            .as_deref()
+            .map(|class_name| self.js_member_storage_name_for_class(class_name, field))
+            .unwrap_or_else(|| self.canon(field))
+    }
+
+    fn js_member_storage_name_for_receiver(&self, receiver: &Expression, field: &str) -> String {
+        if !self.is_js_profile() || !field.starts_with('#') {
+            return self.js_member_storage_name(field);
+        }
+
+        if let Some(class_name) = self.current_class.as_deref() {
+            if matches!(receiver.kind, ExprKind::This | ExprKind::Super) {
+                return self.js_member_storage_name_for_class(class_name, field);
+            }
+        }
+
+        let parts = self.flatten_member_chain(receiver);
+        if !parts.is_empty() {
+            let full_canon = self.canon(&parts.join("."));
+            if self.defined_classes.contains(&full_canon) || self.pending_classes.contains_key(&full_canon) {
+                return self.js_member_storage_name_for_class(&full_canon, field);
+            }
+
+            if let Some(short_name) = parts.last() {
+                let short_canon = self.canon(short_name);
+                if self.defined_classes.contains(&short_canon) || self.pending_classes.contains_key(&short_canon) {
+                    return self.js_member_storage_name_for_class(&short_canon, field);
+                }
+            }
+        }
+
+        self.js_member_storage_name(field)
+    }
+
+    fn js_private_member_access_forbidden(&self, field: &str) -> bool {
+        self.is_js_profile() && field.starts_with('#') && self.current_class.is_none()
+    }
+
+    fn emit_js_private_access_denied(&mut self, field: &str) -> Result<(), String> {
+        let message = format!("Cannot access private member {}", field);
+        self.emit_const(Value::String(Arc::from(message.as_str())));
+        self.emit_js_exception_ctor_from_message_value("TypeError")?;
+        let line = self.line;
+        common::errors::emit_throw(self.chunk(), line);
+        Ok(())
+    }
+
     fn emit_with_target_get(&mut self, name: &str) -> bool {
         let Some(slot) = self.with_targets.last().copied() else {
             return false;
@@ -4924,6 +4989,7 @@ impl Compiler {
         if self.profile.known_types.contains_key(name)
             && !self.defined_globals.contains(name)
             && !self.defined_globals.contains(&cname)
+            && !(self.is_js_profile() && matches!(name, "Object" | "Boolean" | "Number" | "String"))
         {
             self.emit_const(Value::String(Arc::from(name)));
             return;
@@ -8624,7 +8690,14 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, class_tmp);
                 if let ExprKind::Ident(name) = &member.kind {
-                    let field_name = self.canon(name);
+                    if self.js_private_member_access_forbidden(name) {
+                        self.emit_js_private_access_denied(name)?;
+                        return Ok(());
+                    }
+                    let field_name = match &class.kind {
+                        ExprKind::Ident(class_name) => self.js_member_storage_name_for_class(class_name, name),
+                        _ => self.canon(name),
+                    };
                     self.emit_u16(Op::LOCAL_GET, value_tmp);
                     let idx = self.str_const(&field_name);
                     self.emit_u16(Op::STRUCT_SET, idx);
@@ -8638,6 +8711,10 @@ impl Compiler {
                 }
             }
             ExprKind::Member { object, field, .. } => {
+                if self.js_private_member_access_forbidden(field) {
+                    self.emit_js_private_access_denied(field)?;
+                    return Ok(());
+                }
                 if let ExprKind::Ident(obj_name) = &object.kind {
                     if let Some(key) = self.generic_static_member_key(obj_name, field) {
                         let tmp = self.define_local("__tmp");
@@ -8665,7 +8742,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, obj_tmp);
                         self.emit(Op::DROP);
 
-                        let field_name = self.canon(field);
+                        let field_name = self.js_member_storage_name(field);
                         let idx = self.str_const(&field_name);
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         self.emit_u16(Op::LOCAL_GET, value_tmp);
@@ -8698,7 +8775,7 @@ impl Compiler {
                 }
                 let tmp = self.define_local("__tmp");
                 self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
-                let field_name = self.canon(field);
+                let field_name = self.js_member_storage_name(field);
                 if self.profile.name == "fortran" {
                     if let ExprKind::Index { object: collection_owner, index, .. } = &object.kind {
                         let line = self.line;
@@ -9710,8 +9787,8 @@ impl Compiler {
                     // their valueOf/toString chain (Date, custom
                     // valueOf, class instances).
                     if self.is_js_profile() {
-                        self.coerce_top_two_to_default_primitive();
-                        self.emit_js_add();
+                        let idx = self.import("ecma:value", "add");
+                        self.emit_host_call(idx, 2);
                         return;
                     }
                     self.emit(Op::DYN_ADD);
@@ -9743,8 +9820,22 @@ impl Compiler {
                 }
             },
             BinOp::Pow => { let l = self.line; common::math::emit_pow(self.chunk(), l); }
-            BinOp::Eq => self.emit(Op::DYN_EQ),
-            BinOp::NotEq => self.emit(Op::DYN_NE),
+            BinOp::Eq => {
+                if self.is_js_profile() {
+                    let idx = self.import("ecma:value", "abstractEq");
+                    self.emit_host_call(idx, 2);
+                } else {
+                    self.emit(Op::DYN_EQ);
+                }
+            }
+            BinOp::NotEq => {
+                if self.is_js_profile() {
+                    let idx = self.import("ecma:value", "abstractNe");
+                    self.emit_host_call(idx, 2);
+                } else {
+                    self.emit(Op::DYN_NE);
+                }
+            }
             BinOp::StrictEq => {
                 // JS ===: no type coercion. Emit ref_typeof compare first,
                 // then dyn_eq only if types match.

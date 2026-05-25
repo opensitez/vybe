@@ -14,13 +14,44 @@
 //! ships `wasm:js-number` natively + provides `ecma:number` shims
 //! has the full ECMA-262 numeric surface.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+use vybe_bytecode::value::Object;
 use vybe_bytecode::{VM, Value};
+
+static NUMBER_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+
+pub(crate) fn shared_number_prototype() -> Value {
+    Value::Object(
+        NUMBER_PROTOTYPE
+            .get_or_init(|| Arc::new(Mutex::new(Object::new())))
+            .clone(),
+    )
+}
+
+pub(crate) fn boxed_number(value: Value) -> Value {
+    let mut obj = Object::new();
+    obj.properties.insert("__type".into(), Value::String(Arc::from("Number")));
+    obj.properties.insert("__primitive".into(), value);
+    obj.properties.insert("__proto__".into(), shared_number_prototype());
+    Value::Object(Arc::new(Mutex::new(obj)))
+}
 
 fn f_arg(args: &[Value], idx: usize) -> Option<f64> {
     match args.get(idx) {
         Some(Value::F64(n)) => Some(*n),
         Some(Value::I32(n)) => Some(*n as f64),
+        Some(Value::I64(n)) => Some(*n as f64),
+        Some(Value::Object(obj)) => {
+            let primitive = {
+                let locked = obj.lock().unwrap();
+                if matches!(locked.properties.get("__type"), Some(Value::String(tag)) if tag.as_ref() == "Number") {
+                    locked.properties.get("__primitive").cloned()
+                } else {
+                    None
+                }
+            };
+            primitive.as_ref().map(coerce_to_number)
+        }
         _ => None,
     }
 }
@@ -52,50 +83,70 @@ pub fn register(vm: &mut VM) {
 //   Other types fall through to NaN — boxed wrappers aren't supported.
 fn register_constructor(vm: &mut VM) {
     vm.register_host_fn("ecma:number", "Number", Box::new(|_ctx, args| {
-        let n = match args.first().unwrap_or(&Value::Undefined) {
-            Value::Null => 0.0,
-            Value::Undefined => f64::NAN,
-            Value::Bool(b) => if *b { 1.0 } else { 0.0 },
-            Value::F64(n) => *n,
-            Value::I32(n) => *n as f64,
-            Value::I64(n) => *n as f64,
-            Value::String(s) => parse_to_number(s),
-            // Arrays / dates / boxed objects: ECMA-262 §7.1.4.1 step 4 →
-            // ToPrimitive(arg, "number"), which for Array.prototype falls
-            // through @@toPrimitive → valueOf (returns receiver, ignored)
-            // → toString (joins comma-separated). Mirror that here for
-            // the common cases without invoking the full polymorphic
-            // dispatch chain (no `ctx` available).
-            Value::Object(obj) => {
-                let o = obj.lock().unwrap();
-                match &o.kind {
-                    vybe_bytecode::value::ObjectKind::Array(elems) => {
-                        // [].toString → ""; [5].toString → "5";
-                        // [1,2].toString → "1,2".
-                        let joined: Vec<String> = elems.iter().map(|v| match v {
-                            Value::Null | Value::Undefined => String::new(),
-                            other => format!("{}", other),
-                        }).collect();
-                        parse_to_number(&joined.join(","))
-                    }
-                    // Date instances coerce to their ms timestamp via valueOf.
-                    _ if matches!(o.properties.get("__type"), Some(Value::String(s)) if s.as_ref() == "Date") => {
-                        o.properties.get("__time").map(|v| v.as_f64()).unwrap_or(f64::NAN)
-                    }
-                    _ => f64::NAN,
-                }
-            }
-            _ => f64::NAN,
-        };
+        let n = coerce_to_number(args.first().unwrap_or(&Value::Undefined));
         Value::F64(n)
     }));
+    vm.register_host_fn("ecma:number", "new", Box::new(|_ctx, args| {
+        boxed_number(Value::F64(coerce_to_number(args.first().unwrap_or(&Value::Undefined))))
+    }));
+}
+
+fn coerce_to_number(value: &Value) -> f64 {
+    match value {
+        Value::Null => 0.0,
+        Value::Undefined => f64::NAN,
+        Value::Bool(b) => if *b { 1.0 } else { 0.0 },
+        Value::F64(n) => *n,
+        Value::I32(n) => *n as f64,
+        Value::I64(n) => *n as f64,
+        Value::String(s) => parse_to_number(s),
+        Value::Object(obj) => {
+            let o = obj.lock().unwrap();
+            match &o.kind {
+                vybe_bytecode::value::ObjectKind::Array(elems) => {
+                    let joined: Vec<String> = elems.iter().map(|v| match v {
+                        Value::Null | Value::Undefined => String::new(),
+                        other => format!("{}", other),
+                    }).collect();
+                    parse_to_number(&joined.join(","))
+                }
+                _ if matches!(o.properties.get("__type"), Some(Value::String(s)) if s.as_ref() == "Date") => {
+                    o.properties.get("__time").map(|v| v.as_f64()).unwrap_or(f64::NAN)
+                }
+                _ => f64::NAN,
+            }
+        }
+        _ => f64::NAN,
+    }
 }
 
 /// ECMA-262 §7.1.4.1.1 StringToNumber — same trim + parse the
 /// constructor uses for both String and Object→toString fallbacks.
 fn parse_to_number(s: &str) -> f64 {
     let trimmed = s.trim();
-    if trimmed.is_empty() { 0.0 } else { trimmed.parse::<f64>().unwrap_or(f64::NAN) }
+    if trimmed.is_empty() {
+        return 0.0;
+    }
+
+    let (sign, body) = if let Some(rest) = trimmed.strip_prefix('+') {
+        (1.0, rest)
+    } else if let Some(rest) = trimmed.strip_prefix('-') {
+        (-1.0, rest)
+    } else {
+        (1.0, trimmed)
+    };
+
+    let parsed_prefixed = if let Some(rest) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
+        i64::from_str_radix(rest, 16).ok().map(|value| sign * value as f64)
+    } else if let Some(rest) = body.strip_prefix("0o").or_else(|| body.strip_prefix("0O")) {
+        i64::from_str_radix(rest, 8).ok().map(|value| sign * value as f64)
+    } else if let Some(rest) = body.strip_prefix("0b").or_else(|| body.strip_prefix("0B")) {
+        i64::from_str_radix(rest, 2).ok().map(|value| sign * value as f64)
+    } else {
+        None
+    };
+
+    parsed_prefixed.unwrap_or_else(|| trimmed.parse::<f64>().unwrap_or(f64::NAN))
 }
 
 // ── Constants (registered as 0-arg getters for flat host_registry) ─
@@ -330,10 +381,7 @@ fn register_prototype(vm: &mut VM) {
     }));
 
     vm.register_host_fn("ecma:number", "valueOf", Box::new(|_ctx, args| {
-        match args.first() {
-            Some(v @ Value::F64(_)) | Some(v @ Value::I32(_)) => v.clone(),
-            _ => Value::F64(0.0),
-        }
+        Value::F64(f_arg(args, 0).unwrap_or(0.0))
     }));
     vm.register_host_fn("ecma:number", "toLocaleString", Box::new(|_ctx, args| {
         let n = match args.first() {

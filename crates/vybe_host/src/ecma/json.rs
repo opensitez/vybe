@@ -221,9 +221,46 @@ fn stringify_typed_array(ta: &vybe_bytecode::value::TypedArrayState,
     out
 }
 
+fn ordinary_ordered_keys(o: &Object) -> Vec<String> {
+    let tracked: Option<Vec<String>> = o.properties.get("__keys").and_then(|value| {
+        let Value::Object(arr) = value else {
+            return None;
+        };
+        let guard = arr.lock().unwrap();
+        let ObjectKind::Array(ref elems) = guard.kind else {
+            return None;
+        };
+        Some(
+            elems.iter()
+                .filter_map(|elem| match elem {
+                    Value::String(key) if o.properties.contains_key(key.as_ref()) => Some(key.to_string()),
+                    _ => None,
+                })
+                .collect(),
+        )
+    });
+
+    let live: Vec<String> = o.properties.keys().cloned().collect();
+    match tracked {
+        Some(mut keys) => {
+            let mut seen: HashSet<String> = keys.iter().cloned().collect();
+            for key in live {
+                if seen.insert(key.clone()) {
+                    keys.push(key);
+                }
+            }
+            keys
+        }
+        None => live,
+    }
+}
+
 fn stringify_ordinary(o: &Object, visited: &mut HashSet<usize>) -> String {
     let mut parts: Vec<String> = Vec::new();
-    for (k, v) in &o.properties {
+    for k in ordinary_ordered_keys(o) {
+        let Some(v) = o.properties.get(&k) else {
+            continue;
+        };
         // Skip internal __vybe_* bookkeeping properties.
         if k.starts_with("__") { continue; }
         // ECMA-262 §25.5.2.5: Symbol-keyed properties are not serialized.
@@ -242,7 +279,7 @@ fn stringify_ordinary(o: &Object, visited: &mut HashSet<usize>) -> String {
             }
             _ => {}
         }
-        parts.push(format!("{}:{}", quote_string(k), stringify(v, visited)));
+        parts.push(format!("{}:{}", quote_string(&k), stringify(v, visited)));
     }
     format!("{{{}}}", parts.join(","))
 }

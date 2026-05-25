@@ -62,6 +62,7 @@ pub fn canonicalize_method(
             "Symbol.asyncIterator" => ("asynciterator".into(), Some(AsyncIterator)),
             "Symbol.toPrimitive"   => ("toprimitive".into(),   Some(ToPrimitive)),
             "Symbol.hasInstance"   => ("hasinstance".into(),   Some(HasInstance)),
+            "Symbol.toStringTag"   => ("tostringtag".into(),   None),
             _ => (normalized.to_string(), None),
         },
 

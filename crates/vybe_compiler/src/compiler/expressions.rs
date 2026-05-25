@@ -1047,6 +1047,10 @@ impl Compiler {
 
             // ── Member access ───────────────────────────────────────────
             ExprKind::Member { object, field, null_safe } => {
+                if self.js_private_member_access_forbidden(field) {
+                    self.emit_js_private_access_denied(field)?;
+                    return Ok(());
+                }
                 let reflection_field = field.split('<').next().unwrap_or(field.as_str()).trim();
                 if let Some(binding) = self.resolve_reflection_binding_expr(object) {
                     match (binding, reflection_field) {
@@ -1301,7 +1305,13 @@ impl Compiler {
                         let obj_slot = self.define_local("__js_member_obj");
                         self.emit_u16(Op::LOCAL_SET, obj_slot);
                         self.emit(Op::DROP);
-                        let field_name = self.canon(field);
+                        if field == "constructor" {
+                            let constructor_of = self.import("ecma:value", "constructorOf");
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            self.emit_host_call(constructor_of, 1);
+                            return Ok(());
+                        }
+                        let field_name = self.js_member_storage_name_for_receiver(object, field);
                         let prop = self.str_const(&field_name);
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
                         self.emit_u16(Op::STRUCT_GET, prop);
@@ -1367,7 +1377,38 @@ impl Compiler {
                         let line = self.line;
                         common::errors::emit_throw(self.chunk(), line);
                         self.patch_jump(non_null);
-                        let field_name = self.canon(field);
+
+                        let result_slot = self.define_local("__js_member_result");
+                        if field == "constructor" {
+                            let constructor_of = self.import("ecma:value", "constructorOf");
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            self.emit_host_call(constructor_of, 1);
+                            self.emit_u16(Op::LOCAL_SET, result_slot);
+                            self.emit(Op::DROP);
+                            self.restore_js_this(saved_this);
+                            self.emit_u16(Op::LOCAL_GET, result_slot);
+                            return Ok(());
+                        }
+                        let symbol_end = if field == "description" {
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            self.emit(Op::REF_TYPEOF);
+                            self.emit_const(Value::String(Arc::from("symbol")));
+                            self.emit(Op::DYN_EQ);
+                            let not_symbol = self.emit_jump(Op::BR_IF_FALSE);
+                            let invoke = self.import("ecma:value", "invokeMethod");
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            self.emit_const(Value::String(Arc::from("description")));
+                            self.emit_host_call(invoke, 2);
+                            self.emit_u16(Op::LOCAL_SET, result_slot);
+                            self.emit(Op::DROP);
+                            let end_symbol = self.emit_jump(Op::BR);
+                            self.patch_jump(not_symbol);
+                            Some(end_symbol)
+                        } else {
+                            None
+                        };
+
+                        let field_name = self.js_member_storage_name_for_receiver(object, field);
                         let prop = self.str_const(&field_name);
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
                         self.emit_u16(Op::STRUCT_GET, prop);
@@ -1400,8 +1441,10 @@ impl Compiler {
                         self.patch_jump(end_undefined);
                         // Restore the caller's __js_this — value already
                         // on stack as the access result.
-                        let result_slot = self.define_local("__js_member_result");
                         self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
+                        if let Some(end_symbol) = symbol_end {
+                            self.patch_jump(end_symbol);
+                        }
                         self.restore_js_this(saved_this);
                         self.emit_u16(Op::LOCAL_GET, result_slot);
                     }
@@ -4148,6 +4191,10 @@ impl Compiler {
             // ── StaticAccess (PHP) ──────────────────────────────────────
             ExprKind::StaticAccess { class, member } => {
                 if let (ExprKind::Ident(class_name), ExprKind::Ident(member_name)) = (&class.kind, &member.kind) {
+                    if self.js_private_member_access_forbidden(member_name) {
+                        self.emit_js_private_access_denied(member_name)?;
+                        return Ok(());
+                    }
                     if let Some(value) = self.enum_member_ordinal(class_name, member_name) {
                         self.emit_const(Value::F64(value as f64));
                         return Ok(());
@@ -4166,7 +4213,10 @@ impl Compiler {
                 // class::member → look up class, then get static member
                 self.compile_expr(class)?;
                 if let ExprKind::Ident(name) = &member.kind {
-                    let field_name = self.canon(name);
+                    let field_name = match &class.kind {
+                        ExprKind::Ident(class_name) => self.js_member_storage_name_for_class(class_name, name),
+                        _ => self.canon(name),
+                    };
                     let idx = self.str_const(&field_name);
                     self.emit_u16(Op::STRUCT_GET, idx);
                 } else {

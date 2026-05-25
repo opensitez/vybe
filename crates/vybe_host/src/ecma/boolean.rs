@@ -11,15 +11,61 @@
 //! direct boolean coercion inline where possible; this host fn is the
 //! dynamic-dispatch fallback.
 
+use std::sync::{Arc, Mutex, OnceLock};
+use vybe_bytecode::value::Object;
 use vybe_bytecode::{VM, Value, HostContext};
+
+static BOOLEAN_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+
+pub(crate) fn shared_boolean_prototype() -> Value {
+    Value::Object(
+        BOOLEAN_PROTOTYPE
+            .get_or_init(|| Arc::new(Mutex::new(Object::new())))
+            .clone(),
+    )
+}
+
+pub(crate) fn boxed_boolean(value: bool) -> Value {
+    let mut obj = Object::new();
+    obj.properties.insert("__type".into(), Value::String(Arc::from("Boolean")));
+    obj.properties.insert("__primitive".into(), Value::Bool(value));
+    obj.properties.insert("__proto__".into(), shared_boolean_prototype());
+    Value::Object(Arc::new(Mutex::new(obj)))
+}
 
 pub fn register(vm: &mut VM) {
     vm.register_host_fn("ecma:boolean", "Boolean", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         Value::Bool(to_boolean(args.first().unwrap_or(&Value::Undefined)))
     }));
+    vm.register_host_fn("ecma:boolean", "new", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        boxed_boolean(to_boolean(args.first().unwrap_or(&Value::Undefined)))
+    }));
+    vm.register_host_fn("ecma:boolean", "toString", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Value::String(Arc::from(if boolean_value(args.first().unwrap_or(&Value::Undefined)) { "true" } else { "false" }))
+    }));
+    vm.register_host_fn("ecma:boolean", "valueOf", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Value::Bool(boolean_value(args.first().unwrap_or(&Value::Undefined)))
+    }));
 }
 
-fn to_boolean(v: &Value) -> bool {
+fn boolean_value(value: &Value) -> bool {
+    if let Value::Object(obj) = value {
+        let primitive = {
+            let locked = obj.lock().unwrap();
+            if matches!(locked.properties.get("__type"), Some(Value::String(tag)) if tag.as_ref() == "Boolean") {
+                locked.properties.get("__primitive").cloned()
+            } else {
+                None
+            }
+        };
+        if let Some(Value::Bool(value)) = primitive {
+            return value;
+        }
+    }
+    to_boolean(value)
+}
+
+pub(crate) fn to_boolean(v: &Value) -> bool {
     match v {
         Value::Null | Value::Undefined => false,
         Value::Bool(b) => *b,

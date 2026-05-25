@@ -15,6 +15,79 @@
 use super::*;
 
 pub fn register(vm: &mut VM) {
+    // ── Object / boxed primitive constructors ─────────────────────
+    let object = host_fn_ref(vm, "ecma:object", "Object");
+    set_prop(&object, "name", Value::String(Arc::from("Object")));
+    let object_proto = crate::ecma::object::shared_object_prototype();
+    set_prop(&object_proto, "constructor", object.clone());
+    for name in &["toString", "toLocaleString", "valueOf", "hasOwnProperty", "propertyIsEnumerable", "isPrototypeOf"] {
+        set_prop(&object_proto, name, host_fn_ref(vm, "ecma:object", name));
+    }
+    set_prop(&object, "prototype", object_proto.clone());
+    for name in &[
+        "keys", "values", "entries", "assign", "freeze", "fromEntries", "hasOwn",
+        "create", "seal", "isFrozen", "isSealed", "is", "getPrototypeOf",
+        "getOwnPropertyNames", "defineProperty",
+    ] {
+        set_prop(&object, name, host_fn_ref(vm, "ecma:object", name));
+    }
+    set_prop(&object, "groupBy", Value::Bool(true));
+    vm.globals.insert("Object".to_string(), object.clone());
+    vm.globals.insert("object".to_string(), object.clone());
+
+    let number = host_fn_ref(vm, "ecma:number", "Number");
+    set_prop(&number, "name", Value::String(Arc::from("Number")));
+    let number_proto = crate::ecma::number::shared_number_prototype();
+    set_prop(&number_proto, "constructor", number.clone());
+    set_prop(&number_proto, "__proto__", object_proto.clone());
+    for name in &["toString", "valueOf", "toFixed", "toExponential", "toPrecision", "toLocaleString"] {
+        set_prop(&number_proto, name, host_fn_ref(vm, "ecma:number", name));
+    }
+    set_prop(&number, "prototype", number_proto);
+    for name in &["parseInt", "parseFloat", "isNaN", "isFinite", "isInteger", "isSafeInteger"] {
+        set_prop(&number, name, host_fn_ref(vm, "ecma:number", name));
+    }
+    for (name, export) in &[
+        ("MAX_SAFE_INTEGER", "MAX_SAFE_INTEGER"),
+        ("MIN_SAFE_INTEGER", "MIN_SAFE_INTEGER"),
+        ("MAX_VALUE", "MAX_VALUE"),
+        ("MIN_VALUE", "MIN_VALUE"),
+        ("EPSILON", "EPSILON"),
+        ("POSITIVE_INFINITY", "POSITIVE_INFINITY"),
+        ("NEGATIVE_INFINITY", "NEGATIVE_INFINITY"),
+        ("NaN", "NaN"),
+    ] {
+        set_prop(&number, name, host_fn_ref(vm, "ecma:number", export));
+    }
+    vm.globals.insert("Number".to_string(), number.clone());
+    vm.globals.insert("number".to_string(), number.clone());
+
+    let string = host_fn_ref(vm, "ecma:string", "String");
+    set_prop(&string, "name", Value::String(Arc::from("String")));
+    let string_proto = crate::ecma::string::shared_string_prototype();
+    set_prop(&string_proto, "constructor", string.clone());
+    set_prop(&string_proto, "__proto__", object_proto.clone());
+    for name in &["toString", "valueOf"] {
+        set_prop(&string_proto, name, host_fn_ref(vm, "ecma:string", name));
+    }
+    set_prop(&string, "prototype", string_proto);
+    for name in &["fromCharCode", "fromCodePoint", "raw"] {
+        set_prop(&string, name, host_fn_ref(vm, "ecma:string", name));
+    }
+    vm.globals.insert("String".to_string(), string.clone());
+    vm.globals.insert("string".to_string(), string.clone());
+
+    let boolean = host_fn_ref(vm, "ecma:boolean", "Boolean");
+    set_prop(&boolean, "name", Value::String(Arc::from("Boolean")));
+    let boolean_proto = crate::ecma::boolean::shared_boolean_prototype();
+    set_prop(&boolean_proto, "constructor", boolean.clone());
+    set_prop(&boolean_proto, "__proto__", object_proto.clone());
+    set_prop(&boolean_proto, "toString", host_fn_ref(vm, "ecma:boolean", "toString"));
+    set_prop(&boolean_proto, "valueOf", host_fn_ref(vm, "ecma:boolean", "valueOf"));
+    set_prop(&boolean, "prototype", boolean_proto);
+    vm.globals.insert("Boolean".to_string(), boolean.clone());
+    vm.globals.insert("boolean".to_string(), boolean.clone());
+
     // ── Symbol ─────────────────────────────────────────────────────
     // `Symbol` is callable as `Symbol(desc)` AND has static properties
     // (`Symbol.for`, `Symbol.iterator`, etc.). Build a Value that is
@@ -105,15 +178,6 @@ pub fn register(vm: &mut VM) {
             vm.globals.insert(global_name.to_string(), ctor);
         }
     }
-
-    // ── Object — namespace object for property-access feature detection ──
-    // The call path (Object.keys, Object.assign, etc.) uses CALL_IMPORT and
-    // never touches this global. This object exists so that property-access
-    // patterns like `Object.groupBy ?` (ES2024 feature detection) resolve to
-    // a truthy value instead of crashing on undefined. The actual groupBy
-    // implementation is a compile-time inline emitter in calls.rs.
-    let obj_ns = ensure_namespace(vm, &["Object"]);
-    set_prop(&obj_ns, "groupBy", Value::Bool(true));
 
     // ── globalThis — proper §19.3.1 singleton ──────────────────────
     // Pulls the shared process-global Object that `ecma:globalThis.get`

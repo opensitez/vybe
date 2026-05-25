@@ -20,9 +20,55 @@
 //! to these via thin forwarding shims so every language sees the
 //! same JS-runtime semantics.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use vybe_bytecode::value::{Object, ObjectKind};
 use vybe_bytecode::{VM, Value};
+
+static STRING_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+
+pub(crate) fn shared_string_prototype() -> Value {
+    Value::Object(
+        STRING_PROTOTYPE
+            .get_or_init(|| Arc::new(Mutex::new(Object::new())))
+            .clone(),
+    )
+}
+
+pub(crate) fn boxed_string(text: Arc<str>) -> Value {
+    let mut obj = Object::new();
+    obj.properties.insert("__type".into(), Value::String(Arc::from("String")));
+    obj.properties.insert("__primitive".into(), Value::String(text.clone()));
+    obj.properties.insert("__proto__".into(), shared_string_prototype());
+    obj.properties.insert("length".into(), Value::I32(text.chars().count() as i32));
+
+    let mut keys = Vec::new();
+    for (index, ch) in text.chars().enumerate() {
+        let key = index.to_string();
+        obj.properties.insert(key.clone(), s_val(&ch.to_string()));
+        keys.push(Value::String(Arc::from(key.as_str())));
+    }
+    obj.properties.insert("__keys".into(), Value::Object(Arc::new(Mutex::new(Object::new_array(keys)))));
+    obj.properties.insert(
+        "__nonenum".into(),
+        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![Value::String(Arc::from("length"))])))),
+    );
+
+    Value::Object(Arc::new(Mutex::new(obj)))
+}
+
+fn to_string_primitive(ctx: &mut vybe_bytecode::HostContext, value: Value) -> Arc<str> {
+    if matches!(value, Value::Object(_)) {
+        let primitive = crate::ecma::value::to_primitive(ctx, &value, "string");
+        if let Value::BigInt(n) = primitive {
+            return Arc::from(format!("{}", n).as_str());
+        }
+        return Arc::from(format!("{}", primitive).as_str());
+    }
+    if let Value::BigInt(n) = value {
+        return Arc::from(format!("{}", n).as_str());
+    }
+    Arc::from(format!("{}", value).as_str())
+}
 
 fn s_arg(args: &[Value], idx: usize) -> String {
     match args.get(idx) {
@@ -189,36 +235,11 @@ fn register_adapters(vm: &mut VM) {
 fn register_constructor(vm: &mut VM) {
     vm.register_host_fn("ecma:string", "String", Box::new(|ctx, args| {
         let v = args.first().cloned().unwrap_or(Value::Undefined);
-        if let Value::Object(ref obj) = v {
-            let (to_str_fn, is_ordinary, type_tag) = {
-                let o = obj.lock().unwrap();
-                (
-                    o.properties.get("toString").cloned(),
-                    matches!(o.kind, vybe_bytecode::value::ObjectKind::Ordinary),
-                    o.properties.get("__type").map(|v| format!("{}", v)),
-                )
-            };
-            if let Some(fn_val) = to_str_fn {
-                if matches!(fn_val, Value::Object(_)) {
-                    let result = ctx.invoke(&fn_val, &[v.clone()]);
-                    if !matches!(result, Value::Null | Value::Undefined) {
-                        return s_val(&format!("{}", result));
-                    }
-                }
-            }
-            // Plain Ordinary objects with no class type tag → spec
-            // Object.prototype.toString output `[object Object]`
-            // (ECMA-262 §20.1.3.6). Class-tagged objects fall through
-            // to the Display impl which emits `[object <ClassName>]`.
-            if is_ordinary && type_tag.is_none() {
-                return s_val("[object Object]");
-            }
-        }
-        // §7.1.17: BigInt ToString strips the `n` suffix
-        if let Value::BigInt(n) = v {
-            return s_val(&format!("{}", n));
-        }
-        s_val(&format!("{}", v))
+        Value::String(to_string_primitive(ctx, v))
+    }));
+    vm.register_host_fn("ecma:string", "new", Box::new(|ctx, args| {
+        let v = args.first().cloned().unwrap_or(Value::Undefined);
+        boxed_string(to_string_primitive(ctx, v))
     }));
 }
 
@@ -276,8 +297,16 @@ fn register_query_ops(vm: &mut VM) {
         s_val(&chars[resolved as usize].to_string())
     }));
 
+    vm.register_host_fn("ecma:string", "toString", Box::new(|ctx, args| {
+        let value = args.first().cloned().unwrap_or(Value::String(Arc::from("")));
+        Value::String(to_string_primitive(ctx, value))
+    }));
+
     // String.prototype.valueOf — returns the primitive string itself.
-    vm.register_host_fn("ecma:string", "valueOf", Box::new(|_ctx, args| s_val(&s_arg(args, 0))));
+    vm.register_host_fn("ecma:string", "valueOf", Box::new(|ctx, args| {
+        let value = args.first().cloned().unwrap_or(Value::String(Arc::from("")));
+        Value::String(to_string_primitive(ctx, value))
+    }));
 }
 
 // ── Extract ops (substring, slice, concat) ────────────────────────

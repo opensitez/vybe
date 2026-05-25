@@ -17,11 +17,19 @@
 //!     `instanceof RegExp` work via the cross-language type registry.
 
 use std::sync::{Arc, Mutex};
+use icu::properties::props::{Emoji, EmojiComponent, EmojiModifier, EmojiModifierBase, EmojiPresentation, RegionalIndicator};
+use icu::properties::CodePointSetData;
+use unicode_segmentation::UnicodeSegmentation;
 use vybe_bytecode::value::{Object, Value};
 use vybe_bytecode::{HostContext, VM};
 use regress::{Match, Regex};
 
 const REGEXP_TYPE: &str = "RegExp";
+
+#[derive(Clone, Copy)]
+enum SpecialPattern {
+    RgiEmoji,
+}
 
 fn s_arg(args: &[Value], idx: usize) -> String {
     match args.get(idx) {
@@ -81,8 +89,180 @@ fn split_regex_literal(s: &str) -> (String, String) {
     }
 }
 
+fn special_pattern(pattern: &str, flags: &str) -> Option<SpecialPattern> {
+    if flags.contains('v') && pattern == r"\p{RGI_Emoji}" {
+        Some(SpecialPattern::RgiEmoji)
+    } else {
+        None
+    }
+}
+
+fn empty_groups_object() -> Value {
+    Value::Object(Arc::new(Mutex::new(Object::new())))
+}
+
+fn range_to_value(start: usize, end: usize) -> Value {
+    make_array(vec![Value::I32(start as i32), Value::I32(end as i32)])
+}
+
+fn exec_span_to_value(input: &str, start: usize, end: usize, include_indices: bool) -> Value {
+    let mut match_obj = Object::new_array(vec![s_val(&input[start..end])]);
+    match_obj.properties.insert("index".into(), Value::I32(start as i32));
+    match_obj.properties.insert("input".into(), s_val(input));
+    match_obj.properties.insert("groups".into(), empty_groups_object());
+    if include_indices {
+        let mut indices = Object::new_array(vec![range_to_value(start, end)]);
+        indices.properties.insert("groups".into(), empty_groups_object());
+        match_obj.properties.insert("indices".into(), Value::Object(Arc::new(Mutex::new(indices))));
+    }
+    Value::Object(Arc::new(Mutex::new(match_obj)))
+}
+
+fn special_match_at(input: &str, kind: SpecialPattern, start: usize) -> Option<usize> {
+    if start > input.len() || !input.is_char_boundary(start) {
+        return None;
+    }
+    let grapheme = input[start..].graphemes(true).next()?;
+    match kind {
+        SpecialPattern::RgiEmoji if is_rgi_emoji_sequence(grapheme) => Some(start + grapheme.len()),
+        _ => None,
+    }
+}
+
+fn special_find(input: &str, kind: SpecialPattern, start: usize) -> Option<(usize, usize)> {
+    if start > input.len() || !input.is_char_boundary(start) {
+        return None;
+    }
+    for (offset, grapheme) in input[start..].grapheme_indices(true) {
+        let found = match kind {
+            SpecialPattern::RgiEmoji => is_rgi_emoji_sequence(grapheme),
+        };
+        if found {
+            let match_start = start + offset;
+            return Some((match_start, match_start + grapheme.len()));
+        }
+    }
+    None
+}
+
+fn special_find_all(input: &str, kind: SpecialPattern) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    for (start, grapheme) in input.grapheme_indices(true) {
+        let found = match kind {
+            SpecialPattern::RgiEmoji => is_rgi_emoji_sequence(grapheme),
+        };
+        if found {
+            out.push((start, start + grapheme.len()));
+        }
+    }
+    out
+}
+
+fn is_rgi_emoji_sequence(cluster: &str) -> bool {
+    let chars: Vec<char> = cluster.chars().collect();
+    if chars.is_empty() {
+        return false;
+    }
+
+    let emoji = CodePointSetData::new::<Emoji>();
+    let emoji_component = CodePointSetData::new::<EmojiComponent>();
+    let emoji_modifier = CodePointSetData::new::<EmojiModifier>();
+    let emoji_modifier_base = CodePointSetData::new::<EmojiModifierBase>();
+    let emoji_presentation = CodePointSetData::new::<EmojiPresentation>();
+    let regional_indicator = CodePointSetData::new::<RegionalIndicator>();
+
+    let is_text_emoji_base = |ch: char| emoji.contains(ch) && !emoji_component.contains(ch);
+    let is_simple_emoji_element = |segment: &str| {
+        let segment_chars: Vec<char> = segment.chars().collect();
+        match segment_chars.as_slice() {
+            [ch] => emoji_presentation.contains(*ch),
+            [ch, '\u{FE0F}'] => is_text_emoji_base(*ch),
+            [base, modifier] => emoji_modifier_base.contains(*base) && emoji_modifier.contains(*modifier),
+            [base, '\u{FE0F}', modifier] => is_text_emoji_base(*base) && emoji_modifier.contains(*modifier),
+            _ => false,
+        }
+    };
+
+    if matches!(chars.as_slice(), [first, second] if regional_indicator.contains(*first) && regional_indicator.contains(*second)) {
+        return true;
+    }
+
+    if matches!(chars.as_slice(), [base, '\u{20E3}'] if matches!(*base, '0'..='9' | '#' | '*')) {
+        return true;
+    }
+    if matches!(chars.as_slice(), [base, '\u{FE0F}', '\u{20E3}'] if matches!(*base, '0'..='9' | '#' | '*')) {
+        return true;
+    }
+
+    if chars.len() >= 3
+        && chars.last() == Some(&'\u{E007F}')
+        && is_text_emoji_base(chars[0])
+        && chars[1..chars.len() - 1]
+            .iter()
+            .all(|ch| matches!(*ch, '\u{E0020}'..='\u{E007E}'))
+    {
+        return true;
+    }
+
+    if cluster.contains('\u{200D}') {
+        let mut count = 0usize;
+        for segment in cluster.split('\u{200D}') {
+            if segment.is_empty() || !is_simple_emoji_element(segment) {
+                return false;
+            }
+            count += 1;
+        }
+        return count >= 2;
+    }
+
+    is_simple_emoji_element(cluster)
+}
+
+fn regexp_exec_special(args: &[Value], input: &str, kind: SpecialPattern, flags: &str) -> Value {
+    let is_global_or_sticky = flags.contains('g') || flags.contains('y');
+    let is_sticky = flags.contains('y');
+    let last_index = if is_global_or_sticky {
+        args.first().and_then(|v| match v {
+            Value::Object(obj) => obj.lock().unwrap().properties.get("lastIndex").map(|v| v.as_i32()),
+            _ => None,
+        }).unwrap_or(0).max(0) as usize
+    } else {
+        0
+    };
+    let search_start = last_index.min(input.len());
+    let found = if is_sticky {
+        special_match_at(input, kind, search_start).map(|end| (search_start, end))
+    } else if is_global_or_sticky {
+        special_find(input, kind, search_start)
+    } else {
+        special_find(input, kind, 0)
+    };
+
+    let (start, end) = match found {
+        Some(found) => found,
+        None => {
+            if is_global_or_sticky {
+                if let Some(Value::Object(obj)) = args.first() {
+                    obj.lock().unwrap().properties.insert("lastIndex".into(), Value::I32(0));
+                }
+            }
+            return Value::Null;
+        }
+    };
+
+    if is_global_or_sticky {
+        if let Some(Value::Object(obj)) = args.first() {
+            obj.lock().unwrap().properties.insert("lastIndex".into(), Value::I32(end as i32));
+        }
+    }
+    exec_span_to_value(input, start, end, flags.contains('d'))
+}
+
 /// Compile a JS regexp using `regress`, filtering out wrapper-only flags.
 fn compile(pattern: &str, flags: &str) -> Option<Regex> {
+    if special_pattern(pattern, flags).is_some() {
+        return None;
+    }
     let normalized_pattern = pattern.replace("(?P<", "(?<");
     let compile_flags: String = flags
         .chars()
@@ -94,6 +274,13 @@ fn compile(pattern: &str, flags: &str) -> Option<Regex> {
 fn match_group_value(m: &Match, input: &str, index: usize) -> Value {
     match m.group(index) {
         Some(range) => s_val(&input[range]),
+        None => Value::Undefined,
+    }
+}
+
+fn match_group_indices_value(m: &Match, index: usize, index_offset: usize) -> Value {
+    match m.group(index) {
+        Some(range) => range_to_value(index_offset + range.start, index_offset + range.end),
         None => Value::Undefined,
     }
 }
@@ -118,7 +305,27 @@ fn named_groups_object(m: &Match, input: &str) -> Value {
     Value::Object(Arc::new(Mutex::new(groups)))
 }
 
-fn exec_match_to_value(m: &Match, input: &str, index_offset: usize) -> Value {
+fn named_groups_indices_object(m: &Match, index_offset: usize) -> Value {
+    let mut groups = Object::new();
+    let mut group_order: Vec<Value> = Vec::new();
+    for (name, _) in m.named_groups() {
+        let value = match m.named_group(name) {
+            Some(range) => range_to_value(index_offset + range.start, index_offset + range.end),
+            None => Value::Undefined,
+        };
+        groups.properties.insert(name.to_string(), value);
+        group_order.push(s_val(name));
+    }
+    if !group_order.is_empty() {
+        groups.properties.insert(
+            "__keys".into(),
+            Value::Object(Arc::new(Mutex::new(Object::new_array(group_order)))),
+        );
+    }
+    Value::Object(Arc::new(Mutex::new(groups)))
+}
+
+fn exec_match_to_value(m: &Match, input: &str, index_offset: usize, include_indices: bool) -> Value {
     let mut elems: Vec<Value> = Vec::with_capacity(m.captures.len() + 1);
     for i in 0..=m.captures.len() {
         elems.push(match_group_value(m, input, i));
@@ -127,6 +334,15 @@ fn exec_match_to_value(m: &Match, input: &str, index_offset: usize) -> Value {
     match_obj.properties.insert("index".into(), Value::I32((index_offset + m.start()) as i32));
     match_obj.properties.insert("input".into(), s_val(input));
     match_obj.properties.insert("groups".into(), named_groups_object(m, input));
+    if include_indices {
+        let mut indices: Vec<Value> = Vec::with_capacity(m.captures.len() + 1);
+        for i in 0..=m.captures.len() {
+            indices.push(match_group_indices_value(m, i, index_offset));
+        }
+        let mut indices_obj = Object::new_array(indices);
+        indices_obj.properties.insert("groups".into(), named_groups_indices_object(m, index_offset));
+        match_obj.properties.insert("indices".into(), Value::Object(Arc::new(Mutex::new(indices_obj))));
+    }
     Value::Object(Arc::new(Mutex::new(match_obj)))
 }
 
@@ -136,6 +352,35 @@ fn make_array(elements: Vec<Value>) -> Value {
 
 fn s_val(s: &str) -> Value {
     Value::String(Arc::from(s))
+}
+
+fn lookup_symbol_method(target: &Value, key: &str) -> Option<Value> {
+    let Value::Object(obj) = target else {
+        return None;
+    };
+    let mut current = Some(obj.clone());
+    for _ in 0..100 {
+        let Some(cur) = current else {
+            break;
+        };
+        let (prop, next_proto) = {
+            let o = cur.lock().unwrap();
+            (
+                o.properties.get(key).cloned(),
+                match o.properties.get("__proto__").cloned() {
+                    Some(Value::Object(proto)) => Some(proto),
+                    _ => None,
+                },
+            )
+        };
+        if let Some(value) = prop {
+            if !matches!(value, Value::Null | Value::Undefined) {
+                return Some(value);
+            }
+        }
+        current = next_proto;
+    }
+    None
 }
 
 pub fn register(vm: &mut VM) {
@@ -212,9 +457,9 @@ pub fn dispatch_regexp_method(method: &str, args: &[Value]) -> Option<Value> {
 
 pub fn dispatch_regexp_string_method(ctx: &mut HostContext, method: &str, args: &[Value]) -> Option<Value> {
     match method {
-        "match" => Some(regexp_string_match(args)),
+        "match" => Some(regexp_string_match(ctx, args)),
         "matchAll" => Some(regexp_string_match_all(args)),
-        "search" => Some(regexp_string_search(args)),
+        "search" => Some(regexp_string_search(ctx, args)),
         "replace" => Some(regexp_string_replace(ctx, args)),
         "replaceAll" => Some(regexp_string_replace_all(args)),
         "split" => Some(regexp_string_split(args)),
@@ -225,6 +470,9 @@ pub fn dispatch_regexp_string_method(ctx: &mut HostContext, method: &str, args: 
 fn regexp_test(args: &[Value]) -> Value {
     let (pattern, flags) = extract_pattern(args, 0);
     let input = s_arg(args, 1);
+    if let Some(kind) = special_pattern(&pattern, &flags) {
+        return Value::Bool(special_find(&input, kind, 0).is_some());
+    }
     match compile(&pattern, &flags) {
         Some(re) => Value::Bool(re.find(&input).is_some()),
         None => Value::Bool(false),
@@ -234,6 +482,9 @@ fn regexp_test(args: &[Value]) -> Value {
 fn regexp_exec(args: &[Value]) -> Value {
     let (pattern, flags) = extract_pattern(args, 0);
     let input = s_arg(args, 1);
+    if let Some(kind) = special_pattern(&pattern, &flags) {
+        return regexp_exec_special(args, &input, kind, &flags);
+    }
     let re = match compile(&pattern, &flags) {
         Some(re) => re,
         None => return Value::Null,
@@ -277,7 +528,7 @@ fn regexp_exec(args: &[Value]) -> Value {
             obj.lock().unwrap().properties.insert("lastIndex".into(), Value::I32(new_idx));
         }
     }
-    exec_match_to_value(&m, &input, 0)
+    exec_match_to_value(&m, &input, 0, flags.contains('d'))
 }
 
 fn regexp_to_string(args: &[Value]) -> Value {
@@ -297,7 +548,7 @@ fn register_string_methods(vm: &mut VM) {
     // `regex.exec(str)` (single match Array with groups). With `g`:
     // Array of full-match strings only (no groups).
     vm.register_host_fn("ecma:regexp", "match",
-        Box::new(|_ctx, args| regexp_string_match(args)));
+        Box::new(|ctx, args| regexp_string_match(ctx, args)));
 
     // `str.matchAll(regex)` — §22.1.3.14. Spec returns an iterator;
     // MVP returns an Array of match Arrays (each shaped like exec's
@@ -309,7 +560,7 @@ fn register_string_methods(vm: &mut VM) {
     // `str.search(regex)` — §22.1.3.16. Returns index of first match
     // or -1.
     vm.register_host_fn("ecma:regexp", "search",
-        Box::new(|_ctx, args| regexp_string_search(args)));
+        Box::new(|ctx, args| regexp_string_search(ctx, args)));
 
     // `str.replace(regex, replacement)` — §22.1.3.18. Replaces first
     // match (or all if `g` flag is set, per spec). Replacement is either
@@ -330,9 +581,25 @@ fn register_string_methods(vm: &mut VM) {
         Box::new(|_ctx, args| regexp_string_split(args)));
 }
 
-fn regexp_string_match(args: &[Value]) -> Value {
+fn regexp_string_match(ctx: &mut HostContext, args: &[Value]) -> Value {
     let input = s_arg(args, 0);
+    if let Some(method) = args.get(1).and_then(|value| lookup_symbol_method(value, "symbolmatch")) {
+        return ctx.invoke(&method, &[Value::String(Arc::from(input.as_str()))]);
+    }
     let (pattern, flags) = extract_pattern(args, 1);
+    if let Some(kind) = special_pattern(&pattern, &flags) {
+        if flags.contains('g') {
+            let matches: Vec<Value> = special_find_all(&input, kind)
+                .into_iter()
+                .map(|(start, end)| s_val(&input[start..end]))
+                .collect();
+            return if matches.is_empty() { Value::Null } else { make_array(matches) };
+        }
+        return match special_find(&input, kind, 0) {
+            Some((start, end)) => exec_span_to_value(&input, start, end, flags.contains('d')),
+            None => Value::Null,
+        };
+    }
     let re = match compile(&pattern, &flags) {
         Some(re) => re,
         None => return Value::Null,
@@ -344,7 +611,7 @@ fn regexp_string_match(args: &[Value]) -> Value {
         if matches.is_empty() { Value::Null } else { make_array(matches) }
     } else {
         match re.find(&input) {
-            Some(m) => exec_match_to_value(&m, &input, 0),
+            Some(m) => exec_match_to_value(&m, &input, 0, flags.contains('d')),
             None => Value::Null,
         }
     }
@@ -353,20 +620,36 @@ fn regexp_string_match(args: &[Value]) -> Value {
 fn regexp_string_match_all(args: &[Value]) -> Value {
     let input = s_arg(args, 0);
     let (pattern, flags) = extract_pattern(args, 1);
+    if let Some(kind) = special_pattern(&pattern, &flags) {
+        let matches = special_find_all(&input, kind)
+            .into_iter()
+            .map(|(start, end)| exec_span_to_value(&input, start, end, flags.contains('d')))
+            .collect();
+        return make_array(matches);
+    }
     let re = match compile(&pattern, &flags) {
         Some(re) => re,
         None => return make_array(Vec::new()),
     };
     let mut out = Vec::new();
     for m in re.find_iter(&input) {
-        out.push(exec_match_to_value(&m, &input, 0));
+        out.push(exec_match_to_value(&m, &input, 0, flags.contains('d')));
     }
     make_array(out)
 }
 
-fn regexp_string_search(args: &[Value]) -> Value {
+fn regexp_string_search(ctx: &mut HostContext, args: &[Value]) -> Value {
     let input = s_arg(args, 0);
+    if let Some(method) = args.get(1).and_then(|value| lookup_symbol_method(value, "symbolsearch")) {
+        return ctx.invoke(&method, &[Value::String(Arc::from(input.as_str()))]);
+    }
     let (pattern, flags) = extract_pattern(args, 1);
+    if let Some(kind) = special_pattern(&pattern, &flags) {
+        return match special_find(&input, kind, 0) {
+            Some((start, _)) => Value::I32(start as i32),
+            None => Value::I32(-1),
+        };
+    }
     match compile(&pattern, &flags) {
         Some(re) => match re.find(&input) {
             Some(m) => Value::I32(m.start() as i32),
