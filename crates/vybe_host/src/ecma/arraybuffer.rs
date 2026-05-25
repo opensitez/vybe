@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use vybe_bytecode::value::{ArrayBufferState, Object, ObjectKind, Value};
 use vybe_bytecode::VM;
 
-const DV_TAG: &str = "__vybe_js_dataview";
+pub const DV_TAG: &str = "__vybe_js_dataview";
 const DV_BUFFER_PROP: &str = "__vybe_dv_buffer";
 const DV_OFFSET_PROP: &str = "__vybe_dv_offset";
 const DV_LENGTH_PROP: &str = "__vybe_dv_length";
@@ -51,6 +51,8 @@ fn new_arraybuffer(byte_length: i32, max_byte_length: i32, resizable: bool, shar
     obj.kind = ObjectKind::ArrayBuffer(state);
     obj.properties.insert("byteLength".into(), Value::I32(n as i32));
     obj.properties.insert("maxByteLength".into(), Value::I32(max as i32));
+    let type_name = if shared { "SharedArrayBuffer" } else { "ArrayBuffer" };
+    obj.properties.insert("__type".into(), Value::String(Arc::from(type_name)));
     Value::Object(Arc::new(Mutex::new(obj)))
 }
 
@@ -268,12 +270,13 @@ fn register_arraybuffer(vm: &mut VM) {
             if let Some(Value::Object(obj)) = args.first() {
                 let o = obj.lock().unwrap();
                 if o.properties.get(DV_TAG).is_some() {
-                    return Value::I32(1);
+                    return Value::Bool(true);
                 }
-                // Phase B4 continuation: check ObjectKind::TypedArray
-                // once that variant lands.
+                if matches!(o.kind, ObjectKind::TypedArray(_)) {
+                    return Value::Bool(true);
+                }
             }
-            Value::I32(0)
+            Value::Bool(false)
         }));
 }
 
@@ -382,11 +385,13 @@ fn register_sharedarraybuffer(vm: &mut VM) {
 fn new_dataview(buffer: Value, byte_offset: i32, byte_length: i32) -> Value {
     let mut obj = Object::new();
     obj.properties.insert(DV_TAG.into(), Value::I32(1));
-    obj.properties.insert(DV_BUFFER_PROP.into(), buffer);
+    obj.properties.insert(DV_BUFFER_PROP.into(), buffer.clone());
+    obj.properties.insert("buffer".into(), buffer);
     obj.properties.insert(DV_OFFSET_PROP.into(), Value::I32(byte_offset.max(0)));
     obj.properties.insert(DV_LENGTH_PROP.into(), Value::I32(byte_length.max(0)));
     obj.properties.insert("byteOffset".into(), Value::I32(byte_offset.max(0)));
     obj.properties.insert("byteLength".into(), Value::I32(byte_length.max(0)));
+    obj.properties.insert("__type".into(), Value::String(Arc::from("DataView")));
     Value::Object(Arc::new(Mutex::new(obj)))
 }
 
@@ -616,4 +621,187 @@ fn register_dataview(vm: &mut VM) {
     setter_multibyte!("setFloat64", 8,
         |v: Option<&Value>| v.map(|x| x.as_f64()).unwrap_or(0.0),
         f64, to_le_bytes, to_be_bytes);
+}
+
+// ── Public method dispatch — called from ecma::value ─────────────────────
+
+/// Dispatches instance method calls on ArrayBuffer objects.
+/// `args[0]` = the ArrayBuffer object; remaining args are user-supplied.
+pub fn dispatch_arraybuffer_method(obj: Arc<Mutex<Object>>, method: &str, args: &[Value]) -> Option<Value> {
+    match method {
+        "slice" => {
+            let o = obj.lock().unwrap();
+            if let ObjectKind::ArrayBuffer(ref state) = o.kind {
+                let src = state.bytes.lock().unwrap();
+                let len = src.len() as i32;
+                let start = args.first().map(|v| v.as_i32()).unwrap_or(0);
+                let end = args.get(1).map(|v| v.as_i32()).unwrap_or(len);
+                let s = start.max(0).min(len) as usize;
+                let e = end.max(0).min(len) as usize;
+                let slice: Vec<u8> = if s < e { src[s..e].to_vec() } else { Vec::new() };
+                drop(src);
+                let slice_len = slice.len();
+                let shared = state.shared;
+                drop(o);
+                let new_state = ArrayBufferState {
+                    bytes: Arc::new(Mutex::new(slice)),
+                    max_byte_length: slice_len,
+                    resizable: false,
+                    detached: false,
+                    shared,
+                };
+                let type_name = if shared { "SharedArrayBuffer" } else { "ArrayBuffer" };
+                let mut new_obj = Object::new();
+                new_obj.kind = ObjectKind::ArrayBuffer(new_state);
+                new_obj.properties.insert("byteLength".into(), Value::I32(slice_len as i32));
+                new_obj.properties.insert("maxByteLength".into(), Value::I32(slice_len as i32));
+                new_obj.properties.insert("__type".into(), Value::String(Arc::from(type_name)));
+                return Some(Value::Object(Arc::new(Mutex::new(new_obj))));
+            }
+            Some(Value::Null)
+        }
+        _ => None,
+    }
+}
+
+/// Dispatches instance method calls on DataView objects.
+/// `args[0]` = the DataView object; remaining args are user-supplied.
+pub fn dispatch_dataview_method(obj: Arc<Mutex<Object>>, method: &str, args: &[Value]) -> Option<Value> {
+    match method {
+        "getInt8" => {
+            let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            if let Some(bytes) = dv_read_bytes(&obj, offset, 1) {
+                return Some(Value::I32(bytes[0] as i8 as i32));
+            }
+            Some(Value::I32(0))
+        }
+        "getUint8" => {
+            let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            if let Some(bytes) = dv_read_bytes(&obj, offset, 1) {
+                return Some(Value::I32(bytes[0] as i32));
+            }
+            Some(Value::I32(0))
+        }
+        "getInt16" => {
+            let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            let le = args.get(1).map(|v| v.as_i32()).unwrap_or(0) != 0;
+            if let Some(bytes) = dv_read_bytes(&obj, offset, 2) {
+                let arr = [bytes[0], bytes[1]];
+                let v = if le { i16::from_le_bytes(arr) } else { i16::from_be_bytes(arr) };
+                return Some(Value::I32(v as i32));
+            }
+            Some(Value::I32(0))
+        }
+        "getUint16" => {
+            let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            let le = args.get(1).map(|v| v.as_i32()).unwrap_or(0) != 0;
+            if let Some(bytes) = dv_read_bytes(&obj, offset, 2) {
+                let arr = [bytes[0], bytes[1]];
+                let v = if le { u16::from_le_bytes(arr) } else { u16::from_be_bytes(arr) };
+                return Some(Value::I32(v as i32));
+            }
+            Some(Value::I32(0))
+        }
+        "getInt32" => {
+            let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            let le = args.get(1).map(|v| v.as_i32()).unwrap_or(0) != 0;
+            if let Some(bytes) = dv_read_bytes(&obj, offset, 4) {
+                let arr = [bytes[0], bytes[1], bytes[2], bytes[3]];
+                let v = if le { i32::from_le_bytes(arr) } else { i32::from_be_bytes(arr) };
+                return Some(Value::I32(v));
+            }
+            Some(Value::I32(0))
+        }
+        "getUint32" => {
+            let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            let le = args.get(1).map(|v| v.as_i32()).unwrap_or(0) != 0;
+            if let Some(bytes) = dv_read_bytes(&obj, offset, 4) {
+                let arr = [bytes[0], bytes[1], bytes[2], bytes[3]];
+                let v = if le { u32::from_le_bytes(arr) } else { u32::from_be_bytes(arr) };
+                return Some(Value::I32(v as i32));
+            }
+            Some(Value::I32(0))
+        }
+        "getFloat32" => {
+            let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            let le = args.get(1).map(|v| v.as_i32()).unwrap_or(0) != 0;
+            if let Some(bytes) = dv_read_bytes(&obj, offset, 4) {
+                let arr = [bytes[0], bytes[1], bytes[2], bytes[3]];
+                let v = if le { f32::from_le_bytes(arr) } else { f32::from_be_bytes(arr) };
+                return Some(Value::F64(v as f64));
+            }
+            Some(Value::F64(0.0))
+        }
+        "getFloat64" => {
+            let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            let le = args.get(1).map(|v| v.as_i32()).unwrap_or(0) != 0;
+            if let Some(bytes) = dv_read_bytes(&obj, offset, 8) {
+                let arr = [bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]];
+                let v = if le { f64::from_le_bytes(arr) } else { f64::from_be_bytes(arr) };
+                return Some(Value::F64(v));
+            }
+            Some(Value::F64(0.0))
+        }
+        "setInt8" => {
+            let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            let val = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
+            dv_write_bytes(&obj, offset, &[(val as i8) as u8]);
+            Some(Value::Undefined)
+        }
+        "setUint8" => {
+            let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            let val = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
+            dv_write_bytes(&obj, offset, &[val as u8]);
+            Some(Value::Undefined)
+        }
+        "setInt16" => {
+            let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            let val = args.get(1).map(|v| v.as_i32() as i16).unwrap_or(0);
+            let le = args.get(2).map(|v| v.as_i32()).unwrap_or(0) != 0;
+            let bytes = if le { val.to_le_bytes() } else { val.to_be_bytes() };
+            dv_write_bytes(&obj, offset, &bytes);
+            Some(Value::Undefined)
+        }
+        "setUint16" => {
+            let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            let val = args.get(1).map(|v| v.as_i32() as u16).unwrap_or(0);
+            let le = args.get(2).map(|v| v.as_i32()).unwrap_or(0) != 0;
+            let bytes = if le { val.to_le_bytes() } else { val.to_be_bytes() };
+            dv_write_bytes(&obj, offset, &bytes);
+            Some(Value::Undefined)
+        }
+        "setInt32" => {
+            let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            let val = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
+            let le = args.get(2).map(|v| v.as_i32()).unwrap_or(0) != 0;
+            let bytes = if le { val.to_le_bytes() } else { val.to_be_bytes() };
+            dv_write_bytes(&obj, offset, &bytes);
+            Some(Value::Undefined)
+        }
+        "setUint32" => {
+            let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            let val = args.get(1).map(|v| v.as_i32() as u32).unwrap_or(0);
+            let le = args.get(2).map(|v| v.as_i32()).unwrap_or(0) != 0;
+            let bytes = if le { val.to_le_bytes() } else { val.to_be_bytes() };
+            dv_write_bytes(&obj, offset, &bytes);
+            Some(Value::Undefined)
+        }
+        "setFloat32" => {
+            let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            let val = args.get(1).map(|v| v.as_f64() as f32).unwrap_or(0.0);
+            let le = args.get(2).map(|v| v.as_i32()).unwrap_or(0) != 0;
+            let bytes = if le { val.to_le_bytes() } else { val.to_be_bytes() };
+            dv_write_bytes(&obj, offset, &bytes);
+            Some(Value::Undefined)
+        }
+        "setFloat64" => {
+            let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            let val = args.get(1).map(|v| v.as_f64()).unwrap_or(0.0);
+            let le = args.get(2).map(|v| v.as_i32()).unwrap_or(0) != 0;
+            let bytes = if le { val.to_le_bytes() } else { val.to_be_bytes() };
+            dv_write_bytes(&obj, offset, &bytes);
+            Some(Value::Undefined)
+        }
+        _ => None,
+    }
 }

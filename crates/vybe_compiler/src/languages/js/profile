@@ -135,6 +135,9 @@ BigInt              = { emit = "host:ecma:bigint:BigInt",         min_args = 1, 
 "Array.from"        = { emit = "host:ecma:array:from",            min_args = 1, max_args = 3 }
 "Array.of"          = { emit = "host:ecma:array:of",              min_args = 0, max_args = 255 }
 
+# ── ArrayBuffer static methods ───────────────────────────────────────────────
+"ArrayBuffer.isView"  = { emit = "host:ecma:arraybuffer:isView", min_args = 1, max_args = 1 }
+
 # ── TypedArray static methods ─────────────────────────────────────────────────
 "Int8Array.from"           = { emit = "host:ecma:int8array:from",     min_args = 1, max_args = 3 }
 "Int8Array.of"             = { emit = "host:ecma:int8array:of",       min_args = 0, max_args = 255 }
@@ -204,15 +207,17 @@ clearInterval        = { emit = "noop",                          min_args = 1, m
 queueMicrotask       = { emit = "noop",                          min_args = 1, max_args = 1 }
 
 # ── Atomics ──────────────────────────────────────────────────────────────────
+# Route through host functions: TypedArrays are object-based (ObjectKind::TypedArray),
+# not WASM linear memory, so I32_ATOMIC_* opcodes don't apply here.
 
-"Atomics.load"            = { emit = "intrinsic:atomics_load",        min_args = 2, max_args = 2 }
-"Atomics.store"           = { emit = "intrinsic:atomics_store",       min_args = 3, max_args = 3 }
-"Atomics.add"             = { emit = "intrinsic:atomics_add",         min_args = 3, max_args = 3 }
-"Atomics.sub"             = { emit = "intrinsic:atomics_sub",         min_args = 3, max_args = 3 }
-"Atomics.exchange"        = { emit = "intrinsic:atomics_exchange",    min_args = 3, max_args = 3 }
-"Atomics.compareExchange" = { emit = "intrinsic:atomics_cmpxchg",    min_args = 4, max_args = 4 }
-"Atomics.wait"            = { emit = "intrinsic:atomics_wait",       min_args = 3, max_args = 4 }
-"Atomics.notify"          = { emit = "intrinsic:atomics_notify",     min_args = 2, max_args = 3 }
+"Atomics.load"            = { emit = "host:ecma:atomics:load",            min_args = 2, max_args = 2 }
+"Atomics.store"           = { emit = "host:ecma:atomics:store",           min_args = 3, max_args = 3 }
+"Atomics.add"             = { emit = "host:ecma:atomics:add",             min_args = 3, max_args = 3 }
+"Atomics.sub"             = { emit = "host:ecma:atomics:sub",             min_args = 3, max_args = 3 }
+"Atomics.exchange"        = { emit = "host:ecma:atomics:exchange",        min_args = 3, max_args = 3 }
+"Atomics.compareExchange" = { emit = "host:ecma:atomics:compareExchange", min_args = 4, max_args = 4 }
+"Atomics.wait"            = { emit = "host:ecma:atomics:wait",            min_args = 3, max_args = 4 }
+"Atomics.notify"          = { emit = "host:ecma:atomics:notify",          min_args = 2, max_args = 3 }
 
 # ── crypto module ────────────────────────────────────────────────────────────
 
@@ -356,7 +361,8 @@ size              = { emit = "intrinsic:map_size",       min_args = 0, max_args 
 # already handles them correctly. Adding generic profile entries here
 # would intercept Map/Set calls at compile time and route them through
 # the wrong storage.
-hasOwnProperty    = { emit = "common:dict.has",          min_args = 1, max_args = 1 }
+hasOwnProperty         = { emit = "common:dict.has",                         min_args = 1, max_args = 1 }
+propertyIsEnumerable   = { emit = "invoke:propertyIsEnumerable",              min_args = 1, max_args = 1 }
 
 # Object.keys/values are STATIC calls via module alias (Object.keys(obj)),
 # NOT instance methods. Map.keys/values go through the type registry.
@@ -675,6 +681,7 @@ module = "ecma:promise"
 "FinalizationRegistry" = ["ecma:finalization-registry", "new"]
 "ArrayBuffer"   = ["ecma:arraybuffer", "new"]
 "SharedArrayBuffer" = ["ecma:sharedarraybuffer", "new"]
+"DataView"      = ["ecma:dataview", "new"]
 "Int8Array"          = ["ecma:int8array",     "new"]
 "Uint8Array"         = ["ecma:uint8array",    "new"]
 "Uint8ClampedArray"  = ["ecma:uint8clamped",  "new"]

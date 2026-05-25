@@ -16,6 +16,18 @@
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::{VM, Value, HostContext};
 
+fn capture_log_lines(output: &Arc<Mutex<Vec<String>>>, args: &[Value]) {
+    let joined = args.iter().map(|arg| format!("{}", arg)).collect::<Vec<_>>().join(" ");
+    let mut lines = output.lock().unwrap();
+    for segment in joined.split('\n') {
+        let line = segment.trim_end_matches('\r');
+        if line.is_empty() {
+            continue;
+        }
+        lines.push(line.to_string());
+    }
+}
+
 fn compile_chunks(src: &str) -> Result<Vec<vybe_bytecode::Chunk>, String> {
     let module = vybe_compiler::languages::php::parse(src)?;
     let profile = vybe_compiler::profile::parse_profile(vybe_compiler::languages::php::profile_source())
@@ -60,8 +72,7 @@ pub fn run_prints(src: &str) -> Vec<String> {
     let out = output.clone();
     vybe_host::register_all(&mut vm);
     vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-        let s: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
-        out.lock().unwrap().push(s.join(" "));
+        capture_log_lines(&out, args);
         Value::Null
     }));
     vybe_host::setup_namespaces(&mut vm);
@@ -76,8 +87,7 @@ pub fn run_prints_dynamic(src: &str, virtual_path: &str) -> Vec<String> {
     let out = output.clone();
     vybe_host::register_all(&mut vm);
     vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-        let s: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
-        out.lock().unwrap().push(s.join(" "));
+        capture_log_lines(&out, args);
         Value::Null
     }));
     vybe_host::setup_namespaces(&mut vm);

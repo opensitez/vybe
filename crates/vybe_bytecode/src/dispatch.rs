@@ -13,12 +13,135 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use crate::error::VMError;
 use crate::opcode::Op;
-use crate::value::{Function, Object, ObjectKind, Upvalue, UpvalueLocation, Value};
+use crate::value::{Function, Object, ObjectKind, TypedArrayState, TypedElemKind, Upvalue, UpvalueLocation, Value};
 use crate::vm::{
     dyn_truthy,
     VM, ExceptionHandler, FinalizerEntry, LabelEntry,
     ImportTarget, ActiveContinuation, ResumeMode,
 };
+
+fn typed_array_live_length(ta: &TypedArrayState) -> usize {
+    let buf = ta.buffer.lock().unwrap();
+    let bpe = ta.elem.bytes_per_element();
+    if ta.byte_offset >= buf.len() {
+        return 0;
+    }
+    let available_bytes = buf.len() - ta.byte_offset;
+    let available_elems = available_bytes / bpe;
+    ta.length.min(available_elems)
+}
+
+fn typed_array_read(ta: &TypedArrayState, idx: usize) -> Option<Value> {
+    if idx >= typed_array_live_length(ta) {
+        return None;
+    }
+    let bpe = ta.elem.bytes_per_element();
+    let buf = ta.buffer.lock().unwrap();
+    let abs = ta.byte_offset + idx * bpe;
+    Some(match ta.elem {
+        TypedElemKind::I8 => Value::I32(buf[abs] as i8 as i32),
+        TypedElemKind::U8 | TypedElemKind::U8Clamped => Value::I32(buf[abs] as i32),
+        TypedElemKind::I16 => {
+            let bytes = [buf[abs], buf[abs + 1]];
+            Value::I32(i16::from_le_bytes(bytes) as i32)
+        }
+        TypedElemKind::U16 => {
+            let bytes = [buf[abs], buf[abs + 1]];
+            Value::I32(u16::from_le_bytes(bytes) as i32)
+        }
+        TypedElemKind::I32 => {
+            let mut bytes = [0u8; 4];
+            bytes.copy_from_slice(&buf[abs..abs + 4]);
+            Value::I32(i32::from_le_bytes(bytes))
+        }
+        TypedElemKind::U32 => {
+            let mut bytes = [0u8; 4];
+            bytes.copy_from_slice(&buf[abs..abs + 4]);
+            Value::I32(u32::from_le_bytes(bytes) as i32)
+        }
+        TypedElemKind::F32 => {
+            let mut bytes = [0u8; 4];
+            bytes.copy_from_slice(&buf[abs..abs + 4]);
+            Value::F64(f32::from_le_bytes(bytes) as f64)
+        }
+        TypedElemKind::F64 => {
+            let mut bytes = [0u8; 8];
+            bytes.copy_from_slice(&buf[abs..abs + 8]);
+            Value::F64(f64::from_le_bytes(bytes))
+        }
+        TypedElemKind::BigI64 => {
+            let mut bytes = [0u8; 8];
+            bytes.copy_from_slice(&buf[abs..abs + 8]);
+            Value::I64(i64::from_le_bytes(bytes))
+        }
+        TypedElemKind::BigU64 => {
+            let mut bytes = [0u8; 8];
+            bytes.copy_from_slice(&buf[abs..abs + 8]);
+            Value::I64(u64::from_le_bytes(bytes) as i64)
+        }
+    })
+}
+
+fn typed_array_write(ta: &TypedArrayState, idx: usize, value: &Value) -> bool {
+    if idx >= typed_array_live_length(ta) {
+        return false;
+    }
+    let bpe = ta.elem.bytes_per_element();
+    let mut buf = ta.buffer.lock().unwrap();
+    let abs = ta.byte_offset + idx * bpe;
+    match ta.elem {
+        TypedElemKind::I8 => {
+            buf[abs] = (value.as_i32() as i8) as u8;
+        }
+        TypedElemKind::U8 => {
+            buf[abs] = (value.as_i32() & 0xFF) as u8;
+        }
+        TypedElemKind::U8Clamped => {
+            let n = value.as_f64();
+            let clamped = if n.is_nan() { 0 } else { n.clamp(0.0, 255.0).round() as i32 };
+            buf[abs] = clamped as u8;
+        }
+        TypedElemKind::I16 => {
+            let bytes = (value.as_i32() as i16).to_le_bytes();
+            buf[abs..abs + 2].copy_from_slice(&bytes);
+        }
+        TypedElemKind::U16 => {
+            let bytes = ((value.as_i32() & 0xFFFF) as u16).to_le_bytes();
+            buf[abs..abs + 2].copy_from_slice(&bytes);
+        }
+        TypedElemKind::I32 => {
+            let bytes = value.as_i32().to_le_bytes();
+            buf[abs..abs + 4].copy_from_slice(&bytes);
+        }
+        TypedElemKind::U32 => {
+            let bytes = (value.as_i32() as u32).to_le_bytes();
+            buf[abs..abs + 4].copy_from_slice(&bytes);
+        }
+        TypedElemKind::F32 => {
+            let bytes = (value.as_f64() as f32).to_le_bytes();
+            buf[abs..abs + 4].copy_from_slice(&bytes);
+        }
+        TypedElemKind::F64 => {
+            let bytes = value.as_f64().to_le_bytes();
+            buf[abs..abs + 8].copy_from_slice(&bytes);
+        }
+        TypedElemKind::BigI64 => {
+            let bits = match value {
+                Value::I64(n) => *n,
+                other => other.as_i32() as i64,
+            };
+            buf[abs..abs + 8].copy_from_slice(&bits.to_le_bytes());
+        }
+        TypedElemKind::BigU64 => {
+            let bits = match value {
+                Value::I64(n) => *n as u64,
+                other => other.as_i32() as u64,
+            };
+            buf[abs..abs + 8].copy_from_slice(&bits.to_le_bytes());
+        }
+    }
+    true
+}
 
 impl VM {
     pub(crate) fn execute_until(&mut self, min_depth: usize) -> Result<Value, VMError> {
@@ -246,6 +369,24 @@ impl VM {
                     let obj = self.pop();
                     match &obj {
                         Value::Object(o) => {
+                            {
+                                let ob = o.lock().unwrap();
+                                if let ObjectKind::TypedArray(ref ta) = ob.kind {
+                                    let numeric_idx = match &key {
+                                        Value::I32(n) if *n >= 0 => Some(*n as usize),
+                                        Value::I64(n) if *n >= 0 => Some(*n as usize),
+                                        Value::F64(n) if n.fract() == 0.0 && *n >= 0.0 => Some(*n as usize),
+                                        Value::String(s) => s.parse::<usize>().ok(),
+                                        _ => None,
+                                    };
+                                    if let Some(idx) = numeric_idx {
+                                        let val = typed_array_read(ta, idx).unwrap_or(Value::Undefined);
+                                        drop(ob);
+                                        self.push(val)?;
+                                        continue;
+                                    }
+                                }
+                            }
                             // Map (associative collection — Python dict, PHP keyed
                             // array, Ruby hash, JS Map): IndexMap lookup by Value
                             // key. Distinct from member access on a Map (`m.foo`
@@ -337,6 +478,24 @@ impl VM {
                     let key = self.pop();
                     let obj = self.pop();
                     if let Value::Object(o) = &obj {
+                        {
+                            let mut ob = o.lock().unwrap();
+                            if let ObjectKind::TypedArray(ref ta) = ob.kind {
+                                let numeric_idx = match &key {
+                                    Value::I32(n) if *n >= 0 => Some(*n as usize),
+                                    Value::I64(n) if *n >= 0 => Some(*n as usize),
+                                    Value::F64(n) if n.fract() == 0.0 && *n >= 0.0 => Some(*n as usize),
+                                    Value::String(s) => s.parse::<usize>().ok(),
+                                    _ => None,
+                                };
+                                if let Some(idx) = numeric_idx {
+                                    typed_array_write(ta, idx, &val);
+                                    drop(ob);
+                                    self.push(val)?;
+                                    continue;
+                                }
+                            }
+                        }
                         // Check for __setitem__ dunder
                         let setitem = o.lock().unwrap().properties.get("__setitem__").cloned();
                         if let Some(func) = setitem {

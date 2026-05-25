@@ -407,7 +407,15 @@ impl fmt::Display for Value {
             Value::I32(n) => write!(f, "{}", n),
             Value::I64(n) => write!(f, "{}", n),
             Value::F64(n) => {
-                if *n == (*n as i64) as f64 && n.abs() < 1e15 && !n.is_infinite() && !n.is_nan() {
+                if n.is_nan() {
+                    write!(f, "NaN")
+                } else if n.is_infinite() {
+                    if n.is_sign_negative() {
+                        write!(f, "-Infinity")
+                    } else {
+                        write!(f, "Infinity")
+                    }
+                } else if *n == (*n as i64) as f64 && n.abs() < 1e15 {
                     write!(f, "{}", *n as i64)
                 } else {
                     write!(f, "{}", n)

@@ -34,6 +34,12 @@ use vybe_bytecode::value::ObjectKind;
 fn typed_array_buffer(args: &[Value], idx: usize) -> Option<(Arc<Mutex<Vec<u8>>>, usize, usize)> {
     if let Some(Value::Object(obj)) = args.get(idx) {
         let o = obj.lock().unwrap();
+        // Fast path: ObjectKind::TypedArray has the buffer Arc directly.
+        if let ObjectKind::TypedArray(ref ta) = o.kind {
+            let bpe = ta.elem.bytes_per_element();
+            return Some((ta.buffer.clone(), ta.byte_offset, bpe));
+        }
+        // Fallback: object with explicit "buffer" property (legacy path).
         let buffer = o.properties.get("buffer")?;
         let byte_offset = o.properties.get("byteOffset").map(|v| v.as_f64() as usize).unwrap_or(0);
         let bpe = o.properties.get("BYTES_PER_ELEMENT").map(|v| v.as_f64() as usize).unwrap_or(4);

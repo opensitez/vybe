@@ -260,10 +260,24 @@ fn register_construction(vm: &mut VM) {
                         let val = dlock.properties.get("value").cloned().unwrap_or(Value::Undefined);
                         let enumerable = dlock.properties.get("enumerable")
                             .map(|x| x.as_bool()).unwrap_or(false);
+                        let writable = dlock.properties.get("writable").map(|x| x.as_bool());
                         drop(dlock);
                         track_key(&arc, &k);
                         if !enumerable { track_nonenum(&arc, &k); }
-                        arc.lock().unwrap().properties.insert(k, val);
+                        arc.lock().unwrap().properties.insert(k.clone(), val);
+                        if matches!(writable, Some(false)) {
+                            let noop_idx = NOOP_SETTER_IDX.load(std::sync::atomic::Ordering::Relaxed);
+                            if noop_idx > 0 {
+                                let mut noop_obj = Object::new();
+                                noop_obj.kind = ObjectKind::HostFunction(noop_idx);
+                                let noop_val = Value::Object(Arc::new(Mutex::new(noop_obj)));
+                                let setter_key = format!("__set_{}", k);
+                                let mut o = arc.lock().unwrap();
+                                if !o.properties.contains_key(&setter_key) {
+                                    o.properties.insert(setter_key, noop_val);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -318,7 +332,7 @@ fn register_construction(vm: &mut VM) {
                         let props: Vec<(String, Value)> = {
                             let src = s.lock().unwrap();
                             src.properties.iter()
-                                .filter(|(k, _)| !k.starts_with("__"))
+                                .filter(|(k, _)| !k.starts_with("__") && !is_nonenum(&*src, k))
                                 .map(|(k, v)| (k.clone(), v.clone()))
                                 .collect()
                         };
@@ -1135,9 +1149,9 @@ fn register_descriptors(vm: &mut VM) {
                     if k.starts_with("__") { continue; }
                     let mut desc = Object::new();
                     desc.properties.insert("value".into(), v.clone());
-                    desc.properties.insert("writable".into(), Value::I32(1));
-                    desc.properties.insert("enumerable".into(), Value::I32(1));
-                    desc.properties.insert("configurable".into(), Value::I32(1));
+                    desc.properties.insert("writable".into(), Value::Bool(true));
+                    desc.properties.insert("enumerable".into(), Value::Bool(!is_nonenum(&o, k)));
+                    desc.properties.insert("configurable".into(), Value::Bool(true));
                     result.properties.insert(k.clone(), Value::Object(Arc::new(Mutex::new(desc))));
                 }
             }
@@ -1351,13 +1365,16 @@ fn register_prototype_methods(vm: &mut VM) {
 
     vm.register_host_fn("ecma:object", "propertyIsEnumerable",
         Box::new(|_ctx, args| {
-            // Our model: any own property is enumerable.
             if let Some(obj) = obj_of(args, 0) {
                 let key = args.get(1).map(key_string).unwrap_or_default();
                 let o = obj.lock().unwrap();
-                return Value::I32(if o.properties.contains_key(&key) && !key.starts_with("__") { 1 } else { 0 });
+                return Value::Bool(
+                    o.properties.contains_key(&key)
+                    && !key.starts_with("__")
+                    && !is_nonenum(&o, &key)
+                );
             }
-            Value::I32(0)
+            Value::Bool(false)
         }));
 
     // toString(): spec default is "[object Object]" for plain objects

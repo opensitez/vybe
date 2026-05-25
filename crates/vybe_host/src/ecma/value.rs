@@ -230,11 +230,15 @@ fn dispatch(ctx: &mut HostContext, receiver: &Value, method: &str, args: &[Value
                 else if o.properties.contains_key(WEAKSET_TAG) { 6 }
                 else {
                     match &o.kind {
-                        ObjectKind::Array(_)      => 1,
-                        ObjectKind::Map(_)        => 2,
-                        ObjectKind::Set(_)        => 3,
-                        ObjectKind::TypedArray(_) => 4,
-                        _ => 0,
+                        ObjectKind::Array(_)       => 1,
+                        ObjectKind::Map(_)         => 2,
+                        ObjectKind::Set(_)         => 3,
+                        ObjectKind::TypedArray(_)  => 4,
+                        ObjectKind::ArrayBuffer(_) => 7,
+                        _ => {
+                            if o.properties.contains_key(crate::ecma::arraybuffer::DV_TAG) { 8 }
+                            else { 0 }
+                        }
                     }
                 }
             };
@@ -245,6 +249,10 @@ fn dispatch(ctx: &mut HostContext, receiver: &Value, method: &str, args: &[Value
                 4 => dispatch_typed_array(ctx, obj.clone(), method, args),
                 5 => dispatch_weakmap(obj.clone(), method, args),
                 6 => dispatch_weakset(obj.clone(), method, args),
+                7 => crate::ecma::arraybuffer::dispatch_arraybuffer_method(obj.clone(), method, args)
+                        .unwrap_or_else(|| dispatch_plain_object(ctx, obj.clone(), method, args)),
+                8 => crate::ecma::arraybuffer::dispatch_dataview_method(obj.clone(), method, args)
+                        .unwrap_or_else(|| dispatch_plain_object(ctx, obj.clone(), method, args)),
                 _ => dispatch_plain_object(ctx, obj.clone(), method, args),
             }
         }
@@ -1721,6 +1729,22 @@ fn dispatch_plain_object(
         let o = obj.lock().unwrap();
         return Value::Bool(o.properties.contains_key(&key));
     }
+    if method == "propertyIsEnumerable" {
+        let key = args.first().map(to_str).unwrap_or_default();
+        let o = obj.lock().unwrap();
+        let has_own = o.properties.contains_key(&key) && !key.starts_with("__");
+        if !has_own { return Value::Bool(false); }
+        let is_enum = match o.properties.get("__nonenum") {
+            Some(Value::Object(arr)) => {
+                let a = arr.lock().unwrap();
+                if let ObjectKind::Array(ref elems) = a.kind {
+                    !elems.iter().any(|e| matches!(e, Value::String(s) if s.as_ref() == key))
+                } else { true }
+            }
+            _ => true,
+        };
+        return Value::Bool(is_enum);
+    }
     // Walk own properties then __proto__ chain for a callable method.
     let cb = {
         let mut found: Option<Value> = None;
@@ -1744,10 +1768,7 @@ fn dispatch_plain_object(
         found
     };
     if let Some(fn_val) = cb {
-        let mut call_args = Vec::with_capacity(args.len() + 1);
-        call_args.push(Value::Object(obj));
-        call_args.extend_from_slice(args);
-        return ctx.invoke(&fn_val, &call_args);
+        return ctx.invoke(&fn_val, args);
     }
     // Type-tagged object fallback: known stamped-`__type` instances
     // (Date) get their methods inline. The polymorphic invokeMethod
