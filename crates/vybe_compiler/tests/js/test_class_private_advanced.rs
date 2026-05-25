@@ -598,7 +598,7 @@ class UUID {
 }
 console.log(UUID.create(256));
 console.log(UUID.create(65536));
-"#), vec!["0100-0080", "0001-8000"]);
+"#), vec!["0100-0080", "10000-8000"]);
 }
 
 // ===================================================================
@@ -635,3 +635,4 @@ const result = new Query()
 console.log(result);
 "#), vec!["SELECT * FROM users WHERE age > 18 AND active = true LIMIT 10"]);
 }
+

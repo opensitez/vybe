@@ -1,6 +1,30 @@
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::{VM, Value, HostContext};
 
+#[macro_export]
+macro_rules! js_cases {
+    ($($name:ident => { $src:expr, [$($expected:expr),* $(,)?] };)+) => {
+        $(
+            #[test]
+            fn $name() {
+                $crate::helpers::assert_js($src, &[$($expected),*]);
+            }
+        )+
+    };
+}
+
+#[macro_export]
+macro_rules! js_import_cases {
+    ($($name:ident => { $src:expr, [$($expected:expr),* $(,)?] };)+) => {
+        $(
+            #[test]
+            fn $name() {
+                $crate::helpers::assert_js_with_imports($src, &[$($expected),*]);
+            }
+        )+
+    };
+}
+
 /// Run JS source through vybex pipeline: pest grammar → walker → common AST → compiler → VM
 pub fn run_js(src: &str) -> Vec<String> {
     let module = vybe_compiler::languages::js::parse(src).expect("JS parse failed");
@@ -24,6 +48,12 @@ pub fn run_js(src: &str) -> Vec<String> {
     vm.run(chunks).expect("JS run failed");
     let result = output.lock().unwrap().clone();
     result
+}
+
+pub fn assert_js(src: &str, expected: &[&str]) {
+    let actual = run_js(src);
+    let expected_vec: Vec<String> = expected.iter().map(|line| (*line).to_string()).collect();
+    assert_eq!(actual, expected_vec);
 }
 
 /// Run JS source through the full pipeline including ESM host-import
@@ -55,6 +85,12 @@ pub fn run_js_with_imports(src: &str) -> Vec<String> {
     vm.run(result.chunks).expect("JS run failed");
     let lines = output.lock().unwrap().clone();
     lines
+}
+
+pub fn assert_js_with_imports(src: &str, expected: &[&str]) {
+    let actual = run_js_with_imports(src);
+    let expected_vec: Vec<String> = expected.iter().map(|line| (*line).to_string()).collect();
+    assert_eq!(actual, expected_vec);
 }
 
 /// Run JS source, return (VM, output) for post-run inspection.
