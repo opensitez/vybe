@@ -16,6 +16,7 @@
 //! Marshaling + error-handling contract pinned in
 //! `crates/vybe_bytecode/src/wasm/JS_BUILTIN_CONVENTIONS.md`.
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, OnceLock};
 use crate::namespaces::receiver_host_fn_ref;
 use vybe_bytecode::value::{Object, ObjectKind, Value};
@@ -83,6 +84,144 @@ fn property_length_as_usize(object: &Object) -> Option<usize> {
         Some(Value::F64(value)) if *value >= 0.0 => Some(*value as usize),
         Some(Value::String(text)) => text.parse::<usize>().ok(),
         _ => None,
+    }
+}
+
+fn hole_indices(object: &Object) -> BTreeSet<usize> {
+    let Some(Value::Object(holes)) = object.properties.get("__holes") else {
+        return BTreeSet::new();
+    };
+    let holes_guard = holes.lock().unwrap();
+    let ObjectKind::Array(ref elems) = holes_guard.kind else {
+        return BTreeSet::new();
+    };
+    elems
+        .iter()
+        .filter_map(|value| match value {
+            Value::I32(index) if *index >= 0 => Some(*index as usize),
+            Value::I64(index) if *index >= 0 => Some(*index as usize),
+            _ => None,
+        })
+        .collect()
+}
+
+fn store_hole_indices(object: &mut Object, holes: &BTreeSet<usize>) {
+    if holes.is_empty() {
+        object.properties.remove("__holes");
+        return;
+    }
+
+    let holes_obj = match object.properties.get("__holes") {
+        Some(Value::Object(existing)) => existing.clone(),
+        _ => {
+            let created = Arc::new(Mutex::new(Object::new_array(Vec::new())));
+            object.properties.insert("__holes".into(), Value::Object(created.clone()));
+            created
+        }
+    };
+
+    let mut holes_guard = holes_obj.lock().unwrap();
+    let ObjectKind::Array(ref mut elems) = holes_guard.kind else {
+        return;
+    };
+    elems.clear();
+    elems.extend(holes.iter().map(|index| Value::I32(*index as i32)));
+}
+
+pub(crate) fn is_array_hole(object: &Object, index: usize) -> bool {
+    hole_indices(object).contains(&index)
+}
+
+fn mark_array_hole(object: &mut Object, index: usize) {
+    let mut holes = hole_indices(object);
+    holes.insert(index);
+    store_hole_indices(object, &holes);
+}
+
+pub(crate) fn clear_array_hole(object: &mut Object, index: usize) {
+    let mut holes = hole_indices(object);
+    holes.remove(&index);
+    store_hole_indices(object, &holes);
+}
+
+pub(crate) fn mark_hole_range(object: &mut Object, range: std::ops::Range<usize>) {
+    let mut holes = hole_indices(object);
+    holes.extend(range);
+    store_hole_indices(object, &holes);
+}
+
+pub(crate) fn remap_array_holes<F>(object: &mut Object, mut remap: F)
+where
+    F: FnMut(usize) -> Option<usize>,
+{
+    let holes = hole_indices(object);
+    let remapped: BTreeSet<usize> = holes.into_iter().filter_map(|index| remap(index)).collect();
+    store_hole_indices(object, &remapped);
+}
+
+pub(crate) fn present_array_entries(object: &Object) -> Vec<(usize, Value)> {
+    let ObjectKind::Array(ref values) = object.kind else {
+        return Vec::new();
+    };
+    values
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !is_array_hole(object, *index))
+        .map(|(index, value)| (index, value.clone()))
+        .collect()
+}
+
+pub(crate) fn make_holey_array(length: usize) -> Value {
+    let array = make_array(vec![Value::Undefined; length]);
+    if let Value::Object(obj) = &array {
+        let mut guard = obj.lock().unwrap();
+        mark_hole_range(&mut guard, 0..length);
+    }
+    array
+}
+
+fn parse_js_array_length(value: &Value) -> Result<usize, &'static str> {
+    match value {
+        Value::I32(length) if *length >= 0 => Ok(*length as usize),
+        Value::I64(length) if *length >= 0 => Ok(*length as usize),
+        Value::F64(length) if *length >= 0.0 && length.fract() == 0.0 && *length <= u32::MAX as f64 => {
+            Ok(*length as usize)
+        }
+        Value::String(text) => text
+            .parse::<u32>()
+            .map(|length| length as usize)
+            .map_err(|_| "Invalid array length"),
+        _ => Err("Invalid array length"),
+    }
+}
+
+pub(crate) fn set_array_length(object: &mut Object, new_len: usize) {
+    let old_len = match &object.kind {
+        ObjectKind::Array(values) => values.len(),
+        _ => return,
+    };
+
+    if let ObjectKind::Array(ref mut values) = object.kind {
+        if new_len < old_len {
+            values.truncate(new_len);
+        } else if new_len > old_len {
+            values.resize(new_len, Value::Undefined);
+        }
+    }
+
+    if new_len < old_len {
+        remap_array_holes(object, |index| (index < new_len).then_some(index));
+    } else if new_len > old_len {
+        mark_hole_range(object, old_len..new_len);
+    }
+
+    sync_length(object);
+}
+
+pub(crate) fn apply_js_array_length(ctx: &mut HostContext, object: &mut Object, value: &Value) {
+    match parse_js_array_length(value) {
+        Ok(new_len) => set_array_length(object, new_len),
+        Err(message) => ctx.throw_value(crate::ecma::error::new_error("RangeError", message)),
     }
 }
 
@@ -245,19 +384,17 @@ fn register_constructors(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:array",
         "new",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             match args.len() {
                 0 => make_array(Vec::new()),
                 1 => match &args[0] {
-                    Value::F64(n) if n.fract() == 0.0 && *n >= 0.0 && *n <= u32::MAX as f64 => {
-                        make_array(vec![Value::Undefined; *n as usize])
-                    }
-                    Value::I32(n) if *n >= 0 => {
-                        make_array(vec![Value::Undefined; *n as usize])
-                    }
-                    Value::I64(n) if *n >= 0 => {
-                        make_array(vec![Value::Undefined; *n as usize])
-                    }
+                    Value::F64(_) | Value::I32(_) | Value::I64(_) => match parse_js_array_length(&args[0]) {
+                        Ok(length) => make_holey_array(length),
+                        Err(message) => {
+                            ctx.throw_value(crate::ecma::error::new_error("RangeError", message));
+                            Value::Undefined
+                        }
+                    },
                     other => make_array(vec![other.clone()]),
                 },
                 _ => make_array(args.to_vec()),
@@ -459,11 +596,17 @@ fn register_property_access(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:array",
         "set",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let key = args.get(1).cloned().unwrap_or(Value::Undefined);
             let val = args.get(2).cloned().unwrap_or(Value::Null);
             if let Some(Value::Object(obj)) = args.first() {
                 let mut o = obj.lock().unwrap();
+                if matches!(&o.kind, ObjectKind::Array(_))
+                    && matches!(&key, Value::String(text) if text.as_ref() == "length" || text.as_ref() == "__len__")
+                {
+                    apply_js_array_length(ctx, &mut o, &val);
+                    return Value::Null;
+                }
                 match &mut o.kind {
                     ObjectKind::Array(v) => {
                         // Numeric keys → element store. Non-numeric keys
@@ -481,6 +624,7 @@ fn register_property_access(vm: &mut VM) {
                             _ => None,
                         };
                         if let Some(idx) = numeric_idx {
+                            let old_len = v.len();
                             // ECMA-262 §6.1.7.2 / §23.1.3 — holes from
                             // sparse `arr[hi] = v` writes read as
                             // Undefined, distinct from explicit `Null`.
@@ -488,6 +632,10 @@ fn register_property_access(vm: &mut VM) {
                                 v.push(Value::Undefined);
                             }
                             v[idx] = val;
+                            if idx >= old_len {
+                                mark_hole_range(&mut o, old_len..(idx + 1));
+                            }
+                            clear_array_hole(&mut o, idx);
                             sync_length(&mut o);
                         } else {
                             let key_str = match &key {
@@ -557,14 +705,12 @@ fn register_property_access(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:array",
         "setLength",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let n = args.get(1).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             if let Some(arr) = array_of(args, 0) {
                 let mut o = arr.lock().unwrap();
-                if let ObjectKind::Array(ref mut v) = o.kind {
-                    v.resize(n, Value::Null);
+                if let Some(value) = args.get(1) {
+                    apply_js_array_length(ctx, &mut o, value);
                 }
-                sync_length(&mut o);
             }
             Value::Null
         }),
@@ -618,12 +764,19 @@ fn register_mutators(vm: &mut VM) {
                     return Value::I32(0);
                 }
                 let mut o = arr.lock().unwrap();
+                let old_len = match &o.kind {
+                    ObjectKind::Array(v) => v.len(),
+                    _ => 0,
+                };
                 let len = if let ObjectKind::Array(ref mut v) = o.kind {
                     v.extend(values.iter().cloned());
                     v.len() as i32
                 } else {
                     0
                 };
+                for index in old_len..(len as usize) {
+                    clear_array_hole(&mut o, index);
+                }
                 sync_length(&mut o);
                 return Value::I32(len);
             }
@@ -655,8 +808,20 @@ fn register_mutators(vm: &mut VM) {
             if let Some(arr) = array_of(args, 0) {
                 if is_frozen(&arr) { return Value::Undefined; }
                 let mut o = arr.lock().unwrap();
-                let popped = if let ObjectKind::Array(ref mut v) = o.kind {
-                    v.pop().unwrap_or(Value::Undefined)
+                let popped = if let ObjectKind::Array(ref v) = o.kind {
+                    if v.is_empty() {
+                        Value::Undefined
+                    } else {
+                        let last_index = v.len() - 1;
+                        let was_hole = is_array_hole(&o, last_index);
+                        let value = if let ObjectKind::Array(ref mut inner) = o.kind {
+                            inner.pop().unwrap_or(Value::Undefined)
+                        } else {
+                            Value::Undefined
+                        };
+                        clear_array_hole(&mut o, last_index);
+                        if was_hole { Value::Undefined } else { value }
+                    }
                 } else {
                     Value::Undefined
                 };
@@ -675,8 +840,22 @@ fn register_mutators(vm: &mut VM) {
             if let Some(arr) = array_of(args, 0) {
                 if is_frozen(&arr) { return Value::Undefined; }
                 let mut o = arr.lock().unwrap();
-                let shifted = if let ObjectKind::Array(ref mut v) = o.kind {
-                    if v.is_empty() { Value::Undefined } else { v.remove(0) }
+                let shifted = if let ObjectKind::Array(ref v) = o.kind {
+                    if v.is_empty() {
+                        Value::Undefined
+                    } else {
+                        let was_hole = is_array_hole(&o, 0);
+                        let value = if let ObjectKind::Array(ref mut inner) = o.kind {
+                            inner.remove(0)
+                        } else {
+                            Value::Undefined
+                        };
+                        remap_array_holes(&mut o, |index| match index {
+                            0 => None,
+                            other => Some(other - 1),
+                        });
+                        if was_hole { Value::Undefined } else { value }
+                    }
                 } else {
                     Value::Undefined
                 };
@@ -704,6 +883,7 @@ fn register_mutators(vm: &mut VM) {
                     return Value::I32(0);
                 }
                 let mut o = arr.lock().unwrap();
+                let offset = args.len().saturating_sub(1);
                 let len = if let ObjectKind::Array(ref mut v) = o.kind {
                     for (i, val) in args.iter().skip(1).enumerate() {
                         v.insert(i, val.clone());
@@ -712,6 +892,9 @@ fn register_mutators(vm: &mut VM) {
                 } else {
                     0
                 };
+                if offset > 0 {
+                    remap_array_holes(&mut o, |index| Some(index + offset));
+                }
                 sync_length(&mut o);
                 return Value::I32(len);
             }
@@ -1000,6 +1183,9 @@ fn register_non_mutators(vm: &mut VM) {
                 if let ObjectKind::Array(ref v) = o.kind {
                     let start = from.max(0) as usize;
                     for (i, elem) in v.iter().enumerate().skip(start) {
+                        if is_array_hole(&o, i) {
+                            continue;
+                        }
                         if elem.eq(&needle) {
                             return Value::I32(i as i32);
                         }
@@ -1024,6 +1210,9 @@ fn register_non_mutators(vm: &mut VM) {
                     let end = from.min(len - 1).max(-1);
                     let end_idx = if end < 0 { 0 } else { (end + 1) as usize };
                     for (i, elem) in v[..end_idx].iter().enumerate().rev() {
+                        if is_array_hole(&o, i) {
+                            continue;
+                        }
                         if elem.eq(&needle) {
                             return Value::I32(i as i32);
                         }
@@ -1050,7 +1239,13 @@ fn register_non_mutators(vm: &mut VM) {
                 let o = obj.lock().unwrap();
                 match &o.kind {
                     ObjectKind::Array(v) => {
-                        for elem in v.iter().skip(from) {
+                        for (index, elem) in v.iter().enumerate().skip(from) {
+                            if is_array_hole(&o, index) {
+                                if matches!(needle, Value::Undefined) {
+                                    return Value::Bool(true);
+                                }
+                                continue;
+                            }
                             if elem.eq(&needle) {
                                 return Value::Bool(true);
                             }
@@ -1097,7 +1292,17 @@ fn register_non_mutators(vm: &mut VM) {
                         _ => format!("{}", e),
                     };
                     match &inner.kind {
-                        ObjectKind::Array(v) => v.iter().map(stringify).collect(),
+                        ObjectKind::Array(v) => v
+                            .iter()
+                            .enumerate()
+                            .map(|(index, value)| {
+                                if is_array_hole(&inner, index) {
+                                    String::new()
+                                } else {
+                                    stringify(value)
+                                }
+                            })
+                            .collect(),
                         ObjectKind::Map(m) => m.values().map(stringify).collect(),
                         ObjectKind::Ordinary => {
                             if let Some(len) = property_length_as_usize(&inner) {
@@ -1171,9 +1376,14 @@ fn register_non_mutators(vm: &mut VM) {
                 if let ObjectKind::Array(ref v) = o.kind {
                     let parts: Vec<String> = v
                         .iter()
-                        .map(|e| match e {
-                            Value::Null | Value::Undefined => String::new(),
-                            _ => format!("{}", e),
+                        .enumerate()
+                        .map(|(index, value)| if is_array_hole(&o, index) {
+                            String::new()
+                        } else {
+                            match value {
+                                Value::Null | Value::Undefined => String::new(),
+                                _ => format!("{}", value),
+                            }
                         })
                         .collect();
                     return Value::String(Arc::from(parts.join(",").as_str()));
@@ -1193,7 +1403,17 @@ fn register_non_mutators(vm: &mut VM) {
             if let Some(arr) = array_of(args, 0) {
                 let o = arr.lock().unwrap();
                 if let ObjectKind::Array(ref v) = o.kind {
-                    let parts: Vec<String> = v.iter().map(|e| format!("{}", e)).collect();
+                    let parts: Vec<String> = v
+                        .iter()
+                        .enumerate()
+                        .map(|(index, value)| {
+                            if is_array_hole(&o, index) {
+                                String::new()
+                            } else {
+                                format!("{}", value)
+                            }
+                        })
+                        .collect();
                     return Value::String(Arc::from(parts.join(",").as_str()));
                 }
             }
@@ -1454,13 +1674,13 @@ fn register_iteration(vm: &mut VM) {
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
-                let snapshot: Vec<Value> = {
+                let entries = {
                     let o = arr.lock().unwrap();
-                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                    present_array_entries(&o)
                 };
-                for (i, elem) in snapshot.iter().enumerate() {
+                for (i, elem) in entries {
                     let invoke_args = vec![
-                        elem.clone(),
+                        elem,
                         Value::I32(i as i32),
                         Value::Object(arr.clone()),
                     ];
@@ -1474,6 +1694,32 @@ fn register_iteration(vm: &mut VM) {
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             let receiver = args.first().cloned().unwrap_or(Value::Undefined);
+            if let Some(arr) = array_of(args, 0) {
+                let (length, entries) = {
+                    let o = arr.lock().unwrap();
+                    let len = if let ObjectKind::Array(ref v) = o.kind { v.len() } else { 0 };
+                    (len, present_array_entries(&o))
+                };
+                let mapped = make_holey_array(length);
+                if let Value::Object(mapped_obj) = &mapped {
+                    let mut mapped_guard = mapped_obj.lock().unwrap();
+                    let clear_indices: Vec<usize> = entries.iter().map(|(index, _)| *index).collect();
+                    if let ObjectKind::Array(ref mut values) = mapped_guard.kind {
+                        for (index, elem) in entries {
+                            let invoke_args = vec![
+                                elem,
+                                Value::I32(index as i32),
+                                Value::Object(arr.clone()),
+                            ];
+                            values[index] = invoke_callback(ctx, &callback, &invoke_args);
+                        }
+                    }
+                    for index in clear_indices {
+                        clear_array_hole(&mut mapped_guard, index);
+                    }
+                }
+                return mapped;
+            }
             let snapshot = array_like_snapshot(&receiver);
             if !snapshot.is_empty() || matches!(receiver, Value::Object(_)) {
                 let mapped: Vec<Value> = snapshot.iter().enumerate()
@@ -1495,6 +1741,24 @@ fn register_iteration(vm: &mut VM) {
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             let receiver = args.first().cloned().unwrap_or(Value::Undefined);
+            if let Some(arr) = array_of(args, 0) {
+                let entries = {
+                    let o = arr.lock().unwrap();
+                    present_array_entries(&o)
+                };
+                let mut filtered = Vec::new();
+                for (index, elem) in entries {
+                    let invoke_args = vec![
+                        elem.clone(),
+                        Value::I32(index as i32),
+                        Value::Object(arr.clone()),
+                    ];
+                    if is_truthy(&invoke_callback(ctx, &callback, &invoke_args)) {
+                        filtered.push(elem);
+                    }
+                }
+                return make_array(filtered);
+            }
             let snapshot = array_like_snapshot(&receiver);
             if !snapshot.is_empty() || matches!(receiver, Value::Object(_)) {
                 let filtered: Vec<Value> = snapshot.iter().enumerate()
@@ -1523,25 +1787,25 @@ fn register_iteration(vm: &mut VM) {
                 Value::Undefined
             };
             if let Some(arr) = array_of(args, 0) {
-                let snapshot: Vec<Value> = {
+                let entries = {
                     let o = arr.lock().unwrap();
-                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                    present_array_entries(&o)
                 };
                 let start_idx = if initial_provided { 0 } else {
-                    if snapshot.is_empty() {
+                    if entries.is_empty() {
                         // Spec: TypeError on empty array with no initial.
                         // MVP returns undefined; Phase B5 doesn't have
                         // throw-dispatch yet.
                         return Value::Undefined;
                     }
-                    acc = snapshot[0].clone();
+                    acc = entries[0].1.clone();
                     1
                 };
-                for i in start_idx..snapshot.len() {
+                for (index, value) in entries.into_iter().skip(start_idx) {
                     let invoke_args = vec![
                         acc,
-                        snapshot[i].clone(),
-                        Value::I32(i as i32),
+                        value,
+                        Value::I32(index as i32),
                         Value::Object(arr.clone()),
                     ];
                     acc = invoke_callback(ctx, &callback, &invoke_args);
@@ -1560,27 +1824,24 @@ fn register_iteration(vm: &mut VM) {
                 Value::Undefined
             };
             if let Some(arr) = array_of(args, 0) {
-                let snapshot: Vec<Value> = {
+                let entries = {
                     let o = arr.lock().unwrap();
-                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                    present_array_entries(&o)
                 };
-                if snapshot.is_empty() {
+                if entries.is_empty() {
                     return if initial_provided { acc } else { Value::Undefined };
                 }
-                let mut i = snapshot.len() as i32 - 1;
                 if !initial_provided {
-                    acc = snapshot[i as usize].clone();
-                    i -= 1;
+                    acc = entries.last().map(|(_, value)| value.clone()).unwrap_or(Value::Undefined);
                 }
-                while i >= 0 {
+                for (index, value) in entries.into_iter().rev().skip(if initial_provided { 0 } else { 1 }) {
                     let invoke_args = vec![
                         acc,
-                        snapshot[i as usize].clone(),
-                        Value::I32(i),
+                        value,
+                        Value::I32(index as i32),
                         Value::Object(arr.clone()),
                     ];
                     acc = invoke_callback(ctx, &callback, &invoke_args);
-                    i -= 1;
                 }
             }
             acc
@@ -1590,55 +1851,55 @@ fn register_iteration(vm: &mut VM) {
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
-                let snapshot: Vec<Value> = {
+                let entries = {
                     let o = arr.lock().unwrap();
-                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                    present_array_entries(&o)
                 };
-                for (i, elem) in snapshot.iter().enumerate() {
+                for (i, elem) in entries {
                     let invoke_args = vec![
-                        elem.clone(),
+                        elem,
                         Value::I32(i as i32),
                         Value::Object(arr.clone()),
                     ];
                     if is_truthy(&invoke_callback(ctx, &callback, &invoke_args)) {
-                        return Value::I32(1);
+                        return Value::Bool(true);
                     }
                 }
             }
-            Value::I32(0)
+            Value::Bool(false)
         }));
 
     vm.register_host_fn("ecma:array", "every",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
-                let snapshot: Vec<Value> = {
+                let entries = {
                     let o = arr.lock().unwrap();
-                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                    present_array_entries(&o)
                 };
-                for (i, elem) in snapshot.iter().enumerate() {
+                for (i, elem) in entries {
                     let invoke_args = vec![
-                        elem.clone(),
+                        elem,
                         Value::I32(i as i32),
                         Value::Object(arr.clone()),
                     ];
                     if !is_truthy(&invoke_callback(ctx, &callback, &invoke_args)) {
-                        return Value::I32(0);
+                        return Value::Bool(false);
                     }
                 }
             }
-            Value::I32(1) // spec: empty array → every returns true
+            Value::Bool(true) // spec: empty array → every returns true
         }));
 
     vm.register_host_fn("ecma:array", "find",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
-                let snapshot: Vec<Value> = {
+                let entries = {
                     let o = arr.lock().unwrap();
-                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                    present_array_entries(&o)
                 };
-                for (i, elem) in snapshot.iter().enumerate() {
+                for (i, elem) in entries {
                     let invoke_args = vec![
                         elem.clone(),
                         Value::I32(i as i32),
@@ -1656,13 +1917,13 @@ fn register_iteration(vm: &mut VM) {
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
-                let snapshot: Vec<Value> = {
+                let entries = {
                     let o = arr.lock().unwrap();
-                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                    present_array_entries(&o)
                 };
-                for (i, elem) in snapshot.iter().enumerate() {
+                for (i, elem) in entries {
                     let invoke_args = vec![
-                        elem.clone(),
+                        elem,
                         Value::I32(i as i32),
                         Value::Object(arr.clone()),
                     ];
@@ -1678,11 +1939,11 @@ fn register_iteration(vm: &mut VM) {
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
-                let snapshot: Vec<Value> = {
+                let entries = {
                     let o = arr.lock().unwrap();
-                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                    present_array_entries(&o)
                 };
-                for (i, elem) in snapshot.iter().enumerate().rev() {
+                for (i, elem) in entries.into_iter().rev() {
                     let invoke_args = vec![
                         elem.clone(),
                         Value::I32(i as i32),
@@ -1700,13 +1961,13 @@ fn register_iteration(vm: &mut VM) {
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
-                let snapshot: Vec<Value> = {
+                let entries = {
                     let o = arr.lock().unwrap();
-                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                    present_array_entries(&o)
                 };
-                for (i, elem) in snapshot.iter().enumerate().rev() {
+                for (i, elem) in entries.into_iter().rev() {
                     let invoke_args = vec![
-                        elem.clone(),
+                        elem,
                         Value::I32(i as i32),
                         Value::Object(arr.clone()),
                     ];
@@ -1722,14 +1983,14 @@ fn register_iteration(vm: &mut VM) {
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
             if let Some(arr) = array_of(args, 0) {
-                let snapshot: Vec<Value> = {
+                let entries = {
                     let o = arr.lock().unwrap();
-                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                    present_array_entries(&o)
                 };
-                let mut out = Vec::with_capacity(snapshot.len());
-                for (i, elem) in snapshot.iter().enumerate() {
+                let mut out = Vec::with_capacity(entries.len());
+                for (i, elem) in entries {
                     let invoke_args = vec![
-                        elem.clone(),
+                        elem,
                         Value::I32(i as i32),
                         Value::Object(arr.clone()),
                     ];

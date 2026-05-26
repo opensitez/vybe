@@ -3953,7 +3953,7 @@ impl Compiler {
                 // the method name lookup matches the previous behaviour)
             }
             if let Some(stdlib_name) = self.profile.lookup_array_method(&field_lower)
-                .filter(|_| !user_class_method && !receiver_is_url_search_params && !js_requires_dynamic_callback_dispatch)
+                .filter(|_| !self.is_js_profile() && !user_class_method && !receiver_is_url_search_params && !js_requires_dynamic_callback_dispatch)
                 .map(|s| s.to_string())
             {
                 // Normalize to the JS-style method name used in match below

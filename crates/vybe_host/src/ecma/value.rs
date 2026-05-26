@@ -864,9 +864,16 @@ fn dispatch_array(
         }
         "push" => {
             let mut o = obj.lock().unwrap();
+            let old_len = match &o.kind {
+                ObjectKind::Array(v) => v.len(),
+                _ => 0,
+            };
             if let ObjectKind::Array(ref mut v) = o.kind {
                 for a in args {
                     v.push(a.clone());
+                }
+                for index in old_len..v.len() {
+                    crate::ecma::array::clear_array_hole(&mut o, index);
                 }
                 sync_length(&mut o);
                 return Value::I32(v_len_after(&o));
@@ -875,8 +882,19 @@ fn dispatch_array(
         }
         "pop" => {
             let mut o = obj.lock().unwrap();
-            if let ObjectKind::Array(ref mut v) = o.kind {
-                let popped = v.pop().unwrap_or(Value::Undefined);
+            let last_index = match &o.kind {
+                ObjectKind::Array(v) if !v.is_empty() => Some(v.len() - 1),
+                _ => None,
+            };
+            if let Some(last_index) = last_index {
+                let was_hole = crate::ecma::array::is_array_hole(&o, last_index);
+                let popped = if let ObjectKind::Array(ref mut v) = o.kind {
+                    let value = v.pop().unwrap_or(Value::Undefined);
+                    if was_hole { Value::Undefined } else { value }
+                } else {
+                    Value::Undefined
+                };
+                crate::ecma::array::clear_array_hole(&mut o, last_index);
                 sync_length(&mut o);
                 return popped;
             }
@@ -884,13 +902,20 @@ fn dispatch_array(
         }
         "shift" => {
             let mut o = obj.lock().unwrap();
-            if let ObjectKind::Array(ref mut v) = o.kind {
-                if v.is_empty() {
-                    return Value::Undefined;
-                }
-                let r = v.remove(0);
+            let has_elements = matches!(&o.kind, ObjectKind::Array(v) if !v.is_empty());
+            if has_elements {
+                let was_hole = crate::ecma::array::is_array_hole(&o, 0);
+                let r = if let ObjectKind::Array(ref mut v) = o.kind {
+                    v.remove(0)
+                } else {
+                    Value::Undefined
+                };
+                crate::ecma::array::remap_array_holes(&mut o, |index| match index {
+                    0 => None,
+                    other => Some(other - 1),
+                });
                 sync_length(&mut o);
-                return r;
+                return if was_hole { Value::Undefined } else { r };
             }
             Value::Undefined
         }
@@ -899,6 +924,9 @@ fn dispatch_array(
             if let ObjectKind::Array(ref mut v) = o.kind {
                 for (i, a) in args.iter().enumerate() {
                     v.insert(i, a.clone());
+                }
+                if !args.is_empty() {
+                    crate::ecma::array::remap_array_holes(&mut o, |index| Some(index + args.len()));
                 }
                 sync_length(&mut o);
                 return Value::I32(v_len_after(&o));
@@ -958,7 +986,13 @@ fn dispatch_array(
             let from = args.get(1).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
             let o = obj.lock().unwrap();
             if let ObjectKind::Array(ref v) = o.kind {
-                for elem in v.iter().skip(from) {
+                for (index, elem) in v.iter().enumerate().skip(from) {
+                    if crate::ecma::array::is_array_hole(&o, index) {
+                        if matches!(needle, Value::Undefined) {
+                            return Value::Bool(true);
+                        }
+                        continue;
+                    }
                     if elem.eq(&needle) {
                         return Value::Bool(true);
                     }
@@ -972,6 +1006,9 @@ fn dispatch_array(
             let o = obj.lock().unwrap();
             if let ObjectKind::Array(ref v) = o.kind {
                 for (i, elem) in v.iter().enumerate().skip(from) {
+                    if crate::ecma::array::is_array_hole(&o, i) {
+                        continue;
+                    }
                     if elem.eq(&needle) {
                         return Value::I32(i as i32);
                     }
@@ -989,6 +1026,9 @@ fn dispatch_array(
                     .map(|n| if n < 0 { (len + n).max(0) as usize } else { n.min(len - 1).max(0) as usize })
                     .unwrap_or(v.len().saturating_sub(1));
                 for i in (0..=from.min(v.len().saturating_sub(1))).rev() {
+                    if crate::ecma::array::is_array_hole(&o, i) {
+                        continue;
+                    }
                     if v[i].eq(&needle) {
                         return Value::I32(i as i32);
                     }
@@ -1015,9 +1055,14 @@ fn dispatch_array(
             if let ObjectKind::Array(ref v) = o.kind {
                 let parts: Vec<String> = v
                     .iter()
-                    .map(|e| match e {
-                        Value::Null | Value::Undefined => String::new(),
-                        other => format!("{}", other),
+                    .enumerate()
+                    .map(|(index, value)| if crate::ecma::array::is_array_hole(&o, index) {
+                        String::new()
+                    } else {
+                        match value {
+                            Value::Null | Value::Undefined => String::new(),
+                            other => format!("{}", other),
+                        }
                     })
                     .collect();
                 return Value::String(Arc::from(parts.join(&sep).as_str()));
@@ -1104,15 +1149,11 @@ fn dispatch_array(
                 Some(c) => c.clone(),
                 None => return Value::Undefined,
             };
-            let snapshot = {
+            let entries = {
                 let o = obj.lock().unwrap();
-                if let ObjectKind::Array(ref v) = o.kind {
-                    v.clone()
-                } else {
-                    Vec::new()
-                }
+                crate::ecma::array::present_array_entries(&o)
             };
-            for (i, v) in snapshot.into_iter().enumerate() {
+            for (i, v) in entries {
                 ctx.invoke(
                     &cb,
                     &[v, Value::I32(i as i32), Value::Object(obj.clone())],
@@ -1125,41 +1166,40 @@ fn dispatch_array(
                 Some(c) => c.clone(),
                 None => return make_array(Vec::new()),
             };
-            let snapshot = {
+            let (length, entries) = {
                 let o = obj.lock().unwrap();
-                if let ObjectKind::Array(ref v) = o.kind {
-                    v.clone()
-                } else {
-                    Vec::new()
-                }
+                let len = if let ObjectKind::Array(ref v) = o.kind { v.len() } else { 0 };
+                (len, crate::ecma::array::present_array_entries(&o))
             };
-            let out: Vec<Value> = snapshot
-                .into_iter()
-                .enumerate()
-                .map(|(i, v)| {
-                    ctx.invoke(
-                        &cb,
-                        &[v, Value::I32(i as i32), Value::Object(obj.clone())],
-                    )
-                })
-                .collect();
-            make_array(out)
+            let out = crate::ecma::array::make_holey_array(length);
+            if let Value::Object(out_obj) = &out {
+                let mut out_guard = out_obj.lock().unwrap();
+                let clear_indices: Vec<usize> = entries.iter().map(|(index, _)| *index).collect();
+                if let ObjectKind::Array(ref mut values) = out_guard.kind {
+                    for (index, value) in entries {
+                        values[index] = ctx.invoke(
+                            &cb,
+                            &[value, Value::I32(index as i32), Value::Object(obj.clone())],
+                        );
+                    }
+                }
+                for index in clear_indices {
+                    crate::ecma::array::clear_array_hole(&mut out_guard, index);
+                }
+            }
+            out
         }
         "filter" => {
             let cb = match args.first() {
                 Some(c) => c.clone(),
                 None => return make_array(Vec::new()),
             };
-            let snapshot = {
+            let entries = {
                 let o = obj.lock().unwrap();
-                if let ObjectKind::Array(ref v) = o.kind {
-                    v.clone()
-                } else {
-                    Vec::new()
-                }
+                crate::ecma::array::present_array_entries(&o)
             };
             let mut out = Vec::new();
-            for (i, v) in snapshot.into_iter().enumerate() {
+            for (i, v) in entries {
                 let keep = ctx.invoke(
                     &cb,
                     &[v.clone(), Value::I32(i as i32), Value::Object(obj.clone())],
@@ -1181,15 +1221,11 @@ fn dispatch_array(
             } else {
                 Value::Undefined
             };
-            let snapshot = {
+            let entries = {
                 let o = obj.lock().unwrap();
-                if let ObjectKind::Array(ref v) = o.kind {
-                    v.clone()
-                } else {
-                    Vec::new()
-                }
+                crate::ecma::array::present_array_entries(&o)
             };
-            let mut iter = snapshot.into_iter().enumerate();
+            let mut iter = entries.into_iter();
             if !has_initial {
                 if let Some((_, first)) = iter.next() {
                     acc = first;
@@ -1213,15 +1249,11 @@ fn dispatch_array(
                 Some(c) => c.clone(),
                 None => return Value::Bool(false),
             };
-            let snapshot = {
+            let entries = {
                 let o = obj.lock().unwrap();
-                if let ObjectKind::Array(ref v) = o.kind {
-                    v.clone()
-                } else {
-                    Vec::new()
-                }
+                crate::ecma::array::present_array_entries(&o)
             };
-            for (i, v) in snapshot.into_iter().enumerate() {
+            for (i, v) in entries {
                 if truthy(&ctx.invoke(
                     &cb,
                     &[v, Value::I32(i as i32), Value::Object(obj.clone())],
@@ -1236,15 +1268,11 @@ fn dispatch_array(
                 Some(c) => c.clone(),
                 None => return Value::Bool(true),
             };
-            let snapshot = {
+            let entries = {
                 let o = obj.lock().unwrap();
-                if let ObjectKind::Array(ref v) = o.kind {
-                    v.clone()
-                } else {
-                    Vec::new()
-                }
+                crate::ecma::array::present_array_entries(&o)
             };
-            for (i, v) in snapshot.into_iter().enumerate() {
+            for (i, v) in entries {
                 if !truthy(&ctx.invoke(
                     &cb,
                     &[v, Value::I32(i as i32), Value::Object(obj.clone())],
@@ -1259,15 +1287,11 @@ fn dispatch_array(
                 Some(c) => c.clone(),
                 None => return Value::Undefined,
             };
-            let snapshot = {
+            let entries = {
                 let o = obj.lock().unwrap();
-                if let ObjectKind::Array(ref v) = o.kind {
-                    v.clone()
-                } else {
-                    Vec::new()
-                }
+                crate::ecma::array::present_array_entries(&o)
             };
-            for (i, v) in snapshot.into_iter().enumerate() {
+            for (i, v) in entries {
                 if truthy(&ctx.invoke(
                     &cb,
                     &[
@@ -1286,15 +1310,11 @@ fn dispatch_array(
                 Some(c) => c.clone(),
                 None => return Value::I32(-1),
             };
-            let snapshot = {
+            let entries = {
                 let o = obj.lock().unwrap();
-                if let ObjectKind::Array(ref v) = o.kind {
-                    v.clone()
-                } else {
-                    Vec::new()
-                }
+                crate::ecma::array::present_array_entries(&o)
             };
-            for (i, v) in snapshot.into_iter().enumerate() {
+            for (i, v) in entries {
                 if truthy(&ctx.invoke(
                     &cb,
                     &[v, Value::I32(i as i32), Value::Object(obj.clone())],
@@ -1309,9 +1329,14 @@ fn dispatch_array(
             if let ObjectKind::Array(ref v) = o.kind {
                 let parts: Vec<String> = v
                     .iter()
-                    .map(|e| match e {
-                        Value::Null | Value::Undefined => String::new(),
-                        other => format!("{}", other),
+                    .enumerate()
+                    .map(|(index, value)| if crate::ecma::array::is_array_hole(&o, index) {
+                        String::new()
+                    } else {
+                        match value {
+                            Value::Null | Value::Undefined => String::new(),
+                            other => format!("{}", other),
+                        }
                     })
                     .collect();
                 return Value::String(Arc::from(parts.join(",").as_str()));

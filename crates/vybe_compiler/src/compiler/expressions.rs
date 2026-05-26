@@ -796,7 +796,24 @@ impl Compiler {
                 if *op == BinOp::InstanceOf {
                     if self.is_js_profile() {
                         self.compile_expr(left)?;
-                        self.compile_expr(right)?;
+                        match &right.kind {
+                            ExprKind::Ident(name)
+                                if matches!(
+                                    name.as_str(),
+                                    "Error"
+                                        | "EvalError"
+                                        | "RangeError"
+                                        | "ReferenceError"
+                                        | "SyntaxError"
+                                        | "TypeError"
+                                        | "URIError"
+                                        | "AggregateError"
+                                ) =>
+                            {
+                                self.emit_const(Value::String(Arc::from(name.as_str())));
+                            }
+                            _ => self.compile_expr(right)?,
+                        }
                         self.compile_binop(op);
                         return Ok(());
                     }
@@ -2806,8 +2823,9 @@ impl Compiler {
                     }
                 } else {
                     if has_elisions {
+                        let array_new_idx = self.import("ecma:array", "new");
                         self.emit_const(Value::I32(elements.len() as i32));
-                        common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
+                        self.emit_host_call(array_new_idx, 1);
                         for (index, elem) in elements.iter().enumerate() {
                             if is_js_array_elision(elem) {
                                 continue;

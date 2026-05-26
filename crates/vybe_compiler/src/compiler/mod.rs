@@ -4021,77 +4021,11 @@ impl Compiler {
     }
 
     fn compile_setlength(&mut self, target: &Expression, len_expr: &Expression) -> Result<(), String> {
-        let line = self.line;
-        let old_slot = self.define_local("__setlength_old");
-        let new_len_slot = self.define_local("__setlength_new_len");
-        let new_slot = self.define_local("__setlength_new");
-        let copy_len_slot = self.define_local("__setlength_copy_len");
-        let idx_slot = self.define_local("__setlength_idx");
-
         self.compile_expr(target)?;
-        self.emit_u16(Op::LOCAL_SET, old_slot);
-        self.emit(Op::DROP);
-
         self.compile_expr(len_expr)?;
-        self.emit_u16(Op::LOCAL_SET, new_len_slot);
+        let set_length_idx = self.import("ecma:array", "setLength");
+        self.emit_host_call(set_length_idx, 2);
         self.emit(Op::DROP);
-
-        self.emit_u16(Op::LOCAL_GET, new_len_slot);
-        common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
-        self.emit_u16(Op::LOCAL_SET, new_slot);
-        self.emit(Op::DROP);
-
-        self.emit_u16(Op::LOCAL_GET, old_slot);
-        self.emit(Op::REF_IS_ARRAY);
-        let skip_copy = self.emit_jump(Op::BR_IF_FALSE);
-
-        self.emit_u16(Op::LOCAL_GET, old_slot);
-        common::collections::emit_len(&mut self.chunks, self.current, line);
-        self.emit_u16(Op::LOCAL_GET, new_len_slot);
-        common::math::emit_min(self.chunk(), line);
-        self.emit_u16(Op::LOCAL_SET, copy_len_slot);
-        self.emit(Op::DROP);
-
-        self.emit(Op::I32_CONST_0);
-        self.emit_u16(Op::LOCAL_SET, idx_slot);
-        self.emit(Op::DROP);
-
-        let copy_block = self.chunk().emit_block(line);
-        let (copy_loop, _) = self.chunk().emit_loop_s(line);
-        self.emit_u16(Op::LOCAL_GET, idx_slot);
-        self.emit_u16(Op::LOCAL_GET, copy_len_slot);
-        self.emit(Op::DYN_LT);
-        self.emit(Op::DYN_NOT);
-        self.chunk().emit_br_if(1, line);
-
-        self.emit_u16(Op::LOCAL_GET, new_slot);
-        self.emit_u16(Op::LOCAL_GET, idx_slot);
-        self.emit_u16(Op::LOCAL_GET, old_slot);
-        self.emit_u16(Op::LOCAL_GET, idx_slot);
-        common::collections::emit_get(&mut self.chunks, self.current, line);
-        common::collections::emit_set(&mut self.chunks, self.current, line);
-        self.emit(Op::DROP);
-
-        self.emit_u16(Op::LOCAL_GET, idx_slot);
-        self.emit_const(Value::F64(1.0));
-        self.emit(Op::DYN_ADD);
-        self.emit_u16(Op::LOCAL_SET, idx_slot);
-        self.emit(Op::DROP);
-        self.chunk().emit_br(0, line);
-        self.chunk().emit_end(line);
-        self.chunk().patch_loop(copy_loop);
-        self.chunk().emit_end(line);
-        self.chunk().patch_block(copy_block);
-
-        self.patch_jump(skip_copy);
-
-        self.emit_u16(Op::LOCAL_GET, new_slot);
-        if let ExprKind::Ident(name) = &target.kind {
-            self.emit_var_set(name);
-        } else {
-            self.compile_assign_target(target)?;
-        }
-
         self.emit(Op::NULL);
         Ok(())
     }
@@ -9718,6 +9652,18 @@ impl Compiler {
             // VB/Pascal: arr(idx) = val — Call used as index because () can
             // represent indexed access in those frontends.
             ExprKind::Call { callee, args, .. } if args.len() == 1 => {
+                if self.is_js_profile()
+                    && matches!(&callee.kind, ExprKind::Ident(name) if name == "__len__")
+                {
+                    let tmp = self.define_local("__tmp");
+                    self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
+                    self.compile_expr(&args[0].value)?;
+                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    let idx = self.import("ecma:array", "setLength");
+                    self.emit_host_call(idx, 2);
+                    self.emit(Op::DROP);
+                    return Ok(());
+                }
                 // Route the subscript through the owner-aware normalization
                 // path so Pascal char-bound arrays and other declaration-
                 // relative indices match the read path.

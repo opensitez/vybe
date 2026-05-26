@@ -485,6 +485,13 @@ fn register_access(vm: &mut VM) {
                         return Value::Null;
                     }
                 }
+                {
+                    let mut o = obj.lock().unwrap();
+                    if matches!(&o.kind, ObjectKind::Array(_)) && (key == "length" || key == "__len__") {
+                        crate::ecma::array::apply_js_array_length(ctx, &mut o, &val);
+                        return Value::Null;
+                    }
+                }
                 let setter_key = format!("__set_{}", key);
                 let setter = {
                     let o = obj.lock().unwrap();
@@ -594,7 +601,7 @@ fn register_access(vm: &mut VM) {
                 let found = match &o.kind {
                     ObjectKind::Array(v) => {
                         let i = key_raw.as_i32();
-                        i >= 0 && (i as usize) < v.len()
+                        i >= 0 && (i as usize) < v.len() && !is_array_hole(&o, i)
                     }
                     ObjectKind::Map(m) => {
                         if m.contains_key(&key_raw) { true }
@@ -820,6 +827,7 @@ fn register_enumeration(vm: &mut VM) {
                 match &o.kind {
                     ObjectKind::Array(v) => {
                         let keys: Vec<Value> = (0..v.len())
+                            .filter(|index| !is_array_hole(&o, *index as i32))
                             .map(|i| Value::String(Arc::from(i.to_string().as_str())))
                             .collect();
                         return Value::Object(Arc::new(Mutex::new(Object::new_array(keys))));
@@ -911,7 +919,12 @@ fn register_enumeration(vm: &mut VM) {
                 let o = obj.lock().unwrap();
                 match &o.kind {
                     ObjectKind::Array(v) => {
-                        return Value::Object(Arc::new(Mutex::new(Object::new_array(v.clone()))));
+                        let values: Vec<Value> = v.iter()
+                            .enumerate()
+                            .filter(|(index, _)| !is_array_hole(&o, *index as i32))
+                            .map(|(_, value)| value.clone())
+                            .collect();
+                        return Value::Object(Arc::new(Mutex::new(Object::new_array(values))));
                     }
                     ObjectKind::Map(m) => {
                         let entries: Vec<Value> = m.iter()
@@ -981,6 +994,7 @@ fn register_enumeration(vm: &mut VM) {
                 match &o.kind {
                     ObjectKind::Array(v) => {
                         let entries: Vec<Value> = v.iter().enumerate()
+                            .filter(|(index, _)| !is_array_hole(&o, *index as i32))
                             .map(|(i, val)| {
                                 let pair = vec![Value::I32(i as i32), val.clone()];
                                 Value::Object(Arc::new(Mutex::new(Object::new_array(pair))))
