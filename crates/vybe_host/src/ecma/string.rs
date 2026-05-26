@@ -21,6 +21,7 @@
 //! same JS-runtime semantics.
 
 use std::sync::{Arc, Mutex, OnceLock};
+use unicode_normalization::UnicodeNormalization;
 use vybe_bytecode::value::{Object, ObjectKind};
 use vybe_bytecode::{HostContext, VM, Value};
 
@@ -57,7 +58,23 @@ pub(crate) fn boxed_string(text: Arc<str>) -> Value {
 }
 
 fn to_string_primitive(ctx: &mut vybe_bytecode::HostContext, value: Value) -> Arc<str> {
-    if matches!(value, Value::Object(_)) {
+    if let Value::Object(obj) = &value {
+        let function_name = {
+            let o = obj.lock().unwrap();
+            if matches!(o.kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_)) {
+                o.properties.get("name").map(|name| format!("{}", name))
+            } else {
+                None
+            }
+        };
+        if let Some(name) = function_name {
+            let rendered = if name.is_empty() {
+                "function () { [native code] }".to_string()
+            } else {
+                format!("function {}() {{ [native code] }}", name)
+            };
+            return Arc::from(rendered.as_str());
+        }
         let primitive = crate::ecma::value::to_primitive(ctx, &value, "string");
         if let Value::BigInt(n) = primitive {
             return Arc::from(format!("{}", n).as_str());
@@ -88,6 +105,20 @@ fn i32_arg(args: &[Value], idx: usize, default: i32) -> i32 {
 
 fn s_val(text: &str) -> Value {
     Value::String(Arc::from(text))
+}
+
+fn utf16_units(text: &str) -> Vec<u16> {
+    text.encode_utf16().collect()
+}
+
+fn utf16_to_string(units: &[u16]) -> String {
+    String::from_utf16_lossy(units)
+}
+
+fn is_regexp_value(value: Option<&Value>) -> bool {
+    let Some(Value::Object(obj)) = value else { return false; };
+    let o = obj.lock().unwrap();
+    matches!(o.properties.get("__type"), Some(Value::String(tag)) if tag.as_ref() == "RegExp")
 }
 
 /// Convert a possibly-negative ECMA-262 index into a clamped
@@ -250,7 +281,7 @@ fn register_query_ops(vm: &mut VM) {
     // via a host fn. Re-register under ecma:string for callers that
     // want the canonical JS-runtime name.
     vm.register_host_fn("ecma:string", "length", Box::new(|_ctx, args| {
-        Value::F64(s_arg(args, 0).chars().count() as f64)
+        Value::F64(s_arg(args, 0).encode_utf16().count() as f64)
     }));
 
     // String.prototype.charAt(pos)
@@ -269,8 +300,8 @@ fn register_query_ops(vm: &mut VM) {
         let s = s_arg(args, 0);
         let pos = i32_arg(args, 1, 0);
         if pos < 0 { return Value::F64(f64::NAN); }
-        match s.chars().nth(pos as usize) {
-            Some(ch) => Value::F64(ch as u32 as f64),
+        match utf16_units(&s).get(pos as usize) {
+            Some(unit) => Value::F64(*unit as f64),
             None => Value::F64(f64::NAN),
         }
     }));
@@ -339,6 +370,27 @@ fn register_extract_ops(vm: &mut VM) {
         };
         let (lo, hi) = if start <= end { (start, end) } else { (end, start) };
         s_val(&chars[lo..hi].iter().collect::<String>())
+    }));
+
+    // String.prototype.substr(start, length?) — legacy Annex B method.
+    vm.register_host_fn("ecma:string", "substr", Box::new(|_ctx, args| {
+        let s = s_arg(args, 0);
+        let units = utf16_units(&s);
+        let len = units.len() as i32;
+        let start_raw = i32_arg(args, 1, 0);
+        let start = if start_raw < 0 {
+            (len + start_raw).max(0)
+        } else {
+            start_raw.min(len)
+        } as usize;
+        let end = match args.get(2) {
+            Some(Value::Undefined) | Some(Value::Null) | None => units.len(),
+            Some(_) => {
+                let count = i32_arg(args, 2, 0).max(0) as usize;
+                start.saturating_add(count).min(units.len())
+            }
+        };
+        s_val(&utf16_to_string(&units[start..end]))
     }));
 
     // String.prototype.slice(start?, end?) — supports negative
@@ -423,12 +475,24 @@ fn register_pad_ops(vm: &mut VM) {
 // ── Search ops ────────────────────────────────────────────────────
 
 fn register_search_ops(vm: &mut VM) {
-    vm.register_host_fn("ecma:string", "includes", Box::new(|_ctx, args| {
+    vm.register_host_fn("ecma:string", "includes", Box::new(|ctx, args| {
+        if is_regexp_value(args.get(1)) {
+            ctx.throw_value(crate::ecma::error::new_error(
+                "TypeError",
+                "First argument to String.prototype.includes must not be a RegExp",
+            ));
+            return Value::Null;
+        }
         let s = s_arg(args, 0);
         let needle = s_arg(args, 1);
+        let hay_units = utf16_units(&s);
+        let needle_units = utf16_units(&needle);
         let pos = i32_arg(args, 2, 0).max(0) as usize;
-        if pos > s.len() { return Value::Bool(false); }
-        Value::Bool(s[pos..].contains(&needle))
+        let start = pos.min(hay_units.len());
+        if needle_units.is_empty() {
+            return Value::Bool(true);
+        }
+        Value::Bool(hay_units[start..].windows(needle_units.len()).any(|window| window == needle_units.as_slice()))
     }));
 
     vm.register_host_fn("ecma:string", "indexOf", Box::new(|_ctx, args| {
@@ -594,12 +658,33 @@ fn register_locale_compare(vm: &mut VM) {
 // implementation requires the `unicode-normalization` crate.
 
 fn register_normalize(vm: &mut VM) {
-    vm.register_host_fn("ecma:string", "normalize", Box::new(|_ctx, args| {
-        // ECMA-262 §22.1.3.13: returns the normalized String. Without
-        // a normalization library, return the input unchanged — a
-        // valid result for already-normalized strings (which include
-        // all ASCII).
-        s_val(&s_arg(args, 0))
+    vm.register_host_fn("ecma:string", "normalize", Box::new(|ctx, args| {
+        let input = s_arg(args, 0);
+        let form = match args.get(1) {
+            None | Some(Value::Undefined) => "NFC",
+            Some(Value::String(form)) => form.as_ref(),
+            Some(other) => {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    "RangeError",
+                    &format!("The normalization form should be one of NFC, NFD, NFKC, NFKD: {}", other),
+                ));
+                return Value::Null;
+            }
+        };
+        let normalized = match form {
+            "NFC" => input.nfc().collect::<String>(),
+            "NFD" => input.nfd().collect::<String>(),
+            "NFKC" => input.nfkc().collect::<String>(),
+            "NFKD" => input.nfkd().collect::<String>(),
+            _ => {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    "RangeError",
+                    &format!("The normalization form should be one of NFC, NFD, NFKC, NFKD: {}", form),
+                ));
+                return Value::Null;
+            }
+        };
+        s_val(&normalized)
     }));
 }
 

@@ -16,7 +16,7 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 use vybe_bytecode::value::Object;
-use vybe_bytecode::{VM, Value};
+use vybe_bytecode::{HostContext, VM, Value};
 
 static NUMBER_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 
@@ -82,13 +82,39 @@ pub fn register(vm: &mut VM) {
 //   string → StringToNumber (parse with whitespace trim, "" → 0).
 //   Other types fall through to NaN — boxed wrappers aren't supported.
 fn register_constructor(vm: &mut VM) {
-    vm.register_host_fn("ecma:number", "Number", Box::new(|_ctx, args| {
-        let n = coerce_to_number(args.first().unwrap_or(&Value::Undefined));
-        Value::F64(n)
+    vm.register_host_fn("ecma:number", "Number", Box::new(|ctx, args| {
+        match coerce_to_number_with_context(ctx, args.first().unwrap_or(&Value::Undefined)) {
+            Ok(n) => Value::F64(n),
+            Err(error) => {
+                ctx.throw_value(error);
+                Value::Null
+            }
+        }
     }));
-    vm.register_host_fn("ecma:number", "new", Box::new(|_ctx, args| {
-        boxed_number(Value::F64(coerce_to_number(args.first().unwrap_or(&Value::Undefined))))
+    vm.register_host_fn("ecma:number", "new", Box::new(|ctx, args| {
+        match coerce_to_number_with_context(ctx, args.first().unwrap_or(&Value::Undefined)) {
+            Ok(n) => boxed_number(Value::F64(n)),
+            Err(error) => {
+                ctx.throw_value(error);
+                Value::Null
+            }
+        }
     }));
+}
+
+fn coerce_to_number_with_context(ctx: &mut HostContext, value: &Value) -> Result<f64, Value> {
+    let primitive = crate::ecma::value::to_primitive(ctx, value, "number");
+    match primitive {
+        Value::BigInt(_) => Err(crate::ecma::error::new_error(
+            "TypeError",
+            "Cannot convert a BigInt value to a number",
+        )),
+        Value::Symbol(_) => Err(crate::ecma::error::new_error(
+            "TypeError",
+            "Cannot convert a Symbol value to a number",
+        )),
+        other => Ok(coerce_to_number(&other)),
+    }
 }
 
 fn coerce_to_number(value: &Value) -> f64 {

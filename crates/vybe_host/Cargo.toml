@@ -41,6 +41,7 @@ httpdate = { workspace = true }
 # Focused crates — ALL locales work out of the box at small total cost:
 intl_pluralrules = "7"          # PluralRules — full CLDR plural rules baked in
 unicode-segmentation = "1"      # Segmenter — UAX #29 graphemes/words/sentences
+unicode-normalization = "0.1"   # String.prototype.normalize forms
 unic-langid = "0.9"             # Locale — BCP-47 parser
 #
 # ICU4X 2.x — Unicode Consortium's Rust port of ICU. The umbrella `icu`

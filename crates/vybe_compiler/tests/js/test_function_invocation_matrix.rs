@@ -663,6 +663,7 @@ console.log(Function.prototype.call.call(slice, "hello", 1, 4));
 "#, ["ell"]);
 }
 
+
 #[test]
 fn object_method_returning_arrow_survives_extraction() {
     case!(r#"

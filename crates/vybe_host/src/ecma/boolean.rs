@@ -72,6 +72,7 @@ pub(crate) fn to_boolean(v: &Value) -> bool {
         Value::F64(n) => *n != 0.0 && !n.is_nan(),
         Value::I32(n) => *n != 0,
         Value::I64(n) => *n != 0,
+        Value::BigInt(n) => *n != 0,
         Value::String(s) => !s.is_empty(),
         _ => true,
     }

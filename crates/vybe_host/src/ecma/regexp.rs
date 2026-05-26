@@ -89,6 +89,10 @@ fn split_regex_literal(s: &str) -> (String, String) {
     }
 }
 
+fn display_source(pattern: &str) -> String {
+    pattern.replace('/', r#"\/"#)
+}
+
 fn special_pattern(pattern: &str, flags: &str) -> Option<SpecialPattern> {
     if flags.contains('v') && pattern == r"\p{RGI_Emoji}" {
         Some(SpecialPattern::RgiEmoji)
@@ -405,7 +409,7 @@ fn register_constructor(vm: &mut VM) {
                 Some(other) => format!("{}", other),
             };
             let mut obj = Object::new();
-            obj.properties.insert("source".into(), s_val(&pattern));
+            obj.properties.insert("source".into(), s_val(&display_source(&pattern)));
             obj.properties.insert("flags".into(), s_val(&flags));
             obj.properties.insert("global".into(), Value::Bool(flags.contains('g')));
             obj.properties.insert("ignoreCase".into(), Value::Bool(flags.contains('i')));
@@ -458,7 +462,7 @@ pub fn dispatch_regexp_method(method: &str, args: &[Value]) -> Option<Value> {
 pub fn dispatch_regexp_string_method(ctx: &mut HostContext, method: &str, args: &[Value]) -> Option<Value> {
     match method {
         "match" => Some(regexp_string_match(ctx, args)),
-        "matchAll" => Some(regexp_string_match_all(args)),
+        "matchAll" => Some(regexp_string_match_all(ctx, args)),
         "search" => Some(regexp_string_search(ctx, args)),
         "replace" => Some(regexp_string_replace(ctx, args)),
         "replaceAll" => Some(regexp_string_replace_all(args)),
@@ -468,15 +472,7 @@ pub fn dispatch_regexp_string_method(ctx: &mut HostContext, method: &str, args: 
 }
 
 fn regexp_test(args: &[Value]) -> Value {
-    let (pattern, flags) = extract_pattern(args, 0);
-    let input = s_arg(args, 1);
-    if let Some(kind) = special_pattern(&pattern, &flags) {
-        return Value::Bool(special_find(&input, kind, 0).is_some());
-    }
-    match compile(&pattern, &flags) {
-        Some(re) => Value::Bool(re.find(&input).is_some()),
-        None => Value::Bool(false),
-    }
+    Value::Bool(!matches!(regexp_exec(args), Value::Null))
 }
 
 fn regexp_exec(args: &[Value]) -> Value {
@@ -555,7 +551,7 @@ fn register_string_methods(vm: &mut VM) {
     // result). Iterator semantics layer on top once iterator protocol
     // dispatch lands.
     vm.register_host_fn("ecma:regexp", "matchAll",
-        Box::new(|_ctx, args| regexp_string_match_all(args)));
+        Box::new(|ctx, args| regexp_string_match_all(ctx, args)));
 
     // `str.search(regex)` — §22.1.3.16. Returns index of first match
     // or -1.
@@ -617,9 +613,16 @@ fn regexp_string_match(ctx: &mut HostContext, args: &[Value]) -> Value {
     }
 }
 
-fn regexp_string_match_all(args: &[Value]) -> Value {
+fn regexp_string_match_all(ctx: &mut HostContext, args: &[Value]) -> Value {
     let input = s_arg(args, 0);
     let (pattern, flags) = extract_pattern(args, 1);
+    if regex_like_arg(args.get(1)) && !flags.contains('g') {
+        ctx.throw_value(crate::ecma::error::new_error(
+            "TypeError",
+            "String.prototype.matchAll called with a non-global RegExp argument",
+        ));
+        return Value::Null;
+    }
     if let Some(kind) = special_pattern(&pattern, &flags) {
         let matches = special_find_all(&input, kind)
             .into_iter()
@@ -700,12 +703,7 @@ fn regexp_string_replace(ctx: &mut HostContext, args: &[Value]) -> Value {
         return s_val(&out);
     }
     let replacement = s_arg(args, 2);
-    let result = if global {
-        re.replace_all(&input, replacement.as_str())
-    } else {
-        re.replace(&input, replacement.as_str())
-    };
-    s_val(&result)
+    s_val(&apply_string_replacement(&input, &re, global, replacement.as_str()))
 }
 
 fn regexp_string_replace_all(args: &[Value]) -> Value {
@@ -713,7 +711,7 @@ fn regexp_string_replace_all(args: &[Value]) -> Value {
     let (pattern, flags) = extract_pattern(args, 1);
     let replacement = s_arg(args, 2);
     match compile(&pattern, &flags) {
-        Some(re) => s_val(&re.replace_all(&input, replacement.as_str())),
+        Some(re) => s_val(&apply_string_replacement(&input, &re, true, replacement.as_str())),
         None => s_val(&input),
     }
 }
@@ -721,6 +719,9 @@ fn regexp_string_replace_all(args: &[Value]) -> Value {
 fn regexp_string_split(args: &[Value]) -> Value {
     let input = s_arg(args, 0);
     let (pattern, flags) = extract_pattern(args, 1);
+    if pattern.is_empty() || pattern == "(?:)" {
+        return make_array(input.chars().map(|ch| s_val(&ch.to_string())).collect());
+    }
     let limit = args.get(2)
         .map(|v| v.as_i32())
         .filter(|n| *n > 0)
@@ -743,4 +744,90 @@ fn regexp_string_split(args: &[Value]) -> Value {
         }
         None => make_array(vec![s_val(&input)]),
     }
+}
+
+fn regex_like_arg(arg: Option<&Value>) -> bool {
+    let Some(Value::Object(obj)) = arg else { return false; };
+    let guard = obj.lock().unwrap();
+    matches!(guard.properties.get("__type"), Some(Value::String(tag)) if tag.as_ref() == REGEXP_TYPE)
+}
+
+fn apply_string_replacement(input: &str, re: &Regex, global: bool, replacement: &str) -> String {
+    let matches: Vec<Match> = if global {
+        re.find_iter(input).collect()
+    } else {
+        re.find(input).into_iter().collect()
+    };
+    if matches.is_empty() {
+        return input.to_string();
+    }
+
+    let mut out = String::with_capacity(input.len());
+    let mut last_end = 0;
+    for m in matches {
+        out.push_str(&input[last_end..m.start()]);
+        out.push_str(&expand_js_replacement(replacement, input, &m));
+        last_end = m.end();
+        if !global {
+            break;
+        }
+    }
+    out.push_str(&input[last_end..]);
+    out
+}
+
+fn expand_js_replacement(template: &str, input: &str, m: &Match) -> String {
+    let mut out = String::new();
+    let chars: Vec<char> = template.chars().collect();
+    let whole = m.group(0).map(|range| &input[range]).unwrap_or("");
+    let prefix = &input[..m.start()];
+    let suffix = &input[m.end()..];
+    let mut index = 0;
+    while index < chars.len() {
+        if chars[index] != '$' || index + 1 >= chars.len() {
+            out.push(chars[index]);
+            index += 1;
+            continue;
+        }
+        match chars[index + 1] {
+            '$' => {
+                out.push('$');
+                index += 2;
+            }
+            '&' => {
+                out.push_str(whole);
+                index += 2;
+            }
+            '`' => {
+                out.push_str(prefix);
+                index += 2;
+            }
+            '\'' => {
+                out.push_str(suffix);
+                index += 2;
+            }
+            digit if digit.is_ascii_digit() => {
+                let first = digit.to_digit(10).unwrap_or(0) as usize;
+                let mut group_index = first;
+                let mut consumed = 2;
+                if index + 2 < chars.len() && chars[index + 2].is_ascii_digit() {
+                    let second = chars[index + 2].to_digit(10).unwrap_or(0) as usize;
+                    let candidate = first * 10 + second;
+                    if m.group(candidate).is_some() {
+                        group_index = candidate;
+                        consumed = 3;
+                    }
+                }
+                if let Some(range) = m.group(group_index) {
+                    out.push_str(&input[range]);
+                }
+                index += consumed;
+            }
+            _ => {
+                out.push('$');
+                index += 1;
+            }
+        }
+    }
+    out
 }

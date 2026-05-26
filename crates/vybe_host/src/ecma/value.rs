@@ -28,6 +28,7 @@
 //! running).
 
 use std::sync::{Arc, Mutex};
+use unicode_normalization::UnicodeNormalization;
 use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::{HostContext, VM};
 use crate::ecma::typedarray::{new_typed_array, new_view_over_buffer, read_element, ta_live_length, write_element};
@@ -37,6 +38,14 @@ fn make_array(elems: Vec<Value>) -> Value {
     let mut obj = Object::new_array(elems);
     obj.properties.insert("__type".into(), Value::String(Arc::from("Array")));
     Value::Object(Arc::new(Mutex::new(obj)))
+}
+
+fn utf16_units(text: &str) -> Vec<u16> {
+    text.encode_utf16().collect()
+}
+
+fn utf16_to_string(units: &[u16]) -> String {
+    String::from_utf16_lossy(units)
 }
 
 pub fn register(vm: &mut VM) {
@@ -181,8 +190,16 @@ pub fn register(vm: &mut VM) {
                 Value::WeakRef(_) => "object",
                 Value::Object(o) => {
                     let ob = o.lock().unwrap();
+                    let proxy_target_is_function = match ob.properties.get("__vybe_proxy_target") {
+                        Some(Value::Object(target)) => {
+                            let target_ob = target.lock().unwrap();
+                            matches!(target_ob.kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_))
+                        }
+                        _ => false,
+                    };
                     match &ob.kind {
                         ObjectKind::Function(_) | ObjectKind::HostFunction(_) => "function",
+                        _ if proxy_target_is_function => "function",
                         // Spec: arrays are "object", not "array".
                         _ => "object",
                     }
@@ -523,11 +540,37 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             };
             Value::String(Arc::from(out.as_str()))
         }
+        "substr" => {
+            let units = utf16_units(s.as_ref());
+            let len = units.len() as i32;
+            let start_raw = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            let start = if start_raw < 0 {
+                (len + start_raw).max(0)
+            } else {
+                start_raw.min(len)
+            } as usize;
+            let end = match args.get(1) {
+                Some(Value::Undefined) | Some(Value::Null) | None => units.len(),
+                Some(value) => start.saturating_add(value.as_i32().max(0) as usize).min(units.len()),
+            };
+            Value::String(Arc::from(utf16_to_string(&units[start..end]).as_str()))
+        }
         "includes" => {
+            if regex_pattern(args.first()).is_some() {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    "TypeError",
+                    "First argument to String.prototype.includes must not be a RegExp",
+                ));
+                return Value::Null;
+            }
             let needle = args.first().map(to_str).unwrap_or_default();
-            let from = args.get(1).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
-            let hay: String = s.chars().skip(from).collect();
-            Value::Bool(hay.contains(needle.as_str()))
+            let hay_units = utf16_units(s.as_ref());
+            let needle_units = utf16_units(needle.as_str());
+            let from = args.get(1).map(|v| v.as_i32().max(0) as usize).unwrap_or(0).min(hay_units.len());
+            if needle_units.is_empty() {
+                return Value::Bool(true);
+            }
+            Value::Bool(hay_units[from..].windows(needle_units.len()).any(|window| window == needle_units.as_slice()))
         }
         "indexOf" => {
             let needle = args.first().map(to_str).unwrap_or_default();
@@ -595,10 +638,41 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
         }
         "charCodeAt" => {
             let i = args.first().map(|v| v.as_i32()).unwrap_or(0);
-            s.chars()
-                .nth(i as usize)
-                .map(|c| Value::I32(c as i32))
-                .unwrap_or(Value::F64(f64::NAN))
+            if i < 0 {
+                Value::F64(f64::NAN)
+            } else {
+                utf16_units(s.as_ref())
+                    .get(i as usize)
+                    .map(|unit| Value::I32(*unit as i32))
+                    .unwrap_or(Value::F64(f64::NAN))
+            }
+        }
+        "normalize" => {
+            let form = match args.first() {
+                None | Some(Value::Undefined) => "NFC",
+                Some(Value::String(form)) => form.as_ref(),
+                Some(other) => {
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        "RangeError",
+                        &format!("The normalization form should be one of NFC, NFD, NFKC, NFKD: {}", other),
+                    ));
+                    return Value::Null;
+                }
+            };
+            let normalized = match form {
+                "NFC" => s.nfc().collect::<String>(),
+                "NFD" => s.nfd().collect::<String>(),
+                "NFKC" => s.nfkc().collect::<String>(),
+                "NFKD" => s.nfkd().collect::<String>(),
+                _ => {
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        "RangeError",
+                        &format!("The normalization form should be one of NFC, NFD, NFKC, NFKD: {}", form),
+                    ));
+                    return Value::Null;
+                }
+            };
+            Value::String(Arc::from(normalized.as_str()))
         }
         "toUpperCase" => Value::String(Arc::from(s.to_uppercase().as_str())),
         "toLowerCase" => Value::String(Arc::from(s.to_lowercase().as_str())),

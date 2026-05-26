@@ -1509,7 +1509,18 @@ fn register_prototype_methods(vm: &mut VM) {
 
     // valueOf: spec default returns the object itself
     vm.register_host_fn("ecma:object", "valueOf",
-        Box::new(|_ctx, args| args.first().cloned().unwrap_or(Value::Null)));
+        Box::new(|_ctx, args| {
+            if let Some(Value::Object(obj)) = args.first() {
+                let primitive = {
+                    let o = obj.lock().unwrap();
+                    o.properties.get("__primitive").cloned()
+                };
+                if let Some(value) = primitive {
+                    return value;
+                }
+            }
+            args.first().cloned().unwrap_or(Value::Null)
+        }));
 }
 
 // ── PHP extensions ────────────────────────────────────────────────────

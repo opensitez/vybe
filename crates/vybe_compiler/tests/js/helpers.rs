@@ -45,7 +45,8 @@ pub fn run_js(src: &str) -> Vec<String> {
         Value::Null
     }));
     vybe_host::setup_namespaces(&mut vm);
-    vm.run(chunks).expect("JS run failed");
+    vybex::dynamic::run_with_js_dynamic_runtime(&mut vm, vybe_host::Capabilities::all(), chunks)
+        .expect("JS run failed");
     let result = output.lock().unwrap().clone();
     result
 }
@@ -82,7 +83,8 @@ pub fn run_js_with_imports(src: &str) -> Vec<String> {
         .compile_with_imports(&module).expect("JS compile failed");
 
     vybex::host_imports::install(&mut vm, &result.host_imports);
-    vm.run(result.chunks).expect("JS run failed");
+    vybex::dynamic::run_with_js_dynamic_runtime(&mut vm, vybe_host::Capabilities::all(), result.chunks)
+        .expect("JS run failed");
     let lines = output.lock().unwrap().clone();
     lines
 }
@@ -111,6 +113,7 @@ pub fn run_js_vm(src: &str) -> (VM, Arc<Mutex<Vec<String>>>) {
         Value::Null
     }));
     vybe_host::setup_namespaces(&mut vm);
-    vm.run(chunks).expect("JS run failed");
+    vybex::dynamic::run_with_js_dynamic_runtime(&mut vm, vybe_host::Capabilities::all(), chunks)
+        .expect("JS run failed");
     (vm, output)
 }
