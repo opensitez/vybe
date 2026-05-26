@@ -16,11 +16,26 @@
 //! Marshaling + error-handling contract pinned in
 //! `crates/vybe_bytecode/src/wasm/JS_BUILTIN_CONVENTIONS.md`.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use crate::namespaces::receiver_host_fn_ref;
 use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::{HostContext, VM};
 use crate::ecma::typedarray::{ta_live_length, read_element, write_element};
+
+fn invoke_callback(ctx: &mut HostContext, callback: &Value, args: &[Value]) -> Value {
+    crate::ecma::function::invoke_bound_callback_if_needed(ctx, callback, args)
+        .unwrap_or_else(|| ctx.invoke(callback, args))
+}
+
+static ARRAY_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+
+pub(crate) fn shared_array_prototype() -> Value {
+    Value::Object(
+        ARRAY_PROTOTYPE
+            .get_or_init(|| Arc::new(Mutex::new(Object::new())))
+            .clone(),
+    )
+}
 
 /// Shorthand: unwrap `args[idx]` as a JS Array. Returns `None` when
 /// the argument isn't an array-kind object. Handlers that require an
@@ -43,7 +58,10 @@ fn array_of<'a>(args: &'a [Value], idx: usize) -> Option<Arc<Mutex<Object>>> {
 }
 
 fn make_array(elements: Vec<Value>) -> Value {
-    Value::Object(Arc::new(Mutex::new(Object::new_array(elements))))
+    let mut obj = Object::new_array(elements);
+    obj.properties.insert("__type".into(), Value::String(Arc::from("Array")));
+    obj.properties.insert("__proto__".into(), shared_array_prototype());
+    Value::Object(Arc::new(Mutex::new(obj)))
 }
 
 /// Marker property set by `ecma:fixedarray.freeze` to forbid
@@ -56,6 +74,45 @@ const FROZEN_MARK: &str = "__vybe_frozen";
 fn is_frozen(arr: &Arc<Mutex<Object>>) -> bool {
     let o = arr.lock().unwrap();
     o.properties.get(FROZEN_MARK).is_some()
+}
+
+fn property_length_as_usize(object: &Object) -> Option<usize> {
+    match object.properties.get("length") {
+        Some(Value::I32(value)) if *value >= 0 => Some(*value as usize),
+        Some(Value::I64(value)) if *value >= 0 => Some(*value as usize),
+        Some(Value::F64(value)) if *value >= 0.0 => Some(*value as usize),
+        Some(Value::String(text)) => text.parse::<usize>().ok(),
+        _ => None,
+    }
+}
+
+fn array_like_snapshot(value: &Value) -> Vec<Value> {
+    let Value::Object(obj) = value else {
+        return Vec::new();
+    };
+    let object = obj.lock().unwrap();
+    match &object.kind {
+        ObjectKind::Array(values) => values.clone(),
+        ObjectKind::TypedArray(ta) => {
+            let live = ta_live_length(ta);
+            (0..live).map(|i| read_element(ta, i)).collect()
+        }
+        ObjectKind::Map(map) => map.values().cloned().collect(),
+        ObjectKind::Ordinary => property_length_as_usize(&object)
+            .map(|len| {
+                (0..len)
+                    .map(|index| {
+                        object
+                            .properties
+                            .get(&index.to_string())
+                            .cloned()
+                            .unwrap_or(Value::Undefined)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
 }
 
 /// Keep the array's cached `length` property in sync with the
@@ -551,7 +608,7 @@ fn register_mutators(vm: &mut VM) {
         "ecma:array",
         "push",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let val = args.get(1).cloned().unwrap_or(Value::Null);
+            let values = &args[1..];
             if let Some(arr) = array_of(args, 0) {
                 if is_frozen(&arr) {
                     let o = arr.lock().unwrap();
@@ -562,13 +619,29 @@ fn register_mutators(vm: &mut VM) {
                 }
                 let mut o = arr.lock().unwrap();
                 let len = if let ObjectKind::Array(ref mut v) = o.kind {
-                    v.push(val);
+                    v.extend(values.iter().cloned());
                     v.len() as i32
                 } else {
                     0
                 };
                 sync_length(&mut o);
                 return Value::I32(len);
+            }
+            if let Some(Value::Object(obj)) = args.first() {
+                let mut object = obj.lock().unwrap();
+                if matches!(object.kind, ObjectKind::Ordinary) {
+                    let start = property_length_as_usize(&object).unwrap_or(0);
+                    for (offset, value) in values.iter().enumerate() {
+                        object
+                            .properties
+                            .insert((start + offset).to_string(), value.clone());
+                    }
+                    let new_length = start + values.len();
+                    object
+                        .properties
+                        .insert("length".into(), Value::F64(new_length as f64));
+                    return Value::I32(new_length as i32);
+                }
             }
             Value::I32(0)
         }),
@@ -1027,6 +1100,17 @@ fn register_non_mutators(vm: &mut VM) {
                         ObjectKind::Array(v) => v.iter().map(stringify).collect(),
                         ObjectKind::Map(m) => m.values().map(stringify).collect(),
                         ObjectKind::Ordinary => {
+                            if let Some(len) = property_length_as_usize(&inner) {
+                                (0..len)
+                                    .map(|index| {
+                                        inner
+                                            .properties
+                                            .get(&index.to_string())
+                                            .map(stringify)
+                                            .unwrap_or_default()
+                                    })
+                                    .collect()
+                            } else {
                             // Plain JS object — iterate values in
                             // insertion order. The compiler tracks
                             // insertion order in a side `__keys` array
@@ -1061,6 +1145,7 @@ fn register_non_mutators(vm: &mut VM) {
                                     .filter(|(k, _)| !k.starts_with("__"))
                                     .map(|(_, v)| stringify(v))
                                     .collect()
+                            }
                             }
                         }
                         ObjectKind::TypedArray(ta) => {
@@ -1379,7 +1464,7 @@ fn register_iteration(vm: &mut VM) {
                         Value::I32(i as i32),
                         Value::Object(arr.clone()),
                     ];
-                    ctx.invoke(&callback, &invoke_args);
+                    invoke_callback(ctx, &callback, &invoke_args);
                 }
             }
             Value::Undefined
@@ -1388,19 +1473,17 @@ fn register_iteration(vm: &mut VM) {
     vm.register_host_fn("ecma:array", "map",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
-            if let Some(arr) = array_of(args, 0) {
-                let snapshot: Vec<Value> = {
-                    let o = arr.lock().unwrap();
-                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
-                };
+            let receiver = args.first().cloned().unwrap_or(Value::Undefined);
+            let snapshot = array_like_snapshot(&receiver);
+            if !snapshot.is_empty() || matches!(receiver, Value::Object(_)) {
                 let mapped: Vec<Value> = snapshot.iter().enumerate()
                     .map(|(i, elem)| {
                         let invoke_args = vec![
                             elem.clone(),
                             Value::I32(i as i32),
-                            Value::Object(arr.clone()),
+                            receiver.clone(),
                         ];
-                        ctx.invoke(&callback, &invoke_args)
+                        invoke_callback(ctx, &callback, &invoke_args)
                     })
                     .collect();
                 return make_array(mapped);
@@ -1411,19 +1494,17 @@ fn register_iteration(vm: &mut VM) {
     vm.register_host_fn("ecma:array", "filter",
         Box::new(move |ctx: &mut HostContext, args: &[Value]| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
-            if let Some(arr) = array_of(args, 0) {
-                let snapshot: Vec<Value> = {
-                    let o = arr.lock().unwrap();
-                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
-                };
+            let receiver = args.first().cloned().unwrap_or(Value::Undefined);
+            let snapshot = array_like_snapshot(&receiver);
+            if !snapshot.is_empty() || matches!(receiver, Value::Object(_)) {
                 let filtered: Vec<Value> = snapshot.iter().enumerate()
                     .filter_map(|(i, elem)| {
                         let invoke_args = vec![
                             elem.clone(),
                             Value::I32(i as i32),
-                            Value::Object(arr.clone()),
+                            receiver.clone(),
                         ];
-                        let keep = is_truthy(&ctx.invoke(&callback, &invoke_args));
+                        let keep = is_truthy(&invoke_callback(ctx, &callback, &invoke_args));
                         if keep { Some(elem.clone()) } else { None }
                     })
                     .collect();
@@ -1463,7 +1544,7 @@ fn register_iteration(vm: &mut VM) {
                         Value::I32(i as i32),
                         Value::Object(arr.clone()),
                     ];
-                    acc = ctx.invoke(&callback, &invoke_args);
+                    acc = invoke_callback(ctx, &callback, &invoke_args);
                 }
             }
             acc
@@ -1498,7 +1579,7 @@ fn register_iteration(vm: &mut VM) {
                         Value::I32(i),
                         Value::Object(arr.clone()),
                     ];
-                    acc = ctx.invoke(&callback, &invoke_args);
+                    acc = invoke_callback(ctx, &callback, &invoke_args);
                     i -= 1;
                 }
             }
@@ -1519,7 +1600,7 @@ fn register_iteration(vm: &mut VM) {
                         Value::I32(i as i32),
                         Value::Object(arr.clone()),
                     ];
-                    if is_truthy(&ctx.invoke(&callback, &invoke_args)) {
+                    if is_truthy(&invoke_callback(ctx, &callback, &invoke_args)) {
                         return Value::I32(1);
                     }
                 }
@@ -1541,7 +1622,7 @@ fn register_iteration(vm: &mut VM) {
                         Value::I32(i as i32),
                         Value::Object(arr.clone()),
                     ];
-                    if !is_truthy(&ctx.invoke(&callback, &invoke_args)) {
+                    if !is_truthy(&invoke_callback(ctx, &callback, &invoke_args)) {
                         return Value::I32(0);
                     }
                 }
@@ -1563,7 +1644,7 @@ fn register_iteration(vm: &mut VM) {
                         Value::I32(i as i32),
                         Value::Object(arr.clone()),
                     ];
-                    if is_truthy(&ctx.invoke(&callback, &invoke_args)) {
+                    if is_truthy(&invoke_callback(ctx, &callback, &invoke_args)) {
                         return elem.clone();
                     }
                 }
@@ -1585,7 +1666,7 @@ fn register_iteration(vm: &mut VM) {
                         Value::I32(i as i32),
                         Value::Object(arr.clone()),
                     ];
-                    if is_truthy(&ctx.invoke(&callback, &invoke_args)) {
+                    if is_truthy(&invoke_callback(ctx, &callback, &invoke_args)) {
                         return Value::I32(i as i32);
                     }
                 }
@@ -1607,7 +1688,7 @@ fn register_iteration(vm: &mut VM) {
                         Value::I32(i as i32),
                         Value::Object(arr.clone()),
                     ];
-                    if is_truthy(&ctx.invoke(&callback, &invoke_args)) {
+                    if is_truthy(&invoke_callback(ctx, &callback, &invoke_args)) {
                         return elem.clone();
                     }
                 }
@@ -1629,7 +1710,7 @@ fn register_iteration(vm: &mut VM) {
                         Value::I32(i as i32),
                         Value::Object(arr.clone()),
                     ];
-                    if is_truthy(&ctx.invoke(&callback, &invoke_args)) {
+                    if is_truthy(&invoke_callback(ctx, &callback, &invoke_args)) {
                         return Value::I32(i as i32);
                     }
                 }
@@ -1652,7 +1733,7 @@ fn register_iteration(vm: &mut VM) {
                         Value::I32(i as i32),
                         Value::Object(arr.clone()),
                     ];
-                    let r = ctx.invoke(&callback, &invoke_args);
+                    let r = invoke_callback(ctx, &callback, &invoke_args);
                     // Flatten one level: if the result is an Array, spread;
                     // otherwise append as single element.
                     if let Value::Object(ref o) = r {
@@ -1691,7 +1772,7 @@ fn register_iteration(vm: &mut VM) {
                         Value::I32(i as i32),
                         Value::Object(arr.clone()),
                     ];
-                    let key = format!("{}", ctx.invoke(&callback, &invoke_args));
+                    let key = format!("{}", invoke_callback(ctx, &callback, &invoke_args));
                     groups.entry(key).or_insert_with(Vec::new).push(elem.clone());
                 }
             }
@@ -1719,7 +1800,7 @@ fn register_iteration(vm: &mut VM) {
                         Value::I32(i as i32),
                         Value::Object(arr.clone()),
                     ];
-                    let key = ctx.invoke(&callback, &invoke_args);
+                    let key = invoke_callback(ctx, &callback, &invoke_args);
                     groups.entry(key).or_insert_with(Vec::new).push(elem.clone());
                 }
             }

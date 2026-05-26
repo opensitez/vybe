@@ -190,6 +190,8 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("ecma:set", "forEach",
         Box::new(|ctx, args| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            let this_arg = args.get(2).cloned();
+            let saved_this = this_arg.as_ref().map(|_| ctx.current_js_this());
             if let Some(setobj) = is_set(args, 0) {
                 let snapshot: Vec<Value> = {
                     let so = setobj.lock().unwrap();
@@ -203,7 +205,13 @@ pub fn register(vm: &mut VM) {
                     let invoke_args = vec![
                         v.clone(), v, Value::Object(setobj.clone()),
                     ];
+                    if let Some(this_arg) = this_arg.clone() {
+                        ctx.set_js_this(this_arg);
+                    }
                     ctx.invoke(&callback, &invoke_args);
+                    if let Some(saved_this) = saved_this.clone() {
+                        ctx.set_js_this(saved_this);
+                    }
                 }
             }
             Value::Undefined

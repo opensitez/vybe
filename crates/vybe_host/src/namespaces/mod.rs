@@ -139,6 +139,7 @@ pub(crate) fn host_fn_ref(vm: &VM, module: &str, name: &str) -> Value {
         obj.properties.insert("__host_module".into(), Value::String(Arc::from(module)));
         obj.properties.insert("__host_name".into(), Value::String(Arc::from(name)));
         obj.properties.insert("__host_idx".into(), Value::F64(idx as f64));
+        obj.properties.insert("__proto__".into(), crate::ecma::function::shared_function_prototype());
         obj.properties.insert("name".into(), Value::String(Arc::from(name)));
         obj.kind = ObjectKind::HostFunction(idx);
         Value::Object(Arc::new(Mutex::new(obj)))
@@ -158,6 +159,7 @@ pub(crate) fn receiver_host_fn_ref(module: &str, name: &str, idx: usize) -> Valu
     obj.properties.insert("__host_name".into(), Value::String(Arc::from(name)));
     obj.properties.insert("__host_idx".into(), Value::F64(idx as f64));
     obj.properties.insert("__vybe_method_receiver".into(), Value::Bool(true));
+    obj.properties.insert("__proto__".into(), crate::ecma::function::shared_function_prototype());
     obj.properties.insert("name".into(), Value::String(Arc::from(name)));
     obj.kind = ObjectKind::HostFunction(idx);
     Value::Object(Arc::new(Mutex::new(obj)))
@@ -175,6 +177,7 @@ pub(crate) fn bound_host_fn_ref(vm: &VM, module: &str, name: &str, bound_args: V
         obj.properties.insert("__host_module".into(), Value::String(Arc::from(module)));
         obj.properties.insert("__host_name".into(), Value::String(Arc::from(name)));
         obj.properties.insert("__host_idx".into(), Value::F64(idx as f64));
+        obj.properties.insert("__proto__".into(), crate::ecma::function::shared_function_prototype());
         obj.properties.insert("name".into(), Value::String(Arc::from(name)));
         obj.properties.insert("__bound_args".into(), Value::Object(
             Arc::new(Mutex::new(Object::new_array(bound_args)))

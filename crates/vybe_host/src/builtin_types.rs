@@ -631,7 +631,7 @@ pub fn register_all(vm: &mut VM) {
     {
         let mut t = TypeDef::new("Date");
         for method in &[
-            "getFullYear", "getMonth", "getDate", "getDay",
+            "getFullYear", "getYear", "getMonth", "getDate", "getDay",
             "getHours", "getMinutes", "getSeconds", "getMilliseconds",
             "getUTCFullYear", "getUTCMonth", "getUTCDate", "getUTCDay",
             "getUTCHours", "getUTCMinutes", "getUTCSeconds", "getUTCMilliseconds",
@@ -640,7 +640,7 @@ pub fn register_all(vm: &mut VM) {
             "setHours", "setMinutes", "setSeconds", "setMilliseconds",
             "setUTCFullYear", "setUTCMonth", "setUTCDate",
             "setUTCHours", "setUTCMinutes", "setUTCSeconds", "setUTCMilliseconds",
-            "toISOString", "toString", "toDateString", "toTimeString", "toJSON",
+            "toISOString", "toString", "toUTCString", "toDateString", "toTimeString", "toJSON",
         ] {
             if let Some(idx) = h(vm, "ecma:date", method) {
                 t.methods.insert(method.to_lowercase(), Method::HostFn(idx));

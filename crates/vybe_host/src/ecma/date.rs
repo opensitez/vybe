@@ -15,12 +15,15 @@
 //! reinvent leap-year / timezone arithmetic.
 
 use std::sync::Arc;
-use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc};
 use vybe_bytecode::{HostContext, Value, VM};
 
 const MODULE: &str = "ecma:date";
 
 fn dt_from_ms(ms: f64) -> Option<DateTime<Utc>> {
+    if !ms.is_finite() {
+        return None;
+    }
     let secs = (ms / 1000.0).floor() as i64;
     let nsecs = (((ms.rem_euclid(1000.0)) * 1_000_000.0) as u32).min(999_999_999);
     Utc.timestamp_opt(secs, nsecs).single()
@@ -28,6 +31,63 @@ fn dt_from_ms(ms: f64) -> Option<DateTime<Utc>> {
 
 fn ms_of(dt: DateTime<Utc>) -> f64 {
     (dt.timestamp() as f64) * 1000.0 + (dt.timestamp_subsec_millis() as f64)
+}
+
+fn format_utc_string(ms: f64) -> Option<String> {
+    dt_from_ms(ms).map(|dt| dt.format("%a, %d %b %Y %H:%M:%S GMT").to_string())
+}
+
+fn component_i64(args: &[Value], idx: usize) -> Result<Option<i64>, ()> {
+    match args.get(idx) {
+        Some(value) => {
+            let numeric = value.as_f64();
+            if numeric.is_nan() {
+                Err(())
+            } else {
+                Ok(Some(numeric.trunc() as i64))
+            }
+        }
+        None => Ok(None),
+    }
+}
+
+fn build_utc_ms(
+    year: i32,
+    month_zero: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
+    millisecond: i64,
+) -> f64 {
+    let total_months = (year as i64) * 12 + month_zero;
+    let normalized_year = total_months.div_euclid(12) as i32;
+    let normalized_month = (total_months.rem_euclid(12) + 1) as u32;
+    let Some(month_start) = NaiveDate::from_ymd_opt(normalized_year, normalized_month, 1) else {
+        return f64::NAN;
+    };
+    let Some(midnight) = month_start.and_hms_milli_opt(0, 0, 0, 0) else {
+        return f64::NAN;
+    };
+    let dt = Utc.from_utc_datetime(&midnight)
+        + Duration::days(day - 1)
+        + Duration::hours(hour)
+        + Duration::minutes(minute)
+        + Duration::seconds(second)
+        + Duration::milliseconds(millisecond);
+    ms_of(dt)
+}
+
+fn construct_date_from_args(values: &[Value]) -> f64 {
+    let year = values.first().map(|v| v.as_f64() as i32).unwrap_or(1970);
+    let constructor_year = if (0..=99).contains(&year) { year + 1900 } else { year };
+    let month_zero = values.get(1).map(|v| v.as_f64().trunc() as i64).unwrap_or(0);
+    let day = values.get(2).map(|v| v.as_f64().trunc() as i64).unwrap_or(1);
+    let hour = values.get(3).map(|v| v.as_f64().trunc() as i64).unwrap_or(0);
+    let minute = values.get(4).map(|v| v.as_f64().trunc() as i64).unwrap_or(0);
+    let second = values.get(5).map(|v| v.as_f64().trunc() as i64).unwrap_or(0);
+    let millisecond = values.get(6).map(|v| v.as_f64().trunc() as i64).unwrap_or(0);
+    build_utc_ms(constructor_year, month_zero, day, hour, minute, second, millisecond)
 }
 
 /// Extract the millisecond timestamp from a Date arg. Accepts either a
@@ -58,82 +118,107 @@ fn ms_arg(args: &[Value], idx: usize) -> f64 {
 /// than producing NaN. e.g. `setDate(35)` on Jan rolls into Feb.
 fn setter_helper(args: &[Value], component: &str) -> f64 {
     let ms = ms_arg(args, 0);
-    let val = args.get(1).map(|v| v.as_f64()).unwrap_or(f64::NAN);
-    if val.is_nan() { return f64::NAN; }
     let dt = match dt_from_ms(ms) { Some(d) => d, None => return f64::NAN };
+    let mut year = dt.year();
+    let mut month_zero = dt.month0() as i64;
+    let mut day = dt.day() as i64;
+    let mut hour = dt.hour() as i64;
+    let mut minute = dt.minute() as i64;
+    let mut second = dt.second() as i64;
+    let mut millisecond = dt.timestamp_subsec_millis() as i64;
 
-    // For day/month/year we rebuild via days-since-epoch arithmetic so
-    // out-of-range values overflow per spec. For h/m/s/ms we offset the
-    // ms timestamp directly — same overflow semantics for free.
     match component {
         "year" => {
-            // setFullYear keeps month/day from current dt but allows year.
-            // Use overflow-friendly reconstruction.
-            let y = val as i32;
-            let m = dt.month();
-            let d = dt.day();
-            match NaiveDate::from_ymd_opt(y, m, 1) {
-                Some(start) => {
-                    let new_date = start + chrono::Duration::days((d - 1) as i64);
-                    let new_time = dt.time();
-                    ms_of(Utc.from_utc_datetime(&new_date.and_time(new_time)))
-                }
-                None => f64::NAN,
+            let Some(next_year) = component_i64(args, 1).ok().flatten() else {
+                return f64::NAN;
+            };
+            year = next_year as i32;
+            if let Ok(Some(next_month)) = component_i64(args, 2) {
+                month_zero = next_month;
+            } else if matches!(component_i64(args, 2), Err(())) {
+                return f64::NAN;
+            }
+            if let Ok(Some(next_day)) = component_i64(args, 3) {
+                day = next_day;
+            } else if matches!(component_i64(args, 3), Err(())) {
+                return f64::NAN;
             }
         }
         "month" => {
-            // setMonth(11) on year=2024 day=31 → 2024-12-31, no overflow
-            // setMonth(12) on year=2024 day=31 → roll to 2025-01-31
-            let y = dt.year();
-            let m_zero = val as i64; // 0-indexed month requested
-            let total_months = (y as i64) * 12 + m_zero;
-            let new_y = total_months.div_euclid(12) as i32;
-            let new_m = (total_months.rem_euclid(12) + 1) as u32;
-            let d = dt.day();
-            // First of new month, then add (d-1) days for overflow rollover
-            match NaiveDate::from_ymd_opt(new_y, new_m, 1) {
-                Some(start) => {
-                    let new_date = start + chrono::Duration::days((d - 1) as i64);
-                    let new_time = dt.time();
-                    ms_of(Utc.from_utc_datetime(&new_date.and_time(new_time)))
-                }
-                None => f64::NAN,
+            let Some(next_month) = component_i64(args, 1).ok().flatten() else {
+                return f64::NAN;
+            };
+            month_zero = next_month;
+            if let Ok(Some(next_day)) = component_i64(args, 2) {
+                day = next_day;
+            } else if matches!(component_i64(args, 2), Err(())) {
+                return f64::NAN;
             }
         }
         "day" => {
-            // setDate(n): replace day-of-month, allowing overflow into
-            // later months. Compute as: first-of-month + (n-1) days.
-            let y = dt.year();
-            let m = dt.month();
-            let d = val as i64;
-            match NaiveDate::from_ymd_opt(y, m, 1) {
-                Some(start) => {
-                    let new_date = start + chrono::Duration::days(d - 1);
-                    let new_time = dt.time();
-                    ms_of(Utc.from_utc_datetime(&new_date.and_time(new_time)))
-                }
-                None => f64::NAN,
-            }
+            let Some(next_day) = component_i64(args, 1).ok().flatten() else {
+                return f64::NAN;
+            };
+            day = next_day;
         }
         "hour" => {
-            // ms_offset = (new_h - cur_h) * 3600_000
-            let cur_h = dt.hour() as f64;
-            ms + (val - cur_h) * 3_600_000.0
+            let Some(next_hour) = component_i64(args, 1).ok().flatten() else {
+                return f64::NAN;
+            };
+            hour = next_hour;
+            if let Ok(Some(next_minute)) = component_i64(args, 2) {
+                minute = next_minute;
+            } else if matches!(component_i64(args, 2), Err(())) {
+                return f64::NAN;
+            }
+            if let Ok(Some(next_second)) = component_i64(args, 3) {
+                second = next_second;
+            } else if matches!(component_i64(args, 3), Err(())) {
+                return f64::NAN;
+            }
+            if let Ok(Some(next_millisecond)) = component_i64(args, 4) {
+                millisecond = next_millisecond;
+            } else if matches!(component_i64(args, 4), Err(())) {
+                return f64::NAN;
+            }
         }
         "minute" => {
-            let cur_min = dt.minute() as f64;
-            ms + (val - cur_min) * 60_000.0
+            let Some(next_minute) = component_i64(args, 1).ok().flatten() else {
+                return f64::NAN;
+            };
+            minute = next_minute;
+            if let Ok(Some(next_second)) = component_i64(args, 2) {
+                second = next_second;
+            } else if matches!(component_i64(args, 2), Err(())) {
+                return f64::NAN;
+            }
+            if let Ok(Some(next_millisecond)) = component_i64(args, 3) {
+                millisecond = next_millisecond;
+            } else if matches!(component_i64(args, 3), Err(())) {
+                return f64::NAN;
+            }
         }
         "second" => {
-            let cur_s = dt.second() as f64;
-            ms + (val - cur_s) * 1000.0
+            let Some(next_second) = component_i64(args, 1).ok().flatten() else {
+                return f64::NAN;
+            };
+            second = next_second;
+            if let Ok(Some(next_millisecond)) = component_i64(args, 2) {
+                millisecond = next_millisecond;
+            } else if matches!(component_i64(args, 2), Err(())) {
+                return f64::NAN;
+            }
         }
         "millisecond" => {
-            let cur_ms = dt.timestamp_subsec_millis() as f64;
-            ms + (val - cur_ms)
+            let Some(next_millisecond) = component_i64(args, 1).ok().flatten() else {
+                return f64::NAN;
+            };
+            millisecond = next_millisecond;
         }
-        _ => f64::NAN,
+        _ => return f64::NAN,
     }
+
+    build_utc_ms(year, month_zero, day, hour, minute, second, millisecond)
 }
 
 /// Format ms-since-epoch as an ISO 8601 string (no surrounding quotes).
@@ -165,6 +250,7 @@ pub fn dispatch_date_method(method: &str, args: &[Value]) -> Option<Value> {
     }
     let result = match method {
         "getFullYear" | "getUTCFullYear" => getter!(|dt: &DateTime<Utc>| dt.year()),
+        "getYear" => getter!(|dt: &DateTime<Utc>| dt.year() - 1900),
         "getMonth" | "getUTCMonth" => getter!(|dt: &DateTime<Utc>| dt.month() as i32 - 1),
         "getDate" | "getUTCDate" => getter!(|dt: &DateTime<Utc>| dt.day() as i32),
         "getDay" | "getUTCDay" => getter!(|dt: &DateTime<Utc>| dt.weekday().num_days_from_sunday() as i32),
@@ -180,6 +266,14 @@ pub fn dispatch_date_method(method: &str, args: &[Value]) -> Option<Value> {
                 Some(dt) => Value::String(Arc::from(
                     dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string().as_str()
                 )),
+                None if method == "toJSON" => Value::Null,
+                None => Value::String(Arc::from("Invalid Date")),
+            }
+        }
+        "toUTCString" => {
+            let ms = ms_arg(args, 0);
+            match format_utc_string(ms) {
+                Some(text) => Value::String(Arc::from(text.as_str())),
                 None => Value::String(Arc::from("Invalid Date")),
             }
         }
@@ -254,6 +348,9 @@ fn parse_natural(s: &str) -> f64 {
     if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
         return ms_of(dt.with_timezone(&Utc));
     }
+    if let Ok(dt) = DateTime::parse_from_rfc2822(s) {
+        return ms_of(dt.with_timezone(&Utc));
+    }
     for pat in &[
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%dT%H:%M:%S",
@@ -268,6 +365,11 @@ fn parse_natural(s: &str) -> f64 {
         if let Ok(nd) = NaiveDate::parse_from_str(s, pat) {
             let ndt = nd.and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap());
             return ms_of(Utc.from_utc_datetime(&ndt));
+        }
+    }
+    if s.chars().all(|ch| ch.is_ascii_digit()) {
+        if let Ok(year) = s.parse::<i32>() {
+            return build_utc_ms(year, 0, 1, 0, 0, 0, 0);
         }
     }
     f64::NAN
@@ -312,21 +414,9 @@ pub fn register(vm: &mut VM) {
                     Some(Value::Object(obj)) => {
                         let o = obj.lock().unwrap();
                         if let vybe_bytecode::value::ObjectKind::Array(elems) = &o.kind {
-                            // Spread args: new Date(...[year, month, day, ...])
-                            let y = elems.first().map(|v| v.as_f64() as i32).unwrap_or(1970);
-                            let m = elems.get(1).map(|v| v.as_f64() as u32 + 1).unwrap_or(1);
-                            let d = elems.get(2).map(|v| v.as_f64() as u32).unwrap_or(1);
-                            let h = elems.get(3).map(|v| v.as_f64() as u32).unwrap_or(0);
-                            let mn = elems.get(4).map(|v| v.as_f64() as u32).unwrap_or(0);
-                            let s = elems.get(5).map(|v| v.as_f64() as u32).unwrap_or(0);
-                            let mss = elems.get(6).map(|v| v.as_f64() as u32).unwrap_or(0);
-                            match (
-                                chrono::NaiveDate::from_ymd_opt(y, m, d),
-                                chrono::NaiveTime::from_hms_milli_opt(h, mn, s, mss),
-                            ) {
-                                (Some(nd), Some(nt)) => ms_of(chrono::TimeZone::from_utc_datetime(&chrono::Utc, &nd.and_time(nt))),
-                                _ => f64::NAN,
-                            }
+                            construct_date_from_args(elems)
+                        } else if matches!(o.properties.get("__type"), Some(Value::String(tag)) if tag.as_ref() == "Date") {
+                            o.properties.get("__time").map(Value::as_f64).unwrap_or(f64::NAN)
                         } else {
                             // Plain Object `this` from .NET/VB New Date() path
                             ms_of(Utc::now())
@@ -342,20 +432,7 @@ pub fn register(vm: &mut VM) {
                 // Skip `this` if first arg is an Object (the .NET wrapper
                 // path passes `this` as arg 0).
                 let offset = if matches!(args.first(), Some(Value::Object(_))) { 1 } else { 0 };
-                let y = args.get(offset).map(|v| v.as_f64() as i32).unwrap_or(1970);
-                let m = args.get(offset + 1).map(|v| v.as_f64() as u32 + 1).unwrap_or(1);
-                let d = args.get(offset + 2).map(|v| v.as_f64() as u32).unwrap_or(1);
-                let h = args.get(offset + 3).map(|v| v.as_f64() as u32).unwrap_or(0);
-                let mn = args.get(offset + 4).map(|v| v.as_f64() as u32).unwrap_or(0);
-                let s = args.get(offset + 5).map(|v| v.as_f64() as u32).unwrap_or(0);
-                let mss = args.get(offset + 6).map(|v| v.as_f64() as u32).unwrap_or(0);
-                match (
-                    NaiveDate::from_ymd_opt(y, m, d),
-                    NaiveTime::from_hms_milli_opt(h, mn, s, mss),
-                ) {
-                    (Some(nd), Some(nt)) => ms_of(Utc.from_utc_datetime(&nd.and_time(nt))),
-                    _ => f64::NAN,
-                }
+                construct_date_from_args(&args[offset..])
             }
         };
         let mut obj = vybe_bytecode::value::Object::new();
@@ -373,21 +450,7 @@ pub fn register(vm: &mut VM) {
     // Date.UTC(year, month, day?, hours?, minutes?, seconds?, ms?) → ms
     // Spec: month is 0-indexed. Defaults: day=1, hours/min/sec/ms=0.
     vm.register_host_fn(MODULE, "UTC", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let y = args.first().map(|v| v.as_f64() as i32).unwrap_or(1970);
-        let m = args.get(1).map(|v| v.as_f64() as u32 + 1).unwrap_or(1);
-        let d = args.get(2).map(|v| v.as_f64() as u32).unwrap_or(1);
-        let h = args.get(3).map(|v| v.as_f64() as u32).unwrap_or(0);
-        let min = args.get(4).map(|v| v.as_f64() as u32).unwrap_or(0);
-        let s = args.get(5).map(|v| v.as_f64() as u32).unwrap_or(0);
-        let ms = args.get(6).map(|v| v.as_f64() as u32).unwrap_or(0);
-        let nd = NaiveDate::from_ymd_opt(y, m, d);
-        let nt = NaiveTime::from_hms_milli_opt(h, min, s, ms);
-        match (nd, nt) {
-            (Some(nd), Some(nt)) => {
-                Value::F64(ms_of(Utc.from_utc_datetime(&nd.and_time(nt))))
-            }
-            _ => Value::F64(f64::NAN),
-        }
+        Value::F64(construct_date_from_args(args))
     }));
 
     // getFullYear / getMonth / getDate / getDay / getHours / getMinutes
@@ -406,6 +469,7 @@ pub fn register(vm: &mut VM) {
         };
     }
     getter!("getFullYear", |dt: &DateTime<Utc>| dt.year());
+    getter!("getYear", |dt: &DateTime<Utc>| dt.year() - 1900);
     getter!("getMonth", |dt: &DateTime<Utc>| dt.month() as i32 - 1);
     getter!("getDate", |dt: &DateTime<Utc>| dt.day() as i32);
     getter!("getDay", |dt: &DateTime<Utc>| dt.weekday().num_days_from_sunday() as i32);
@@ -446,6 +510,14 @@ pub fn register(vm: &mut VM) {
                 let s = dt.format("%a %b %d %Y %H:%M:%S GMT+0000 (UTC)").to_string();
                 Value::String(Arc::from(s.as_str()))
             }
+            None => Value::String(Arc::from("Invalid Date")),
+        }
+    }));
+
+    vm.register_host_fn(MODULE, "toUTCString", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let ms = ms_arg(args, 0);
+        match format_utc_string(ms) {
+            Some(text) => Value::String(Arc::from(text.as_str())),
             None => Value::String(Arc::from("Invalid Date")),
         }
     }));

@@ -29,6 +29,7 @@ quick-xml = { workspace = true }
 # For the `vybe:http` host module's parsed accessors + helpers.
 form_urlencoded = { workspace = true }
 percent-encoding = { workspace = true }
+url = { workspace = true }
 httpdate = { workspace = true }
 
 # ECMA-402 Intl backing — hybrid: focused crates for services that

@@ -1511,6 +1511,8 @@ fn dispatch_map(
         }
         "forEach" => {
             let cb = args.first().cloned().unwrap_or(Value::Null);
+            let this_arg = args.get(1).cloned();
+            let saved_this = this_arg.as_ref().map(|_| ctx.current_js_this());
             let snapshot: Vec<(Value, Value)> = {
                 let m = obj.lock().unwrap();
                 if let ObjectKind::Map(ref im) = m.kind {
@@ -1520,7 +1522,13 @@ fn dispatch_map(
                 }
             };
             for (k, v) in snapshot {
+                if let Some(this_arg) = this_arg.clone() {
+                    ctx.set_js_this(this_arg);
+                }
                 ctx.invoke(&cb, &[v, k, Value::Object(obj.clone())]);
+                if let Some(saved_this) = saved_this.clone() {
+                    ctx.set_js_this(saved_this);
+                }
             }
             Value::Undefined
         }
@@ -1602,6 +1610,8 @@ fn dispatch_set(
         }
         "forEach" => {
             let cb = args.first().cloned().unwrap_or(Value::Null);
+            let this_arg = args.get(1).cloned();
+            let saved_this = this_arg.as_ref().map(|_| ctx.current_js_this());
             let snapshot: Vec<Value> = {
                 let so = obj.lock().unwrap();
                 if let ObjectKind::Set(ref s) = so.kind {
@@ -1611,7 +1621,13 @@ fn dispatch_set(
                 }
             };
             for v in snapshot {
+                if let Some(this_arg) = this_arg.clone() {
+                    ctx.set_js_this(this_arg);
+                }
                 ctx.invoke(&cb, &[v.clone(), v, Value::Object(obj.clone())]);
+                if let Some(saved_this) = saved_this.clone() {
+                    ctx.set_js_this(saved_this);
+                }
             }
             Value::Undefined
         }
@@ -2031,6 +2047,9 @@ fn dispatch_plain_object(
         }
         return ctx.invoke(&fn_val, args);
     }
+    if let Some(result) = dispatch_error_object_method(ctx, &obj, method) {
+        return result;
+    }
     // Type-tagged object fallback: known stamped-`__type` instances
     // (Date) get their methods inline. The polymorphic invokeMethod
     // shim doesn't see the type registry, so `d.toString()` would
@@ -2103,6 +2122,59 @@ fn dispatch_plain_object(
     Value::Undefined
 }
 
+fn dispatch_error_object_method(
+    ctx: &mut HostContext,
+    obj: &Arc<Mutex<Object>>,
+    method: &str,
+) -> Option<Value> {
+    if method != "toString" || !is_error_like_object(obj) {
+        return None;
+    }
+
+    let (name_value, message_value) = {
+        let object = obj.lock().unwrap();
+        (
+            object.properties.get("name").cloned(),
+            object.properties.get("message").cloned(),
+        )
+    };
+
+    let name = error_to_string_component(ctx, name_value, "Error");
+    let message = error_to_string_component(ctx, message_value, "");
+    let rendered = if name.is_empty() {
+        message
+    } else if message.is_empty() {
+        name
+    } else {
+        format!("{}: {}", name, message)
+    };
+
+    Some(Value::String(Arc::from(rendered.as_str())))
+}
+
+fn error_to_string_component(
+    ctx: &mut HostContext,
+    value: Option<Value>,
+    default: &str,
+) -> String {
+    match value {
+        None | Some(Value::Undefined) => default.to_string(),
+        Some(other) => {
+            let primitive = to_primitive(ctx, &other, "string");
+            to_str(&primitive)
+        }
+    }
+}
+
+fn is_error_like_object(obj: &Arc<Mutex<Object>>) -> bool {
+    let object = obj.lock().unwrap();
+    if matches!(object.properties.get("tostringtag"), Some(Value::String(tag)) if tag.as_ref() == "Error") {
+        return true;
+    }
+
+    matches!(object.properties.get("__type"), Some(Value::String(tag)) if tag.ends_with("Error"))
+}
+
 fn lookup_method_for_call(receiver: &Value, method: &str) -> Value {
     let Value::Object(receiver_obj) = receiver else {
         return Value::Null;
@@ -2146,6 +2218,9 @@ fn bind_method_receiver(receiver: Arc<Mutex<Object>>, method: Value) -> Value {
         let o = target.lock().unwrap();
         match &o.kind {
             ObjectKind::HostFunction(_) => {
+                if !matches!(o.properties.get("__vybe_method_receiver"), Some(Value::Bool(true))) {
+                    return Value::Object(target.clone());
+                }
                 let prev_bound = match o.properties.get("__bound_args") {
                     Some(Value::Object(bound)) => {
                         let bo = bound.lock().unwrap();

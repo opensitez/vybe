@@ -1430,9 +1430,9 @@ fn register_prototype_methods(vm: &mut VM) {
             if let Some(obj) = obj_of(args, 0) {
                 let key = args.get(1).map(key_string).unwrap_or_default();
                 let o = obj.lock().unwrap();
-                return Value::I32(if o.properties.contains_key(&key) { 1 } else { 0 });
+                return Value::Bool(o.properties.contains_key(&key));
             }
-            Value::I32(0)
+            Value::Bool(false)
         }));
 
     vm.register_host_fn("ecma:object", "isPrototypeOf",

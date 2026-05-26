@@ -251,6 +251,8 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("ecma:map", "forEach",
         Box::new(|ctx, args| {
             let callback = args.get(1).cloned().unwrap_or(Value::Null);
+            let this_arg = args.get(2).cloned();
+            let saved_this = this_arg.as_ref().map(|_| ctx.current_js_this());
             if let Some(mapobj) = is_map(args, 0) {
                 let snapshot: Vec<(Value, Value)> = {
                     let m = mapobj.lock().unwrap();
@@ -262,7 +264,13 @@ pub fn register(vm: &mut VM) {
                 };
                 for (k, v) in snapshot {
                     let invoke_args = vec![v, k, Value::Object(mapobj.clone())];
+                    if let Some(this_arg) = this_arg.clone() {
+                        ctx.set_js_this(this_arg);
+                    }
                     ctx.invoke(&callback, &invoke_args);
+                    if let Some(saved_this) = saved_this.clone() {
+                        ctx.set_js_this(saved_this);
+                    }
                 }
             }
             Value::Undefined

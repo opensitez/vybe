@@ -21,7 +21,8 @@ pub fn register(vm: &mut VM) {
     let object_proto = crate::ecma::object::shared_object_prototype();
     set_prop(&object_proto, "constructor", object.clone());
     for name in &["toString", "toLocaleString", "valueOf", "hasOwnProperty", "propertyIsEnumerable", "isPrototypeOf"] {
-        set_prop(&object_proto, name, host_fn_ref(vm, "ecma:object", name));
+        let idx = *vm.host_registry.get(&("ecma:object".to_string(), (*name).to_string())).expect("ecma:object prototype method must be registered");
+        set_prop(&object_proto, name, receiver_host_fn_ref("ecma:object", name, idx));
     }
     set_prop(&object, "prototype", object_proto.clone());
     for name in &[
@@ -41,7 +42,8 @@ pub fn register(vm: &mut VM) {
     set_prop(&number_proto, "constructor", number.clone());
     set_prop(&number_proto, "__proto__", object_proto.clone());
     for name in &["toString", "valueOf", "toFixed", "toExponential", "toPrecision", "toLocaleString"] {
-        set_prop(&number_proto, name, host_fn_ref(vm, "ecma:number", name));
+        let idx = *vm.host_registry.get(&("ecma:number".to_string(), (*name).to_string())).expect("ecma:number prototype method must be registered");
+        set_prop(&number_proto, name, receiver_host_fn_ref("ecma:number", name, idx));
     }
     set_prop(&number, "prototype", number_proto);
     for name in &["parseInt", "parseFloat", "isNaN", "isFinite", "isInteger", "isSafeInteger"] {
@@ -67,8 +69,15 @@ pub fn register(vm: &mut VM) {
     let string_proto = crate::ecma::string::shared_string_prototype();
     set_prop(&string_proto, "constructor", string.clone());
     set_prop(&string_proto, "__proto__", object_proto.clone());
-    for name in &["toString", "valueOf"] {
-        set_prop(&string_proto, name, host_fn_ref(vm, "ecma:string", name));
+    for name in &[
+        "toString", "valueOf", "length", "charAt", "charCodeAt", "codePointAt", "at",
+        "concat", "substring", "slice", "toUpperCase", "toLowerCase", "toLocaleUpperCase",
+        "toLocaleLowerCase", "trim", "trimStart", "trimEnd", "padStart", "padEnd",
+        "includes", "indexOf", "lastIndexOf", "startsWith", "endsWith", "repeat",
+        "replace", "replaceAll", "split", "localeCompare", "normalize",
+    ] {
+        let idx = *vm.host_registry.get(&("ecma:string".to_string(), (*name).to_string())).expect("ecma:string prototype method must be registered");
+        set_prop(&string_proto, name, receiver_host_fn_ref("ecma:string", name, idx));
     }
     set_prop(&string, "prototype", string_proto);
     for name in &["fromCharCode", "fromCodePoint", "raw"] {
@@ -82,11 +91,50 @@ pub fn register(vm: &mut VM) {
     let boolean_proto = crate::ecma::boolean::shared_boolean_prototype();
     set_prop(&boolean_proto, "constructor", boolean.clone());
     set_prop(&boolean_proto, "__proto__", object_proto.clone());
-    set_prop(&boolean_proto, "toString", host_fn_ref(vm, "ecma:boolean", "toString"));
-    set_prop(&boolean_proto, "valueOf", host_fn_ref(vm, "ecma:boolean", "valueOf"));
+    let boolean_to_string = *vm.host_registry.get(&("ecma:boolean".to_string(), "toString".to_string())).expect("ecma:boolean.toString must be registered");
+    let boolean_value_of = *vm.host_registry.get(&("ecma:boolean".to_string(), "valueOf".to_string())).expect("ecma:boolean.valueOf must be registered");
+    set_prop(&boolean_proto, "toString", receiver_host_fn_ref("ecma:boolean", "toString", boolean_to_string));
+    set_prop(&boolean_proto, "valueOf", receiver_host_fn_ref("ecma:boolean", "valueOf", boolean_value_of));
     set_prop(&boolean, "prototype", boolean_proto);
     vm.globals.insert("Boolean".to_string(), boolean.clone());
     vm.globals.insert("boolean".to_string(), boolean.clone());
+
+    let function = Value::Object(Arc::new(Mutex::new(Object::new())));
+    set_prop(&function, "name", Value::String(Arc::from("Function")));
+    let function_proto = crate::ecma::function::shared_function_prototype();
+    set_prop(&function_proto, "constructor", function.clone());
+    set_prop(&function_proto, "__proto__", object_proto.clone());
+    for name in &["bind", "call", "apply"] {
+        let idx = *vm.host_registry.get(&("ecma:function".to_string(), (*name).to_string())).expect("ecma:function prototype method must be registered");
+        set_prop(&function_proto, name, receiver_host_fn_ref("ecma:function", name, idx));
+    }
+    set_prop(&function, "prototype", function_proto.clone());
+    set_prop(&function, "__proto__", function_proto);
+    vm.globals.insert("Function".to_string(), function.clone());
+    vm.globals.insert("function".to_string(), function.clone());
+
+    let array = host_fn_ref(vm, "ecma:array", "new");
+    set_prop(&array, "name", Value::String(Arc::from("Array")));
+    set_prop(&array, "__proto__", crate::ecma::function::shared_function_prototype());
+    let array_proto = crate::ecma::array::shared_array_prototype();
+    set_prop(&array_proto, "constructor", array.clone());
+    set_prop(&array_proto, "__proto__", object_proto.clone());
+    for name in &[
+        "at", "concat", "copyWithin", "entries", "every", "fill", "filter", "find",
+        "findIndex", "findLast", "findLastIndex", "flat", "flatMap", "forEach", "group",
+        "groupToMap", "includes", "indexOf", "join", "lastIndexOf", "map", "pop", "push",
+        "reduce", "reduceRight", "reverse", "shift", "slice", "some", "sort", "splice",
+        "toReversed", "toSorted", "toSpliced", "unshift", "values",
+    ] {
+        let idx = *vm.host_registry.get(&("ecma:array".to_string(), (*name).to_string())).expect("ecma:array prototype method must be registered");
+        set_prop(&array_proto, name, receiver_host_fn_ref("ecma:array", name, idx));
+    }
+    set_prop(&array, "prototype", array_proto);
+    for name in &["from", "fromAsync", "isArray", "of"] {
+        set_prop(&array, name, host_fn_ref(vm, "ecma:array", name));
+    }
+    vm.globals.insert("Array".to_string(), array.clone());
+    vm.globals.insert("array".to_string(), array.clone());
 
     // ── Symbol ─────────────────────────────────────────────────────
     // `Symbol` is callable as `Symbol(desc)` AND has static properties
