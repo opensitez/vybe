@@ -11,9 +11,26 @@
 //! `crates/vybe_bytecode/src/wasm/JS_BUILTIN_CONVENTIONS.md`.
 
 use indexmap::IndexMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::VM;
+
+static MAP_ITERATOR_IDX: OnceLock<usize> = OnceLock::new();
+
+fn bound_iterator_method(receiver: &Arc<Mutex<Object>>, module: &str, name: &str, idx: usize) -> Value {
+    let mut fn_obj = Object::new();
+    fn_obj.kind = ObjectKind::HostFunction(idx);
+    fn_obj.properties.insert("__host_module".into(), Value::String(Arc::from(module)));
+    fn_obj.properties.insert("__host_name".into(), Value::String(Arc::from(name)));
+    fn_obj.properties.insert("__host_idx".into(), Value::F64(idx as f64));
+    fn_obj.properties.insert("__proto__".into(), crate::ecma::function::shared_function_prototype());
+    fn_obj.properties.insert("name".into(), Value::String(Arc::from(name)));
+    fn_obj.properties.insert(
+        "__bound_args".into(),
+        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![Value::Object(receiver.clone())])))),
+    );
+    Value::Object(Arc::new(Mutex::new(fn_obj)))
+}
 
 fn new_map_value() -> Value {
     let mut obj = Object::new();
@@ -23,7 +40,14 @@ fn new_map_value() -> Value {
     // (`STRUCT_GET m "set"` → host fn) find the right binding. Without
     // it, JS-shape `m.set(k,v)` would dereference a missing property.
     obj.properties.insert("__type".into(), Value::String(Arc::from("Map")));
-    Value::Object(Arc::new(Mutex::new(obj)))
+    let map = Arc::new(Mutex::new(obj));
+    if let Some(idx) = MAP_ITERATOR_IDX.get() {
+        map.lock().unwrap().properties.insert(
+            "iterator".into(),
+            bound_iterator_method(&map, "ecma:map", "entries", *idx),
+        );
+    }
+    Value::Object(map)
 }
 
 fn is_map(args: &[Value], idx: usize) -> Option<Arc<Mutex<Object>>> {
@@ -189,17 +213,17 @@ pub fn register(vm: &mut VM) {
             Value::I32(0)
         }));
 
-    // keys / values / entries — Array snapshots in insertion order
+    // keys / values / entries — Array Iterators over insertion-order snapshots
     vm.register_host_fn("ecma:map", "keys",
         Box::new(|_ctx, args| {
             if let Some(mapobj) = is_map(args, 0) {
                 let m = mapobj.lock().unwrap();
                 if let ObjectKind::Map(ref im) = m.kind {
                     let keys: Vec<Value> = im.keys().cloned().collect();
-                    return Value::Object(Arc::new(Mutex::new(Object::new_array(keys))));
+                    return crate::ecma::array::make_array_iterator(keys);
                 }
             }
-            Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+            crate::ecma::array::make_array_iterator(Vec::new())
         }));
 
     vm.register_host_fn("ecma:map", "values",
@@ -208,10 +232,10 @@ pub fn register(vm: &mut VM) {
                 let m = mapobj.lock().unwrap();
                 if let ObjectKind::Map(ref im) = m.kind {
                     let vals: Vec<Value> = im.values().cloned().collect();
-                    return Value::Object(Arc::new(Mutex::new(Object::new_array(vals))));
+                    return crate::ecma::array::make_array_iterator(vals);
                 }
             }
-            Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+            crate::ecma::array::make_array_iterator(Vec::new())
         }));
 
     // .NET `Dictionary<K,V>.ContainsValue(v)` — linear-scan check
@@ -240,11 +264,17 @@ pub fn register(vm: &mut VM) {
                             Object::new_array(vec![k.clone(), v.clone()])
                         ))))
                         .collect();
-                    return Value::Object(Arc::new(Mutex::new(Object::new_array(pairs))));
+                    return crate::ecma::array::make_array_iterator(pairs);
                 }
             }
-            Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+            crate::ecma::array::make_array_iterator(Vec::new())
         }));
+    if let Some(idx) = vm.host_registry
+        .get(&("ecma:map".to_string(), "entries".to_string()))
+        .copied()
+    {
+        let _ = MAP_ITERATOR_IDX.set(idx);
+    }
 
     // forEach(map, callback) — invokes callback(value, key, map) per
     // entry in insertion order. ECMA-262 §24.1.3.5.

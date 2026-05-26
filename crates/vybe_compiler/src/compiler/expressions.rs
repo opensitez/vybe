@@ -1375,12 +1375,7 @@ impl Compiler {
                         let val_slot = self.define_local("__js_member_val");
                         self.emit_u16(Op::LOCAL_SET, val_slot);
                         self.emit(Op::DROP);
-                        self.emit_u16(Op::LOCAL_GET, val_slot);
-                        self.emit(Op::REF_IS_NULL);
-                        let val_not_null = self.emit_jump(Op::BR_IF_FALSE);
                         let lookup = self.str_const("__vybe_js_get_method");
-                        let end_lookup = self.emit_jump(Op::BR);
-                        self.patch_jump(val_not_null);
                         self.emit_u16(Op::LOCAL_GET, val_slot);
                         self.emit(Op::REF_IS_UNDEFINED);
                         let have_direct = self.emit_jump(Op::BR_IF_FALSE);
@@ -1390,16 +1385,8 @@ impl Compiler {
                         self.emit_const(Value::String(Arc::from(field_name.as_str())));
                         self.emit_u8(Op::CALL_REF, 2);
                         let end_lookup_undefined = self.emit_jump(Op::BR);
-                        self.patch_jump(end_lookup);
-                        self.emit_u16(Op::GLOBAL_GET, lookup);
-
-                        self.emit_u16(Op::LOCAL_GET, obj_slot);
-                        self.emit_const(Value::String(Arc::from(field_name.as_str())));
-                        self.emit_u8(Op::CALL_REF, 2);
-                        let end_lookup_null = self.emit_jump(Op::BR);
                         self.patch_jump(have_direct);
                         self.emit_u16(Op::LOCAL_GET, val_slot);
-                        self.patch_jump(end_lookup_null);
                         self.patch_jump(end_lookup_undefined);
                         self.patch_jump(end);
                     } else {
@@ -1472,12 +1459,7 @@ impl Compiler {
                         let val_slot = self.define_local("__js_member_val");
                         self.emit_u16(Op::LOCAL_SET, val_slot);
                         self.emit(Op::DROP);
-                        self.emit_u16(Op::LOCAL_GET, val_slot);
-                        self.emit(Op::REF_IS_NULL);
-                        let val_not_null = self.emit_jump(Op::BR_IF_FALSE);
                         let lookup = self.str_const("__vybe_js_get_method");
-                        let end = self.emit_jump(Op::BR);
-                        self.patch_jump(val_not_null);
                         self.emit_u16(Op::LOCAL_GET, val_slot);
                         self.emit(Op::REF_IS_UNDEFINED);
                         let have_direct = self.emit_jump(Op::BR_IF_FALSE);
@@ -1486,15 +1468,8 @@ impl Compiler {
                         self.emit_const(Value::String(Arc::from(field_name.as_str())));
                         self.emit_u8(Op::CALL_REF, 2);
                         let end_undefined = self.emit_jump(Op::BR);
-                        self.patch_jump(end);
-                        self.emit_u16(Op::GLOBAL_GET, lookup);
-                        self.emit_u16(Op::LOCAL_GET, obj_slot);
-                        self.emit_const(Value::String(Arc::from(field_name.as_str())));
-                        self.emit_u8(Op::CALL_REF, 2);
-                        let end_null = self.emit_jump(Op::BR);
                         self.patch_jump(have_direct);
                         self.emit_u16(Op::LOCAL_GET, val_slot);
-                        self.patch_jump(end_null);
                         self.patch_jump(end_undefined);
                         // Restore the caller's __js_this — value already
                         // on stack as the access result.
@@ -2178,12 +2153,7 @@ impl Compiler {
                     let val_slot = self.define_local("__js_index_val");
                     self.emit_u16(Op::LOCAL_SET, val_slot);
                     self.emit(Op::DROP);
-                    self.emit_u16(Op::LOCAL_GET, val_slot);
-                    self.emit(Op::REF_IS_NULL);
-                    let val_not_null = self.emit_jump(Op::BR_IF_FALSE);
                     let lookup = self.str_const("__vybe_js_get_method");
-                    let end_lookup = self.emit_jump(Op::BR);
-                    self.patch_jump(val_not_null);
                     self.emit_u16(Op::LOCAL_GET, val_slot);
                     self.emit(Op::REF_IS_UNDEFINED);
                     let have_direct = self.emit_jump(Op::BR_IF_FALSE);
@@ -2209,32 +2179,8 @@ impl Compiler {
                     }
                     self.emit_u8(Op::CALL_REF, 2);
                     let end_undefined = self.emit_jump(Op::BR);
-                    self.patch_jump(end_lookup);
-                    self.emit_u16(Op::GLOBAL_GET, lookup);
-                    self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    match &index.kind {
-                        ExprKind::Member { object, field, null_safe: false }
-                            if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
-                                let fallback_key = match field.as_str() {
-                                    "iterator" => Some("iterator"),
-                                    "asyncIterator" => Some("asyncIterator"),
-                                    "toPrimitive" => Some("toprimitive"),
-                                    "hasInstance" => Some("hasinstance"),
-                                    _ => None,
-                                };
-                                if let Some(fallback_key) = fallback_key {
-                                    self.emit_const(Value::String(Arc::from(fallback_key)));
-                                } else {
-                                    self.emit_u16(Op::LOCAL_GET, key_slot);
-                                }
-                            }
-                        _ => self.emit_u16(Op::LOCAL_GET, key_slot),
-                    }
-                    self.emit_u8(Op::CALL_REF, 2);
-                    let end_null = self.emit_jump(Op::BR);
                     self.patch_jump(have_direct);
                     self.emit_u16(Op::LOCAL_GET, val_slot);
-                    self.patch_jump(end_null);
                     self.patch_jump(end_undefined);
                     self.patch_jump(end);
                 } else if matches!(self.profile.name.as_str(), "csharp" | "vb") {
@@ -2337,12 +2283,7 @@ impl Compiler {
                         let val_slot = self.define_local("__js_index_val");
                         self.emit_u16(Op::LOCAL_SET, val_slot);
                         self.emit(Op::DROP);
-                        self.emit_u16(Op::LOCAL_GET, val_slot);
-                        self.emit(Op::REF_IS_NULL);
-                        let val_not_null = self.emit_jump(Op::BR_IF_FALSE);
                         let lookup = self.str_const("__vybe_js_get_method");
-                        let end_lookup = self.emit_jump(Op::BR);
-                        self.patch_jump(val_not_null);
                         self.emit_u16(Op::LOCAL_GET, val_slot);
                         self.emit(Op::REF_IS_UNDEFINED);
                         let have_direct = self.emit_jump(Op::BR_IF_FALSE);
@@ -2368,32 +2309,8 @@ impl Compiler {
                         }
                         self.emit_u8(Op::CALL_REF, 2);
                         let end_undefined = self.emit_jump(Op::BR);
-                        self.patch_jump(end_lookup);
-                        self.emit_u16(Op::GLOBAL_GET, lookup);
-                        self.emit_u16(Op::LOCAL_GET, obj_slot);
-                        match &index.kind {
-                            ExprKind::Member { object, field, null_safe: false }
-                                if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
-                                    let fallback_key = match field.as_str() {
-                                        "iterator" => Some("iterator"),
-                                        "asyncIterator" => Some("asyncIterator"),
-                                        "toPrimitive" => Some("toprimitive"),
-                                        "hasInstance" => Some("hasinstance"),
-                                        _ => None,
-                                    };
-                                    if let Some(fallback_key) = fallback_key {
-                                        self.emit_const(Value::String(Arc::from(fallback_key)));
-                                    } else {
-                                        self.emit_u16(Op::LOCAL_GET, key_slot);
-                                    }
-                                }
-                            _ => self.emit_u16(Op::LOCAL_GET, key_slot),
-                        }
-                        self.emit_u8(Op::CALL_REF, 2);
-                        let end_null = self.emit_jump(Op::BR);
                         self.patch_jump(have_direct);
                         self.emit_u16(Op::LOCAL_GET, val_slot);
-                        self.patch_jump(end_null);
                         self.patch_jump(end_undefined);
                         return Ok(());
                     }

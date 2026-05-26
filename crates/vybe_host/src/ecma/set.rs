@@ -11,9 +11,26 @@
 //! Marshaling + error-handling contract:
 //! `crates/vybe_bytecode/src/wasm/JS_BUILTIN_CONVENTIONS.md`.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::VM;
+
+static SET_ITERATOR_IDX: OnceLock<usize> = OnceLock::new();
+
+fn bound_iterator_method(receiver: &Arc<Mutex<Object>>, module: &str, name: &str, idx: usize) -> Value {
+    let mut fn_obj = Object::new();
+    fn_obj.kind = ObjectKind::HostFunction(idx);
+    fn_obj.properties.insert("__host_module".into(), Value::String(Arc::from(module)));
+    fn_obj.properties.insert("__host_name".into(), Value::String(Arc::from(name)));
+    fn_obj.properties.insert("__host_idx".into(), Value::F64(idx as f64));
+    fn_obj.properties.insert("__proto__".into(), crate::ecma::function::shared_function_prototype());
+    fn_obj.properties.insert("name".into(), Value::String(Arc::from(name)));
+    fn_obj.properties.insert(
+        "__bound_args".into(),
+        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![Value::Object(receiver.clone())])))),
+    );
+    Value::Object(Arc::new(Mutex::new(fn_obj)))
+}
 
 fn new_set() -> Value {
     let mut obj = Object::new();
@@ -22,24 +39,39 @@ fn new_set() -> Value {
     // __type stamp: see comment on `ecma:map.new`. Without it the
     // TypeRegistry-driven `STRUCT_GET s "add"` lookup misses.
     obj.properties.insert("__type".into(), Value::String(Arc::from("Set")));
-    Value::Object(Arc::new(Mutex::new(obj)))
+    let set = Arc::new(Mutex::new(obj));
+    if let Some(idx) = SET_ITERATOR_IDX.get() {
+        set.lock().unwrap().properties.insert(
+            "iterator".into(),
+            bound_iterator_method(&set, "ecma:set", "values", *idx),
+        );
+    }
+    Value::Object(set)
 }
 
 fn new_set_from_iterable(args: &[Value]) -> Value {
     let s = new_set();
-    if let (Value::Object(setobj), Some(Value::Object(src))) = (&s, args.first()) {
-        let srclock = src.lock().unwrap();
-        if let ObjectKind::Array(ref items) = srclock.kind {
-            let items = items.clone();
-            drop(srclock);
-            let mut so = setobj.lock().unwrap();
-            if let ObjectKind::Set(ref mut iset) = so.kind {
-                for item in items {
-                    iset.insert(item);
+    if let Value::Object(setobj) = &s {
+        let items: Vec<Value> = match args.first() {
+            Some(Value::Object(src)) => {
+                let srclock = src.lock().unwrap();
+                match &srclock.kind {
+                    ObjectKind::Array(items) => items.clone(),
+                    _ => Vec::new(),
                 }
             }
-            sync_set_size(&mut so);
+            Some(Value::String(text)) => text.chars()
+                .map(|ch| Value::String(Arc::from(ch.to_string().as_str())))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let mut so = setobj.lock().unwrap();
+        if let ObjectKind::Set(ref mut iset) = so.kind {
+            for item in items {
+                iset.insert(item);
+            }
         }
+        sync_set_size(&mut so);
     }
     s
 }
@@ -72,18 +104,24 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let s = new_set();
             if let Value::Object(setobj) = &s {
-                if let Some(Value::Object(src)) = args.first() {
-                    let srclock = src.lock().unwrap();
-                    if let ObjectKind::Array(ref items) = srclock.kind {
-                        let items = items.clone();
-                        drop(srclock);
-                        let mut so = setobj.lock().unwrap();
-                        if let ObjectKind::Set(ref mut s) = so.kind {
-                            for item in items { s.insert(item); }
+                let items: Vec<Value> = match args.first() {
+                    Some(Value::Object(src)) => {
+                        let srclock = src.lock().unwrap();
+                        match &srclock.kind {
+                            ObjectKind::Array(items) => items.clone(),
+                            _ => Vec::new(),
                         }
-                        sync_set_size(&mut so);
                     }
+                    Some(Value::String(text)) => text.chars()
+                        .map(|ch| Value::String(Arc::from(ch.to_string().as_str())))
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                let mut so = setobj.lock().unwrap();
+                if let ObjectKind::Set(ref mut s) = so.kind {
+                    for item in items { s.insert(item); }
                 }
+                sync_set_size(&mut so);
             }
             s
         }));
@@ -162,11 +200,17 @@ pub fn register(vm: &mut VM) {
                     let so = setobj.lock().unwrap();
                     if let ObjectKind::Set(ref s) = so.kind {
                         let snapshot: Vec<Value> = s.iter().cloned().collect();
-                        return Value::Object(Arc::new(Mutex::new(Object::new_array(snapshot))));
+                        return crate::ecma::array::make_array_iterator(snapshot);
                     }
                 }
-                Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+                crate::ecma::array::make_array_iterator(Vec::new())
             }));
+    }
+    if let Some(idx) = vm.host_registry
+        .get(&("ecma:set".to_string(), "values".to_string()))
+        .copied()
+    {
+        let _ = SET_ITERATOR_IDX.set(idx);
     }
 
     vm.register_host_fn("ecma:set", "entries",
@@ -179,10 +223,10 @@ pub fn register(vm: &mut VM) {
                             Object::new_array(vec![v.clone(), v.clone()])
                         ))))
                         .collect();
-                    return Value::Object(Arc::new(Mutex::new(Object::new_array(pairs))));
+                    return crate::ecma::array::make_array_iterator(pairs);
                 }
             }
-            Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+            crate::ecma::array::make_array_iterator(Vec::new())
         }));
 
     // Set.prototype.forEach(callback) — callback receives (value,

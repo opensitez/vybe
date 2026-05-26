@@ -996,9 +996,10 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_br(1, 0); // exit
     c.emit_end(0); c.patch_block(arr_step);
 
-    // method = v.iterator (or v.__iter__ if null)
+    // method = getMethodForCall(v, "iterator")
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
-    c.emit_op_u16(Op::STRUCT_GET, iter_key, 0);
+    c.emit_op_u16(Op::CONST, iter_key, 0);
+    crate::emitter::collections::emit_import_call_into(imports, &mut c, "ecma:value", "getMethodForCall", 2, 0);
     c.emit_op_u16(Op::LOCAL_SET, method, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -1064,9 +1065,10 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_br(1, 0); // exit
     c.emit_end(0); c.patch_block(it_ok);
 
-    // method = it.next
+    // method = getMethodForCall(it, "next")
     c.emit_op_u16(Op::LOCAL_GET, it, 0);
-    c.emit_op_u16(Op::STRUCT_GET, next_key, 0);
+    c.emit_op_u16(Op::CONST, next_key, 0);
+    crate::emitter::collections::emit_import_call_into(imports, &mut c, "ecma:value", "getMethodForCall", 2, 0);
     c.emit_op_u16(Op::LOCAL_SET, method, 0);
     c.emit_op(Op::DROP, 0);
 

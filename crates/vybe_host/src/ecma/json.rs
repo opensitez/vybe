@@ -3,166 +3,201 @@
 //! `JSON.stringify` / `JSON.parse` per ECMA-262 §25.5.
 //!
 //! Implementation notes:
-//!   - `stringify` handles all value kinds in our VM: Array (JS
-//!     array), Map (serializes as empty object per spec — Maps aren't
-//!     natively stringifiable), Set (same), Object (property bag),
-//!     TypedArray (numeric-indexed array of elements), ArrayBuffer
-//!     (serialized as `{}` per spec), primitives with the usual JS
-//!     rules.
-//!   - `parse` produces Array / Object / Value primitives — never
-//!     Map/Set/TypedArray (the spec says JSON.parse always materializes
-//!     JS Objects and Arrays).
+//!   - `stringify` handles JS Arrays, ordinary Objects, boxed
+//!     primitives, Date `toJSON`, Maps/Sets (`{}`), TypedArrays, and
+//!     ArrayBuffers with the usual ECMA omission/null rules.
+//!   - `parse` materializes Arrays / ordinary Objects / primitives and
+//!     optionally runs the ECMA reviver walk.
 //!   - NaN / Infinity stringify to `"null"` per spec.
-//!   - `undefined` elements in Arrays stringify as `"null"`;
-//!     `undefined` properties in Objects are **omitted** (spec).
-//!   - Circular references: we detect via a visited-set and throw
-//!     (MVP: returns an error string instead of trapping).
-//!   - The `replacer` and `space` arguments are currently ignored —
-//!     Phase B5 follow-up.
+//!   - `undefined` / function / symbol elements in Arrays stringify as
+//!     `"null"`; the same values in Objects are omitted.
+//!   - Circular references are detected via a visited-set. MVP keeps the
+//!     existing non-throwing behavior and serializes the cycle as null.
 //!
 //! See `JS_BUILTIN_CONVENTIONS.md`.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::value::{Object, ObjectKind, TypedElemKind, Value};
-use vybe_bytecode::VM;
+use vybe_bytecode::{HostContext, VM};
 
 pub fn register(vm: &mut VM) {
     vm.register_host_fn("ecma:json", "stringify",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let value = args.first().cloned().unwrap_or(Value::Undefined);
-            // Spec: stringify(undefined) returns undefined, not "undefined"
-            if matches!(value, Value::Undefined) {
-                return Value::Undefined;
+            let mut state = StringifyState::new(args.get(1), args.get(2));
+            let root_holder = make_root_holder(value.clone());
+            match serialize_property(ctx, &root_holder, "", value, &mut state, false) {
+                Some(text) => Value::String(Arc::from(text.as_str())),
+                None => Value::Undefined,
             }
-            // Spec: stringify(Symbol) returns undefined
-            if matches!(value, Value::Symbol(_)) {
-                return Value::Undefined;
-            }
-            let mut visited: HashSet<usize> = HashSet::new();
-            let s = stringify(&value, &mut visited);
-            Value::String(Arc::from(s.as_str()))
         }));
 
     vm.register_host_fn("ecma:json", "parse",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let text: String = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
                 None => return Value::Undefined,
             };
-            parse_json(&text).unwrap_or(Value::Null)
+            let parsed = parse_json(&text).unwrap_or(Value::Null);
+            match args.get(1).cloned() {
+                Some(reviver) if is_callable(&reviver) => apply_reviver(ctx, parsed, reviver),
+                _ => parsed,
+            }
         }));
 }
 
 // ── Stringify ──────────────────────────────────────────────────────────
 
-fn stringify(v: &Value, visited: &mut HashSet<usize>) -> String {
-    match v {
-        Value::Null | Value::Undefined => "null".to_string(),
-        Value::Bool(b) => if *b { "true".into() } else { "false".into() },
-        Value::I32(n) => n.to_string(),
-        Value::I64(n) => n.to_string(),
-        Value::F64(n) => {
-            if n.is_nan() || n.is_infinite() {
-                "null".to_string()  // ECMA-262 §25.5.2 — NaN/Infinity stringify as null
-            } else if *n == (*n as i64) as f64 && n.abs() < 1e16 {
-                (*n as i64).to_string()
-            } else {
-                n.to_string()
-            }
+struct StringifyState {
+    replacer_fn: Option<Value>,
+    property_list: Option<Vec<String>>,
+    gap: String,
+    indent: String,
+    visited: HashSet<usize>,
+}
+
+impl StringifyState {
+    fn new(replacer: Option<&Value>, space: Option<&Value>) -> Self {
+        let replacer_fn = replacer.cloned().filter(is_callable);
+        let property_list = replacer.and_then(|value| collect_property_list(value));
+        Self {
+            replacer_fn,
+            property_list,
+            gap: build_gap(space),
+            indent: String::new(),
+            visited: HashSet::new(),
         }
-        Value::String(s) => quote_string(s),
-        Value::BigInt(_) => "null".into(), // spec says TypeError; MVP emits null
-        Value::Symbol(_) => "null".into(),
-        Value::V128(_) => "null".into(),
-        Value::WeakRef(_) => "null".into(),
-        Value::Object(obj) => stringify_object(obj, visited),
     }
 }
 
-fn stringify_object(obj: &Arc<Mutex<Object>>, visited: &mut HashSet<usize>) -> String {
-    let id = Arc::as_ptr(obj) as usize;
-    if !visited.insert(id) {
-        // Cycle detected. Per spec we should throw TypeError; MVP
-        // emits a sentinel string.
-        return "null".to_string();
+fn serialize_property(
+    ctx: &mut HostContext,
+    holder: &Value,
+    key: &str,
+    raw_value: Value,
+    state: &mut StringifyState,
+    in_array: bool,
+) -> Option<String> {
+    let value = transform_json_value(ctx, holder, key, raw_value, state);
+    serialize_json_value(ctx, &value, state, in_array)
+}
+
+fn transform_json_value(
+    ctx: &mut HostContext,
+    holder: &Value,
+    key: &str,
+    raw_value: Value,
+    state: &mut StringifyState,
+) -> Value {
+    let mut value = raw_value;
+
+    if let Some(to_json_result) = apply_to_json(ctx, &value, key) {
+        value = to_json_result;
     }
+
+    if let Some(replacer) = &state.replacer_fn {
+        value = crate::ecma::function::invoke_with_explicit_this(
+            ctx,
+            replacer,
+            holder.clone(),
+            &[Value::String(Arc::from(key)), value],
+        );
+    }
+
+    unbox_json_wrapper(value)
+}
+
+fn serialize_json_value(
+    ctx: &mut HostContext,
+    value: &Value,
+    state: &mut StringifyState,
+    in_array: bool,
+) -> Option<String> {
+    match value {
+        Value::Undefined | Value::Symbol(_) if in_array => Some("null".to_string()),
+        Value::Undefined | Value::Symbol(_) => None,
+        Value::Object(obj) if is_function_like_object(obj) && in_array => Some("null".to_string()),
+        Value::Object(obj) if is_function_like_object(obj) => None,
+        Value::Null => Some("null".to_string()),
+        Value::Bool(b) => Some(if *b { "true".into() } else { "false".into() }),
+        Value::I32(n) => Some(n.to_string()),
+        Value::I64(n) => Some(n.to_string()),
+        Value::F64(n) => Some(json_number_string(*n)),
+        Value::String(s) => Some(quote_string(s)),
+        Value::BigInt(_) | Value::V128(_) | Value::WeakRef(_) => Some("null".to_string()),
+        Value::Object(obj) => serialize_object(ctx, obj, state),
+    }
+}
+
+fn serialize_object(
+    ctx: &mut HostContext,
+    obj: &Arc<Mutex<Object>>,
+    state: &mut StringifyState,
+) -> Option<String> {
+    let id = Arc::as_ptr(obj) as usize;
+    if !state.visited.insert(id) {
+        return Some("null".to_string());
+    }
+
     let result = {
-        let o = obj.lock().unwrap();
-        match &o.kind {
-            ObjectKind::Array(elems) => stringify_array(elems, visited),
-            ObjectKind::TypedArray(ta) => stringify_typed_array(ta, visited),
-            ObjectKind::Map(_) | ObjectKind::Set(_) => {
-                // Spec: Map/Set serialize as {} (no enumerable own
-                // properties). Matches v8.
-                "{}".to_string()
+        let guard = obj.lock().unwrap();
+        match &guard.kind {
+            ObjectKind::Array(elems) => serialize_array(ctx, obj, elems.clone(), state),
+            ObjectKind::TypedArray(ta) => Some(stringify_typed_array(ta)),
+            ObjectKind::Map(_) | ObjectKind::Set(_) | ObjectKind::ArrayBuffer(_) => {
+                Some("{}".to_string())
             }
-            ObjectKind::ArrayBuffer(_) => "{}".to_string(),
-            ObjectKind::Function(_) | ObjectKind::HostFunction(_) => {
-                // Spec: functions are omitted (handled by caller when
-                // nested in Object/Array); top-level returns undefined.
-                "null".to_string()
-            }
-            ObjectKind::Continuation(_) => {
-                // Continuations don't serialize — match the function
-                // treatment above (no enumerable own data).
-                "null".to_string()
-            }
-            ObjectKind::Ordinary => {
-                // Date receives toJSON treatment per ECMA-262 §25.5.1.1:
-                // if `__type=Date`, serialize as the ISO string. Same logic
-                // V8 uses to make `JSON.stringify(d)` return `"2026-..."`.
-                // Read __time directly while we hold the lock — calling
-                // `dispatch_date_method` would re-lock and deadlock.
-                let is_date = matches!(
-                    o.properties.get("__type"),
-                    Some(Value::String(s)) if s.as_ref() == "Date"
-                );
-                if is_date {
-                    let ms = o.properties.get("__time")
-                        .map(|v| v.as_f64())
-                        .unwrap_or(f64::NAN);
-                    let iso = crate::ecma::date::format_iso_from_ms(ms);
-                    return match iso {
-                        Some(s) => format!("\"{}\"", s),
-                        None => "null".to_string(),
-                    };
-                }
-                stringify_ordinary(&o, visited)
-            }
-            // Module Namespace Objects serialize their exports like an
-            // Ordinary object — functions (the common case) get dropped
-            // per the same "value is a function → undefined" rule.
-            ObjectKind::ModuleNamespace => {
-                stringify_ordinary(&o, visited)
+            ObjectKind::Function(_) | ObjectKind::HostFunction(_) | ObjectKind::Continuation(_) => None,
+            ObjectKind::Ordinary | ObjectKind::ModuleNamespace => {
+                let keys = object_serialization_keys(&guard, state.property_list.as_ref());
+                drop(guard);
+                Some(serialize_ordinary(ctx, obj, &keys, state))
             }
         }
     };
-    visited.remove(&id);
+
+    state.visited.remove(&id);
     result
 }
 
-fn stringify_array(elems: &[Value], visited: &mut HashSet<usize>) -> String {
-    let parts: Vec<String> = elems.iter().map(|v| {
-        match v {
-            // Functions / symbols / undefined in arrays serialize as "null"
-            Value::Undefined | Value::Symbol(_) => "null".to_string(),
-            Value::Object(o) => {
-                let is_fn = {
-                    let lock = o.lock().unwrap();
-                    matches!(lock.kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_))
-                };
-                if is_fn { "null".into() } else { stringify(v, visited) }
-            }
-            _ => stringify(v, visited),
-        }
-    }).collect();
-    format!("[{}]", parts.join(","))
+fn serialize_array(
+    ctx: &mut HostContext,
+    obj: &Arc<Mutex<Object>>,
+    elems: Vec<Value>,
+    state: &mut StringifyState,
+) -> Option<String> {
+    let holder = Value::Object(obj.clone());
+    let stepback = state.indent.clone();
+    state.indent.push_str(&state.gap);
+
+    let mut parts = Vec::with_capacity(elems.len());
+    for (index, value) in elems.into_iter().enumerate() {
+        let key = index.to_string();
+        parts.push(
+            serialize_property(ctx, &holder, &key, value, state, true)
+                .unwrap_or_else(|| "null".to_string()),
+        );
+    }
+
+    state.indent = stepback.clone();
+    if state.gap.is_empty() {
+        return Some(format!("[{}]", parts.join(",")));
+    }
+    if parts.is_empty() {
+        return Some("[]".to_string());
+    }
+
+    let body = parts
+        .iter()
+        .map(|part| format!("{}{}", state.indent.clone() + &state.gap, part))
+        .collect::<Vec<_>>()
+        .join(",\n");
+    Some(format!("[\n{}\n{}]", body, stepback))
 }
 
-fn stringify_typed_array(ta: &vybe_bytecode::value::TypedArrayState,
-                          _visited: &mut HashSet<usize>) -> String {
+fn stringify_typed_array(ta: &vybe_bytecode::value::TypedArrayState) -> String {
     // Typed arrays stringify as the comma-joined element values
     // wrapped in an object shape — actually JSON.stringify on a typed
     // array produces a plain object with numeric-string keys. v8:
@@ -221,6 +256,51 @@ fn stringify_typed_array(ta: &vybe_bytecode::value::TypedArrayState,
     out
 }
 
+fn serialize_ordinary(
+    ctx: &mut HostContext,
+    obj: &Arc<Mutex<Object>>,
+    keys: &[String],
+    state: &mut StringifyState,
+) -> String {
+    let holder = Value::Object(obj.clone());
+    let stepback = state.indent.clone();
+    state.indent.push_str(&state.gap);
+
+    let mut parts = Vec::new();
+    for key in keys {
+        let value = {
+            let guard = obj.lock().unwrap();
+            guard.properties.get(key).cloned()
+        };
+        let Some(value) = value else {
+            continue;
+        };
+        if let Some(serialized) = serialize_property(ctx, &holder, key, value, state, false) {
+            let member = if state.gap.is_empty() {
+                format!("{}:{}", quote_string(key), serialized)
+            } else {
+                format!("{}: {}", quote_string(key), serialized)
+            };
+            parts.push(member);
+        }
+    }
+
+    state.indent = stepback.clone();
+    if state.gap.is_empty() {
+        return format!("{{{}}}", parts.join(","));
+    }
+    if parts.is_empty() {
+        return "{}".to_string();
+    }
+
+    let body = parts
+        .iter()
+        .map(|part| format!("{}{}", state.indent.clone() + &state.gap, part))
+        .collect::<Vec<_>>()
+        .join(",\n");
+    format!("{{\n{}\n{}}}", body, stepback)
+}
+
 fn ordinary_ordered_keys(o: &Object) -> Vec<String> {
     let tracked: Option<Vec<String>> = o.properties.get("__keys").and_then(|value| {
         let Value::Object(arr) = value else {
@@ -255,33 +335,215 @@ fn ordinary_ordered_keys(o: &Object) -> Vec<String> {
     }
 }
 
-fn stringify_ordinary(o: &Object, visited: &mut HashSet<usize>) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    for k in ordinary_ordered_keys(o) {
-        let Some(v) = o.properties.get(&k) else {
+fn object_serialization_keys(o: &Object, property_list: Option<&Vec<String>>) -> Vec<String> {
+    let ordered = ordinary_ordered_keys(o);
+    if let Some(list) = property_list {
+        return list
+            .iter()
+            .filter(|key| is_serializable_object_key(o, key) && o.properties.contains_key(*key))
+            .cloned()
+            .collect();
+    }
+
+    let mut indices = Vec::new();
+    let mut others = Vec::new();
+    for key in ordered {
+        if !is_serializable_object_key(o, &key) {
+            continue;
+        }
+        if let Some(index) = json_array_index(&key) {
+            indices.push((index, key));
+        } else {
+            others.push(key);
+        }
+    }
+    indices.sort_by_key(|(index, _)| *index);
+    indices
+        .into_iter()
+        .map(|(_, key)| key)
+        .chain(others)
+        .collect()
+}
+
+fn is_serializable_object_key(o: &Object, key: &str) -> bool {
+    if key.starts_with("__") {
+        return false;
+    }
+    if key.starts_with("Symbol(") && key.ends_with(')') {
+        return false;
+    }
+    !is_non_enumerable(o, key)
+}
+
+fn is_non_enumerable(o: &Object, key: &str) -> bool {
+    match o.properties.get("__nonenum") {
+        Some(Value::Object(arr)) => {
+            let guard = arr.lock().unwrap();
+            let ObjectKind::Array(ref elems) = guard.kind else {
+                return false;
+            };
+            elems.iter().any(|value| matches!(value, Value::String(name) if name.as_ref() == key))
+        }
+        _ => false,
+    }
+}
+
+fn json_array_index(key: &str) -> Option<u32> {
+    if key.is_empty() || (key.len() > 1 && key.starts_with('0')) {
+        return None;
+    }
+    let parsed = key.parse::<u32>().ok()?;
+    if parsed == u32::MAX {
+        return None;
+    }
+    if parsed.to_string() == key {
+        Some(parsed)
+    } else {
+        None
+    }
+}
+
+fn build_gap(space: Option<&Value>) -> String {
+    match space {
+        Some(Value::I32(n)) => " ".repeat((*n).clamp(0, 10) as usize),
+        Some(Value::I64(n)) => " ".repeat((*n).clamp(0, 10) as usize),
+        Some(Value::F64(n)) => {
+            if !n.is_finite() || *n <= 0.0 {
+                String::new()
+            } else {
+                " ".repeat(n.floor().clamp(0.0, 10.0) as usize)
+            }
+        }
+        Some(Value::String(text)) => text.chars().take(10).collect(),
+        Some(Value::Object(obj)) => {
+            let primitive = unbox_json_wrapper(Value::Object(obj.clone()));
+            match primitive {
+                Value::String(text) => text.chars().take(10).collect(),
+                Value::I32(n) => " ".repeat(n.clamp(0, 10) as usize),
+                Value::I64(n) => " ".repeat(n.clamp(0, 10) as usize),
+                Value::F64(n) => {
+                    if !n.is_finite() || n <= 0.0 {
+                        String::new()
+                    } else {
+                        " ".repeat(n.floor().clamp(0.0, 10.0) as usize)
+                    }
+                }
+                _ => String::new(),
+            }
+        }
+        _ => String::new(),
+    }
+}
+
+fn collect_property_list(value: &Value) -> Option<Vec<String>> {
+    let Value::Object(obj) = value else {
+        return None;
+    };
+    let guard = obj.lock().unwrap();
+    let ObjectKind::Array(ref elems) = guard.kind else {
+        return None;
+    };
+
+    let mut keys = Vec::new();
+    let mut seen = HashSet::new();
+    for elem in elems {
+        let Some(key) = replacer_property_key(elem) else {
             continue;
         };
-        // Skip internal __vybe_* bookkeeping properties.
-        if k.starts_with("__") { continue; }
-        // ECMA-262 §25.5.2.5: Symbol-keyed properties are not serialized.
-        // Our VM stores them as "Symbol(<desc>)" string keys.
-        if k.starts_with("Symbol(") && k.ends_with(')') { continue; }
-        // Skip undefined / function values per spec (omitted, not
-        // serialized as "null").
-        match v {
-            Value::Undefined | Value::Symbol(_) => continue,
-            Value::Object(inner) => {
-                let is_fn = {
-                    let lock = inner.lock().unwrap();
-                    matches!(lock.kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_))
-                };
-                if is_fn { continue; }
-            }
-            _ => {}
+        if seen.insert(key.clone()) {
+            keys.push(key);
         }
-        parts.push(format!("{}:{}", quote_string(&k), stringify(v, visited)));
     }
-    format!("{{{}}}", parts.join(","))
+    Some(keys)
+}
+
+fn replacer_property_key(value: &Value) -> Option<String> {
+    match unbox_json_wrapper(value.clone()) {
+        Value::String(text) => Some(text.to_string()),
+        Value::I32(n) => Some(n.to_string()),
+        Value::I64(n) => Some(n.to_string()),
+        Value::F64(n) if n.is_finite() => Some(json_number_string(n)),
+        _ => None,
+    }
+}
+
+fn json_number_string(n: f64) -> String {
+    if n.is_nan() || n.is_infinite() {
+        return "null".to_string();
+    }
+    if n == 0.0 {
+        return "0".to_string();
+    }
+    if n.fract() == 0.0 && n.abs() < 1e16 {
+        return (n as i64).to_string();
+    }
+    n.to_string()
+}
+
+fn is_callable(value: &Value) -> bool {
+    let Value::Object(obj) = value else {
+        return false;
+    };
+    let guard = obj.lock().unwrap();
+    matches!(guard.kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_))
+        || guard.properties.contains_key("__call__")
+}
+
+fn is_function_like_object(obj: &Arc<Mutex<Object>>) -> bool {
+    let guard = obj.lock().unwrap();
+    matches!(guard.kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_))
+        || guard.properties.contains_key("__call__")
+}
+
+fn unbox_json_wrapper(value: Value) -> Value {
+    let Value::Object(obj) = &value else {
+        return value;
+    };
+    let primitive = {
+        let guard = obj.lock().unwrap();
+        match guard.properties.get("__type") {
+            Some(Value::String(tag)) if matches!(tag.as_ref(), "Number" | "String" | "Boolean") => {
+                guard.properties.get("__primitive").cloned()
+            }
+            _ => None,
+        }
+    };
+    primitive.unwrap_or(value)
+}
+
+fn apply_to_json(ctx: &mut HostContext, value: &Value, key: &str) -> Option<Value> {
+    let Value::Object(obj) = value else {
+        return None;
+    };
+
+    if let Some(method) = {
+        let guard = obj.lock().unwrap();
+        guard.properties.get("toJSON").cloned()
+    } {
+        if is_callable(&method) {
+            return Some(crate::ecma::function::invoke_with_explicit_this(
+                ctx,
+                &method,
+                value.clone(),
+                &[Value::String(Arc::from(key))],
+            ));
+        }
+    }
+
+    let is_date = {
+        let guard = obj.lock().unwrap();
+        matches!(guard.properties.get("__type"), Some(Value::String(tag)) if tag.as_ref() == "Date")
+    };
+    if is_date {
+        return crate::ecma::date::dispatch_date_method("toJSON", &[value.clone()]);
+    }
+    None
+}
+
+fn make_root_holder(value: Value) -> Value {
+    let mut root = Object::new();
+    root.properties.insert("".into(), value);
+    Value::Object(Arc::new(Mutex::new(root)))
 }
 
 fn quote_string(s: &str) -> String {
@@ -311,6 +573,157 @@ fn quote_string(s: &str) -> String {
 struct Parser<'a> {
     src: &'a [u8],
     pos: usize,
+}
+
+fn apply_reviver(ctx: &mut HostContext, parsed: Value, reviver: Value) -> Value {
+    let holder = make_root_holder(parsed);
+    internalize_json_property(ctx, &holder, "", &reviver)
+}
+
+fn internalize_json_property(
+    ctx: &mut HostContext,
+    holder: &Value,
+    key: &str,
+    reviver: &Value,
+) -> Value {
+    let mut value = get_holder_property(holder, key).unwrap_or(Value::Undefined);
+
+    if let Value::Object(obj) = value.clone() {
+        let is_array = {
+            let guard = obj.lock().unwrap();
+            matches!(guard.kind, ObjectKind::Array(_))
+        };
+        if is_array {
+            let len = {
+                let guard = obj.lock().unwrap();
+                match &guard.kind {
+                    ObjectKind::Array(elems) => elems.len(),
+                    _ => 0,
+                }
+            };
+            for index in 0..len {
+                let idx_key = index.to_string();
+                let revived = internalize_json_property(
+                    ctx,
+                    &Value::Object(obj.clone()),
+                    &idx_key,
+                    reviver,
+                );
+                if matches!(revived, Value::Undefined) {
+                    delete_holder_property(&Value::Object(obj.clone()), &idx_key);
+                } else {
+                    set_holder_property(&Value::Object(obj.clone()), &idx_key, revived);
+                }
+            }
+        } else {
+            let keys = {
+                let guard = obj.lock().unwrap();
+                ordinary_ordered_keys(&guard)
+                    .into_iter()
+                    .filter(|name| is_serializable_object_key(&guard, name))
+                    .collect::<Vec<_>>()
+            };
+            for child_key in keys {
+                let revived = internalize_json_property(
+                    ctx,
+                    &Value::Object(obj.clone()),
+                    &child_key,
+                    reviver,
+                );
+                if matches!(revived, Value::Undefined) {
+                    delete_holder_property(&Value::Object(obj.clone()), &child_key);
+                } else {
+                    set_holder_property(&Value::Object(obj.clone()), &child_key, revived);
+                }
+            }
+        }
+
+        value = Value::Object(obj);
+    }
+
+    crate::ecma::function::invoke_with_explicit_this(
+        ctx,
+        reviver,
+        holder.clone(),
+        &[Value::String(Arc::from(key)), value],
+    )
+}
+
+fn get_holder_property(holder: &Value, key: &str) -> Option<Value> {
+    let Value::Object(obj) = holder else {
+        return None;
+    };
+    let guard = obj.lock().unwrap();
+    if let Some(index) = json_array_index(key) {
+        if let ObjectKind::Array(ref elems) = guard.kind {
+            return elems.get(index as usize).cloned();
+        }
+    }
+    guard.properties.get(key).cloned()
+}
+
+fn set_holder_property(holder: &Value, key: &str, value: Value) {
+    let Value::Object(obj) = holder else {
+        return;
+    };
+    let mut guard = obj.lock().unwrap();
+    if let Some(index) = json_array_index(key) {
+        if let ObjectKind::Array(ref mut elems) = guard.kind {
+            if let Some(slot) = elems.get_mut(index as usize) {
+                *slot = value;
+                clear_array_hole(&mut guard, index as i32);
+                return;
+            }
+        }
+    }
+    guard.properties.insert(key.to_string(), value);
+}
+
+fn delete_holder_property(holder: &Value, key: &str) {
+    let Value::Object(obj) = holder else {
+        return;
+    };
+    let mut guard = obj.lock().unwrap();
+    if let Some(index) = json_array_index(key) {
+        if let ObjectKind::Array(ref mut elems) = guard.kind {
+            if let Some(slot) = elems.get_mut(index as usize) {
+                *slot = Value::Undefined;
+                mark_array_hole(&mut guard, index as i32);
+                return;
+            }
+        }
+    }
+    guard.properties.remove(key);
+}
+
+fn mark_array_hole(object: &mut Object, index: i32) {
+    let holes = match object.properties.get("__holes") {
+        Some(Value::Object(existing)) => existing.clone(),
+        _ => {
+            let created = Arc::new(Mutex::new(Object::new_array(Vec::new())));
+            object.properties.insert("__holes".into(), Value::Object(created.clone()));
+            created
+        }
+    };
+
+    let mut holes_guard = holes.lock().unwrap();
+    let ObjectKind::Array(ref mut elems) = holes_guard.kind else {
+        return;
+    };
+    if !elems.iter().any(|value| matches!(value, Value::I32(existing) if *existing == index)) {
+        elems.push(Value::I32(index));
+    }
+}
+
+fn clear_array_hole(object: &mut Object, index: i32) {
+    let Some(Value::Object(holes)) = object.properties.get("__holes") else {
+        return;
+    };
+    let mut holes_guard = holes.lock().unwrap();
+    let ObjectKind::Array(ref mut elems) = holes_guard.kind else {
+        return;
+    };
+    elems.retain(|value| !matches!(value, Value::I32(existing) if *existing == index));
 }
 
 fn parse_json(text: &str) -> Option<Value> {
@@ -388,6 +801,9 @@ impl<'a> Parser<'a> {
         let s = std::str::from_utf8(&self.src[start..self.pos]).ok()?;
         // Try i64 first for exact integer preservation, then f64.
         if !s.contains('.') && !s.contains('e') && !s.contains('E') {
+            if s == "-0" {
+                return Some(Value::F64(-0.0));
+            }
             if let Ok(n) = s.parse::<i64>() {
                 // Fit into i32 if possible — matches v8's tagging
                 // preference for small integers.
@@ -480,6 +896,8 @@ impl<'a> Parser<'a> {
         if self.peek()? != b'{' { return None; }
         self.pos += 1;
         let mut obj = Object::new();
+        let mut tracked_keys: Vec<Value> = Vec::new();
+        let mut seen_keys: HashSet<String> = HashSet::new();
         self.skip_whitespace();
         if self.peek() == Some(b'}') {
             self.pos += 1;
@@ -492,6 +910,9 @@ impl<'a> Parser<'a> {
             if self.peek() != Some(b':') { return None; }
             self.pos += 1;
             let val = self.parse_value()?;
+            if seen_keys.insert(key.clone()) {
+                tracked_keys.push(Value::String(Arc::from(key.as_str())));
+            }
             obj.properties.insert(key, val);
             self.skip_whitespace();
             match self.peek()? {
@@ -500,6 +921,10 @@ impl<'a> Parser<'a> {
                 _ => return None,
             }
         }
+        obj.properties.insert(
+            "__keys".into(),
+            Value::Object(Arc::new(Mutex::new(Object::new_array(tracked_keys)))),
+        );
         Some(Value::Object(Arc::new(Mutex::new(obj))))
     }
 }

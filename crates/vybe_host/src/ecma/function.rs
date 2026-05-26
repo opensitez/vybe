@@ -114,7 +114,7 @@ pub(crate) fn invoke_bound_callback_if_needed(
     Some(invoke_bound_target(ctx, &target, bound_this, target_proto, &invoke_args))
 }
 
-fn invoke_with_explicit_this(
+pub(crate) fn invoke_with_explicit_this(
     ctx: &mut HostContext,
     target: &Value,
     this_arg: Value,

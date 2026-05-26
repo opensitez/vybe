@@ -1487,27 +1487,27 @@ fn dispatch_map(
         "keys" => {
             let m = obj.lock().unwrap();
             if let ObjectKind::Map(ref im) = m.kind {
-                return make_array(im.keys().cloned().collect());
+                return crate::ecma::array::make_array_iterator(im.keys().cloned().collect());
             }
-            make_array(Vec::new())
+            crate::ecma::array::make_array_iterator(Vec::new())
         }
         "values" => {
             let m = obj.lock().unwrap();
             if let ObjectKind::Map(ref im) = m.kind {
-                return make_array(im.values().cloned().collect());
+                return crate::ecma::array::make_array_iterator(im.values().cloned().collect());
             }
-            make_array(Vec::new())
+            crate::ecma::array::make_array_iterator(Vec::new())
         }
-        "entries" => {
+        "iterator" | "entries" => {
             let m = obj.lock().unwrap();
             if let ObjectKind::Map(ref im) = m.kind {
                 let pairs: Vec<Value> = im
                     .iter()
                     .map(|(k, v)| make_array(vec![k.clone(), v.clone()]))
                     .collect();
-                return make_array(pairs);
+                return crate::ecma::array::make_array_iterator(pairs);
             }
-            make_array(Vec::new())
+            crate::ecma::array::make_array_iterator(Vec::new())
         }
         "forEach" => {
             let cb = args.first().cloned().unwrap_or(Value::Null);
@@ -1588,14 +1588,12 @@ fn dispatch_set(
             }
             Value::I32(0)
         }
-        // Set.prototype.keys/values/entries: spec returns an iterator;
-        // MVP returns a snapshot Array (matches `ecma:set` registrations).
-        "keys" | "values" => {
+        "iterator" | "keys" | "values" => {
             let so = obj.lock().unwrap();
             if let ObjectKind::Set(ref s) = so.kind {
-                return make_array(s.iter().cloned().collect());
+                return crate::ecma::array::make_array_iterator(s.iter().cloned().collect());
             }
-            make_array(Vec::new())
+            crate::ecma::array::make_array_iterator(Vec::new())
         }
         "entries" => {
             let so = obj.lock().unwrap();
@@ -1604,9 +1602,9 @@ fn dispatch_set(
                     .iter()
                     .map(|v| make_array(vec![v.clone(), v.clone()]))
                     .collect();
-                return make_array(pairs);
+                return crate::ecma::array::make_array_iterator(pairs);
             }
-            make_array(Vec::new())
+            crate::ecma::array::make_array_iterator(Vec::new())
         }
         "forEach" => {
             let cb = args.first().cloned().unwrap_or(Value::Null);
@@ -2179,10 +2177,6 @@ fn lookup_method_for_call(receiver: &Value, method: &str) -> Value {
     let Value::Object(receiver_obj) = receiver else {
         return Value::Null;
     };
-
-    if method == "next" && is_array_iterator(receiver_obj) {
-        return Value::Null;
-    }
 
     let mut current = Some(receiver_obj.clone());
     while let Some(obj) = current {

@@ -43,7 +43,7 @@ fn emit_import_call(chunks: &mut [Chunk], current: usize, module: &str, name: &s
 /// passed `imports` chunk (caller ensures that's the module-level
 /// imports chunk = `chunks[0]` of the final program), and the
 /// CALL_IMPORT opcode emits in `code`.
-fn emit_import_call_into(imports: &mut Chunk, code: &mut Chunk, module: &str, name: &str, argc: u8, line: u32) {
+pub(crate) fn emit_import_call_into(imports: &mut Chunk, code: &mut Chunk, module: &str, name: &str, argc: u8, line: u32) {
     let idx = imports.add_import(module, name);
     code.emit_op_u16(Op::CALL_IMPORT, idx, line);
     code.emit(argc, line);

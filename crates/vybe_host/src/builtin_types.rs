@@ -496,6 +496,7 @@ pub fn register_all(vm: &mut VM) {
             ("set", "set"), ("get", "get"), ("has", "has"),
             ("delete", "delete"), ("keys", "keys"), ("values", "values"),
             ("clear", "clear"), ("entries", "entries"), ("forEach", "forEach"),
+            ("iterator", "entries"),
         ] {
             if let Some(idx) = h(vm, "ecma:map", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
@@ -521,7 +522,7 @@ pub fn register_all(vm: &mut VM) {
         for (method, fname) in &[
             ("add", "add"), ("has", "has"), ("delete", "delete"),
             ("values", "values"), ("keys", "values"), ("clear", "clear"),
-            ("entries", "entries"), ("forEach", "forEach"),
+            ("entries", "entries"), ("forEach", "forEach"), ("iterator", "values"),
         ] {
             if let Some(idx) = h(vm, "ecma:set", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
