@@ -1,5 +1,4 @@
 use vybe_bytecode::*;
-use vybe_bytecode::value::*;
 use vybe_host::{Capabilities, Capability, register_with_capabilities};
 use std::sync::{Arc, Mutex};
 
@@ -90,11 +89,8 @@ fn all_caps_registers_database() {
 fn all_caps_registers_sockets() {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::all());
-    // The .NET-shaped TcpClient / TcpListener / UdpClient host fns live
-    // under `dotnet:sockets`. Real WASI 0.2.8 socket primitives are checked
-    // by `all_caps_registers_wasi_sockets` below.
     let has_sock = vm.host_registry.keys().any(|(m, _)| m.starts_with("wasi:sockets/"));
-    assert!(has_sock, "Full caps should register dotnet:sockets");
+    assert!(has_sock, "Full caps should register wasi:sockets modules");
 }
 
 #[test]
@@ -146,7 +142,7 @@ fn safe_blocks_sockets() {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::safe());
     let has_sock = vm.host_registry.keys().any(|(m, _)| m.starts_with("wasi:sockets/"));
-    assert!(!has_sock, "Safe mode should NOT have dotnet:sockets");
+    assert!(!has_sock, "Safe mode should NOT have wasi:sockets modules");
 }
 
 #[test]
