@@ -23,9 +23,15 @@
 //! Node small-icu uses (real Intl code, locale-aware behaviour).
 
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::{HostContext, VM};
+
+static COLLATOR_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+static NUMBER_FORMAT_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+static DATE_TIME_FORMAT_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+static RELATIVE_TIME_FORMAT_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+static SEGMENTER_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 
 pub fn register(vm: &mut VM) {
     register_collator(vm);
@@ -45,6 +51,26 @@ pub fn register(vm: &mut VM) {
 
 fn s_val(text: &str) -> Value {
     Value::String(Arc::from(text))
+}
+
+pub(crate) fn shared_collator_prototype() -> Value {
+    Value::Object(COLLATOR_PROTOTYPE.get_or_init(|| Arc::new(Mutex::new(Object::new()))).clone())
+}
+
+pub(crate) fn shared_number_format_prototype() -> Value {
+    Value::Object(NUMBER_FORMAT_PROTOTYPE.get_or_init(|| Arc::new(Mutex::new(Object::new()))).clone())
+}
+
+pub(crate) fn shared_date_time_format_prototype() -> Value {
+    Value::Object(DATE_TIME_FORMAT_PROTOTYPE.get_or_init(|| Arc::new(Mutex::new(Object::new()))).clone())
+}
+
+pub(crate) fn shared_relative_time_format_prototype() -> Value {
+    Value::Object(RELATIVE_TIME_FORMAT_PROTOTYPE.get_or_init(|| Arc::new(Mutex::new(Object::new()))).clone())
+}
+
+pub(crate) fn shared_segmenter_prototype() -> Value {
+    Value::Object(SEGMENTER_PROTOTYPE.get_or_init(|| Arc::new(Mutex::new(Object::new()))).clone())
 }
 
 fn make_array(elements: Vec<Value>) -> Value {
@@ -94,6 +120,17 @@ fn resolve_options(arg: Option<&Value>) -> Arc<Mutex<Object>> {
     }
 }
 
+fn resolve_date_ms(arg: Option<&Value>) -> Option<f64> {
+    match arg {
+        Some(Value::Object(obj)) => {
+            let lock = obj.lock().unwrap();
+            lock.properties.get("__time").map(|v| v.as_f64())
+        }
+        Some(value) => Some(value.as_f64()),
+        None => None,
+    }
+}
+
 /// Parse a tag into a `unic_langid::LanguageIdentifier`. Falls back to
 /// `en-US` on parse failure (matches ECMA-402's "best fit" behaviour).
 fn parse_langid(tag: &str) -> unic_langid::LanguageIdentifier {
@@ -123,6 +160,7 @@ fn register_collator(vm: &mut VM) {
         drop(opts_lock);
         make_object(vec![
             ("__type", s_val("Collator")),
+            ("__proto__", shared_collator_prototype()),
             ("locale", s_val(&locale)),
             ("usage", s_val(&usage)),
             ("sensitivity", s_val(&sensitivity)),
@@ -146,6 +184,10 @@ fn register_collator(vm: &mut VM) {
             None => String::new(),
         };
         let locale = obj_string_prop(&collator, "locale").unwrap_or_else(|| "en-US".into());
+        let sensitivity = obj_string_prop(&collator, "sensitivity").unwrap_or_else(|| "variant".into());
+        if sensitivity == "base" && a.to_lowercase() == b.to_lowercase() {
+            return Value::I32(0);
+        }
         let icu_loc = parse_icu_locale(&locale);
         let prefs = (&icu_loc).into();
         let coll = match Collator::try_new(prefs, CollatorOptions::default()) {
@@ -212,6 +254,7 @@ fn register_number_format(vm: &mut VM) {
         drop(ol);
         make_object(vec![
             ("__type", s_val("NumberFormat")),
+            ("__proto__", shared_number_format_prototype()),
             ("locale", s_val(&locale)),
             ("style", s_val(&style)),
             ("currency", s_val(&currency)),
@@ -241,13 +284,7 @@ fn register_number_format(vm: &mut VM) {
             Some(v) => v.as_f64(),
             None => f64::NAN,
         };
-        // MVP: single { type: "literal", value: format(value) } part.
-        // Full breakdown into integer/decimal/group/currency parts is
-        // a future enhancement (icu::decimal exposes part info).
-        make_array(vec![make_object(vec![
-            ("type", s_val("literal")),
-            ("value", s_val(&format_number_real(&nf, value))),
-        ])])
+        make_array(format_number_parts_real(&nf, value))
     }));
 
     vm.register_host_fn("ecma:intl/numberformat", "resolvedOptions", Box::new(|_ctx, args| {
@@ -349,10 +386,25 @@ fn currency_symbol(code: &str) -> &'static str {
 fn register_date_time_format(vm: &mut VM) {
     vm.register_host_fn("ecma:intl/datetimeformat", "new", Box::new(|_ctx, args| {
         let locale = resolve_locale(args.first());
-        let _options = resolve_options(args.get(1));
+        let options = resolve_options(args.get(1));
+        let ol = options.lock().unwrap();
+        let year = ol.properties.get("year")
+            .and_then(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
+            .unwrap_or_default();
+        let month = ol.properties.get("month")
+            .and_then(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
+            .unwrap_or_default();
+        let day = ol.properties.get("day")
+            .and_then(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
+            .unwrap_or_default();
+        drop(ol);
         make_object(vec![
             ("__type", s_val("DateTimeFormat")),
+            ("__proto__", shared_date_time_format_prototype()),
             ("locale", s_val(&locale)),
+            ("year", s_val(&year)),
+            ("month", s_val(&month)),
+            ("day", s_val(&day)),
         ])
     }));
 
@@ -361,8 +413,8 @@ fn register_date_time_format(vm: &mut VM) {
             Some(Value::Object(o)) => o.clone(),
             _ => return s_val(""),
         };
-        let ms = match args.get(1) {
-            Some(v) => v.as_f64(),
+        let ms = match resolve_date_ms(args.get(1)) {
+            Some(ms) => ms,
             None => return s_val(""),
         };
         s_val(&format_date_real(&dtf, ms))
@@ -373,14 +425,11 @@ fn register_date_time_format(vm: &mut VM) {
             Some(Value::Object(o)) => o.clone(),
             _ => return make_array(vec![]),
         };
-        let ms = match args.get(1) {
-            Some(v) => v.as_f64(),
+        let ms = match resolve_date_ms(args.get(1)) {
+            Some(ms) => ms,
             None => return make_array(vec![]),
         };
-        make_array(vec![make_object(vec![
-            ("type", s_val("literal")),
-            ("value", s_val(&format_date_real(&dtf, ms))),
-        ])])
+        make_array(format_date_parts_real(&dtf, ms))
     }));
 
     vm.register_host_fn("ecma:intl/datetimeformat", "resolvedOptions", Box::new(|_ctx, args| {
@@ -412,6 +461,37 @@ fn register_date_time_format(vm: &mut VM) {
 fn format_date_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> String {
     use icu::datetime::{DateTimeFormatter, fieldsets};
     use icu::datetime::input::Date;
+
+    let year_opt = obj_string_prop(dtf, "year").unwrap_or_default();
+    let month_opt = obj_string_prop(dtf, "month").unwrap_or_default();
+    let day_opt = obj_string_prop(dtf, "day").unwrap_or_default();
+
+    if !year_opt.is_empty() || !month_opt.is_empty() || !day_opt.is_empty() {
+        let secs = (ms / 1000.0) as i64;
+        let (year, month, day) = epoch_to_ymd(secs);
+        if year_opt == "numeric" && month_opt.is_empty() && day_opt.is_empty() {
+            return year.to_string();
+        }
+        let mut out = String::new();
+        if !month_opt.is_empty() {
+            out.push_str(&format_month_part(month, &month_opt));
+        }
+        if !day_opt.is_empty() {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(&format_day_part(day, &day_opt));
+        }
+        if !year_opt.is_empty() {
+            if !out.is_empty() {
+                out.push_str(", ");
+            }
+            out.push_str(&year.to_string());
+        }
+        if !out.is_empty() {
+            return out;
+        }
+    }
 
     let locale = obj_string_prop(dtf, "locale").unwrap_or_else(|| "en-US".into());
     let icu_loc = parse_icu_locale(&locale);
@@ -723,6 +803,7 @@ fn register_relative_time_format(vm: &mut VM) {
         drop(ol);
         make_object(vec![
             ("__type", s_val("RelativeTimeFormat")),
+            ("__proto__", shared_relative_time_format_prototype()),
             ("locale", s_val(&locale)),
             ("numeric", s_val(&numeric)),
             ("style", s_val(&style)),
@@ -738,7 +819,8 @@ fn register_relative_time_format(vm: &mut VM) {
         let unit = match args.get(2) { Some(Value::String(s)) => s.to_string(), _ => "second".into() };
         let locale = obj_string_prop(&rtf, "locale").unwrap_or_else(|| "en-US".into());
         let style = obj_string_prop(&rtf, "style").unwrap_or_else(|| "long".into());
-        s_val(&format_relative_time_real(&locale, &style, value, &unit))
+        let numeric = obj_string_prop(&rtf, "numeric").unwrap_or_else(|| "always".into());
+        s_val(&format_relative_time_real(&locale, &style, &numeric, value, &unit))
     }));
 
     vm.register_host_fn("ecma:intl/relativetimeformat", "formatToParts", Box::new(|_ctx, args| {
@@ -750,9 +832,10 @@ fn register_relative_time_format(vm: &mut VM) {
         let unit = match args.get(2) { Some(Value::String(s)) => s.to_string(), _ => "second".into() };
         let locale = obj_string_prop(&rtf, "locale").unwrap_or_else(|| "en-US".into());
         let style = obj_string_prop(&rtf, "style").unwrap_or_else(|| "long".into());
+        let numeric = obj_string_prop(&rtf, "numeric").unwrap_or_else(|| "always".into());
         make_array(vec![make_object(vec![
             ("type", s_val("literal")),
-            ("value", s_val(&format_relative_time_real(&locale, &style, value, &unit))),
+            ("value", s_val(&format_relative_time_real(&locale, &style, &numeric, value, &unit))),
         ])])
     }));
 
@@ -783,10 +866,18 @@ fn register_relative_time_format(vm: &mut VM) {
 /// Format relative time using `icu_relativetime`. Constructor variants
 /// per (style × unit) — pick the right one and format. Falls back to
 /// a plain English form on locale/unit data miss.
-fn format_relative_time_real(locale: &str, style: &str, value: f64, unit: &str) -> String {
+fn format_relative_time_real(locale: &str, style: &str, numeric: &str, value: f64, unit: &str) -> String {
     use icu_relativetime::{RelativeTimeFormatter, RelativeTimeFormatterOptions};
     use icu_relativetime::options::Numeric;
     use fixed_decimal::FixedDecimal;
+
+    if numeric == "auto" {
+        let rounded = value.round() as i64;
+        let unit_norm = unit.trim_end_matches('s');
+        if let Some(text) = auto_relative_time_phrase(rounded, unit_norm) {
+            return text;
+        }
+    }
 
     // icu_relativetime 0.1 uses the older icu_locid types — separate
     // from icu 2.x's icu_locale_core. Bridge via the older crate.
@@ -866,6 +957,7 @@ fn register_segmenter(vm: &mut VM) {
         drop(ol);
         make_object(vec![
             ("__type", s_val("Segmenter")),
+            ("__proto__", shared_segmenter_prototype()),
             ("locale", s_val(&locale)),
             ("granularity", s_val(&granularity)),
         ])
@@ -897,10 +989,12 @@ fn register_segmenter(vm: &mut VM) {
         };
 
         let elems: Vec<Value> = segments.into_iter().map(|(seg_str, idx)| {
+            let is_word_like = granularity == "word" && segment_is_word_like(&seg_str);
             make_object(vec![
                 ("segment", s_val(&seg_str)),
                 ("index", Value::I32(idx as i32)),
                 ("input", s_val(&input)),
+                ("isWordLike", Value::Bool(is_word_like)),
             ])
         }).collect();
         make_array(elems)
@@ -925,6 +1019,172 @@ fn register_segmenter(vm: &mut VM) {
             _ => make_array(vec![]),
         }
     }));
+}
+
+fn format_number_parts_real(nf: &Arc<Mutex<Object>>, value: f64) -> Vec<Value> {
+    let formatted = format_number_real(nf, value);
+    let mut parts = Vec::new();
+    let mut seen_decimal = false;
+    let chars: Vec<char> = formatted.chars().collect();
+    let mut index = 0;
+
+    while index < chars.len() {
+        let ch = chars[index];
+        if ch.is_ascii_digit() {
+            let start = index;
+            while index < chars.len() && chars[index].is_ascii_digit() {
+                index += 1;
+            }
+            let value: String = chars[start..index].iter().collect();
+            parts.push(make_object(vec![
+                ("type", s_val(if seen_decimal { "fraction" } else { "integer" })),
+                ("value", s_val(&value)),
+            ]));
+            continue;
+        }
+
+        let part_type = match ch {
+            ',' => "group",
+            '.' => {
+                seen_decimal = true;
+                "decimal"
+            }
+            '%' => "percentSign",
+            '$' | '€' | '£' | '¥' | '¤' => "currency",
+            _ => "literal",
+        };
+        parts.push(make_object(vec![
+            ("type", s_val(part_type)),
+            ("value", s_val(&ch.to_string())),
+        ]));
+        index += 1;
+    }
+
+    if parts.is_empty() {
+        parts.push(make_object(vec![
+            ("type", s_val("literal")),
+            ("value", s_val(&formatted)),
+        ]));
+    }
+    parts
+}
+
+fn format_date_parts_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> Vec<Value> {
+    let secs = (ms / 1000.0) as i64;
+    let (year, month, day) = epoch_to_ymd(secs);
+    let year_opt = obj_string_prop(dtf, "year").unwrap_or_default();
+    let month_opt = obj_string_prop(dtf, "month").unwrap_or_default();
+    let day_opt = obj_string_prop(dtf, "day").unwrap_or_default();
+
+    if year_opt == "numeric" && month_opt.is_empty() && day_opt.is_empty() {
+        return vec![make_object(vec![
+            ("type", s_val("year")),
+            ("value", s_val(&year.to_string())),
+        ])];
+    }
+
+    let mut parts = Vec::new();
+    if !month_opt.is_empty() {
+        parts.push(make_object(vec![
+            ("type", s_val("month")),
+            ("value", s_val(&format_month_part(month, &month_opt))),
+        ]));
+    }
+    if !day_opt.is_empty() {
+        if !parts.is_empty() {
+            parts.push(make_object(vec![("type", s_val("literal")), ("value", s_val(" "))]));
+        }
+        parts.push(make_object(vec![
+            ("type", s_val("day")),
+            ("value", s_val(&format_day_part(day, &day_opt))),
+        ]));
+    }
+    if !year_opt.is_empty() {
+        if !parts.is_empty() {
+            parts.push(make_object(vec![("type", s_val("literal")), ("value", s_val(", "))]));
+        }
+        parts.push(make_object(vec![
+            ("type", s_val("year")),
+            ("value", s_val(&year.to_string())),
+        ]));
+    }
+
+    if parts.is_empty() {
+        parts.push(make_object(vec![
+            ("type", s_val("literal")),
+            ("value", s_val(&format_date_real(dtf, ms))),
+        ]));
+    }
+    parts
+}
+
+fn format_month_part(month: i32, month_opt: &str) -> String {
+    match month_opt {
+        "2-digit" => format!("{:02}", month),
+        "numeric" => month.to_string(),
+        "short" => month_name(month, true).to_string(),
+        _ => month_name(month, false).to_string(),
+    }
+}
+
+fn format_day_part(day: i32, day_opt: &str) -> String {
+    if day_opt == "2-digit" {
+        format!("{:02}", day)
+    } else {
+        day.to_string()
+    }
+}
+
+fn month_name(month: i32, short: bool) -> &'static str {
+    match (month, short) {
+        (1, false) => "January",
+        (2, false) => "February",
+        (3, false) => "March",
+        (4, false) => "April",
+        (5, false) => "May",
+        (6, false) => "June",
+        (7, false) => "July",
+        (8, false) => "August",
+        (9, false) => "September",
+        (10, false) => "October",
+        (11, false) => "November",
+        (12, false) => "December",
+        (1, true) => "Jan",
+        (2, true) => "Feb",
+        (3, true) => "Mar",
+        (4, true) => "Apr",
+        (5, true) => "May",
+        (6, true) => "Jun",
+        (7, true) => "Jul",
+        (8, true) => "Aug",
+        (9, true) => "Sep",
+        (10, true) => "Oct",
+        (11, true) => "Nov",
+        (12, true) => "Dec",
+        _ => "",
+    }
+}
+
+fn auto_relative_time_phrase(value: i64, unit: &str) -> Option<String> {
+    match (value, unit) {
+        (-1, "day") => Some("yesterday".into()),
+        (0, "day") => Some("today".into()),
+        (1, "day") => Some("tomorrow".into()),
+        (-1, "week") => Some("last week".into()),
+        (0, "week") => Some("this week".into()),
+        (1, "week") => Some("next week".into()),
+        (-1, "month") => Some("last month".into()),
+        (0, "month") => Some("this month".into()),
+        (1, "month") => Some("next month".into()),
+        (-1, "year") => Some("last year".into()),
+        (0, "year") => Some("this year".into()),
+        (1, "year") => Some("next year".into()),
+        _ => None,
+    }
+}
+
+fn segment_is_word_like(segment: &str) -> bool {
+    segment.chars().any(|ch| ch.is_alphanumeric())
 }
 
 // ── Intl.Locale (ECMA-402 §14) ───────────────────────────────────────
