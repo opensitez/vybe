@@ -159,6 +159,14 @@ fn js_call_ident(name: &str, args: Vec<Expression>) -> Expression {
     })
 }
 
+fn js_dynamic_import_alias(module: &str) -> String {
+    let suffix: String = module
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect();
+    format!("__js_dynamic_import_{}", suffix)
+}
+
 fn js_nullish_check(name: &str) -> Expression {
     Expression::new(ExprKind::Binary {
         op: BinOp::Or,
@@ -1038,7 +1046,7 @@ impl Compiler {
         self.restore_js_this_after_call(saved_js_this, "__js_rest_arg_call_result");
     }
 
-    fn emit_array_value_or_undefined(&mut self, args_slot: u16, len_slot: u16, index: usize) {
+    pub(super) fn emit_array_value_or_undefined(&mut self, args_slot: u16, len_slot: u16, index: usize) {
         self.emit_u16(Op::LOCAL_GET, len_slot);
         self.emit_const(Value::F64(index as f64));
         self.emit(Op::DYN_GT);
@@ -1644,6 +1652,14 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, exc_tmp);
         self.emit(Op::DROP);
 
+        if self.is_js_profile() {
+            self.emit_u16(Op::LOCAL_GET, exc_tmp);
+            self.emit_const(Value::String(Arc::from("Error")));
+            let tag_key = self.str_const("tostringtag");
+            self.emit_u16(Op::STRUCT_SET, tag_key);
+            self.emit(Op::DROP);
+        }
+
         self.emit_const(Value::String(Arc::from(format!("{}: ", type_name))));
         self.emit_u16(Op::LOCAL_GET, exc_tmp);
         let msg_k = self.str_const("message");
@@ -1669,6 +1685,46 @@ impl Compiler {
     }
 
     pub(super) fn emit_js_exception_ctor_value(&mut self, type_name: &str, args: &[&Expression]) -> Result<(), String> {
+        if type_name.trim() == "AggregateError" {
+            if let Some(msg_arg) = args.get(1) {
+                self.compile_expr(msg_arg)?;
+            } else {
+                self.emit_const(Value::String(Arc::from("")));
+            }
+            self.emit_js_exception_ctor_from_message_value(type_name)?;
+
+            let exc_tmp = self.define_local("__agg_exc_tmp");
+            self.emit_u16(Op::LOCAL_SET, exc_tmp);
+            self.emit(Op::DROP);
+
+            self.emit_u16(Op::LOCAL_GET, exc_tmp);
+            if let Some(errors_arg) = args.first() {
+                self.compile_expr(errors_arg)?;
+            } else {
+                common::collections::emit_array_new(&mut self.chunks, self.current, 0, self.line);
+            }
+            let errors_key = self.str_const("errors");
+            self.emit_u16(Op::STRUCT_SET, errors_key);
+            self.emit(Op::DROP);
+
+            if let Some(opts_arg) = args.get(2) {
+                self.emit_u16(Op::LOCAL_GET, exc_tmp);
+                self.compile_expr(opts_arg)?;
+                let cause_key = self.str_const("cause");
+                self.emit_u16(Op::STRUCT_GET, cause_key);
+                let cause_val = self.define_local("__agg_cause_val");
+                self.emit_u16(Op::LOCAL_SET, cause_val);
+                self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, exc_tmp);
+                self.emit_u16(Op::LOCAL_GET, cause_val);
+                self.emit_u16(Op::STRUCT_SET, cause_key);
+                self.emit(Op::DROP);
+            }
+
+            self.emit_u16(Op::LOCAL_GET, exc_tmp);
+            return Ok(());
+        }
+
         if let Some(msg_arg) = args.first() {
             self.compile_expr(msg_arg)?;
         } else {
@@ -1853,6 +1909,35 @@ impl Compiler {
 
         if self.is_js_profile() {
             if let ExprKind::Ident(name) = &callee.kind {
+                if name == "__js_dynamic_import" {
+                    let Some(path) = args.first().and_then(|arg| match &arg.value.kind {
+                        ExprKind::Lit(Literal::Str(path)) => Some(path.clone()),
+                        _ => None,
+                    }) else {
+                        return Err("Dynamic import currently requires a string literal module specifier".into());
+                    };
+
+                    let normalized_module = self
+                        .profile
+                        .bare_module_aliases
+                        .get(path.as_str())
+                        .cloned()
+                        .unwrap_or(path);
+                    if !super::is_host_specifier(&normalized_module) {
+                        return Err(format!(
+                            "Dynamic import for '{}' is not supported yet",
+                            normalized_module
+                        ));
+                    }
+
+                    let alias = js_dynamic_import_alias(&normalized_module);
+                    self.host_namespace_aliases
+                        .insert(self.canon(&alias), normalized_module);
+                    self.emit_var_get(&alias);
+                    let resolve_idx = self.import("ecma:promise", "resolve");
+                    self.emit_host_call(resolve_idx, 1);
+                    return Ok(());
+                }
                 if name == "String" {
                     if let Some(arg) = args.first() {
                         self.compile_expr(&arg.value)?;
@@ -2587,7 +2672,17 @@ impl Compiler {
                 // `Math.max`) still win on the names they claim.
                 let key = self.canon(obj_name);
                 if let Some(module) = self.host_namespace_aliases.get(&key).cloned() {
-                    for a in &arg_exprs { self.compile_expr(a)?; }
+                    let mut arg_slots = Vec::with_capacity(arg_exprs.len());
+                    for (index, arg) in arg_exprs.iter().enumerate() {
+                        self.compile_expr(arg)?;
+                        let arg_slot = self.define_local(&format!("__host_namespace_arg_{}", index));
+                        self.emit_u16(Op::LOCAL_SET, arg_slot);
+                        self.emit(Op::DROP);
+                        arg_slots.push(arg_slot);
+                    }
+                    for slot in &arg_slots {
+                        self.emit_u16(Op::LOCAL_GET, *slot);
+                    }
                     let idx = self.import(&module, field);
                     self.emit_host_call(idx, arg_exprs.len() as u8);
                     return Ok(());
@@ -2624,7 +2719,17 @@ impl Compiler {
                     let prefix_lc = self.canon(prefix);
                     if matches!(prefix_lc.as_str(), "vybe" | "wasi" | "wasm") {
                         let module = format!("{}:{}", prefix_lc, self.canon(inner_field));
-                        for a in &arg_exprs { self.compile_expr(a)?; }
+                        let mut arg_slots = Vec::with_capacity(arg_exprs.len());
+                        for (index, arg) in arg_exprs.iter().enumerate() {
+                            self.compile_expr(arg)?;
+                            let arg_slot = self.define_local(&format!("__host_prefix_arg_{}", index));
+                            self.emit_u16(Op::LOCAL_SET, arg_slot);
+                            self.emit(Op::DROP);
+                            arg_slots.push(arg_slot);
+                        }
+                        for slot in &arg_slots {
+                            self.emit_u16(Op::LOCAL_GET, *slot);
+                        }
                         let idx = self.import(&module, field);
                         self.emit_host_call(idx, arg_exprs.len() as u8);
                         return Ok(());
@@ -3092,6 +3197,20 @@ impl Compiler {
                 if !dotnet_root {
                     let alias_key = self.canon(&lower_parts[0]);
                     if let Some(module) = self.host_namespace_aliases.get(&alias_key).cloned() {
+                        let is_js_prototype_chain = self.is_js_profile()
+                            && lower_parts.len() > 2
+                            && lower_parts.get(1).is_some_and(|part| part.eq_ignore_ascii_case("prototype"));
+                        let is_js_function_helper_chain = self.is_js_profile()
+                            && lower_parts.len() > 2
+                            && lower_parts
+                                .last()
+                                .is_some_and(|part| matches!(part.as_str(), "call" | "apply" | "bind"));
+                        if is_js_prototype_chain || is_js_function_helper_chain {
+                            // `Array.prototype.join.bind(...)` and similar borrowed-method
+                            // chains must stay as property access on the extracted function
+                            // value, not collapse into a synthetic host import like
+                            // `ecma:array.prototype.join.bind` or `ecma:math.max.apply`.
+                        } else {
                         // Check if any prefix of parts[0..n] is a namespace constant
                         // e.g. Math.PI.toFixed(5) — "Math.PI" is constant 3.14159, "toFixed" is method.
                         if lower_parts.len() > 2 {
@@ -3133,10 +3252,21 @@ impl Compiler {
                             if handled { return Ok(()); }
                         }
                         let func = if lower_parts.len() == 2 { lower_parts[1].clone() } else { lower_parts[1..].join(".") };
-                        for a in &arg_exprs { self.compile_expr(a)?; }
+                        let mut arg_slots = Vec::with_capacity(arg_exprs.len());
+                        for (index, arg) in arg_exprs.iter().enumerate() {
+                            self.compile_expr(arg)?;
+                            let arg_slot = self.define_local(&format!("__host_alias_arg_{}", index));
+                            self.emit_u16(Op::LOCAL_SET, arg_slot);
+                            self.emit(Op::DROP);
+                            arg_slots.push(arg_slot);
+                        }
+                        for slot in &arg_slots {
+                            self.emit_u16(Op::LOCAL_GET, *slot);
+                        }
                         let idx = self.import(&module, &func);
                         self.emit_host_call(idx, arg_exprs.len() as u8);
                         return Ok(());
+                        }
                     }
                 }
 
@@ -3469,43 +3599,12 @@ impl Compiler {
             if !self.direct_receiver_has_own_pending_method(object, field)
                 && (field == "call" || field == "apply")
             {
-                let saved_js_this = self.save_js_this("__js_prev_this_call");
-                if self.is_js_profile() {
-                    if let Some(this_arg) = arg_exprs.first() {
-                        self.compile_expr(this_arg)?;
-                    } else {
-                        let line = self.line;
-                        common::expressions::emit_undefined(self.chunk(), line);
-                    }
-                    self.set_js_this_from_stack();
+                self.compile_expr(object)?;
+                for arg in &arg_exprs {
+                    self.compile_expr(arg)?;
                 }
-                self.compile_expr(object)?;                       // [fn]
-                if field == "call" {
-                    // Skip thisArg, compile rest as positional args.
-                    for a in arg_exprs.iter().skip(1) {
-                        self.compile_expr(a)?;
-                    }
-                    let n = arg_exprs.len().saturating_sub(1);
-                    self.emit_u8(Op::CALL_REF, n as u8);
-                } else {
-                    // apply(thisArg, argsArray) — spread the array.
-                    if let Some(args_expr) = arg_exprs.get(1) {
-                        self.compile_expr(args_expr)?;
-                        self.emit(Op::SPREAD);
-                    }
-                    // Use call_ref with 0 — the spread opcode pushes
-                    // each array element and bumps the call arity at
-                    // runtime via Op::call_spread if available, else
-                    // we fall back here. The current VM uses Op::SPREAD
-                    // before call_ref to flatten the top array.
-                    self.emit_u8(Op::CALL_REF, 0);
-                }
-                if saved_js_this.is_some() {
-                    let result_slot = self.define_local("__js_call_result");
-                    self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
-                    self.restore_js_this(saved_js_this);
-                    self.emit_u16(Op::LOCAL_GET, result_slot);
-                }
+                let idx = self.import("ecma:function", field);
+                self.emit_host_call(idx, (arg_exprs.len() + 1) as u8);
                 return Ok(());
             }
         }
@@ -3672,6 +3771,13 @@ impl Compiler {
                 matched_value_method.as_ref().map(|d| &d.emit),
                 Some(BuiltinEmit::Stdlib(_))
             ) && self.expr_is_known_string_receiver(object);
+            let array_only_value_method_for_non_array = matches!(
+                matched_value_method.as_ref().map(|d| &d.emit),
+                Some(BuiltinEmit::HostCall(module, func))
+                    if module == "ecma:array"
+                        && func == "entries"
+                        && !self.expr_is_array_like(object)
+            );
             // Keep dotnet adapter value-methods ahead of runtime collection
             // dispatch for untyped receivers (notably plain arrays using
             // LINQ-style extension methods like Select/SelectMany).
@@ -3697,6 +3803,19 @@ impl Compiler {
                         || Self::is_string_type_hint(&type_hint)
                         || matches!(type_hint.as_str(), "number" | "int" | "double" | "bool" | "boolean")
                 });
+            let receiver_is_url_search_params = receiver_type_hint
+                .as_deref()
+                .map(Self::normalize_type_hint)
+                .is_some_and(|type_hint| type_hint == "urlsearchparams")
+                || matches!(&object.kind,
+                    ExprKind::Member { object: url_object, field: member_field, .. }
+                        if member_field == "searchParams"
+                            && self
+                                .infer_expr_type_hint(url_object)
+                                .as_deref()
+                                .map(Self::normalize_type_hint)
+                                .is_some_and(|type_hint| type_hint == "url")
+                );
             let user_method_shadow = self.direct_receiver_has_own_pending_method(object, field)
                 || receiver_has_pending_user_method
                 || (receiver_is_direct
@@ -3711,6 +3830,9 @@ impl Compiler {
             let is_array_method = self.profile.lookup_array_method(&field_lower_check).is_some();
             if user_method_shadow || is_array_method {
                 // Fall through — let the HOF dispatch or generic call path handle it
+            } else if array_only_value_method_for_non_array {
+                // Array-only value methods like `.entries()` must not steal
+                // Map/Set receivers away from runtime method dispatch.
             } else if self.profile.namespaces.use_dotnet
                 && common::dotnet::uses_runtime_collection_dispatch_arity(field, arg_exprs.len() as u8)
                 && !prefer_string_stdlib_value_method
@@ -3818,14 +3940,20 @@ impl Compiler {
                     .infer_expr_type_hint(object)
                     .as_deref()
                     .is_some_and(|type_hint| self.pending_class_has_method_name_for_type(type_hint, field));
+            let js_requires_dynamic_callback_dispatch = self.is_js_profile()
+                && arg_exprs
+                    .first()
+                    .is_some_and(|expr| matches!(expr.kind, ExprKind::Call { .. }));
             if !user_class_method
+                && !receiver_is_url_search_params
+                && !js_requires_dynamic_callback_dispatch
                 && self.profile.lookup_array_method(&field_lower).is_some()
             {
                 // (re-fetch only when we're committed to the HOF path so
                 // the method name lookup matches the previous behaviour)
             }
             if let Some(stdlib_name) = self.profile.lookup_array_method(&field_lower)
-                .filter(|_| !user_class_method)
+                .filter(|_| !user_class_method && !receiver_is_url_search_params && !js_requires_dynamic_callback_dispatch)
                 .map(|s| s.to_string())
             {
                 // Normalize to the JS-style method name used in match below
@@ -3922,11 +4050,14 @@ impl Compiler {
                         if self.is_js_profile() {
                             self.emit_u16(Op::LOCAL_GET, arr_slot);
                             self.emit_u16(Op::LOCAL_GET, fn_slot);
+                            if let Some(this_arg) = arg_exprs.get(1) {
+                                self.compile_expr(this_arg)?;
+                            }
                             common::invoke::emit_invoke_method(
                                 &mut self.chunks,
                                 self.current,
                                 "forEach",
-                                1,
+                                if arg_exprs.get(1).is_some() { 2 } else { 1 },
                                 line,
                             );
                             self.emit(Op::DROP); // forEach returns undefined
@@ -4720,25 +4851,6 @@ impl Compiler {
                     self.emit_host_call(lookup, 2);
                     let lookup_slot = self.define_local("__js_lookup_fn");
                     self.emit_u16(Op::LOCAL_SET, lookup_slot); self.emit(Op::DROP);
-                    self.emit_u16(Op::LOCAL_GET, lookup_slot);
-                    self.emit(Op::REF_IS_NULL);
-                    let lookup_not_null = self.emit_jump(Op::BR_IF_FALSE);
-                    let invoke = self.import("ecma:value", "invokeMethod");
-                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.emit_const(Value::String(Arc::from(method_name.as_str())));
-                    for a in &arg_exprs { self.compile_expr(a)?; }
-                    self.emit_host_call(invoke, (arg_exprs.len() + 2) as u8);
-                    let after_call = self.emit_jump(Op::BR);
-                    self.patch_jump(lookup_not_null);
-                    self.emit_u16(Op::LOCAL_GET, lookup_slot);
-                    self.emit(Op::REF_IS_UNDEFINED);
-                    let have_lookup_fn = self.emit_jump(Op::BR_IF_FALSE);
-                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.emit_const(Value::String(Arc::from(method_name.as_str())));
-                    for a in &arg_exprs { self.compile_expr(a)?; }
-                    self.emit_host_call(invoke, (arg_exprs.len() + 2) as u8);
-                    let after_undefined_call = self.emit_jump(Op::BR);
-                    self.patch_jump(have_lookup_fn);
                     let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                     for (index, arg) in arg_exprs.iter().enumerate() {
                         self.compile_expr(arg)?;
@@ -4746,6 +4858,29 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, arg_slot); self.emit(Op::DROP);
                         arg_slots.push(arg_slot);
                     }
+                    self.emit_u16(Op::LOCAL_GET, lookup_slot);
+                    self.emit(Op::REF_IS_NULL);
+                    let lookup_not_null = self.emit_jump(Op::BR_IF_FALSE);
+                    let invoke = self.import("ecma:value", "invokeMethod");
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_const(Value::String(Arc::from(method_name.as_str())));
+                    for slot in &arg_slots {
+                        self.emit_u16(Op::LOCAL_GET, *slot);
+                    }
+                    self.emit_host_call(invoke, (arg_slots.len() + 2) as u8);
+                    let after_call = self.emit_jump(Op::BR);
+                    self.patch_jump(lookup_not_null);
+                    self.emit_u16(Op::LOCAL_GET, lookup_slot);
+                    self.emit(Op::REF_IS_UNDEFINED);
+                    let have_lookup_fn = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_const(Value::String(Arc::from(method_name.as_str())));
+                    for slot in &arg_slots {
+                        self.emit_u16(Op::LOCAL_GET, *slot);
+                    }
+                    self.emit_host_call(invoke, (arg_slots.len() + 2) as u8);
+                    let after_undefined_call = self.emit_jump(Op::BR);
+                    self.patch_jump(have_lookup_fn);
                     self.emit_call_ref_with_bound_js_this_arg_slots(lookup_slot, obj_tmp, &arg_slots);
                     let js_done = self.emit_jump(Op::BR);
                     self.patch_jump(after_call);
@@ -5680,30 +5815,41 @@ impl Compiler {
             } else {
                 let receiver_slot = obj_tmp;
                 if self.is_js_profile() {
-                    self.emit_u16(Op::LOCAL_GET, fn_tmp);
-                    self.emit(Op::REF_IS_NULL);
-                    let fn_not_null = self.emit_jump(Op::BR_IF_FALSE);
-                    let need_lookup = self.emit_jump(Op::BR);
-                    self.patch_jump(fn_not_null);
-                    self.emit_u16(Op::LOCAL_GET, fn_tmp);
-                    self.emit(Op::REF_IS_UNDEFINED);
-                    let have_fn = self.emit_jump(Op::BR_IF_FALSE);
-                    let need_lookup_undefined = self.emit_jump(Op::BR);
+                    let js_user_defined_member = self.direct_receiver_has_own_pending_method(object, field)
+                        || self
+                            .infer_expr_type_hint(object)
+                            .as_deref()
+                            .is_some_and(|type_hint| self.pending_class_has_method_name_for_type(type_hint, field));
+                    let js_done = if js_user_defined_member {
+                        self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                        self.emit(Op::REF_IS_NULL);
+                        let fn_not_null = self.emit_jump(Op::BR_IF_FALSE);
+                        let need_lookup = self.emit_jump(Op::BR);
+                        self.patch_jump(fn_not_null);
+                        self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                        self.emit(Op::REF_IS_UNDEFINED);
+                        let have_fn = self.emit_jump(Op::BR_IF_FALSE);
+                        let need_lookup_undefined = self.emit_jump(Op::BR);
 
-                    let mut arg_slots = Vec::with_capacity(arg_exprs.len());
-                    for (index, arg) in arg_exprs.iter().enumerate() {
-                        self.compile_expr(arg)?;
-                        let arg_slot = self.define_local(&format!("__js_member_call_arg_{}", index));
-                        self.emit_u16(Op::LOCAL_SET, arg_slot);
-                        self.emit(Op::DROP);
-                        arg_slots.push(arg_slot);
-                    }
-                    self.emit_call_ref_with_bound_js_this_arg_slots(fn_tmp, obj_tmp, &arg_slots);
-                    let js_done = self.emit_jump(Op::BR);
+                        let mut arg_slots = Vec::with_capacity(arg_exprs.len());
+                        for (index, arg) in arg_exprs.iter().enumerate() {
+                            self.compile_expr(arg)?;
+                            let arg_slot = self.define_local(&format!("__js_member_call_arg_{}", index));
+                            self.emit_u16(Op::LOCAL_SET, arg_slot);
+                            self.emit(Op::DROP);
+                            arg_slots.push(arg_slot);
+                        }
+                        self.emit_call_ref_with_bound_js_this_arg_slots(fn_tmp, obj_tmp, &arg_slots);
+                        let js_done = self.emit_jump(Op::BR);
 
-                    self.patch_jump(have_fn);
-                    self.patch_jump(need_lookup_undefined);
-                    self.patch_jump(need_lookup);
+                        self.patch_jump(have_fn);
+                        self.patch_jump(need_lookup_undefined);
+                        self.patch_jump(need_lookup);
+                        Some(js_done)
+                    } else {
+                        None
+                    };
+
                     let method_name = field_name.clone();
                     let lookup = self.import("ecma:value", "getMethodForCall");
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -5712,28 +5858,6 @@ impl Compiler {
                     let lookup_slot = self.define_local("__js_member_lookup_fn");
                     self.emit_u16(Op::LOCAL_SET, lookup_slot);
                     self.emit(Op::DROP);
-
-                    self.emit_u16(Op::LOCAL_GET, lookup_slot);
-                    self.emit(Op::REF_IS_NULL);
-                    let lookup_not_null = self.emit_jump(Op::BR_IF_FALSE);
-                    let invoke = self.import("ecma:value", "invokeMethod");
-                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.emit_const(Value::String(Arc::from(method_name.as_str())));
-                    for a in &arg_exprs { self.compile_expr(a)?; }
-                    self.emit_host_call(invoke, (arg_exprs.len() + 2) as u8);
-                    let after_call = self.emit_jump(Op::BR);
-
-                    self.patch_jump(lookup_not_null);
-                    self.emit_u16(Op::LOCAL_GET, lookup_slot);
-                    self.emit(Op::REF_IS_UNDEFINED);
-                    let have_lookup_fn = self.emit_jump(Op::BR_IF_FALSE);
-                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.emit_const(Value::String(Arc::from(method_name.as_str())));
-                    for a in &arg_exprs { self.compile_expr(a)?; }
-                    self.emit_host_call(invoke, (arg_exprs.len() + 2) as u8);
-                    let after_undefined_call = self.emit_jump(Op::BR);
-
-                    self.patch_jump(have_lookup_fn);
                     let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                     for (index, arg) in arg_exprs.iter().enumerate() {
                         self.compile_expr(arg)?;
@@ -5742,10 +5866,38 @@ impl Compiler {
                         self.emit(Op::DROP);
                         arg_slots.push(arg_slot);
                     }
+
+                    self.emit_u16(Op::LOCAL_GET, lookup_slot);
+                    self.emit(Op::REF_IS_NULL);
+                    let lookup_not_null = self.emit_jump(Op::BR_IF_FALSE);
+                    let invoke = self.import("ecma:value", "invokeMethod");
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_const(Value::String(Arc::from(method_name.as_str())));
+                    for slot in &arg_slots {
+                        self.emit_u16(Op::LOCAL_GET, *slot);
+                    }
+                    self.emit_host_call(invoke, (arg_slots.len() + 2) as u8);
+                    let after_call = self.emit_jump(Op::BR);
+
+                    self.patch_jump(lookup_not_null);
+                    self.emit_u16(Op::LOCAL_GET, lookup_slot);
+                    self.emit(Op::REF_IS_UNDEFINED);
+                    let have_lookup_fn = self.emit_jump(Op::BR_IF_FALSE);
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_const(Value::String(Arc::from(method_name.as_str())));
+                    for slot in &arg_slots {
+                        self.emit_u16(Op::LOCAL_GET, *slot);
+                    }
+                    self.emit_host_call(invoke, (arg_slots.len() + 2) as u8);
+                    let after_undefined_call = self.emit_jump(Op::BR);
+
+                    self.patch_jump(have_lookup_fn);
                     self.emit_call_ref_with_bound_js_this_arg_slots(lookup_slot, obj_tmp, &arg_slots);
                     self.patch_jump(after_call);
                     self.patch_jump(after_undefined_call);
-                    self.patch_jump(js_done);
+                    if let Some(js_done) = js_done {
+                        self.patch_jump(js_done);
+                    }
                 } else {
                     let method_canon = self.canon(field);
                     let qualified_method = resolve_receiver_type_hint(self, object)
@@ -5857,6 +6009,15 @@ impl Compiler {
 
         // ── Simple call: name(args) / expr(args) ────────────────────
         if let ExprKind::Ident(name) = &callee.kind {
+            if self.is_js_profile() && name == "Function" {
+                for arg in &arg_exprs {
+                    self.compile_expr(arg)?;
+                }
+                let idx = self.import("vybe:js", "function_constructor");
+                self.emit_host_call(idx, arg_exprs.len() as u8);
+                return Ok(());
+            }
+
             if self.try_compile_fortran_derived_type_constructor(name, args)? {
                 return Ok(());
             }
@@ -6410,20 +6571,17 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_SET, receiver_slot);
             self.emit(Op::DROP);
             if let Some(signature) = rest_signature.as_ref() {
-                self.emit_u16(Op::LOCAL_GET, receiver_slot);
-                self.emit(Op::REF_IS_NULL);
-                let no_receiver_null = self.emit_jump(Op::BR_IF_TRUE);
-                self.emit_u16(Op::LOCAL_GET, receiver_slot);
-                self.emit(Op::REF_IS_UNDEFINED);
-                let no_receiver = self.emit_jump(Op::BR_IF_TRUE);
+                let mut arg_slots = Vec::with_capacity(arg_exprs.len());
+                for (index, arg) in arg_exprs.iter().enumerate() {
+                    self.compile_expr_with_value_copy(arg)?;
+                    let arg_slot = self.define_local(&format!("__direct_rest_call_arg_{}", index));
+                    self.emit_u16(Op::LOCAL_SET, arg_slot);
+                    self.emit(Op::DROP);
+                    arg_slots.push(arg_slot);
+                }
 
-                self.emit_known_rest_call_from_local(callee_slot, Some(receiver_slot), args, signature)?;
-                let call_done = self.emit_jump(Op::BR);
-
-                self.patch_jump(no_receiver_null);
-                self.patch_jump(no_receiver);
-                self.emit_known_rest_call_from_local(callee_slot, None, args, signature)?;
-                self.patch_jump(call_done);
+                let _ = signature;
+                self.emit_call_ref_with_arg_slots(callee_slot, Some(receiver_slot), &arg_slots);
                 return Ok(());
             }
             if let Some(param_modes) = self.function_param_modes.get(&self.canon(name)).cloned() {
@@ -6772,14 +6930,18 @@ impl Compiler {
         for slot in &arg_slots {
             self.emit_u16(Op::LOCAL_GET, *slot);
         }
+        let saved_js_new_target = self.save_js_new_target("__js_prev_new_target_call_ref");
+        self.set_js_new_target_undefined();
         self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
         let result_slot = self.define_local("__call_ref_result");
         self.emit_u16(Op::LOCAL_SET, result_slot);
         self.emit(Op::DROP);
+        self.restore_js_new_target(saved_js_new_target);
         let done = self.emit_jump(Op::BR);
 
         self.patch_jump(no_receiver);
         let saved_js_this = self.save_js_this("__js_prev_this_call_ref");
+        let saved_js_new_target = self.save_js_new_target("__js_prev_new_target_call_ref_no_receiver");
         if self.is_js_profile() {
             let js_global_this = self.str_const("__js_global_this");
             self.emit_u16(Op::GLOBAL_GET, js_global_this);
@@ -6799,6 +6961,7 @@ impl Compiler {
             self.patch_jump(has_non_null_global_this);
             self.patch_jump(has_global_this);
             self.set_js_this_from_stack();
+            self.set_js_new_target_undefined();
         }
         self.emit_u16(Op::LOCAL_GET, callee_slot);
         for slot in &arg_slots {
@@ -6808,6 +6971,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, result_slot);
         self.emit(Op::DROP);
         self.restore_js_this(saved_js_this);
+        self.restore_js_new_target(saved_js_new_target);
         self.patch_jump(done);
 
         if has_by_ref_args {
@@ -8610,6 +8774,23 @@ impl Compiler {
         for uv in &emitted_uvs {
             self.chunks[self.current].emit(if uv.is_local { 1 } else { 0 }, line);
             self.chunks[self.current].emit(uv.index, line);
+        }
+        if self.is_js_profile() {
+            let length = params.iter().take_while(|p| p.default.is_none() && !p.is_rest).count();
+
+            self.emit(Op::DUP);
+            self.emit_const(Value::F64(length as f64));
+            let length_key = self.str_const("length");
+            self.emit_u16(Op::STRUCT_SET, length_key);
+            self.emit(Op::DROP);
+
+            self.emit(Op::DUP);
+            self.emit_var_get("Function");
+            let function_proto_key = self.str_const("prototype");
+            self.emit_u16(Op::STRUCT_GET, function_proto_key);
+            let proto_link_key = self.str_const("__proto__");
+            self.emit_u16(Op::STRUCT_SET, proto_link_key);
+            self.emit(Op::DROP);
         }
         if has_rest {
             self.emit_stamp_rest_metadata_on_stack(params.len().saturating_sub(1));

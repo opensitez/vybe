@@ -325,6 +325,7 @@ pub fn emit_len(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].patch_jump(use_arr_len);
     chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_len_slot, line);
     let end_arr = chunks[current].emit_jump(Op::BR, line);
 

@@ -372,6 +372,10 @@ call_expression = {
 
 new_expression = { "new" ~ primary ~ call_chain* }
 
+import_meta = { "import" ~ "." ~ "meta" }
+new_target = { "new" ~ "." ~ "target" }
+dynamic_import = { "import" ~ "(" ~ argument_list? ~ ")" }
+
 // `chain_lead` lets a method/property access continue across newlines:
 //   arr
 //     .filter(x => ...)
@@ -402,11 +406,15 @@ primary = {
     | async_function_expression
     | function_expression
     | class_expression
+    | dynamic_import
+    | import_meta
+    | new_target
     | array_literal
     | object_literal
     | template_literal
     | this_kw
     | super_kw
+    | private_name
     | true_kw
     | false_kw
     | null_kw
@@ -465,7 +473,7 @@ object_literal = {
 object_property = {
     "..." ~ assignment_expression                                     // spread
     | computed_property_name ~ ":" ~ assignment_expression             // computed key
-    | async_kw? ~ property_name ~ "(" ~ param_list? ~ ")" ~ function_body // method shorthand (before get/set to avoid get/set prefix match)
+    | async_kw? ~ generator_marker? ~ property_name ~ "(" ~ param_list? ~ ")" ~ function_body // method shorthand (before get/set to avoid get/set prefix match)
     | "get" ~ property_name ~ "(" ~ ")" ~ function_body               // getter
     | "set" ~ property_name ~ "(" ~ param ~ ")" ~ function_body       // setter
     | property_name ~ ":" ~ assignment_expression                      // key: value

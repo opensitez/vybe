@@ -146,6 +146,7 @@ pub fn is_exception_type(name: &str) -> bool {
         | "errorexception"
         // JS
         | "rangeerror" | "syntaxerror" | "referenceerror" | "urierror"
+        | "evalerror" | "aggregateerror"
         // Ruby
         | "standarderror" | "argumenterror" | "nameerror" | "nomethoderror"
     )

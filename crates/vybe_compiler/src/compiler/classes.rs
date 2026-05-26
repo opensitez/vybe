@@ -278,10 +278,21 @@ impl Compiler {
         }
         let name = &cname;
 
+        let uses_js_arguments = self.is_js_profile()
+            && !is_generator
+            && (params.iter().any(|param| param.default.as_ref().is_some_and(expr_uses_js_arguments))
+                || body.iter().any(stmt_uses_js_arguments));
         let has_rest = params.last().map_or(false, |p| p.is_rest);
-        let generator_control_arity = usize::from(is_generator && !has_rest);
-        let arity: u8 = (params.len() + generator_control_arity) as u8;
-        if has_rest {
+        let lowered_has_rest = has_rest || uses_js_arguments;
+        let generator_control_arity = usize::from(is_generator && !lowered_has_rest);
+        let arity: u8 = if uses_js_arguments {
+            (1 + generator_control_arity) as u8
+        } else {
+            (params.len() + generator_control_arity) as u8
+        };
+        if uses_js_arguments {
+            self.rest_fixed_arities.insert(0);
+        } else if has_rest {
             self.rest_fixed_arities.insert(params.len().saturating_sub(1) as u8);
         }
         let func_idx = self.chunks.len();
@@ -319,9 +330,29 @@ impl Compiler {
         self.function_label_base = self.label_depth;
         let saved_fn = self.current_func_name.take();
         self.current_func_name = Some(name.to_string());
+        self.js_arguments_bindings.push(None);
 
-        // Define params
-        for p in params {
+        let js_arguments_source_slot = if uses_js_arguments {
+            Some(self.define_local("__vybe_js_arguments_array"))
+        } else {
+            None
+        };
+        let js_arguments_slot = if uses_js_arguments {
+            let slot = self.define_local("arguments");
+            self.emit_u16(Op::LOCAL_GET, js_arguments_source_slot.unwrap());
+            self.emit_u16(Op::LOCAL_SET, slot);
+            self.emit(Op::DROP);
+            Some(slot)
+        } else {
+            None
+        };
+
+        let mut aliased_params = HashMap::new();
+        let mut aliased_indices = HashMap::new();
+        let simple_arguments_alias = uses_js_arguments
+            && params.iter().all(|param| param.default.is_none() && !param.is_rest);
+
+        for (index, p) in params.iter().enumerate() {
             self.define_local_typed(&p.name, p.type_hint.clone());
             let normalized_type_hint = p
                 .type_hint
@@ -343,6 +374,55 @@ impl Compiler {
                     },
                 );
             }
+            if simple_arguments_alias {
+                let slot = self.scope().resolve(&p.name).unwrap();
+                aliased_params.insert(p.name.clone(), (slot, index));
+                aliased_indices.insert(index, slot);
+            }
+        }
+
+        let js_arguments_len_slot = if uses_js_arguments {
+            let len_slot = self.define_local("__vybe_js_arguments_length");
+            self.emit_u16(Op::LOCAL_GET, js_arguments_source_slot.unwrap());
+            common::collections::emit_len(&mut self.chunks, self.current, self.line);
+            self.emit_u16(Op::LOCAL_SET, len_slot);
+            self.emit(Op::DROP);
+            Some(len_slot)
+        } else {
+            None
+        };
+
+        if let Some(slot) = js_arguments_slot {
+            *self.js_arguments_bindings.last_mut().unwrap() = Some(JsArgumentsBinding {
+                args_slot: slot,
+                aliased_params,
+                aliased_indices,
+            });
+        }
+
+        if uses_js_arguments {
+            for (index, p) in params.iter().enumerate() {
+                let slot = self.scope().resolve(&p.name).unwrap();
+                if p.is_rest {
+                    self.emit_u16(Op::LOCAL_GET, js_arguments_source_slot.unwrap());
+                    self.emit_const(Value::F64(index as f64));
+                    self.emit_u16(Op::LOCAL_GET, js_arguments_len_slot.unwrap());
+                    common::collections::emit_slice(&mut self.chunks, self.current, self.line);
+                    self.emit_u16(Op::LOCAL_SET, slot);
+                    self.emit(Op::DROP);
+                } else {
+                    self.emit_array_value_or_undefined(
+                        js_arguments_source_slot.unwrap(),
+                        js_arguments_len_slot.unwrap(),
+                        index,
+                    );
+                    self.emit_u16(Op::LOCAL_SET, slot);
+                    self.emit(Op::DROP);
+                }
+            }
+        }
+
+        for p in params {
             // Default parameters: ECMA-262 §15.2.3 — only `undefined`
             // triggers the default (not `null`). The VM now pads
             // missing positional args with `Undefined`, distinct from
@@ -472,6 +552,7 @@ impl Compiler {
         let locals = self.scope().next_slot.max(self.chunks[func_idx].local_count);
         self.chunks[func_idx].local_count = locals;
         let uvs = self.scopes.last().unwrap().upvalues.clone();
+        self.js_arguments_bindings.pop();
         self.scopes.pop();
         self.static_local_bindings.pop();
         self.current = saved;
@@ -483,7 +564,9 @@ impl Compiler {
             self.chunks[self.current].emit(if uv.is_local { 1 } else { 0 }, line);
             self.chunks[self.current].emit(uv.index, line);
         }
-        if has_rest {
+        if uses_js_arguments {
+            self.emit_stamp_rest_metadata_on_stack(0);
+        } else if has_rest {
             self.emit_stamp_rest_metadata_on_stack(params.len().saturating_sub(1));
         }
         let idx = self.str_const(name);
@@ -509,6 +592,14 @@ impl Compiler {
             self.emit_const(Value::F64(length as f64));
             let length_key = self.str_const("length");
             self.emit_u16(Op::STRUCT_SET, length_key);
+            self.emit(Op::DROP);
+
+            self.emit_var_get(name);
+            self.emit_var_get("Function");
+            let function_proto_key = self.str_const("prototype");
+            self.emit_u16(Op::STRUCT_GET, function_proto_key);
+            let proto_link_key = self.str_const("__proto__");
+            self.emit_u16(Op::STRUCT_SET, proto_link_key);
             self.emit(Op::DROP);
 
             self.emit_u16(Op::LOCAL_GET, proto_slot);
@@ -1338,6 +1429,10 @@ impl Compiler {
                         if let Some(bargs) = base_args {
                             if let Some(parent_name) = parent {
                                 if parent_ctor_is_bound {
+                                    if self.is_js_profile() {
+                                        self.emit_var_get(name);
+                                        self.set_js_new_target_from_stack();
+                                    }
                                     self.emit_var_get(parent_name);
                                     for a in *bargs { self.compile_expr(a)?; }
                                     self.emit_u8(Op::CALL_REF, bargs.len() as u8);
@@ -1351,6 +1446,10 @@ impl Compiler {
                         } else if auto_base_needed {
                             if let Some(parent_name) = parent {
                                 if parent_ctor_is_bound {
+                                    if self.is_js_profile() {
+                                        self.emit_var_get(name);
+                                        self.set_js_new_target_from_stack();
+                                    }
                                     self.emit_var_get(parent_name);
                                     self.emit_u8(Op::CALL_REF, 0);
                                     self.emit_u16(Op::LOCAL_SET, this_slot);
@@ -1363,6 +1462,10 @@ impl Compiler {
                         }
                     } else if let Some(parent_name) = parent {
                         if parent_ctor_is_bound {
+                            if self.is_js_profile() {
+                                self.emit_var_get(name);
+                                self.set_js_new_target_from_stack();
+                            }
                             self.emit_var_get(parent_name);
                             if synthesized_forward_args {
                                 let parent_ctor_slot = self.define_local(&format!("__{}_parent_ctor", helper_name));

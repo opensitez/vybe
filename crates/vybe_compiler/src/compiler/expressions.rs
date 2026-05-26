@@ -6,6 +6,48 @@
 use super::*;
 
 impl Compiler {
+    fn emit_js_import_meta_object(&mut self) {
+        let global_name = "__js_import_meta";
+        let global_idx = self.str_const(global_name);
+        let meta_slot = self.define_local("__js_import_meta_value");
+
+        self.emit_u16(Op::GLOBAL_GET, global_idx);
+        self.emit_u16(Op::LOCAL_SET, meta_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, meta_slot);
+        self.emit(Op::REF_IS_NULL);
+        let init_null = self.emit_jump(Op::BR_IF_TRUE);
+        self.emit_u16(Op::LOCAL_GET, meta_slot);
+        self.emit(Op::REF_IS_UNDEFINED);
+        let init_undefined = self.emit_jump(Op::BR_IF_TRUE);
+        let skip_init = self.emit_jump(Op::BR);
+
+        self.patch_jump(init_null);
+        self.patch_jump(init_undefined);
+        let line = self.line;
+        common::dict::emit_new(&mut self.chunks, self.current, line);
+        let init_slot = self.define_local("__js_import_meta_init");
+        self.emit_u16(Op::LOCAL_SET, init_slot);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, init_slot);
+        self.emit_const(Value::String(Arc::from("")));
+        let url_key = self.str_const("url");
+        self.emit_u16(Op::STRUCT_SET, url_key);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, init_slot);
+        self.emit_u16(Op::GLOBAL_SET, global_idx);
+        self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_GET, init_slot);
+        self.emit_u16(Op::LOCAL_SET, meta_slot);
+        self.emit(Op::DROP);
+
+        self.patch_jump(skip_init);
+        self.emit_u16(Op::LOCAL_GET, meta_slot);
+    }
+
     fn try_compile_fortran_array_binary_operator(
         &mut self,
         op: &BinOp,
@@ -520,6 +562,10 @@ impl Compiler {
                 match name.as_str() {
                     "NaN" => { self.emit_const(Value::F64(f64::NAN)); return Ok(()); }
                     "Infinity" => { self.emit_const(Value::F64(f64::INFINITY)); return Ok(()); }
+                    "__js_import_meta" if self.is_js_profile() => {
+                        self.emit_js_import_meta_object();
+                        return Ok(());
+                    }
                     "undefined" if self.case_sensitive => { let l = self.line; common::expressions::emit_undefined(self.chunk(), l); return Ok(()); }
                     _ => {}
                 }
@@ -763,6 +809,17 @@ impl Compiler {
                         );
                         self.chunk().emit_op_u16(vybe_bytecode::Op::REF_TEST, idx, line);
                         return Ok(());
+                    }
+                }
+                if self.is_js_profile() && *op == BinOp::In {
+                    if let ExprKind::Ident(field) = &left.kind {
+                        if field.starts_with('#') {
+                            let storage_name = self.js_member_storage_name(field);
+                            self.emit_const(Value::String(Arc::from(storage_name.as_str())));
+                            self.compile_expr(right)?;
+                            self.compile_binop(op);
+                            return Ok(());
+                        }
                     }
                 }
                 if self.profile.name == "pascal" && (*op == BinOp::In || *op == BinOp::NotIn) {
@@ -2381,6 +2438,15 @@ impl Compiler {
                 // the dispatcher.
                 if self.is_js_profile() {
                     if let ExprKind::Ident(name) = &class.kind {
+                        if name == "Function" {
+                            for arg in args {
+                                self.compile_expr(&arg.value)?;
+                            }
+                            let idx = self.import("vybe:js", "function_constructor");
+                            self.emit_host_call(idx, args.len() as u8);
+                            return Ok(());
+                        }
+
                         if name == "Proxy" && args.len() == 2 {
                             self.uses_proxy = true;
                             self.compile_expr(&args[0].value)?;
@@ -2693,14 +2759,18 @@ impl Compiler {
                     self.patch_jump(skip_proto);
 
                     let saved_js_this = self.save_js_this("__js_prev_this_new");
+                    let saved_js_new_target = self.save_js_new_target("__js_prev_new_target_new");
                     self.emit_u16(Op::LOCAL_GET, instance_slot);
                     self.set_js_this_from_stack();
+                    self.emit_u16(Op::LOCAL_GET, ctor_slot);
+                    self.set_js_new_target_from_stack();
                     self.emit_u16(Op::LOCAL_GET, ctor_slot);
                     for a in args { self.compile_expr(&a.value)?; }
                     self.emit_u8(Op::CALL_REF, args.len() as u8);
                     let result_slot = self.define_local("__js_ctor_result");
                     self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
                     self.restore_js_this(saved_js_this);
+                    self.restore_js_new_target(saved_js_new_target);
                     self.emit_u16(Op::LOCAL_GET, result_slot);
                     self.emit(Op::REF_IS_NULL);
                     let use_instance = self.emit_jump(Op::BR_IF_TRUE);
@@ -2736,6 +2806,9 @@ impl Compiler {
                     let mut lexical_captures = captures.clone();
                     if !lexical_captures.iter().any(|capture| capture == "__js_this" || capture == "&__js_this") {
                         lexical_captures.push("__js_this".to_string());
+                    }
+                    if !lexical_captures.iter().any(|capture| capture == "__js_new_target" || capture == "&__js_new_target") {
+                        lexical_captures.push("__js_new_target".to_string());
                     }
                     self.compile_lambda(params, body, &lexical_captures)?;
                 } else {

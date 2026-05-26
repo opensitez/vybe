@@ -211,6 +211,13 @@ struct FortranInterfaceOverload {
     param_types: Vec<Option<String>>,
 }
 
+#[derive(Debug, Clone)]
+struct JsArgumentsBinding {
+    args_slot: u16,
+    aliased_params: HashMap<String, (u16, usize)>,
+    aliased_indices: HashMap<usize, u16>,
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Compiler
 // ════════════════════════════════════════════════════════════════════════════
@@ -354,6 +361,7 @@ pub struct Compiler {
     /// must emit matching TRY_END opcodes before RETURN so the VM does
     /// not retain stale handlers from the callee frame.
     active_async_try_depth: usize,
+    js_arguments_bindings: Vec<Option<JsArgumentsBinding>>,
 }
 
 /// §16.2.1.3 wildcard — `import * as alias from "module"`.
@@ -478,6 +486,147 @@ fn expr_uses_proxy(expr: &Expression) -> bool {
     }
 }
 
+fn stmt_uses_js_arguments(stmt: &Statement) -> bool {
+    match &stmt.kind {
+        StmtKind::Expr(expr) => expr_uses_js_arguments(expr),
+        StmtKind::Return(expr) => expr.as_ref().is_some_and(expr_uses_js_arguments),
+        StmtKind::Throw { expr, cause } => {
+            expr.as_ref().is_some_and(expr_uses_js_arguments)
+                || cause.as_ref().is_some_and(expr_uses_js_arguments)
+        }
+        StmtKind::VarDecl { declarations, .. } => declarations.iter().any(|decl| {
+            decl.init.as_ref().is_some_and(expr_uses_js_arguments)
+        }),
+        StmtKind::Assign { targets, value } => {
+            targets.iter().any(expr_uses_js_arguments) || expr_uses_js_arguments(value)
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            expr_uses_js_arguments(target) || expr_uses_js_arguments(value)
+        }
+        StmtKind::Block(body)
+        | StmtKind::Using { body, .. }
+        | StmtKind::Lock { body, .. } => body.iter().any(stmt_uses_js_arguments),
+        StmtKind::If { cond, then_body, elifs, else_body } => {
+            expr_uses_js_arguments(cond)
+                || then_body.iter().any(stmt_uses_js_arguments)
+                || elifs.iter().any(|(cond, body)| {
+                    expr_uses_js_arguments(cond) || body.iter().any(stmt_uses_js_arguments)
+                })
+                || else_body.as_ref().is_some_and(|body| body.iter().any(stmt_uses_js_arguments))
+        }
+        StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
+            expr_uses_js_arguments(cond) || body.iter().any(stmt_uses_js_arguments)
+        }
+        StmtKind::For { init, cond, update, body, .. } => {
+            init.as_ref().is_some_and(|stmt| stmt_uses_js_arguments(stmt))
+                || cond.as_ref().is_some_and(expr_uses_js_arguments)
+                || update.as_ref().is_some_and(expr_uses_js_arguments)
+                || body.iter().any(stmt_uses_js_arguments)
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            expr_uses_js_arguments(iter)
+                || body.iter().any(stmt_uses_js_arguments)
+        }
+        StmtKind::Switch { expr, cases, default } => {
+            expr_uses_js_arguments(expr)
+                || cases.iter().any(|case| {
+                    case.conditions.iter().any(|condition| match condition {
+                        CaseCondition::Value(expr) => expr_uses_js_arguments(expr),
+                        CaseCondition::Range { from, to } => {
+                            expr_uses_js_arguments(from) || expr_uses_js_arguments(to)
+                        }
+                        CaseCondition::Comparison { expr, .. } => expr_uses_js_arguments(expr),
+                    })
+                        || case.body.iter().any(stmt_uses_js_arguments)
+                })
+                || default.as_ref().is_some_and(|body| body.iter().any(stmt_uses_js_arguments))
+        }
+        StmtKind::Try { body, catches, else_body, finally } => {
+            body.iter().any(stmt_uses_js_arguments)
+                || catches.iter().any(|catch| catch.body.iter().any(stmt_uses_js_arguments))
+                || else_body.as_ref().is_some_and(|body| body.iter().any(stmt_uses_js_arguments))
+                || finally.as_ref().is_some_and(|body| body.iter().any(stmt_uses_js_arguments))
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            params.iter().any(|param| param.default.as_ref().is_some_and(expr_uses_js_arguments))
+                || body.iter().any(stmt_uses_js_arguments)
+        }
+        StmtKind::ClassDecl { members, .. } => members.iter().any(|member| match member {
+            ClassMember::Method(stmt) => stmt_uses_js_arguments(stmt),
+            ClassMember::Constructor { params, body, .. } => {
+                params.iter().any(|param| param.default.as_ref().is_some_and(expr_uses_js_arguments))
+                    || body.iter().any(stmt_uses_js_arguments)
+            }
+            ClassMember::Field { init, .. } => init.as_ref().is_some_and(expr_uses_js_arguments),
+            ClassMember::Property { getter, setter, .. } => {
+                getter.as_ref().is_some_and(|body| body.iter().any(stmt_uses_js_arguments))
+                    || setter.as_ref().is_some_and(|setter| setter.body.iter().any(stmt_uses_js_arguments))
+            }
+            _ => false,
+        }),
+        _ => false,
+    }
+}
+
+fn expr_uses_js_arguments(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => name == "arguments",
+        ExprKind::Binary { left, right, .. } => {
+            expr_uses_js_arguments(left) || expr_uses_js_arguments(right)
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::Spread(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::Void(expr) => expr_uses_js_arguments(expr),
+        ExprKind::Yield(expr) => expr.as_ref().is_some_and(|expr| expr_uses_js_arguments(expr)),
+        ExprKind::YieldFrom(expr) => expr_uses_js_arguments(expr),
+        ExprKind::Call { callee, args, .. } => {
+            expr_uses_js_arguments(callee)
+                || args.iter().any(|arg| expr_uses_js_arguments(&arg.value))
+        }
+        ExprKind::New { class, args } => {
+            expr_uses_js_arguments(class)
+                || args.iter().any(|arg| expr_uses_js_arguments(&arg.value))
+        }
+        ExprKind::Member { object, .. } => expr_uses_js_arguments(object),
+        ExprKind::Index { object, index, .. } => {
+            expr_uses_js_arguments(object) || expr_uses_js_arguments(index)
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            expr_uses_js_arguments(cond)
+                || expr_uses_js_arguments(then)
+                || expr_uses_js_arguments(else_)
+        }
+        ExprKind::Array(elements) => elements.iter().any(|element| {
+            element.key.as_ref().is_some_and(expr_uses_js_arguments)
+                || expr_uses_js_arguments(&element.value)
+        }),
+        ExprKind::Object(props) => props.iter().any(|prop| match prop {
+            ObjectProperty::KeyValue { value, .. } => expr_uses_js_arguments(value),
+            ObjectProperty::Computed { key, value } => {
+                expr_uses_js_arguments(key) || expr_uses_js_arguments(value)
+            }
+            ObjectProperty::Spread(expr) => expr_uses_js_arguments(expr),
+            ObjectProperty::Method { value, .. } => stmt_uses_js_arguments(value),
+            ObjectProperty::Accessor { value, .. } => stmt_uses_js_arguments(value),
+            _ => false,
+        }),
+        ExprKind::Assign { target, value } => {
+            expr_uses_js_arguments(target) || expr_uses_js_arguments(value)
+        }
+        ExprKind::Lambda { params, body, .. } => {
+            params.iter().any(|param| param.default.as_ref().is_some_and(expr_uses_js_arguments))
+                || match body {
+                    LambdaBody::Expr(expr) => expr_uses_js_arguments(expr),
+                    LambdaBody::Block(body) => body.iter().any(stmt_uses_js_arguments),
+                }
+        }
+        _ => false,
+    }
+}
+
 /// Named + wildcard ESM imports a compiled module binds against host
 /// Component Model namespaces.
 #[derive(Debug, Default, Clone)]
@@ -579,7 +728,43 @@ impl Compiler {
             catch_depth: 0,
             active_async_try_depth: 0,
             uses_proxy: false,
+            js_arguments_bindings: Vec::new(),
         }
+    }
+
+    fn current_js_arguments_binding(&self) -> Option<&JsArgumentsBinding> {
+        self.js_arguments_bindings.last().and_then(|binding| binding.as_ref())
+    }
+
+    fn js_arguments_alias_for_name(&self, name: &str) -> Option<(u16, usize)> {
+        let binding = self.current_js_arguments_binding()?;
+        binding
+            .aliased_params
+            .get(name)
+            .map(|(_, index)| (binding.args_slot, *index))
+            .or_else(|| {
+                binding
+                    .aliased_params
+                    .get(&self.canon(name))
+                    .map(|(_, index)| (binding.args_slot, *index))
+            })
+    }
+
+    fn js_arguments_alias_for_index_target(&self, object: &Expression, index: &Expression) -> Option<(u16, u16, usize)> {
+        let binding = self.current_js_arguments_binding()?;
+        let ExprKind::Ident(name) = &object.kind else {
+            return None;
+        };
+        if name != "arguments" {
+            return None;
+        }
+        let index = match &index.kind {
+            ExprKind::Lit(Literal::Int(value)) if *value >= 0 => *value as usize,
+            ExprKind::Lit(Literal::Float(value)) if *value >= 0.0 && value.fract() == 0.0 => *value as usize,
+            _ => return None,
+        };
+        let slot = *binding.aliased_indices.get(&index)?;
+        Some((binding.args_slot, slot, index))
     }
 
     fn reserve_shared_global_name(&mut self, name: &str) {
@@ -4986,10 +5171,44 @@ impl Compiler {
         // `global_get` of a nonexistent global → null.
         // Only do this when the name isn't shadowed by an actual global
         // (e.g. `Dim list As New List(Of String)` shadows the `list` type name).
+        let is_js_runtime_global = self.is_js_profile()
+            && matches!(
+                name,
+                "Object"
+                    | "Boolean"
+                    | "Number"
+                    | "String"
+                    | "Array"
+                    | "Function"
+                    | "Symbol"
+                    | "BigInt"
+                    | "Error"
+                    | "EvalError"
+                    | "RangeError"
+                    | "ReferenceError"
+                    | "SyntaxError"
+                    | "TypeError"
+                    | "URIError"
+                    | "AggregateError"
+                    | "ArrayBuffer"
+                    | "SharedArrayBuffer"
+                    | "DataView"
+                    | "Int8Array"
+                    | "Uint8Array"
+                    | "Uint8ClampedArray"
+                    | "Int16Array"
+                    | "Uint16Array"
+                    | "Int32Array"
+                    | "Uint32Array"
+                    | "Float32Array"
+                    | "Float64Array"
+                    | "BigInt64Array"
+                    | "BigUint64Array"
+            );
         if self.profile.known_types.contains_key(name)
             && !self.defined_globals.contains(name)
             && !self.defined_globals.contains(&cname)
-            && !(self.is_js_profile() && matches!(name, "Object" | "Boolean" | "Number" | "String"))
+            && !is_js_runtime_global
         {
             self.emit_const(Value::String(Arc::from(name)));
             return;
@@ -5027,6 +5246,16 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, slot);
                 common::references::emit_cell_store(&mut self.chunks, self.current, value_slot, self.line);
                 self.emit(Op::DROP);
+            } else if let Some((args_slot, index)) = self.js_arguments_alias_for_name(name) {
+                let value_slot = self.define_local("__js_arguments_alias_value");
+                self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, value_slot);
+                self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+                self.emit_u16(Op::LOCAL_GET, args_slot);
+                self.emit_const(Value::F64(index as f64));
+                self.emit_u16(Op::LOCAL_GET, value_slot);
+                common::collections::emit_set(&mut self.chunks, self.current, self.line);
+                self.emit(Op::DROP);
             } else {
                 self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
             }
@@ -5039,6 +5268,16 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, slot);
                     common::references::emit_cell_store(&mut self.chunks, self.current, value_slot, self.line);
+                    self.emit(Op::DROP);
+                } else if let Some((args_slot, index)) = self.js_arguments_alias_for_name(name) {
+                    let value_slot = self.define_local("__js_arguments_alias_value_ci");
+                    self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, value_slot);
+                    self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, args_slot);
+                    self.emit_const(Value::F64(index as f64));
+                    self.emit_u16(Op::LOCAL_GET, value_slot);
+                    common::collections::emit_set(&mut self.chunks, self.current, self.line);
                     self.emit(Op::DROP);
                 } else {
                     self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
@@ -5517,6 +5756,47 @@ impl Compiler {
         let Some(slot) = slot else { return; };
         let idx = self.str_const("__js_this");
         self.emit_u16(Op::LOCAL_GET, slot);
+        self.emit_u16(Op::GLOBAL_SET, idx);
+        self.emit(Op::DROP);
+    }
+
+    fn save_js_new_target(&mut self, local_name: &str) -> Option<u16> {
+        if !self.is_js_profile() {
+            return None;
+        }
+        let slot = self.scope().resolve(local_name)
+            .unwrap_or_else(|| self.define_local(local_name));
+        let idx = self.str_const("__js_new_target");
+        self.emit_u16(Op::GLOBAL_GET, idx);
+        self.emit_u16(Op::LOCAL_SET, slot);
+        self.emit(Op::DROP);
+        Some(slot)
+    }
+
+    fn set_js_new_target_from_stack(&mut self) {
+        if !self.is_js_profile() {
+            return;
+        }
+        let idx = self.str_const("__js_new_target");
+        self.emit_u16(Op::GLOBAL_SET, idx);
+        self.emit(Op::DROP);
+    }
+
+    fn restore_js_new_target(&mut self, slot: Option<u16>) {
+        let Some(slot) = slot else { return; };
+        let idx = self.str_const("__js_new_target");
+        self.emit_u16(Op::LOCAL_GET, slot);
+        self.emit_u16(Op::GLOBAL_SET, idx);
+        self.emit(Op::DROP);
+    }
+
+    fn set_js_new_target_undefined(&mut self) {
+        if !self.is_js_profile() {
+            return;
+        }
+        let idx = self.str_const("__js_new_target");
+        let line = self.line;
+        common::expressions::emit_undefined(self.chunk(), line);
         self.emit_u16(Op::GLOBAL_SET, idx);
         self.emit(Op::DROP);
     }
@@ -9151,6 +9431,17 @@ impl Compiler {
                 let line = self.line;
                 let tmp = self.define_local("__tmp");
                 self.emit_u16(Op::LOCAL_SET, tmp); self.emit(Op::DROP);
+                if let Some((args_slot, param_slot, alias_index)) = self.js_arguments_alias_for_index_target(object, index) {
+                    self.emit_u16(Op::LOCAL_GET, args_slot);
+                    self.emit_const(Value::F64(alias_index as f64));
+                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    common::collections::emit_set(&mut self.chunks, self.current, line);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    self.emit_u16(Op::LOCAL_SET, param_slot);
+                    self.emit(Op::DROP);
+                    return Ok(());
+                }
                 if self.is_php_profile() {
                     if let ExprKind::Member { object: recv, field, null_safe } = &object.kind {
                         if !*null_safe {
@@ -11006,12 +11297,20 @@ impl Compiler {
         if let Some(def) = builtin {
             match &def.emit {
                 BuiltinEmit::Print => {
-                    for a in args {
+                    let mut arg_slots = Vec::with_capacity(args.len());
+                    for (index, a) in args.iter().enumerate() {
                         if let Some(enum_type) = self.console_enum_type_from_expr(a) {
                             self.emit_enum_value_to_string(&enum_type, a)?;
                         } else {
                             self.compile_expr(a)?;
                         }
+                        let arg_slot = self.define_local(&format!("__print_arg_{}", index));
+                        self.emit_u16(Op::LOCAL_SET, arg_slot);
+                        self.emit(Op::DROP);
+                        arg_slots.push(arg_slot);
+                    }
+                    for slot in &arg_slots {
+                        self.emit_u16(Op::LOCAL_GET, *slot);
                     }
                     let idx = self.import("wasi:cli", "log");
                     common::io::emit_print_with_import(self.chunk(), idx, args.len() as u8, line);

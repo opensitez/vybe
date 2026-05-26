@@ -1570,6 +1570,24 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         }
         Rule::string_literal => Ok(ExprKind::Lit(Literal::Str(unquote(pair.as_str())))),
         Rule::regex_literal => Ok(walk_regex_literal(pair.as_str())),
+        Rule::import_meta => Ok(ExprKind::Ident("__js_import_meta".to_string())),
+        Rule::new_target => Ok(ExprKind::Ident("__js_new_target".to_string())),
+        Rule::dynamic_import => {
+            let args = pair
+                .into_inner()
+                .find(|p| p.as_rule() == Rule::argument_list)
+                .map(walk_arguments)
+                .transpose()?
+                .unwrap_or_default();
+            Ok(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Ident(
+                    "__js_dynamic_import".to_string(),
+                ))),
+                args,
+                optional: false,
+            })
+        }
+        Rule::private_name => Ok(ExprKind::Ident(pair.as_str().to_string())),
         Rule::ident_name | Rule::ident_or_keyword => {
             let name = pair.as_str();
             match name {
