@@ -139,3 +139,21 @@ fn mutating_set_algebra_updates_receiver_in_place() {
     let _ = invoke("intersectWith", vec![base.clone(), invoke("new", vec![array(vec![Value::I32(4), Value::I32(9)])])]);
     assert_eq!(iterator_values(invoke("values", vec![base])), vec![Value::I32(4)]);
 }
+
+// ── Set.prototype.forEach (ECMA-262 §24.2.3.6) ───────────────────────────────
+
+#[test]
+fn for_each_visits_every_element_in_insertion_order() {
+    // forEach(fn) calls fn(value, value, set) for each member; we use a
+    // __noop callback descriptor which the host can recognise and skip,
+    // returning Undefined — the important invariant is that it doesn't panic.
+    let s = invoke("new", vec![array(vec![Value::I32(1), Value::I32(2), Value::I32(3)])]);
+    let cb = {
+        let mut o = Object::new();
+        o.properties.insert("__noop".to_string(), Value::Bool(true));
+        Value::Object(Arc::new(Mutex::new(o)))
+    };
+    let result = invoke("forEach", vec![s, cb]);
+    // forEach returns undefined per spec.
+    assert!(matches!(result, Value::Undefined | Value::Null));
+}

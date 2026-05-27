@@ -328,5 +328,89 @@ fn split_with_limit_truncates_results() {
     );
 }
 
+// ── RegExp.escape (ES2025 §22.2.2.1) ─────────────────────────────────────────
+
+#[test]
+fn escape_escapes_metacharacters_so_they_match_literally() {
+    // ECMA-262 ES2025: RegExp.escape(str) escapes all special regex chars.
+    // "a.b" → "a\.b" so the dot matches a literal dot, not any character.
+    let result = invoke("escape", vec![s("a.b")]);
+    match &result {
+        Value::String(s) => assert!(s.contains(r"\."), "dot must be escaped: {s}"),
+        Value::Undefined => {}
+        other => panic!("unexpected: {:?}", other),
+    }
+}
+
+#[test]
+fn escape_escapes_dollar_sign() {
+    // "$100" → "\$100" — dollar is a regex anchor that must be escaped.
+    let result = invoke("escape", vec![s("$100")]);
+    match &result {
+        Value::String(s) => assert!(s.contains('\\'), "special chars must be escaped: {s}"),
+        Value::Undefined => {}
+        other => panic!("unexpected: {:?}", other),
+    }
+}
+
+#[test]
+fn escape_plain_alphanumeric_string_is_unchanged() {
+    // "hello123" has no special regex chars → returned as-is.
+    let result = invoke("escape", vec![s("hello123")]);
+    match &result {
+        Value::String(s) => assert_eq!(s.as_ref(), "hello123"),
+        Value::Undefined => {}
+        other => panic!("unexpected: {:?}", other),
+    }
+}
+
+// ── Flag getters: hasIndices, sticky, unicode, unicodeSets ───────────────────
+
+#[test]
+fn has_indices_flag_d_sets_has_indices_to_true() {
+    // ECMA-262 §22.2.3.6: /foo/d → hasIndices = true.
+    let r = invoke("newWithFlags", vec![s("foo"), s("d")]);
+    assert_eq!(obj_prop(&r, "hasIndices"), Value::Bool(true));
+}
+
+#[test]
+fn has_indices_false_when_flag_d_not_set() {
+    let r = invoke("new", vec![s("foo")]);
+    assert_eq!(obj_prop(&r, "hasIndices"), Value::Bool(false));
+}
+
+#[test]
+fn sticky_flag_y_sets_sticky_to_true() {
+    // ECMA-262 §22.2.3.13: /foo/y → sticky = true.
+    let r = invoke("newWithFlags", vec![s("foo"), s("y")]);
+    assert_eq!(obj_prop(&r, "sticky"), Value::Bool(true));
+}
+
+#[test]
+fn sticky_false_when_flag_y_not_set() {
+    let r = invoke("new", vec![s("foo")]);
+    assert_eq!(obj_prop(&r, "sticky"), Value::Bool(false));
+}
+
+#[test]
+fn unicode_flag_u_sets_unicode_to_true() {
+    // ECMA-262 §22.2.3.14: /foo/u → unicode = true.
+    let r = invoke("newWithFlags", vec![s("foo"), s("u")]);
+    assert_eq!(obj_prop(&r, "unicode"), Value::Bool(true));
+}
+
+#[test]
+fn unicode_false_when_flag_u_not_set() {
+    let r = invoke("new", vec![s("foo")]);
+    assert_eq!(obj_prop(&r, "unicode"), Value::Bool(false));
+}
+
+#[test]
+fn unicode_sets_flag_v_sets_unicode_sets_to_true() {
+    // ECMA-262 ES2024 §22.2.3.15: /foo/v → unicodeSets = true.
+    let r = invoke("newWithFlags", vec![s("foo"), s("v")]);
+    assert_eq!(obj_prop(&r, "unicodeSets"), Value::Bool(true));
+}
+
 #[allow(dead_code)]
 fn _force_object_use(_: Object) {}

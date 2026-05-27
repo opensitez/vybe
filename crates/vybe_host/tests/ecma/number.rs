@@ -222,3 +222,147 @@ fn to_string_radix_hex() {
 fn to_string_radix_binary() {
     assert_eq!(as_string(&invoke("toString", vec![Value::F64(5.0), Value::F64(2.0)])), "101");
 }
+
+// ── Number.prototype.toPrecision ─────────────────────────────────────────────
+
+#[test]
+fn to_precision_uses_significant_digits_not_decimal_places() {
+    // toFixed(2) → "3.14"; toPrecision(3) → "3.14" only for small numbers.
+    // toPrecision counts ALL significant digits, switching to exponential
+    // notation when the number is too large or too small.
+    assert_eq!(as_string(&invoke("toPrecision", vec![Value::F64(123.456), Value::F64(5.0)])), "123.46");
+}
+
+#[test]
+fn to_precision_switches_to_exponential_for_large_numbers() {
+    // 123456.toPrecision(3) → "1.23e+5" (cannot fit 3 sig-figs without exp).
+    let result = as_string(&invoke("toPrecision", vec![Value::F64(123456.0), Value::F64(3.0)]));
+    assert!(result.contains('e') || result.contains('E'), "expected exponential notation, got {}", result);
+}
+
+// ── Number.prototype.toExponential ───────────────────────────────────────────
+
+#[test]
+fn to_exponential_formats_in_scientific_notation() {
+    // (1234).toExponential(2) → "1.23e+3"
+    let result = as_string(&invoke("toExponential", vec![Value::F64(1234.0), Value::F64(2.0)]));
+    // The mantissa must be 1.23 and the exponent must encode +3.
+    assert!(result.starts_with("1.23") && (result.contains("e+3") || result.contains("e+03")),
+        "got {}", result);
+}
+
+#[test]
+fn to_exponential_no_arg_uses_full_precision() {
+    // (0.00123).toExponential() → "1.23e-3" (no rounding).
+    let result = as_string(&invoke("toExponential", vec![Value::F64(0.00123)]));
+    assert!(result.contains('e') || result.contains('E'), "expected exponential notation, got {}", result);
+}
+
+// ── Number.MAX_VALUE / MIN_VALUE ─────────────────────────────────────────────
+
+#[test]
+fn max_value_is_finite_and_very_large() {
+    if let Value::F64(n) = invoke("MAX_VALUE", vec![]) {
+        assert!(n.is_finite() && n > 1e300, "MAX_VALUE should be > 1e300, got {}", n);
+    } else {
+        panic!("expected F64");
+    }
+}
+
+#[test]
+fn min_value_is_the_smallest_positive_subnormal() {
+    // ECMA-262: Number.MIN_VALUE is the smallest positive value, ≈ 5e-324.
+    if let Value::F64(n) = invoke("MIN_VALUE", vec![]) {
+        assert!(n > 0.0 && n < 1e-320, "MIN_VALUE should be tiny positive, got {}", n);
+    } else {
+        panic!("expected F64");
+    }
+}
+
+// ── parseInt edge cases ───────────────────────────────────────────────────────
+
+#[test]
+fn parse_int_trims_leading_whitespace() {
+    // ECMA-262 §18.2.5: parseInt trims leading StrWhiteSpaceChars.
+    assert_eq!(invoke("parseInt", vec![s("  42")]), Value::F64(42.0));
+}
+
+#[test]
+fn parse_int_auto_detects_hex_prefix() {
+    // parseInt("0xff") → 255 without an explicit radix argument.
+    assert_eq!(invoke("parseInt", vec![s("0xff")]), Value::F64(255.0));
+}
+
+#[test]
+fn parse_int_handles_sign_prefix() {
+    assert_eq!(invoke("parseInt", vec![s("-10")]), Value::F64(-10.0));
+}
+
+// ── Number.prototype.toLocaleString ──────────────────────────────────────────
+
+#[test]
+fn to_locale_string_returns_non_empty_string() {
+    // ECMA-262 §21.1.3.4: toLocaleString returns a locale-sensitive string representation.
+    let result = invoke("toLocaleString", vec![Value::F64(1234567.89)]);
+    assert!(matches!(result, Value::String(ref s) if !s.is_empty()));
+}
+
+#[test]
+fn to_locale_string_of_zero_contains_zero_digit() {
+    let result = invoke("toLocaleString", vec![Value::F64(0.0)]);
+    match result {
+        Value::String(s) => assert!(s.contains('0')),
+        other => panic!("expected string, got {:?}", other),
+    }
+}
+
+// ── Global isFinite / isNaN (ECMA-262 §19.2.2 / §19.2.3) ────────────────────
+
+#[test]
+fn global_is_finite_coerces_string_to_number() {
+    // ECMA-262 §19.2.2: global isFinite performs ToNumber first, unlike Number.isFinite.
+    // isFinite("42") → ToNumber("42")=42 → true.
+    assert_eq!(invoke("globalIsFinite", vec![s("42")]), Value::Bool(true));
+}
+
+#[test]
+fn global_is_finite_false_for_infinity_string() {
+    assert_eq!(invoke("globalIsFinite", vec![s("Infinity")]), Value::Bool(false));
+}
+
+#[test]
+fn global_is_finite_false_for_nan_value() {
+    assert_eq!(invoke("globalIsFinite", vec![Value::F64(f64::NAN)]), Value::Bool(false));
+}
+
+#[test]
+fn global_is_nan_coerces_string_nan_to_true() {
+    // ECMA-262 §19.2.3: global isNaN performs ToNumber first.
+    // isNaN("NaN") → ToNumber("NaN")=NaN → true.
+    assert_eq!(invoke("globalIsNaN", vec![s("NaN")]), Value::Bool(true));
+}
+
+#[test]
+fn global_is_nan_false_for_numeric_string() {
+    // isNaN("42") → ToNumber("42")=42 → false.
+    assert_eq!(invoke("globalIsNaN", vec![s("42")]), Value::Bool(false));
+}
+
+#[test]
+fn global_is_nan_true_for_non_numeric_string() {
+    // isNaN("hello") → ToNumber("hello")=NaN → true.
+    assert_eq!(invoke("globalIsNaN", vec![s("hello")]), Value::Bool(true));
+}
+
+// ── Number.prototype.valueOf (ECMA-262 §21.1.3.7) ────────────────────────────
+
+#[test]
+fn value_of_returns_the_number_primitive() {
+    // §21.1.3.7: valueOf extracts the [[NumberData]] internal slot.
+    assert_eq!(invoke("valueOf", vec![Value::F64(3.14)]), Value::F64(3.14));
+}
+
+#[test]
+fn value_of_of_integer_returns_same_value() {
+    assert_eq!(invoke("valueOf", vec![Value::I32(42)]), Value::I32(42));
+}

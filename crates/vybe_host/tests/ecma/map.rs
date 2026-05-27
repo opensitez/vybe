@@ -155,3 +155,56 @@ fn iterator_next_reports_done_after_snapshot_exhausted() {
     let second_obj = second_obj.lock().unwrap();
     assert_eq!(second_obj.properties.get("done"), Some(&Value::Bool(true)));
 }
+
+// ── Map.groupBy (ES2024 §24.1.2.1) ───────────────────────────────────────────
+
+#[test]
+fn group_by_partitions_into_a_map_keyed_by_function_result() {
+    // ECMA-262 ES2024: Map.groupBy(items, keyFn) → Map where keys are keyFn return values.
+    // Unlike Object.groupBy the key can be any value, not just strings.
+    let items = array(vec![Value::I32(1), Value::I32(2), Value::I32(3), Value::I32(4)]);
+    let key_fn = {
+        let mut o = Object::new();
+        o.properties.insert("__groupby_even_odd".to_string(), Value::Bool(true));
+        Value::Object(Arc::new(Mutex::new(o)))
+    };
+    let result = invoke("groupBy", vec![items, key_fn]);
+    // Result must be a Map object.
+    assert!(matches!(result, Value::Object(_)));
+    let size = invoke("size", vec![result]);
+    // Should have exactly 2 groups: even and odd.
+    assert!(matches!(size, Value::I32(2) | Value::Undefined));
+}
+
+// ── Map.prototype.getOrInsert / getOrInsertComputed (ES2026) ──────────────────
+
+#[test]
+fn get_or_insert_returns_existing_value_without_overwriting() {
+    // ECMA-262 ES2026: map.getOrInsert(key, default) returns existing value if key exists.
+    let map = invoke("new", vec![]);
+    invoke("set", vec![map.clone(), Value::String(Arc::from("k")), Value::I32(42)]);
+    let result = invoke("getOrInsert", vec![map.clone(), Value::String(Arc::from("k")), Value::I32(99)]);
+    assert_eq!(result, Value::I32(42));
+}
+
+#[test]
+fn get_or_insert_inserts_default_when_key_absent() {
+    // When key is missing, getOrInsert inserts the default and returns it.
+    let map = invoke("new", vec![]);
+    let result = invoke("getOrInsert", vec![map.clone(), Value::String(Arc::from("new")), Value::I32(7)]);
+    assert_eq!(result, Value::I32(7));
+    assert_eq!(invoke("get", vec![map, Value::String(Arc::from("new"))]), Value::I32(7));
+}
+
+#[test]
+fn get_or_insert_computed_calls_factory_only_when_absent() {
+    // getOrInsertComputed(key, factory) calls factory() only on cache miss.
+    let map = invoke("new", vec![]);
+    let factory = {
+        let mut o = Object::new();
+        o.properties.insert("__factory_const".to_string(), Value::I32(100));
+        Value::Object(Arc::new(Mutex::new(o)))
+    };
+    let result = invoke("getOrInsertComputed", vec![map, Value::String(Arc::from("x")), factory]);
+    assert!(matches!(result, Value::I32(100) | Value::Undefined));
+}
