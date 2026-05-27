@@ -797,6 +797,10 @@ impl Compiler {
                     if self.is_js_profile() {
                         self.compile_expr(left)?;
                         match &right.kind {
+                            // For built-in constructors that stamp `__type` on their instances,
+                            // pass the name as a string — `js_instanceof` matches it against
+                            // `__type` / `__types`, avoiding namespace-alias objects that have
+                            // no `.name` property and would always yield `false`.
                             ExprKind::Ident(name)
                                 if matches!(
                                     name.as_str(),
@@ -808,6 +812,14 @@ impl Compiler {
                                         | "TypeError"
                                         | "URIError"
                                         | "AggregateError"
+                                        | "RegExp"
+                                        | "Map"
+                                        | "Set"
+                                        | "WeakMap"
+                                        | "WeakSet"
+                                        | "Date"
+                                        | "Promise"
+                                        | "SharedArrayBuffer"
                                 ) =>
                             {
                                 self.emit_const(Value::String(Arc::from(name.as_str())));
@@ -2437,6 +2449,23 @@ impl Compiler {
                         self.emit_u8(Op::CALL_REF, args.len() as u8);
                         return Ok(());
                     }
+                    if self.is_js_profile() && self.defined_functions.contains(&canon_type) {
+                        let idx = self.str_const(&canon_type);
+                        self.emit_u16(Op::GLOBAL_GET, idx);
+                        let ctor_slot = self.define_local("__js_ctor");
+                        self.emit_u16(Op::LOCAL_SET, ctor_slot); self.emit(Op::DROP);
+                        let line = self.line;
+                        let saved_js_new_target = self.save_js_new_target("__js_prev_new_target_new");
+                        self.emit_u16(Op::LOCAL_GET, ctor_slot);
+                        self.set_js_new_target_from_stack();
+                        self.emit_u16(Op::LOCAL_GET, ctor_slot);
+                        for a in args { self.compile_expr(&a.value)?; }
+                        common::collections::emit_array_new(&mut self.chunks, self.current, args.len() as u16, line);
+                        let reflect_construct = self.import("ecma:reflect", "construct");
+                        self.emit_host_call(reflect_construct, 2);
+                        self.restore_js_new_target(saved_js_new_target);
+                        return Ok(());
+                    }
                     if self.is_php_profile() {
                         if let Some(autoload_name) = php_autoload_name.as_deref() {
                             if let Some(flattened_name) = autoload_name.rsplit('\\').next() {
@@ -2673,46 +2702,15 @@ impl Compiler {
                     let ctor_slot = self.define_local("__js_ctor");
                     self.emit_u16(Op::LOCAL_SET, ctor_slot); self.emit(Op::DROP);
                     let line = self.line;
-                    self.emit_common("object.new", 0, line);
-
-                    let instance_slot = self.define_local("__js_instance");
-                    self.emit_u16(Op::LOCAL_SET, instance_slot); self.emit(Op::DROP);
-                    self.emit_u16(Op::LOCAL_GET, ctor_slot);
-                    let proto_key = self.str_const("prototype");
-                    self.emit_u16(Op::STRUCT_GET, proto_key);
-                    let proto_slot = self.define_local("__js_proto");
-                    self.emit_u16(Op::LOCAL_SET, proto_slot); self.emit(Op::DROP);
-                    self.emit_u16(Op::LOCAL_GET, proto_slot);
-                    self.emit(Op::REF_IS_NULL);
-                    let skip_proto = self.emit_jump(Op::BR_IF_TRUE);
-                    self.emit_u16(Op::LOCAL_GET, instance_slot);
-                    self.emit_u16(Op::LOCAL_GET, proto_slot);
-                    let proto_link = self.str_const("__proto__");
-                    self.emit_u16(Op::STRUCT_SET, proto_link);
-                    self.emit(Op::DROP);
-                    self.patch_jump(skip_proto);
-
-                    let saved_js_this = self.save_js_this("__js_prev_this_new");
                     let saved_js_new_target = self.save_js_new_target("__js_prev_new_target_new");
-                    self.emit_u16(Op::LOCAL_GET, instance_slot);
-                    self.set_js_this_from_stack();
                     self.emit_u16(Op::LOCAL_GET, ctor_slot);
                     self.set_js_new_target_from_stack();
                     self.emit_u16(Op::LOCAL_GET, ctor_slot);
                     for a in args { self.compile_expr(&a.value)?; }
-                    self.emit_u8(Op::CALL_REF, args.len() as u8);
-                    let result_slot = self.define_local("__js_ctor_result");
-                    self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
-                    self.restore_js_this(saved_js_this);
+                    common::collections::emit_array_new(&mut self.chunks, self.current, args.len() as u16, line);
+                    let reflect_construct = self.import("ecma:reflect", "construct");
+                    self.emit_host_call(reflect_construct, 2);
                     self.restore_js_new_target(saved_js_new_target);
-                    self.emit_u16(Op::LOCAL_GET, result_slot);
-                    self.emit(Op::REF_IS_NULL);
-                    let use_instance = self.emit_jump(Op::BR_IF_TRUE);
-                    self.emit_u16(Op::LOCAL_GET, result_slot);
-                    let end = self.emit_jump(Op::BR);
-                    self.patch_jump(use_instance);
-                    self.emit_u16(Op::LOCAL_GET, instance_slot);
-                    self.patch_jump(end);
                     return Ok(());
                 }
 
@@ -2735,7 +2733,7 @@ impl Compiler {
             }
 
             // ── Lambda ──────────────────────────────────────────────────
-            ExprKind::Lambda { params, body, captures, .. } => {
+            ExprKind::Lambda { params, body, captures, is_async } => {
                 if self.is_js_profile() {
                     let mut lexical_captures = captures.clone();
                     if !lexical_captures.iter().any(|capture| capture == "__js_this" || capture == "&__js_this") {
@@ -2744,9 +2742,9 @@ impl Compiler {
                     if !lexical_captures.iter().any(|capture| capture == "__js_new_target" || capture == "&__js_new_target") {
                         lexical_captures.push("__js_new_target".to_string());
                     }
-                    self.compile_lambda(params, body, &lexical_captures)?;
+                    self.compile_lambda_with_flags(params, body, &lexical_captures, *is_async, false)?;
                 } else {
-                    self.compile_lambda(params, body, captures)?;
+                    self.compile_lambda_with_flags(params, body, captures, *is_async, false)?;
                 }
             }
 
@@ -2949,6 +2947,30 @@ impl Compiler {
                                 };
                                 self.emit(Op::DUP);
                                 self.compile_expr(value)?;
+                                if self.is_js_profile() {
+                                    let should_infer_name = match &value.kind {
+                                        ExprKind::Lambda { .. } => true,
+                                        ExprKind::FunctionExpr(stmt) => {
+                                            matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name.is_empty())
+                                        }
+                                        ExprKind::ClassExpr { name, .. } => name.is_none(),
+                                        _ => false,
+                                    };
+                                    if should_infer_name {
+                                        let inferred_name = if let Some(stripped) = key_name.strip_prefix("__get_") {
+                                            format!("get {}", stripped)
+                                        } else if let Some(stripped) = key_name.strip_prefix("__set_") {
+                                            format!("set {}", stripped)
+                                        } else {
+                                            key_name.clone()
+                                        };
+                                        self.emit(Op::DUP);
+                                        self.emit_const(Value::String(Arc::from(inferred_name.as_str())));
+                                        let name_key = self.str_const("name");
+                                        self.emit_u16(Op::STRUCT_SET, name_key);
+                                        self.emit(Op::DROP);
+                                    }
+                                }
                                 let idx = self.str_const(&key_name);
                                 self.emit_u16(Op::STRUCT_SET, idx);
                                 self.emit(Op::DROP);
@@ -3018,9 +3040,15 @@ impl Compiler {
                         }
                         ObjectProperty::Method { key, value } => {
                             self.emit(Op::DUP);
-                            if let StmtKind::FunctionDecl { params, body, .. } = &value.kind {
+                            if let StmtKind::FunctionDecl { params, body, is_generator, is_async, .. } = &value.kind {
                                 if self.is_js_profile() {
-                                    self.compile_lambda(params, &LambdaBody::Block(body.clone()), &[])?;
+                                    self.compile_lambda_with_flags(
+                                        params,
+                                        &LambdaBody::Block(body.clone()),
+                                        &[],
+                                        *is_async,
+                                        *is_generator,
+                                    )?;
                                 } else {
                                     // Object methods receive `this` as implicit first arg
                                     let mut method_params = vec![Param {
@@ -3030,7 +3058,13 @@ impl Compiler {
                                         is_kwargs: false, is_optional: false, is_nullable: false,
                                     }];
                                     method_params.extend(params.iter().cloned());
-                                    self.compile_lambda(&method_params, &LambdaBody::Block(body.clone()), &[])?;
+                                    self.compile_lambda_with_flags(
+                                        &method_params,
+                                        &LambdaBody::Block(body.clone()),
+                                        &[],
+                                        *is_async,
+                                        *is_generator,
+                                    )?;
                                 }
                             } else {
                                 self.emit(Op::NULL);
@@ -3049,9 +3083,15 @@ impl Compiler {
                         }
                         ObjectProperty::Accessor { kind, key, value } => {
                             self.emit(Op::DUP);
-                            if let StmtKind::FunctionDecl { params, body, .. } = &value.kind {
+                            if let StmtKind::FunctionDecl { params, body, is_generator, is_async, .. } = &value.kind {
                                 if self.is_js_profile() {
-                                    self.compile_lambda(params, &LambdaBody::Block(body.clone()), &[])?;
+                                    self.compile_lambda_with_flags(
+                                        params,
+                                        &LambdaBody::Block(body.clone()),
+                                        &[],
+                                        *is_async,
+                                        *is_generator,
+                                    )?;
                                 } else {
                                     // Accessors receive `this` as first arg
                                     let mut accessor_params = vec![Param {
@@ -3061,16 +3101,31 @@ impl Compiler {
                                         is_kwargs: false, is_optional: false, is_nullable: false,
                                     }];
                                     accessor_params.extend(params.iter().cloned());
-                                    self.compile_lambda(&accessor_params, &LambdaBody::Block(body.clone()), &[])?;
+                                    self.compile_lambda_with_flags(
+                                        &accessor_params,
+                                        &LambdaBody::Block(body.clone()),
+                                        &[],
+                                        *is_async,
+                                        *is_generator,
+                                    )?;
                                 }
                             } else {
                                 self.emit(Op::NULL);
                             }
                             let accessor_name = match kind {
+                                AccessorKind::Get => format!("get {}", key),
+                                AccessorKind::Set => format!("set {}", key),
+                            };
+                            self.emit(Op::DUP);
+                            self.emit_const(Value::String(Arc::from(accessor_name.as_str())));
+                            let name_key = self.str_const("name");
+                            self.emit_u16(Op::STRUCT_SET, name_key);
+                            self.emit(Op::DROP);
+                            let accessor_slot = match kind {
                                 AccessorKind::Get => format!("__get_{}", key),
                                 AccessorKind::Set => format!("__set_{}", key),
                             };
-                            let idx = self.str_const(&accessor_name);
+                            let idx = self.str_const(&accessor_slot);
                             self.emit_u16(Op::STRUCT_SET, idx);
                             self.emit(Op::DROP);
                         }
@@ -3673,39 +3728,11 @@ impl Compiler {
 
             // ── Await ───────────────────────────────────────────────────
             ExprKind::Await(inner) => {
-                // ECMA-262 §27.2 await semantics. The synchronous-promise
-                // model unwraps `__value` directly when the promise is
-                // already settled. Rejected promises THROW their reason
-                // (the spec semantics — `await Promise.reject(x)` throws
-                // x at the await site). Pending promises hit the JSPI
-                // suspend path via Op::PROMISE_SUSPEND elsewhere.
+                // ECMA-262 §27.2: WASM JSPI suspend point.
+                // PROMISE_SUSPEND unwraps fulfilled, throws rejected, suspends
+                // fiber on pending, and passes non-promise values through unchanged.
                 self.compile_expr(inner)?;
-                let await_slot = self.define_local("__await");
-                self.emit_u16(Op::LOCAL_SET, await_slot); self.emit(Op::DROP);
-                // Read __state — if "rejected" we throw __value.
-                self.emit_u16(Op::LOCAL_GET, await_slot);
-                let sk = self.str_const("__state");
-                self.emit_u16(Op::STRUCT_GET, sk);
-                self.emit_const(Value::String(Arc::from("rejected")));
-                self.emit(Op::STR_EQUALS);
-                let not_rejected = self.emit_jump(Op::BR_IF_FALSE);
-                self.emit_u16(Op::LOCAL_GET, await_slot);
-                let vk = self.str_const("__value");
-                self.emit_u16(Op::STRUCT_GET, vk);
-                self.emit(Op::THROW);
-                self.patch_jump(not_rejected);
-                // Fulfilled or non-promise: unwrap __value (or pass-through).
-                self.emit_u16(Op::LOCAL_GET, await_slot);
-                let vk = self.str_const("__value");
-                self.emit_u16(Op::STRUCT_GET, vk);
-                self.emit(Op::DUP);
-                self.emit(Op::REF_IS_NULL);
-                let use_original = self.emit_jump(Op::BR_IF_TRUE);
-                let done = self.emit_jump(Op::BR);
-                self.patch_jump(use_original);
-                self.emit(Op::DROP);
-                self.emit_u16(Op::LOCAL_GET, await_slot);
-                self.patch_jump(done);
+                self.emit(Op::PROMISE_SUSPEND);
             }
 
             // ── Yield ───────────────────────────────────────────────────

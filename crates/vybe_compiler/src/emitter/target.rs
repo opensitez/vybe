@@ -62,7 +62,7 @@ impl Target {
                 "vybe:types".into(), "vybe:convert".into(), "vybe:object".into(),
                 "ecma:regexp".into(), "vybe:crypto".into(),
                 "vybe:database".into(), "vybe:xml".into(),
-                "vybe:drawing".into(), "dotnet:io".into(), "dotnet:net".into(), "dotnet:sockets".into(),
+                "vybe:drawing".into(),
                 "wasi:cli".into(), "wasi:filesystem".into(), "wasi:http".into(),
                 "wasi:random/random".into(), "wasi:random/insecure".into(), "wasi:random/insecure-seed".into(),
                 "wasi:clocks".into(),

@@ -175,34 +175,24 @@ fn parse_to_number(s: &str) -> f64 {
     parsed_prefixed.unwrap_or_else(|| trimmed.parse::<f64>().unwrap_or(f64::NAN))
 }
 
-// ── Constants (registered as 0-arg getters for flat host_registry) ─
+// ── Constants ─────────────────────────────────────────────────────
 //
-// Component-Model packages canonically expose constants as 0-arg
-// imports — e.g. `wasi:cli/environment.get-environment` is a fn,
-// not a value. Same convention here: `Number.MAX_SAFE_INTEGER` is
-// a `fn() -> f64` rather than a primitive constant binding.
+// ESM named imports and namespace reads should observe these as
+// immutable value bindings, not zero-arg callables.
 
 fn register_constants(vm: &mut VM) {
     // Number.MAX_SAFE_INTEGER = 2^53 − 1.
-    vm.register_host_fn("ecma:number", "MAX_SAFE_INTEGER",
-        Box::new(|_ctx, _args| Value::F64(9007199254740991.0)));
-    vm.register_host_fn("ecma:number", "MIN_SAFE_INTEGER",
-        Box::new(|_ctx, _args| Value::F64(-9007199254740991.0)));
+    vm.register_host_value("ecma:number", "MAX_SAFE_INTEGER", Value::F64(9007199254740991.0));
+    vm.register_host_value("ecma:number", "MIN_SAFE_INTEGER", Value::F64(-9007199254740991.0));
     // Number.MAX_VALUE / MIN_VALUE — largest / smallest representable
     // positive normal f64. MIN_VALUE is the smallest *positive* > 0,
     // not the most negative.
-    vm.register_host_fn("ecma:number", "MAX_VALUE",
-        Box::new(|_ctx, _args| Value::F64(f64::MAX)));
-    vm.register_host_fn("ecma:number", "MIN_VALUE",
-        Box::new(|_ctx, _args| Value::F64(f64::MIN_POSITIVE)));
-    vm.register_host_fn("ecma:number", "EPSILON",
-        Box::new(|_ctx, _args| Value::F64(f64::EPSILON)));
-    vm.register_host_fn("ecma:number", "POSITIVE_INFINITY",
-        Box::new(|_ctx, _args| Value::F64(f64::INFINITY)));
-    vm.register_host_fn("ecma:number", "NEGATIVE_INFINITY",
-        Box::new(|_ctx, _args| Value::F64(f64::NEG_INFINITY)));
-    vm.register_host_fn("ecma:number", "NaN",
-        Box::new(|_ctx, _args| Value::F64(f64::NAN)));
+    vm.register_host_value("ecma:number", "MAX_VALUE", Value::F64(f64::MAX));
+    vm.register_host_value("ecma:number", "MIN_VALUE", Value::F64(f64::from_bits(1)));
+    vm.register_host_value("ecma:number", "EPSILON", Value::F64(f64::EPSILON));
+    vm.register_host_value("ecma:number", "POSITIVE_INFINITY", Value::F64(f64::INFINITY));
+    vm.register_host_value("ecma:number", "NEGATIVE_INFINITY", Value::F64(f64::NEG_INFINITY));
+    vm.register_host_value("ecma:number", "NaN", Value::F64(f64::NAN));
 }
 
 // ── Predicates ────────────────────────────────────────────────────
@@ -219,7 +209,14 @@ fn to_f64_coerce(v: &Value) -> f64 {
         Value::Bool(b) => if *b { 1.0 } else { 0.0 },
         Value::Null => 0.0,
         Value::Undefined => f64::NAN,
-        Value::String(s) => s.trim().parse::<f64>().unwrap_or(f64::NAN),
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                0.0
+            } else {
+                trimmed.parse::<f64>().unwrap_or(f64::NAN)
+            }
+        }
         _ => f64::NAN,
     }
 }
@@ -283,7 +280,7 @@ fn register_parsers(vm: &mut VM) {
         let radix = match args.get(1) {
             Some(Value::F64(n)) if *n != 0.0 => *n as u32,
             Some(Value::I32(n)) if *n != 0 => *n as u32,
-            _ => 10,
+            _ => 0,
         };
         Value::F64(parse_int_ecma(&input, radix))
     }));
@@ -424,12 +421,11 @@ fn register_prototype(vm: &mut VM) {
 
     vm.register_host_fn("ecma:number", "toExponential", Box::new(|_ctx, args| {
         let n = f_arg(args, 0).unwrap_or(0.0);
-        let digits = match args.get(1) {
-            Some(Value::F64(d)) => *d as usize,
-            Some(Value::I32(d)) => *d as usize,
-            _ => 6,
+        let raw = match args.get(1) {
+            Some(Value::F64(d)) => format!("{:.1$e}", n, *d as usize),
+            Some(Value::I32(d)) => format!("{:.1$e}", n, *d as usize),
+            _ => format!("{:e}", n),
         };
-        let raw = format!("{:.1$e}", n, digits);
         let parts: Vec<&str> = raw.splitn(2, 'e').collect();
         if parts.len() == 2 {
             let exp: i32 = parts[1].parse().unwrap_or(0);

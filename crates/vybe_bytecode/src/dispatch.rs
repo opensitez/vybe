@@ -2748,6 +2748,8 @@ impl VM {
                         type_id: 0,
                         fields: Vec::new(),
                     };
+                    let mut obj = obj;
+                    crate::calls::attach_continuation_protocols(&mut obj.properties, &self.globals);
                     self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
                 }
                 _ if op == Op::SUSPEND => {
@@ -2912,6 +2914,7 @@ impl VM {
                                 type_id: 0,
                                 fields: Vec::new(),
                             };
+                            crate::calls::attach_continuation_protocols(&mut new_obj.properties, &self.globals);
                             // Store the bound args as an array property
                             // keyed `__bound_args`; RESUME sees this on
                             // first fire.

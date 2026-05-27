@@ -1,17 +1,18 @@
-//! .NET implicit import list.
+//! `.NET` adapter implicit import list.
 //!
-//! Owns the single piece of data that represents "what namespaces does every
-//! .NET compiler implicitly recognise". Language compilers extend this with
-//! language-specific additions (e.g. `microsoft.visualbasic` for VB,
-//! `system.linq` for C#) before handing it to the resolver.
+//! Owns the single piece of data that represents "what `.NET`-shaped namespaces
+//! does every adapter-aware compiler implicitly recognise". Language compilers
+//! extend this with language-specific additions (e.g. `microsoft.visualbasic`
+//! for VB, `system.linq` for C#) before handing it to the resolver.
 //!
 //! This file is intentionally narrow — namespace-root recognition lives in
 //! `namespaces.rs`, and namespace → host mapping lives in `host_map.rs`.
 
 use std::collections::BTreeSet;
 
-/// Return the default set of .NET namespace imports that every .NET compiler
-/// should recognise. Returned as a Vec so callers can `.extend()` with extras.
+/// Return the default set of `.NET`-shaped namespace imports that every
+/// adapter-aware compiler should recognise. Returned as a Vec so callers can
+/// `.extend()` with extras.
 pub fn default_interface_imports() -> Vec<String> {
     super::core::default_interface_imports()
         .into_iter()

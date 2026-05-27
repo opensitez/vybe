@@ -15,6 +15,19 @@ use crate::vm::{
     VM, CallFrame, MAX_FRAMES,
 };
 
+pub(crate) fn attach_continuation_protocols(
+    properties: &mut HashMap<String, Value>,
+    globals: &HashMap<String, Value>,
+) {
+    if let Some(next) = globals.get("__vybe_generator_next").cloned() {
+        properties.insert("next".into(), next);
+    }
+    if let Some(iter) = globals.get("__vybe_generator_self").cloned() {
+        properties.insert("iterator".into(), iter.clone());
+        properties.insert("asyncIterator".into(), iter);
+    }
+}
+
 fn typed_array_live_length(ta: &TypedArrayState) -> usize {
     let buf = ta.buffer.lock().unwrap();
     let bpe = ta.elem.bytes_per_element();
@@ -301,6 +314,7 @@ impl VM {
                 type_id: 0,
                 fields: Vec::new(),
             };
+            attach_continuation_protocols(&mut cont.properties, &self.globals);
             if !args.is_empty() {
                 // Stash bound args so the first RESUME can re-push them.
                 let bound = Object {

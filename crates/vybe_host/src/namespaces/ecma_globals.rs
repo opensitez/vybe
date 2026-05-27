@@ -20,9 +20,20 @@ pub fn register(vm: &mut VM) {
     set_prop(&object, "name", Value::String(Arc::from("Object")));
     let object_proto = crate::ecma::object::shared_object_prototype();
     set_prop(&object_proto, "constructor", object.clone());
+    if let Value::Object(proto) = &object_proto {
+        crate::ecma::object::track_nonenum(proto, "constructor");
+        crate::ecma::object::track_nonenum(proto, "constructor");
+    }
     for name in &["toString", "toLocaleString", "valueOf", "hasOwnProperty", "propertyIsEnumerable", "isPrototypeOf"] {
         let idx = *vm.host_registry.get(&("ecma:object".to_string(), (*name).to_string())).expect("ecma:object prototype method must be registered");
         set_prop(&object_proto, name, receiver_host_fn_ref("ecma:object", name, idx));
+        if let Value::Object(proto) = &object_proto {
+            crate::ecma::object::track_nonenum(proto, name);
+            let lower = name.to_lowercase();
+            if lower != *name {
+                crate::ecma::object::track_nonenum(proto, &lower);
+            }
+        }
     }
     set_prop(&object, "prototype", object_proto.clone());
     for name in &[
@@ -49,18 +60,14 @@ pub fn register(vm: &mut VM) {
     for name in &["parseInt", "parseFloat", "isNaN", "isFinite", "isInteger", "isSafeInteger"] {
         set_prop(&number, name, host_fn_ref(vm, "ecma:number", name));
     }
-    for (name, export) in &[
-        ("MAX_SAFE_INTEGER", "MAX_SAFE_INTEGER"),
-        ("MIN_SAFE_INTEGER", "MIN_SAFE_INTEGER"),
-        ("MAX_VALUE", "MAX_VALUE"),
-        ("MIN_VALUE", "MIN_VALUE"),
-        ("EPSILON", "EPSILON"),
-        ("POSITIVE_INFINITY", "POSITIVE_INFINITY"),
-        ("NEGATIVE_INFINITY", "NEGATIVE_INFINITY"),
-        ("NaN", "NaN"),
-    ] {
-        set_prop(&number, name, host_fn_ref(vm, "ecma:number", export));
-    }
+    set_prop(&number, "MAX_SAFE_INTEGER", Value::F64(9007199254740991.0));
+    set_prop(&number, "MIN_SAFE_INTEGER", Value::F64(-9007199254740991.0));
+    set_prop(&number, "MAX_VALUE", Value::F64(f64::MAX));
+    set_prop(&number, "MIN_VALUE", Value::F64(f64::from_bits(1)));
+    set_prop(&number, "EPSILON", Value::F64(f64::EPSILON));
+    set_prop(&number, "POSITIVE_INFINITY", Value::F64(f64::INFINITY));
+    set_prop(&number, "NEGATIVE_INFINITY", Value::F64(f64::NEG_INFINITY));
+    set_prop(&number, "NaN", Value::F64(f64::NAN));
     vm.globals.insert("Number".to_string(), number.clone());
     vm.globals.insert("number".to_string(), number.clone());
 
@@ -118,6 +125,9 @@ pub fn register(vm: &mut VM) {
     set_prop(&array, "__proto__", crate::ecma::function::shared_function_prototype());
     let array_proto = crate::ecma::array::shared_array_prototype();
     set_prop(&array_proto, "constructor", array.clone());
+    if let Value::Object(proto) = &array_proto {
+        crate::ecma::object::track_nonenum(proto, "constructor");
+    }
     set_prop(&array_proto, "__proto__", object_proto.clone());
     for name in &[
         "at", "concat", "copyWithin", "entries", "every", "fill", "filter", "find",
@@ -128,6 +138,20 @@ pub fn register(vm: &mut VM) {
     ] {
         let idx = *vm.host_registry.get(&("ecma:array".to_string(), (*name).to_string())).expect("ecma:array prototype method must be registered");
         set_prop(&array_proto, name, receiver_host_fn_ref("ecma:array", name, idx));
+        if let Value::Object(proto) = &array_proto {
+            crate::ecma::object::track_nonenum(proto, name);
+            let lower = name.to_lowercase();
+            if lower != *name {
+                crate::ecma::object::track_nonenum(proto, &lower);
+            }
+        }
+    }
+    if let Some(idx) = vm.host_registry.get(&("ecma:array".to_string(), "values".to_string())).copied() {
+        set_prop(&array_proto, "iterator", receiver_host_fn_ref("ecma:array", "values", idx));
+        if let Value::Object(proto) = &array_proto {
+            crate::ecma::object::track_nonenum(proto, "iterator");
+            crate::ecma::object::track_nonenum(proto, "iterator");
+        }
     }
     set_prop(&array, "prototype", array_proto);
     for name in &["from", "fromAsync", "isArray", "of"] {
@@ -135,6 +159,37 @@ pub fn register(vm: &mut VM) {
     }
     vm.globals.insert("Array".to_string(), array.clone());
     vm.globals.insert("array".to_string(), array.clone());
+
+    let date = host_fn_ref(vm, "ecma:date", "new");
+    if !matches!(date, Value::Null) {
+        set_prop(&date, "name", Value::String(Arc::from("Date")));
+        set_prop(&date, "__proto__", crate::ecma::function::shared_function_prototype());
+        let date_proto = Value::Object(Arc::new(Mutex::new(Object::new())));
+        set_prop(&date_proto, "constructor", date.clone());
+        set_prop(&date_proto, "__proto__", object_proto.clone());
+        for name in &[
+            "getFullYear", "getYear", "getMonth", "getDate", "getDay",
+            "getHours", "getMinutes", "getSeconds", "getMilliseconds",
+            "getUTCFullYear", "getUTCMonth", "getUTCDate", "getUTCDay",
+            "getUTCHours", "getUTCMinutes", "getUTCSeconds", "getUTCMilliseconds",
+            "getTime", "getTimezoneOffset", "valueOf",
+            "setTime", "setFullYear", "setMonth", "setDate",
+            "setHours", "setMinutes", "setSeconds", "setMilliseconds",
+            "setUTCFullYear", "setUTCMonth", "setUTCDate",
+            "setUTCHours", "setUTCMinutes", "setUTCSeconds", "setUTCMilliseconds",
+            "toISOString", "toString", "toUTCString", "toDateString", "toTimeString", "toJSON",
+        ] {
+            if let Some(idx) = vm.host_registry.get(&("ecma:date".to_string(), (*name).to_string())).copied() {
+                set_prop(&date_proto, name, receiver_host_fn_ref("ecma:date", name, idx));
+            }
+        }
+        set_prop(&date, "prototype", date_proto);
+        for name in &["now", "parse", "UTC"] {
+            set_prop(&date, name, host_fn_ref(vm, "ecma:date", name));
+        }
+        vm.globals.insert("Date".to_string(), date.clone());
+        vm.globals.insert("date".to_string(), date.clone());
+    }
 
     // ── Symbol ─────────────────────────────────────────────────────
     // `Symbol` is callable as `Symbol(desc)` AND has static properties
@@ -171,6 +226,10 @@ pub fn register(vm: &mut VM) {
         set_prop(&reflect, name, host_fn_ref(vm, "ecma:reflect", name));
     }
 
+    // ── Proxy ──────────────────────────────────────────────────────
+    let proxy = ensure_namespace(vm, &["Proxy"]);
+    set_prop(&proxy, "revocable", host_fn_ref(vm, "ecma:reflect", "proxyRevocable"));
+
     // ── Atomics ────────────────────────────────────────────────────
     let atomics = ensure_namespace(vm, &["Atomics"]);
     for name in &[
@@ -188,10 +247,16 @@ pub fn register(vm: &mut VM) {
     vm.globals.insert("BigInt".to_string(), bigint);
     vm.globals.insert("bigint".to_string(), vm.globals.get("BigInt").cloned().unwrap_or(Value::Null));
 
+    for name in &["encodeURI", "decodeURI", "encodeURIComponent", "decodeURIComponent", "escape", "unescape", "btoa", "atob"] {
+        vm.globals.insert((*name).to_string(), host_fn_ref(vm, "ecma:string", name));
+    }
+
     // ── Iterator (Stage-3 helpers) ─────────────────────────────────
     let iter = ensure_namespace(vm, &["Iterator"]);
     set_prop(&iter, "from",  host_fn_ref(vm, "ecma:iterator", "from"));
     set_prop(&iter, "range", host_fn_ref(vm, "ecma:iterator", "range"));
+    let async_iter = ensure_namespace(vm, &["AsyncIterator"]);
+    set_prop(&async_iter, "from", host_fn_ref(vm, "ecma:iterator", "asyncFrom"));
 
     // ── Math Stage-3 accumulators ──────────────────────────────────
     // Math global already created by namespaces/math.rs; just add the new
@@ -220,11 +285,24 @@ pub fn register(vm: &mut VM) {
     for (global_name, module, bpe) in TYPED_ARRAY_GLOBALS {
         let ctor = host_fn_ref(vm, module, "new");
         if !matches!(ctor, Value::Null) {
+            set_prop(&ctor, "name", Value::String(Arc::from(*global_name)));
             set_prop(&ctor, "from",              host_fn_ref(vm, module, "from"));
             set_prop(&ctor, "of",                host_fn_ref(vm, module, "of"));
             set_prop(&ctor, "BYTES_PER_ELEMENT", Value::I32(*bpe));
             vm.globals.insert(global_name.to_string(), ctor);
         }
+    }
+
+    // ── RegExp — constructor + static helpers ──────────────────────────
+    // `new RegExp(...)` routes to ecma:regexp.new (see js/profile).
+    // The constructor object also carries a static `test(pattern, str)`
+    // convenience method for functional use: `RegExp.test(/\d+/, str)`.
+    let regexp = host_fn_ref(vm, "ecma:regexp", "new");
+    if !matches!(regexp, Value::Null) {
+        set_prop(&regexp, "name", Value::String(Arc::from("RegExp")));
+        set_prop(&regexp, "test", host_fn_ref(vm, "ecma:regexp", "test"));
+        vm.globals.insert("RegExp".to_string(), regexp.clone());
+        vm.globals.insert("regexp".to_string(), regexp);
     }
 
     // ── globalThis — proper §19.3.1 singleton ──────────────────────

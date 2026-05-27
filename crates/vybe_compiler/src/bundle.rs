@@ -3209,6 +3209,7 @@ pub fn flatten_module_exports(
 /// `flatten_module_exports`.
 pub fn validate_imports_against_modules(
     chunks: &[vybe_bytecode::Chunk],
+    host_imports: &crate::compiler::HostImportMetadata,
     modules: &HashMap<String, ModuleRecord>,
 ) -> Vec<String> {
     let mut unresolved = Vec::new();
@@ -3239,14 +3240,26 @@ pub fn validate_imports_against_modules(
             unresolved.push(format!("{}::{}", imp.module, imp.name));
         }
     }
+
+    for import in &host_imports.named {
+        let Some(_record) = modules.get(&import.module) else {
+            unresolved.push(format!("{}::{}", import.module, import.func));
+            continue;
+        };
+        let mut visited: Vec<(String, String)> = Vec::new();
+        if resolve_export(modules, &import.module, &import.func, &mut visited).is_none() {
+            unresolved.push(format!("{}::{}", import.module, import.func));
+        }
+    }
+
+    unresolved.sort();
+    unresolved.dedup();
     unresolved
 }
 
 /// Recursive resolver — the `ResolveExport(exportName, resolveSet)`
 /// abstract op from §16.2.1.6.2. Walks `Indirect` entries until it
-/// hits a `Function` (the canonical terminal) or exhausts the chain.
-/// `Value` / `ResourceType` exports aren't representable in the
-/// `(module, func)` output shape yet; those names just drop out.
+/// hits a terminal export or exhausts the chain.
 fn resolve_export(
     modules: &HashMap<String, ModuleRecord>,
     specifier: &str,
@@ -3264,24 +3277,18 @@ fn resolve_export(
 
     let record = modules.get(specifier)?;
     match record.exports.get(name)? {
-        ExportEntry::Function { .. } => {
-            // Terminal — Synthetic export. Bind to the module the
-            // function is registered under, which is the specifier
-            // that owns this record.
+        ExportEntry::Function { .. }
+        | ExportEntry::Value(_)
+        | ExportEntry::ResourceType { .. }
+        | ExportEntry::Class { .. } => {
+            // Terminal export. Bind to the module that owns this record;
+            // runtime installation resolves whether the name materializes
+            // as a function marker or immutable value.
             Some((specifier.to_string(), name.to_string()))
         }
         ExportEntry::Indirect { from, name: src_name } => {
             resolve_export(modules, from, src_name, visited)
         }
-        // Non-callable exports — Value (const), ResourceType, Class.
-        // `resolve_export` is the host-fn call-target resolver, so
-        // class/resource imports don't have a `(module, name)` pair to
-        // return here. Constructor calls take a different path that
-        // looks up the type_id in the registry and emits a typed
-        // construction sequence, not a host call.
-        ExportEntry::Value(_)
-        | ExportEntry::ResourceType { .. }
-        | ExportEntry::Class { .. } => None,
     }
 }
 

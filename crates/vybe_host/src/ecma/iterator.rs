@@ -27,6 +27,7 @@ fn make_iterator(values: Vec<Value>) -> Value {
     let mut obj = Object::new();
     obj.properties.insert("__type".into(), Value::String(Arc::from("Iterator")));
     obj.kind = ObjectKind::Array(values);
+    obj.properties.insert("__index".into(), Value::I32(0));
     if let Some(methods) = METHODS.get() {
         for (name, idx) in methods {
             obj.properties.insert(name.clone(), receiver_host_fn_ref("ecma:iterator", name, *idx));
@@ -35,8 +36,21 @@ fn make_iterator(values: Vec<Value>) -> Value {
     Value::Object(Arc::new(Mutex::new(obj)))
 }
 
-fn extract_values(v: &Value) -> Vec<Value> {
-    if let Value::Object(obj) = v {
+pub(crate) fn maybe_await_value(value: Value) -> Value {
+    crate::ecma::object::unwrap_fulfilled_promise(value)
+}
+
+fn values_from_array_like(obj: &Arc<Mutex<Object>>) -> Option<Vec<Value>> {
+    let o = obj.lock().unwrap();
+    let ObjectKind::Array(ref vec) = o.kind else {
+        return None;
+    };
+    let start = o.properties.get("__index").map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
+    Some(vec.iter().skip(start).cloned().collect())
+}
+
+fn values_from_materialized(value: Value) -> Vec<Value> {
+    if let Value::Object(obj) = value {
         let o = obj.lock().unwrap();
         if let ObjectKind::Array(ref vec) = o.kind {
             return vec.clone();
@@ -45,11 +59,44 @@ fn extract_values(v: &Value) -> Vec<Value> {
     Vec::new()
 }
 
+pub(crate) fn materialize_iterable_values(
+    ctx: &mut HostContext,
+    value: &Value,
+    prefer_async: bool,
+) -> Vec<Value> {
+    match value {
+        Value::Object(obj) => {
+            if let Some(values) = values_from_array_like(obj) {
+                return values;
+            }
+            let first = if prefer_async { "asyncIterator" } else { "iterator" };
+            let second = if prefer_async { "iterator" } else { "asyncIterator" };
+            if let Some(values) = crate::ecma::object::collect_protocol_iterable(ctx, obj, first) {
+                return values_from_materialized(values);
+            }
+            if let Some(values) = crate::ecma::object::collect_protocol_iterable(ctx, obj, second) {
+                return values_from_materialized(values);
+            }
+            Vec::new()
+        }
+        Value::String(text) => text
+            .chars()
+            .map(|ch| Value::String(Arc::from(ch.to_string().as_str())))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 pub fn register(vm: &mut VM) {
     // Iterator.from(obj) — adapts arrays, iterables, generators.
-    vm.register_host_fn("ecma:iterator", "from", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+    vm.register_host_fn("ecma:iterator", "from", Box::new(|ctx: &mut HostContext, args: &[Value]| {
         let v = args.first().cloned().unwrap_or(Value::Null);
-        make_iterator(extract_values(&v))
+        make_iterator(materialize_iterable_values(ctx, &v, false))
+    }));
+
+    vm.register_host_fn("ecma:iterator", "asyncFrom", Box::new(|ctx: &mut HostContext, args: &[Value]| {
+        let v = args.first().cloned().unwrap_or(Value::Null);
+        make_iterator(materialize_iterable_values(ctx, &v, true))
     }));
 
     // Iterator.range(start, end?, step?) — lazy numeric sequence.
@@ -77,21 +124,21 @@ pub fn register(vm: &mut VM) {
 
     // iterator.take(n) — first n elements.
     vm.register_host_fn("ecma:iterator", "take", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let v = extract_values(args.first().unwrap_or(&Value::Null));
+        let v = materialize_iterable_values(_ctx, args.first().unwrap_or(&Value::Null), false);
         let n = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
         make_iterator(v.into_iter().take(n).collect())
     }));
 
     // iterator.drop(n) — skip first n elements.
     vm.register_host_fn("ecma:iterator", "drop", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let v = extract_values(args.first().unwrap_or(&Value::Null));
+        let v = materialize_iterable_values(_ctx, args.first().unwrap_or(&Value::Null), false);
         let n = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
         make_iterator(v.into_iter().skip(n).collect())
     }));
 
     // iterator.map(fn) — apply mapper to each.
     vm.register_host_fn("ecma:iterator", "map", Box::new(|ctx: &mut HostContext, args: &[Value]| {
-        let v = extract_values(args.first().unwrap_or(&Value::Null));
+        let v = materialize_iterable_values(ctx, args.first().unwrap_or(&Value::Null), false);
         let mapper = args.get(1).cloned().unwrap_or(Value::Null);
         let mapped: Vec<Value> = v.into_iter()
             .map(|x| ctx.invoke(&mapper, &[x]))
@@ -101,7 +148,7 @@ pub fn register(vm: &mut VM) {
 
     // iterator.filter(fn) — keep elements where fn returns truthy.
     vm.register_host_fn("ecma:iterator", "filter", Box::new(|ctx: &mut HostContext, args: &[Value]| {
-        let v = extract_values(args.first().unwrap_or(&Value::Null));
+        let v = materialize_iterable_values(ctx, args.first().unwrap_or(&Value::Null), false);
         let pred = args.get(1).cloned().unwrap_or(Value::Null);
         let filtered: Vec<Value> = v.into_iter()
             .filter(|x| ctx.invoke(&pred, &[x.clone()]).as_bool())
@@ -111,7 +158,7 @@ pub fn register(vm: &mut VM) {
 
     // iterator.reduce(fn, init?) — fold left with optional initial value.
     vm.register_host_fn("ecma:iterator", "reduce", Box::new(|ctx: &mut HostContext, args: &[Value]| {
-        let v = extract_values(args.first().unwrap_or(&Value::Null));
+        let v = materialize_iterable_values(ctx, args.first().unwrap_or(&Value::Null), false);
         let reducer = args.get(1).cloned().unwrap_or(Value::Null);
         let init = args.get(2).cloned();
         let mut iter = v.into_iter();
@@ -127,7 +174,7 @@ pub fn register(vm: &mut VM) {
 
     // iterator.forEach(fn) — invoke fn for each, no result.
     vm.register_host_fn("ecma:iterator", "forEach", Box::new(|ctx: &mut HostContext, args: &[Value]| {
-        let v = extract_values(args.first().unwrap_or(&Value::Null));
+        let v = materialize_iterable_values(ctx, args.first().unwrap_or(&Value::Null), false);
         let cb = args.get(1).cloned().unwrap_or(Value::Null);
         for x in v {
             ctx.invoke(&cb, &[x]);
@@ -137,21 +184,21 @@ pub fn register(vm: &mut VM) {
 
     // iterator.some(fn) — any element matches.
     vm.register_host_fn("ecma:iterator", "some", Box::new(|ctx: &mut HostContext, args: &[Value]| {
-        let v = extract_values(args.first().unwrap_or(&Value::Null));
+        let v = materialize_iterable_values(ctx, args.first().unwrap_or(&Value::Null), false);
         let pred = args.get(1).cloned().unwrap_or(Value::Null);
         Value::Bool(v.into_iter().any(|x| ctx.invoke(&pred, &[x]).as_bool()))
     }));
 
     // iterator.every(fn) — all elements match.
     vm.register_host_fn("ecma:iterator", "every", Box::new(|ctx: &mut HostContext, args: &[Value]| {
-        let v = extract_values(args.first().unwrap_or(&Value::Null));
+        let v = materialize_iterable_values(ctx, args.first().unwrap_or(&Value::Null), false);
         let pred = args.get(1).cloned().unwrap_or(Value::Null);
         Value::Bool(v.into_iter().all(|x| ctx.invoke(&pred, &[x]).as_bool()))
     }));
 
     // iterator.find(fn) — first matching element, or undefined.
     vm.register_host_fn("ecma:iterator", "find", Box::new(|ctx: &mut HostContext, args: &[Value]| {
-        let v = extract_values(args.first().unwrap_or(&Value::Null));
+        let v = materialize_iterable_values(ctx, args.first().unwrap_or(&Value::Null), false);
         let pred = args.get(1).cloned().unwrap_or(Value::Null);
         v.into_iter()
             .find(|x| ctx.invoke(&pred, &[x.clone()]).as_bool())
@@ -160,24 +207,48 @@ pub fn register(vm: &mut VM) {
 
     // iterator.toArray() — materialize.
     vm.register_host_fn("ecma:iterator", "toArray", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        let v = extract_values(args.first().unwrap_or(&Value::Null));
+        let v = materialize_iterable_values(_ctx, args.first().unwrap_or(&Value::Null), false);
         Value::Object(Arc::new(Mutex::new(Object::new_array(v))))
     }));
 
     // iterator.flatMap(fn) — map then flatten one level.
     vm.register_host_fn("ecma:iterator", "flatMap", Box::new(|ctx: &mut HostContext, args: &[Value]| {
-        let v = extract_values(args.first().unwrap_or(&Value::Null));
+        let v = materialize_iterable_values(ctx, args.first().unwrap_or(&Value::Null), false);
         let mapper = args.get(1).cloned().unwrap_or(Value::Null);
         let mut result = Vec::new();
         for x in v {
             let mapped = ctx.invoke(&mapper, &[x]);
-            result.extend(extract_values(&mapped));
+            result.extend(materialize_iterable_values(ctx, &mapped, false));
         }
         make_iterator(result)
     }));
 
+    vm.register_host_fn("ecma:iterator", "next", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let Some(Value::Object(it)) = args.first() else {
+            let mut result = Object::new();
+            result.properties.insert("value".into(), Value::Undefined);
+            result.properties.insert("done".into(), Value::Bool(true));
+            return Value::Object(Arc::new(Mutex::new(result)));
+        };
+        let mut lock = it.lock().unwrap();
+        let index = lock.properties.get("__index").map(|value| value.as_i32().max(0) as usize).unwrap_or(0);
+        if let ObjectKind::Array(ref values) = lock.kind {
+            if let Some(value) = values.get(index).cloned() {
+                lock.properties.insert("__index".into(), Value::I32(index as i32 + 1));
+                let mut result = Object::new();
+                result.properties.insert("value".into(), value);
+                result.properties.insert("done".into(), Value::Bool(false));
+                return Value::Object(Arc::new(Mutex::new(result)));
+            }
+        }
+        let mut result = Object::new();
+        result.properties.insert("value".into(), Value::Undefined);
+        result.properties.insert("done".into(), Value::Bool(true));
+        Value::Object(Arc::new(Mutex::new(result)))
+    }));
+
     // Capture method indices for instance-property attachment.
-    let methods: Vec<(String, usize)> = ["take", "drop", "map", "filter", "reduce",
+    let methods: Vec<(String, usize)> = ["next", "take", "drop", "map", "filter", "reduce",
         "forEach", "some", "every", "find", "toArray", "flatMap"]
         .iter()
         .filter_map(|name| {

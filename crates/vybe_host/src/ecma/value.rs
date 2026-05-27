@@ -62,10 +62,19 @@ pub fn register(vm: &mut VM) {
             let b = args.get(1).cloned().unwrap_or(Value::Undefined);
             let pa = to_primitive(ctx, &a, "default");
             let pb = to_primitive(ctx, &b, "default");
-            match (&pa, &pb) {
-                (Value::String(_), _) | (_, Value::String(_)) => {
-                    Value::String(Arc::from(format!("{}{}", pa, pb).as_str()))
+            if matches!(pa, Value::Symbol(_)) || matches!(pb, Value::Symbol(_)) {
+                if matches!(pa, Value::String(_) | Value::Symbol(_))
+                    || matches!(pb, Value::String(_) | Value::Symbol(_))
+                {
+                    ctx.throw_value(crate::ecma::error::new_error(
+                        "TypeError",
+                        "Cannot convert a Symbol value to a string",
+                    ));
+                    return Value::Undefined;
                 }
+            }
+            match (&pa, &pb) {
+                (Value::String(_), _) | (_, Value::String(_)) => Value::String(Arc::from(format!("{}{}", pa, pb).as_str())),
                 _ => {
                     let na = pa.as_f64();
                     let nb = pb.as_f64();
@@ -129,7 +138,11 @@ pub fn register(vm: &mut VM) {
         "toPrimitive",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let v = args.first().cloned().unwrap_or(Value::Undefined);
-            to_primitive(ctx, &v, "number")
+            let hint = match args.get(1) {
+                Some(Value::String(s)) => s.to_string(),
+                _ => "number".to_string(),
+            };
+            to_primitive(ctx, &v, &hint)
         }),
     );
 
@@ -261,7 +274,7 @@ fn dispatch(ctx: &mut HostContext, receiver: &Value, method: &str, args: &[Value
             "valueOf" => receiver.clone(),
             // ECMA-262 §20.4.3.2 Symbol.prototype.description — the raw description string
             "description" => {
-                if desc.is_empty() {
+                if !crate::ecma::symbol::has_description(desc) {
                     Value::Undefined
                 } else {
                     Value::String(Arc::clone(desc))
@@ -295,8 +308,8 @@ fn dispatch(ctx: &mut HostContext, receiver: &Value, method: &str, args: &[Value
                 2 => dispatch_map(ctx, obj.clone(), method, args),
                 3 => dispatch_set(ctx, obj.clone(), method, args),
                 4 => dispatch_typed_array(ctx, obj.clone(), method, args),
-                5 => dispatch_weakmap(obj.clone(), method, args),
-                6 => dispatch_weakset(obj.clone(), method, args),
+                5 => dispatch_weakmap(ctx, obj.clone(), method, args),
+                6 => dispatch_weakset(ctx, obj.clone(), method, args),
                 7 => crate::ecma::arraybuffer::dispatch_arraybuffer_method(obj.clone(), method, args)
                         .unwrap_or_else(|| dispatch_plain_object(ctx, obj.clone(), method, args)),
                 8 => crate::ecma::arraybuffer::dispatch_dataview_method(obj.clone(), method, args)
@@ -468,8 +481,12 @@ fn dispatch_number(receiver: &Value, method: &str, args: &[Value]) -> Value {
             Value::String(Arc::from(format!("{:.1$}", n, digits).as_str()))
         }
         "toExponential" => {
-            let digits = args.first().map(|v| v.as_i32().max(0) as usize).unwrap_or(6);
-            let raw = format!("{:.1$e}", n, digits);
+            let raw = if let Some(digits_arg) = args.first() {
+                let digits = digits_arg.as_i32().max(0) as usize;
+                format!("{:.1$e}", n, digits)
+            } else {
+                format!("{:e}", n)
+            };
             // Rust uses e4 but JS uses e+4; normalize
             let parts: Vec<&str> = raw.splitn(2, 'e').collect();
             if parts.len() == 2 {
@@ -1151,6 +1168,39 @@ fn dispatch_array(
             drop(o);
             Value::Object(obj)
         }
+        "sort" => {
+            let compare_fn = args.first().cloned();
+            let snapshot = {
+                let o = obj.lock().unwrap();
+                if let ObjectKind::Array(ref v) = o.kind {
+                    v.clone()
+                } else {
+                    Vec::new()
+                }
+            };
+            let mut values = snapshot;
+            values.sort_by(|a, b| {
+                if let Some(compare_fn) = compare_fn.as_ref() {
+                    let result = ctx.invoke(compare_fn, &[a.clone(), b.clone()]);
+                    let order = result.as_f64();
+                    if order < 0.0 {
+                        std::cmp::Ordering::Less
+                    } else if order > 0.0 {
+                        std::cmp::Ordering::Greater
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
+                } else {
+                    format!("{}", a).cmp(&format!("{}", b))
+                }
+            });
+            let mut o = obj.lock().unwrap();
+            if let ObjectKind::Array(ref mut v) = o.kind {
+                *v = values;
+            }
+            drop(o);
+            Value::Object(obj)
+        }
         "fill" => {
             let fill = args.first().cloned().unwrap_or(Value::Undefined);
             let mut o = obj.lock().unwrap();
@@ -1705,6 +1755,134 @@ fn dispatch_set(
             }
             crate::ecma::array::make_array_iterator(Vec::new())
         }
+        "union" => {
+            let mut out = indexmap::IndexSet::new();
+            {
+                let so = obj.lock().unwrap();
+                if let ObjectKind::Set(ref s) = so.kind {
+                    for value in s.iter() {
+                        out.insert(value.clone());
+                    }
+                }
+            }
+            if let Some(Value::Object(rhs)) = args.first() {
+                let ro = rhs.lock().unwrap();
+                if let ObjectKind::Set(ref s) = ro.kind {
+                    for value in s.iter() {
+                        out.insert(value.clone());
+                    }
+                }
+            }
+            let mut out_obj = Object::new();
+            out_obj.kind = ObjectKind::Set(out);
+            out_obj.properties.insert("__type".into(), Value::String(Arc::from("Set")));
+            sync_set_size(&mut out_obj);
+            Value::Object(Arc::new(Mutex::new(out_obj)))
+        }
+        "intersection" => {
+            let rhs = match args.first() {
+                Some(Value::Object(rhs)) => rhs.clone(),
+                _ => return Value::Object(Arc::new(Mutex::new(Object::new()))),
+            };
+            let mut out = indexmap::IndexSet::new();
+            let so = obj.lock().unwrap();
+            let ro = rhs.lock().unwrap();
+            if let (ObjectKind::Set(lhs), ObjectKind::Set(rhs_set)) = (&so.kind, &ro.kind) {
+                for value in lhs.iter() {
+                    if rhs_set.contains(value) {
+                        out.insert(value.clone());
+                    }
+                }
+            }
+            let mut out_obj = Object::new();
+            out_obj.kind = ObjectKind::Set(out);
+            out_obj.properties.insert("__type".into(), Value::String(Arc::from("Set")));
+            sync_set_size(&mut out_obj);
+            Value::Object(Arc::new(Mutex::new(out_obj)))
+        }
+        "difference" => {
+            let rhs = match args.first() {
+                Some(Value::Object(rhs)) => rhs.clone(),
+                _ => return Value::Object(Arc::new(Mutex::new(Object::new()))),
+            };
+            let mut out = indexmap::IndexSet::new();
+            let so = obj.lock().unwrap();
+            let ro = rhs.lock().unwrap();
+            if let (ObjectKind::Set(lhs), ObjectKind::Set(rhs_set)) = (&so.kind, &ro.kind) {
+                for value in lhs.iter() {
+                    if !rhs_set.contains(value) {
+                        out.insert(value.clone());
+                    }
+                }
+            }
+            let mut out_obj = Object::new();
+            out_obj.kind = ObjectKind::Set(out);
+            out_obj.properties.insert("__type".into(), Value::String(Arc::from("Set")));
+            sync_set_size(&mut out_obj);
+            Value::Object(Arc::new(Mutex::new(out_obj)))
+        }
+        "symmetricDifference" => {
+            let rhs = match args.first() {
+                Some(Value::Object(rhs)) => rhs.clone(),
+                _ => return Value::Object(Arc::new(Mutex::new(Object::new()))),
+            };
+            let mut out = indexmap::IndexSet::new();
+            let so = obj.lock().unwrap();
+            let ro = rhs.lock().unwrap();
+            if let (ObjectKind::Set(lhs), ObjectKind::Set(rhs_set)) = (&so.kind, &ro.kind) {
+                for value in lhs.iter() {
+                    if !rhs_set.contains(value) {
+                        out.insert(value.clone());
+                    }
+                }
+                for value in rhs_set.iter() {
+                    if !lhs.contains(value) {
+                        out.insert(value.clone());
+                    }
+                }
+            }
+            let mut out_obj = Object::new();
+            out_obj.kind = ObjectKind::Set(out);
+            out_obj.properties.insert("__type".into(), Value::String(Arc::from("Set")));
+            sync_set_size(&mut out_obj);
+            Value::Object(Arc::new(Mutex::new(out_obj)))
+        }
+        "isSubsetOf" => {
+            let rhs = match args.first() {
+                Some(Value::Object(rhs)) => rhs.clone(),
+                _ => return Value::Bool(false),
+            };
+            let so = obj.lock().unwrap();
+            let ro = rhs.lock().unwrap();
+            if let (ObjectKind::Set(lhs), ObjectKind::Set(rhs_set)) = (&so.kind, &ro.kind) {
+                return Value::Bool(lhs.iter().all(|value| rhs_set.contains(value)));
+            }
+            Value::Bool(false)
+        }
+        "isSupersetOf" => {
+            let rhs = match args.first() {
+                Some(Value::Object(rhs)) => rhs.clone(),
+                _ => return Value::Bool(false),
+            };
+            let so = obj.lock().unwrap();
+            let ro = rhs.lock().unwrap();
+            if let (ObjectKind::Set(lhs), ObjectKind::Set(rhs_set)) = (&so.kind, &ro.kind) {
+                return Value::Bool(rhs_set.iter().all(|value| lhs.contains(value)));
+            }
+            Value::Bool(false)
+        }
+        "isDisjointFrom" => {
+            let rhs = match args.first() {
+                Some(Value::Object(rhs)) => rhs.clone(),
+                _ => return Value::Bool(false),
+            };
+            let so = obj.lock().unwrap();
+            let ro = rhs.lock().unwrap();
+            if let (ObjectKind::Set(lhs), ObjectKind::Set(rhs_set)) = (&so.kind, &ro.kind) {
+                return Value::Bool(!lhs.iter().any(|value| rhs_set.contains(value)));
+            }
+            Value::Bool(false)
+        }
         "forEach" => {
             let cb = args.first().cloned().unwrap_or(Value::Null);
             let this_arg = args.get(1).cloned();
@@ -2074,6 +2252,17 @@ fn dispatch_typed_array(
             }
             make_array(Vec::new())
         }
+        "entries" => {
+            let o = obj.lock().unwrap();
+            if let ObjectKind::TypedArray(ta) = &o.kind {
+                let live = ta_live_length(ta);
+                let entries: Vec<Value> = (0..live)
+                    .map(|i| make_array(vec![Value::I32(i as i32), read_element(ta, i)]))
+                    .collect();
+                return make_array(entries);
+            }
+            make_array(Vec::new())
+        }
         _ => Value::Undefined,
     }
 }
@@ -2142,7 +2331,19 @@ fn dispatch_plain_object(
                 return ctx.invoke(&fn_val, &call_args);
             }
         }
-        return ctx.invoke(&fn_val, args);
+        if let Value::Object(func_obj) = &fn_val {
+            if matches!(func_obj.lock().unwrap().kind, ObjectKind::HostFunction(_)) {
+                let mut call_args = Vec::with_capacity(args.len() + 1);
+                call_args.push(Value::Object(obj.clone()));
+                call_args.extend_from_slice(args);
+                return ctx.invoke(&fn_val, &call_args);
+            }
+        }
+        let saved_this = ctx.current_js_this();
+        ctx.set_js_this(Value::Object(obj.clone()));
+        let result = ctx.invoke(&fn_val, args);
+        ctx.set_js_this(saved_this);
+        return result;
     }
     if let Some(result) = dispatch_error_object_method(ctx, &obj, method) {
         return result;
@@ -2191,7 +2392,7 @@ fn dispatch_plain_object(
                     "toString" => Value::String(Arc::from(format!("Symbol({})", desc).as_str())),
                     "valueOf" => Value::Symbol(Arc::clone(desc)),
                     "description" => {
-                        if desc.is_empty() {
+                        if !crate::ecma::symbol::has_description(desc) {
                             Value::Undefined
                         } else {
                             Value::String(Arc::clone(desc))
@@ -2498,7 +2699,19 @@ pub(crate) fn to_primitive(ctx: &mut HostContext, v: &Value, hint: &str) -> Valu
     if let Some(tp_fn) = tp {
         if !matches!(tp_fn, Value::Null | Value::Undefined) {
             let hint_val = Value::String(Arc::from(hint));
-            return ctx.invoke(&tp_fn, &[v.clone(), hint_val]);
+            if let Some(result) = crate::ecma::function::invoke_bound_callback_if_needed(
+                ctx,
+                &tp_fn,
+                &[hint_val.clone()],
+            ) {
+                return result;
+            }
+            return crate::ecma::function::invoke_with_explicit_this(
+                ctx,
+                &tp_fn,
+                v.clone(),
+                &[hint_val],
+            );
         }
     }
     // Skip the dance for non-Ordinary objects (Functions, Continuations
@@ -2540,21 +2753,37 @@ pub(crate) fn to_primitive(ctx: &mut HostContext, v: &Value, hint: &str) -> Valu
             }
         }
     }
+    // WHATWG URL: toString() is a bound HostFunction returning href — return href directly.
+    if type_tag.as_deref() == Some("URL") {
+        let href = obj.lock().unwrap().properties.get("href").cloned();
+        if let Some(href) = href {
+            return href;
+        }
+    }
     let methods: &[&str] = if hint == "string" {
         &["toString", "valueOf"]
     } else {
         &["valueOf", "toString"]
     };
-    // Route through `dispatch` (which mirrors the JS method-call
-    // protocol — sets `__js_this`, then calls). Direct ctx.invoke
-    // bypasses __js_this binding, so the user's body sees a stale
-    // global and reads `.v` on null/undefined → throws TypeError.
     let receiver = Value::Object(obj.clone());
     for m in methods {
-        let exists = lookup_method_via_proto(&obj, m).is_some();
-        if !exists { continue; }
-        let result = dispatch(ctx, &receiver, m, &[]);
-        if !matches!(result, Value::Object(_) | Value::Undefined) {
+        let fn_val = match lookup_method_via_proto(&obj, m) {
+            Some(v) if !matches!(v, Value::Null | Value::Undefined) => v,
+            _ => continue,
+        };
+        // Only invoke user-defined bytecode functions. HostFunctions (e.g.
+        // Object.prototype.valueOf) are called inline by call_value_inner
+        // without pushing a frame, causing the subsequent execute_until to
+        // run the rest of the main program. Skip them — Object.prototype.valueOf
+        // returns `this` (an Object) which wouldn't yield a primitive anyway.
+        if !matches!(&fn_val, Value::Object(o) if matches!(o.lock().unwrap().kind, ObjectKind::Function(_))) {
+            continue;
+        }
+        let saved_this = ctx.current_js_this();
+        ctx.set_js_this(receiver.clone());
+        let result = ctx.invoke(&fn_val, &[]);
+        ctx.set_js_this(saved_this);
+        if !matches!(result, Value::Object(_) | Value::Undefined | Value::Null) {
             return result;
         }
     }
@@ -2597,7 +2826,7 @@ fn regex_pattern(arg: Option<&Value>) -> Option<(String, String)> {
 
 // ── WeakMap dynamic dispatch (for when type isn't known at compile time) ─────
 
-fn dispatch_weakmap(obj: Arc<Mutex<Object>>, method: &str, args: &[Value]) -> Value {
+fn dispatch_weakmap(ctx: &mut HostContext, obj: Arc<Mutex<Object>>, method: &str, args: &[Value]) -> Value {
     match method {
         "get" => {
             let key = args.first().cloned().unwrap_or(Value::Undefined);
@@ -2619,7 +2848,13 @@ fn dispatch_weakmap(obj: Arc<Mutex<Object>>, method: &str, args: &[Value]) -> Va
         "set" => {
             let key = args.first().cloned().unwrap_or(Value::Undefined);
             let val = args.get(1).cloned().unwrap_or(Value::Undefined);
-            if !matches!(key, Value::Object(_)) { return Value::Object(obj); }
+            if !matches!(key, Value::Object(_)) {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    "TypeError",
+                    "Invalid value used as weak map key",
+                ));
+                return Value::Null;
+            }
             // find or insert
             let existing = {
                 let m = obj.lock().unwrap();
@@ -2679,11 +2914,17 @@ fn dispatch_weakmap(obj: Arc<Mutex<Object>>, method: &str, args: &[Value]) -> Va
 
 // ── WeakSet dynamic dispatch ──────────────────────────────────────────────────
 
-fn dispatch_weakset(obj: Arc<Mutex<Object>>, method: &str, args: &[Value]) -> Value {
+fn dispatch_weakset(ctx: &mut HostContext, obj: Arc<Mutex<Object>>, method: &str, args: &[Value]) -> Value {
     match method {
         "add" => {
             let v = args.first().cloned().unwrap_or(Value::Undefined);
-            if !matches!(v, Value::Object(_)) { return Value::Object(obj); }
+            if !matches!(v, Value::Object(_)) {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    "TypeError",
+                    "Invalid value used in weak set",
+                ));
+                return Value::Null;
+            }
             let mut so = obj.lock().unwrap();
             let already = if let ObjectKind::Array(ref vs) = so.kind {
                 wm_key_ptr_find(vs, &v).is_some()

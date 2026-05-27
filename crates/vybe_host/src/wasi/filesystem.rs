@@ -299,6 +299,9 @@ fn register_types(vm: &mut VM) {
         if !exists && !create {
             return err("no-entry");
         }
+        if exists && create && exclusive {
+            return err("exist");
+        }
         if directory && exists && !resolved.is_dir() {
             return err("not-directory");
         }

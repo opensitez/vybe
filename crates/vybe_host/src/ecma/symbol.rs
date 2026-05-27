@@ -13,8 +13,8 @@
 //! `Symbol.for(key)` interns through a process-global registry so
 //! repeat lookups return the same `Arc`.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
 use vybe_bytecode::{VM, Value, HostContext};
 
 // Well-known symbols — created once at register time, exposed through
@@ -63,9 +63,42 @@ fn well_known() -> &'static WellKnown {
 // maps to one canonical symbol shared across realms (in our case, the
 // VM process).
 static REGISTRY: std::sync::OnceLock<Mutex<HashMap<String, Arc<str>>>> = std::sync::OnceLock::new();
+static NO_DESCRIPTION_SYMBOLS: std::sync::OnceLock<Mutex<HashSet<usize>>> = std::sync::OnceLock::new();
 
 fn registry() -> &'static Mutex<HashMap<String, Arc<str>>> {
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn no_description_symbols() -> &'static Mutex<HashSet<usize>> {
+    NO_DESCRIPTION_SYMBOLS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+pub(crate) fn canonical_property_key(sym: &Arc<str>) -> String {
+    match sym.as_ref() {
+        "@@iterator" => "iterator".to_string(),
+        "@@asyncIterator" => "asyncIterator".to_string(),
+        "@@toPrimitive" => "toprimitive".to_string(),
+        "@@hasInstance" => "hasinstance".to_string(),
+        "@@toStringTag" => "tostringtag".to_string(),
+        "@@isConcatSpreadable" => "isconcatspreadable".to_string(),
+        "@@unscopables" => "unscopables".to_string(),
+        "@@match" => "symbolmatch".to_string(),
+        "@@matchAll" => "symbolmatchall".to_string(),
+        "@@replace" => "symbolreplace".to_string(),
+        "@@search" => "symbolsearch".to_string(),
+        "@@split" => "symbolsplit".to_string(),
+        "@@species" => "species".to_string(),
+        "@@dispose" => "dispose".to_string(),
+        "@@asyncDispose" => "asyncdispose".to_string(),
+        _ => format!("Symbol({})", sym),
+    }
+}
+
+pub(crate) fn has_description(sym: &Arc<str>) -> bool {
+    !no_description_symbols()
+        .lock()
+        .unwrap()
+    .contains(&(sym.as_ptr() as usize))
 }
 
 pub fn register(vm: &mut VM) {
@@ -75,11 +108,19 @@ pub fn register(vm: &mut VM) {
         // Spec §20.4.1.1: store description verbatim. toString wraps it
         // as `Symbol(<desc>)` per §20.4.3.3 — keeping the wrap there
         // means Display and toString agree on a single representation.
+        let has_description = args.first().is_some_and(|v| !matches!(v, Value::Undefined));
         let desc = args.first()
             .filter(|v| !matches!(v, Value::Undefined))
             .map(|v| format!("{}", v))
             .unwrap_or_default();
-        Value::Symbol(Arc::from(desc.as_str()))
+        let symbol = Arc::<str>::from(desc.as_str());
+        if !has_description {
+            no_description_symbols()
+                .lock()
+                .unwrap()
+                .insert(symbol.as_ptr() as usize);
+        }
+        Value::Symbol(symbol)
     }));
 
     // Symbol.for(key) — global registry lookup; creates if absent.

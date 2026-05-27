@@ -122,6 +122,15 @@ pub(crate) fn invoke_with_explicit_this(
 ) -> Value {
     match target {
         Value::Object(obj)
+            if matches!(obj.lock().unwrap().kind, ObjectKind::HostFunction(_))
+                && obj.lock().unwrap().properties.contains_key("__bound_args") => {
+            let previous_this = ctx.current_js_this();
+            ctx.set_js_this(this_arg);
+            let result = ctx.invoke(target, args);
+            ctx.set_js_this(previous_this);
+            result
+        }
+        Value::Object(obj)
             if matches!(obj.lock().unwrap().kind, ObjectKind::Function(_)) => {
             let previous_this = ctx.current_js_this();
             ctx.set_js_this(this_arg);
@@ -161,8 +170,12 @@ fn invoke_bound_target(
                 ctx.set_js_this(bound_this);
             }
             let result = invoke_compiled_function(ctx, target, args);
-            ctx.set_js_this(previous_this);
-            result
+            ctx.set_js_this(previous_this.clone());
+            if constructor_call && !matches!(result, Value::Object(_)) {
+                previous_this
+            } else {
+                result
+            }
         }
         _ => {
             if host_function_uses_explicit_receiver(target) {

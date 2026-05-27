@@ -9,9 +9,4 @@ pub fn register(vm: &mut VM) {
     set_prop(&gui, "msgbox", host_fn_ref(vm, "vybe:gui", "msgBox"));
     set_prop(&gui, "showform", host_fn_ref(vm, "vybe:gui", "showForm"));
     set_prop(&gui, "closeform", host_fn_ref(vm, "vybe:gui", "closeForm"));
-
-    // Application.Run
-    let app = ensure_namespace(vm, &["Application"]);
-    set_prop(&app, "run", host_fn_ref(vm, "vybe:gui", "runApplication"));
-    set_prop(&app, "exit", host_fn_ref(vm, "vybe:gui", "appExit"));
 }

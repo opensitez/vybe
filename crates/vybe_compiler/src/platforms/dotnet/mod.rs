@@ -1,9 +1,13 @@
-//! Shared .NET BCL frontend for all .NET-shaped compilers (VB, C#, F#, …).
+//! Shared adapter surface for all `.NET`-shaped compilers (VB, C#, F#, ...).
 //!
-//! The .NET Base Class Library exposes the same namespace hierarchy regardless
-//! of language: `System.Threading.Thread.Sleep`, `System.Diagnostics.Stopwatch`,
-//! etc. This module is a single source of truth so every .NET compiler resolves
-//! these identically.
+//! Source languages can talk in `System.*`, WinForms, and other `.NET`-shaped
+//! names, but this is not a `.NET` VM. This module is the compiler-side adapter
+//! layer that rewrites those shapes onto the real runtime capability modules
+//! available inside the wasm VM: `ecma:*`, `node:*`, `wasi:*`, `web:*`, and
+//! `vybe:*`.
+//!
+//! In other words: VB/C# think they are targeting `.NET`; the generated wasm is
+//! actually targeting JS/WASM-flavoured runtime primitives underneath.
 pub mod resolver;
 pub mod imports;
 pub mod namespaces;
@@ -51,6 +55,13 @@ pub struct DotnetSurface {
     runtime_collection_methods: HashSet<String>,
     runtime_collection_method_arities: HashMap<String, HashSet<u8>>,
     component_descriptor: ComponentDescriptor,
+}
+
+#[cfg(test)]
+fn is_real_runtime_interface(interface: &str) -> bool {
+    interface.contains(':')
+        && !interface.starts_with("dotnet.")
+        && !interface.starts_with("system.")
 }
 
 static DOTNET_SURFACE_CACHE: LazyLock<DotnetSurface> = LazyLock::new(build_dotnet_surface);
@@ -515,6 +526,20 @@ mod tests {
             .exports
             .iter()
             .any(|exp| exp.interface == "dotnet.System" && exp.name == "Console"));
+    }
+
+    #[test]
+    fn test_dotnet_component_descriptors_import_only_real_runtime_interfaces() {
+        for descriptor in [dotnet_core_component_descriptor(), dotnet_winforms_component_descriptor()] {
+            for import in &descriptor.imports {
+                assert!(
+                    is_real_runtime_interface(&import.interface),
+                    "dotnet adapter leaked non-runtime import interface: {}::{}",
+                    import.interface,
+                    import.name,
+                );
+            }
+        }
     }
 
     #[test]

@@ -90,6 +90,8 @@ pub struct Linker {
     components: Vec<Component>,
     /// Host-provided interfaces (wasi:*, vybe:*)
     host_exports: HashMap<(String, String), ExportImpl>,
+    /// Host-provided type exports sourced from Module Records.
+    host_type_exports: HashMap<(String, String), crate::TypeDef>,
 }
 
 impl Linker {
@@ -97,6 +99,7 @@ impl Linker {
         Linker {
             components: Vec::new(),
             host_exports: HashMap::new(),
+            host_type_exports: HashMap::new(),
         }
     }
 
@@ -110,11 +113,14 @@ impl Linker {
 
     /// Register all host functions from a VM as exports.
     pub fn register_host_from_vm(&mut self, vm: &crate::VM) {
-        for ((module, name), &idx) in &vm.host_registry {
+        for (module, name, idx) in vm.iter_host_function_exports() {
             self.host_exports.insert(
-                (module.clone(), name.clone()),
+                (module, name),
                 ExportImpl::HostFn(idx),
             );
+        }
+        for (module, name, typedef) in vm.iter_host_type_exports() {
+            self.host_type_exports.insert((module, name), typedef);
         }
     }
 
@@ -181,7 +187,7 @@ impl Linker {
         }
 
         // 4. Resolve type imports/exports across components
-        let mut all_type_exports: HashMap<(String, String), crate::TypeDef> = HashMap::new();
+        let mut all_type_exports: HashMap<(String, String), crate::TypeDef> = self.host_type_exports.clone();
         for comp in &self.components {
             for ((iface, name), typedef) in &comp.type_exports {
                 all_type_exports.insert((iface.clone(), name.clone()), typedef.clone());

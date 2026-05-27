@@ -2672,6 +2672,7 @@ impl Compiler {
                 // `Math.max`) still win on the names they claim.
                 let key = self.canon(obj_name);
                 if let Some(module) = self.host_namespace_aliases.get(&key).cloned() {
+                    let _ = module;
                     let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                     for (index, arg) in arg_exprs.iter().enumerate() {
                         self.compile_expr(arg)?;
@@ -2680,11 +2681,17 @@ impl Compiler {
                         self.emit(Op::DROP);
                         arg_slots.push(arg_slot);
                     }
-                    for slot in &arg_slots {
-                        self.emit_u16(Op::LOCAL_GET, *slot);
-                    }
-                    let idx = self.import(&module, field);
-                    self.emit_host_call(idx, arg_exprs.len() as u8);
+                    self.emit_var_get(obj_name);
+                    let namespace_slot = self.define_local("__host_namespace_call_ns");
+                    self.emit_u16(Op::LOCAL_SET, namespace_slot);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, namespace_slot);
+                    let field_idx = self.str_const(field);
+                    self.emit_u16(Op::STRUCT_GET, field_idx);
+                    let callee_slot = self.define_local("__host_namespace_call_callee");
+                    self.emit_u16(Op::LOCAL_SET, callee_slot);
+                    self.emit(Op::DROP);
+                    self.emit_call_ref_with_arg_slots(callee_slot, None, &arg_slots);
                     return Ok(());
                 }
             }
@@ -3294,34 +3301,40 @@ impl Compiler {
                 let class_path = class_parts.join(".");
                 let mut static_class_canon = None;
                 let head_name = class_parts.first().map(String::as_str).unwrap_or("");
+                // If any part of the chain (after the head) is a private field, this is
+                // ClassName.#privateField.method(...) — the receiver is the private field
+                // value, NOT the class itself. Don't treat it as a static method call.
+                let chain_through_private = class_parts.iter().skip(1).any(|p| p.starts_with('#'));
 
-                if let Some(current_class) = self.current_class.clone() {
-                    if self.canon(head_name) == self.canon(&current_class)
-                        || class_parts.last().is_some_and(|part| self.canon(part) == self.canon(&current_class))
-                    {
-                        static_class_canon = Some(current_class);
+                if !chain_through_private {
+                    if let Some(current_class) = self.current_class.clone() {
+                        if self.canon(head_name) == self.canon(&current_class)
+                            || class_parts.last().is_some_and(|part| self.canon(part) == self.canon(&current_class))
+                        {
+                            static_class_canon = Some(current_class);
+                        }
                     }
-                }
 
-                let full_canon = self.canon(&class_path);
-                if static_class_canon.is_none()
-                    && (self.defined_classes.contains(&full_canon) || self.pending_classes.contains_key(&full_canon))
-                    && self.scope().resolve(head_name).is_none()
-                    && self.scope().resolve_ci(head_name).is_none()
-                    && self.lookup_var_type_hint(head_name).is_none()
-                {
-                    static_class_canon = Some(full_canon);
-                }
-
-                if static_class_canon.is_none() && class_parts.len() > 1 {
-                    let short_name = class_parts.last().map(String::as_str).unwrap_or("");
-                    let short_canon = self.canon(short_name);
-                    if (self.defined_classes.contains(&short_canon) || self.pending_classes.contains_key(&short_canon))
-                        && self.scope().resolve(short_name).is_none()
-                        && self.scope().resolve_ci(short_name).is_none()
-                        && self.lookup_var_type_hint(short_name).is_none()
+                    let full_canon = self.canon(&class_path);
+                    if static_class_canon.is_none()
+                        && (self.defined_classes.contains(&full_canon) || self.pending_classes.contains_key(&full_canon))
+                        && self.scope().resolve(head_name).is_none()
+                        && self.scope().resolve_ci(head_name).is_none()
+                        && self.lookup_var_type_hint(head_name).is_none()
                     {
-                        static_class_canon = Some(short_canon);
+                        static_class_canon = Some(full_canon);
+                    }
+
+                    if static_class_canon.is_none() && class_parts.len() > 1 {
+                        let short_name = class_parts.last().map(String::as_str).unwrap_or("");
+                        let short_canon = self.canon(short_name);
+                        if (self.defined_classes.contains(&short_canon) || self.pending_classes.contains_key(&short_canon))
+                            && self.scope().resolve(short_name).is_none()
+                            && self.scope().resolve_ci(short_name).is_none()
+                            && self.lookup_var_type_hint(short_name).is_none()
+                        {
+                            static_class_canon = Some(short_canon);
+                        }
                     }
                 }
 
@@ -6032,9 +6045,20 @@ impl Compiler {
             // ── ESM host-module import binding ──────────────────────────
             let key = self.canon(name);
             if let Some((module, func)) = self.host_import_bindings.get(&key).cloned() {
-                for a in &arg_exprs { self.compile_expr(a)?; }
-                let idx = self.import(&module, &func);
-                self.emit_host_call(idx, arg_exprs.len() as u8);
+                let _ = (module, func);
+                let mut arg_slots = Vec::with_capacity(arg_exprs.len());
+                for (index, arg) in arg_exprs.iter().enumerate() {
+                    self.compile_expr_with_value_copy(arg)?;
+                    let arg_slot = self.define_local(&format!("__host_import_call_arg_{}", index));
+                    self.emit_u16(Op::LOCAL_SET, arg_slot);
+                    self.emit(Op::DROP);
+                    arg_slots.push(arg_slot);
+                }
+                self.emit_var_get(name);
+                let callee_slot = self.define_local("__host_import_call_callee");
+                self.emit_u16(Op::LOCAL_SET, callee_slot);
+                self.emit(Op::DROP);
+                self.emit_call_ref_with_arg_slots(callee_slot, None, &arg_slots);
                 return Ok(());
             }
 
@@ -8603,6 +8627,17 @@ impl Compiler {
     }
 
     pub(super) fn compile_lambda(&mut self, params: &[Param], body: &LambdaBody, captures: &[String]) -> Result<(), String> {
+        self.compile_lambda_with_flags(params, body, captures, false, false)
+    }
+
+    pub(super) fn compile_lambda_with_flags(
+        &mut self,
+        params: &[Param],
+        body: &LambdaBody,
+        captures: &[String],
+        is_async: bool,
+        is_generator: bool,
+    ) -> Result<(), String> {
         let normalized_captures: Vec<String> = captures
             .iter()
             .map(|capture| self.normalize_explicit_capture(capture))
@@ -8612,10 +8647,16 @@ impl Compiler {
             .iter()
             .any(|capture| !Self::split_explicit_capture(capture).0)
         {
-            return self.compile_lambda_with_explicit_captures(params, body, &normalized_captures);
+            return self.compile_lambda_with_explicit_captures(
+                params,
+                body,
+                &normalized_captures,
+                is_async,
+                is_generator,
+            );
         }
 
-        self.compile_lambda_direct(params, body)
+        self.compile_lambda_direct(params, body, is_async, is_generator)
     }
 
     fn compile_lambda_with_explicit_captures(
@@ -8623,6 +8664,8 @@ impl Compiler {
         params: &[Param],
         body: &LambdaBody,
         captures: &[String],
+        is_async: bool,
+        is_generator: bool,
     ) -> Result<(), String> {
         let capture_bindings: Vec<(String, Option<String>)> = captures
             .iter()
@@ -8654,7 +8697,7 @@ impl Compiler {
         // upvalue-captures the factory's locals (the by-value captures, including
         // __js_this). compile_lambda_direct emits REF_FUNC into the factory chunk,
         // leaving the function reference on the factory's operand stack.
-        self.compile_lambda_direct(params, body)?;
+        self.compile_lambda_direct(params, body, is_async, is_generator)?;
 
         // Emit RETURN so the factory returns the function reference it just built.
         let line = self.line;
@@ -8686,7 +8729,13 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_lambda_direct(&mut self, params: &[Param], body: &LambdaBody) -> Result<(), String> {
+    fn compile_lambda_direct(
+        &mut self,
+        params: &[Param],
+        body: &LambdaBody,
+        is_async: bool,
+        is_generator: bool,
+    ) -> Result<(), String> {
         let has_rest = params.last().map_or(false, |p| p.is_rest);
         if has_rest {
             self.rest_fixed_arities.insert(params.len().saturating_sub(1) as u8);
@@ -8695,6 +8744,8 @@ impl Compiler {
         let ci = self.chunks.len();
         let chunk = common::functions::create_function_chunk("<lambda>", arity);
         self.chunks.push(chunk);
+        self.chunks[ci].is_async = is_async;
+        self.chunks[ci].is_generator = is_generator;
         self.scopes.push(Scope::new_function());
         let saved = self.current;
         self.current = ci;
@@ -8718,24 +8769,60 @@ impl Compiler {
             self.current_result_slot = Some(rs);
             Some((rs, saved_rs))
         } else { None };
+        let saved_result_slot = result_slot.as_ref().map(|(_, saved_rs)| *saved_rs);
+
+        let async_try = if is_async && self.is_js_profile() {
+            let line = self.line;
+            Some(common::functions::emit_async_body_start(&mut self.chunks[self.current], line))
+        } else {
+            None
+        };
+        if async_try.is_some() {
+            self.active_async_try_depth += 1;
+        }
 
         match body {
             LambdaBody::Expr(expr) => {
                 self.compile_expr(expr)?;
-                self.emit(Op::RETURN);
+                if self.current_chunk_is_js_async() {
+                    let resolve_idx = self.import("ecma:promise", "resolve");
+                    self.emit_host_call(resolve_idx, 1);
+                    self.emit_return_through_finally(1)?;
+                } else {
+                    self.emit(Op::RETURN);
+                }
             }
             LambdaBody::Block(stmts) => {
                 for s in stmts { self.compile_stmt(s)?; }
             }
         }
 
-        if let Some((rs, saved_rs)) = result_slot {
+        if async_try.is_some() {
+            self.active_async_try_depth = self.active_async_try_depth.saturating_sub(1);
+        }
+
+        if let Some(catch_jump) = async_try {
+            let line = self.line;
+            let chunk = &mut self.chunks[self.current];
+            common::functions::emit_async_body_fallthrough(chunk, catch_jump, line);
+            let resolve_idx = self.import("ecma:promise", "resolve");
+            self.emit_host_call(resolve_idx, 1);
+            self.emit(Op::RETURN);
+            let chunk = &mut self.chunks[self.current];
+            common::functions::patch_async_body_catch(chunk, catch_jump);
+            let reject_idx = self.import("ecma:promise", "reject");
+            self.emit_host_call(reject_idx, 1);
+            self.emit(Op::RETURN);
+        } else if let Some((rs, saved_rs)) = result_slot {
             self.emit_u16(Op::LOCAL_GET, rs);
             self.emit(Op::RETURN);
             self.current_result_slot = saved_rs;
         } else if matches!(body, LambdaBody::Block(_)) {
             let line = self.line;
             common::functions::emit_function_epilogue(&mut self.chunks[ci], line);
+        }
+        if let Some(saved_rs) = saved_result_slot {
+            self.current_result_slot = saved_rs;
         }
 
         self.current_func_name = saved_fn;

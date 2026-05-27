@@ -22,6 +22,40 @@ fn s_val(text: &str) -> Value {
     Value::String(Arc::from(text))
 }
 
+fn versions_value() -> Value {
+    let mut object = Object::new();
+    object.properties.insert("vybe".into(), s_val(env!("CARGO_PKG_VERSION")));
+    object.properties.insert("node".into(), s_val(env!("CARGO_PKG_VERSION")));
+    Value::Object(Arc::new(Mutex::new(object)))
+}
+
+fn argv_value() -> Value {
+    let items: Vec<Value> = std::env::args()
+        .map(|arg| s_val(&arg))
+        .collect();
+    Value::Object(Arc::new(Mutex::new(Object::new_array(items))))
+}
+
+fn argv0_value() -> Value {
+    let argv0 = std::env::args().next().unwrap_or_else(|| "vybex".to_string());
+    s_val(&argv0)
+}
+
+fn exec_path_value() -> Value {
+    match std::env::current_exe() {
+        Ok(path) => s_val(path.to_string_lossy().as_ref()),
+        Err(_) => s_val(""),
+    }
+}
+
+fn env_value() -> Value {
+    let mut object = Object::new();
+    for (key, value) in std::env::vars() {
+        object.properties.insert(key, s_val(&value));
+    }
+    Value::Object(Arc::new(Mutex::new(object)))
+}
+
 /// Process start time, captured once at module init so `uptime()`
 /// can return monotonic seconds since the host process began.
 fn process_start() -> Instant {
@@ -53,34 +87,17 @@ fn node_arch() -> &'static str {
 pub fn register(vm: &mut VM) {
     let _ = process_start(); // initialize the start-time cache up front
 
-    vm.register_host_fn("node:process", "platform", Box::new(|_ctx, _args| s_val(node_platform())));
-    vm.register_host_fn("node:process", "arch", Box::new(|_ctx, _args| s_val(node_arch())));
+    vm.register_host_value("node:process", "platform", s_val(node_platform()));
+    vm.register_host_value("node:process", "arch", s_val(node_arch()));
 
     // Vybe doesn't ship as Node, but consumers expect a "v"-prefixed
     // version string for compat (most regex parsing assumes `v(\d+)`).
-    vm.register_host_fn("node:process", "version", Box::new(|_ctx, _args| {
-        s_val(concat!("v", env!("CARGO_PKG_VERSION")))
-    }));
-
-    vm.register_host_fn("node:process", "versions", Box::new(|_ctx, _args| {
-        let mut o = Object::new();
-        o.properties.insert("vybe".into(), s_val(env!("CARGO_PKG_VERSION")));
-        // node:process consumers may peek `versions.node`; mirror our own
-        // version under that key for max compat.
-        o.properties.insert("node".into(), s_val(env!("CARGO_PKG_VERSION")));
-        Value::Object(Arc::new(Mutex::new(o)))
-    }));
-
-    vm.register_host_fn("node:process", "pid", Box::new(|_ctx, _args| {
-        Value::F64(std::process::id() as f64)
-    }));
-
-    vm.register_host_fn("node:process", "ppid", Box::new(|_ctx, _args| {
-        // Cross-platform parent PID requires libc/winapi calls. Punt
-        // until a test actually demands it; return 0 for now (Node
-        // returns the real PPID).
-        Value::F64(0.0)
-    }));
+    vm.register_host_value("node:process", "version", s_val(concat!("v", env!("CARGO_PKG_VERSION"))));
+    vm.register_host_value("node:process", "versions", versions_value());
+    vm.register_host_value("node:process", "pid", Value::F64(std::process::id() as f64));
+    // Cross-platform parent PID requires libc/winapi calls. Punt until a
+    // test actually demands it; return 0 for now (Node returns the real PPID).
+    vm.register_host_value("node:process", "ppid", Value::F64(0.0));
 
     vm.register_host_fn("node:process", "cwd", Box::new(|_ctx, _args| {
         match std::env::current_dir() {
@@ -104,32 +121,10 @@ pub fn register(vm: &mut VM) {
         std::process::exit(code);
     }));
 
-    vm.register_host_fn("node:process", "argv", Box::new(|_ctx, _args| {
-        let items: Vec<Value> = std::env::args()
-            .map(|arg| s_val(&arg))
-            .collect();
-        Value::Object(Arc::new(Mutex::new(Object::new_array(items))))
-    }));
-
-    vm.register_host_fn("node:process", "argv0", Box::new(|_ctx, _args| {
-        let argv0 = std::env::args().next().unwrap_or_else(|| "vybex".to_string());
-        s_val(&argv0)
-    }));
-
-    vm.register_host_fn("node:process", "execPath", Box::new(|_ctx, _args| {
-        match std::env::current_exe() {
-            Ok(p) => s_val(p.to_string_lossy().as_ref()),
-            Err(_) => s_val(""),
-        }
-    }));
-
-    vm.register_host_fn("node:process", "env", Box::new(|_ctx, _args| {
-        let mut o = Object::new();
-        for (k, v) in std::env::vars() {
-            o.properties.insert(k, s_val(&v));
-        }
-        Value::Object(Arc::new(Mutex::new(o)))
-    }));
+    vm.register_host_value("node:process", "argv", argv_value());
+    vm.register_host_value("node:process", "argv0", argv0_value());
+    vm.register_host_value("node:process", "execPath", exec_path_value());
+    vm.register_host_value("node:process", "env", env_value());
 
     vm.register_host_fn("node:process", "uptime", Box::new(|_ctx, _args| {
         Value::F64(process_start().elapsed().as_secs_f64())

@@ -342,6 +342,11 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, js_arguments_source_slot.unwrap());
             self.emit_u16(Op::LOCAL_SET, slot);
             self.emit(Op::DROP);
+            self.emit_u16(Op::LOCAL_GET, slot);
+            self.emit_var_get(name);
+            let callee_key = self.str_const("callee");
+            self.emit_u16(Op::STRUCT_SET, callee_key);
+            self.emit(Op::DROP);
             Some(slot)
         } else {
             None
@@ -482,7 +487,7 @@ impl Compiler {
         // JSPI; this wrap just covers terminal throw / return.
         let async_try = if is_async && self.is_js_profile() {
             let line = self.line;
-            Some(crate::emitter::errors::emit_try_start(&mut self.chunks[self.current], line))
+            Some(common::functions::emit_async_body_start(&mut self.chunks[self.current], line))
         } else {
             None
         };
@@ -522,15 +527,13 @@ impl Compiler {
             // (early returns); we still need the fall-through path
             // to leave a fulfilled Promise on the stack.
             let chunk = &mut self.chunks[self.current];
-            crate::emitter::errors::emit_try_end(chunk, line);
-            // After try_end, the body completed normally. Wrap with
-            chunk.emit_op(Op::UNDEFINED, line);
+            common::functions::emit_async_body_fallthrough(chunk, catch_jump, line);
             let resolve_idx = self.import("ecma:promise", "resolve");
             self.emit_host_call(resolve_idx, 1);
             self.emit_return();
             // Catch handler — exception value on TOS.
             let chunk = &mut self.chunks[self.current];
-            crate::emitter::errors::patch_catch(chunk, catch_jump);
+            common::functions::patch_async_body_catch(chunk, catch_jump);
             let reject_idx = self.import("ecma:promise", "reject");
             self.emit_host_call(reject_idx, 1);
             self.emit_return();

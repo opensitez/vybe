@@ -61,6 +61,22 @@ const VARIANTS: &[(TypedElemKind, &str)] = &[
     (TypedElemKind::BigU64,    "ecma:biguint64array"),
 ];
 
+pub(crate) fn typed_array_name(elem: TypedElemKind) -> &'static str {
+    match elem {
+        TypedElemKind::I8 => "Int8Array",
+        TypedElemKind::U8 => "Uint8Array",
+        TypedElemKind::U8Clamped => "Uint8ClampedArray",
+        TypedElemKind::I16 => "Int16Array",
+        TypedElemKind::U16 => "Uint16Array",
+        TypedElemKind::I32 => "Int32Array",
+        TypedElemKind::U32 => "Uint32Array",
+        TypedElemKind::F32 => "Float32Array",
+        TypedElemKind::F64 => "Float64Array",
+        TypedElemKind::BigI64 => "BigInt64Array",
+        TypedElemKind::BigU64 => "BigUint64Array",
+    }
+}
+
 pub(crate) fn zero_value(elem: TypedElemKind) -> Value {
     match elem {
         TypedElemKind::F32 | TypedElemKind::F64 => Value::F64(0.0),
@@ -209,6 +225,7 @@ pub(crate) fn write_element(ta: &TypedArrayState, i: usize, v: &Value) {
         }
         TypedElemKind::BigI64 => {
             let val = match v {
+                Value::BigInt(n) => *n as i64,
                 Value::I64(n) => *n,
                 other => other.as_i32() as i64,
             };
@@ -217,6 +234,7 @@ pub(crate) fn write_element(ta: &TypedArrayState, i: usize, v: &Value) {
         }
         TypedElemKind::BigU64 => {
             let val = match v {
+                Value::BigInt(n) => *n as u64,
                 Value::I64(n) => *n as u64,
                 other => other.as_i32() as u64,
             };
@@ -264,6 +282,7 @@ pub(crate) fn new_typed_array(elem: TypedElemKind, length: usize) -> Value {
     obj.properties.insert("byteLength".into(), Value::I32(byte_length as i32));
     obj.properties.insert("byteOffset".into(), Value::I32(0));
     obj.properties.insert("BYTES_PER_ELEMENT".into(), Value::I32(bpe as i32));
+    obj.properties.insert("__type".into(), Value::String(Arc::from(typed_array_name(elem))));
     Value::Object(Arc::new(Mutex::new(obj)))
 }
 
@@ -297,6 +316,7 @@ pub(crate) fn new_view_over_buffer(
     obj.properties.insert("byteLength".into(), Value::I32((length * bpe) as i32));
     obj.properties.insert("byteOffset".into(), Value::I32(byte_offset as i32));
     obj.properties.insert("BYTES_PER_ELEMENT".into(), Value::I32(bpe as i32));
+    obj.properties.insert("__type".into(), Value::String(Arc::from(typed_array_name(elem))));
     Value::Object(Arc::new(Mutex::new(obj)))
 }
 

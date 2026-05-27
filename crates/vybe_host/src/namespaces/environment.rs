@@ -1,62 +1,32 @@
 use super::*;
 
 pub fn register(vm: &mut VM) {
-    // Environment (direct shortcut)
-    let env = ensure_namespace(vm, &["Environment"]);
-    register_env_methods(vm, &env);
+    // JS `env.*` ambient compatibility namespace.
+    let js_env = ensure_namespace(vm, &["env"]);
+    set_prop(&js_env, "args", host_fn_ref(vm, "wasi:cli", "args"));
+    set_prop(&js_env, "cwd", host_fn_ref(vm, "wasi:cli", "cwd"));
+    set_prop(&js_env, "platform", host_fn_ref(vm, "wasi:cli", "platform"));
+    set_prop(&js_env, "arch", host_fn_ref(vm, "wasi:cli", "arch"));
+    set_prop(&js_env, "getEnv", host_fn_ref(vm, "wasi:cli", "getEnv"));
 
-    // System.Environment
-    let sys_env = ensure_namespace(vm, &["System", "Environment"]);
-    register_env_methods(vm, &sys_env);
+    // JS `random.*` ambient compatibility namespace.
+    let random = ensure_namespace(vm, &["random"]);
+    set_prop(&random, "get-random-bytes", host_fn_ref(vm, "wasi:random/random", "get-random-bytes"));
+    set_prop(&random, "get-random-u64", host_fn_ref(vm, "wasi:random/random", "get-random-u64"));
+    set_prop(&random, "random", host_fn_ref(vm, "wasi:random/random", "random"));
+    set_prop(&random, "randomInt", host_fn_ref(vm, "wasi:random/random", "randomInt"));
+    set_prop(&random, "uuid", host_fn_ref(vm, "wasi:random/random", "uuid"));
 
-    // Thread (direct shortcut)
-    let thread = ensure_namespace(vm, &["Thread"]);
-    set_prop(&thread, "sleep", host_fn_ref(vm, "wasi:clocks", "sleep"));
+    // JS `clock.*` ambient namespace.
+    let clock = ensure_namespace(vm, &["clock"]);
+    set_prop(&clock, "now", host_fn_ref(vm, "wasi:clocks", "now"));
+    set_prop(&clock, "hrtime", host_fn_ref(vm, "wasi:clocks", "hrtime"));
+    set_prop(&clock, "sleep", host_fn_ref(vm, "wasi:clocks", "sleep"));
+    set_prop(&clock, "toISOString", host_fn_ref(vm, "wasi:clocks", "toISOString"));
 
-    // System.Threading.Thread
-    let sys_thread = ensure_namespace(vm, &["System", "Threading", "Thread"]);
-    set_prop(&sys_thread, "sleep", host_fn_ref(vm, "wasi:clocks", "sleep"));
-}
-
-fn register_env_methods(vm: &VM, ns: &Value) {
-    // 0-arg properties — computed once at startup and stored as values
-    let cwd = std::env::current_dir()
-        .map(|p| Value::String(Arc::from(p.to_string_lossy().as_ref())))
-        .unwrap_or(Value::Null);
-    set_prop(ns, "currentdirectory", cwd);
-
-    let machine = std::env::var("HOSTNAME")
-        .or_else(|_| std::env::var("HOST"))
-        .or_else(|_| std::env::var("COMPUTERNAME"))
-        .unwrap_or_else(|_| {
-            std::env::var("USER").map(|u| format!("{}-mac", u)).unwrap_or_else(|_| "unknown".into())
-        });
-    set_prop(ns, "machinename", Value::String(Arc::from(machine.as_str())));
-
-    let user = std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_else(|_| "unknown".into());
-    set_prop(ns, "username", Value::String(Arc::from(user.as_str())));
-
-    set_prop(ns, "osversion", Value::String(Arc::from(std::env::consts::OS)));
-    set_prop(ns, "newline", Value::String(Arc::from("\n")));
-
-    let nprocs = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-    set_prop(ns, "processorcount", Value::F64(nprocs as f64));
-
-    set_prop(ns, "is64bitoperatingsystem", Value::Bool(cfg!(target_pointer_width = "64")));
-    set_prop(ns, "is64bitprocess", Value::Bool(cfg!(target_pointer_width = "64")));
-
-    let ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    set_prop(ns, "tickcount", Value::F64(ms as f64));
-
-    // Functions called with args — keep as function refs
-    set_prop(ns, "getenvironmentvariable", host_fn_ref(vm, "wasi:cli", "getEnv"));
-    set_prop(ns, "setenvironmentvariable", Value::Null); // noop
-    set_prop(ns, "getfolderpath", host_fn_ref(vm, "wasi:cli", "getFolderPath"));
-    set_prop(ns, "commandline", host_fn_ref(vm, "wasi:cli", "args"));
-    set_prop(ns, "exit", host_fn_ref(vm, "wasi:cli", "exit"));
+    // JS `http.*` ambient namespace (wasi:http shim).
+    let http = ensure_namespace(vm, &["http"]);
+    set_prop(&http, "fetch", host_fn_ref(vm, "wasi:http", "fetch"));
+    set_prop(&http, "get", host_fn_ref(vm, "wasi:http", "get"));
+    set_prop(&http, "post", host_fn_ref(vm, "wasi:http", "post"));
 }

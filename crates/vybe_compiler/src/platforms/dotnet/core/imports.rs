@@ -1,4 +1,6 @@
-/// Return the default set of shared .NET namespace imports.
+/// Return the default set of shared `.NET`-shaped namespace imports.
+/// These are compile-time names only; runtime dispatch still targets real
+/// capability interfaces such as `ecma:*`, `wasi:*`, `node:*`, and `vybe:*`.
 pub fn default_interface_imports() -> Vec<String> {
     vec![
         "system".into(),

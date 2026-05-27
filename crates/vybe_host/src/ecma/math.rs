@@ -1,8 +1,8 @@
 use vybe_bytecode::{VM, Value};
 
 pub fn register(vm: &mut VM) {
-    // Core math — also available as opcodes, but registered as host fns
-    // so namespace objects can reference them
+    // Core math — callable ops stay as host functions, while spec
+    // constants are registered as immutable value exports.
     vm.register_host_fn("ecma:math", "floor",  Box::new(|_ctx, a| Value::F64(f(a, 0).floor())));
     vm.register_host_fn("ecma:math", "ceil",   Box::new(|_ctx, a| Value::F64(f(a, 0).ceil())));
     vm.register_host_fn("ecma:math", "abs",    Box::new(|_ctx, a| Value::F64(f(a, 0).abs())));
@@ -26,8 +26,8 @@ pub fn register(vm: &mut VM) {
         let x = f(a, 0);
         if a.len() > 1 { Value::F64(x.ln() / f(a, 1).ln()) } else { Value::F64(x.ln()) }
     }));
-    vm.register_host_fn("ecma:math", "PI",   Box::new(|_ctx, _| Value::F64(std::f64::consts::PI)));
-    vm.register_host_fn("ecma:math", "E",    Box::new(|_ctx, _| Value::F64(std::f64::consts::E)));
+    vm.register_host_value("ecma:math", "PI", Value::F64(std::f64::consts::PI));
+    vm.register_host_value("ecma:math", "E", Value::F64(std::f64::consts::E));
     vm.register_host_fn("ecma:math", "sign",  Box::new(|_ctx, a| {
         let n = f(a, 0);
         if n > 0.0 { Value::F64(1.0) } else if n < 0.0 { Value::F64(-1.0) } else { Value::F64(0.0) }

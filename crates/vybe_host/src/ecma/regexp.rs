@@ -722,24 +722,31 @@ fn regexp_string_split(args: &[Value]) -> Value {
     if pattern.is_empty() || pattern == "(?:)" {
         return make_array(input.chars().map(|ch| s_val(&ch.to_string())).collect());
     }
-    let limit = args.get(2)
-        .map(|v| v.as_i32())
-        .filter(|n| *n > 0)
-        .map(|n| n as usize);
+    let limit = args.get(2).map(|v| v.as_i32().max(0) as usize);
+    if matches!(limit, Some(0)) {
+        return make_array(Vec::new());
+    }
     match compile(&pattern, &flags) {
         Some(re) => {
             let mut parts: Vec<Value> = Vec::new();
             let mut last_end = 0;
             for m in re.find_iter(&input) {
-                if let Some(n) = limit {
-                    if parts.len() + 1 >= n {
-                        break;
+                parts.push(s_val(&input[last_end..m.start()]));
+                if matches!(limit, Some(n) if parts.len() >= n) {
+                    return make_array(parts);
+                }
+                for index in 1..=m.captures.len() {
+                    parts.push(match_group_value(&m, &input, index));
+                    if matches!(limit, Some(n) if parts.len() >= n) {
+                        return make_array(parts);
                     }
                 }
-                parts.push(s_val(&input[last_end..m.start()]));
                 last_end = m.end();
             }
             parts.push(s_val(&input[last_end..]));
+            if let Some(n) = limit {
+                parts.truncate(n);
+            }
             make_array(parts)
         }
         None => make_array(vec![s_val(&input)]),

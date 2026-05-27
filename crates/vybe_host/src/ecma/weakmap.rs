@@ -22,7 +22,7 @@
 
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::value::{Object, ObjectKind, Value};
-use vybe_bytecode::VM;
+use vybe_bytecode::{HostContext, VM};
 
 pub const WEAKMAP_TAG: &str = "__vybe_js_weakmap";
 pub const WEAKSET_TAG: &str = "__vybe_js_weakset";
@@ -83,6 +83,22 @@ pub fn key_ptr_find(keys: &[Value], key: &Value) -> Option<usize> {
     None
 }
 
+fn throw_invalid_weakmap_key(ctx: &mut HostContext) -> Value {
+    ctx.throw_value(crate::ecma::error::new_error(
+        "TypeError",
+        "Invalid value used as weak map key",
+    ));
+    Value::Null
+}
+
+fn throw_invalid_weakset_value(ctx: &mut HostContext) -> Value {
+    ctx.throw_value(crate::ecma::error::new_error(
+        "TypeError",
+        "Invalid value used in weak set",
+    ));
+    Value::Null
+}
+
 pub fn register(vm: &mut VM) {
     register_weakmap(vm);
     register_weakset(vm);
@@ -92,7 +108,7 @@ pub fn register(vm: &mut VM) {
 
 fn register_weakmap(vm: &mut VM) {
     vm.register_host_fn("ecma:weakmap", "new",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let m = new_weakmap();
             if let (Value::Object(mapobj), Some(Value::Object(src))) = (&m, args.first()) {
                 let s = src.lock().unwrap();
@@ -104,6 +120,9 @@ fn register_weakmap(vm: &mut VM) {
                             let pl = p.lock().unwrap();
                             if let ObjectKind::Array(ref kv) = pl.kind {
                                 if kv.len() >= 2 {
+                                    if !matches!(kv[0], Value::Object(_)) {
+                                        return throw_invalid_weakmap_key(ctx);
+                                    }
                                     weakmap_set(mapobj, kv[0].clone(), kv[1].clone());
                                 }
                             }
@@ -115,7 +134,7 @@ fn register_weakmap(vm: &mut VM) {
         }));
 
     vm.register_host_fn("ecma:weakmap", "fromIterable",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let m = new_weakmap();
             if let Value::Object(mapobj) = &m {
                 if let Some(Value::Object(src)) = args.first() {
@@ -128,6 +147,9 @@ fn register_weakmap(vm: &mut VM) {
                                 let pl = p.lock().unwrap();
                                 if let ObjectKind::Array(ref kv) = pl.kind {
                                     if kv.len() >= 2 {
+                                        if !matches!(kv[0], Value::Object(_)) {
+                                            return throw_invalid_weakmap_key(ctx);
+                                        }
                                         weakmap_set(mapobj, kv[0].clone(), kv[1].clone());
                                     }
                                 }
@@ -163,13 +185,12 @@ fn register_weakmap(vm: &mut VM) {
         }));
 
     vm.register_host_fn("ecma:weakmap", "set",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             if let Some(mapobj) = is_weakmap(args, 0) {
                 let key = args.get(1).cloned().unwrap_or(Value::Undefined);
                 let val = args.get(2).cloned().unwrap_or(Value::Undefined);
-                // Per spec: non-object keys throw TypeError. MVP returns the map without inserting.
                 if !matches!(key, Value::Object(_)) {
-                    return Value::Object(mapobj);
+                    return throw_invalid_weakmap_key(ctx);
                 }
                 weakmap_set(&mapobj, key, val);
                 return Value::Object(mapobj);
@@ -259,7 +280,7 @@ fn weakmap_set(mapobj: &Arc<Mutex<Object>>, key: Value, val: Value) {
 
 fn register_weakset(vm: &mut VM) {
     vm.register_host_fn("ecma:weakset", "new",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let s = new_weakset();
             if let (Value::Object(setobj), Some(Value::Object(src))) = (&s, args.first()) {
                 let srclock = src.lock().unwrap();
@@ -268,7 +289,9 @@ fn register_weakset(vm: &mut VM) {
                     drop(srclock);
                     let mut so = setobj.lock().unwrap();
                     for item in items {
-                        if !matches!(item, Value::Object(_)) { continue; }
+                        if !matches!(item, Value::Object(_)) {
+                            return throw_invalid_weakset_value(ctx);
+                        }
                         if let ObjectKind::Array(ref vs) = so.kind {
                             if key_ptr_find(vs, &item).is_some() { continue; }
                         }
@@ -282,7 +305,7 @@ fn register_weakset(vm: &mut VM) {
         }));
 
     vm.register_host_fn("ecma:weakset", "fromIterable",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let s = new_weakset();
             if let Value::Object(setobj) = &s {
                 if let Some(Value::Object(src)) = args.first() {
@@ -292,7 +315,9 @@ fn register_weakset(vm: &mut VM) {
                         drop(srclock);
                         let mut so = setobj.lock().unwrap();
                         for item in items {
-                            if !matches!(item, Value::Object(_)) { continue; }
+                            if !matches!(item, Value::Object(_)) {
+                                return throw_invalid_weakset_value(ctx);
+                            }
                             if let ObjectKind::Array(ref vs) = so.kind {
                                 if key_ptr_find(vs, &item).is_some() { continue; }
                             }
@@ -307,10 +332,12 @@ fn register_weakset(vm: &mut VM) {
         }));
 
     vm.register_host_fn("ecma:weakset", "add",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             if let Some(setobj) = is_weakset(args, 0) {
                 let v = args.get(1).cloned().unwrap_or(Value::Undefined);
-                if !matches!(v, Value::Object(_)) { return Value::Object(setobj); }
+                if !matches!(v, Value::Object(_)) {
+                    return throw_invalid_weakset_value(ctx);
+                }
                 let mut so = setobj.lock().unwrap();
                 if let ObjectKind::Array(ref vs) = so.kind {
                     if key_ptr_find(vs, &v).is_some() {

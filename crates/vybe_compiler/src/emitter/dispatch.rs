@@ -165,6 +165,19 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
         "delegates.combine" => crate::emitter::delegates::emit_combine(chunks, current, line),
         "delegates.remove" => crate::emitter::delegates::emit_remove(chunks, current, line),
 
+        // ── JS Node compatibility adapters ───────────────────────
+        // JS source keeps the Node-shaped call surface, but lowers
+        // through compile-time adapters that compose the real
+        // `wasi:sockets/*` interfaces. These live in the shared
+        // `.NET` adapter home under `platforms/dotnet/core` so every
+        // frontend can reuse them without a JS-only emitter fork.
+        "js.net_create_connection"
+            => crate::emitter::dotnet::core::node_socket_adapter::emit_net_create_connection(chunks, current, argc, line),
+        "js.net_create_server"
+            => crate::emitter::dotnet::core::node_socket_adapter::emit_net_create_server(chunks, current, argc, line),
+        "js.dgram_create_socket"
+            => crate::emitter::dotnet::core::node_socket_adapter::emit_dgram_create_socket(chunks, current, argc, line),
+
         // ── Threading ops ──
         // Real WASM threading opcodes (wasi-threads proposal):
         // thread_spawn, thread_join, memory atomic_*. NOT host calls — these

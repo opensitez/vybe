@@ -563,8 +563,10 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
     // gate for future wasi-threads primitives.
     // `vybe:crypto` retired — md5/sha256 flow through `web:crypto`
     // (registered unconditionally via `crate::web::register` above).
-    // The Crypto capability gate remains for future wasi:crypto/* primitives.
-    let _ = caps.has(Capability::Crypto);
+    // Real `wasi:crypto/*` shims stay capability-gated here.
+    if caps.has(Capability::Crypto) {
+        crate::wasi::crypto::register(vm);
+    }
     // `Xml` capability now gates access to `web:dom-parser` (registered
     // unconditionally via `crate::web::register` above). The flag stays
     // for future wasi:xml-style proposals or capability-restricted

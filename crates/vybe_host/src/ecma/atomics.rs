@@ -174,11 +174,15 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("ecma:atomics", "wait", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let idx = args.get(1).map(|v| v.as_f64() as usize).unwrap_or(0);
         let expected = args.get(2).map(|v| v.as_f64() as i64).unwrap_or(0);
+        let timeout_ms = args.get(3).map(|v| v.as_f64()).unwrap_or(f64::INFINITY);
         if let Some((buf, off, bpe)) = typed_array_buffer(args, 0) {
             let actual = atomic_load(&buf, off, idx, bpe);
             if actual != expected {
                 return Value::String(Arc::from("not-equal"));
             }
+        }
+        if timeout_ms <= 0.0 {
+            return Value::String(Arc::from("timed-out"));
         }
         Value::String(Arc::from("ok"))
     }));

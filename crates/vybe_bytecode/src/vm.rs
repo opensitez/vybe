@@ -43,6 +43,9 @@ pub struct HostContext<'a> {
     /// Raw pointer to VM.last_exception — set by THROW when no handler matches.
     /// Null when no VM is attached (HostContext::empty()).
     last_exception_slot: *mut Option<Value>,
+    /// Raw pointer to VM globals for host-managed JS receiver binding.
+    /// Null when no VM is attached (HostContext::empty()).
+    globals_slot: *mut HashMap<String, Value>,
 }
 
 // SAFETY: HostContext is always created and used on the VM's owning thread.
@@ -91,6 +94,30 @@ impl<'a> HostContext<'a> {
         }
     }
 
+    /// Read the current JS receiver binding (`__js_this`) from globals.
+    /// Returns `Undefined` when no binding exists.
+    pub fn current_js_this(&self) -> Value {
+        unsafe {
+            if self.globals_slot.is_null() {
+                Value::Undefined
+            } else {
+                (*self.globals_slot)
+                    .get("__js_this")
+                    .cloned()
+                    .unwrap_or(Value::Undefined)
+            }
+        }
+    }
+
+    /// Update the current JS receiver binding (`__js_this`) in globals.
+    pub fn set_js_this(&mut self, value: Value) {
+        unsafe {
+            if !self.globals_slot.is_null() {
+                (*self.globals_slot).insert("__js_this".into(), value);
+            }
+        }
+    }
+
     /// Queue a microtask (Promise reaction) to run after the current task.
     /// ECMA-262 §27.2.1.3 EnqueueJob("PromiseJobs", ...).
     pub fn queue_microtask(&mut self, callback: Value, value: Value) {
@@ -125,6 +152,7 @@ impl<'a> HostContext<'a> {
             memory: None,
             event_loop: None,
             last_exception_slot: std::ptr::null_mut(),
+            globals_slot: std::ptr::null_mut(),
         }
     }
 }
@@ -555,10 +583,113 @@ impl VM {
         // Synthetic ModuleRecord; subsequent registrations add exports.
         // `host_registry` remains the fast lookup path; `modules` is
         // the spec-aligned per-module view.
+        self.insert_host_module_export(module, name, ExportEntry::Function { idx });
+    }
+
+    /// Authoritative host function export view used by both the ESM linker
+    /// and the Component linker. This derives from Module Records rather than
+    /// the legacy flat cache so both link paths observe the same synthetic
+    /// modules and exports.
+    pub fn iter_host_function_exports(&self) -> impl Iterator<Item = (String, String, usize)> + '_ {
+        self.modules.iter().flat_map(move |(module, record)| {
+            record.exports.keys().filter_map(move |name| {
+                self.resolve_host_function_index(module, name)
+                    .map(|idx| (module.clone(), name.clone(), idx))
+            })
+        })
+    }
+
+    /// Register an immutable host value in the authoritative Module Records
+    /// registry so ESM validation and host-module adapters can observe it.
+    pub fn register_host_value(&mut self, module: &str, name: &str, value: Value) {
+        self.insert_host_module_export(module, name, ExportEntry::Value(value));
+    }
+
+    /// Register a host class type export backed by the shared TypeRegistry.
+    pub fn register_host_class_export(&mut self, module: &str, name: &str, type_id: usize) {
+        self.insert_host_module_export(module, name, ExportEntry::Class { type_id });
+    }
+
+    /// Register a host resource type export backed by the shared TypeRegistry.
+    pub fn register_host_resource_type_export(&mut self, module: &str, name: &str, type_id: usize) {
+        self.insert_host_module_export(module, name, ExportEntry::ResourceType { type_id });
+    }
+
+    /// Resolve a host function import through the authoritative Module Records,
+    /// following any Indirect re-exports until a concrete host function is found.
+    pub fn resolve_host_function_index(&self, module: &str, name: &str) -> Option<usize> {
+        let mut visited = Vec::new();
+        match self.resolve_host_export(module, name, &mut visited)? {
+            ExportEntry::Function { idx } => Some(*idx),
+            _ => None,
+        }
+    }
+
+    /// Resolve host type exports (Class / ResourceType) through Module Records.
+    pub fn iter_host_type_exports(&self) -> impl Iterator<Item = (String, String, crate::TypeDef)> + '_ {
+        self.modules.iter().flat_map(move |(module, record)| {
+            record.exports.keys().filter_map(move |name| {
+                self.resolve_host_type_export(module, name)
+                    .map(|typedef| (module.clone(), name.clone(), typedef))
+            })
+        })
+    }
+
+    fn insert_host_module_export(&mut self, module: &str, name: &str, export: ExportEntry) {
+        self.insert_module_export(module, name, export.clone());
+        if let Some((alias_module, alias_name)) = Self::canonical_subinterface_alias(module, name) {
+            self.insert_module_export(&alias_module, &alias_name, export);
+        }
+    }
+
+    fn insert_module_export(&mut self, module: &str, name: &str, export: ExportEntry) {
         let record = self.modules
             .entry(module.to_string())
             .or_insert_with(|| ModuleRecord::new_synthetic(module));
-        record.exports.insert(name.to_string(), ExportEntry::Function { idx });
+        record.exports.insert(name.to_string(), export);
+    }
+
+    fn canonical_subinterface_alias(module: &str, name: &str) -> Option<(String, String)> {
+        if name.starts_with('[') {
+            return None;
+        }
+        let (path, leaf) = name.rsplit_once('.')?;
+        if path.is_empty() || leaf.is_empty() {
+            return None;
+        }
+        let alias_module = format!("{}/{}", module, path.replace('.', "/"));
+        Some((alias_module, leaf.to_string()))
+    }
+
+    fn resolve_host_export<'a>(
+        &'a self,
+        module: &str,
+        name: &str,
+        visited: &mut Vec<(String, String)>,
+    ) -> Option<&'a ExportEntry> {
+        let key = (module.to_string(), name.to_string());
+        if visited.contains(&key) {
+            return None;
+        }
+        visited.push(key);
+
+        let record = self.modules.get(module)?;
+        match record.exports.get(name)? {
+            ExportEntry::Indirect { from, name: target_name } => {
+                self.resolve_host_export(from, target_name, visited)
+            }
+            export => Some(export),
+        }
+    }
+
+    fn resolve_host_type_export(&self, module: &str, name: &str) -> Option<crate::TypeDef> {
+        let mut visited = Vec::new();
+        match self.resolve_host_export(module, name, &mut visited)? {
+            ExportEntry::Class { type_id } | ExportEntry::ResourceType { type_id } => {
+                self.type_registry.get(*type_id).cloned()
+            }
+            _ => None,
+        }
     }
 
     /// Create a HostContext with callback capability for host functions.
@@ -572,6 +703,7 @@ impl VM {
         let el = self.event_loop.clone();
         // Raw pointer to last_exception — safe: valid for host call duration.
         let exc_ptr = &mut self.last_exception as *mut Option<Value>;
+        let globals_ptr = &mut self.globals as *mut HashMap<String, Value>;
         HostContext {
             invoker: Some(unsafe {
                 // SAFETY: vm_ptr is valid for the duration of the host function call.
@@ -581,6 +713,7 @@ impl VM {
             memory: None,
             event_loop: Some(el),
             last_exception_slot: exc_ptr,
+            globals_slot: globals_ptr,
         }
     }
 
@@ -613,9 +746,15 @@ impl VM {
             self.stack.push(arg.clone());
         }
 
-        // Call the function (pushes a new frame)
+        // Call the function (pushes a new frame for compiled fns; inline for host fns)
         if self.call_value(args.len()).is_err() {
             return Value::Null;
+        }
+
+        // Host functions run inline — no frame was pushed, result is already on the stack.
+        // Calling execute_until would re-enter the dispatch loop at the wrong IP.
+        if self.frames.len() == saved_frame_depth {
+            return self.stack.pop().unwrap_or(Value::Null);
         }
 
         // Execute until the callback frame returns
@@ -885,7 +1024,7 @@ impl VM {
                     ];
                     let mut resolved = false;
                     for key in &key_candidates {
-                        if let Some(&idx) = self.host_registry.get(key) {
+                        if let Some(idx) = self.resolve_host_function_index(&key.0, &key.1) {
                             self.import_table.push(ImportTarget::Host(idx));
                             resolved = true;
                             break;
@@ -1006,8 +1145,7 @@ impl VM {
         self.import_table.clear();
         for (_i, import) in self.chunks[script_idx].imports.iter().enumerate() {
             // 1. Try host function registry (exact module:name match)
-            let key = (import.module.clone(), import.name.clone());
-            if let Some(&idx) = self.host_registry.get(&key) {
+            if let Some(idx) = self.resolve_host_function_index(&import.module, &import.name) {
                 self.import_table.push(ImportTarget::Host(idx));
                 continue;
             }

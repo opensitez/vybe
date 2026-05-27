@@ -84,7 +84,7 @@ console.log(Object(obj) === obj);
     object_number_box_valueof_roundtrips_primitive => { r#"console.log(Object(1).valueOf());"#, ["1"] };
     object_boolean_box_valueof_roundtrips_primitive => { r#"console.log(Object(true).valueOf());"#, ["true"] };
     object_string_box_valueof_roundtrips_primitive => { r#"console.log(Object("x").valueOf());"#, ["x"] };
-    object_bigint_box_valueof_roundtrips_primitive => { r#"console.log(Object(12n).valueOf());"#, ["12"] };
+    object_bigint_box_valueof_roundtrips_primitive => { r#"console.log(Object(12n).valueOf());"#, ["12n"] };
     object_symbol_box_valueof_roundtrips_primitive => {
         r#"
 const s = Symbol.for("boxed");

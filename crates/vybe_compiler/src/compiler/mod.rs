@@ -306,16 +306,14 @@ pub struct Compiler {
     generator_functions: HashSet<String>,
     /// ESM host-module import bindings: canon(local) → (module, func).
     /// Populated from user `import { X } from "wasi:foo"` statements.
-    /// A direct call to `X` compiles to `CALL_IMPORT`; read-as-value
-    /// (`const f = X`) reads the global that `host_imports::install`
-    /// places under the same key.
+    /// Calls and reads both go through the installed runtime binding so
+    /// function exports stay callable while value exports preserve
+    /// normal JS non-callable semantics.
     host_import_bindings: HashMap<String, (String, String)>,
     /// ESM wildcard namespace aliases: canon(alias) → module specifier.
     /// `import * as cli from "wasi:cli"` records `cli` → `"wasi:cli"`.
-    /// Module Namespace Object access `cli.field` is resolved at compile
-    /// time to `CALL_IMPORT (wasi:cli, field)` with no receiver pushed.
-    /// Bare-value access of `cli` uses a runtime namespace object built
-    /// by `host_imports::install` (reflection path).
+    /// Bare-value access and calls both route through the runtime Module
+    /// Namespace object built by `host_imports::install`.
     host_namespace_aliases: HashMap<String, String>,
     /// Component-Model package roots: canon(prefix) → module_root.
     /// Populated by the Linker from profile `PackageRoot` defaults
@@ -2414,6 +2412,9 @@ impl Compiler {
     ) -> Result<(), String> {
 
         let key_index_slot = self.maybe_define_php_generator_key_index_slot(key);
+    let did_break_slot = self.define_local("__gen_for_did_break");
+    self.emit(Op::FALSE);
+    self.emit_u16(Op::LOCAL_SET, did_break_slot); self.emit(Op::DROP);
 
         let line = self.line;
         let block_patch = self.chunk().emit_block(line);
@@ -2473,7 +2474,7 @@ impl Compiler {
             label: self.pending_label.take(),
             break_label_depth: break_depth,
             continue_label_depth: continue_depth,
-            did_break_slot: None,
+            did_break_slot: Some(did_break_slot),
         });
         for s in body { self.compile_stmt(s)?; }
         self.loops.pop();
@@ -2490,8 +2491,44 @@ impl Compiler {
         self.chunk().patch_block(block_patch);
         self.label_depth -= 2;
 
+        let skip_cleanup = self.chunk().emit_block(line);
+        self.label_depth += 1;
+        self.emit_u16(Op::LOCAL_GET, did_break_slot);
+        self.emit(Op::DYN_TO_BOOL);
+        self.emit(Op::DYN_NOT);
+        self.chunk().emit_br_if(0, line);
+
+        self.emit_u16(Op::LOCAL_GET, cont_slot);
+        let is_done_idx = self.import("ecma:value", "isGeneratorDone");
+        self.emit_host_call(is_done_idx, 1);
+        let already_done = self.emit_jump(Op::BR_IF_TRUE);
+
+        self.emit_u16(Op::LOCAL_GET, cont_slot);
+        self.emit(Op::UNDEFINED);
+        self.emit_generator_control_packet_from_stack("return");
+        self.emit_u16(Op::RESUME, 0);
+        self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_GET, cont_slot);
+        self.emit(Op::TRUE);
+        let returned_key = self.str_const("__vybe_gen_returned");
+        self.emit_u16(Op::STRUCT_SET, returned_key);
+        self.emit(Op::DROP);
+        self.patch_jump(already_done);
+
+        self.chunk().emit_end(line);
+        self.chunk().patch_block(skip_cleanup);
+        self.label_depth -= 1;
+
         if let Some(else_stmts) = else_body {
+            let skip_else = self.chunk().emit_block(line);
+            self.label_depth += 1;
+            self.emit_u16(Op::LOCAL_GET, did_break_slot);
+            self.emit(Op::DYN_TO_BOOL);
+            self.chunk().emit_br_if(0, line);
             for s in else_stmts { self.compile_stmt(s)?; }
+            self.chunk().emit_end(line);
+            self.chunk().patch_block(skip_else);
+            self.label_depth -= 1;
         }
         Ok(())
     }
@@ -5106,38 +5143,41 @@ impl Compiler {
         // Only do this when the name isn't shadowed by an actual global
         // (e.g. `Dim list As New List(Of String)` shadows the `list` type name).
         let is_js_runtime_global = self.is_js_profile()
-            && matches!(
-                name,
-                "Object"
-                    | "Boolean"
-                    | "Number"
-                    | "String"
-                    | "Array"
-                    | "Function"
-                    | "Symbol"
-                    | "BigInt"
-                    | "Error"
-                    | "EvalError"
-                    | "RangeError"
-                    | "ReferenceError"
-                    | "SyntaxError"
-                    | "TypeError"
-                    | "URIError"
-                    | "AggregateError"
-                    | "ArrayBuffer"
-                    | "SharedArrayBuffer"
-                    | "DataView"
-                    | "Int8Array"
-                    | "Uint8Array"
-                    | "Uint8ClampedArray"
-                    | "Int16Array"
-                    | "Uint16Array"
-                    | "Int32Array"
-                    | "Uint32Array"
-                    | "Float32Array"
-                    | "Float64Array"
-                    | "BigInt64Array"
-                    | "BigUint64Array"
+            && (
+                matches!(
+                    name,
+                    "Object"
+                        | "Boolean"
+                        | "Number"
+                        | "String"
+                        | "Array"
+                        | "Function"
+                        | "Symbol"
+                        | "BigInt"
+                        | "Error"
+                        | "EvalError"
+                        | "RangeError"
+                        | "ReferenceError"
+                        | "SyntaxError"
+                        | "TypeError"
+                        | "URIError"
+                        | "AggregateError"
+                        | "ArrayBuffer"
+                        | "SharedArrayBuffer"
+                        | "DataView"
+                        | "Int8Array"
+                        | "Uint8Array"
+                        | "Uint8ClampedArray"
+                        | "Int16Array"
+                        | "Uint16Array"
+                        | "Int32Array"
+                        | "Uint32Array"
+                        | "Float32Array"
+                        | "Float64Array"
+                        | "BigInt64Array"
+                        | "BigUint64Array"
+                )
+                || self.host_namespace_aliases.contains_key(&cname)
             );
         if self.profile.known_types.contains_key(name)
             && !self.defined_globals.contains(name)
@@ -8631,14 +8671,15 @@ impl Compiler {
                     // the binding name as their `name` property.
                     // Covers `const f = () => x` / `const f = function() {}`.
                     if self.is_js_profile() {
-                        let is_anon_fn = match &init_expr.kind {
+                        let should_infer_name = match &init_expr.kind {
                             ExprKind::Lambda { .. } => true,
                             ExprKind::FunctionExpr(stmt) => {
                                 matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name.is_empty())
                             }
+                            ExprKind::ClassExpr { name, .. } => name.is_none(),
                             _ => false,
                         };
-                        if is_anon_fn {
+                        if should_infer_name {
                             let line = self.line;
                             self.emit(Op::DUP);
                             self.emit_const(Value::String(Arc::from(name.as_str())));
@@ -8742,7 +8783,27 @@ impl Compiler {
                     }
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.emit_const(Value::String(Arc::from(prop.key.as_str())));
-                    { let l = self.line; common::collections::emit_get(&mut self.chunks, self.current, l); }
+                    {
+                        let l = self.line;
+                        common::collections::emit_get(&mut self.chunks, self.current, l);
+                    }
+                    // JS: if own-property lookup returned Undefined, the key may live
+                    // on the prototype chain — fall back to ecma:object.get which walks
+                    // __proto__. We don't use ecma:object.get unconditionally because
+                    // CALL_IMPORT triggers the JSPI auto-check: if the own value happens
+                    // to be a pending Promise (e.g. Promise.withResolvers destructuring),
+                    // the fiber would be suspended before the await expression even runs.
+                    if self.is_js_profile() {
+                        self.emit(Op::DUP);
+                        self.emit(Op::REF_IS_UNDEFINED);
+                        let not_undef = self.emit_jump(Op::BR_IF_FALSE);
+                        self.emit(Op::DROP); // drop the Undefined
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit_const(Value::String(Arc::from(prop.key.as_str())));
+                        let get_idx = self.import("ecma:object", "get");
+                        self.emit_host_call(get_idx, 2);
+                        self.patch_jump(not_undef);
+                    }
                     if let Some(ref default) = prop.default {
                         self.emit(Op::DUP);
                         self.emit(Op::REF_IS_NULL);
@@ -9106,18 +9167,18 @@ impl Compiler {
                     self.chunk().emit(3, line);
                     self.emit(Op::DROP);
                     self.restore_js_this(saved_this);
-                    // globalThis.X = val also sets X in module global scope
-                    // so bare `X` references resolve (§19.3 global object semantics).
-                    if matches!(&object.kind, ExprKind::Ident(n) if n == "globalThis") {
-                        self.emit_u16(Op::LOCAL_GET, tmp);
-                        let g_idx = self.str_const(&field_name);
-                        self.emit_u16(Op::GLOBAL_SET, g_idx);
-                        self.emit(Op::DROP);
-                    }
                 } else {
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     let idx = self.str_const(&field_name);
                     self.emit_u16(Op::STRUCT_SET, idx);
+                    self.emit(Op::DROP);
+                }
+                // globalThis.X = val also sets X in module global scope
+                // so bare `X` references resolve (§19.3 global object semantics).
+                if matches!(&object.kind, ExprKind::Ident(n) if n == "globalThis") {
+                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    let g_idx = self.str_const(&field_name);
+                    self.emit_u16(Op::GLOBAL_SET, g_idx);
                     self.emit(Op::DROP);
                 }
             }
@@ -9786,30 +9847,13 @@ impl Compiler {
     // Binary operator emission
     // ════════════════════════════════════════════════════════════════════════
 
-    /// JS profile: emit a single `ToPrimitive(hint)` call on the
-    /// top-of-stack value, routed through the `__vybe_to_primitive`
-    /// JS-source polyfill (compiled to bytecode at vybex build time).
-    /// Going through the polyfill — instead of a host fn that calls
-    /// `dispatch` — keeps the JS method-call protocol intact, so
-    /// `__js_this` is set when the user's `valueOf` / `toString`
-    /// body executes.
-    ///
-    /// Critical fast path: only enter the polyfill when the operand
-    /// is an `Object`. Primitives skip it. Without this guard, the
-    /// polyfill's own `<` / `+` / etc. operators (which the JS
-    /// compiler also routes through `emit_to_primitive`) recurse
-    /// into the polyfill on every iteration → infinite loop.
     fn emit_to_primitive(&mut self, hint: &str) {
         self.emit(Op::DUP);
         self.emit(Op::REF_IS_OBJECT);
         let skip = self.emit_jump(Op::BR_IF_FALSE);
-        let helper = self.str_const("__vybe_to_primitive");
-        let val_slot = self.define_local("__top_v");
-        self.emit_u16(Op::LOCAL_SET, val_slot); self.emit(Op::DROP);
-        self.emit_u16(Op::GLOBAL_GET, helper);
-        self.emit_u16(Op::LOCAL_GET, val_slot);
+        let idx = self.import("ecma:value", "toPrimitive");
         self.emit_const(Value::String(Arc::from(hint)));
-        self.emit_u8(Op::CALL_REF, 2);
+        self.emit_host_call(idx, 2);
         self.patch_jump(skip);
     }
 
@@ -9972,13 +10016,18 @@ impl Compiler {
 
         self.patch_jump(lhs_string);
         self.patch_jump(rhs_string);
-        let tostring_global = self.str_const("__vybe_tostring");
-        self.emit_u16(Op::GLOBAL_GET, tostring_global);
+        // Per ECMA-262 §13.15.4: both operands go through ToPrimitive(hint=string)
+        // so user toString() overrides on class instances fire correctly, exactly
+        // as template literal substitutions do.
+        let line = self.line;
         self.emit_u16(Op::LOCAL_GET, lhs_slot);
-        self.emit_u8(Op::CALL_REF, 1);
-        self.emit_u16(Op::GLOBAL_GET, tostring_global);
+        self.emit_to_primitive("string");
+        self.emit_const(Value::String(Arc::from("")));
+        common::strings::emit_str_concat(self.chunk(), line);
         self.emit_u16(Op::LOCAL_GET, rhs_slot);
-        self.emit_u8(Op::CALL_REF, 1);
+        self.emit_to_primitive("string");
+        self.emit_const(Value::String(Arc::from("")));
+        common::strings::emit_str_concat(self.chunk(), line);
         self.emit(Op::STR_CONCAT);
         let done = self.emit_jump(Op::BR);
 

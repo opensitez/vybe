@@ -1,5 +1,5 @@
 // JavaScript Grammar for pest parser
-// Covers everything vybe_parser_js supports
+// Covers ES2025 — full syntax supported by Vybe's JS walker.
 //
 // ASI: NEWLINE is a visible token (not whitespace). Statements terminate on
 // ";" or NEWLINE or before "}" or at EOI. return/break/continue/throw
@@ -24,14 +24,18 @@ terminator = _{ ";" | NEWLINE | &"}" | &EOI }
 eat_terminators = _{ (";" | NEWLINE)* }
 
 // ── Program ─────────────────────────────────────────────────────────────────
+// ES2023 §12.5: optional hashbang comment on line 1 (e.g. #!/usr/bin/env node)
 
-program = { SOI ~ eat_terminators ~ (statement ~ eat_terminators)* ~ EOI }
+hashbang_comment = _{ "#!" ~ (!NEWLINE ~ ANY)* }
+program = { SOI ~ hashbang_comment? ~ eat_terminators ~ (statement ~ eat_terminators)* ~ EOI }
 
 // ── Statements ──────────────────────────────────────────────────────────────
 
 statement = _{
     empty_statement
     | block_statement
+    | await_using_declaration
+    | using_declaration
     | variable_declaration
     | async_function_declaration
     | function_declaration
@@ -41,6 +45,7 @@ statement = _{
     | while_statement
     | do_while_statement
     | switch_statement
+    | debugger_statement
     | return_statement
     | break_statement
     | continue_statement
@@ -91,6 +96,22 @@ array_pattern_elem = {
 
 array_hole = { &"," }   // empty slot before comma
 
+// ── Explicit resource management (ES2025) ───────────────────────────────────
+// `using x = expr` — scoped resource bound to block lifetime.
+// `await using x = expr` — async resource (only valid inside async functions).
+// `using` is a contextual keyword (not reserved): if not followed by an
+// identifier start, the rule fails and expression_statement handles it.
+
+using_declarator = { binding_pattern ~ "=" ~ assignment_expression }
+
+using_declaration = {
+    "using" ~ using_declarator ~ ("," ~ using_declarator)* ~ terminator
+}
+
+await_using_declaration = {
+    await_kw ~ "using" ~ using_declarator ~ ("," ~ using_declarator)* ~ terminator
+}
+
 // ── Function declaration ────────────────────────────────────────────────────
 
 function_declaration = {
@@ -138,7 +159,8 @@ get_keyword = @{ "get" ~ !(ASCII_ALPHANUMERIC | "_") }
 set_keyword = @{ "set" ~ !(ASCII_ALPHANUMERIC | "_") }
 getter_method = { get_keyword ~ property_name ~ "(" ~ ")" ~ function_body }
 setter_method = { set_keyword ~ property_name ~ "(" ~ param ~ ")" ~ function_body }
-class_method = { async_kw? ~ property_name ~ "(" ~ param_list? ~ ")" ~ function_body }
+// ES2015 generator methods (`*name()`) and async generator methods (`async *name()`).
+class_method = { async_kw? ~ generator_marker? ~ property_name ~ "(" ~ param_list? ~ ")" ~ function_body }
 class_property = { property_name ~ ("=" ~ assignment_expression)? ~ (";" | NEWLINE | &"}") }
 
 property_name = { computed_property_name | string_literal | numeric_literal | private_name | ident_or_keyword }
@@ -166,12 +188,19 @@ for_header = {
     for_in_header | for_of_header | for_c_header
 }
 
+// ES2025: left-hand side of for-in/of may be a full LeftHandSideExpression
+// (e.g. `for (obj.x in items)`, `for (arr[0] of iter)`) or a var declaration.
+// `for_lhs_expr` covers member/computed access that `binding_pattern` cannot.
+for_lhs_expr = { postfix }
+
 for_in_header = {
-    (var_kind ~ binding_pattern | binding_pattern) ~ "in" ~ expression
+    var_kind ~ binding_pattern ~ "in" ~ expression
+    | for_lhs_expr ~ "in" ~ expression
 }
 
 for_of_header = {
-    (var_kind ~ binding_pattern | binding_pattern) ~ "of" ~ expression
+    var_kind ~ binding_pattern ~ "of" ~ expression
+    | for_lhs_expr ~ "of" ~ expression
 }
 
 for_c_header = {
@@ -200,6 +229,10 @@ switch_case = {
     ("case" ~ expression | "default") ~ ":" ~ eat_terminators ~ (statement ~ eat_terminators)*
 }
 
+// ── Debugger statement (ECMA-262 §14.16) ────────────────────────────────────
+
+debugger_statement = { "debugger" ~ terminator }
+
 // ── Jump statements ─────────────────────────────────────────────────────────
 // Note: ASI — break/continue/return/throw treat newline as terminator.
 // In pest we approximate with optional ";" since we can't check newlines in rules.
@@ -219,13 +252,14 @@ try_statement = {
     "try" ~ block_statement ~ eat_terminators ~ catch_clause? ~ eat_terminators ~ finally_clause?
 }
 
-catch_clause = { "catch" ~ ("(" ~ ident_name ~ ")")? ~ block_statement }
+// ES2019: catch binding is optional; ES2019+ allows destructuring patterns.
+catch_clause = { "catch" ~ ("(" ~ binding_pattern ~ ")")? ~ block_statement }
 finally_clause = { "finally" ~ block_statement }
 
 // ── Import / Export ─────────────────────────────────────────────────────────
 
 import_statement = {
-    "import" ~ (import_clause ~ "from")? ~ string_literal ~ terminator
+    "import" ~ (import_clause ~ "from")? ~ string_literal ~ import_with? ~ terminator
 }
 
 import_clause = {
@@ -237,16 +271,22 @@ import_clause = {
 namespace_import = { "*" ~ "as" ~ ident_name }
 named_imports = { "{" ~ (import_specifier ~ ("," ~ import_specifier)*)? ~ ","? ~ "}" }
 default_import = { ident_name }
-import_specifier = { ident_or_keyword ~ ("as" ~ ident_name)? }
+// ES2022: import specifier names may be string literals: import { "old-name" as newName }
+import_specifier = { (ident_or_keyword | string_literal) ~ ("as" ~ ident_name)? }
+
+// ES2025 import attributes: `with { type: "json" }` (replaces ES2023 `assert`)
+import_with = { "with" ~ "{" ~ (import_attribute ~ ("," ~ import_attribute)*)? ~ ","? ~ "}" }
+import_attribute = { (ident_or_keyword | string_literal) ~ ":" ~ string_literal }
 
 export_statement = {
-    "export" ~ "default" ~ (function_declaration | class_declaration | assignment_expression) ~ terminator
-    | "export" ~ "*" ~ ("as" ~ ident_name)? ~ "from" ~ string_literal ~ terminator
-    | "export" ~ "{" ~ (export_specifier ~ ("," ~ export_specifier)*)? ~ ","? ~ "}" ~ ("from" ~ string_literal)? ~ terminator
-    | "export" ~ (function_declaration | class_declaration | variable_declaration)
+    "export" ~ "default" ~ (async_function_declaration | function_declaration | class_declaration | assignment_expression) ~ terminator
+    | "export" ~ "*" ~ ("as" ~ ident_name)? ~ "from" ~ string_literal ~ import_with? ~ terminator
+    | "export" ~ "{" ~ (export_specifier ~ ("," ~ export_specifier)*)? ~ ","? ~ "}" ~ ("from" ~ string_literal ~ import_with?)? ~ terminator
+    | "export" ~ (async_function_declaration | function_declaration | class_declaration | variable_declaration)
 }
 
-export_specifier = { ident_name ~ ("as" ~ ident_name)? }
+// ES2022: export specifier names may be string literals: export { foo as "foo-bar" }
+export_specifier = { (ident_name | string_literal) ~ ("as" ~ (ident_name | string_literal))? }
 
 // ── Labeled statement ───────────────────────────────────────────────────────
 // Must come before expression_statement. pest tries labeled first; if ":" is not
@@ -551,14 +591,14 @@ ident_or_keyword = @{
 }
 
 // Only truly reserved words that can NEVER be identifiers in any context.
-// Contextual keywords (get, set, from, of, as, async, await, yield, let) are NOT here
+// Contextual keywords (get, set, from, of, as, async, await, yield, let, using) are NOT here
 // because JS allows them as identifiers in non-keyword positions.
 strict_keyword = _{
     ("var" | "const" | "function" | "return" | "if" | "else" |
      "for" | "while" | "do" | "break" | "continue" | "switch" | "case" |
      "default" | "new" | "delete" | "typeof" | "void" | "instanceof" |
      "in" | "this" | "super" | "class" | "extends" | "static" |
-     "throw" | "try" | "catch" | "finally" | "true" |
+     "throw" | "try" | "catch" | "finally" | "debugger" | "true" |
      "false" | "null" | "undefined" | "import" | "export")
     ~ !(ASCII_ALPHANUMERIC | "_" | "$")
 }

@@ -71,8 +71,12 @@ pub fn namespace_to_host_module(prefix: &str) -> Option<&'static str> {
         "system.diagnostics.stopwatch" => Some("wasi:clocks"),
         "system.diagnostics.debug" | "system.diagnostics.trace" | "system.diagnostics" => Some("wasi:cli"),
         "system.net" => Some("wasi:http"),
-        "system.net.dns" => Some("dotnet:net"),
-        "system.net.sockets" => Some("dotnet:sockets"),
+        // Networking no longer falls through to a monolithic `.NET`
+        // host namespace. `System.Net.Http` maps directly to
+        // `wasi:http`, while `System.Net.Dns` and
+        // `System.Net.Sockets.*` resolve through explicit component
+        // metadata and lower via emitter adapters that compose
+        // `wasi:sockets/*` + `node:os`.
         // .NET `System.Text.RegularExpressions.Regex.*` falls back here.
         // Same pattern-first arg shape as PHP/Python, but ecma:regexp.test
         // and exec already accept string-as-pattern. Methods needing arg
@@ -105,5 +109,12 @@ mod tests {
     fn test_static_method_mappings_exclude_winforms_application() {
         assert!(static_method_mappings().iter().any(|mapping| mapping.type_name == "Console"));
         assert!(!static_method_mappings().iter().any(|mapping| mapping.type_name == "Application"));
+    }
+
+    #[test]
+    fn test_network_namespaces_do_not_fall_back_to_retired_dotnet_host_modules() {
+        assert_eq!(namespace_to_host_module("system.net"), Some("wasi:http"));
+        assert_eq!(namespace_to_host_module("system.net.dns"), None);
+        assert_eq!(namespace_to_host_module("system.net.sockets"), None);
     }
 }

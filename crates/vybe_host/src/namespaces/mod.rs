@@ -24,7 +24,7 @@ mod web_globals;
 
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::value::{Object, ObjectKind};
-use vybe_bytecode::{VM, Value, HostContext};
+use vybe_bytecode::{VM, Value};
 
 /// Register all namespace objects on the VM.
 /// Call this AFTER registering all host functions.

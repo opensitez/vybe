@@ -7,12 +7,12 @@
 //!   to the host function reference so `const f = log; f("hi")` works
 //!   (the compiler already emits a direct `CALL_IMPORT` for `log(...)`).
 //! * `import * as cli from "wasi:cli"` — synthesize a namespace object
-//!   exposing every host function registered under `wasi:cli` as a
-//!   property, and install it as a global under the alias.
+//!   exposing every resolvable host export registered under `wasi:cli`
+//!   as a property, and install it as a global under the alias.
 //!
-//! Both forms read the same source of truth — `vm.host_registry` and
-//! `vm.func_table` — which is populated before the script runs by the
-//! `register_host_fn` calls in `vybe_host::register_*`.
+//! Both forms read the same source of truth — `vm.modules` — so ESM
+//! runtime binding installation observes the same synthetic module
+//! registry as the linker and component model.
 //!
 //! The compiler itself never emits dispatch code against these globals
 //! for direct calls: those become `CALL_IMPORT`. This module only
@@ -20,6 +20,7 @@
 
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::{Value, VM};
+use vybe_bytecode::module_record::ExportEntry;
 use vybe_bytecode::value::{Object, ObjectKind};
 
 use vybe_compiler::compiler::HostImportMetadata;
@@ -27,7 +28,7 @@ use vybe_compiler::compiler::HostImportMetadata;
 /// Install named + wildcard ESM host-module imports as VM globals.
 pub fn install(vm: &mut VM, meta: &HostImportMetadata) {
     for n in &meta.named {
-        let Some(val) = host_fn_value(vm, &n.module, &n.func) else {
+        let Some(val) = export_value(vm, &n.module, &n.func) else {
             // Unresolved named import — leave it to `setup_execution` to
             // surface as an `Unresolved import` error if the code actually
             // calls it.
@@ -42,11 +43,34 @@ pub fn install(vm: &mut VM, meta: &HostImportMetadata) {
     }
 }
 
-/// Look up a host function by `(module, name)` and return a reusable
-/// `Value::Object(HostFunction(idx))` reference from the func table.
-fn host_fn_value(vm: &VM, module: &str, func: &str) -> Option<Value> {
-    let idx = *vm.host_registry.get(&(module.to_string(), func.to_string()))?;
-    vm.func_table.get(idx).cloned()
+/// Resolve a runtime ESM binding from the authoritative ModuleRecord view.
+/// Functions reuse the VM's `func_table` marker value; immutable value
+/// exports clone their registered `Value` directly.
+fn export_value(vm: &VM, module: &str, name: &str) -> Option<Value> {
+    resolve_export_value(vm, module, name, &mut Vec::new())
+}
+
+fn resolve_export_value(
+    vm: &VM,
+    module: &str,
+    name: &str,
+    visited: &mut Vec<(String, String)>,
+) -> Option<Value> {
+    let key = (module.to_string(), name.to_string());
+    if visited.contains(&key) {
+        return None;
+    }
+    visited.push(key);
+
+    let record = vm.modules.get(module)?;
+    match record.exports.get(name)? {
+        ExportEntry::Function { idx } => vm.func_table.get(*idx).cloned(),
+        ExportEntry::Value(value) => Some(value.clone()),
+        ExportEntry::Indirect { from, name: target_name } => {
+            resolve_export_value(vm, from, target_name, visited)
+        }
+        ExportEntry::Class { .. } | ExportEntry::ResourceType { .. } => None,
+    }
 }
 
 /// Build the Module Namespace Object for `import * as ns from "<module>"`
@@ -69,11 +93,10 @@ fn build_namespace(vm: &VM, module: &str) -> Value {
     // that care about iteration order (`Object.keys(ns)`,
     // `Reflect.ownKeys(ns)`, `for ... in ns`) see the same order every
     // time.
-    let mut exports: Vec<(String, Value)> = vm.host_registry.iter()
-        .filter_map(|((m, name), &idx)| {
-            if m != module { return None; }
-            vm.func_table.get(idx).cloned().map(|v| (name.clone(), v))
-        })
+    let mut exports: Vec<(String, Value)> = vm.modules.get(module)
+        .into_iter()
+        .flat_map(|record| record.exports.keys())
+        .filter_map(|name| export_value(vm, module, name).map(|value| (name.clone(), value)))
         .collect();
     exports.sort_by(|a, b| a.0.cmp(&b.0));
 

@@ -24,38 +24,83 @@
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::{VM, Value, HostContext};
 use vybe_bytecode::value::{Object, ObjectKind};
+use crate::ecma::function::invoke_with_explicit_this;
 
 pub fn register(vm: &mut VM) {
+    vm.register_host_fn("ecma:reflect", "__proxyRevoke", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(proxy)) = args.first() {
+            let mut o = proxy.lock().unwrap();
+            o.properties.insert("__vybe_proxy_revoked".into(), Value::Bool(true));
+            o.properties.insert("__vybe_proxy_handler".into(), Value::Null);
+        }
+        Value::Undefined
+    }));
+    let proxy_revoke_idx = *vm
+        .host_registry
+        .get(&("ecma:reflect".to_string(), "__proxyRevoke".to_string()))
+        .expect("ecma:reflect.__proxyRevoke must be registered");
+
+    vm.register_host_fn("ecma:reflect", "proxyRevocable", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+        let target = args.first().cloned().unwrap_or(Value::Undefined);
+        let handler = args.get(1).cloned().unwrap_or(Value::Undefined);
+
+        let mut proxy = Object::new();
+        proxy.properties.insert("__vybe_proxy_target".into(), target.clone());
+        proxy.properties.insert("__vybe_proxy_handler".into(), handler);
+        if let Value::Object(target_obj) = &target {
+            if let Some(proto) = target_obj.lock().unwrap().properties.get("__proto__").cloned() {
+                proxy.properties.insert("__proto__".into(), proto);
+            }
+        }
+        let proxy_value = Value::Object(Arc::new(Mutex::new(proxy)));
+
+        let mut revoke = Object::new();
+        revoke.kind = ObjectKind::HostFunction(proxy_revoke_idx);
+        revoke.properties.insert(
+            "__bound_args".into(),
+            Value::Object(Arc::new(Mutex::new(Object::new_array(vec![proxy_value.clone()])))),
+        );
+        let revoke_value = Value::Object(Arc::new(Mutex::new(revoke)));
+
+        let mut result = Object::new();
+        result.properties.insert("proxy".into(), proxy_value);
+        result.properties.insert("revoke".into(), revoke_value);
+        Value::Object(Arc::new(Mutex::new(result)))
+    }));
+
     // Reflect.apply(target, thisArg, argsList) → result
     vm.register_host_fn("ecma:reflect", "apply", Box::new(|ctx: &mut HostContext, args: &[Value]| {
         let target = args.first().cloned().unwrap_or(Value::Undefined);
         let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
-        let mut invoke_args: Vec<Value> = vec![this_arg];
+        let mut invoke_args: Vec<Value> = Vec::new();
         if let Some(Value::Object(arr)) = args.get(2) {
             let o = arr.lock().unwrap();
             if let ObjectKind::Array(ref v) = o.kind {
                 invoke_args.extend(v.iter().cloned());
             }
         }
-        ctx.invoke(&target, &invoke_args)
+        invoke_with_explicit_this(ctx, &target, this_arg, &invoke_args)
     }));
 
     // Reflect.construct(target, argsList, newTarget?) → object
     //
-    // `newTarget` is ignored — without proper [[Construct]] internal
-    // method dispatch, we synthesize a plain Object as `this` and
-    // invoke `target` as a function on it.
     vm.register_host_fn("ecma:reflect", "construct", Box::new(|ctx: &mut HostContext, args: &[Value]| {
         let target = args.first().cloned().unwrap_or(Value::Undefined);
-        let this_obj = Value::Object(Arc::new(Mutex::new(Object::new())));
-        let mut invoke_args: Vec<Value> = vec![this_obj.clone()];
+        let mut this_value = Object::new();
+        if let Value::Object(target_obj) = &target {
+            if let Some(proto) = target_obj.lock().unwrap().properties.get("prototype").cloned() {
+                this_value.properties.insert("__proto__".into(), proto);
+            }
+        }
+        let this_obj = Value::Object(Arc::new(Mutex::new(this_value)));
+        let mut invoke_args: Vec<Value> = Vec::new();
         if let Some(Value::Object(arr)) = args.get(1) {
             let o = arr.lock().unwrap();
             if let ObjectKind::Array(ref v) = o.kind {
                 invoke_args.extend(v.iter().cloned());
             }
         }
-        let result = ctx.invoke(&target, &invoke_args);
+        let result = invoke_with_explicit_this(ctx, &target, this_obj.clone(), &invoke_args);
         // If the target returns an object, use it; else use the synthetic this.
         if matches!(result, Value::Object(_)) { result } else { this_obj }
     }));

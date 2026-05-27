@@ -509,7 +509,25 @@ fn register_constructors(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:array",
         "fromAsync",
-        Box::new(|_ctx: &mut HostContext, _args: &[Value]| make_array(Vec::new())),
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let source = args.first().cloned().unwrap_or(Value::Undefined);
+            let mapper = args.get(1).cloned();
+            let mapped: Vec<Value> = crate::ecma::iterator::materialize_iterable_values(ctx, &source, true)
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    let awaited = crate::ecma::iterator::maybe_await_value(value);
+                    let mapped = match mapper.as_ref() {
+                        Some(mapper) if !matches!(mapper, Value::Null | Value::Undefined) => {
+                            ctx.invoke(mapper, &[awaited, Value::I32(index as i32)])
+                        }
+                        _ => awaited,
+                    };
+                    crate::ecma::iterator::maybe_await_value(mapped)
+                })
+                .collect();
+            make_array(mapped)
+        }),
     );
 
     // isArray(v) -> i32
@@ -975,22 +993,53 @@ fn register_mutators(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:array",
         "sort",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
             if let Some(Value::Object(obj)) = args.first() {
+                let compare_fn = args.get(1).cloned();
                 let o = obj.lock().unwrap();
                 match &o.kind {
-                    ObjectKind::Array(_) => {
+                    ObjectKind::Array(v) => {
+                        let mut values = v.clone();
                         drop(o);
+                        values.sort_by(|a, b| {
+                            if let Some(compare_fn) = compare_fn.as_ref() {
+                                let result = ctx.invoke(compare_fn, &[a.clone(), b.clone()]);
+                                let order = result.as_f64();
+                                if order < 0.0 {
+                                    std::cmp::Ordering::Less
+                                } else if order > 0.0 {
+                                    std::cmp::Ordering::Greater
+                                } else {
+                                    std::cmp::Ordering::Equal
+                                }
+                            } else {
+                                format!("{}", a).cmp(&format!("{}", b))
+                            }
+                        });
                         let mut o = obj.lock().unwrap();
                         if let ObjectKind::Array(ref mut v) = o.kind {
-                            v.sort_by(|a, b| format!("{}", a).cmp(&format!("{}", b)));
+                            *v = values;
                         }
                     }
                     ObjectKind::TypedArray(ta) => {
                         let live = ta_live_length(ta);
                         let mut values: Vec<Value> = (0..live).map(|i| read_element(ta, i)).collect();
-                        values.sort_by(|a, b| a.as_f64().partial_cmp(&b.as_f64())
-                            .unwrap_or(std::cmp::Ordering::Equal));
+                        values.sort_by(|a, b| {
+                            if let Some(compare_fn) = compare_fn.as_ref() {
+                                let result = ctx.invoke(compare_fn, &[a.clone(), b.clone()]);
+                                let order = result.as_f64();
+                                if order < 0.0 {
+                                    std::cmp::Ordering::Less
+                                } else if order > 0.0 {
+                                    std::cmp::Ordering::Greater
+                                } else {
+                                    std::cmp::Ordering::Equal
+                                }
+                            } else {
+                                a.as_f64().partial_cmp(&b.as_f64())
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            }
+                        });
                         for (i, v) in values.iter().enumerate() { write_element(ta, i, v); }
                     }
                     _ => {}

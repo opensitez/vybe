@@ -426,6 +426,9 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         Rule::try_statement => walk_try(pair)?,
         Rule::export_statement => walk_export(pair)?,
         Rule::labeled_statement => walk_labeled(pair)?,
+        Rule::debugger_statement => StmtKind::Empty,
+        Rule::using_declaration => walk_using_decl(pair, false)?,
+        Rule::await_using_declaration => walk_using_decl(pair, true)?,
         Rule::expression_statement => {
             let expr = walk_expression(first_meaningful(pair)?)?;
             StmtKind::Expr(expr)
@@ -467,6 +470,19 @@ fn walk_var_declarator(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
         array_bounds: None,
         with_events: false,
     })
+}
+
+// ES2025 `using x = expr` / `await using x = expr` — normalize as `const`
+// declarations. The compiler treats them identically for now; disposal
+// semantics would require finalizer support in the VM.
+fn walk_using_decl(pair: Pair<Rule>, _is_await: bool) -> Result<StmtKind, String> {
+    let mut declarations = Vec::new();
+    for p in pair.into_inner() {
+        if p.as_rule() == Rule::using_declarator {
+            declarations.push(walk_var_declarator(p)?);
+        }
+    }
+    Ok(StmtKind::VarDecl { declarations, kind: VarDeclKind::Const })
 }
 
 fn walk_binding_pattern(pair: Pair<Rule>) -> Result<BindingPattern, String> {
@@ -970,10 +986,12 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
             let mut params = Vec::new();
             let mut body = Vec::new();
             let mut is_async = false;
+            let mut is_generator = false;
             let mut param_prologue = Vec::new();
             for p in member_pair.into_inner() {
                 match p.as_rule() {
                     Rule::async_kw => is_async = true,
+                    Rule::generator_marker => is_generator = true,
                     Rule::property_name | Rule::ident_name | Rule::ident_or_keyword => name = extract_property_name(&p),
                     Rule::param_list => {
                         let (parsed_params, prologue) = walk_params_with_prologue(p)?;
@@ -998,7 +1016,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
                     visibility: Visibility::Public,
                 })
             } else {
-                let is_generator = body_contains_yield(&body);
+                if !is_generator { is_generator = body_contains_yield(&body); }
                 Ok(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
                     name,
                     params,
@@ -1080,8 +1098,9 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
             let parts: Vec<Pair<Rule>> = header_inner.into_inner().collect();
             let (var, prefix) = extract_for_target(&parts)?;
             let iter = walk_expression(parts.into_iter()
-                .filter(|p| !matches!(p.as_rule(), Rule::var_kind | Rule::ident_name | Rule::binding_pattern))
-                .next().ok_or("missing iter expr")?)?;
+                .find(|p| !matches!(p.as_rule(),
+                    Rule::var_kind | Rule::ident_name | Rule::binding_pattern | Rule::for_lhs_expr))
+                .ok_or("missing iter expr")?)?;
             let mut full_body = prefix;
             full_body.extend(body);
             Ok(StmtKind::ForIn {
@@ -1093,8 +1112,9 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
             let parts: Vec<Pair<Rule>> = header_inner.into_inner().collect();
             let (var, prefix) = extract_for_target(&parts)?;
             let iter = walk_expression(parts.into_iter()
-                .filter(|p| !matches!(p.as_rule(), Rule::var_kind | Rule::ident_name | Rule::binding_pattern))
-                .next().ok_or("missing iter expr")?)?;
+                .find(|p| !matches!(p.as_rule(),
+                    Rule::var_kind | Rule::ident_name | Rule::binding_pattern | Rule::for_lhs_expr))
+                .ok_or("missing iter expr")?)?;
             let mut full_body = prefix;
             full_body.extend(body);
             Ok(StmtKind::ForIn {
@@ -1295,12 +1315,44 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
             Rule::catch_clause => {
                 let mut var_name = None;
                 let mut catch_body = Vec::new();
+                let mut destructure_prefix: Vec<Statement> = Vec::new();
                 for cp in p.into_inner() {
                     match cp.as_rule() {
                         Rule::ident_name => var_name = Some(cp.as_str().to_string()),
-                        Rule::block_statement => catch_body = walk_body_from_block(cp)?,
+                        Rule::binding_pattern => {
+                            // Destructuring catch: catch ({ message }) {}
+                            // Desugar to: catch (__catch_tmp) { const { message } = __catch_tmp; }
+                            let inner = cp.clone().into_inner().next();
+                            match inner.as_ref().map(|p| p.as_rule()) {
+                                Some(Rule::ident_name) => {
+                                    var_name = Some(inner.unwrap().as_str().to_string());
+                                }
+                                _ => {
+                                    let tmp = "__catch_tmp".to_string();
+                                    var_name = Some(tmp.clone());
+                                    let pattern = walk_binding_pattern(cp)?;
+                                    destructure_prefix.push(Statement::new(StmtKind::VarDecl {
+                                        declarations: vec![VarDeclarator {
+                                            pattern,
+                                            type_hint: None,
+                                            init: Some(Expression::ident(&tmp)),
+                                            array_bounds: None,
+                                            with_events: false,
+                                        }],
+                                        kind: VarDeclKind::Const,
+                                    }));
+                                }
+                            }
+                        }
+                        Rule::block_statement => {
+                            catch_body = walk_body_from_block(cp)?;
+                        }
                         _ => {}
                     }
+                }
+                if !destructure_prefix.is_empty() {
+                    destructure_prefix.extend(catch_body);
+                    catch_body = destructure_prefix;
                 }
                 catches.push(CatchClause {
                     types: Vec::new(),
@@ -1341,6 +1393,7 @@ fn walk_import(pair: Pair<Rule>) -> Result<Import, String> {
 
     for p in pair.into_inner() {
         match p.as_rule() {
+            Rule::import_with => {} // ES2025 import attributes — ignored at AST level
             Rule::string_literal => source = unquote(p.as_str()),
             Rule::import_clause => {
                 for cp in p.into_inner() {
@@ -1359,7 +1412,13 @@ fn walk_import(pair: Pair<Rule>) -> Result<Import, String> {
                             for sp in cp.into_inner() {
                                 if sp.as_rule() == Rule::import_specifier {
                                     let mut parts = sp.into_inner();
-                                    let name = parts.next().map(|p| p.as_str().to_string()).unwrap_or_default();
+                                    let first = parts.next().ok_or("import_specifier has no name")?;
+                                    // ES2022: specifier name may be a string literal
+                                    let name = if first.as_rule() == Rule::string_literal {
+                                        unquote(first.as_str())
+                                    } else {
+                                        first.as_str().to_string()
+                                    };
                                     let alias = parts.next().map(|p| p.as_str().to_string());
                                     names.push(ImportName { name, alias });
                                 }
@@ -1412,14 +1471,24 @@ fn walk_export(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     for p in pair.into_inner() {
         match p.as_rule() {
+            Rule::import_with => {} // ES2025 import attributes — ignored at AST level
             Rule::function_declaration | Rule::async_function_declaration |
             Rule::class_declaration | Rule::variable_declaration => {
                 declaration = Some(Box::new(walk_statement(p)?));
             }
             Rule::export_specifier => {
                 let mut parts = p.into_inner();
-                let name = parts.next().map(|p| p.as_str().to_string()).unwrap_or_default();
-                let alias = parts.next().map(|p| p.as_str().to_string());
+                let first = parts.next().ok_or("export_specifier has no name")?;
+                // ES2022: specifier name may be string literal
+                let name = if first.as_rule() == Rule::string_literal {
+                    unquote(first.as_str())
+                } else {
+                    first.as_str().to_string()
+                };
+                let alias = parts.next().map(|p| {
+                    if p.as_rule() == Rule::string_literal { unquote(p.as_str()) }
+                    else { p.as_str().to_string() }
+                });
                 names.push(ExportName { name, alias });
             }
             Rule::string_literal => {
@@ -2559,6 +2628,13 @@ fn extract_for_target(parts: &[Pair<Rule>]) -> Result<(String, Vec<Statement>), 
             Rule::ident_name => {
                 return Ok((p.as_str().to_string(), Vec::new()));
             }
+            Rule::for_lhs_expr => {
+                // Member/computed LHS: `for (obj.x in arr)` — walk as expression,
+                // produce a synthetic assignment target name for the ForIn AST node.
+                // The compiler will emit a store to the member at runtime.
+                let expr_text = p.as_str().to_string();
+                return Ok((expr_text, Vec::new()));
+            }
             Rule::binding_pattern => {
                 let inner = p.clone().into_inner().next().ok_or("Empty binding pattern")?;
                 if inner.as_rule() == Rule::ident_name {
@@ -2634,6 +2710,16 @@ fn walk_object_accessor(mut inner: Vec<Pair<Rule>>, is_getter: bool) -> Result<O
 /// FunctionDecl-wrapped lambda. Out-of-line for the same stack-frame
 /// reason as walk_object_accessor.
 fn walk_object_method(mut inner: Vec<Pair<Rule>>) -> Result<ObjectProperty, String> {
+    let mut is_async = false;
+    let mut has_generator_marker = false;
+    if inner.first().is_some_and(|p| p.as_rule() == Rule::async_kw) {
+        is_async = true;
+        inner.remove(0);
+    }
+    if inner.first().is_some_and(|p| p.as_rule() == Rule::generator_marker) {
+        has_generator_marker = true;
+        inner.remove(0);
+    }
     let key_pair = inner.remove(0);
     // `[Symbol.iterator]() {…}` — rewrite to the canonical
     // cross-language method name (`iterator` / `toprimitive` / etc.)
@@ -2649,7 +2735,6 @@ fn walk_object_method(mut inner: Vec<Pair<Rule>>) -> Result<ObjectProperty, Stri
         .unwrap_or(raw_key);
     let mut params = Vec::new();
     let mut body = Vec::new();
-    let mut is_async = false;
     for p in inner {
         match p.as_rule() {
             Rule::async_kw => is_async = true,
@@ -2659,7 +2744,7 @@ fn walk_object_method(mut inner: Vec<Pair<Rule>>) -> Result<ObjectProperty, Stri
             _ => {}
         }
     }
-    let is_generator = body_contains_yield(&body);
+    let is_generator = has_generator_marker || body_contains_yield(&body);
     let func = Statement::new(StmtKind::FunctionDecl {
         name: key.clone(),
         params,

@@ -16,6 +16,7 @@ mod test_csharp_error_handling;
 mod test_csharp_extension_methods;
 mod test_csharp_attributes_metadata;
 mod test_csharp_datetime_timespan;
+mod test_csharp_file_io_modern;
 mod test_csharp_explicit_interface_impl;
 mod test_csharp_generics;
 mod test_csharp_events_advanced;

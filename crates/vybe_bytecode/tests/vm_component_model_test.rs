@@ -149,6 +149,128 @@ fn linker_resolves_type_exports() {
     assert!(result.type_exports.contains_key(&("animals:api".into(), "Dog".into())));
 }
 
+#[test]
+fn linker_register_host_from_vm_uses_module_records() {
+    use std::collections::HashMap;
+    use vybe_bytecode::chunk::Import;
+    use vybe_bytecode::component::{Component, Language, Linker};
+    use vybe_bytecode::ImportTarget;
+
+    let mut vm = VM::new();
+    vm.register_host_fn("ecma:test", "alpha", Box::new(|_ctx, _args| Value::I32(1)));
+    vm.register_host_fn("wasi:test", "beta", Box::new(|_ctx, _args| Value::I32(2)));
+
+    vm.host_registry.remove(&("ecma:test".to_string(), "alpha".to_string()));
+    vm.host_registry.remove(&("wasi:test".to_string(), "beta".to_string()));
+
+    let mut script = Chunk::new("<script>");
+    script.imports.push(Import { module: "ecma:test".into(), name: "alpha".into() });
+    script.imports.push(Import { module: "wasi:test".into(), name: "beta".into() });
+
+    let component = Component {
+        name: "app".into(),
+        language: Language::JS,
+        chunks: vec![script],
+        imports: vec![
+            ("ecma:test".into(), "alpha".into()),
+            ("wasi:test".into(), "beta".into()),
+        ],
+        exports: HashMap::new(),
+        type_exports: HashMap::new(),
+        type_imports: vec![],
+    };
+
+    let mut linker = Linker::new();
+    linker.register_host_from_vm(&vm);
+    linker.add_component(component);
+
+    let result = linker.link().expect("host imports should resolve from module records");
+    assert!(matches!(result.resolved_imports.first(), Some(ImportTarget::Host(_))));
+    assert!(matches!(result.resolved_imports.get(1), Some(ImportTarget::Host(_))));
+}
+
+#[test]
+fn linker_register_host_from_vm_includes_host_type_exports() {
+    use std::collections::HashMap;
+    use vybe_bytecode::component::{Component, Language, Linker};
+
+    let mut vm = VM::new();
+    let mut descriptor = TypeDef::new("Descriptor");
+    descriptor.interface = Some("wasi:filesystem/types".into());
+    descriptor.is_resource = true;
+    let tid = vm.type_registry.register(descriptor);
+    vm.register_host_resource_type_export("wasi:filesystem/types", "descriptor", tid);
+
+    let component = Component {
+        name: "fs-client".into(),
+        language: Language::JS,
+        chunks: vec![Chunk::new("<script>")],
+        imports: vec![],
+        exports: HashMap::new(),
+        type_exports: HashMap::new(),
+        type_imports: vec![("wasi:filesystem/types".into(), "descriptor".into())],
+    };
+
+    let mut linker = Linker::new();
+    linker.register_host_from_vm(&vm);
+    linker.add_component(component);
+
+    let result = linker.link().expect("host type imports should resolve from module records");
+    let exported = result
+        .type_exports
+        .get(&("wasi:filesystem/types".into(), "descriptor".into()))
+        .expect("host type export should be visible to the linker");
+    assert_eq!(exported.name, "Descriptor");
+    assert!(exported.is_resource);
+}
+
+#[test]
+fn esm_and_component_linker_share_canonical_host_subinterface_aliases() {
+    use std::collections::HashMap;
+    use vybe_bytecode::component::{Component, Language, Linker};
+    use vybe_bytecode::ImportTarget;
+
+    let mut vm = VM::new();
+    vm.register_host_fn("node:util", "types.isArray", Box::new(|_ctx, _args| Value::I32(7)));
+    vm.host_registry.remove(&("node:util".to_string(), "types.isArray".to_string()));
+
+    let mut script = Chunk::new("<script>");
+    script.local_count = 0;
+    let import_idx = script.add_import("node:util/types", "isArray");
+    script.emit_op_u16(Op::CALL_IMPORT, import_idx, 0);
+    script.emit(0, 0);
+    script.emit_op(Op::HALT, 0);
+
+    let vm_result = vm.run(vec![script.clone()]).expect("VM should resolve the canonical host subinterface alias");
+    assert_eq!(vm_result.as_i32(), 7);
+
+    let component = Component {
+        name: "app".into(),
+        language: Language::JS,
+        chunks: vec![script],
+        imports: vec![("node:util/types".into(), "isArray".into())],
+        exports: HashMap::new(),
+        type_exports: HashMap::new(),
+        type_imports: vec![],
+    };
+
+    let mut linker = Linker::new();
+    linker.register_host_from_vm(&vm);
+    linker.add_component(component);
+
+    let link_result = linker.link().expect("Component linker should resolve the same canonical host subinterface alias");
+    assert!(matches!(link_result.resolved_imports.first(), Some(ImportTarget::Host(_))));
+
+    let mut linked_vm = VM::new();
+    linked_vm.register_host_fn("node:util", "types.isArray", Box::new(|_ctx, _args| Value::I32(7)));
+    linked_vm.host_registry.remove(&("node:util".to_string(), "types.isArray".to_string()));
+
+    let linked_result = linked_vm
+        .run_linked(link_result.chunks, link_result.resolved_imports)
+        .expect("linked execution should use the same host function target");
+    assert_eq!(linked_result.as_i32(), 7);
+}
+
 // ── TypeRegistry import/export ──────────────────────────────
 
 #[test]

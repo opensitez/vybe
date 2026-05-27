@@ -381,9 +381,10 @@ pub fn build_stdlib(imports: &mut Chunk) -> StdLib {
     chunks.push(build_polyfill(
         imports, include_str!("polyfills/sprintf.js"), "js", "sprintf"));
     exports.push("__stdlib_sprintf");
-    chunks.push(build_polyfill(
-        imports, include_str!("polyfills/to_primitive.js"), "js", "__vybe_to_primitive"));
-    exports.push("__stdlib_to_primitive");
+    chunks.push(build_generator_next());
+    exports.push("__stdlib_generator_next");
+    chunks.push(build_generator_self());
+    exports.push("__stdlib_generator_self");
     chunks.push(build_iter_drain(imports));
     exports.push("__stdlib_iter_drain");
     // PHP runtime helpers — all centralized under `emitter/php/`.
@@ -1156,6 +1157,52 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::GLOBAL_SET, js_this, 0);
     c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+fn build_generator_next() -> Chunk {
+    use std::sync::Arc;
+
+    let mut c = Chunk::new("__stdlib_generator_next");
+    c.arity = 0;
+    c.local_count = 2; // value(0) + has_more(1)
+    let value_local = 0u16;
+    let has_more_local = 1u16;
+    let js_this = c.add_constant(Value::String(Arc::from("__js_this")));
+    let value_key = c.add_constant(Value::String(Arc::from("value")));
+    let done_key = c.add_constant(Value::String(Arc::from("done")));
+
+    c.emit_op_u16(Op::GLOBAL_GET, js_this, 0);
+    c.emit_op(Op::GEN_NEXT, 0);
+    c.emit_op_u16(Op::LOCAL_SET, has_more_local, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op_u16(Op::LOCAL_SET, value_local, 0);
+    c.emit_op(Op::DROP, 0);
+
+    c.emit_op_u16(Op::STRUCT_NEW, 0, 0);
+    c.emit_op(Op::DUP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, value_local, 0);
+    c.emit_op_u16(Op::STRUCT_SET, value_key, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op(Op::DUP, 0);
+    c.emit_op_u16(Op::LOCAL_GET, has_more_local, 0);
+    c.emit_op(Op::DYN_TO_BOOL, 0);
+    c.emit_op(Op::DYN_NOT, 0);
+    c.emit_op_u16(Op::STRUCT_SET, done_key, 0);
+    c.emit_op(Op::DROP, 0);
+    c.emit_op(Op::RETURN, 0);
+    c
+}
+
+fn build_generator_self() -> Chunk {
+    use std::sync::Arc;
+
+    let mut c = Chunk::new("__stdlib_generator_self");
+    c.arity = 0;
+    c.local_count = 0;
+    let js_this = c.add_constant(Value::String(Arc::from("__js_this")));
+    c.emit_op_u16(Op::GLOBAL_GET, js_this, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }

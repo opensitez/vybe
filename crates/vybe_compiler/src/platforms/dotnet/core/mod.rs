@@ -3,6 +3,7 @@ pub mod component_classes;
 pub mod host_map;
 pub mod types;
 pub mod namespaces;
+pub mod node_socket_adapter;
 pub mod sockets_adapter;
 pub mod stringbuilder_adapter;
 pub mod random_adapter;

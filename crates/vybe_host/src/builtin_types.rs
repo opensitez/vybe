@@ -338,79 +338,6 @@ pub fn register_all(vm: &mut VM) {
         vm.type_registry.register(t);
     }
 
-    // --- TcpClient ---
-    {
-        let mut t = TypeDef::new("TcpClient");
-        for (method, fname) in &[
-            ("close", "tcpClientClose"), ("getstream", "tcpClientGetStream"),
-        ] {
-            if let Some(idx) = h(vm, "dotnet:sockets", fname) {
-                t.methods.insert(method.to_string(), Method::HostFn(idx));
-            }
-        }
-        t.parent = Some(0);
-        vm.type_registry.register(t);
-    }
-
-    // --- TcpListener ---
-    {
-        let mut t = TypeDef::new("TcpListener");
-        for (method, fname) in &[
-            ("start", "tcpListenerStart"), ("stop", "tcpListenerStop"),
-            ("accepttcpclient", "tcpListenerAccept"), ("pending", "tcpListenerPending"),
-        ] {
-            if let Some(idx) = h(vm, "dotnet:sockets", fname) {
-                t.methods.insert(method.to_string(), Method::HostFn(idx));
-            }
-        }
-        t.parent = Some(0);
-        vm.type_registry.register(t);
-    }
-
-    // --- UdpClient ---
-    {
-        let mut t = TypeDef::new("UdpClient");
-        for (method, fname) in &[
-            ("send", "udpClientSend"), ("receive", "udpClientReceive"), ("close", "udpClientClose"),
-        ] {
-            if let Some(idx) = h(vm, "dotnet:sockets", fname) {
-                t.methods.insert(method.to_string(), Method::HostFn(idx));
-            }
-        }
-        t.parent = Some(0);
-        vm.type_registry.register(t);
-    }
-
-    // --- StreamReader ---
-    {
-        let mut t = TypeDef::new("StreamReader");
-        for (method, fname) in &[
-            ("readline", "streamReaderReadLine"), ("readtoend", "streamReaderReadToEnd"),
-            ("close", "streamWriterClose"),
-        ] {
-            if let Some(idx) = h(vm, "dotnet:io", fname) {
-                t.methods.insert(method.to_string(), Method::HostFn(idx));
-            }
-        }
-        t.parent = Some(0);
-        vm.type_registry.register(t);
-    }
-
-    // --- StreamWriter ---
-    {
-        let mut t = TypeDef::new("StreamWriter");
-        for (method, fname) in &[
-            ("writeline", "streamWriterWriteLine"), ("write", "streamWriterWrite"),
-            ("flush", "streamWriterFlush"), ("close", "streamWriterClose"),
-        ] {
-            if let Some(idx) = h(vm, "dotnet:io", fname) {
-                t.methods.insert(method.to_string(), Method::HostFn(idx));
-            }
-        }
-        t.parent = Some(0);
-        vm.type_registry.register(t);
-    }
-
     // --- Stopwatch ---
     {
         let mut t = TypeDef::new("Stopwatch");
@@ -915,8 +842,6 @@ pub fn register_all(vm: &mut VM) {
         // Queue / Stack ctor mappings retired — all lower at compile time
         // through the dotnet wrapper Common emit path. Queue/Stack don't
         // need a runtime ctor since they're plain Arrays.
-        ("StreamReader", "dotnet:io", "streamReaderNew"),
-        ("StreamWriter", "dotnet:io", "streamWriterNew"),
         ("Stopwatch", "wasi:clocks", "stopwatchNew"),
         // Random ctor: real WASI entropy. Seed argument (if any) is ignored —
         // wasi:random/insecure is a process-global PRNG with no per-instance

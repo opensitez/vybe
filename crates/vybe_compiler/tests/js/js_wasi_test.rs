@@ -5,7 +5,7 @@ fn run_js_one(code: &str) -> String {
 }
 
 // ============================================================
-// vybe:fs — filesystem
+// fs compatibility alias — filesystem
 // ============================================================
 
 #[test]
@@ -68,7 +68,7 @@ fn test_fs_is_file_is_dir() {
 }
 
 // ============================================================
-// vybe:clock — time
+// clock compatibility alias — time
 // ============================================================
 
 #[test]
@@ -82,7 +82,8 @@ fn test_clock_now() {
 
 #[test]
 fn test_clock_date_now() {
-    // JS alias: Date.now() → vybe:clock/now
+    // ECMA Date surface backed by the same wall-clock source as the
+    // WASI clock interfaces. This is not the WASI API surface.
     let code = r#"
         let t = Date.now();
         console.log(t > 1000000000000);
@@ -100,7 +101,7 @@ fn test_clock_to_iso_string() {
 }
 
 // ============================================================
-// vybe:env — environment
+// env compatibility alias — environment
 // ============================================================
 
 #[test]
@@ -123,7 +124,7 @@ fn test_env_args() {
 }
 
 // ============================================================
-// vybe:random
+// random compatibility alias — random
 // ============================================================
 
 #[test]

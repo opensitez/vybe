@@ -60,6 +60,7 @@ parseInt            = { emit = "host:ecma:number:parseInt",           min_args =
 parseFloat          = { emit = "host:ecma:number:parseFloat",         min_args = 1, max_args = 1 }
 isNaN               = { emit = "host:ecma:number:globalIsNaN",        min_args = 1, max_args = 1 }
 isFinite            = { emit = "host:ecma:number:globalIsFinite",     min_args = 1, max_args = 1 }
+eval                = { emit = "host:ecma:global:eval",               min_args = 1, max_args = 1 }
 
 # ── Encoding ─────────────────────────────────────────────────────────────────
 
@@ -104,6 +105,9 @@ decodeURI               = { emit = "host:ecma:string:decodeURI",             min
 "Math.imul"         = { emit = "host:ecma:math:imul",     min_args = 2, max_args = 2 }
 "Math.expm1"        = { emit = "host:ecma:math:expm1",    min_args = 1, max_args = 1 }
 "Math.log1p"        = { emit = "host:ecma:math:log1p",    min_args = 1, max_args = 1 }
+"Math.sinh"         = { emit = "stdlib:sinh",              min_args = 1, max_args = 1 }
+"Math.cosh"         = { emit = "stdlib:cosh",              min_args = 1, max_args = 1 }
+"Math.tanh"         = { emit = "stdlib:tanh",              min_args = 1, max_args = 1 }
 
 # ── Number static methods ────────────────────────────────────────────────────
 
@@ -184,7 +188,16 @@ BigInt              = { emit = "host:ecma:bigint:BigInt",         min_args = 1, 
 "Object.is"          = { emit = "host:ecma:object:is",           min_args = 2, max_args = 2 }
 "Object.getPrototypeOf"     = { emit = "host:ecma:object:getPrototypeOf",     min_args = 1, max_args = 1 }
 "Object.getOwnPropertyNames" = { emit = "host:ecma:object:getOwnPropertyNames", min_args = 1, max_args = 1 }
-"Object.defineProperty" = { emit = "host:ecma:object:defineProperty", min_args = 3, max_args = 3 }
+"Object.getOwnPropertyDescriptor"  = { emit = "host:ecma:object:getOwnPropertyDescriptor",  min_args = 2, max_args = 2 }
+"Object.getOwnPropertyDescriptors" = { emit = "host:ecma:object:getOwnPropertyDescriptors", min_args = 1, max_args = 1 }
+"Object.getOwnPropertySymbols"     = { emit = "host:ecma:object:getOwnPropertySymbols",     min_args = 1, max_args = 1 }
+"Object.defineProperty"            = { emit = "host:ecma:object:defineProperty",             min_args = 3, max_args = 3 }
+"Object.defineProperties"          = { emit = "host:ecma:object:defineProperties",           min_args = 2, max_args = 2 }
+"Object.preventExtensions"         = { emit = "host:ecma:object:preventExtensions",          min_args = 1, max_args = 1 }
+"Object.isExtensible"              = { emit = "host:ecma:object:isExtensible",               min_args = 1, max_args = 1 }
+"Object.setPrototypeOf"            = { emit = "host:ecma:object:setPrototypeOf",             min_args = 2, max_args = 2 }
+"Object.groupBy"                   = { emit = "host:ecma:object:groupBy",                     min_args = 2, max_args = 2 }
+"Map.groupBy"                      = { emit = "host:ecma:map:groupBy",                        min_args = 2, max_args = 2 }
 
 # ── JSON ─────────────────────────────────────────────────────────────────────
 
@@ -255,12 +268,12 @@ queueMicrotask       = { emit = "noop",                          min_args = 1, m
 
 # ── net module ───────────────────────────────────────────────────────────────
 
-"net.createConnection" = { emit = "host:dotnet:sockets:tcpClientNew",   min_args = 1, max_args = 2 }
-"net.connect"          = { emit = "host:dotnet:sockets:tcpClientNew",   min_args = 1, max_args = 2 }
-"net.createServer"     = { emit = "host:dotnet:sockets:tcpListenerNew", min_args = 0, max_args = 1 }
-"dgram.createSocket"   = { emit = "host:dotnet:sockets:udpClientNew",   min_args = 1, max_args = 1 }
-"dns.resolve"          = { emit = "host:dotnet:net:dnsGetHostAddresses", min_args = 1, max_args = 1 }
-"dns.lookup"           = { emit = "host:dotnet:net:dnsGetHostAddresses", min_args = 1, max_args = 1 }
+"net.createConnection" = { emit = "common:js.net_create_connection",    min_args = 1, max_args = 2 }
+"net.connect"          = { emit = "common:js.net_create_connection",    min_args = 1, max_args = 2 }
+"net.createServer"     = { emit = "common:js.net_create_server",        min_args = 0, max_args = 1 }
+"dgram.createSocket"   = { emit = "common:js.dgram_create_socket",      min_args = 1, max_args = 1 }
+"dns.resolve"          = { emit = "common:dotnet.dns_get_host_addresses", min_args = 1, max_args = 1 }
+"dns.lookup"           = { emit = "common:dotnet.dns_get_host_addresses", min_args = 1, max_args = 1 }
 
 # ── child_process module ─────────────────────────────────────────────────────
 
@@ -498,21 +511,32 @@ module = "ecma:finalization-registry"
 [[esm_default]]
 kind = "namespace"
 alias = "fs"
+# Compatibility alias over the legacy flat `wasi:filesystem` module.
+# The actual WASI filesystem interfaces are `wasi:filesystem/preopens`
+# and `wasi:filesystem/types`.
 module = "wasi:filesystem"
 
 [[esm_default]]
 kind = "namespace"
 alias = "clock"
+# Compatibility alias over the legacy flat `wasi:clocks` namespace.
+# The actual WASI proposal surfaces are `wasi:clocks/wall-clock` and
+# `wasi:clocks/monotonic-clock`, which remain importable directly.
 module = "wasi:clocks"
 
 [[esm_default]]
 kind = "namespace"
 alias = "env"
+# Compatibility alias over the legacy flat `wasi:cli` module.
+# The actual WASI CLI environment interface is `wasi:cli/environment`.
 module = "wasi:cli"
 
 [[esm_default]]
 kind = "namespace"
 alias = "random"
+# Convenience alias over `wasi:random/random`. The actual WASI functions
+# are `get-random-bytes` and `get-random-u64`; extra helpers like
+# `random()`, `randomInt()`, and `uuid()` are Vybe extensions on top.
 module = "wasi:random/random"
 
 [[esm_default]]
@@ -596,17 +620,17 @@ module = "web:fetch"
 [[esm_default]]
 kind = "namespace"
 alias = "net"
-module = "dotnet:sockets"
+module = "wasi:sockets/tcp"
 
 [[esm_default]]
 kind = "namespace"
 alias = "tls"
-module = "dotnet:sockets"
+module = "wasi:sockets/tcp"
 
 [[esm_default]]
 kind = "namespace"
 alias = "dgram"
-module = "dotnet:sockets"
+module = "wasi:sockets/udp"
 
 [[esm_default]]
 kind = "namespace"

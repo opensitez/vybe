@@ -15,6 +15,7 @@
 //! See `JS_BUILTIN_CONVENTIONS.md` for marshaling rules.
 
 use std::sync::{Arc, Mutex, OnceLock};
+use crate::ecma::function::invoke_with_explicit_this;
 use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::{HostContext, VM};
 
@@ -24,6 +25,8 @@ const FROZEN_MARK: &str = "__vybe_frozen";
 const SEALED_MARK: &str = "__vybe_sealed";
 const EXTENSIBLE_MARK: &str = "__vybe_extensible"; // absence means extensible
 const PROTO_KEY: &str = "__proto__";
+const PROXY_TARGET_KEY: &str = "__vybe_proxy_target";
+const PROXY_HANDLER_KEY: &str = "__vybe_proxy_handler";
 /// PHP-array next-int-key tracker. Used by `appendAutoKey`.
 const NEXT_INT_KEY: &str = "__vybe_next_int_key";
 
@@ -59,7 +62,30 @@ fn obj_of(args: &[Value], idx: usize) -> Option<Arc<Mutex<Object>>> {
 fn key_string(v: &Value) -> String {
     match v {
         Value::String(s) => s.to_string(),
+        Value::Symbol(sym) => crate::ecma::symbol::canonical_property_key(sym),
         _ => format!("{}", v),
+    }
+}
+
+fn proxy_target_and_handler(obj: &Arc<Mutex<Object>>) -> Option<(Value, Value)> {
+    let o = obj.lock().unwrap();
+    let target = o.properties.get(PROXY_TARGET_KEY).cloned()?;
+    let handler = o.properties.get(PROXY_HANDLER_KEY).cloned()?;
+    Some((target, handler))
+}
+
+fn proxy_trap(handler: &Value, name: &str) -> Option<Value> {
+    let Value::Object(handler_obj) = handler else {
+        return None;
+    };
+    let trap = handler_obj.lock().unwrap().properties.get(name).cloned()?;
+    match &trap {
+        Value::Object(trap_obj)
+            if matches!(trap_obj.lock().unwrap().kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_)) =>
+        {
+            Some(trap)
+        }
+        _ => None,
     }
 }
 
@@ -89,7 +115,7 @@ fn track_key(obj: &Arc<Mutex<Object>>, key: &str) {
 /// Mark `key` as non-enumerable on `obj` (lazy-initializes the
 /// `__nonenum` set). `Object.keys` / `Object.entries` filter against
 /// this set so defineProperty with `enumerable: false` is honoured.
-fn track_nonenum(obj: &Arc<Mutex<Object>>, key: &str) {
+pub(crate) fn track_nonenum(obj: &Arc<Mutex<Object>>, key: &str) {
     let mut o = obj.lock().unwrap();
     let arr = match o.properties.get("__nonenum") {
         Some(Value::Object(a)) => a.clone(),
@@ -109,10 +135,30 @@ fn track_nonenum(obj: &Arc<Mutex<Object>>, key: &str) {
     }
 }
 
+fn track_nonconfig(obj: &Arc<Mutex<Object>>, key: &str) {
+    let mut o = obj.lock().unwrap();
+    let arr = match o.properties.get("__nonconfig") {
+        Some(Value::Object(a)) => a.clone(),
+        _ => {
+            let a = Arc::new(Mutex::new(Object::new_array(Vec::new())));
+            o.properties.insert("__nonconfig".into(), Value::Object(a.clone()));
+            a
+        }
+    };
+    drop(o);
+    let mut a = arr.lock().unwrap();
+    if let ObjectKind::Array(ref mut elems) = a.kind {
+        let key_v = Value::String(Arc::from(key));
+        if !elems.iter().any(|e| matches!(e, Value::String(s) if s.as_ref() == key)) {
+            elems.push(key_v);
+        }
+    }
+}
+
 /// Track a Symbol-typed property key in `__sym_keys` so the regular
 /// `__keys` enumeration (and thus Object.keys) skips it per
 /// ECMA-262 §7.3.22 — Symbol keys remain reachable via `obj[sym]`.
-fn track_sym_key(obj: &Arc<Mutex<Object>>, key: &str) {
+fn track_sym_key(obj: &Arc<Mutex<Object>>, key: Value) {
     let mut o = obj.lock().unwrap();
     let arr = match o.properties.get("__sym_keys") {
         Some(Value::Object(a)) => a.clone(),
@@ -125,11 +171,100 @@ fn track_sym_key(obj: &Arc<Mutex<Object>>, key: &str) {
     drop(o);
     let mut a = arr.lock().unwrap();
     if let ObjectKind::Array(ref mut elems) = a.kind {
-        let key_v = Value::String(Arc::from(key));
-        if !elems.iter().any(|e| matches!(e, Value::String(s) if s.as_ref() == key)) {
-            elems.push(key_v);
+        if !elems.iter().any(|existing| existing == &key) {
+            elems.push(key);
         }
     }
+}
+
+pub(crate) fn unwrap_fulfilled_promise(value: Value) -> Value {
+    let Value::Object(obj) = &value else {
+        return value;
+    };
+    let unwrapped = {
+        let lock = obj.lock().unwrap();
+        if lock.properties.get("__type").map(|v| format!("{}", v)).as_deref() != Some("Promise") {
+            None
+        } else if lock.properties.get("__state").map(|v| format!("{}", v)).as_deref() == Some("fulfilled") {
+            Some(lock.properties.get("__value").cloned().unwrap_or(Value::Undefined))
+        } else {
+            None
+        }
+    };
+    unwrapped.unwrap_or(value)
+}
+
+fn lookup_protocol_member(receiver: &Arc<Mutex<Object>>, key: &str) -> Option<Value> {
+    let raw_key = format!("@@{}", key);
+    let mut current = receiver.clone();
+    for _ in 0..100 {
+        let next_proto = {
+            let lock = current.lock().unwrap();
+            if let Some(value) = lock.properties.get(key) {
+                if !matches!(value, Value::Null | Value::Undefined) {
+                    return Some(value.clone());
+                }
+            }
+            if let Some(value) = lock.properties.get(&raw_key) {
+                if !matches!(value, Value::Null | Value::Undefined) {
+                    return Some(value.clone());
+                }
+            }
+            match lock.properties.get("__proto__").cloned() {
+                Some(Value::Object(proto)) => Some(proto),
+                _ => None,
+            }
+        };
+        match next_proto {
+            Some(proto) => current = proto,
+            None => break,
+        }
+    }
+    None
+}
+
+pub(crate) fn collect_protocol_iterable(
+    ctx: &mut HostContext,
+    receiver: &Arc<Mutex<Object>>,
+    method_name: &str,
+) -> Option<Value> {
+    let method = lookup_protocol_member(receiver, method_name)?;
+    if matches!(method, Value::Null | Value::Undefined) {
+        return None;
+    }
+    let iterator = crate::ecma::function::invoke_bound_callback_if_needed(ctx, &method, &[])
+        .unwrap_or_else(|| invoke_with_explicit_this(ctx, &method, Value::Object(receiver.clone()), &[]));
+    let iterator = unwrap_fulfilled_promise(iterator);
+    let Value::Object(iterator_obj) = iterator else {
+        return None;
+    };
+
+    let mut out = Vec::new();
+    for _ in 0..1024 {
+        let next_fn = lookup_protocol_member(&iterator_obj, "next");
+        let Some(next_fn) = next_fn else {
+            break;
+        };
+        let step = crate::ecma::function::invoke_bound_callback_if_needed(ctx, &next_fn, &[])
+            .unwrap_or_else(|| invoke_with_explicit_this(ctx, &next_fn, Value::Object(iterator_obj.clone()), &[]));
+        let step = unwrap_fulfilled_promise(step);
+        let Value::Object(step_obj) = step else {
+            break;
+        };
+        let (done, value) = {
+            let lock = step_obj.lock().unwrap();
+            (
+                lock.properties.get("done").map(|v| v.as_bool()).unwrap_or(false),
+                lock.properties.get("value").cloned().unwrap_or(Value::Undefined),
+            )
+        };
+        if done {
+            break;
+        }
+        out.push(value);
+    }
+
+    Some(Value::Object(Arc::new(Mutex::new(Object::new_array(out)))))
 }
 
 /// True if index `i` is a hole created by `delete arr[i]`. Holes are
@@ -149,6 +284,16 @@ fn is_array_hole(o: &Object, i: i32) -> bool {
 /// Returns true if `key` is marked non-enumerable on `obj`.
 fn is_nonenum(o: &Object, key: &str) -> bool {
     if let Some(Value::Object(arr)) = o.properties.get("__nonenum") {
+        let a = arr.lock().unwrap();
+        if let ObjectKind::Array(ref elems) = a.kind {
+            return elems.iter().any(|e| matches!(e, Value::String(s) if s.as_ref() == key));
+        }
+    }
+    false
+}
+
+fn is_nonconfig(o: &Object, key: &str) -> bool {
+    if let Some(Value::Object(arr)) = o.properties.get("__nonconfig") {
         let a = arr.lock().unwrap();
         if let ObjectKind::Array(ref elems) = a.kind {
             return elems.iter().any(|e| matches!(e, Value::String(s) if s.as_ref() == key));
@@ -429,10 +574,21 @@ fn register_construction(vm: &mut VM) {
                     if let Value::Object(s) = source {
                         let props: Vec<(String, Value)> = {
                             let src = s.lock().unwrap();
-                            src.properties.iter()
-                                .filter(|(k, _)| !k.starts_with("__") && !is_nonenum(&*src, k))
-                                .map(|(k, v)| (k.clone(), v.clone()))
-                                .collect()
+                            match &src.kind {
+                                ObjectKind::Map(map) => map
+                                    .iter()
+                                    .filter_map(|(k, v)| match k {
+                                        Value::String(name) if !name.starts_with("__") => {
+                                            Some((name.to_string(), v.clone()))
+                                        }
+                                        _ => None,
+                                    })
+                                    .collect(),
+                                _ => src.properties.iter()
+                                    .filter(|(k, _)| !k.starts_with("__") && !is_nonenum(&*src, k))
+                                    .map(|(k, v)| (k.clone(), v.clone()))
+                                    .collect(),
+                            }
                         };
                         let mut tgt = t.lock().unwrap();
                         for (k, v) in props {
@@ -464,6 +620,7 @@ fn register_access(vm: &mut VM) {
     vm.register_host_fn("ecma:object", "set",
         Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
+                let key_raw = args.get(1).cloned().unwrap_or(Value::Undefined);
                 let key = args.get(1).map(key_string).unwrap_or_default();
                 let val = args.get(2).cloned().unwrap_or(Value::Undefined);
                 // ECMA-262 §10.1.5 OrdinarySet — three gates:
@@ -524,6 +681,21 @@ fn register_access(vm: &mut VM) {
                     }
                 }
                 obj.lock().unwrap().properties.insert(key, val);
+                let kind_skip = {
+                    let o = obj.lock().unwrap();
+                    matches!(o.kind, ObjectKind::Array(_))
+                };
+                if !kind_skip {
+                    match key_raw {
+                        Value::Symbol(sym) => track_sym_key(&obj, Value::Symbol(sym)),
+                        _ => {
+                            let tracked_key = key_string(&key_raw);
+                            if !tracked_key.starts_with("__") {
+                                track_key(&obj, &tracked_key);
+                            }
+                        }
+                    }
+                }
             }
             Value::Null
         }));
@@ -646,9 +818,8 @@ fn register_access(vm: &mut VM) {
                     matches!(o.kind, ObjectKind::Array(_))
                 };
                 if kind_skip { return Value::Undefined; }
-                if let Some(Value::Symbol(_)) = args.get(1) {
-                    let key = args.get(1).map(key_string).unwrap_or_default();
-                    track_sym_key(&obj, &key);
+                if let Some(Value::Symbol(sym)) = args.get(1) {
+                    track_sym_key(&obj, Value::Symbol(sym.clone()));
                     return Value::Undefined;
                 }
                 let key = args.get(1).map(key_string).unwrap_or_default();
@@ -787,7 +958,11 @@ fn register_enumeration(vm: &mut VM) {
             .and_then(|v| if let Value::Object(a) = v {
                 let lock = a.lock().unwrap();
                 if let ObjectKind::Array(ref el) = lock.kind {
-                    Some(el.iter().filter_map(|e| if let Value::String(s) = e { Some(s.to_string()) } else { None }).collect())
+                    Some(el.iter().filter_map(|e| match e {
+                        Value::String(s) => Some(s.to_string()),
+                        Value::Symbol(sym) => Some(crate::ecma::symbol::canonical_property_key(sym)),
+                        _ => None,
+                    }).collect())
                 } else { None }
             } else { None })
             .unwrap_or_default();
@@ -914,7 +1089,7 @@ fn register_enumeration(vm: &mut VM) {
     // for-of loops; `Object.values` keeps the spec-strict "values only"
     // behaviour for `Object.values(map)` user calls.
     vm.register_host_fn("ecma:object", "iterForOf",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
                 match &o.kind {
@@ -941,6 +1116,14 @@ fn register_enumeration(vm: &mut VM) {
                     }
                     _ => {}
                 }
+                drop(o);
+                if let Some(values) = collect_protocol_iterable(ctx, &obj, "asyncIterator") {
+                    return values;
+                }
+                if let Some(values) = collect_protocol_iterable(ctx, &obj, "iterator") {
+                    return values;
+                }
+                let o = obj.lock().unwrap();
                 let values: Vec<Value> = ordinary_ordered_keys(&o).into_iter()
                     .filter_map(|k| o.properties.get(&k).cloned())
                     .collect();
@@ -1064,17 +1247,9 @@ fn register_enumeration(vm: &mut VM) {
                     Some(Value::Object(arr)) => {
                         let a = arr.lock().unwrap();
                         if let ObjectKind::Array(ref elems) = a.kind {
-                            elems.iter().filter_map(|e| {
-                                if let Value::String(s) = e {
-                                    // "Symbol(desc)" → desc
-                                    let raw = s.as_ref();
-                                    let desc = if raw.starts_with("Symbol(") && raw.ends_with(')') {
-                                        &raw["Symbol(".len()..raw.len()-1]
-                                    } else {
-                                        raw
-                                    };
-                                    Some(Value::Symbol(Arc::from(desc)))
-                                } else { None }
+                            elems.iter().filter_map(|e| match e {
+                                Value::Symbol(sym) => Some(Value::Symbol(sym.clone())),
+                                _ => None,
                             }).collect()
                         } else { Vec::new() }
                     }
@@ -1107,17 +1282,35 @@ fn register_descriptors(vm: &mut VM) {
     // non-enumerable keys via `__nonenum` so `Object.keys` /
     // `Object.entries` exclude them per §7.3.22.
     vm.register_host_fn("ecma:object", "defineProperty",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
-                let key = args.get(1).map(key_string).unwrap_or_default();
+                let original_obj = obj.clone();
+                let key_value = args.get(1).cloned().unwrap_or(Value::Undefined);
+                let descriptor = args.get(2).cloned().unwrap_or(Value::Undefined);
+                let mut define_obj = obj.clone();
+                if let Some((target, handler)) = proxy_target_and_handler(&obj) {
+                    if let Some(trap) = proxy_trap(&handler, "defineProperty") {
+                        let _ = invoke_with_explicit_this(
+                            ctx,
+                            &trap,
+                            handler,
+                            &[target, key_value.clone(), descriptor.clone()],
+                        );
+                        return Value::Object(original_obj);
+                    }
+                    if let Value::Object(target_obj) = target {
+                        define_obj = target_obj;
+                    }
+                }
+                let key = key_string(&key_value);
                 // ECMA-262 §10.1: descriptor either has data fields
                 // (`value`, `writable`) or accessor fields (`get`, `set`).
                 // The VM honors `__get_<key>` / `__set_<key>` properties
                 // as accessors (see dispatch.rs STRUCT_GET / STRUCT_SET),
                 // so install them here when the descriptor specifies
                 // get/set callables.
-                let (val_or_none, getter, setter, enumerable, writable) = match args.get(2) {
-                    Some(Value::Object(desc)) => {
+                let (val_or_none, getter, setter, enumerable, writable, configurable) = match &descriptor {
+                    Value::Object(desc) => {
                         let d = desc.lock().unwrap();
                         let val = d.properties.get("value").cloned();
                         let get = d.properties.get("get").cloned()
@@ -1140,16 +1333,26 @@ fn register_descriptors(vm: &mut VM) {
                         // or absent on data descriptor → non-writable).
                         let w = d.properties.get("writable")
                             .map(|x| x.as_bool());
-                        (val, get, set, e, w)
+                        let c = d.properties.get("configurable")
+                            .map(|x| x.as_bool())
+                            .unwrap_or(false);
+                        (val, get, set, e, w, c)
                     }
-                    _ => (None, None, None, false, None),
+                    _ => (None, None, None, false, None, false),
                 };
-                track_key(&obj, &key);
+                track_key(&define_obj, &key);
                 if !enumerable {
-                    track_nonenum(&obj, &key);
+                    track_nonenum(&define_obj, &key);
                 }
                 {
-                    let mut o = obj.lock().unwrap();
+                    let mut o = define_obj.lock().unwrap();
+                    if o.properties.contains_key(&key) && is_nonconfig(&o, &key) {
+                        ctx.throw_value(crate::ecma::error::new_error(
+                            "TypeError",
+                            "Cannot redefine property",
+                        ));
+                        return Value::Null;
+                    }
                     if let Some(g) = getter {
                         o.properties.insert(format!("__get_{}", key), g);
                     }
@@ -1178,10 +1381,13 @@ fn register_descriptors(vm: &mut VM) {
                     } else if !o.properties.contains_key(&key) {
                         // Pure accessor descriptor: stamp Undefined so
                         // own-key enumeration sees the property.
-                        o.properties.insert(key, Value::Undefined);
+                        o.properties.insert(key.clone(), Value::Undefined);
                     }
                 }
-                return Value::Object(obj);
+                if !configurable {
+                    track_nonconfig(&define_obj, &key);
+                }
+                return Value::Object(original_obj);
             }
             Value::Null
         }));
@@ -1239,12 +1445,28 @@ fn register_descriptors(vm: &mut VM) {
             if let Some(obj) = obj_of(args, 0) {
                 let key = args.get(1).map(key_string).unwrap_or_default();
                 let o = obj.lock().unwrap();
+                let getter_key = format!("__get_{}", key);
+                let setter_key = format!("__set_{}", key);
+                if o.properties.contains_key(&getter_key) || o.properties.contains_key(&setter_key) {
+                    let mut desc = Object::new();
+                    desc.properties.insert(
+                        "get".into(),
+                        o.properties.get(&getter_key).cloned().unwrap_or(Value::Undefined),
+                    );
+                    desc.properties.insert(
+                        "set".into(),
+                        o.properties.get(&setter_key).cloned().unwrap_or(Value::Undefined),
+                    );
+                    desc.properties.insert("enumerable".into(), Value::Bool(!is_nonenum(&o, &key)));
+                    desc.properties.insert("configurable".into(), Value::Bool(!is_nonconfig(&o, &key)));
+                    return Value::Object(Arc::new(Mutex::new(desc)));
+                }
                 if let Some(v) = o.properties.get(&key) {
                     let mut desc = Object::new();
                     desc.properties.insert("value".into(), v.clone());
                     desc.properties.insert("writable".into(), Value::Bool(true));
                     desc.properties.insert("enumerable".into(), Value::Bool(!is_nonenum(&o, &key)));
-                    desc.properties.insert("configurable".into(), Value::Bool(true));
+                    desc.properties.insert("configurable".into(), Value::Bool(!is_nonconfig(&o, &key)));
                     return Value::Object(Arc::new(Mutex::new(desc)));
                 }
             }
@@ -1260,10 +1482,23 @@ fn register_descriptors(vm: &mut VM) {
                 for (k, v) in &o.properties {
                     if k.starts_with("__") { continue; }
                     let mut desc = Object::new();
-                    desc.properties.insert("value".into(), v.clone());
-                    desc.properties.insert("writable".into(), Value::Bool(true));
+                    let getter_key = format!("__get_{}", k);
+                    let setter_key = format!("__set_{}", k);
+                    if o.properties.contains_key(&getter_key) || o.properties.contains_key(&setter_key) {
+                        desc.properties.insert(
+                            "get".into(),
+                            o.properties.get(&getter_key).cloned().unwrap_or(Value::Undefined),
+                        );
+                        desc.properties.insert(
+                            "set".into(),
+                            o.properties.get(&setter_key).cloned().unwrap_or(Value::Undefined),
+                        );
+                    } else {
+                        desc.properties.insert("value".into(), v.clone());
+                        desc.properties.insert("writable".into(), Value::Bool(true));
+                    }
                     desc.properties.insert("enumerable".into(), Value::Bool(!is_nonenum(&o, k)));
-                    desc.properties.insert("configurable".into(), Value::Bool(true));
+                    desc.properties.insert("configurable".into(), Value::Bool(!is_nonconfig(&o, k)));
                     result.properties.insert(k.clone(), Value::Object(Arc::new(Mutex::new(desc))));
                 }
             }
@@ -1275,8 +1510,17 @@ fn register_descriptors(vm: &mut VM) {
 
 fn register_prototype(vm: &mut VM) {
     vm.register_host_fn("ecma:object", "getPrototypeOf",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
+                if let Some((target, handler)) = proxy_target_and_handler(&obj) {
+                    if let Some(trap) = proxy_trap(&handler, "getPrototypeOf") {
+                        return invoke_with_explicit_this(ctx, &trap, handler, &[target]);
+                    }
+                    if let Value::Object(target_obj) = target {
+                        let o = target_obj.lock().unwrap();
+                        return o.properties.get(PROTO_KEY).cloned().unwrap_or(Value::Null);
+                    }
+                }
                 let o = obj.lock().unwrap();
                 return o.properties.get(PROTO_KEY).cloned().unwrap_or(Value::Null);
             }
@@ -1492,6 +1736,9 @@ fn register_prototype_methods(vm: &mut VM) {
     // toString(): spec default is "[object Object]" for plain objects
     vm.register_host_fn("ecma:object", "toString",
         Box::new(|ctx, args| {
+            if let Some(Value::Symbol(_)) = args.first() {
+                return Value::String(Arc::from("[object Symbol]"));
+            }
             if let Some(obj) = obj_of(args, 0) {
                 let tag = object_to_string_tag(ctx, &obj);
                 return Value::String(Arc::from(format!("[object {}]", tag).as_str()));

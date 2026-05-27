@@ -368,14 +368,12 @@ pub fn run() {
 
     // Programmatic-mode server primitive: scripts can call
     // `vybe:http/server.listen(addr, handler)` to become a long-lived
-    // HTTP server (Node/Flask/Sinatra style). Register before the
-    // adapters so `node:http`'s re-export target exists.
+    // HTTP server (Node/Flask/Sinatra style).
     crate::server::programmatic::register(&mut vm);
 
-    // Register every in-language Adapter module (node:http, node:fs,
-    // etc.). Each adapter's JS source is embedded, parsed, and
-    // installed into `vm.modules` as `ModuleKind::Adapter` with
-    // `Indirect` exports chained to the real Synthetic targets.
+    // Register any in-language adapter modules whose targets are real.
+    // Today this is intentionally empty; we do not install placeholder
+    // adapters over non-existent `wasi:http/*` server surfaces.
     if let Err(e) = crate::adapters::register_all(&mut vm) {
         eprintln!("adapter registration error: {e}");
         std::process::exit(1);

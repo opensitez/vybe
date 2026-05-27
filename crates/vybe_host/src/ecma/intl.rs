@@ -33,6 +33,20 @@ static DATE_TIME_FORMAT_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new(
 static RELATIVE_TIME_FORMAT_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 static SEGMENTER_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 
+fn bound_host_fn_ref_by_idx(module: &str, name: &str, idx: usize, bound_args: Vec<Value>) -> Value {
+    let mut obj = Object::new();
+    obj.properties.insert("__host_module".into(), Value::String(Arc::from(module)));
+    obj.properties.insert("__host_name".into(), Value::String(Arc::from(name)));
+    obj.properties.insert("__host_idx".into(), Value::F64(idx as f64));
+    obj.properties.insert("name".into(), Value::String(Arc::from(name)));
+    obj.properties.insert(
+        "__bound_args".into(),
+        Value::Object(Arc::new(Mutex::new(Object::new_array(bound_args)))),
+    );
+    obj.kind = ObjectKind::HostFunction(idx);
+    Value::Object(Arc::new(Mutex::new(obj)))
+}
+
 pub fn register(vm: &mut VM) {
     register_collator(vm);
     register_number_format(vm);
@@ -74,7 +88,10 @@ pub(crate) fn shared_segmenter_prototype() -> Value {
 }
 
 fn make_array(elements: Vec<Value>) -> Value {
-    Value::Object(Arc::new(Mutex::new(Object::new_array(elements))))
+    let mut obj = Object::new_array(elements);
+    obj.properties.insert("__type".into(), Value::String(Arc::from("Array")));
+    obj.properties.insert("__proto__".into(), crate::ecma::array::shared_array_prototype());
+    Value::Object(Arc::new(Mutex::new(obj)))
 }
 
 fn make_object(props: Vec<(&str, Value)>) -> Value {
@@ -147,26 +164,7 @@ fn parse_icu_locale(tag: &str) -> icu::locale::Locale {
 // ── Intl.Collator (ECMA-402 §11) ────────────────────────────────────
 
 fn register_collator(vm: &mut VM) {
-    vm.register_host_fn("ecma:intl/collator", "new", Box::new(|_ctx, args| {
-        let locale = resolve_locale(args.first());
-        let options = resolve_options(args.get(1));
-        let opts_lock = options.lock().unwrap();
-        let usage = opts_lock.properties.get("usage")
-            .and_then(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
-            .unwrap_or_else(|| "sort".into());
-        let sensitivity = opts_lock.properties.get("sensitivity")
-            .and_then(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
-            .unwrap_or_else(|| "variant".into());
-        drop(opts_lock);
-        make_object(vec![
-            ("__type", s_val("Collator")),
-            ("__proto__", shared_collator_prototype()),
-            ("locale", s_val(&locale)),
-            ("usage", s_val(&usage)),
-            ("sensitivity", s_val(&sensitivity)),
-        ])
-    }));
-
+    // Register compare first so we can look up its index for bound instances.
     vm.register_host_fn("ecma:intl/collator", "compare", Box::new(|_ctx, args| {
         use icu::collator::{Collator, options::CollatorOptions};
         let collator = match args.first() {
@@ -205,6 +203,39 @@ fn register_collator(vm: &mut VM) {
             std::cmp::Ordering::Equal => 0,
             std::cmp::Ordering::Greater => 1,
         })
+    }));
+
+    let compare_idx = *vm.host_registry
+        .get(&("ecma:intl/collator".to_string(), "compare".to_string()))
+        .expect("ecma:intl/collator.compare must be registered");
+
+    vm.register_host_fn("ecma:intl/collator", "new", Box::new(move |_ctx, args| {
+        let locale = resolve_locale(args.first());
+        let options = resolve_options(args.get(1));
+        let opts_lock = options.lock().unwrap();
+        let usage = opts_lock.properties.get("usage")
+            .and_then(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
+            .unwrap_or_else(|| "sort".into());
+        let sensitivity = opts_lock.properties.get("sensitivity")
+            .and_then(|v| if let Value::String(s) = v { Some(s.to_string()) } else { None })
+            .unwrap_or_else(|| "variant".into());
+        drop(opts_lock);
+        let result = make_object(vec![
+            ("__type", s_val("Collator")),
+            ("__proto__", shared_collator_prototype()),
+            ("locale", s_val(&locale)),
+            ("usage", s_val(&usage)),
+            ("sensitivity", s_val(&sensitivity)),
+        ]);
+        // Attach a bound compare so `coll.compare` passed to Array.sort retains the collator.
+        if let Value::Object(coll_arc) = &result {
+            let bound = bound_host_fn_ref_by_idx(
+                "ecma:intl/collator", "compare", compare_idx,
+                vec![Value::Object(coll_arc.clone())],
+            );
+            coll_arc.lock().unwrap().properties.insert("compare".into(), bound);
+        }
+        result
     }));
 
     vm.register_host_fn("ecma:intl/collator", "resolvedOptions", Box::new(|_ctx, args| {

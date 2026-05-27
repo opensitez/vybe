@@ -694,6 +694,27 @@ fn register_normalize(vm: &mut VM) {
 // are spec'd as global functions but they're string transforms — they
 // belong on `ecma:string` for the purposes of the host-fn registry.
 
+fn decode_uri_string(input: &str) -> Result<String, &'static str> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len() {
+                return Err("URI malformed");
+            }
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).map_err(|_| "URI malformed")?;
+            let byte = u8::from_str_radix(hex, 16).map_err(|_| "URI malformed")?;
+            out.push(byte);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).map_err(|_| "URI malformed")
+}
+
 fn register_uri(vm: &mut VM) {
     // encodeURIComponent — encodes everything except the unreserved set
     // (ALPHA / DIGIT / `-` / `_` / `.` / `~` / `!` / `*` / `'` / `(` / `)`).
@@ -714,26 +735,16 @@ fn register_uri(vm: &mut VM) {
         s_val(&encoded)
     }));
 
-    // decodeURIComponent — reverses encodeURIComponent. Emits the raw
-    // input on malformed escape sequences (ECMA spec throws URIError;
-    // we degrade to passthrough until exception dispatch is wired).
-    vm.register_host_fn("ecma:string", "decodeURIComponent", Box::new(|_ctx, args| {
+    // decodeURIComponent — reverses encodeURIComponent.
+    vm.register_host_fn("ecma:string", "decodeURIComponent", Box::new(|ctx, args| {
         let s = s_arg(args, 0);
-        let bytes = s.as_bytes();
-        let mut out = Vec::with_capacity(bytes.len());
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i] == b'%' && i + 2 < bytes.len() {
-                if let Ok(byte) = u8::from_str_radix(std::str::from_utf8(&bytes[i+1..i+3]).unwrap_or(""), 16) {
-                    out.push(byte);
-                    i += 3;
-                    continue;
-                }
+        match decode_uri_string(&s) {
+            Ok(decoded) => s_val(&decoded),
+            Err(message) => {
+                ctx.throw_value(crate::ecma::error::new_error("URIError", message));
+                Value::Undefined
             }
-            out.push(bytes[i]);
-            i += 1;
         }
-        s_val(&String::from_utf8_lossy(&out))
     }));
 
     // encodeURI — like encodeURIComponent but ALSO leaves URI-syntax
@@ -759,23 +770,66 @@ fn register_uri(vm: &mut VM) {
     // reserved set than decodeURIComponent (it preserves URI-syntax
     // chars even if they were percent-encoded), but for our MVP we
     // simply unescape every `%XX` — same behaviour as decodeURIComponent.
-    vm.register_host_fn("ecma:string", "decodeURI", Box::new(|_ctx, args| {
+    vm.register_host_fn("ecma:string", "decodeURI", Box::new(|ctx, args| {
         let s = s_arg(args, 0);
-        let bytes = s.as_bytes();
-        let mut out = Vec::with_capacity(bytes.len());
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i] == b'%' && i + 2 < bytes.len() {
-                if let Ok(byte) = u8::from_str_radix(std::str::from_utf8(&bytes[i+1..i+3]).unwrap_or(""), 16) {
-                    out.push(byte);
-                    i += 3;
-                    continue;
+        match decode_uri_string(&s) {
+            Ok(decoded) => s_val(&decoded),
+            Err(message) => {
+                ctx.throw_value(crate::ecma::error::new_error("URIError", message));
+                Value::Undefined
+            }
+        }
+    }));
+
+    // Annex B `escape` — legacy percent encoder used by older JS code.
+    // Leaves `A-Z a-z 0-9 @*_+-./` unescaped, encodes Latin-1 bytes as
+    // `%XX`, and wider code points as `%uXXXX`.
+    vm.register_host_fn("ecma:string", "escape", Box::new(|_ctx, args| {
+        let s = s_arg(args, 0);
+        let mut encoded = String::new();
+        for ch in s.chars() {
+            if ch.is_ascii_alphanumeric() || "@*_+-./".contains(ch) {
+                encoded.push(ch);
+            } else {
+                let code = ch as u32;
+                if code < 256 {
+                    encoded.push_str(&format!("%{:02X}", code));
+                } else {
+                    encoded.push_str(&format!("%u{:04X}", code));
                 }
             }
-            out.push(bytes[i]);
+        }
+        s_val(&encoded)
+    }));
+
+    // Annex B `unescape` — reverses `%XX` and `%uXXXX` escapes.
+    vm.register_host_fn("ecma:string", "unescape", Box::new(|_ctx, args| {
+        let s = s_arg(args, 0);
+        let bytes = s.as_bytes();
+        let mut out = String::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%' {
+                if i + 5 < bytes.len() && bytes[i + 1] == b'u' {
+                    if let Ok(code) = u32::from_str_radix(std::str::from_utf8(&bytes[i + 2..i + 6]).unwrap_or(""), 16) {
+                        if let Some(ch) = char::from_u32(code) {
+                            out.push(ch);
+                            i += 6;
+                            continue;
+                        }
+                    }
+                } else if i + 2 < bytes.len() {
+                    if let Ok(byte) = u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16) {
+                        out.push(byte as char);
+                        i += 3;
+                        continue;
+                    }
+                }
+            }
+            out.push(bytes[i] as char);
             i += 1;
         }
-        s_val(&String::from_utf8_lossy(&out))
+        s_val(&out)
     }));
 }
 
