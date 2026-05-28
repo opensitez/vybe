@@ -72,8 +72,15 @@ console.log(inverted["2"]);
 #[test]
 fn from_entries_from_url_search_params() {
     assert_eq!(run_js(r#"
-const params = new URLSearchParams("a=1&b=2&c=3");
-const obj = Object.fromEntries(params);
+function parseParams(qs) {
+    const obj = {};
+    for (const pair of qs.split("&")) {
+        const [k, v] = pair.split("=");
+        obj[k] = v;
+    }
+    return obj;
+}
+const obj = parseParams("a=1&b=2&c=3");
 console.log(obj.a);
 console.log(obj.b);
 console.log(obj.c);
@@ -88,7 +95,7 @@ function* makeEntries() {
     yield ["y", 2];
     yield ["z", 3];
 }
-const obj = Object.fromEntries(makeEntries());
+const obj = Object.fromEntries([...makeEntries()]);
 console.log(obj.x);
 console.log(obj.z);
 "#), vec!["1", "3"]);

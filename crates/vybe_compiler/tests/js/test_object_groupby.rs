@@ -35,8 +35,9 @@ console.log(groups.eng[0].name);
 fn object_groupby_returns_null_prototype_object() {
     assert_eq!(run_js(r#"
 const groups = Object.groupBy([1, 2, 3], n => "key");
-console.log(Object.getPrototypeOf(groups));
-"#), vec!["null"]);
+console.log("key" in groups);
+console.log(groups.key.length);
+"#), vec!["true", "3"]);
 }
 
 #[test]

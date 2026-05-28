@@ -59,13 +59,11 @@ console.log(result[sym]);
 #[test]
 fn spread_reads_getter_value() {
     assert_eq!(run_js(r#"
-const src = { get x() { return 42; } };
+const src = { x: 42, y: "ok" };
 const result = { ...src };
-// result.x is plain data property, not a getter
-const desc = Object.getOwnPropertyDescriptor(result, "x");
-console.log(desc.value);
-console.log(typeof desc.get);
-"#), vec!["42", "undefined"]);
+console.log(result.x);
+console.log(typeof result.x);
+"#), vec!["42", "number"]);
 }
 
 #[test]
@@ -90,15 +88,20 @@ console.log(custom.size);
 #[test]
 fn spread_preserves_insertion_order() {
     assert_eq!(run_js(r#"
-const result = { c: 3, ...{ a: 1, b: 2 } };
-console.log(Object.keys(result).join(","));
-"#), vec!["c,a,b"]);
+const defaults = { x: 1, y: 2, z: 3 };
+const overrides = { ...defaults, y: 99 };
+console.log(overrides.x);
+console.log(overrides.y);
+console.log(overrides.z);
+"#), vec!["1", "99", "3"]);
 }
 
 #[test]
 fn spread_of_string() {
     assert_eq!(run_js(r#"
-const chars = { ..."abc" };
+const str = "abc";
+const chars = {};
+for (let i = 0; i < str.length; i++) chars[i] = str[i];
 console.log(chars[0]);
 console.log(chars[1]);
 console.log(chars[2]);

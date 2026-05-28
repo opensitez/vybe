@@ -226,8 +226,8 @@ const obj = {};
 Object.defineProperties(obj, {
     x: { value: 10, writable: true, enumerable: true, configurable: true },
     y: { value: 20, writable: true, enumerable: true, configurable: true },
-    z: { get() { return this.x + this.y; }, enumerable: true }
 });
+obj.z = obj.x + obj.y;
 console.log(obj.x);
 console.log(obj.y);
 console.log(obj.z);

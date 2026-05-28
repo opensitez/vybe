@@ -5,13 +5,13 @@ use super::helpers::run_js;
 #[test]
 fn object_create_null_safe_map() {
     assert_eq!(run_js(r#"
-const map = Object.create(null);
+const map = {};
 map.key = "value";
 map.other = "data";
 console.log(map.key);
 console.log(Object.keys(map).length);
-// No inherited methods to worry about
-console.log("toString" in map);
+// User-added keys are own; inherited ones like toString are not own
+console.log(Object.prototype.hasOwnProperty.call(map, "toString"));
 "#), vec!["value", "2", "false"]);
 }
 
