@@ -4695,6 +4695,21 @@ impl Compiler {
                         self.emit(Op::DYN_TO_BOOL);
                         self.emit(Op::DYN_NOT);
                         self.emit_u16(Op::LOCAL_SET, done_slot); self.emit(Op::DROP);
+                        // Per ECMA-262 §27.5.3.5: when a generator completes
+                        // (done=true) with no explicit return value, the VM
+                        // leaves null on the stack. Convert null → undefined
+                        // so the {value} field is spec-correct.
+                        if self.is_js_profile() {
+                            self.emit_u16(Op::LOCAL_GET, done_slot);
+                            let still_running = self.emit_jump(Op::BR_IF_FALSE);
+                            self.emit_u16(Op::LOCAL_GET, value_slot);
+                            self.emit(Op::REF_IS_NULL);
+                            let not_null = self.emit_jump(Op::BR_IF_FALSE);
+                            self.emit(Op::UNDEFINED);
+                            self.emit_u16(Op::LOCAL_SET, value_slot); self.emit(Op::DROP);
+                            self.patch_jump(not_null);
+                            self.patch_jump(still_running);
+                        }
                     } else {
                         // `g.next(v)` — RESUME with the resume value;
                         // the suspended yield expression evaluates to
@@ -4904,7 +4919,8 @@ impl Compiler {
                     self.patch_jump(js_done);
                     let end = self.emit_jump(Op::BR);
                     self.patch_jump(skip);
-                    self.emit(Op::NULL);
+                    // Per ECMA-262 §13.5.9: optional chain short-circuit yields undefined.
+                    self.emit(Op::UNDEFINED);
                     self.patch_jump(end);
                     return Ok(());
                 }

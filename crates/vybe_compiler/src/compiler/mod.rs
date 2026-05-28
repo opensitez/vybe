@@ -45,6 +45,9 @@ struct LoopCtx {
     /// decide whether the Python/Ruby `else` clause runs.
     /// `None` for loops without an `else` clause — no slot allocated.
     did_break_slot: Option<u16>,
+    /// True for actual loops (while/for/for-in); false for switch blocks
+    /// and labeled non-loop blocks. `continue` skips non-continuable contexts.
+    is_continuable: bool,
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -170,7 +173,7 @@ pub(crate) struct ReflectionTypeMetadata {
 #[derive(Debug, Clone)]
 pub(crate) enum ReflectionBinding {
     Type(String),
-    Constructor { type_name: String, param_types: Vec<String> },
+    Constructor { type_name: String, #[allow(dead_code)] param_types: Vec<String> },
     Method { type_name: String, method_name: String },
     Property { type_name: String, property_name: String },
     Field { type_name: String, field_name: String },
@@ -775,6 +778,7 @@ impl Compiler {
         self.shared_global_names.push(owned);
     }
 
+    #[allow(dead_code)]
     fn reserve_shared_global_binding_pattern(&mut self, pattern: &BindingPattern) {
         match pattern {
             BindingPattern::Ident(name) => self.reserve_shared_global_name(&self.canon(name)),
@@ -803,6 +807,7 @@ impl Compiler {
         }
     }
 
+    #[allow(dead_code)]
     fn reserve_shared_global_names_in_body(&mut self, body: &[Statement]) {
         for stmt in body {
             match &stmt.kind {
@@ -2381,6 +2386,115 @@ impl Compiler {
     ///       br $loop
     ///     end
     ///   end
+    /// Emit a lazy for-of loop for a custom iterable (one that has an `iterator()`
+    /// method per the [Symbol.iterator] protocol). Calls `next()` per iteration.
+    /// On entry: `iter_slot` holds the iterable value (not yet advanced).
+    /// Emits: BLOCK $exit + LOOP { call iterator(), then loop calling next() }
+    fn compile_for_of_custom_iterator_lazy(
+        &mut self,
+        iter_slot: u16,
+        var: &str,
+        body: &[Statement],
+        else_body: Option<&[Statement]>,
+    ) -> Result<(), String> {
+        let line = self.line;
+        let js_this = self.str_const("__js_this");
+        let iterator_key = self.str_const("iterator");
+        let next_key_c = self.str_const("next");
+        let done_key_c = self.str_const("done");
+        let value_key_c = self.str_const("value");
+
+        // it = iter_slot.iterator() with __js_this = iter_slot
+        let it_slot = self.define_local("__cit_it");
+        let next_method_slot = self.define_local("__cit_next");
+        let step_slot = self.define_local("__cit_step");
+        let done_slot = self.define_local("__cit_done");
+        let did_break_slot = self.define_local("__cit_did_break");
+        self.emit(Op::FALSE);
+        self.emit_u16(Op::LOCAL_SET, did_break_slot); self.emit(Op::DROP);
+
+        // Get iterator method
+        self.emit_u16(Op::LOCAL_GET, iter_slot);
+        self.emit_u16(Op::STRUCT_GET, iterator_key);
+        let iter_fn_slot = self.define_local("__cit_iter_fn");
+        self.emit_u16(Op::LOCAL_SET, iter_fn_slot); self.emit(Op::DROP);
+
+        // Call iterator() with __js_this = iter_slot
+        self.emit_u16(Op::LOCAL_GET, iter_slot);
+        self.emit_u16(Op::GLOBAL_SET, js_this); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_GET, iter_fn_slot);
+        self.emit_u8(Op::CALL_REF, 0);
+        self.emit_u16(Op::LOCAL_SET, it_slot); self.emit(Op::DROP);
+
+        // Emit BLOCK + LOOP
+        let block_patch = self.chunk().emit_block(line);
+        let (loop_patch, _) = self.chunk().emit_loop_s(line);
+        self.label_depth += 2;
+
+        // next_method = it.next
+        self.emit_u16(Op::LOCAL_GET, it_slot);
+        self.emit_u16(Op::STRUCT_GET, next_key_c);
+        self.emit_u16(Op::LOCAL_SET, next_method_slot); self.emit(Op::DROP);
+
+        // Call next() with __js_this = it
+        self.emit_u16(Op::LOCAL_GET, it_slot);
+        self.emit_u16(Op::GLOBAL_SET, js_this); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_GET, next_method_slot);
+        self.emit_u8(Op::CALL_REF, 0);
+        self.emit_u16(Op::LOCAL_SET, step_slot); self.emit(Op::DROP);
+
+        // step.done check
+        self.emit_u16(Op::LOCAL_GET, step_slot);
+        self.emit_u16(Op::STRUCT_GET, done_key_c);
+        self.emit_u16(Op::LOCAL_SET, done_slot); self.emit(Op::DROP);
+        self.emit_u16(Op::LOCAL_GET, done_slot);
+        self.emit(Op::DYN_TO_BOOL);
+        self.emit_u8(Op::BR_IF_LABEL, 1); // done → exit block
+
+        // var = step.value
+        self.emit_u16(Op::LOCAL_GET, step_slot);
+        self.emit_u16(Op::STRUCT_GET, value_key_c);
+        let var_slot = self.define_local(var);
+        self.emit_u16(Op::LOCAL_SET, var_slot); self.emit(Op::DROP);
+
+        // Loop body in $body block for break/continue targeting
+        let body_block = self.chunk().emit_block(line);
+        self.label_depth += 1;
+        let break_depth = self.label_depth - 2; // $exit
+        let continue_depth = self.label_depth;   // $body
+        self.loops.push(LoopCtx {
+            label: self.pending_label.take(),
+            break_label_depth: break_depth,
+            continue_label_depth: continue_depth,
+            did_break_slot: Some(did_break_slot),
+            is_continuable: true,
+        });
+        for s in body { self.compile_stmt(s)?; }
+        self.loops.pop();
+        self.chunk().emit_end(line); self.chunk().patch_block(body_block);
+        self.label_depth -= 1;
+
+        // continue → loop
+        self.emit_u8(Op::BR_LABEL, 0);
+        self.chunk().emit_end(line); self.chunk().patch_loop(loop_patch);
+        self.chunk().emit_end(line); self.chunk().patch_block(block_patch);
+        self.label_depth -= 2;
+
+        if let Some(else_stmts) = else_body {
+            // Python/Ruby else: runs if no break
+            let skip = self.chunk().emit_block(line);
+            self.label_depth += 1;
+            self.emit_u16(Op::LOCAL_GET, did_break_slot);
+            self.emit(Op::DYN_TO_BOOL);
+            self.chunk().emit_br_if(0, line);
+            for s in else_stmts { self.compile_stmt(s)?; }
+            self.chunk().emit_end(line); self.chunk().patch_block(skip);
+            self.label_depth -= 1;
+        }
+
+        Ok(())
+    }
+
     fn compile_generator_for_in(
         &mut self,
         var: &str,
@@ -2475,6 +2589,7 @@ impl Compiler {
             break_label_depth: break_depth,
             continue_label_depth: continue_depth,
             did_break_slot: Some(did_break_slot),
+            is_continuable: true,
         });
         for s in body { self.compile_stmt(s)?; }
         self.loops.pop();
@@ -2881,6 +2996,24 @@ impl Compiler {
         Ok(())
     }
 
+    fn emit_throw_through_finally(&mut self) -> Result<(), String> {
+        if self.active_finally_blocks.is_empty() {
+            let line = self.line;
+            common::errors::emit_throw(self.chunk(), line);
+            return Ok(());
+        }
+        // Save the exception, run finally blocks, then re-throw.
+        // Mirrors emit_return_through_finally but for exceptions.
+        let exc_slot = self.define_local("__throw_finally_exc");
+        self.emit_u16(Op::LOCAL_SET, exc_slot);
+        self.emit(Op::DROP);
+        self.emit_active_finally_blocks()?;
+        self.emit_u16(Op::LOCAL_GET, exc_slot);
+        let line = self.line;
+        common::errors::emit_throw(self.chunk(), line);
+        Ok(())
+    }
+
     fn emit_return_through_finally(&mut self, result_count: usize) -> Result<(), String> {
         let slots: Vec<u16> = (0..result_count)
             .map(|idx| self.define_local(&format!("__return_val_{}", idx)))
@@ -2974,7 +3107,9 @@ impl Compiler {
         let ctx = if let Some(lbl) = label {
             self.loops.iter().rev().find(|c| c.label.as_deref() == Some(lbl))?
         } else {
-            self.loops.last()?
+            // Skip switch/labeled-block contexts — `continue` targets the
+            // nearest actual loop (ECMA-262 §14.8.1).
+            self.loops.iter().rev().find(|c| c.is_continuable)?
         };
         Some((self.label_depth - ctx.continue_label_depth) as u8)
     }
@@ -2982,6 +3117,7 @@ impl Compiler {
     #[allow(dead_code)]
     fn current_offset(&self) -> usize { self.chunks[self.current].current_offset() }
     fn str_const(&mut self, s: &str) -> u16 { self.chunks[self.current].add_constant(Value::String(Arc::from(s))) }
+    #[allow(dead_code)]
     fn shared_str_const(&mut self, s: &str) -> u16 { self.chunks[0].add_constant(Value::String(Arc::from(s))) }
 
     fn import(&mut self, module: &str, name: &str) -> u16 { self.chunks[0].add_import(module, name) }
@@ -3725,6 +3861,7 @@ impl Compiler {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn emit_php_array_assoc_key_tracking(&mut self, obj_slot: u16, key_slot: u16, line: u32) {
         let missing_slot = self.emit_php_array_assoc_key_is_missing(obj_slot, key_slot, line);
         self.emit_php_array_assoc_key_tracking_when_missing(obj_slot, key_slot, missing_slot, line);
@@ -4043,6 +4180,7 @@ impl Compiler {
         index
     }
 
+    #[allow(dead_code)]
     fn compile_array_index_operand(&mut self, index: &Expression) -> Result<(), String> {
         if let Some(semantics) = self.profile_array_index_semantics() {
             let normalized = normalize_array_index_operand(index.clone(), semantics);
@@ -5405,6 +5543,7 @@ impl Compiler {
         None
     }
 
+    #[allow(dead_code)]
     fn is_class_nested_type(&self, name: &str) -> Option<String> {
         if let Some(ref class_name) = self.current_class {
             let mut owner = Some(class_name.clone());
@@ -6163,7 +6302,7 @@ impl Compiler {
                 let continue_depth = self.label_depth + 2; // loop is second (continue target)
                 self.label_depth += 2;
                 self.loop_states.push(lp);
-                self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth, did_break_slot: None });
+                self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth, did_break_slot: None, is_continuable: true });
                 self.compile_expr(cond)?;
                 let line = self.line;
                 common::loops::emit_loop_cond(&mut self.chunks, self.current, line);
@@ -6218,7 +6357,7 @@ impl Compiler {
                 let continue_depth = self.label_depth; // innermost = continue target (body block or loop)
                 let lp = common::loops::LoopState { block_patch, loop_patch, body_block_patch: body_block };
                 self.loop_states.push(lp);
-                self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth, did_break_slot: None });
+                self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth, did_break_slot: None, is_continuable: true });
                 if let Some(loop_capture_name) = loop_capture_name.clone() {
                     self.capture_by_value_vars.push(loop_capture_name);
                 }
@@ -6291,15 +6430,39 @@ impl Compiler {
                         None
                     };
 
-                    // JS profile: route the iter through __vybe_iter_drain
-                    // first. If the value has a user-defined `iterator()`
-                    // (canonical name for `[Symbol.iterator]`), the
-                    // polyfill calls it with `__js_this` correctly bound
-                    // and returns the drained array. For built-ins
-                    // (Array / Map / Set / String) it returns the input
-                    // unchanged so iterForOf still produces the right
-                    // shape. Only kicks in for `for ... of` (values
-                    // path) — for-in over keys keeps standard semantics.
+                    // Gate 2: custom iterable with user-defined [Symbol.iterator] — lazy
+                    // per-iteration loop so infinite iterables work with break. Only fires
+                    // when the `iterator` property is a BYTECODE function (REF_IS_FUNC).
+                    // Built-in Map/Set iterators store a HostFunction there and fall through
+                    // to iter_drain below. Exits done_block (BR 1) after completing the loop.
+                    if self.is_js_profile() && *of && key.is_none() && runtime_generator_done.is_some() {
+                        let line = self.line;
+                        let custom_iter_gate = self.chunk().emit_block(line);
+                        self.label_depth += 1;
+
+                        // Only fire for user-defined bytecode iterators, not host-backed ones
+                        // (Map/Set store HostFunction objects for "iterator"; REF_IS_FUNC is false
+                        // for those). Arrays/Strings also fall through since they use host paths.
+                        self.emit_u16(Op::LOCAL_GET, iter_slot);
+                        let iterator_key = self.str_const("iterator");
+                        self.emit_u16(Op::STRUCT_GET, iterator_key);
+                        self.emit(Op::REF_IS_FUNC);
+                        self.emit(Op::DYN_NOT);
+                        self.emit_u8(Op::BR_IF_LABEL, 0); // not a bytecode fn → fall to iter_drain
+
+                        // Custom iterable: lazy next() loop (supports break on infinite iterators).
+                        self.compile_for_of_custom_iterator_lazy(iter_slot, &var.clone(), body, else_body.as_deref())?;
+                        // Loop finished — skip the iter_drain path entirely.
+                        self.emit_u8(Op::BR_LABEL, 1); // exit done_block
+
+                        self.chunk().emit_end(line);
+                        self.chunk().patch_block(custom_iter_gate);
+                        self.label_depth -= 1;
+                    }
+
+                    // JS profile: route the iter through __vybe_iter_drain for remaining cases
+                    // (Map, Set, generators via host, etc.). Arrays return as-is (fast path in
+                    // iter_drain). Custom iterables were handled above. Only for `for ... of`.
                     if self.is_js_profile() && *of && key.is_none() {
                         let drain_key = self.str_const("__vybe_iter_drain");
                         self.emit_u16(Op::GLOBAL_GET, drain_key);
@@ -6420,7 +6583,7 @@ impl Compiler {
                     }
 
                     self.loop_states.push(lp);
-                    self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth, did_break_slot });
+                    self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth, did_break_slot, is_continuable: true });
                     for s in body { self.compile_stmt(s)?; }
                     self.loops.pop();
                     let lp = self.loop_states.pop().unwrap();
@@ -6459,7 +6622,7 @@ impl Compiler {
                 let continue_depth = self.label_depth + 2;
                 self.label_depth += 2;
                 self.loop_states.push(lp);
-                self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth, did_break_slot: None });
+                self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: break_depth, continue_label_depth: continue_depth, did_break_slot: None, is_continuable: true });
                 for s in body { self.compile_stmt(s)?; }
                 self.compile_expr(cond)?;
                 self.loops.pop();
@@ -6483,7 +6646,7 @@ impl Compiler {
                 self.label_depth += 1;
                 let switch_lp = common::loops::LoopState { block_patch: switch_block, loop_patch: 0, body_block_patch: None };
                 self.loop_states.push(switch_lp);
-                self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: self.label_depth, continue_label_depth: self.label_depth, did_break_slot: None });
+                self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: self.label_depth, continue_label_depth: self.label_depth, did_break_slot: None, is_continuable: false });
 
                 // Merge legacy `default` field into the cases list.
                 // New walkers emit default as a case with empty conditions
@@ -6516,7 +6679,13 @@ impl Compiler {
                             CaseCondition::Value(val) => {
                                 self.emit_u16(Op::LOCAL_GET, sw_slot);
                                 self.compile_expr(val)?;
-                                self.emit(Op::DYN_EQ);
+                                // JS switch uses === (strict equality, no type coercion per §14.12.1).
+                                // Other languages use regular equality.
+                                if self.is_js_profile() {
+                                    self.compile_binop(&BinOp::StrictEq);
+                                } else {
+                                    self.emit(Op::DYN_EQ);
+                                }
                                 match_patches.push(self.emit_jump(Op::BR_IF_TRUE));
                             }
                             CaseCondition::Range { from, to } => {
@@ -6730,9 +6899,8 @@ impl Compiler {
 
                         for p in skip_arm_patches { self.patch_jump(p); }
                     }
-                    // Fallthrough = no arm matched. Re-throw the exception.
-                    let line = self.line;
-                    common::errors::emit_throw(self.chunk(), line);
+                    // Fallthrough = no arm matched. Re-throw (through finally if any).
+                    self.emit_throw_through_finally()?;
                     for p in end_patches { self.patch_jump(p); }
                 }
                 self.patch_jump(skip_to_finally);
@@ -6858,8 +7026,15 @@ impl Compiler {
             // ── Throw ───────────────────────────────────────────────────
             StmtKind::Throw { expr, cause: _ } => {
                 if let Some(v) = expr { self.compile_expr(v)?; } else { self.emit(Op::NULL); }
-                let line = self.line;
-                common::errors::emit_throw(&mut self.chunks[self.current], line);
+                // Inside a catch arm, the VM exception handler is no longer active for
+                // this try block, so we must inline the finally block before throwing.
+                // In the try body, the VM routes exceptions to the catch handler first.
+                if self.catch_depth > 0 {
+                    self.emit_throw_through_finally()?;
+                } else {
+                    let line = self.line;
+                    common::errors::emit_throw(self.chunk(), line);
+                }
             }
 
             // ── Function declaration ────────────────────────────────────
@@ -7960,10 +8135,38 @@ impl Compiler {
 
             // ── Labeled statement ───────────────────────────────────────
             StmtKind::Labeled { label, body } => {
-                // Store label so the next loop push picks it up.
+                // Store label so the next loop/switch push picks it up.
                 self.pending_label = Some(label.clone());
+                // Check if this is a non-loop body (plain block etc.). If so,
+                // we need to emit a WASM block + LoopCtx so that `break label`
+                // can find the label (ECMA-262 §14.13: labeled block statements
+                // accept `break <label>`).
+                let is_loop_body = matches!(&body.kind,
+                    StmtKind::While { .. } | StmtKind::DoWhile { .. }
+                    | StmtKind::For { .. } | StmtKind::ForIn { .. }
+                    | StmtKind::Switch { .. }
+                );
+                let block_patch = if !is_loop_body {
+                    let line = self.line;
+                    let bp = self.chunk().emit_block(line);
+                    self.label_depth += 1;
+                    let lp = common::loops::LoopState { block_patch: bp, loop_patch: 0, body_block_patch: None };
+                    self.loop_states.push(lp);
+                    self.loops.push(LoopCtx { label: self.pending_label.take(), break_label_depth: self.label_depth, continue_label_depth: self.label_depth, did_break_slot: None, is_continuable: false });
+                    Some(bp)
+                } else {
+                    None
+                };
                 self.compile_stmt(body)?;
                 self.pending_label = None;
+                if let Some(_) = block_patch {
+                    let line = self.line;
+                    self.chunk().emit_end(line);
+                    let lp = self.loop_states.pop().unwrap();
+                    self.chunk().patch_block(lp.block_patch);
+                    self.loops.pop();
+                    self.label_depth -= 1;
+                }
             }
 
             // ── Echo (PHP/debug print) ──────────────────────────────────
@@ -9901,6 +10104,7 @@ impl Compiler {
         self.patch_jump(not_object);
     }
 
+    #[allow(dead_code)]
     fn coerce_top_two_php_datetime_for_compare(&mut self) {
         let t_b = self.define_local("__php_cmp_b");
         let t_a = self.define_local("__php_cmp_a");
@@ -9993,6 +10197,7 @@ impl Compiler {
         self.emit_to_primitive("default");
     }
 
+    #[allow(dead_code)]
     fn emit_js_add(&mut self) {
         let rhs_slot = self.define_local("__js_add_rhs");
         let lhs_slot = self.define_local("__js_add_lhs");

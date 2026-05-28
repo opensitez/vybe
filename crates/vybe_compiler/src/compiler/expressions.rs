@@ -817,9 +817,17 @@ impl Compiler {
                                         | "Set"
                                         | "WeakMap"
                                         | "WeakSet"
+                                        | "WeakRef"
+                                        | "FinalizationRegistry"
+                                        | "ArrayBuffer"
+                                        | "DataView"
                                         | "Date"
                                         | "Promise"
                                         | "SharedArrayBuffer"
+                                        | "URL"
+                                        | "URLSearchParams"
+                                        | "TextEncoder"
+                                        | "TextDecoder"
                                 ) =>
                             {
                                 self.emit_const(Value::String(Arc::from(name.as_str())));
@@ -1087,19 +1095,26 @@ impl Compiler {
             // ── Call ────────────────────────────────────────────────────
             ExprKind::Call { callee, args, optional } => {
                 if *optional {
-                    // Optional call: callee?.() — short-circuit to null if callee is null/undefined.
-                    // Stack: compile callee → [func_or_null].
-                    // Dup to check null while preserving the original for the call.
+                    // Optional call: callee?.() — short-circuit to undefined if callee is null/undefined.
+                    // Per ECMA-262 §13.5.9: the result is `undefined` (not null) when short-circuiting.
                     self.compile_expr(callee)?;
-                    self.emit(Op::DUP);
+                    let tmp = self.define_local("__optional_callee");
+                    self.emit_u16(Op::LOCAL_SET, tmp);
+                    self.emit(Op::DROP);
+                    self.emit_u16(Op::LOCAL_GET, tmp);
                     self.emit(Op::REF_IS_NULL);
-                    let skip = self.emit_jump(Op::BR_IF_TRUE);
-                    // Not null — call it. Stack: [func]. Compile args, call.
+                    let null_skip = self.emit_jump(Op::BR_IF_TRUE);
+                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    self.emit(Op::REF_IS_UNDEFINED);
+                    let undef_skip = self.emit_jump(Op::BR_IF_TRUE);
+                    // Not null/undefined — call it.
+                    self.emit_u16(Op::LOCAL_GET, tmp);
                     for a in args { self.compile_expr(&a.value)?; }
                     self.emit_u8(Op::CALL_REF, args.len() as u8);
                     let end = self.emit_jump(Op::BR);
-                    self.patch_jump(skip);
-                    // Null path: the dup left [null] on stack, use it as result
+                    self.patch_jump(null_skip);
+                    self.patch_jump(undef_skip);
+                    self.emit(Op::UNDEFINED);
                     self.patch_jump(end);
                 } else {
                     if self.profile.parens_for_index
@@ -2182,6 +2197,20 @@ impl Compiler {
                     let val_slot = self.define_local("__js_index_val");
                     self.emit_u16(Op::LOCAL_SET, val_slot);
                     self.emit(Op::DROP);
+                    // String[n] out-of-bounds: ARRAY_GET returns null, but JS spec (§6.1.4.1) needs undefined.
+                    {
+                        self.emit_u16(Op::LOCAL_GET, obj_slot);
+                        self.emit(Op::REF_IS_STRING);
+                        let obj_not_string = self.emit_jump(Op::BR_IF_FALSE);
+                        self.emit_u16(Op::LOCAL_GET, val_slot);
+                        self.emit(Op::REF_IS_NULL);
+                        let val_not_null = self.emit_jump(Op::BR_IF_FALSE);
+                        self.emit(Op::UNDEFINED);
+                        self.emit_u16(Op::LOCAL_SET, val_slot);
+                        self.emit(Op::DROP);
+                        self.patch_jump(val_not_null);
+                        self.patch_jump(obj_not_string);
+                    }
                     let lookup = self.str_const("__vybe_js_get_method");
                     self.emit_u16(Op::LOCAL_GET, val_slot);
                     self.emit(Op::REF_IS_UNDEFINED);
@@ -2312,6 +2341,20 @@ impl Compiler {
                         let val_slot = self.define_local("__js_index_val");
                         self.emit_u16(Op::LOCAL_SET, val_slot);
                         self.emit(Op::DROP);
+                        // String[n] out-of-bounds: ARRAY_GET returns null, but JS spec needs undefined.
+                        {
+                            self.emit_u16(Op::LOCAL_GET, obj_slot);
+                            self.emit(Op::REF_IS_STRING);
+                            let obj_not_string = self.emit_jump(Op::BR_IF_FALSE);
+                            self.emit_u16(Op::LOCAL_GET, val_slot);
+                            self.emit(Op::REF_IS_NULL);
+                            let val_not_null = self.emit_jump(Op::BR_IF_FALSE);
+                            self.emit(Op::UNDEFINED);
+                            self.emit_u16(Op::LOCAL_SET, val_slot);
+                            self.emit(Op::DROP);
+                            self.patch_jump(val_not_null);
+                            self.patch_jump(obj_not_string);
+                        }
                         let lookup = self.str_const("__vybe_js_get_method");
                         self.emit_u16(Op::LOCAL_GET, val_slot);
                         self.emit(Op::REF_IS_UNDEFINED);

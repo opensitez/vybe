@@ -339,10 +339,12 @@ fn annotate_php_parse_error(err: &str, blocks: &[ExpandedPhpBlock]) -> String {
     )
 }
 
+#[allow(dead_code)]
 fn expand_php_bundle_sources(sources: &[SourceFile]) -> Result<String, String> {
     Ok(expand_php_bundle_sources_with_map(sources)?.into_code())
 }
 
+#[allow(dead_code)]
 fn expand_php_bundle_sources_with_map(sources: &[SourceFile]) -> Result<ExpandedPhpSource, String> {
     expand_php_bundle_sources_with_map_and_entry_path(sources, None)
 }

@@ -132,7 +132,7 @@ BigInt              = { emit = "host:ecma:bigint:BigInt",         min_args = 1, 
 # ── String static methods ────────────────────────────────────────────────────
 
 "String.fromCharCode" = { emit = "opcode:str_from_char_code",     min_args = 1, max_args = 255 }
-"String.raw"          = { emit = "stdlib:string_raw",              min_args = 1, max_args = 255 }
+"String.raw"          = { emit = "host:ecma:string:raw",           min_args = 1, max_args = 255 }
 
 # ── Array static methods ─────────────────────────────────────────────────────
 

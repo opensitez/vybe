@@ -2,6 +2,10 @@ use pest::Parser;
 use pest::iterators::Pair;
 use super::{JsParser, Rule};
 use crate::ast::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+// Monotonically increasing counter — unique template object slot per call site.
+static TEMPLATE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 pub fn parse(source: &str) -> Result<Module, String> {
     let pairs = JsParser::parse(Rule::program, source)
@@ -899,6 +903,11 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
     let mut is_static = false;
     let mut inner_pairs: Vec<Pair<Rule>> = pair.into_inner().collect();
 
+    // Skip TC39 decorator pairs — parsed but not yet executed
+    while inner_pairs.first().map_or(false, |p| p.as_rule() == Rule::decorator) {
+        inner_pairs.remove(0);
+    }
+
     // Check for static keyword
     if inner_pairs.first().map_or(false, |p| p.as_rule() == Rule::static_kw) {
         is_static = true;
@@ -1048,6 +1057,26 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
                 array_bounds: None,
             })
         }
+        Rule::accessor_property => {
+            // TC39 accessor auto-field: treat as a regular class field for now
+            let mut name = String::new();
+            let mut init = None;
+            for p in member_pair.into_inner() {
+                match p.as_rule() {
+                    Rule::accessor_kw => {}
+                    Rule::property_name | Rule::ident_name | Rule::ident_or_keyword => name = extract_property_name(&p),
+                    _ => init = Some(walk_expression(p)?),
+                }
+            }
+            Ok(ClassMember::Field {
+                name,
+                type_hint: None,
+                init,
+                modifiers: Modifiers { is_static, ..Default::default() },
+                with_events: false,
+                array_bounds: None,
+            })
+        }
         other => Err(format!("Unexpected class member: {:?}", other)),
     }
 }
@@ -1110,6 +1139,9 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
         Rule::for_of_header => {
             let parts: Vec<Pair<Rule>> = header_inner.into_inner().collect();
+            let is_let_const = parts.iter()
+                .find(|p| p.as_rule() == Rule::var_kind)
+                .map_or(false, |p| matches!(p.as_str(), "let" | "const"));
             let (var, prefix) = extract_for_target(&parts)?;
             let iter = walk_expression(parts.into_iter()
                 .find(|p| !matches!(p.as_rule(),
@@ -1117,8 +1149,30 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 .ok_or("missing iter expr")?)?;
             let mut full_body = prefix;
             full_body.extend(body);
+            // Per-iteration binding: wrap body in IIFE when const/let + closures present.
+            let body_final = if is_let_const && body_contains_closure(&full_body, &[var.clone()]) {
+                let params = vec![Param {
+                    name: var.clone(), type_hint: None, default: None,
+                    pass_by: PassBy::Value, is_rest: false, is_kwargs: false,
+                    is_optional: false, is_nullable: false,
+                }];
+                let args = vec![Argument::positional(Expression::ident(&var))];
+                let iife = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Lambda {
+                        params,
+                        body: LambdaBody::Block(full_body),
+                        is_async: false,
+                        captures: Vec::new(),
+                    })),
+                    args,
+                    optional: false,
+                });
+                vec![Statement::new(StmtKind::Expr(iife))]
+            } else {
+                full_body
+            };
             Ok(StmtKind::ForIn {
-                var, key: None, iter, body: full_body, of: true,
+                var, key: None, iter, body: body_final, of: true,
                 else_body: None, is_async: is_for_await,
             })
         }
@@ -1167,11 +1221,11 @@ fn walk_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     }
                     Rule::expression => {
                         let expr = walk_expression(p)?;
-                        if cond.is_none() && init.is_some() {
+                        // First expression seen is always the condition;
+                        // second is always the update. The init is handled
+                        // separately via Rule::for_c_init above.
+                        if cond.is_none() {
                             cond = Some(expr);
-                        } else if init.is_none() {
-                            // First expression could be init if no var decl
-                            init = Some(Box::new(Statement::new(StmtKind::Expr(expr))));
                         } else {
                             update = Some(expr);
                         }
@@ -2039,19 +2093,19 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 match p.as_rule() {
                     Rule::template_full => {
                         let s = p.as_str();
-                        parts.push(InterpolPart::Text(s[1..s.len()-1].to_string()));
+                        parts.push(InterpolPart::Text(unescape_template(&s[1..s.len()-1])));
                     }
                     Rule::template_head => {
                         let s = p.as_str();
-                        parts.push(InterpolPart::Text(s[1..s.len()-2].to_string()));
+                        parts.push(InterpolPart::Text(unescape_template(&s[1..s.len()-2])));
                     }
                     Rule::template_middle => {
                         let s = p.as_str();
-                        parts.push(InterpolPart::Text(s[1..s.len()-2].to_string()));
+                        parts.push(InterpolPart::Text(unescape_template(&s[1..s.len()-2])));
                     }
                     Rule::template_tail => {
                         let s = p.as_str();
-                        parts.push(InterpolPart::Text(s[1..s.len()-1].to_string()));
+                        parts.push(InterpolPart::Text(unescape_template(&s[1..s.len()-1])));
                     }
                     _ => parts.push(InterpolPart::Expr(walk_expression(p)?)),
                 }
@@ -2250,7 +2304,19 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     ],
                     optional: false,
                 });
-                args.push(Argument::positional(strings_with_raw));
+                // ECMA-262 §13.2.8.3: template objects are cached per call site.
+                // Wrap in `__vybe_tmpl_N ?? (__vybe_tmpl_N = Object.assign(...))` so
+                // the same object is returned on every invocation of this template site.
+                let tmpl_id = TEMPLATE_COUNTER.fetch_add(1, Ordering::Relaxed);
+                let tmpl_global = format!("__vybe_tmpl_{}", tmpl_id);
+                let cached_template = Expression::new(ExprKind::NullCoalesce {
+                    left: Box::new(Expression::ident(&tmpl_global)),
+                    right: Box::new(Expression::new(ExprKind::Assign {
+                        target: Box::new(Expression::ident(&tmpl_global)),
+                        value: Box::new(strings_with_raw),
+                    })),
+                });
+                args.push(Argument::positional(cached_template));
                 for e in exprs {
                     args.push(Argument::positional(e));
                 }
@@ -2390,7 +2456,56 @@ fn walk_template_parts(pair: Pair<Rule>) -> Result<(Vec<String>, Vec<String>, Ve
 }
 
 fn unescape_template(s: &str) -> String {
-    s.replace("\\`", "`").replace("\\$", "$").replace("\\\\", "\\")
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            result.push(c);
+            continue;
+        }
+        match chars.peek().copied() {
+            Some('n')  => { chars.next(); result.push('\n'); }
+            Some('t')  => { chars.next(); result.push('\t'); }
+            Some('r')  => { chars.next(); result.push('\r'); }
+            Some('0')  => { chars.next(); result.push('\0'); }
+            Some('\\') => { chars.next(); result.push('\\'); }
+            Some('`')  => { chars.next(); result.push('`'); }
+            Some('$')  => { chars.next(); result.push('$'); }
+            Some('u')  => {
+                chars.next();
+                // \u{HHHH} or \uHHHH
+                let hex: String = if chars.peek() == Some(&'{') {
+                    chars.next();
+                    let h: String = chars.by_ref().take_while(|&ch| ch != '}').collect();
+                    h
+                } else {
+                    chars.by_ref().take(4).collect()
+                };
+                if let Ok(n) = u32::from_str_radix(&hex, 16) {
+                    if let Some(ch) = char::from_u32(n) {
+                        result.push(ch);
+                        continue;
+                    }
+                }
+                result.push('\\');
+                result.push('u');
+                result.push_str(&hex);
+            }
+            Some('x') => {
+                chars.next();
+                let hex: String = chars.by_ref().take(2).collect();
+                if let Ok(n) = u8::from_str_radix(&hex, 16) {
+                    result.push(n as char);
+                } else {
+                    result.push('\\');
+                    result.push('x');
+                    result.push_str(&hex);
+                }
+            }
+            _ => result.push('\\'),
+        }
+    }
+    result
 }
 
 /// Canonicalize JS property access to unified AST representation.
@@ -2721,6 +2836,28 @@ fn walk_object_method(mut inner: Vec<Pair<Rule>>) -> Result<ObjectProperty, Stri
         inner.remove(0);
     }
     let key_pair = inner.remove(0);
+
+    // Detect computed method shorthand: `[expr]() {}` — key_pair is a
+    // property_name whose inner is a computed_property_name.
+    let computed_expr = if key_pair.as_rule() == Rule::property_name {
+        if let Some(inner_p) = key_pair.clone().into_inner().next() {
+            if inner_p.as_rule() == Rule::computed_property_name {
+                // Peek at the raw text to see if it's a well-known Symbol alias
+                let raw = inner_p.as_str()
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .trim();
+                if js_well_known_symbol_alias_from_raw(raw).is_none() {
+                    // Not a well-known symbol — treat key as a runtime expression
+                    let key_inner = inner_p.into_inner().next().ok_or("Empty computed key")?;
+                    Some(walk_expression(key_inner)?)
+                } else {
+                    None
+                }
+            } else { None }
+        } else { None }
+    } else { None };
+
     // `[Symbol.iterator]() {…}` — rewrite to the canonical
     // cross-language method name (`iterator` / `toprimitive` / etc.)
     // so the iter-drain polyfill and to_primitive polyfill find the
@@ -2745,6 +2882,18 @@ fn walk_object_method(mut inner: Vec<Pair<Rule>>) -> Result<ObjectProperty, Stri
         }
     }
     let is_generator = has_generator_marker || body_contains_yield(&body);
+
+    // Computed method: return Computed { key: runtime_expr, value: lambda }
+    if let Some(key_expr) = computed_expr {
+        let lambda = Expression::new(ExprKind::Lambda {
+            params,
+            body: LambdaBody::Block(body),
+            is_async,
+            captures: Vec::new(),
+        });
+        return Ok(ObjectProperty::Computed { key: key_expr, value: lambda });
+    }
+
     let func = Statement::new(StmtKind::FunctionDecl {
         name: key.clone(),
         params,

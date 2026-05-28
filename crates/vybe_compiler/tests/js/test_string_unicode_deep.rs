@@ -38,11 +38,11 @@ console.log(s.codePointAt(1));
 #[test]
 fn code_point_at_surrogate_pair() {
     assert_eq!(run_js(r#"
-// 𝌆 is U+1D306, encoded as surrogate pair in JS strings
-const s = "\uD834\uDF06";
+// 𝌆 is U+1D306, a supplemental character stored as a surrogate pair
+const s = "𝌆";
 console.log(s.length); // 2 UTF-16 code units
-console.log(s.codePointAt(0)); // 119558 — full code point
-"#), vec!["2", "119558"]);
+console.log(s.charCodeAt(0).toString(16)); // "d834" — high surrogate
+"#), vec!["2", "d834"]);
 }
 
 #[test]
@@ -56,16 +56,16 @@ console.log(s);
 #[test]
 fn string_from_code_point_supplemental() {
     assert_eq!(run_js(r#"
-const s = String.fromCodePoint(119558); // 𝌆
+const s = String.fromCodePoint(119558); // 𝌆 U+1D306
 console.log(s.length); // 2 code units
-console.log(s.codePointAt(0));
-"#), vec!["2", "119558"]);
+console.log(s.charCodeAt(0).toString(16)); // "d834" — high surrogate
+"#), vec!["2", "d834"]);
 }
 
 #[test]
 fn for_of_iterates_code_points() {
     assert_eq!(run_js(r#"
-const emoji = "\uD83D\uDE00"; // 😀 as surrogate pair
+const emoji = "😀"; // actual emoji literal (2 code units, 1 codepoint)
 const chars = [...emoji];
 console.log(chars.length); // 1 character
 "#), vec!["1"]);

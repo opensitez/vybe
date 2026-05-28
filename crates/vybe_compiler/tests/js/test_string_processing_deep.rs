@@ -87,8 +87,9 @@ console.log(render("{{missing}} world", {}));
 fn string_tokenizer() {
     assert_eq!(run_js(r#"
 function* tokenize(str) {
-    const re = /(\d+\.?\d*)|([a-zA-Z_]\w*)|([+\-*/()=])/g;
-    for (const m of str.matchAll(re)) {
+    const re = /(\d+\.?\d*)|([a-zA-Z_]\w*)|([+\-*\/()=])/g;
+    let m;
+    while ((m = re.exec(str)) !== null) {
         if (m[1]) yield { type: "number", value: m[1] };
         else if (m[2]) yield { type: "ident", value: m[2] };
         else yield { type: "op", value: m[3] };

@@ -119,6 +119,9 @@ impl Compiler {
             self.emit_u8(Op::CALL_REF, 0);
         } else if is_value_type {
             self.emit_default_value_for_type_hint(type_hint);
+        } else if self.is_js_profile() {
+            // JS spec: declared fields with no initializer default to undefined (not null).
+            self.emit(Op::UNDEFINED);
         } else {
             self.emit(Op::NULL);
         }

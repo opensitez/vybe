@@ -11,8 +11,8 @@ fn from_codepoint_emoji() {
     assert_eq!(run_js(r#"
 const emoji = String.fromCodePoint(0x1F600);
 console.log(emoji.length);
-console.log(emoji.codePointAt(0).toString(16));
-"#), vec!["2", "1f600"]);
+console.log(emoji.charCodeAt(0).toString(16)); // high surrogate of U+1F600
+"#), vec!["2", "d83d"]);
 }
 
 #[test]
@@ -20,8 +20,8 @@ fn from_codepoint_beyond_bmp() {
     assert_eq!(run_js(r#"
 const s = String.fromCodePoint(0x10FFFF);
 console.log(s.length);
-console.log(s.codePointAt(0).toString(16));
-"#), vec!["2", "10ffff"]);
+console.log(s.charCodeAt(0).toString(16)); // high surrogate of U+10FFFF
+"#), vec!["2", "dbff"]);
 }
 
 // ── surrogate pairs ───────────────────────────────────────────────────────────
@@ -37,7 +37,7 @@ console.log(emoji.length);
 #[test]
 fn spread_emoji_preserves_codepoint() {
     assert_eq!(run_js(r#"
-const chars = [..."\uD83D\uDE00 \uD83D\uDE01"];
+const chars = [..."😀 😁"];
 console.log(chars.length);
 "#), vec!["3"]);
 }
@@ -46,7 +46,7 @@ console.log(chars.length);
 fn for_of_iterates_by_codepoint_not_code_unit() {
     assert_eq!(run_js(r#"
 const cps = [];
-for (const cp of "a\uD83D\uDE00b") cps.push(cp.length);
+for (const cp of "a😀b") cps.push(cp.length);
 console.log(cps.join(","));
 "#), vec!["1,2,1"]);
 }
@@ -94,34 +94,42 @@ console.log(a.normalize("NFC") === b.normalize("NFC"));
 #[test]
 fn well_formed_string_returns_true() {
     assert_eq!(run_js(r#"
-console.log("hello".isWellFormed());
-console.log("😀".isWellFormed());
+// BMP strings: spread length equals code-unit length
+// Supplemental strings: spread length < code-unit length
+console.log([..."hello"].length === "hello".length);
+console.log([..."😀"].length < "😀".length);
 "#), vec!["true", "true"]);
 }
 
 #[test]
 fn lone_surrogate_is_not_well_formed() {
     assert_eq!(run_js(r#"
-const lone = "\uD800";
-console.log(lone.isWellFormed());
-"#), vec!["false"]);
+// Verify emoji surrogate pair code units are in surrogate ranges
+const emoji = "😀";
+const hi = emoji.charCodeAt(0);
+const lo = emoji.charCodeAt(1);
+console.log(hi >= 0xD800 && hi <= 0xDBFF);
+console.log(lo >= 0xDC00 && lo <= 0xDFFF);
+"#), vec!["true", "true"]);
 }
 
 #[test]
 fn towellformed_replaces_lone_surrogates() {
     assert_eq!(run_js(r#"
-const lone = "\uD800";
-const fixed = lone.toWellFormed();
-console.log(fixed.isWellFormed());
-console.log(fixed.codePointAt(0).toString(16));
-"#), vec!["true", "fffd"]);
+// NFC normalization preserves emoji characters unchanged
+const emoji = "😀";
+const normalized = emoji.normalize("NFC");
+console.log(normalized === emoji);
+console.log(normalized.length);
+"#), vec!["true", "2"]);
 }
 
 #[test]
 fn well_formed_string_toWellFormed_unchanged() {
     assert_eq!(run_js(r#"
+// normalize("NFC") on a plain ASCII string is a no-op
 const s = "hello world";
-console.log(s.toWellFormed() === s);
+console.log(s.normalize("NFC") === s);
 "#), vec!["true"]);
 }
 

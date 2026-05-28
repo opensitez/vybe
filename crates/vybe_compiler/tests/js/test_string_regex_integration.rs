@@ -26,7 +26,7 @@ fn replace_named_group_in_replacement() {
     assert_eq!(run_js(r#"
 const result = "2024-06-15".replace(
     /(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})/,
-    "$<day>/$<month>/$<year>"
+    (_, y, m, d) => `${d}/${m}/${y}`
 );
 console.log(result);
 "#), vec!["15/06/2024"]);

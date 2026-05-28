@@ -89,6 +89,7 @@ fn unmask_php_literal_tags(text: &str) -> String {
         .replace(PHP_LITERAL_CLOSE_MASK, "?>")
 }
 
+#[allow(dead_code)]
 fn parse_php_heredoc_header(bytes: &[u8], start: usize) -> Option<(usize, Vec<u8>)> {
     if start + 3 >= bytes.len()
         || bytes[start] != b'<'
@@ -149,6 +150,7 @@ fn parse_php_heredoc_header(bytes: &[u8], start: usize) -> Option<(usize, Vec<u8
     Some((index, tag))
 }
 
+#[allow(dead_code)]
 fn mask_php_literal_tag_sequences(source: &str) -> String {
     enum ScanState {
         Normal,
@@ -386,6 +388,7 @@ fn current_class_name() -> Option<String> {
     CLASS_STACK.with(|s| s.borrow().last().cloned())
 }
 
+#[allow(dead_code)]
 enum MixedPhpSegment<'a> {
     Html(&'a str),
     Code { code: &'a str, has_close_tag: bool },

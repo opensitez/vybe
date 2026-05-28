@@ -22,6 +22,11 @@ NEWLINE = { "\n" | "\r\n" }
 terminator = _{ ";" | NEWLINE | &"}" | &EOI }
 // Consume optional terminators (semicolons and newlines)
 eat_terminators = _{ (";" | NEWLINE)* }
+// Truly-silent newline eater: uses literal chars (not the NEWLINE rule) so no
+// NEWLINE parse-tree nodes bubble up into parent rules. Use this in expression
+// contexts (arrow body, argument lists, ternary) where NEWLINE nodes would
+// confuse the walker.
+eat_nl = _{ ("\n" | "\r\n" | ";")* }
 
 // ── Program ─────────────────────────────────────────────────────────────────
 // ES2023 §12.5: optional hashbang comment on line 1 (e.g. #!/usr/bin/env node)
@@ -135,15 +140,23 @@ param = { "..."? ~ binding_pattern ~ ("=" ~ assignment_expression)? }
 
 // ── Class declaration ───────────────────────────────────────────────────────
 
+// TC39 stage-3 decorators: @name, @name.method, @name(args), @name.method(args).
+// eat_terminators inside decorator consumes the trailing newline so that
+// `decorator* ~ eat_terminators ~ "class"` works for multi-decorator stacks.
+decorator = { "@" ~ ident_name ~ ("." ~ ident_or_keyword)* ~ ("(" ~ argument_list? ~ ")")? ~ eat_nl }
+
 class_declaration = {
-    "class" ~ ident_name? ~ ("extends" ~ assignment_expression)? ~ class_body
+    decorator* ~ "class" ~ ident_name? ~ ("extends" ~ assignment_expression)? ~ class_body
 }
 
 class_body = { "{" ~ eat_terminators ~ (class_member ~ eat_terminators)* ~ "}" }
 
+// TC39 accessor keyword for auto-accessor fields (@decorator + accessor field).
+accessor_kw = @{ "accessor" ~ !(ASCII_ALPHANUMERIC | "_") }
+accessor_property = { accessor_kw ~ property_name ~ ("=" ~ assignment_expression)? ~ (";" | NEWLINE | &"}") }
+
 class_member = {
-    static_block
-    | static_kw? ~ (getter_method | setter_method | class_method | class_property)
+    decorator* ~ eat_nl ~ (static_block | static_kw? ~ (getter_method | setter_method | accessor_property | class_method | class_property))
 }
 
 static_kw = { "static" }
@@ -200,6 +213,7 @@ for_in_header = {
 
 for_of_header = {
     var_kind ~ binding_pattern ~ "of" ~ expression
+    | "using" ~ binding_pattern ~ "of" ~ expression
     | for_lhs_expr ~ "of" ~ expression
 }
 
@@ -318,7 +332,7 @@ assignment_op = {
 }
 
 conditional_expression = {
-    logical_expr ~ ("?" ~ assignment_expression ~ ":" ~ assignment_expression)?
+    logical_expr ~ (eat_nl ~ "?" ~ eat_nl ~ assignment_expression ~ eat_nl ~ ":" ~ eat_nl ~ assignment_expression)?
 }
 
 // Flattened to minimize recursion depth.
@@ -435,7 +449,7 @@ call_chain = {
     | template_literal                                         // tagged template: tag`...`
 }
 
-argument_list = { argument ~ ("," ~ argument)* ~ ","? }
+argument_list = { eat_nl ~ argument ~ ("," ~ eat_nl ~ argument)* ~ ","? ~ eat_nl }
 argument = { "..." ~ assignment_expression | assignment_expression }
 
 // ── Primary expressions ─────────────────────────────────────────────────────
@@ -478,7 +492,7 @@ async_arrow_function = {
     async_kw ~ ("(" ~ param_list? ~ ")" | ident_name) ~ "=>" ~ arrow_body
 }
 
-arrow_body = { function_body | assignment_expression }
+arrow_body = { eat_nl ~ (function_body | assignment_expression) }
 
 // ── Function / Class expressions ────────────────────────────────────────────
 
@@ -531,7 +545,7 @@ template_full = @{ "`" ~ template_chars* ~ "`" }
 template_head = @{ "`" ~ template_chars* ~ "${" }
 template_middle = @{ "}" ~ template_chars* ~ "${" }
 template_tail = @{ "}" ~ template_chars* ~ "`" }
-template_chars = _{ "\\`" | "\\$" | "\\\\" | (!( "`" | "${") ~ ANY) }
+template_chars = _{ "\\`" | "\\\\" | (!( "`" | "${") ~ ANY) }
 
 // ── Regex literal ───────────────────────────────────────────────────────────
 // NOTE: regex vs division ambiguity cannot be fully resolved in PEG.

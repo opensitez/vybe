@@ -64,6 +64,7 @@ use vybe_bytecode::opcode::Op;
 /// per-call remapping). Caching cuts per-test polyfill compile cost
 /// from ~10s to negligible. The cache holds Vec<Chunk> values which
 /// are deep-cloned per call so callers freely mutate their copy.
+#[allow(dead_code)]
 pub(crate) fn build_polyfill_batch(
     imports: &mut Chunk,
     source: &str,

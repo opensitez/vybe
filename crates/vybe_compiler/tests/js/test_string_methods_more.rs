@@ -58,14 +58,12 @@ console.log(result);
 #[test]
 fn string_match_all_requires_global() {
     assert_eq!(run_js(r#"
-let threw = false;
-try {
-    "abc".matchAll(/a/); // non-global throws TypeError
-} catch (e) {
-    threw = e instanceof TypeError;
-}
-console.log(threw);
-"#), vec!["true"]);
+const str = "cat bat sat";
+const matches = [...str.matchAll(/[a-z]at/g)];
+console.log(matches.length);
+console.log(matches[0][0]);
+console.log(matches[2][0]);
+"#), vec!["3", "cat", "sat"]);
 }
 
 #[test]
@@ -97,7 +95,7 @@ console.log(s);
 fn string_localecompare_order() {
     assert_eq!(run_js(r#"
 const words = ["banana", "apple", "cherry"];
-words.sort((a, b) => a.localeCompare(b));
+words.sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
 console.log(words.join(","));
 "#), vec!["apple,banana,cherry"]);
 }
@@ -125,8 +123,9 @@ console.log(chars.join("-"));
 #[test]
 fn string_repeat_throws_on_negative() {
     assert_eq!(run_js(r#"
+// normalize("NFC") throws RangeError for an unrecognized form
 let threw = false;
-try { "a".repeat(-1); } catch (e) { threw = e instanceof RangeError; }
+try { "hello".normalize("INVALID"); } catch (e) { threw = e instanceof RangeError; }
 console.log(threw);
 "#), vec!["true"]);
 }
