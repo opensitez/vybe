@@ -575,6 +575,7 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
     let _ = caps.has(Capability::Xml);
     if caps.has(Capability::HttpServer) {
         crate::node::http::register(vm);
+        crate::node::https::register(vm);
     }
 
     // Set up namespace objects, type registry

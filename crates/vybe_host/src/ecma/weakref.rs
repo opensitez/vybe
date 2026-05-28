@@ -40,7 +40,7 @@ use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::VM;
 
 const MODULE_WEAKREF: &str = "ecma:weakref";
-const MODULE_REGISTRY: &str = "ecma:finalizationregistry";
+const MODULE_REGISTRY: &str = "ecma:finalization-registry";
 
 const WEAKREF_TAG: &str = "__vybe_js_weakref";
 const WEAKREF_TARGET_PROP: &str = "__vybe_wr_target";
@@ -102,11 +102,21 @@ fn is_registry(arg: &Value) -> Option<Arc<Mutex<Object>>> {
 pub fn register(vm: &mut VM) {
     // ── WeakRef (§26.1) ──────────────────────────────────────────
 
-    // `new WeakRef(target)` — wraps target. Spec requires target to be
-    // an Object (or non-registered Symbol since ES2024); we accept any
-    // non-null Value to stay forgiving.
-    vm.register_host_fn(MODULE_WEAKREF, "new", Box::new(|_ctx, args| {
+    // `new WeakRef(target)` — wraps target. ECMA-262 §26.1.1.1: target must
+    // be an Object (or non-registered Symbol since ES2024). Throw TypeError
+    // for primitives, null, and undefined.
+    vm.register_host_fn(MODULE_WEAKREF, "new", Box::new(|ctx, args| {
         let target = args.first().cloned().unwrap_or(Value::Undefined);
+        match &target {
+            Value::Object(_) | Value::Symbol(_) => {}
+            _ => {
+                ctx.throw_value(crate::ecma::error::new_error(
+                    "TypeError",
+                    "WeakRef target must be an object",
+                ));
+                return Value::Undefined;
+            }
+        }
         new_weakref(target)
     }));
 
@@ -250,5 +260,81 @@ fn same_value(a: &Value, b: &Value) -> bool {
         (Value::Null, Value::Null) => true,
         (Value::Undefined, Value::Undefined) => true,
         _ => false,
+    }
+}
+
+// ── Instance method dispatch ───────────────────────────────────────
+//
+// Called from `ecma:value::dispatch_plain_object` when the receiver's
+// `__type` is "WeakRef" or "FinalizationRegistry" and the method isn't
+// found as an own property (which it never is — host fns live in the
+// type registry, not on the object itself).
+
+pub fn dispatch_weakref_method(obj: Arc<Mutex<Object>>, method: &str, args: &[Value]) -> Option<Value> {
+    let wr = Value::Object(obj);
+    match method {
+        "deref" => {
+            let Some(arc) = is_weakref(&wr) else { return None };
+            let lock = arc.lock().unwrap();
+            Some(lock.properties.get(WEAKREF_TARGET_PROP).cloned().unwrap_or(Value::Undefined))
+        }
+        _ => None,
+    }
+}
+
+pub fn dispatch_registry_method(obj: Arc<Mutex<Object>>, method: &str, args: &[Value]) -> Option<Value> {
+    let reg = Value::Object(obj.clone());
+    match method {
+        "register" => {
+            let Some(registry) = is_registry(&reg) else { return None };
+            let target = args.first().cloned().unwrap_or(Value::Undefined);
+            let held = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let token = args.get(2).cloned().unwrap_or(Value::Undefined);
+            let entry = Value::Object(Arc::new(Mutex::new(
+                Object::new_array(vec![target, held, token])
+            )));
+            let lock = registry.lock().unwrap();
+            if let Some(Value::Object(entries)) = lock.properties.get(REGISTRY_ENTRIES_PROP) {
+                let entries = entries.clone();
+                drop(lock);
+                if let ObjectKind::Array(ref mut items) = entries.lock().unwrap().kind {
+                    items.push(entry);
+                }
+            }
+            Some(Value::Undefined)
+        }
+        "unregister" => {
+            let Some(registry) = is_registry(&reg) else { return None };
+            let token = args.first().cloned().unwrap_or(Value::Undefined);
+            if matches!(token, Value::Undefined | Value::Null) {
+                return Some(Value::Bool(false));
+            }
+            let lock = registry.lock().unwrap();
+            let Some(Value::Object(entries)) = lock.properties.get(REGISTRY_ENTRIES_PROP) else {
+                return Some(Value::Bool(false));
+            };
+            let entries = entries.clone();
+            drop(lock);
+            let mut removed = false;
+            if let ObjectKind::Array(ref mut items) = entries.lock().unwrap().kind {
+                let before = items.len();
+                items.retain(|entry| {
+                    if let Value::Object(t) = entry {
+                        let t = t.lock().unwrap();
+                        if let ObjectKind::Array(ref tuple) = t.kind {
+                            if let Some(stored_token) = tuple.get(2) {
+                                if same_value(stored_token, &token) {
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                    true
+                });
+                removed = items.len() < before;
+            }
+            Some(Value::Bool(removed))
+        }
+        _ => None,
     }
 }

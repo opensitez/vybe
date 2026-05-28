@@ -2415,6 +2415,14 @@ fn dispatch_plain_object(
             if let Some(result) = crate::ecma::promise::dispatch_promise_method(ctx, method, &call_args) {
                 return result;
             }
+        } else if tag == "WeakRef" {
+            if let Some(result) = crate::ecma::weakref::dispatch_weakref_method(obj, method, args) {
+                return result;
+            }
+        } else if tag == "FinalizationRegistry" {
+            if let Some(result) = crate::ecma::weakref::dispatch_registry_method(obj, method, args) {
+                return result;
+            }
         }
     }
     Value::Undefined

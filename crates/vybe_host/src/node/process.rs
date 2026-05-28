@@ -95,9 +95,7 @@ pub fn register(vm: &mut VM) {
     vm.register_host_value("node:process", "version", s_val(concat!("v", env!("CARGO_PKG_VERSION"))));
     vm.register_host_value("node:process", "versions", versions_value());
     vm.register_host_value("node:process", "pid", Value::F64(std::process::id() as f64));
-    // Cross-platform parent PID requires libc/winapi calls. Punt until a
-    // test actually demands it; return 0 for now (Node returns the real PPID).
-    vm.register_host_value("node:process", "ppid", Value::F64(0.0));
+    vm.register_host_value("node:process", "ppid", Value::F64(get_ppid() as f64));
 
     vm.register_host_fn("node:process", "cwd", Box::new(|_ctx, _args| {
         match std::env::current_dir() {
@@ -154,6 +152,80 @@ pub fn register(vm: &mut VM) {
         o.properties.insert("arrayBuffers".into(), Value::F64(0.0));
         Value::Object(Arc::new(Mutex::new(o)))
     }));
+
+    vm.register_host_value("node:process", "title", s_val("vybex"));
+    vm.register_host_value("node:process", "execArgv", {
+        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![]))))
+    });
+    vm.register_host_value("node:process", "exitCode", Value::Undefined);
+
+    vm.register_host_fn("node:process", "emitWarning", Box::new(|_ctx, args| {
+        if let Some(Value::String(msg)) = args.first() {
+            eprintln!("[node:process] Warning: {msg}");
+        }
+        Value::Undefined
+    }));
+
+    vm.register_host_fn("node:process", "cpuUsage", Box::new(|_ctx, _args| {
+        let mut o = Object::new();
+        o.properties.insert("user".into(), Value::F64(0.0));
+        o.properties.insert("system".into(), Value::F64(0.0));
+        Value::Object(Arc::new(Mutex::new(o)))
+    }));
+
+    vm.register_host_fn("node:process", "resourceUsage", Box::new(|_ctx, _args| {
+        let mut o = Object::new();
+        for key in ["userCPUTime", "systemCPUTime", "maxRSS", "sharedMemorySize",
+                    "unsharedDataSize", "unsharedStackSize", "minorPageFault",
+                    "majorPageFault", "swappedOut", "fsRead", "fsWrite",
+                    "ipcSent", "ipcReceived", "signalsCount", "voluntaryContextSwitches",
+                    "involuntaryContextSwitches"] {
+            o.properties.insert(key.into(), Value::F64(0.0));
+        }
+        Value::Object(Arc::new(Mutex::new(o)))
+    }));
+
+    vm.register_host_value("node:process", "features", {
+        let mut o = Object::new();
+        for key in ["inspector", "debug", "uv", "ipv6", "tls_alpn", "tls_sni", "tls"] {
+            o.properties.insert(key.into(), Value::Bool(false));
+        }
+        Value::Object(Arc::new(Mutex::new(o)))
+    });
+
+    vm.register_host_value("node:process", "release", {
+        let mut o = Object::new();
+        o.properties.insert("name".into(), s_val("node"));
+        o.properties.insert("lts".into(), Value::Bool(false));
+        o.properties.insert("sourceUrl".into(), s_val(""));
+        o.properties.insert("headersUrl".into(), s_val(""));
+        Value::Object(Arc::new(Mutex::new(o)))
+    });
+}
+
+fn get_ppid() -> u32 {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(text) = std::fs::read_to_string("/proc/self/status") {
+            for line in text.lines() {
+                if let Some(rest) = line.strip_prefix("PPid:") {
+                    if let Ok(pid) = rest.trim().parse::<u32>() {
+                        return pid;
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(unix)]
+    {
+        // POSIX guarantees getppid(); use extern "C" to avoid the libc crate.
+        unsafe extern "C" { fn getppid() -> u32; }
+        return unsafe { getppid() };
+    }
+    #[cfg(windows)]
+    { 1 }
+    #[allow(unreachable_code)]
+    1
 }
 
 /// `/proc/self/status` `VmRSS:` parse — bytes resident set size.

@@ -911,12 +911,12 @@ fn register_access(vm: &mut VM) {
                     let removed = m.shift_remove(&key_value).is_some();
                     return Value::Bool(removed);
                 }
-                let removed = o.properties.remove(&key).is_some();
+                let existed = o.properties.remove(&key).is_some();
                 // Drop the key from `__keys` so re-adding goes to the
                 // end (ECMA-262 §13.5.1 + §7.3.22 ordering — delete
                 // shifts a key out of insertion order; subsequent
                 // `obj.k = v` appends at the new tail).
-                if removed {
+                if existed {
                     if let Some(Value::Object(arr)) = o.properties.get("__keys").cloned() {
                         drop(o);
                         let mut a = arr.lock().unwrap();
@@ -925,7 +925,10 @@ fn register_access(vm: &mut VM) {
                         }
                     }
                 }
-                return Value::Bool(removed);
+                // ECMA-262 §13.5.1: delete returns true for any configurable or
+                // non-existent property. Only non-configurable properties return false.
+                // Since we don't track configurability, delete always succeeds here.
+                return Value::Bool(true);
             }
             Value::Bool(false)
         }));
@@ -1750,17 +1753,21 @@ fn register_prototype_methods(vm: &mut VM) {
             Value::Bool(false)
         }));
 
-    // toString(): spec default is "[object Object]" for plain objects
+    // toString(): ECMA-262 §20.1.3.6 — returns "[object <Tag>]" for any value
+    // (including primitives). Called via Object.prototype.toString.call(value).
     vm.register_host_fn("ecma:object", "toString",
         Box::new(|ctx, args| {
-            if let Some(Value::Symbol(_)) = args.first() {
-                return Value::String(Arc::from("[object Symbol]"));
-            }
-            if let Some(obj) = obj_of(args, 0) {
-                let tag = object_to_string_tag(ctx, &obj);
-                return Value::String(Arc::from(format!("[object {}]", tag).as_str()));
-            }
-            Value::String(Arc::from(""))
+            let tag = match args.first() {
+                None | Some(Value::Undefined) => "Undefined".to_string(),
+                Some(Value::Null) => "Null".to_string(),
+                Some(Value::Bool(_)) => "Boolean".to_string(),
+                Some(Value::I32(_)) | Some(Value::I64(_)) | Some(Value::F64(_)) => "Number".to_string(),
+                Some(Value::String(_)) => "String".to_string(),
+                Some(Value::Symbol(_)) => "Symbol".to_string(),
+                Some(Value::Object(obj)) => object_to_string_tag(ctx, obj),
+                _ => "Object".to_string(),
+            };
+            Value::String(Arc::from(format!("[object {}]", tag).as_str()))
         }));
 
     vm.register_host_fn("ecma:object", "toLocaleString",

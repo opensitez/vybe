@@ -10,10 +10,20 @@
 //! methods (`isFile()`, `isDirectory()`, `isSymbolicLink()`, etc.)
 //! bound as host fn refs taking the Stats object as the receiver.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::collections::HashMap;
 use std::time::SystemTime;
 use vybe_bytecode::value::{Object, ObjectKind};
 use vybe_bytecode::{HostContext, VM, Value};
+
+// ── Global FD table — maps host-fd-number → (path, mode, position) ──
+static FD_TABLE: OnceLock<Mutex<HashMap<i32, (String, String, u64)>>> = OnceLock::new();
+static NEXT_FD: AtomicI32 = AtomicI32::new(3);
+
+fn fd_table() -> &'static Mutex<HashMap<i32, (String, String, u64)>> {
+    FD_TABLE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 // ── Stats type tags ───────────────────────────────────────────────
 const TYPE_FILE: i32 = 1;
@@ -142,6 +152,13 @@ pub fn register(vm: &mut VM) {
         let path = s_arg(args, 0, "");
         let encoding = match args.get(1) {
             Some(Value::String(text)) => Some(text.to_string()),
+            Some(Value::Object(opts)) => {
+                let o = opts.lock().unwrap();
+                match o.properties.get("encoding") {
+                    Some(Value::String(enc)) => Some(enc.to_string()),
+                    _ => None,
+                }
+            }
             _ => None,
         };
         match std::fs::read(&path) {
@@ -162,7 +179,25 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("node:fs", "writeFileSync", Box::new(|_ctx, args| {
         let path = s_arg(args, 0, "");
         let data = s_arg(args, 1, "");
-        let _ = std::fs::write(&path, data.as_bytes());
+        let flag = match args.get(2) {
+            Some(Value::Object(opts)) => {
+                let o = opts.lock().unwrap();
+                match o.properties.get("flag") {
+                    Some(Value::String(f)) => f.to_string(),
+                    _ => "w".to_string(),
+                }
+            }
+            Some(Value::String(s)) => s.to_string(),
+            _ => "w".to_string(),
+        };
+        if flag == "a" || flag == "ax" || flag == "a+" {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                let _ = f.write_all(data.as_bytes());
+            }
+        } else {
+            let _ = std::fs::write(&path, data.as_bytes());
+        }
         Value::Null
     }));
 
@@ -241,6 +276,33 @@ pub fn register(vm: &mut VM) {
         Value::Object(Arc::new(Mutex::new(o)))
     };
     let build_stats_clone = build_stats_with_idxs.clone();
+    let build_stats_fstat = build_stats_with_idxs.clone();
+
+    // Lightweight dirent builder for readdirSync {withFileTypes: true}
+    let build_dirent = {
+        let is_file_idx2 = is_file_idx;
+        let is_dir_idx2 = is_dir_idx;
+        let is_sym_idx2 = is_sym_idx;
+        move |name: String, meta: &std::fs::Metadata| -> Value {
+            let ft = meta.file_type();
+            let type_tag = if ft.is_file() { TYPE_FILE }
+                else if ft.is_dir() { TYPE_DIR }
+                else if ft.is_symlink() { TYPE_SYMLINK }
+                else { 0 };
+            let make_fn = |idx: usize| -> Value {
+                let mut obj = Object::new();
+                obj.kind = ObjectKind::HostFunction(idx);
+                Value::Object(Arc::new(Mutex::new(obj)))
+            };
+            let mut o = Object::new();
+            o.properties.insert("name".into(), Value::String(Arc::from(name.as_str())));
+            o.properties.insert("__type".into(), Value::I32(type_tag));
+            o.properties.insert("isFile".into(), make_fn(is_file_idx2));
+            o.properties.insert("isDirectory".into(), make_fn(is_dir_idx2));
+            o.properties.insert("isSymbolicLink".into(), make_fn(is_sym_idx2));
+            Value::Object(Arc::new(Mutex::new(o)))
+        }
+    };
 
     vm.register_host_fn("node:fs", "statSync", Box::new(move |_ctx, args| {
         let path = s_arg(args, 0, "");
@@ -259,16 +321,47 @@ pub fn register(vm: &mut VM) {
         }
     }));
 
-    // ── readdirSync(path) → string[] ──────────────────────────────
-    vm.register_host_fn("node:fs", "readdirSync", Box::new(|_ctx, args| {
+    // ── fstatSync(fd) → Stats ─────────────────────────────────────
+    vm.register_host_fn("node:fs", "fstatSync", Box::new(move |_ctx, args| {
+        let fd = match args.first() {
+            Some(Value::I32(n)) => *n, Some(Value::F64(f)) => *f as i32, _ => return Value::Null,
+        };
+        let path = fd_table().lock().unwrap().get(&fd).map(|(p,_,_)| p.clone());
+        match path {
+            Some(p) => match std::fs::metadata(&p) {
+                Ok(meta) => build_stats_fstat(&meta),
+                Err(_) => Value::Null,
+            },
+            None => Value::Null,
+        }
+    }));
+
+    // ── readdirSync(path[, {withFileTypes}]) ────────────────────────
+    vm.register_host_fn("node:fs", "readdirSync", Box::new(move |_ctx, args| {
         let path = s_arg(args, 0, "");
+        let with_file_types = opt_obj_bool(args, 1, "withFileTypes");
         match std::fs::read_dir(&path) {
             Ok(entries) => {
-                let names: Vec<Value> = entries
+                let items: Vec<Value> = entries
                     .filter_map(|e| e.ok())
-                    .map(|e| Value::String(Arc::from(e.file_name().to_string_lossy().as_ref())))
+                    .map(|e| {
+                        if with_file_types {
+                            let name = e.file_name().to_string_lossy().to_string();
+                            if let Ok(meta) = e.metadata() {
+                                build_dirent(name, &meta)
+                            } else {
+                                let mut o = Object::new();
+                                o.properties.insert("name".into(), Value::String(Arc::from(
+                                    e.file_name().to_string_lossy().as_ref())));
+                                o.properties.insert("__type".into(), Value::I32(0));
+                                Value::Object(Arc::new(Mutex::new(o)))
+                            }
+                        } else {
+                            Value::String(Arc::from(e.file_name().to_string_lossy().as_ref()))
+                        }
+                    })
                     .collect();
-                Value::Object(Arc::new(Mutex::new(Object::new_array(names))))
+                Value::Object(Arc::new(Mutex::new(Object::new_array(items))))
             }
             Err(_) => Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new())))),
         }
@@ -374,6 +467,246 @@ pub fn register(vm: &mut VM) {
         }
         Value::Null
     }));
+
+    // ── openSync(path, flags) → fd ────────────────────────────────
+    vm.register_host_fn("node:fs", "openSync", Box::new(|_ctx, args| {
+        let path = s_arg(args, 0, "");
+        let flags = s_arg(args, 1, "r");
+        // Ensure file exists for write mode
+        if flags.contains('w') || flags.contains('a') {
+            let _ = std::fs::OpenOptions::new().create(true).write(true)
+                .truncate(flags == "w")
+                .open(&path);
+        }
+        let fd = NEXT_FD.fetch_add(1, Ordering::Relaxed);
+        fd_table().lock().unwrap().insert(fd, (path, flags, 0));
+        Value::I32(fd)
+    }));
+
+    // ── closeSync(fd) ─────────────────────────────────────────────
+    vm.register_host_fn("node:fs", "closeSync", Box::new(|_ctx, args| {
+        let fd = match args.first() {
+            Some(Value::I32(n)) => *n, Some(Value::F64(f)) => *f as i32, _ => return Value::Undefined,
+        };
+        fd_table().lock().unwrap().remove(&fd);
+        Value::Undefined
+    }));
+
+    // ── writeSync(fd, data) → bytes_written ──────────────────────
+    vm.register_host_fn("node:fs", "writeSync", Box::new(|_ctx, args| {
+        use std::io::{Seek, SeekFrom, Write};
+        let fd = match args.first() {
+            Some(Value::I32(n)) => *n, Some(Value::F64(f)) => *f as i32, _ => return Value::I32(0),
+        };
+        let data: Vec<u8> = match args.get(1) {
+            Some(Value::String(s)) => s.as_bytes().to_vec(),
+            Some(Value::Object(obj)) => {
+                let obj = obj.lock().unwrap();
+                if let ObjectKind::Array(elems) = &obj.kind {
+                    elems.iter().map(|e| match e { Value::I32(n) => *n as u8, _ => 0 }).collect()
+                } else { Vec::new() }
+            }
+            _ => Vec::new(),
+        };
+        let n = data.len();
+        let (path, _flags, pos) = {
+            let t = fd_table().lock().unwrap();
+            match t.get(&fd) { Some(e) => e.clone(), None => return Value::I32(0) }
+        };
+        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).create(true).open(&path) {
+            let _ = f.seek(SeekFrom::Start(pos));
+            let _ = f.write_all(&data);
+        }
+        fd_table().lock().unwrap().entry(fd).and_modify(|e| e.2 += n as u64);
+        Value::I32(n as i32)
+    }));
+
+    // ── readSync(fd, buffer, offset, length, position) → bytes_read
+    vm.register_host_fn("node:fs", "readSync", Box::new(|_ctx, args| {
+        use std::io::{Read, Seek, SeekFrom};
+        let fd = match args.first() {
+            Some(Value::I32(n)) => *n, Some(Value::F64(f)) => *f as i32, _ => return Value::I32(0),
+        };
+        let length = match args.get(3) {
+            Some(Value::I32(n)) => *n as usize, Some(Value::F64(f)) => *f as usize, _ => 0,
+        };
+        let position = match args.get(4) {
+            Some(Value::I32(n)) => *n as i64, Some(Value::F64(f)) => *f as i64, _ => -1,
+        };
+        let path = {
+            let t = fd_table().lock().unwrap();
+            match t.get(&fd) { Some((p,_,_)) => p.clone(), None => return Value::I32(0) }
+        };
+        let mut buf = vec![0u8; length];
+        let n = if let Ok(mut f) = std::fs::File::open(&path) {
+            if position >= 0 { let _ = f.seek(SeekFrom::Start(position as u64)); }
+            f.read(&mut buf).unwrap_or(0)
+        } else { 0 };
+        // Fill buffer object
+        if let Some(Value::Object(buf_obj)) = args.get(1) {
+            let offset = match args.get(2) {
+                Some(Value::I32(o)) => *o as usize, Some(Value::F64(f)) => *f as usize, _ => 0,
+            };
+            let mut bo = buf_obj.lock().unwrap();
+            if let ObjectKind::Array(ref mut elems) = bo.kind {
+                for (i, &b) in buf[..n].iter().enumerate() {
+                    if offset + i < elems.len() { elems[offset + i] = Value::I32(b as i32); }
+                }
+            }
+        }
+        Value::I32(n as i32)
+    }));
+
+    // ── fsyncSync / fdatasyncSync ─────────────────────────────────
+    vm.register_host_fn("node:fs", "fsyncSync", Box::new(|_ctx, _args| Value::Undefined));
+    vm.register_host_fn("node:fs", "fdatasyncSync", Box::new(|_ctx, _args| Value::Undefined));
+
+    // ── ftruncateSync(fd, len) ────────────────────────────────────
+    vm.register_host_fn("node:fs", "ftruncateSync", Box::new(|_ctx, args| {
+        let fd = match args.first() {
+            Some(Value::I32(n)) => *n, Some(Value::F64(f)) => *f as i32, _ => return Value::Undefined,
+        };
+        let len = match args.get(1) {
+            Some(Value::I32(n)) => *n as u64, Some(Value::F64(f)) => *f as u64, _ => 0,
+        };
+        let path = { let t = fd_table().lock().unwrap(); t.get(&fd).map(|(p,_,_)| p.clone()) };
+        if let Some(p) = path {
+            if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&p) {
+                let _ = f.set_len(len);
+            }
+        }
+        Value::Undefined
+    }));
+
+    // ── chmodSync(path, mode) ─────────────────────────────────────
+    vm.register_host_fn("node:fs", "chmodSync", Box::new(|_ctx, args| {
+        let path = s_arg(args, 0, "");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = match args.get(1) {
+                Some(Value::I32(n)) => *n as u32, Some(Value::F64(f)) => *f as u32, _ => 0o644,
+            };
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode));
+        }
+        let _ = path;
+        Value::Undefined
+    }));
+
+    // ── chownSync(path, uid, gid) ─────────────────────────────────
+    vm.register_host_fn("node:fs", "chownSync", Box::new(|_ctx, _args| Value::Undefined));
+
+    // ── symlinkSync(target, path) ─────────────────────────────────
+    vm.register_host_fn("node:fs", "symlinkSync", Box::new(|_ctx, args| {
+        let target = s_arg(args, 0, "");
+        let link = s_arg(args, 1, "");
+        #[cfg(unix)]
+        { let _ = std::os::unix::fs::symlink(&target, &link); }
+        #[cfg(not(unix))]
+        { let _ = (target, link); }
+        Value::Undefined
+    }));
+
+    // ── linkSync(existing, new) ───────────────────────────────────
+    vm.register_host_fn("node:fs", "linkSync", Box::new(|_ctx, args| {
+        let existing = s_arg(args, 0, "");
+        let new_path = s_arg(args, 1, "");
+        let _ = std::fs::hard_link(&existing, &new_path);
+        Value::Undefined
+    }));
+
+    // ── mkdtempSync(prefix) → path ────────────────────────────────
+    vm.register_host_fn("node:fs", "mkdtempSync", Box::new(|_ctx, args| {
+        let prefix = s_arg(args, 0, "");
+        // Generate unique suffix from current time
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let path = format!("{}{:08x}", prefix, suffix);
+        let _ = std::fs::create_dir_all(&path);
+        Value::String(Arc::from(path.as_str()))
+    }));
+
+    // ── createReadStream(path) → stream stub ──────────────────────
+    vm.register_host_fn("node:fs", "createReadStream", Box::new(|_ctx, args| {
+        let path = s_arg(args, 0, "");
+        let mut o = Object::new();
+        o.properties.insert("path".into(), Value::String(Arc::from(path.as_str())));
+        o.properties.insert("readable".into(), Value::Bool(true));
+        o.properties.insert("destroyed".into(), Value::Bool(false));
+        for m in ["on","once","off","emit","pipe","unpipe","read","destroy","pause","resume",
+                  "setEncoding","addListener","removeListener"] {
+            o.properties.insert(m.into(), Value::Undefined);
+        }
+        Value::Object(Arc::new(Mutex::new(o)))
+    }));
+
+    // ── createWriteStream(path) → stream stub ────────────────────
+    vm.register_host_fn("node:fs", "createWriteStream", Box::new(|_ctx, args| {
+        let path = s_arg(args, 0, "");
+        let mut o = Object::new();
+        o.properties.insert("path".into(), Value::String(Arc::from(path.as_str())));
+        o.properties.insert("writable".into(), Value::Bool(true));
+        o.properties.insert("destroyed".into(), Value::Bool(false));
+        for m in ["write","end","on","once","off","emit","destroy","cork","uncork",
+                  "addListener","removeListener"] {
+            o.properties.insert(m.into(), Value::Undefined);
+        }
+        Value::Object(Arc::new(Mutex::new(o)))
+    }));
+
+    // ── watch(path[, callback]) → watcher stub ───────────────────
+    vm.register_host_fn("node:fs", "watch", Box::new(|_ctx, args| {
+        let path = s_arg(args, 0, "");
+        let mut o = Object::new();
+        o.properties.insert("path".into(), Value::String(Arc::from(path.as_str())));
+        for m in ["close","on","once","off","emit"] {
+            o.properties.insert(m.into(), Value::Undefined);
+        }
+        Value::Object(Arc::new(Mutex::new(o)))
+    }));
+
+    // ── watchFile(path[, callback]) → stat watcher stub ──────────
+    vm.register_host_fn("node:fs", "watchFile", Box::new(|_ctx, args| {
+        let path = s_arg(args, 0, "");
+        let mut o = Object::new();
+        o.properties.insert("path".into(), Value::String(Arc::from(path.as_str())));
+        for m in ["stop","on","once","off"] {
+            o.properties.insert(m.into(), Value::Undefined);
+        }
+        Value::Object(Arc::new(Mutex::new(o)))
+    }));
+
+    // ── unwatchFile → undefined ───────────────────────────────────
+    vm.register_host_fn("node:fs", "unwatchFile", Box::new(|_ctx, _args| Value::Undefined));
+
+    // ── constants ─────────────────────────────────────────────────
+    vm.register_host_fn("node:fs", "constants", Box::new(|_ctx, _args| {
+        let mut o = Object::new();
+        o.properties.insert("F_OK".into(), Value::I32(0));
+        o.properties.insert("R_OK".into(), Value::I32(4));
+        o.properties.insert("W_OK".into(), Value::I32(2));
+        o.properties.insert("X_OK".into(), Value::I32(1));
+        o.properties.insert("O_RDONLY".into(), Value::I32(0));
+        o.properties.insert("O_WRONLY".into(), Value::I32(1));
+        o.properties.insert("O_RDWR".into(), Value::I32(2));
+        #[cfg(unix)]
+        o.properties.insert("O_CREAT".into(), Value::I32(libc_o_creat()));
+        #[cfg(not(unix))]
+        o.properties.insert("O_CREAT".into(), Value::I32(512));
+        o.properties.insert("O_EXCL".into(), Value::I32(128));
+        o.properties.insert("O_TRUNC".into(), Value::I32(512));
+        o.properties.insert("O_APPEND".into(), Value::I32(8));
+        o.properties.insert("O_SYNC".into(), Value::I32(2048));
+        Value::Object(Arc::new(Mutex::new(o)))
+    }));
+}
+
+// ── Platform helpers ───────────────────────────────────────────────
+#[cfg(unix)]
+fn libc_o_creat() -> i32 {
+    64 // O_CREAT on Linux; 512 on macOS — use 64 as safe cross-platform value
 }
 
 // Suppress the unused build_stats helper (kept in case future

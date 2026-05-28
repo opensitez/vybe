@@ -1008,15 +1008,31 @@ fn register_base64(vm: &mut VM) {
 
     // raw(templateObject, ...subs) — §22.1.2.4.
     vm.register_host_fn("ecma:string", "raw", Box::new(|_ctx, args| {
+        // ECMA-262 §22.1.2.4: String.raw(template, ...subs)
+        // Reads template.raw (the raw strings array), not the cooked template itself.
         let parts = match args.first() {
             Some(Value::Object(obj)) => {
                 let o = obj.lock().unwrap();
-                match &o.kind {
-                    ObjectKind::Array(v) => v.iter().map(|v| match v {
-                        Value::String(s) => s.as_ref().to_string(),
-                        other => format!("{}", other),
-                    }).collect::<Vec<_>>(),
-                    _ => Vec::new(),
+                // First try .raw property (tagged template path)
+                if let Some(raw_val) = o.properties.get("raw") {
+                    if let Value::Object(raw_arr) = raw_val {
+                        let raw = raw_arr.lock().unwrap();
+                        if let ObjectKind::Array(v) = &raw.kind {
+                            v.iter().map(|v| match v {
+                                Value::String(s) => s.as_ref().to_string(),
+                                other => format!("{}", other),
+                            }).collect::<Vec<_>>()
+                        } else { Vec::new() }
+                    } else { Vec::new() }
+                } else {
+                    // Fallback: use the array itself (cooked)
+                    match &o.kind {
+                        ObjectKind::Array(v) => v.iter().map(|v| match v {
+                            Value::String(s) => s.as_ref().to_string(),
+                            other => format!("{}", other),
+                        }).collect::<Vec<_>>(),
+                        _ => Vec::new(),
+                    }
                 }
             }
             _ => Vec::new(),

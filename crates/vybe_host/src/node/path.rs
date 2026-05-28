@@ -318,6 +318,55 @@ pub fn register(vm: &mut VM) {
 
     vm.register_host_fn("node:path", "sep", Box::new(|_ctx, _args| s_val(sep())));
     vm.register_host_fn("node:path", "delimiter", Box::new(|_ctx, _args| s_val(delimiter())));
+
+    vm.register_host_fn("node:path", "toNamespacedPath", Box::new(|_ctx, args| {
+        let path = s_arg(args, 0, "");
+        if cfg!(windows) && path.starts_with("\\\\") {
+            s_val(&format!("\\\\?\\{}", &path[2..]))
+        } else {
+            s_val(&path)
+        }
+    }));
+
+    vm.register_host_fn("node:path", "posix", Box::new(|_ctx, _args| {
+        let mut o = Object::new();
+        o.properties.insert("sep".into(), s_val("/"));
+        o.properties.insert("delimiter".into(), s_val(":"));
+        Value::Object(Arc::new(Mutex::new(o)))
+    }));
+
+    vm.register_host_fn("node:path", "win32", Box::new(|_ctx, _args| {
+        let mut o = Object::new();
+        o.properties.insert("sep".into(), s_val("\\"));
+        o.properties.insert("delimiter".into(), s_val(";"));
+        Value::Object(Arc::new(Mutex::new(o)))
+    }));
+
+    vm.register_host_fn("node:path", "matchesGlob", Box::new(|_ctx, args| {
+        let path = s_arg(args, 0, "");
+        let pattern = s_arg(args, 1, "");
+        Value::Bool(glob_matches(&pattern, &path))
+    }));
+}
+
+fn glob_matches(pattern: &str, path: &str) -> bool {
+    // Convert glob to regex: ** → .*, * → [^/]*, ? → [^/]
+    let mut re = String::from("^");
+    let mut chars = pattern.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '*' if chars.peek() == Some(&'*') => { chars.next(); re.push_str(".*"); }
+            '*' => re.push_str("[^/]*"),
+            '?' => re.push_str("[^/]"),
+            '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
+                re.push('\\');
+                re.push(c);
+            }
+            other => re.push(other),
+        }
+    }
+    re.push('$');
+    regex::Regex::new(&re).map(|r| r.is_match(path)).unwrap_or(false)
 }
 
 #[allow(dead_code)]

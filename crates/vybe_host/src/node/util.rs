@@ -37,6 +37,7 @@ pub fn register(vm: &mut VM) {
     register_parse_args(vm);
     register_types(vm);
     register_legacy_predicates(vm);
+    register_extras(vm);
 }
 
 // ── format / formatWithOptions ───────────────────────────────────────
@@ -699,10 +700,14 @@ fn register_legacy_predicates(vm: &mut VM) {
         Value::Bool(is_typed_kind(args, "Error"))
     }));
     vm.register_host_fn(MODULE, "isBuffer", Box::new(|_ctx, args| {
-        // Node Buffer is an ArrayBuffer view in spirit; we check the
-        // ArrayBuffer kind since Vybe doesn't have a separate Buffer type.
-        Value::Bool(matches!(args.first(), Some(Value::Object(o))
-            if matches!(o.lock().unwrap().kind, ObjectKind::ArrayBuffer(_))))
+        Value::Bool(match args.first() {
+            Some(Value::Object(o)) => {
+                let o = o.lock().unwrap();
+                matches!(o.kind, ObjectKind::ArrayBuffer(_))
+                    || o.properties.get("__type").map_or(false, |t| matches!(t, Value::String(s) if s.as_ref() == "Buffer"))
+            }
+            _ => false,
+        })
     }));
 }
 
@@ -749,4 +754,156 @@ fn json_stringify(v: &Value) -> String {
         }
         _ => "null".into(),
     }
+}
+
+fn errno_name(code: i32) -> &'static str {
+    match code {
+        1 => "EPERM", 2 => "ENOENT", 3 => "ESRCH", 4 => "EINTR", 5 => "EIO",
+        6 => "ENXIO", 7 => "E2BIG", 8 => "ENOEXEC", 9 => "EBADF", 10 => "ECHILD",
+        11 => "EAGAIN", 12 => "ENOMEM", 13 => "EACCES", 14 => "EFAULT",
+        16 => "EBUSY", 17 => "EEXIST", 19 => "ENODEV", 20 => "ENOTDIR",
+        21 => "EISDIR", 22 => "EINVAL", 23 => "ENFILE", 24 => "EMFILE",
+        25 => "ENOTTY", 27 => "EFBIG", 28 => "ENOSPC", 30 => "EROFS",
+        32 => "EPIPE", 33 => "EDOM", 34 => "ERANGE", 36 => "EDEADLK",
+        38 => "ENOSYS", 40 => "ELOOP", 41 => "ENOMSG", 61 => "ENODATA",
+        _ => "EUNKNOWN",
+    }
+}
+
+fn register_extras(vm: &mut VM) {
+    // ── TextEncoder / TextDecoder ──────────────────────────────────────
+    vm.register_host_fn(MODULE, "TextEncoder", Box::new(|_ctx, _args| {
+        let mut o = Object::new();
+        o.properties.insert("encoding".into(), Value::String(Arc::from("utf-8")));
+        Value::Object(Arc::new(Mutex::new(o)))
+    }));
+
+    vm.register_host_fn(MODULE, "textEncoderEncode", Box::new(|_ctx, args| {
+        // args: [encoder, string]
+        let text = match args.get(1) {
+            Some(Value::String(s)) => s.to_string(),
+            _ => String::new(),
+        };
+        let bytes: Vec<Value> = text.as_bytes().iter().map(|&b| Value::I32(b as i32)).collect();
+        Value::Object(Arc::new(Mutex::new(Object::new_array(bytes))))
+    }));
+
+    vm.register_host_fn(MODULE, "textEncoderEncoding", Box::new(|_ctx, args| {
+        match args.first() {
+            Some(Value::Object(o)) => {
+                o.lock().unwrap().properties.get("encoding").cloned().unwrap_or(Value::String(Arc::from("utf-8")))
+            }
+            _ => Value::String(Arc::from("utf-8")),
+        }
+    }));
+
+    vm.register_host_fn(MODULE, "TextDecoder", Box::new(|_ctx, args| {
+        let enc = match args.first() {
+            Some(Value::String(s)) => s.to_string(),
+            _ => "utf-8".to_string(),
+        };
+        let mut o = Object::new();
+        o.properties.insert("encoding".into(), Value::String(Arc::from(enc.as_str())));
+        Value::Object(Arc::new(Mutex::new(o)))
+    }));
+
+    vm.register_host_fn(MODULE, "textDecoderDecode", Box::new(|_ctx, args| {
+        let buf = args.get(1);
+        let bytes: Vec<u8> = match buf {
+            Some(Value::Object(obj)) => {
+                let obj = obj.lock().unwrap();
+                match &obj.kind {
+                    ObjectKind::Array(elems) => elems.iter().map(|v| match v {
+                        Value::I32(n) => *n as u8,
+                        Value::F64(f) => *f as u8,
+                        _ => 0,
+                    }).collect(),
+                    _ => vec![],
+                }
+            }
+            _ => vec![],
+        };
+        Value::String(Arc::from(String::from_utf8_lossy(&bytes).as_ref()))
+    }));
+
+    vm.register_host_fn(MODULE, "textDecoderEncoding", Box::new(|_ctx, args| {
+        match args.first() {
+            Some(Value::Object(o)) => {
+                o.lock().unwrap().properties.get("encoding").cloned().unwrap_or(Value::String(Arc::from("utf-8")))
+            }
+            _ => Value::String(Arc::from("utf-8")),
+        }
+    }));
+
+    // ── getSystemErrorName / getSystemErrorMap ─────────────────────────
+    vm.register_host_fn(MODULE, "getSystemErrorName", Box::new(|_ctx, args| {
+        let code = match args.first() {
+            Some(Value::I32(n)) => *n,
+            Some(Value::F64(f)) => *f as i32,
+            _ => 0,
+        };
+        Value::String(Arc::from(errno_name(code)))
+    }));
+
+    vm.register_host_fn(MODULE, "getSystemErrorMap", Box::new(|_ctx, _args| {
+        let mut o = Object::new();
+        for (code, name) in [(1,"EPERM"),(2,"ENOENT"),(3,"ESRCH"),(4,"EINTR"),(5,"EIO"),
+                              (6,"ENXIO"),(7,"E2BIG"),(8,"ENOEXEC"),(9,"EBADF"),(10,"ECHILD"),
+                              (11,"EAGAIN"),(12,"ENOMEM"),(13,"EACCES"),(14,"EFAULT"),
+                              (16,"EBUSY"),(17,"EEXIST"),(19,"ENODEV"),(20,"ENOTDIR"),
+                              (21,"EISDIR"),(22,"EINVAL"),(23,"ENFILE"),(24,"EMFILE"),
+                              (28,"ENOSPC"),(30,"EROFS"),(32,"EPIPE"),(34,"ERANGE")] {
+            let arr = vec![Value::I32(code), Value::String(Arc::from(name))];
+            o.properties.insert(code.to_string(), Value::Object(Arc::new(Mutex::new(Object::new_array(arr)))));
+        }
+        Value::Object(Arc::new(Mutex::new(o)))
+    }));
+
+    // ── Stub wrappers ─────────────────────────────────────────────────
+    vm.register_host_fn(MODULE, "promisify", Box::new(|_ctx, _args| {
+        Value::Object(Arc::new(Mutex::new(Object::new())))
+    }));
+    vm.register_host_fn(MODULE, "callbackify", Box::new(|_ctx, _args| {
+        Value::Object(Arc::new(Mutex::new(Object::new())))
+    }));
+    vm.register_host_fn(MODULE, "deprecate", Box::new(|_ctx, _args| {
+        Value::Object(Arc::new(Mutex::new(Object::new())))
+    }));
+    vm.register_host_fn(MODULE, "debuglog", Box::new(|_ctx, _args| {
+        Value::Object(Arc::new(Mutex::new(Object::new())))
+    }));
+    vm.register_host_fn(MODULE, "inherits", Box::new(|_ctx, _args| {
+        Value::Undefined
+    }));
+
+    // ── MIMEType / MIMEParams ──────────────────────────────────────────
+    vm.register_host_fn(MODULE, "MIMEType", Box::new(|_ctx, args| {
+        let mime_str = match args.first() {
+            Some(Value::String(s)) => s.to_string(),
+            _ => return Value::Undefined,
+        };
+        // Parse "type/subtype; param=value"
+        let (type_sub, _params_str) = mime_str.split_once(';').unwrap_or((&mime_str, ""));
+        let (ty, subtype) = type_sub.trim().split_once('/').unwrap_or((type_sub.trim(), ""));
+        let essence = format!("{}/{}", ty.trim(), subtype.trim());
+        let mut o = Object::new();
+        o.properties.insert("type".into(), Value::String(Arc::from(ty.trim())));
+        o.properties.insert("subtype".into(), Value::String(Arc::from(subtype.trim())));
+        o.properties.insert("essence".into(), Value::String(Arc::from(essence.as_str())));
+        o.properties.insert("params".into(), Value::Object(Arc::new(Mutex::new(Object::new()))));
+        Value::Object(Arc::new(Mutex::new(o)))
+    }));
+
+    vm.register_host_fn(MODULE, "MIMEParams", Box::new(|_ctx, _args| {
+        Value::Object(Arc::new(Mutex::new(Object::new())))
+    }));
+
+    // ── styleText (Node 22+) ───────────────────────────────────────────
+    vm.register_host_fn(MODULE, "styleText", Box::new(|_ctx, args| {
+        let text = match args.get(1) {
+            Some(Value::String(s)) => s.to_string(),
+            _ => String::new(),
+        };
+        Value::String(Arc::from(text.as_str()))
+    }));
 }

@@ -22,6 +22,7 @@ pub mod context;
 pub mod request;
 pub mod response;
 pub mod meta;
+pub mod client;
 
 pub use context::{
     RequestContext, RequestBodyReader, ResponseState, ResponseMessage,
@@ -40,4 +41,5 @@ pub fn register(vm: &mut VM) {
     request::register(vm);
     response::register(vm);
     meta::register(vm);
+    client::register(vm);
 }
