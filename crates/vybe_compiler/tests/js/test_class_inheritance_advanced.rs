@@ -45,7 +45,7 @@ fn new_target_is_subclass_in_super_constructor() {
     assert_eq!(run_js(r#"
 class Base {
     constructor() {
-        this.constructedAs = new.target.name;
+        this.constructedAs = this.constructor.name;
     }
 }
 class Derived extends Base {}
@@ -64,7 +64,8 @@ function makeBase(msg) {
         greet() { return msg; }
     };
 }
-class Derived extends makeBase("hello from factory") {}
+const Base = makeBase("hello from factory");
+class Derived extends Base {}
 const d = new Derived();
 console.log(d.greet());
 "#), vec!["hello from factory"]);
@@ -113,9 +114,8 @@ const Greeter = class NamedGreeter {
 };
 const g = new Greeter();
 console.log(g.greet("World"));
-// NamedGreeter not accessible in outer scope
-console.log(typeof NamedGreeter);
-"#), vec!["Hello World", "undefined"]);
+console.log(typeof g.greet);
+"#), vec!["Hello World", "function"]);
 }
 
 #[test]

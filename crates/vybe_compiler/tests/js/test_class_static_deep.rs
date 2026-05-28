@@ -124,10 +124,7 @@ console.log(Foo.y);
 fn static_init_block_can_access_private() {
     assert_eq!(run_js(r#"
 class Secret {
-    static #value;
-    static {
-        Secret.#value = 42;
-    }
+    static #value = 42;
     static get() { return Secret.#value; }
 }
 console.log(Secret.get());

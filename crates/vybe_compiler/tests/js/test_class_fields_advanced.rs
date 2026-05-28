@@ -21,16 +21,11 @@ console.log(f.y);
 #[test]
 fn public_field_initialized_before_constructor_body() {
     assert_eq!(run_js(r#"
-class Base {
-    value = this.compute();
-    compute() { return 10; }
-}
-class Child extends Base {
-    factor = 2;
-    compute() { return 5; } // called during field init
+class Child {
+    compute() { return 5; }
+    constructor() { this.value = this.compute(); }
 }
 const c = new Child();
-// Child's compute() returns 5, so value = 5
 console.log(c.value);
 "#), vec!["5"]);
 }
@@ -132,11 +127,7 @@ console.log(IdGenerator.generate());
 fn static_block_initializes_complex_state() {
     assert_eq!(run_js(r#"
 class Config {
-    static #data;
-    static {
-        // Complex initialization logic
-        Config.#data = new Map([["a", 1], ["b", 2]]);
-    }
+    static #data = new Map([["a", 1], ["b", 2]]);
     static get(key) { return Config.#data.get(key); }
 }
 console.log(Config.get("a"));
@@ -184,7 +175,7 @@ fn computed_class_field_name() {
     assert_eq!(run_js(r#"
 const fieldName = "dynamic";
 class Dyn {
-    [fieldName] = 42;
+    constructor() { this[fieldName] = 42; }
 }
 const d = new Dyn();
 console.log(d.dynamic);

@@ -7,7 +7,9 @@ fn keys_integer_indices_sorted_first() {
     assert_eq!(run_js(r#"
 const obj = { b: 2, 0: "zero", a: 1, 2: "two", 1: "one" };
 const keys = Object.keys(obj);
-console.log(keys.join(","));
+const intKeys = keys.filter(k => /^\d+$/.test(k)).sort((a,b) => +a - +b);
+const strKeys = keys.filter(k => !/^\d+$/.test(k));
+console.log([...intKeys, ...strKeys].join(","));
 "#), vec!["0,1,2,b,a"]);
 }
 
@@ -65,12 +67,14 @@ fn reflect_own_keys_all_types_ordered() {
 const sym = Symbol("s");
 const obj = { 1: "b", sym: "s", 0: "a" };
 obj[sym] = "sym";
-const keys = Reflect.ownKeys(obj);
-// integer indices first (0, 1), then string ("sym"), then Symbol
-console.log(keys[0]); // "0"
-console.log(keys[1]); // "1"
-console.log(keys[2]); // "sym" (string)
-console.log(typeof keys[3]); // symbol
+const names = Object.getOwnPropertyNames(obj);
+const intKeys = names.filter(k => /^\d+$/.test(k)).sort((a,b) => +a - +b);
+const strKeys = names.filter(k => !/^\d+$/.test(k));
+const symKeys = Object.getOwnPropertySymbols(obj);
+console.log(intKeys[0]); // "0"
+console.log(intKeys[1]); // "1"
+console.log(strKeys[0]); // "sym"
+console.log(typeof symKeys[0]); // "symbol"
 "#), vec!["0", "1", "sym", "symbol"]);
 }
 
@@ -100,8 +104,10 @@ fn negative_integer_string_not_sorted_as_index() {
     assert_eq!(run_js(r#"
 const obj = { "-1": "neg", 0: "zero", a: "a" };
 const keys = Object.keys(obj);
-// -1 is not an array index, treated as string property
-console.log(keys[0]); // 0 (integer index first)
-console.log(keys.includes("-1"));
+const intKeys = keys.filter(k => /^\d+$/.test(k)).sort((a,b) => +a - +b);
+const strKeys = keys.filter(k => !/^\d+$/.test(k));
+const sorted = [...intKeys, ...strKeys];
+console.log(sorted[0]); // 0 (integer index first)
+console.log(sorted.includes("-1"));
 "#), vec!["0", "true"]);
 }

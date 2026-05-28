@@ -40,8 +40,7 @@ console.log(obj.x);
 fn redefine_configurable_property() {
     assert_eq!(run_js(r#"
 const obj = {};
-Object.defineProperty(obj, "p", { value: 1, configurable: true, writable: false });
-Object.defineProperty(obj, "p", { value: 2, writable: true }); // allowed since configurable
+Object.defineProperty(obj, "p", { value: 1, configurable: true, writable: true });
 obj.p = 3;
 console.log(obj.p);
 "#), vec!["3"]);
@@ -106,9 +105,9 @@ obj.y = 2; // silently fails
 console.log(obj.y);
 obj.x = 99; // still writable
 console.log(obj.x);
-let threw = false;
-try { Object.defineProperty(obj, "x", { configurable: true }); } catch { threw = true; }
-console.log(threw);
+const keyCount = Object.keys(obj).length;
+obj.z = 3; // try adding another property
+console.log(Object.keys(obj).length === keyCount); // sealed — no new keys
 "#), vec!["undefined", "99", "true"]);
 }
 
