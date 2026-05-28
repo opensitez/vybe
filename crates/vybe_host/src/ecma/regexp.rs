@@ -395,9 +395,9 @@ pub fn register(vm: &mut VM) {
 
 // ── Constructor ───────────────────────────────────────────────────────
 
+// ── RegExp.prototype ─────────────────────────────────────────────────
+
 fn register_constructor(vm: &mut VM) {
-    // `new RegExp(pattern, flags?)` — ECMA-262 §22.2.4. Pattern can be a
-    // string or another RegExp (in which case its source/flags are reused).
     vm.register_host_fn("ecma:regexp", "new",
         Box::new(|_ctx, args| {
             let (pattern, default_flags) = extract_pattern(args, 0);
@@ -423,6 +423,45 @@ fn register_constructor(vm: &mut VM) {
             // type registry; matches the pattern used by Map/Set/etc.
             obj.properties.insert("__type".into(), Value::String(Arc::from(REGEXP_TYPE)));
             Value::Object(Arc::new(Mutex::new(obj)))
+        }));
+
+    // newWithFlags(pattern, flags) — explicit flags alias.
+    vm.register_host_fn("ecma:regexp", "newWithFlags",
+        Box::new(|_ctx, args| {
+            let (pattern, _) = extract_pattern(args, 0);
+            let flags = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+            let mut obj = Object::new();
+            obj.properties.insert("source".into(), s_val(&display_source(&pattern)));
+            obj.properties.insert("flags".into(), s_val(&flags));
+            obj.properties.insert("global".into(), Value::Bool(flags.contains('g')));
+            obj.properties.insert("ignoreCase".into(), Value::Bool(flags.contains('i')));
+            obj.properties.insert("multiline".into(), Value::Bool(flags.contains('m')));
+            obj.properties.insert("dotAll".into(), Value::Bool(flags.contains('s')));
+            obj.properties.insert("unicode".into(), Value::Bool(flags.contains('u')));
+            obj.properties.insert("unicodeSets".into(), Value::Bool(flags.contains('v')));
+            obj.properties.insert("sticky".into(), Value::Bool(flags.contains('y')));
+            obj.properties.insert("hasIndices".into(), Value::Bool(flags.contains('d')));
+            obj.properties.insert("lastIndex".into(), Value::I32(0));
+            obj.properties.insert("__type".into(), Value::String(Arc::from(REGEXP_TYPE)));
+            Value::Object(Arc::new(Mutex::new(obj)))
+        }));
+
+    // escape(str) — ES2025 §22.2.2.1. Escape all special regex chars.
+    vm.register_host_fn("ecma:regexp", "escape",
+        Box::new(|_ctx, args| {
+            let s = match args.first() {
+                Some(Value::String(s)) => s.as_ref().to_string(),
+                Some(v) => format!("{}", v),
+                None => return Value::Undefined,
+            };
+            let escaped: String = s.chars().map(|c| {
+                if c.is_alphanumeric() || c == '_' {
+                    c.to_string()
+                } else {
+                    format!("\\{}", c)
+                }
+            }).collect();
+            Value::String(Arc::from(escaped.as_str()))
         }));
 }
 
@@ -616,13 +655,6 @@ fn regexp_string_match(ctx: &mut HostContext, args: &[Value]) -> Value {
 fn regexp_string_match_all(ctx: &mut HostContext, args: &[Value]) -> Value {
     let input = s_arg(args, 0);
     let (pattern, flags) = extract_pattern(args, 1);
-    if regex_like_arg(args.get(1)) && !flags.contains('g') {
-        ctx.throw_value(crate::ecma::error::new_error(
-            "TypeError",
-            "String.prototype.matchAll called with a non-global RegExp argument",
-        ));
-        return Value::Null;
-    }
     if let Some(kind) = special_pattern(&pattern, &flags) {
         let matches = special_find_all(&input, kind)
             .into_iter()
@@ -728,25 +760,20 @@ fn regexp_string_split(args: &[Value]) -> Value {
     }
     match compile(&pattern, &flags) {
         Some(re) => {
+            let max_parts = limit.unwrap_or(usize::MAX);
             let mut parts: Vec<Value> = Vec::new();
             let mut last_end = 0;
             for m in re.find_iter(&input) {
-                parts.push(s_val(&input[last_end..m.start()]));
-                if matches!(limit, Some(n) if parts.len() >= n) {
-                    return make_array(parts);
+                if parts.len() + 1 >= max_parts {
+                    break;
                 }
+                parts.push(s_val(&input[last_end..m.start()]));
                 for index in 1..=m.captures.len() {
                     parts.push(match_group_value(&m, &input, index));
-                    if matches!(limit, Some(n) if parts.len() >= n) {
-                        return make_array(parts);
-                    }
                 }
                 last_end = m.end();
             }
             parts.push(s_val(&input[last_end..]));
-            if let Some(n) = limit {
-                parts.truncate(n);
-            }
             make_array(parts)
         }
         None => make_array(vec![s_val(&input)]),

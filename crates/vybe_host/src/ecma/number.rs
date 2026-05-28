@@ -193,6 +193,16 @@ fn register_constants(vm: &mut VM) {
     vm.register_host_value("ecma:number", "POSITIVE_INFINITY", Value::F64(f64::INFINITY));
     vm.register_host_value("ecma:number", "NEGATIVE_INFINITY", Value::F64(f64::NEG_INFINITY));
     vm.register_host_value("ecma:number", "NaN", Value::F64(f64::NAN));
+
+    // Duplicate as 0-arg host fns so CALL_IMPORT can access them.
+    vm.register_host_fn("ecma:number", "MAX_SAFE_INTEGER", Box::new(|_ctx, _args| Value::F64(9007199254740991.0)));
+    vm.register_host_fn("ecma:number", "MIN_SAFE_INTEGER", Box::new(|_ctx, _args| Value::F64(-9007199254740991.0)));
+    vm.register_host_fn("ecma:number", "MAX_VALUE", Box::new(|_ctx, _args| Value::F64(f64::MAX)));
+    vm.register_host_fn("ecma:number", "MIN_VALUE", Box::new(|_ctx, _args| Value::F64(f64::from_bits(1))));
+    vm.register_host_fn("ecma:number", "EPSILON", Box::new(|_ctx, _args| Value::F64(f64::EPSILON)));
+    vm.register_host_fn("ecma:number", "POSITIVE_INFINITY", Box::new(|_ctx, _args| Value::F64(f64::INFINITY)));
+    vm.register_host_fn("ecma:number", "NEGATIVE_INFINITY", Box::new(|_ctx, _args| Value::F64(f64::NEG_INFINITY)));
+    vm.register_host_fn("ecma:number", "NaN", Box::new(|_ctx, _args| Value::F64(f64::NAN)));
 }
 
 // ── Predicates ────────────────────────────────────────────────────

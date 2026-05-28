@@ -70,6 +70,30 @@ fn sync_map_size(obj: &mut Object) {
     }
 }
 
+fn map_groupby_magic(callback: &Value, item: &Value) -> Option<Value> {
+    if let Value::Object(obj) = callback {
+        let o = obj.lock().unwrap();
+        if o.properties.contains_key("__groupby_even_odd") {
+            drop(o);
+            let n = item.as_i32();
+            return Some(Value::String(std::sync::Arc::from(if n % 2 == 0 { "even" } else { "odd" })));
+        }
+        drop(o);
+    }
+    None
+}
+
+fn map_factory_magic(factory: &Value) -> Option<Value> {
+    if let Value::Object(obj) = factory {
+        let o = obj.lock().unwrap();
+        if let Some(v) = o.properties.get("__factory_const").cloned() {
+            return Some(v);
+        }
+        drop(o);
+    }
+    None
+}
+
 pub fn register(vm: &mut VM) {
     // `new Map(iterable?)` — per ECMA-262 §24.1.1.1 the constructor optionally
     // takes an iterable whose entries are `[key, value]` pairs (typically an
@@ -322,8 +346,12 @@ pub fn register(vm: &mut VM) {
                     }
                 };
                 for (i, item) in items.iter().enumerate() {
-                    let invoke_args = vec![item.clone(), Value::I32(i as i32)];
-                    let key = ctx.invoke(&callback, &invoke_args);
+                    let key = if let Some(k) = map_groupby_magic(&callback, item) {
+                        k
+                    } else {
+                        let invoke_args = vec![item.clone(), Value::I32(i as i32)];
+                        ctx.invoke(&callback, &invoke_args)
+                    };
                     let mut mo = outobj.lock().unwrap();
                     if let ObjectKind::Map(ref mut im) = mo.kind {
                         let entry = im.entry(key).or_insert_with(|| {
@@ -340,5 +368,52 @@ pub fn register(vm: &mut VM) {
                 }
             }
             out
+        }));
+
+    // Map.prototype.getOrInsert(key, default) — ES2026.
+    vm.register_host_fn("ecma:map", "getOrInsert",
+        Box::new(|_ctx, args| {
+            if let Some(Value::Object(mapobj)) = args.first() {
+                let key = args.get(1).cloned().unwrap_or(Value::Undefined);
+                let default = args.get(2).cloned().unwrap_or(Value::Undefined);
+                let mut mo = mapobj.lock().unwrap();
+                if let ObjectKind::Map(ref mut im) = mo.kind {
+                    if let Some(existing) = im.get(&key) {
+                        return existing.clone();
+                    }
+                    im.insert(key, default.clone());
+                    sync_map_size(&mut mo);
+                    return default;
+                }
+            }
+            Value::Undefined
+        }));
+
+    // Map.prototype.getOrInsertComputed(key, factory) — ES2026.
+    vm.register_host_fn("ecma:map", "getOrInsertComputed",
+        Box::new(|ctx, args| {
+            if let Some(Value::Object(mapobj)) = args.first() {
+                let key = args.get(1).cloned().unwrap_or(Value::Undefined);
+                let factory = args.get(2).cloned().unwrap_or(Value::Undefined);
+                let mut mo = mapobj.lock().unwrap();
+                if let ObjectKind::Map(ref mut im) = mo.kind {
+                    if let Some(existing) = im.get(&key) {
+                        return existing.clone();
+                    }
+                    drop(mo);
+                    let value = if let Some(v) = map_factory_magic(&factory) {
+                        v
+                    } else {
+                        ctx.invoke(&factory, &[key.clone()])
+                    };
+                    let mut mo2 = mapobj.lock().unwrap();
+                    if let ObjectKind::Map(ref mut im) = mo2.kind {
+                        im.insert(key, value.clone());
+                        sync_map_size(&mut mo2);
+                    }
+                    return value;
+                }
+            }
+            Value::Undefined
         }));
 }

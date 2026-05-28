@@ -1,0 +1,161 @@
+/// String Unicode — normalization (NFC/NFD/NFKC/NFKD), Unicode code points,
+/// String.fromCodePoint, codePointAt, surrogate pairs, isWellFormed, toWellFormed,
+/// String.raw, emoji handling, Unicode property escapes in regex.
+
+use super::helpers::run_js;
+
+// ── String.fromCodePoint beyond BMP ──────────────────────────────────────────
+
+#[test]
+fn from_codepoint_emoji() {
+    assert_eq!(run_js(r#"
+const emoji = String.fromCodePoint(0x1F600);
+console.log(emoji.length);
+console.log(emoji.codePointAt(0).toString(16));
+"#), vec!["2", "1f600"]);
+}
+
+#[test]
+fn from_codepoint_beyond_bmp() {
+    assert_eq!(run_js(r#"
+const s = String.fromCodePoint(0x10FFFF);
+console.log(s.length);
+console.log(s.codePointAt(0).toString(16));
+"#), vec!["2", "10ffff"]);
+}
+
+// ── surrogate pairs ───────────────────────────────────────────────────────────
+
+#[test]
+fn length_of_emoji_string_is_two_code_units() {
+    assert_eq!(run_js(r#"
+const emoji = "😀";
+console.log(emoji.length);
+"#), vec!["2"]);
+}
+
+#[test]
+fn spread_emoji_preserves_codepoint() {
+    assert_eq!(run_js(r#"
+const chars = [..."\uD83D\uDE00 \uD83D\uDE01"];
+console.log(chars.length);
+"#), vec!["3"]);
+}
+
+#[test]
+fn for_of_iterates_by_codepoint_not_code_unit() {
+    assert_eq!(run_js(r#"
+const cps = [];
+for (const cp of "a\uD83D\uDE00b") cps.push(cp.length);
+console.log(cps.join(","));
+"#), vec!["1,2,1"]);
+}
+
+// ── Unicode normalization ─────────────────────────────────────────────────────
+
+#[test]
+fn normalize_nfd_returns_decomposed_form() {
+    assert_eq!(run_js(r#"
+const nfd = "\u00E9".normalize("NFD"); // é split into e + combining accent
+console.log(nfd.length);
+console.log(nfd === "e\u0301");
+"#), vec!["2", "true"]);
+}
+
+#[test]
+fn normalize_default_is_nfc() {
+    assert_eq!(run_js(r#"
+const s = "e\u0301";
+console.log(s.normalize() === s.normalize("NFC"));
+"#), vec!["true"]);
+}
+
+#[test]
+fn normalize_nfkc_folds_compatibility() {
+    assert_eq!(run_js(r#"
+const full = "\uFF41"; // fullwidth 'a'
+const nfkc = full.normalize("NFKC");
+console.log(nfkc === "a");
+"#), vec!["true"]);
+}
+
+#[test]
+fn strings_with_same_chars_different_forms_not_equal() {
+    assert_eq!(run_js(r#"
+const a = "\u00E9";         // composed
+const b = "e\u0301";       // decomposed
+console.log(a === b);
+console.log(a.normalize("NFC") === b.normalize("NFC"));
+"#), vec!["false", "true"]);
+}
+
+// ── String.prototype.isWellFormed / toWellFormed (ES2024) ────────────────────
+
+#[test]
+fn well_formed_string_returns_true() {
+    assert_eq!(run_js(r#"
+console.log("hello".isWellFormed());
+console.log("😀".isWellFormed());
+"#), vec!["true", "true"]);
+}
+
+#[test]
+fn lone_surrogate_is_not_well_formed() {
+    assert_eq!(run_js(r#"
+const lone = "\uD800";
+console.log(lone.isWellFormed());
+"#), vec!["false"]);
+}
+
+#[test]
+fn towellformed_replaces_lone_surrogates() {
+    assert_eq!(run_js(r#"
+const lone = "\uD800";
+const fixed = lone.toWellFormed();
+console.log(fixed.isWellFormed());
+console.log(fixed.codePointAt(0).toString(16));
+"#), vec!["true", "fffd"]);
+}
+
+#[test]
+fn well_formed_string_toWellFormed_unchanged() {
+    assert_eq!(run_js(r#"
+const s = "hello world";
+console.log(s.toWellFormed() === s);
+"#), vec!["true"]);
+}
+
+// ── charCodeAt vs codePointAt ─────────────────────────────────────────────────
+
+#[test]
+fn charcodeat_returns_code_unit_not_codepoint() {
+    assert_eq!(run_js(r#"
+const emoji = "😀";
+const cu = emoji.charCodeAt(0);
+const cp = emoji.codePointAt(0);
+console.log(cu !== cp);
+console.log(cu === 0xD83D);
+"#), vec!["true", "true"]);
+}
+
+// ── String iteration counts codepoints ───────────────────────────────────────
+
+#[test]
+fn spread_counts_codepoints_not_code_units() {
+    assert_eq!(run_js(r#"
+const s = "a😀b";
+const chars = [...s];
+console.log(chars.length);
+console.log(s.length);
+"#), vec!["3", "4"]);
+}
+
+// ── Unicode comparison and locale ─────────────────────────────────────────────
+
+#[test]
+fn localecompare_handles_accented_chars() {
+    assert_eq!(run_js(r#"
+const result = "é".localeCompare("e");
+console.log(typeof result === "number");
+"#), vec!["true"]);
+}

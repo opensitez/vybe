@@ -606,4 +606,16 @@ pub fn register(vm: &mut VM) {
         Value::F64(Utc::now().timestamp() as f64)
     }));
 
+    vm.register_host_fn(MODULE, "toLocaleString", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        dispatch_date_method("toString", args).unwrap_or_else(|| Value::String(Arc::from("Invalid Date")))
+    }));
+
+    vm.register_host_fn(MODULE, "toLocaleDateString", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        dispatch_date_method("toDateString", args).unwrap_or_else(|| Value::String(Arc::from("Invalid Date")))
+    }));
+
+    vm.register_host_fn(MODULE, "toLocaleTimeString", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        dispatch_date_method("toTimeString", args).unwrap_or_else(|| Value::String(Arc::from("Invalid Date")))
+    }));
+
 }

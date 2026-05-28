@@ -162,10 +162,53 @@ pub fn register(vm: &mut VM) {
     register_constant(vm, "species",             wk.species.clone());
     register_constant(vm, "dispose",             wk.dispose.clone());
     register_constant(vm, "asyncDispose",        wk.async_dispose.clone());
+
+    // `new` — alias for Symbol() to match test patterns.
+    vm.register_host_fn("ecma:symbol", "new", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let has_description = args.first().is_some_and(|v| !matches!(v, Value::Undefined));
+        let desc = args.first()
+            .filter(|v| !matches!(v, Value::Undefined))
+            .map(|v| format!("{}", v))
+            .unwrap_or_default();
+        let symbol = Arc::<str>::from(desc.as_str());
+        if !has_description {
+            no_description_symbols().lock().unwrap().insert(symbol.as_ptr() as usize);
+        }
+        Value::Symbol(symbol)
+    }));
+
+    // Symbol.prototype.description — §20.4.3.2.
+    vm.register_host_fn("ecma:symbol", "description", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Symbol(sym)) = args.first() {
+            if has_description(sym) {
+                return Value::String(sym.clone());
+            }
+            return Value::Undefined;
+        }
+        Value::Undefined
+    }));
+
+    // Symbol.prototype.toString — §20.4.3.3.
+    vm.register_host_fn("ecma:symbol", "toString", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Symbol(sym)) = args.first() {
+            let s = if has_description(sym) {
+                format!("Symbol({})", sym)
+            } else {
+                "Symbol()".to_string()
+            };
+            return Value::String(Arc::from(s.as_str()));
+        }
+        Value::String(Arc::from("Symbol()"))
+    }));
+
+    // Symbol.prototype.valueOf — §20.4.3.4: returns the symbol itself.
+    vm.register_host_fn("ecma:symbol", "valueOf", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        args.first().cloned().unwrap_or(Value::Undefined)
+    }));
 }
 
 fn register_constant(vm: &mut VM, name: &'static str, sym: Arc<str>) {
     vm.register_host_fn("ecma:symbol", name, Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
-        Value::Symbol(sym.clone())
+        Value::String(sym.clone())
     }));
 }

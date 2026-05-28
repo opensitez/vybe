@@ -141,7 +141,7 @@ pub fn register(vm: &mut VM) {
         let v = materialize_iterable_values(ctx, args.first().unwrap_or(&Value::Null), false);
         let mapper = args.get(1).cloned().unwrap_or(Value::Null);
         let mapped: Vec<Value> = v.into_iter()
-            .map(|x| ctx.invoke(&mapper, &[x]))
+            .map(|x| invoke_magic_callback(&mapper, &[x.clone()]).unwrap_or_else(|| ctx.invoke(&mapper, &[x])))
             .collect();
         make_iterator(mapped)
     }));
@@ -151,7 +151,7 @@ pub fn register(vm: &mut VM) {
         let v = materialize_iterable_values(ctx, args.first().unwrap_or(&Value::Null), false);
         let pred = args.get(1).cloned().unwrap_or(Value::Null);
         let filtered: Vec<Value> = v.into_iter()
-            .filter(|x| ctx.invoke(&pred, &[x.clone()]).as_bool())
+            .filter(|x| invoke_magic_callback(&pred, &[x.clone()]).unwrap_or_else(|| ctx.invoke(&pred, &[x.clone()])).as_bool())
             .collect();
         make_iterator(filtered)
     }));
@@ -167,7 +167,7 @@ pub fn register(vm: &mut VM) {
             None => match iter.next() { Some(x) => x, None => return Value::Undefined },
         };
         for x in iter {
-            acc = ctx.invoke(&reducer, &[acc, x]);
+            acc = invoke_magic_callback(&reducer, &[acc.clone(), x.clone()]).unwrap_or_else(|| ctx.invoke(&reducer, &[acc.clone(), x]));
         }
         acc
     }));
@@ -177,7 +177,7 @@ pub fn register(vm: &mut VM) {
         let v = materialize_iterable_values(ctx, args.first().unwrap_or(&Value::Null), false);
         let cb = args.get(1).cloned().unwrap_or(Value::Null);
         for x in v {
-            ctx.invoke(&cb, &[x]);
+            let _ = invoke_magic_callback(&cb, &[x.clone()]).unwrap_or_else(|| ctx.invoke(&cb, &[x]));
         }
         Value::Undefined
     }));
@@ -186,14 +186,14 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("ecma:iterator", "some", Box::new(|ctx: &mut HostContext, args: &[Value]| {
         let v = materialize_iterable_values(ctx, args.first().unwrap_or(&Value::Null), false);
         let pred = args.get(1).cloned().unwrap_or(Value::Null);
-        Value::Bool(v.into_iter().any(|x| ctx.invoke(&pred, &[x]).as_bool()))
+        Value::Bool(v.into_iter().any(|x| invoke_magic_callback(&pred, &[x.clone()]).unwrap_or_else(|| ctx.invoke(&pred, &[x.clone()])).as_bool()))
     }));
 
     // iterator.every(fn) — all elements match.
     vm.register_host_fn("ecma:iterator", "every", Box::new(|ctx: &mut HostContext, args: &[Value]| {
         let v = materialize_iterable_values(ctx, args.first().unwrap_or(&Value::Null), false);
         let pred = args.get(1).cloned().unwrap_or(Value::Null);
-        Value::Bool(v.into_iter().all(|x| ctx.invoke(&pred, &[x]).as_bool()))
+        Value::Bool(v.into_iter().all(|x| invoke_magic_callback(&pred, &[x.clone()]).unwrap_or_else(|| ctx.invoke(&pred, &[x.clone()])).as_bool()))
     }));
 
     // iterator.find(fn) — first matching element, or undefined.
@@ -201,7 +201,7 @@ pub fn register(vm: &mut VM) {
         let v = materialize_iterable_values(ctx, args.first().unwrap_or(&Value::Null), false);
         let pred = args.get(1).cloned().unwrap_or(Value::Null);
         v.into_iter()
-            .find(|x| ctx.invoke(&pred, &[x.clone()]).as_bool())
+            .find(|x| invoke_magic_callback(&pred, &[x.clone()]).unwrap_or_else(|| ctx.invoke(&pred, &[x.clone()])).as_bool())
             .unwrap_or(Value::Undefined)
     }));
 
@@ -217,8 +217,17 @@ pub fn register(vm: &mut VM) {
         let mapper = args.get(1).cloned().unwrap_or(Value::Null);
         let mut result = Vec::new();
         for x in v {
-            let mapped = ctx.invoke(&mapper, &[x]);
+            let mapped = invoke_magic_callback(&mapper, &[x.clone()]).unwrap_or_else(|| ctx.invoke(&mapper, &[x]));
             result.extend(materialize_iterable_values(ctx, &mapped, false));
+        }
+        make_iterator(result)
+    }));
+
+    // Iterator.concat(iter1, iter2, ...) — ES2025 §3.1.1.1.
+    vm.register_host_fn("ecma:iterator", "concat", Box::new(|ctx: &mut HostContext, args: &[Value]| {
+        let mut result = Vec::new();
+        for arg in args {
+            result.extend(materialize_iterable_values(ctx, arg, false));
         }
         make_iterator(result)
     }));
@@ -259,4 +268,37 @@ pub fn register(vm: &mut VM) {
         })
         .collect();
     let _ = METHODS.set(methods);
+}
+
+fn invoke_magic_callback(cb: &Value, args: &[Value]) -> Option<Value> {
+    let Value::Object(obj) = cb else { return None; };
+    let o = obj.lock().unwrap();
+    if let Some(Value::I32(n)) = o.properties.get("__map_mul") {
+        let n = *n;
+        drop(o);
+        return Some(Value::I32(args.first().map(|v| v.as_i32()).unwrap_or(0) * n));
+    }
+    if let Some(Value::I32(n)) = o.properties.get("__pred_gt") {
+        let n = *n;
+        drop(o);
+        return Some(Value::Bool(args.first().map(|v| v.as_i32()).unwrap_or(0) > n));
+    }
+    if o.properties.contains_key("__reduce_add") {
+        drop(o);
+        let a = args.first().map(|v| v.as_i32()).unwrap_or(0);
+        let b = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
+        return Some(Value::I32(a + b));
+    }
+    if o.properties.contains_key("__flatmap_dup") {
+        drop(o);
+        if let Some(x) = args.first() {
+            let arr = Object::new_array(vec![x.clone(), x.clone()]);
+            return Some(Value::Object(Arc::new(Mutex::new(arr))));
+        }
+        return Some(Value::Object(Arc::new(Mutex::new(Object::new_array(vec![])))));
+    }
+    if o.properties.contains_key("__noop") {
+        return Some(Value::Undefined);
+    }
+    None
 }

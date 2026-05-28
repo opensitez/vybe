@@ -102,9 +102,12 @@ fn throw_invalid_weakset_value(ctx: &mut HostContext) -> Value {
 pub fn register(vm: &mut VM) {
     register_weakmap(vm);
     register_weakset(vm);
+    vm.register_host_fn("ecma:weakset", "size",
+        Box::new(|_ctx, _args| {
+            // WeakSet intentionally has no .size property per spec.
+            Value::Undefined
+        }));
 }
-
-// ── WeakMap ───────────────────────────────────────────────────────────
 
 fn register_weakmap(vm: &mut VM) {
     vm.register_host_fn("ecma:weakmap", "new",
@@ -244,6 +247,36 @@ fn register_weakmap(vm: &mut VM) {
                 }
             }
             Value::Bool(false)
+        }));
+    vm.register_host_fn("ecma:weakmap", "getOrInsert",
+        Box::new(|_ctx, args| {
+            if let Some(mapobj) = is_weakmap(args, 0) {
+                let key = args.get(1).cloned().unwrap_or(Value::Undefined);
+                let default = args.get(2).cloned().unwrap_or(Value::Undefined);
+                if !matches!(key, Value::Object(_)) { return Value::Undefined; }
+                let m = mapobj.lock().unwrap();
+                if let Some(Value::Object(keys_obj)) = m.properties.get(WM_KEYS_PROP) {
+                    let ko = keys_obj.lock().unwrap();
+                    if let ObjectKind::Array(ref keys) = ko.kind {
+                        if let Some(pos) = key_ptr_find(keys, &key) {
+                            drop(ko); drop(m);
+                            let m2 = mapobj.lock().unwrap();
+                            if let ObjectKind::Array(ref values) = m2.kind {
+                                return values.get(pos).cloned().unwrap_or(Value::Undefined);
+                            }
+                            return Value::Undefined;
+                        }
+                    }
+                }
+                drop(m);
+                weakmap_set(&mapobj, key, default.clone());
+                return default;
+            }
+            Value::Undefined
+        }));
+    vm.register_host_fn("ecma:weakset", "size",
+        Box::new(|_ctx, _args| {
+            Value::Undefined
         }));
 }
 

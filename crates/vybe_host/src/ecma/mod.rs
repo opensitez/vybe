@@ -46,6 +46,9 @@ pub mod weakref;        // §26.1/§26.2  WeakRef + FinalizationRegistry (co-loc
 
 // ── JS-runtime helpers (not strictly ECMA-262) ───────────────────────
 pub mod fixedarray;     // V8-internal fixed-length array shape
+pub mod generator;      // §27.3 GeneratorFunction / §27.5 Generator protocol
+pub mod global;         // §19 Global object (isNaN, isFinite, eval, etc.)
+pub mod proxy;          // §28.3 Proxy
 pub mod structured_clone; // HTML spec §2.8 — not ECMA, but JS-runtime-adjacent
 pub mod value;          // generic JS-value reflection (Vybe extension)
 
@@ -81,6 +84,9 @@ pub fn register(vm: &mut VM) {
     weakmap::register(vm);
     weakref::register(vm);
     fixedarray::register(vm);
+    generator::register(vm);
+    global::register(vm);
+    proxy::register(vm);
     structured_clone::register(vm);
     value::register(vm);
 }

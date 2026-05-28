@@ -28,6 +28,26 @@ pub fn register(vm: &mut VM) {
         }));
     }
 
+    // isError(v) → bool — checks if v is an Error-stamped object.
+    vm.register_host_fn("ecma:error", "isError", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.lock().unwrap();
+            let is_err = o.properties.get("__exception_type").is_some()
+                || matches!(o.properties.get("__types"), Some(Value::Object(_)));
+            return Value::Bool(is_err);
+        }
+        Value::Bool(false)
+    }));
+
+    // ErrorWithCause(message, options?) → error object with optional cause.
+    vm.register_host_fn("ecma:error", "ErrorWithCause", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let message = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+        let cause = options_cause(args.get(1));
+        let mut obj = Object::new();
+        stamp_error_object(&mut obj, "Error", &message, cause);
+        Value::Object(Arc::new(Mutex::new(obj)))
+    }));
+
     vm.register_host_fn("ecma:error", "AggregateError", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         // AggregateError(errors, message?, options?)
         let this = args.first().cloned().unwrap_or(Value::Null);
@@ -97,15 +117,21 @@ pub(crate) fn new_error(kind: &str, message: &str) -> Value {
 }
 
 fn make_error(kind: &str, args: &[Value]) -> Value {
-    // args[0] = this (from `new`), args[1] = message, args[2] = options (ES2022)
-    let this = args.first().cloned().unwrap_or(Value::Null);
-    let message = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
-    let cause = options_cause(args.get(2));
-    if let Value::Object(ref obj) = this {
+    // Two call patterns:
+    //   Compiler: args[0] = this (Object), args[1] = message, args[2] = options
+    //   Direct:   args[0] = message (non-Object), args[1] = options
+    if let Some(Value::Object(obj)) = args.first() {
+        let message = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
+        let cause = options_cause(args.get(2));
         let mut o = obj.lock().unwrap();
         stamp_error_object(&mut o, kind, &message, cause);
+        return Value::Object(obj.clone());
     }
-    this
+    let message = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+    let cause = options_cause(args.get(1));
+    let mut obj = Object::new();
+    stamp_error_object(&mut obj, kind, &message, cause);
+    Value::Object(Arc::new(Mutex::new(obj)))
 }
 
 /// JS error class hierarchy per ECMA-262 §20.5.5. Returned in

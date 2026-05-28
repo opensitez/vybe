@@ -79,7 +79,8 @@ pub fn register(vm: &mut VM) {
                 invoke_args.extend(v.iter().cloned());
             }
         }
-        invoke_with_explicit_this(ctx, &target, this_arg, &invoke_args)
+        let result = invoke_with_explicit_this(ctx, &target, this_arg, &invoke_args);
+        if matches!(result, Value::Null) { Value::Undefined } else { result }
     }));
 
     // Reflect.construct(target, argsList, newTarget?) → object
@@ -142,9 +143,10 @@ pub fn register(vm: &mut VM) {
         let key = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
         if let Some(Value::Object(obj)) = args.first() {
             let mut o = obj.lock().unwrap();
-            return Value::Bool(o.properties.remove(&key).is_some());
+            o.properties.remove(&key);
+            return Value::Bool(true);
         }
-        Value::Bool(false)
+        Value::Bool(true)
     }));
 
     // Reflect.ownKeys(target) → Array of string keys.

@@ -962,6 +962,80 @@ fn register_base64(vm: &mut VM) {
             }
         }
     }));
+
+    // match(string, pattern) — §22.1.3.12. Returns first-match array or Null.
+    vm.register_host_fn("ecma:string", "match", Box::new(|_ctx, args| {
+        let s = s_arg(args, 0);
+        let pattern = s_arg(args, 1);
+        if let Ok(re) = regex::Regex::new(&pattern) {
+            if let Some(m) = re.find(&s) {
+                let mut arr_vals = vec![Value::String(Arc::from(m.as_str()))];
+                if let Some(caps) = re.captures(&s) {
+                    for i in 1..caps.len() {
+                        arr_vals.push(match caps.get(i) {
+                            Some(g) => Value::String(Arc::from(g.as_str())),
+                            None => Value::Undefined,
+                        });
+                    }
+                }
+                return Value::Object(Arc::new(Mutex::new(Object::new_array(arr_vals))));
+            }
+        }
+        Value::Null
+    }));
+
+    // search(string, pattern) — §22.1.3.21. Returns index of first match or -1.
+    vm.register_host_fn("ecma:string", "search", Box::new(|_ctx, args| {
+        let s = s_arg(args, 0);
+        let pattern = s_arg(args, 1);
+        if let Ok(re) = regex::Regex::new(&pattern) {
+            if let Some(m) = re.find(&s) {
+                return Value::F64(m.start() as f64);
+            }
+        }
+        Value::F64(-1.0)
+    }));
+
+    // isWellFormed — §22.1.3.10 (ES2024). Rust strings are always UTF-8.
+    vm.register_host_fn("ecma:string", "isWellFormed", Box::new(|_ctx, _args| {
+        Value::Bool(true)
+    }));
+
+    // toWellFormed — §22.1.3.31 (ES2024). Returns the string unchanged.
+    vm.register_host_fn("ecma:string", "toWellFormed", Box::new(|_ctx, args| {
+        args.first().cloned().unwrap_or(Value::Undefined)
+    }));
+
+    // raw(templateObject, ...subs) — §22.1.2.4.
+    vm.register_host_fn("ecma:string", "raw", Box::new(|_ctx, args| {
+        let parts = match args.first() {
+            Some(Value::Object(obj)) => {
+                let o = obj.lock().unwrap();
+                match &o.kind {
+                    ObjectKind::Array(v) => v.iter().map(|v| match v {
+                        Value::String(s) => s.as_ref().to_string(),
+                        other => format!("{}", other),
+                    }).collect::<Vec<_>>(),
+                    _ => Vec::new(),
+                }
+            }
+            _ => Vec::new(),
+        };
+        let subs: Vec<String> = if args.len() > 1 { args[1..].iter().map(|v| format!("{}", v)).collect() } else { Vec::new() };
+        let mut result = String::new();
+        for (i, part) in parts.iter().enumerate() {
+            result.push_str(part);
+            if let Some(sub) = subs.get(i) {
+                result.push_str(sub);
+            }
+        }
+        s_val(&result)
+    }));
+
+    // toLocaleString — same as toString for basic strings.
+    vm.register_host_fn("ecma:string", "toLocaleString", Box::new(|_ctx, args| {
+        args.first().cloned().unwrap_or(Value::Undefined)
+    }));
 }
 
 #[allow(dead_code)]

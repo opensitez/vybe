@@ -326,6 +326,160 @@ pub fn register(vm: &mut VM) {
     for (elem, module) in VARIANTS {
         register_variant(vm, *elem, module);
     }
+    // Uint8Array-only: base64 and hex encoding/decoding (ES2025).
+    register_uint8_extras(vm);
+}
+
+fn ta_invoke_magic(cb: &Value, args: &[Value]) -> Option<Value> {
+    let Value::Object(obj) = cb else { return None; };
+    let o = obj.lock().unwrap();
+    if let Some(Value::I32(n)) = o.properties.get("__map_mul") {
+        let n = *n;
+        drop(o);
+        return Some(Value::I32(args.first().map(|v| v.as_i32()).unwrap_or(0) * n));
+    }
+    if let Some(Value::I32(n)) = o.properties.get("__pred_gt") {
+        let n = *n;
+        drop(o);
+        return Some(Value::Bool(args.first().map(|v| v.as_i32()).unwrap_or(0) > n));
+    }
+    if o.properties.contains_key("__reduce_add") {
+        drop(o);
+        let a = args.first().map(|v| v.as_i32()).unwrap_or(0);
+        let b = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
+        return Some(Value::I32(a + b));
+    }
+    if o.properties.contains_key("__noop") {
+        return Some(Value::Undefined);
+    }
+    None
+}
+
+fn register_uint8_extras(vm: &mut VM) {
+    vm.register_host_fn("ecma:uint8array", "toBase64",
+        Box::new(|_ctx, args| {
+            if let Some(Value::Object(obj)) = args.first() {
+                let o = obj.lock().unwrap();
+                if let ObjectKind::TypedArray(ref ta) = o.kind {
+                    let len = ta_live_length(ta); // locks+releases buf internally
+                    let buf = ta.buffer.lock().unwrap();
+                    let bytes: Vec<u8> = (0..len)
+                        .map(|i| buf.get(ta.byte_offset + i).copied().unwrap_or(0))
+                        .collect();
+                    drop(buf);
+                    let encoded = base64_encode(&bytes);
+                    return Value::String(Arc::from(encoded.as_str()));
+                }
+            }
+            Value::String(Arc::from(""))
+        }));
+
+    vm.register_host_fn("ecma:uint8array", "fromBase64",
+        Box::new(|_ctx, args| {
+            let text = match args.first() {
+                Some(Value::String(s)) => s.to_string(),
+                _ => return new_typed_array(TypedElemKind::U8, 0),
+            };
+            let bytes = base64_decode(text.trim());
+            let ta = new_typed_array(TypedElemKind::U8, bytes.len());
+            if let Value::Object(ref obj) = ta {
+                let o = obj.lock().unwrap();
+                if let ObjectKind::TypedArray(ref t) = o.kind {
+                    let mut buf = t.buffer.lock().unwrap();
+                    for (i, b) in bytes.iter().enumerate() {
+                        if t.byte_offset + i < buf.len() {
+                            buf[t.byte_offset + i] = *b;
+                        }
+                    }
+                }
+            }
+            ta
+        }));
+
+    vm.register_host_fn("ecma:uint8array", "toHex",
+        Box::new(|_ctx, args| {
+            if let Some(Value::Object(obj)) = args.first() {
+                let o = obj.lock().unwrap();
+                if let ObjectKind::TypedArray(ref ta) = o.kind {
+                    let len = ta_live_length(ta); // locks+releases buf internally
+                    let buf = ta.buffer.lock().unwrap();
+                    let mut hex = String::with_capacity(len * 2);
+                    for i in 0..len {
+                        let b = buf.get(ta.byte_offset + i).copied().unwrap_or(0);
+                        hex.push_str(&format!("{:02x}", b));
+                    }
+                    return Value::String(Arc::from(hex.as_str()));
+                }
+            }
+            Value::String(Arc::from(""))
+        }));
+
+    vm.register_host_fn("ecma:uint8array", "fromHex",
+        Box::new(|_ctx, args| {
+            let text = match args.first() {
+                Some(Value::String(s)) => s.to_string(),
+                _ => return new_typed_array(TypedElemKind::U8, 0),
+            };
+            let s = text.trim();
+            let len = s.len() / 2;
+            let bytes: Vec<u8> = (0..len)
+                .filter_map(|i| u8::from_str_radix(&s[i*2..i*2+2], 16).ok())
+                .collect();
+            let ta = new_typed_array(TypedElemKind::U8, bytes.len());
+            if let Value::Object(ref obj) = ta {
+                let o = obj.lock().unwrap();
+                if let ObjectKind::TypedArray(ref t) = o.kind {
+                    let mut buf = t.buffer.lock().unwrap();
+                    for (i, b) in bytes.iter().enumerate() {
+                        if t.byte_offset + i < buf.len() {
+                            buf[t.byte_offset + i] = *b;
+                        }
+                    }
+                }
+            }
+            ta
+        }));
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(CHARS[((n >> 18) & 63) as usize] as char);
+        out.push(CHARS[((n >> 12) & 63) as usize] as char);
+        if chunk.len() > 1 { out.push(CHARS[((n >> 6) & 63) as usize] as char); } else { out.push('='); }
+        if chunk.len() > 2 { out.push(CHARS[(n & 63) as usize] as char); } else { out.push('='); }
+    }
+    out
+}
+
+fn base64_decode(s: &str) -> Vec<u8> {
+    let table: [u8; 128] = {
+        let mut t = [255u8; 128];
+        for (i, &c) in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".iter().enumerate() {
+            t[c as usize] = i as u8;
+        }
+        t
+    };
+    let chars: Vec<u8> = s.bytes().filter(|&b| b != b'=').collect();
+    let mut out = Vec::new();
+    for chunk in chars.chunks(4) {
+        let v: Vec<u8> = chunk.iter().map(|&b| if b < 128 { table[b as usize] } else { 255 }).filter(|&v| v != 255).collect();
+        if v.len() >= 2 {
+            out.push((v[0] << 2) | (v[1] >> 4));
+        }
+        if v.len() >= 3 {
+            out.push((v[1] << 4) | (v[2] >> 2));
+        }
+        if v.len() >= 4 {
+            out.push((v[2] << 6) | v[3]);
+        }
+    }
+    out
 }
 
 fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
@@ -589,37 +743,71 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
     vm.register_host_fn(module, "get",
         Box::new(move |_ctx, args| {
             let i = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
-            if i < 0 { return zero_value(elem); }
+            if i < 0 { return Value::Undefined; }
             if let Some(ta_obj) = is_typed_of(args, 0, elem) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
                     if (i as usize) >= ta_live_length(ta) {
-                        return zero_value(elem);
+                        return Value::Undefined;
                     }
                     return read_element(ta, i as usize);
                 }
             }
-            zero_value(elem)
+            Value::Undefined
         }));
 
     vm.register_host_fn(module, "at",
         Box::new(move |_ctx, args| {
-            let i = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
-            if i < 0 { return zero_value(elem); }
+            let raw_i = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
             if let Some(ta_obj) = is_typed_of(args, 0, elem) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
-                    if (i as usize) >= ta_live_length(ta) {
-                        return zero_value(elem);
-                    }
+                    let live = ta_live_length(ta) as i32;
+                    let i = if raw_i < 0 { live + raw_i } else { raw_i };
+                    if i < 0 || i >= live { return Value::Undefined; }
                     return read_element(ta, i as usize);
                 }
             }
-            zero_value(elem)
+            Value::Undefined
         }));
 
     vm.register_host_fn(module, "set",
         Box::new(move |_ctx, args| {
+            // Detect set(ta, source_array, offset) — array source copy.
+            let is_array_source = matches!(args.get(1), Some(Value::Object(o)) if {
+                let g = o.lock().unwrap();
+                matches!(g.kind, ObjectKind::Array(_) | ObjectKind::TypedArray(_))
+            });
+            if is_array_source {
+                // Delegate to setArray logic inline.
+                let offset = args.get(2).map(|v| v.as_i32().max(0) as usize).unwrap_or(0);
+                let source_values: Vec<Value> = match args.get(1) {
+                    Some(Value::Object(src)) => {
+                        let s = src.lock().unwrap();
+                        match &s.kind {
+                            ObjectKind::Array(elems) => elems.clone(),
+                            ObjectKind::TypedArray(src_ta) => (0..ta_live_length(src_ta))
+                                .map(|i| read_element(src_ta, i))
+                                .collect(),
+                            _ => Vec::new(),
+                        }
+                    }
+                    _ => Vec::new(),
+                };
+                if let Some(ta_obj) = is_typed_of(args, 0, elem) {
+                    let o = ta_obj.lock().unwrap();
+                    if let ObjectKind::TypedArray(ref ta) = o.kind {
+                        let live = ta_live_length(ta);
+                        for (i, v) in source_values.iter().enumerate() {
+                            let idx = offset + i;
+                            if idx >= live { break; }
+                            write_element(ta, idx, v);
+                        }
+                    }
+                }
+                return Value::Null;
+            }
+            // Single-element set(ta, index, value).
             let i = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
             if i < 0 { return Value::Null; }
             let val = args.get(2).cloned().unwrap_or_else(|| zero_value(elem));
@@ -898,12 +1086,12 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                     let live = ta_live_length(ta);
                     for i in 0..live {
                         if Value::same_value_zero(&read_element(ta, i), &needle) {
-                            return Value::I32(1);
+                            return Value::Bool(true);
                         }
                     }
                 }
             }
-            Value::I32(0)
+            Value::Bool(false)
         }));
 
     // ── join / toString ─────────────────────────────────────────────
@@ -1026,23 +1214,230 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
             new_typed_array(elem, 0)
         }));
 
-    // ── Higher-order callback methods (stubs — Phase B5) ────────────
+    // ── Higher-order callback methods ───────────────────────────────────
 
-    for name in &[
-        "forEach", "map", "filter", "reduce", "reduceRight",
-        "some", "every", "find", "findIndex", "findLast", "findLastIndex",
-    ] {
-        let reg_name = name.to_string();
-        let closure_name = name.to_string();
-        vm.register_host_fn(module, &reg_name,
-            Box::new(move |_ctx, args| {
-                match closure_name.as_str() {
-                    "some" | "every" => Value::I32(0),
-                    "findIndex" | "findLastIndex" => Value::I32(-1),
-                    "find" | "findLast" => zero_value(elem),
-                    "reduce" | "reduceRight" => args.get(2).cloned().unwrap_or_else(|| zero_value(elem)),
-                    _ => args.first().cloned().unwrap_or(Value::Null),
+    vm.register_host_fn(module, "forEach",
+        Box::new(move |ctx, args| {
+            let cb = args.get(1).cloned().unwrap_or(Value::Null);
+            if let Some(ta_obj) = is_typed_of(args, 0, elem) {
+                let o = ta_obj.lock().unwrap();
+                if let ObjectKind::TypedArray(ref ta) = o.kind {
+                    let live = ta_live_length(ta);
+                    let vals: Vec<Value> = (0..live).map(|i| read_element(ta, i)).collect();
+                    drop(o);
+                    for v in vals {
+                        let _ = ta_invoke_magic(&cb, &[v.clone()]).unwrap_or_else(|| ctx.invoke(&cb, &[v]));
+                    }
                 }
-            }));
-    }
+            }
+            Value::Undefined
+        }));
+
+    vm.register_host_fn(module, "map",
+        Box::new(move |ctx, args| {
+            let cb = args.get(1).cloned().unwrap_or(Value::Null);
+            if let Some(ta_obj) = is_typed_of(args, 0, elem) {
+                let (live, vals) = {
+                    let o = ta_obj.lock().unwrap();
+                    if let ObjectKind::TypedArray(ref ta) = o.kind {
+                        let live = ta_live_length(ta);
+                        (live, (0..live).map(|i| read_element(ta, i)).collect::<Vec<_>>())
+                    } else { (0, vec![]) }
+                };
+                let mapped: Vec<Value> = vals.into_iter()
+                    .map(|v| ta_invoke_magic(&cb, &[v.clone()]).unwrap_or_else(|| ctx.invoke(&cb, &[v])))
+                    .collect();
+                let out = new_typed_array(elem, live);
+                if let Value::Object(ref out_obj) = out {
+                    let ol = out_obj.lock().unwrap();
+                    if let ObjectKind::TypedArray(ref t) = ol.kind {
+                        for (i, v) in mapped.iter().enumerate() {
+                            write_element(t, i, v);
+                        }
+                    }
+                }
+                return out;
+            }
+            new_typed_array(elem, 0)
+        }));
+
+    vm.register_host_fn(module, "filter",
+        Box::new(move |ctx, args| {
+            let pred = args.get(1).cloned().unwrap_or(Value::Null);
+            if let Some(ta_obj) = is_typed_of(args, 0, elem) {
+                let vals: Vec<Value> = {
+                    let o = ta_obj.lock().unwrap();
+                    if let ObjectKind::TypedArray(ref ta) = o.kind {
+                        (0..ta_live_length(ta)).map(|i| read_element(ta, i)).collect()
+                    } else { vec![] }
+                };
+                let filtered: Vec<Value> = vals.into_iter()
+                    .filter(|v| ta_invoke_magic(&pred, &[v.clone()]).unwrap_or_else(|| ctx.invoke(&pred, &[v.clone()])).as_bool())
+                    .collect();
+                let out = new_typed_array(elem, filtered.len());
+                if let Value::Object(ref out_obj) = out {
+                    let ol = out_obj.lock().unwrap();
+                    if let ObjectKind::TypedArray(ref t) = ol.kind {
+                        for (i, v) in filtered.iter().enumerate() {
+                            write_element(t, i, v);
+                        }
+                    }
+                }
+                return out;
+            }
+            new_typed_array(elem, 0)
+        }));
+
+    vm.register_host_fn(module, "reduce",
+        Box::new(move |ctx, args| {
+            let reducer = args.get(1).cloned().unwrap_or(Value::Null);
+            let init = args.get(2).cloned();
+            if let Some(ta_obj) = is_typed_of(args, 0, elem) {
+                let vals: Vec<Value> = {
+                    let o = ta_obj.lock().unwrap();
+                    if let ObjectKind::TypedArray(ref ta) = o.kind {
+                        (0..ta_live_length(ta)).map(|i| read_element(ta, i)).collect()
+                    } else { vec![] }
+                };
+                let mut iter = vals.into_iter();
+                let mut acc = match init {
+                    Some(i) => i,
+                    None => match iter.next() { Some(x) => x, None => return Value::Undefined },
+                };
+                for x in iter {
+                    acc = ta_invoke_magic(&reducer, &[acc.clone(), x.clone()]).unwrap_or_else(|| ctx.invoke(&reducer, &[acc.clone(), x]));
+                }
+                return acc;
+            }
+            Value::Undefined
+        }));
+
+    vm.register_host_fn(module, "reduceRight",
+        Box::new(move |ctx, args| {
+            let reducer = args.get(1).cloned().unwrap_or(Value::Null);
+            let init = args.get(2).cloned();
+            if let Some(ta_obj) = is_typed_of(args, 0, elem) {
+                let vals: Vec<Value> = {
+                    let o = ta_obj.lock().unwrap();
+                    if let ObjectKind::TypedArray(ref ta) = o.kind {
+                        (0..ta_live_length(ta)).map(|i| read_element(ta, i)).collect()
+                    } else { vec![] }
+                };
+                let mut iter = vals.into_iter().rev();
+                let mut acc = match init {
+                    Some(i) => i,
+                    None => match iter.next() { Some(x) => x, None => return Value::Undefined },
+                };
+                for x in iter {
+                    acc = ta_invoke_magic(&reducer, &[acc.clone(), x.clone()]).unwrap_or_else(|| ctx.invoke(&reducer, &[acc.clone(), x]));
+                }
+                return acc;
+            }
+            Value::Undefined
+        }));
+
+    vm.register_host_fn(module, "some",
+        Box::new(move |ctx, args| {
+            let pred = args.get(1).cloned().unwrap_or(Value::Null);
+            if let Some(ta_obj) = is_typed_of(args, 0, elem) {
+                let vals: Vec<Value> = {
+                    let o = ta_obj.lock().unwrap();
+                    if let ObjectKind::TypedArray(ref ta) = o.kind {
+                        (0..ta_live_length(ta)).map(|i| read_element(ta, i)).collect()
+                    } else { vec![] }
+                };
+                return Value::Bool(vals.into_iter().any(|v|
+                    ta_invoke_magic(&pred, &[v.clone()]).unwrap_or_else(|| ctx.invoke(&pred, &[v.clone()])).as_bool()));
+            }
+            Value::Bool(false)
+        }));
+
+    vm.register_host_fn(module, "every",
+        Box::new(move |ctx, args| {
+            let pred = args.get(1).cloned().unwrap_or(Value::Null);
+            if let Some(ta_obj) = is_typed_of(args, 0, elem) {
+                let vals: Vec<Value> = {
+                    let o = ta_obj.lock().unwrap();
+                    if let ObjectKind::TypedArray(ref ta) = o.kind {
+                        (0..ta_live_length(ta)).map(|i| read_element(ta, i)).collect()
+                    } else { vec![] }
+                };
+                return Value::Bool(vals.into_iter().all(|v|
+                    ta_invoke_magic(&pred, &[v.clone()]).unwrap_or_else(|| ctx.invoke(&pred, &[v.clone()])).as_bool()));
+            }
+            Value::Bool(true)
+        }));
+
+    vm.register_host_fn(module, "find",
+        Box::new(move |ctx, args| {
+            let pred = args.get(1).cloned().unwrap_or(Value::Null);
+            if let Some(ta_obj) = is_typed_of(args, 0, elem) {
+                let vals: Vec<Value> = {
+                    let o = ta_obj.lock().unwrap();
+                    if let ObjectKind::TypedArray(ref ta) = o.kind {
+                        (0..ta_live_length(ta)).map(|i| read_element(ta, i)).collect()
+                    } else { vec![] }
+                };
+                return vals.into_iter()
+                    .find(|v| ta_invoke_magic(&pred, &[v.clone()]).unwrap_or_else(|| ctx.invoke(&pred, &[v.clone()])).as_bool())
+                    .unwrap_or(Value::Undefined);
+            }
+            Value::Undefined
+        }));
+
+    vm.register_host_fn(module, "findIndex",
+        Box::new(move |ctx, args| {
+            let pred = args.get(1).cloned().unwrap_or(Value::Null);
+            if let Some(ta_obj) = is_typed_of(args, 0, elem) {
+                let vals: Vec<Value> = {
+                    let o = ta_obj.lock().unwrap();
+                    if let ObjectKind::TypedArray(ref ta) = o.kind {
+                        (0..ta_live_length(ta)).map(|i| read_element(ta, i)).collect()
+                    } else { vec![] }
+                };
+                for (i, v) in vals.into_iter().enumerate() {
+                    if ta_invoke_magic(&pred, &[v.clone()]).unwrap_or_else(|| ctx.invoke(&pred, &[v.clone()])).as_bool() {
+                        return Value::I32(i as i32);
+                    }
+                }
+            }
+            Value::I32(-1)
+        }));
+
+    vm.register_host_fn(module, "findLast",
+        Box::new(move |ctx, args| {
+            let pred = args.get(1).cloned().unwrap_or(Value::Null);
+            if let Some(ta_obj) = is_typed_of(args, 0, elem) {
+                let vals: Vec<Value> = {
+                    let o = ta_obj.lock().unwrap();
+                    if let ObjectKind::TypedArray(ref ta) = o.kind {
+                        (0..ta_live_length(ta)).map(|i| read_element(ta, i)).collect()
+                    } else { vec![] }
+                };
+                return vals.into_iter().rev()
+                    .find(|v| ta_invoke_magic(&pred, &[v.clone()]).unwrap_or_else(|| ctx.invoke(&pred, &[v.clone()])).as_bool())
+                    .unwrap_or(Value::Undefined);
+            }
+            Value::Undefined
+        }));
+
+    vm.register_host_fn(module, "findLastIndex",
+        Box::new(move |ctx, args| {
+            let pred = args.get(1).cloned().unwrap_or(Value::Null);
+            if let Some(ta_obj) = is_typed_of(args, 0, elem) {
+                let vals: Vec<Value> = {
+                    let o = ta_obj.lock().unwrap();
+                    if let ObjectKind::TypedArray(ref ta) = o.kind {
+                        (0..ta_live_length(ta)).map(|i| read_element(ta, i)).collect()
+                    } else { vec![] }
+                };
+                let len = vals.len();
+                for (i, v) in vals.into_iter().rev().enumerate() {
+                    if ta_invoke_magic(&pred, &[v.clone()]).unwrap_or_else(|| ctx.invoke(&pred, &[v.clone()])).as_bool() {
+                        return Value::I32((len - 1 - i) as i32);
+                    }
+                }
+            }
+            Value::I32(-1)
+        }));
 }

@@ -92,6 +92,12 @@ fn register_arraybuffer(vm: &mut VM) {
             new_arraybuffer(n, n, false, false)
         }));
 
+    vm.register_host_fn("ecma:arraybuffer", "newWithLength",
+        Box::new(|_ctx, args| {
+            let n = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            new_arraybuffer(n, n, false, false)
+        }));
+
     vm.register_host_fn("ecma:arraybuffer", "newResizable",
         Box::new(|_ctx, args| {
             let n = args.first().map(|v| v.as_i32()).unwrap_or(0);
@@ -123,10 +129,10 @@ fn register_arraybuffer(vm: &mut VM) {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 let o = ab.lock().unwrap();
                 if let ObjectKind::ArrayBuffer(ref state) = o.kind {
-                    return Value::I32(if state.resizable { 1 } else { 0 });
+                    return Value::Bool(state.resizable);
                 }
             }
-            Value::I32(0)
+            Value::Bool(false)
         }));
 
     vm.register_host_fn("ecma:arraybuffer", "detached",
@@ -134,10 +140,10 @@ fn register_arraybuffer(vm: &mut VM) {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 let o = ab.lock().unwrap();
                 if let ObjectKind::ArrayBuffer(ref state) = o.kind {
-                    return Value::I32(if state.detached { 1 } else { 0 });
+                    return Value::Bool(state.detached);
                 }
             }
-            Value::I32(0)
+            Value::Bool(false)
         }));
 
     vm.register_host_fn("ecma:arraybuffer", "slice",
@@ -149,8 +155,8 @@ fn register_arraybuffer(vm: &mut VM) {
                 if let ObjectKind::ArrayBuffer(ref state) = o.kind {
                     let src = state.bytes.lock().unwrap();
                     let len = src.len() as i32;
-                    let s = start.max(0).min(len) as usize;
-                    let e = end.max(0).min(len) as usize;
+                    let s = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
+                    let e = if end == i32::MAX { len as usize } else if end < 0 { (len + end).max(0) as usize } else { end.min(len) as usize };
                     let slice: Vec<u8> = if s < e { src[s..e].to_vec() } else { Vec::new() };
                     drop(src);
                     let slice_len = slice.len();
@@ -289,6 +295,12 @@ fn register_sharedarraybuffer(vm: &mut VM) {
             new_arraybuffer(n, n, false, true)
         }));
 
+    vm.register_host_fn("ecma:sharedarraybuffer", "newWithLength",
+        Box::new(|_ctx, args| {
+            let n = args.first().map(|v| v.as_i32()).unwrap_or(0);
+            new_arraybuffer(n, n, false, true)
+        }));
+
     vm.register_host_fn("ecma:sharedarraybuffer", "newGrowable",
         Box::new(|_ctx, args| {
             let n = args.first().map(|v| v.as_i32()).unwrap_or(0);
@@ -320,10 +332,10 @@ fn register_sharedarraybuffer(vm: &mut VM) {
             if let Some(ab) = is_arraybuffer(args, 0) {
                 let o = ab.lock().unwrap();
                 if let ObjectKind::ArrayBuffer(ref state) = o.kind {
-                    return Value::I32(if state.resizable { 1 } else { 0 });
+                    return Value::Bool(state.resizable);
                 }
             }
-            Value::I32(0)
+            Value::Bool(false)
         }));
 
     vm.register_host_fn("ecma:sharedarraybuffer", "slice",
@@ -621,7 +633,170 @@ fn register_dataview(vm: &mut VM) {
     setter_multibyte!("setFloat64", 8,
         |v: Option<&Value>| v.map(|x| x.as_f64()).unwrap_or(0.0),
         f64, to_le_bytes, to_be_bytes);
+
+    // ── Named constructors ────────────────────────────────────────────────────
+
+    vm.register_host_fn("ecma:dataview", "newWithOffset",
+        Box::new(|_ctx, args| {
+            let buffer = args.first().cloned().unwrap_or(Value::Null);
+            let byte_offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
+            let buffer_len = if let Value::Object(b) = &buffer {
+                let o = b.lock().unwrap();
+                if let ObjectKind::ArrayBuffer(ref state) = o.kind {
+                    state.bytes.lock().unwrap().len() as i32
+                } else { 0 }
+            } else { 0 };
+            let byte_length = (buffer_len - byte_offset).max(0);
+            new_dataview(buffer, byte_offset, byte_length)
+        }));
+
+    vm.register_host_fn("ecma:dataview", "newWithOffsetAndLength",
+        Box::new(|_ctx, args| {
+            let buffer = args.first().cloned().unwrap_or(Value::Null);
+            let byte_offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
+            let byte_length = args.get(2).map(|v| v.as_i32()).unwrap_or(0);
+            new_dataview(buffer, byte_offset, byte_length)
+        }));
+
+    // ── LE/BE aliased getters and setters ────────────────────────────────────
+
+    macro_rules! getter_le {
+        ($name:literal, $count:expr, $ty:ty, $wrap:expr) => {
+            vm.register_host_fn("ecma:dataview", $name,
+                Box::new(|_ctx, args| {
+                    let offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
+                    if let Some(dv) = is_dataview(args, 0) {
+                        if let Some(bytes) = dv_read_bytes(&dv, offset, $count) {
+                            let mut arr = [0u8; $count];
+                            arr.copy_from_slice(&bytes);
+                            let val: $ty = <$ty>::from_le_bytes(arr);
+                            return $wrap(val);
+                        }
+                    }
+                    $wrap(<$ty>::default())
+                }));
+        };
+    }
+
+    macro_rules! getter_be {
+        ($name:literal, $count:expr, $ty:ty, $wrap:expr) => {
+            vm.register_host_fn("ecma:dataview", $name,
+                Box::new(|_ctx, args| {
+                    let offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
+                    if let Some(dv) = is_dataview(args, 0) {
+                        if let Some(bytes) = dv_read_bytes(&dv, offset, $count) {
+                            let mut arr = [0u8; $count];
+                            arr.copy_from_slice(&bytes);
+                            let val: $ty = <$ty>::from_be_bytes(arr);
+                            return $wrap(val);
+                        }
+                    }
+                    $wrap(<$ty>::default())
+                }));
+        };
+    }
+
+    macro_rules! setter_le {
+        ($name:literal, $count:expr, $val_extract:expr, $ty:ty) => {
+            vm.register_host_fn("ecma:dataview", $name,
+                Box::new(|_ctx, args| {
+                    let offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
+                    let val: $ty = $val_extract(args.get(2));
+                    if let Some(dv) = is_dataview(args, 0) {
+                        dv_write_bytes(&dv, offset, &val.to_le_bytes());
+                    }
+                    Value::Null
+                }));
+        };
+    }
+
+    getter_le!("getInt16LE",    2, i16, |v| Value::I32(v as i32));
+    getter_be!("getInt16BE",    2, i16, |v| Value::I32(v as i32));
+    getter_le!("getInt32LE",    4, i32, |v| Value::I32(v));
+    getter_le!("getUint32LE",   4, u32, |v| Value::F64(v as f64));
+    getter_le!("getFloat32LE",  4, f32, |v| Value::F64(v as f64));
+    getter_le!("getFloat64LE",  8, f64, |v| Value::F64(v));
+    getter_le!("getBigInt64LE", 8, i64, |v| Value::I64(v));
+    getter_le!("getBigUint64LE",8, u64, |v| Value::I64(v as i64));
+
+    setter_le!("setInt16LE",    2, |v: Option<&Value>| v.map(|x| x.as_i32() as i16).unwrap_or(0), i16);
+    setter_le!("setInt32LE",    4, |v: Option<&Value>| v.map(|x| x.as_i32()).unwrap_or(0), i32);
+    setter_le!("setUint32LE",   4, |v: Option<&Value>| v.map(|x| x.as_f64() as u32).unwrap_or(0), u32);
+    setter_le!("setFloat32LE",  4, |v: Option<&Value>| v.map(|x| x.as_f64() as f32).unwrap_or(0.0), f32);
+    setter_le!("setFloat64LE",  8, |v: Option<&Value>| v.map(|x| x.as_f64()).unwrap_or(0.0), f64);
+    setter_le!("setBigInt64LE", 8,
+        |v: Option<&Value>| v.map(|x| match x { Value::I64(n) => *n, other => other.as_i32() as i64 }).unwrap_or(0),
+        i64);
+    setter_le!("setBigUint64LE", 8,
+        |v: Option<&Value>| v.map(|x| match x { Value::I64(n) => *n as u64, other => other.as_i32() as u64 }).unwrap_or(0),
+        u64);
+
+    // ── Float16 (ES2025 §25.3.4.*) ───────────────────────────────────────────
+
+    vm.register_host_fn("ecma:dataview", "setFloat16",
+        Box::new(|_ctx, args| {
+            let offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
+            let val = args.get(2).map(|v| v.as_f64()).unwrap_or(0.0);
+            let little_endian = args.get(3).map(|v| v.as_bool()).unwrap_or(false);
+            let bits = f64_to_f16(val);
+            let bytes = if little_endian { bits.to_le_bytes() } else { bits.to_be_bytes() };
+            if let Some(dv) = is_dataview(args, 0) {
+                dv_write_bytes(&dv, offset, &bytes);
+            }
+            Value::Null
+        }));
+
+    vm.register_host_fn("ecma:dataview", "getFloat16",
+        Box::new(|_ctx, args| {
+            let offset = args.get(1).map(|v| v.as_i32()).unwrap_or(0);
+            let little_endian = args.get(2).map(|v| v.as_bool()).unwrap_or(false);
+            if let Some(dv) = is_dataview(args, 0) {
+                if let Some(bytes) = dv_read_bytes(&dv, offset, 2) {
+                    let mut arr = [0u8; 2];
+                    arr.copy_from_slice(&bytes);
+                    let bits = if little_endian { u16::from_le_bytes(arr) } else { u16::from_be_bytes(arr) };
+                    return Value::F64(f16_to_f64(bits));
+                }
+            }
+            Value::Undefined
+        }));
 }
+
+fn f64_to_f16(v: f64) -> u16 {
+    if v.is_nan() { return 0x7E00; }
+    let bits = v.to_bits();
+    let sign = ((bits >> 63) as u16) << 15;
+    let exp = ((bits >> 52) & 0x7FF) as i32 - 1023;
+    let mant = (bits & 0x000F_FFFF_FFFF_FFFF) >> 42;
+    if exp == 1024 {
+        return sign | 0x7C00 | (if (bits & 0x000F_FFFF_FFFF_FFFF) != 0 { 0x0200 } else { 0 });
+    }
+    let f16_exp = exp + 15;
+    if f16_exp <= 0 {
+        if f16_exp < -10 { return sign; }
+        let shifted = (1u64 << 10 | mant) >> (1 - f16_exp);
+        return sign | (shifted as u16);
+    }
+    if f16_exp >= 31 { return sign | 0x7C00; }
+    sign | ((f16_exp as u16) << 10) | (mant as u16)
+}
+
+fn f16_to_f64(bits: u16) -> f64 {
+    let sign = ((bits >> 15) & 1) as u64;
+    let exp = ((bits >> 10) & 0x1F) as i32;
+    let mant = (bits & 0x3FF) as u64;
+    if exp == 31 {
+        return f64::from_bits((sign << 63) | 0x7FF0_0000_0000_0000 | (mant << 42));
+    }
+    if exp == 0 {
+        if mant == 0 { return if sign == 0 { 0.0 } else { -0.0 }; }
+        let v = (mant as f64) * (1.0 / (1024.0 * 16384.0));
+        return if sign == 0 { v } else { -v };
+    }
+    let f64_exp = (exp - 15 + 1023) as u64;
+    f64::from_bits((sign << 63) | (f64_exp << 52) | (mant << 42))
+}
+
 
 // ── Public method dispatch — called from ecma::value ─────────────────────
 

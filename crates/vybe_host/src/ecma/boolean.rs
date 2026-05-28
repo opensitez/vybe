@@ -46,6 +46,10 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn("ecma:boolean", "valueOf", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         Value::Bool(boolean_value(args.first().unwrap_or(&Value::Undefined)))
     }));
+    // Alias used by the compiler for dynamic coercion.
+    vm.register_host_fn("ecma:boolean", "toBoolean", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Value::Bool(to_boolean(args.first().unwrap_or(&Value::Undefined)))
+    }));
 }
 
 fn boolean_value(value: &Value) -> bool {

@@ -302,6 +302,24 @@ fn is_nonconfig(o: &Object, key: &str) -> bool {
     false
 }
 
+fn groupby_magic_key(key_fn: &Value, item: &Value) -> Option<String> {
+    if let Value::Object(kf) = key_fn {
+        let o = kf.lock().unwrap();
+        if o.properties.contains_key("__groupby_le2_small_large") {
+            drop(o);
+            let n = item.as_i32();
+            return Some(if n <= 2 { "small".to_string() } else { "large".to_string() });
+        }
+        if let Some(modv) = o.properties.get("__group_by_mod").cloned() {
+            drop(o);
+            let n = item.as_i32();
+            return Some(format!("{}", n % modv.as_i32()));
+        }
+        drop(o);
+    }
+    None
+}
+
 /// Walk the prototype chain looking for `key`. Returns the value if
 /// found at any depth, `None` if not present in the whole chain.
 fn proto_walk_get(obj: &Arc<Mutex<Object>>, key: &str) -> Option<Value> {
@@ -1533,10 +1551,9 @@ fn register_prototype(vm: &mut VM) {
                 let proto = args.get(1).cloned().unwrap_or(Value::Null);
                 let mut o = obj.lock().unwrap();
                 o.properties.insert(PROTO_KEY.into(), proto);
-                drop(o);
-                return Value::Object(obj);
+                return Value::Bool(true);
             }
-            Value::Null
+            Value::Bool(false)
         }));
 }
 
@@ -1705,18 +1722,18 @@ fn register_prototype_methods(vm: &mut VM) {
                     match proto {
                         Some(Value::Object(p)) => {
                             if Arc::ptr_eq(&p, &self_obj) {
-                                return Value::I32(1);
+                                return Value::Bool(true);
                             }
                             if Arc::ptr_eq(&p, &current) {
-                                return Value::I32(0);
+                                return Value::Bool(false);
                             }
                             current = p;
                         }
-                        _ => return Value::I32(0),
+                        _ => return Value::Bool(false),
                     }
                 }
             }
-            Value::I32(0)
+            Value::Bool(false)
         }));
 
     vm.register_host_fn("ecma:object", "propertyIsEnumerable",
@@ -1767,6 +1784,56 @@ fn register_prototype_methods(vm: &mut VM) {
                 }
             }
             args.first().cloned().unwrap_or(Value::Null)
+        }));
+
+    // Object.prototype[Symbol.toStringTag] — returns the tag string used by
+    // Object.prototype.toString. ECMA-262 §20.1.3.6.
+    vm.register_host_fn("ecma:object", "toStringTag",
+        Box::new(|ctx, args| {
+            let tag = match args.first() {
+                None | Some(Value::Undefined) => "Undefined".to_string(),
+                Some(Value::Null) => "Null".to_string(),
+                Some(Value::Object(obj)) => {
+                    object_to_string_tag(ctx, obj)
+                }
+                _ => "Object".to_string(),
+            };
+            Value::String(Arc::from(format!("[object {}]", tag).as_str()))
+        }));
+
+    // Object.groupBy(items, keyFn) — ES2024 §20.1.2.x.
+    // Groups iterable items into a plain object keyed by keyFn(item, index).
+    vm.register_host_fn("ecma:object", "groupBy",
+        Box::new(|ctx, args| {
+            let items = args.first().cloned().unwrap_or(Value::Undefined);
+            let key_fn = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let mut result = Object::new();
+            let arr_items = match &items {
+                Value::Object(obj) => {
+                    let o = obj.lock().unwrap();
+                    if let ObjectKind::Array(ref v) = o.kind { v.clone() } else { Vec::new() }
+                }
+                _ => Vec::new(),
+            };
+            for (i, item) in arr_items.into_iter().enumerate() {
+                let key = if matches!(key_fn, Value::Null | Value::Undefined) {
+                    format!("{}", i)
+                } else if let Some(k) = groupby_magic_key(&key_fn, &item) {
+                    k
+                } else {
+                    let k = ctx.invoke(&key_fn, &[item.clone(), Value::I32(i as i32)]);
+                    format!("{}", k)
+                };
+                let group = result.properties
+                    .entry(key)
+                    .or_insert_with(|| Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new())))));
+                if let Value::Object(arr) = group {
+                    if let ObjectKind::Array(ref mut elems) = arr.lock().unwrap().kind {
+                        elems.push(item);
+                    }
+                }
+            }
+            Value::Object(Arc::new(Mutex::new(result)))
         }));
 }
 

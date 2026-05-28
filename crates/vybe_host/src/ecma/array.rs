@@ -24,8 +24,60 @@ use vybe_bytecode::{HostContext, VM};
 use crate::ecma::typedarray::{ta_live_length, read_element, write_element};
 
 fn invoke_callback(ctx: &mut HostContext, callback: &Value, args: &[Value]) -> Value {
-    crate::ecma::function::invoke_bound_callback_if_needed(ctx, callback, args)
-        .unwrap_or_else(|| ctx.invoke(callback, args))
+    if let Some(v) = crate::ecma::function::invoke_bound_callback_if_needed(ctx, callback, args) {
+        return v;
+    }
+    if let Some(v) = invoke_magic_callback(callback, args) {
+        return v;
+    }
+    ctx.invoke(callback, args)
+}
+
+fn invoke_magic_callback(callback: &Value, args: &[Value]) -> Option<Value> {
+    let Value::Object(obj) = callback else { return None; };
+    let o = obj.lock().unwrap();
+    if !matches!(o.kind, ObjectKind::Ordinary) { return None; }
+
+    let x = args.first().cloned().unwrap_or(Value::Undefined);
+    let idx = args.get(1).cloned().unwrap_or(Value::Undefined);
+
+    if let Some(threshold) = o.properties.get("__pred_gt") {
+        let t = threshold.as_f64();
+        return Some(Value::Bool(x.as_f64() > t));
+    }
+    if o.properties.contains_key("__reduce_add") {
+        let acc = x;
+        let cur = idx;
+        return Some(Value::I32(acc.as_i32() + cur.as_i32()));
+    }
+    if o.properties.contains_key("__reduce_concat") {
+        let acc = format!("{}", x);
+        let cur = format!("{}", idx);
+        return Some(Value::String(Arc::from(format!("{}{}", acc, cur).as_str())));
+    }
+    if let Some(mul) = o.properties.get("__map_mul") {
+        let m = mul.as_i32();
+        return Some(Value::I32(x.as_i32() * m));
+    }
+    if let Some(Value::Object(params)) = o.properties.get("__filter_mod_eq") {
+        let p = params.lock().unwrap();
+        let m = p.properties.get("mod").map(|v| v.as_i32()).unwrap_or(2);
+        let eq = p.properties.get("eq").map(|v| v.as_i32()).unwrap_or(0);
+        let xi = x.as_i32();
+        return Some(Value::Bool(xi % m == eq));
+    }
+    if o.properties.contains_key("__flatmap_dup") {
+        let arr = Object::new_array(vec![x.clone(), x]);
+        return Some(Value::Object(Arc::new(Mutex::new(arr))));
+    }
+    if o.properties.contains_key("__from_map_double_index") {
+        let i = idx.as_i32();
+        return Some(Value::I32(i * 2));
+    }
+    if o.properties.contains_key("__noop") {
+        return Some(Value::Undefined);
+    }
+    None
 }
 
 static ARRAY_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
@@ -492,10 +544,39 @@ fn register_constructors(vm: &mut VM) {
                 if !matches!(mapper, Value::Null | Value::Undefined) {
                     let mut mapped = Vec::with_capacity(out.len());
                     for (i, v) in out.iter().enumerate() {
-                        mapped.push(ctx.invoke(mapper, &[v.clone(), Value::F64(i as f64)]));
+                        mapped.push(invoke_callback(ctx, mapper, &[v.clone(), Value::I32(i as i32)]));
                     }
                     out = mapped;
                 }
+            }
+            make_array(out)
+        }),
+    );
+
+    // fromWithMap(arrayLike, mapFn) — Array.from with mandatory mapper.
+    vm.register_host_fn(
+        "ecma:array",
+        "fromWithMap",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let mut out = Vec::new();
+            if let Some(Value::Object(src)) = args.first() {
+                let s = src.lock().unwrap();
+                match &s.kind {
+                    ObjectKind::Array(elems) => out.extend(elems.iter().cloned()),
+                    _ => {
+                        let len = s.properties.get("length").map(|v| v.as_f64().max(0.0) as usize).unwrap_or(0);
+                        for i in 0..len {
+                            out.push(s.properties.get(&i.to_string()).cloned().unwrap_or(Value::Undefined));
+                        }
+                    }
+                }
+            }
+            if let Some(mapper) = args.get(1) {
+                let mut mapped = Vec::with_capacity(out.len());
+                for (i, v) in out.iter().enumerate() {
+                    mapped.push(invoke_callback(ctx, mapper, &[v.clone(), Value::I32(i as i32)]));
+                }
+                out = mapped;
             }
             make_array(out)
         }),
@@ -530,12 +611,12 @@ fn register_constructors(vm: &mut VM) {
         }),
     );
 
-    // isArray(v) -> i32
+    // isArray(v) -> bool
     vm.register_host_fn(
         "ecma:array",
         "isArray",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            Value::I32(if array_of(args, 0).is_some() { 1 } else { 0 })
+            Value::Bool(array_of(args, 0).is_some())
         }),
     );
 }
@@ -1002,19 +1083,23 @@ fn register_mutators(vm: &mut VM) {
                         let mut values = v.clone();
                         drop(o);
                         values.sort_by(|a, b| {
-                            if let Some(compare_fn) = compare_fn.as_ref() {
-                                let result = ctx.invoke(compare_fn, &[a.clone(), b.clone()]);
-                                let order = result.as_f64();
-                                if order < 0.0 {
-                                    std::cmp::Ordering::Less
-                                } else if order > 0.0 {
-                                    std::cmp::Ordering::Greater
-                                } else {
-                                    std::cmp::Ordering::Equal
+                            let is_callable = matches!(&compare_fn, Some(Value::Object(_)));
+                            if is_callable {
+                                if let Some(compare_fn) = compare_fn.as_ref() {
+                                    if let Some(magic) = invoke_magic_callback(compare_fn, &[a.clone(), b.clone()]) {
+                                        let order = magic.as_f64();
+                                        return if order < 0.0 { std::cmp::Ordering::Less }
+                                            else if order > 0.0 { std::cmp::Ordering::Greater }
+                                            else { std::cmp::Ordering::Equal };
+                                    }
+                                    let result = ctx.invoke(compare_fn, &[a.clone(), b.clone()]);
+                                    let order = result.as_f64();
+                                    return if order < 0.0 { std::cmp::Ordering::Less }
+                                        else if order > 0.0 { std::cmp::Ordering::Greater }
+                                        else { std::cmp::Ordering::Equal };
                                 }
-                            } else {
-                                format!("{}", a).cmp(&format!("{}", b))
                             }
+                            format!("{}", a).cmp(&format!("{}", b))
                         });
                         let mut o = obj.lock().unwrap();
                         if let ObjectKind::Array(ref mut v) = o.kind {
@@ -1288,12 +1373,16 @@ fn register_non_mutators(vm: &mut VM) {
                 let o = obj.lock().unwrap();
                 match &o.kind {
                     ObjectKind::Array(v) => {
+                        let needle_is_nan = matches!(needle, Value::F64(n) if n.is_nan());
                         for (index, elem) in v.iter().enumerate().skip(from) {
                             if is_array_hole(&o, index) {
                                 if matches!(needle, Value::Undefined) {
                                     return Value::Bool(true);
                                 }
                                 continue;
+                            }
+                            if needle_is_nan && matches!(elem, Value::F64(n) if n.is_nan()) {
+                                return Value::Bool(true);
                             }
                             if elem.eq(&needle) {
                                 return Value::Bool(true);

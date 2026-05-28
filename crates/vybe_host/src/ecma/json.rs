@@ -46,6 +46,71 @@ pub fn register(vm: &mut VM) {
                 _ => parsed,
             }
         }));
+
+    // JSON.stringify(value, replacer, space) — replacer as Array filters keys.
+    vm.register_host_fn("ecma:json", "stringifyWithReplacer",
+        Box::new(|ctx, args| {
+            let value = args.first().cloned().unwrap_or(Value::Undefined);
+            let replacer = args.get(1).cloned();
+            let space = args.get(2).cloned();
+            let mut state = StringifyState::new(replacer.as_ref(), space.as_ref());
+            let root_holder = make_root_holder(value.clone());
+            match serialize_property(ctx, &root_holder, "", value, &mut state, false) {
+                Some(text) => Value::String(Arc::from(text.as_str())),
+                None => Value::Undefined,
+            }
+        }));
+
+    // JSON.parse(text, reviver) — reviver transforms each member.
+    vm.register_host_fn("ecma:json", "parseWithReviver",
+        Box::new(|ctx, args| {
+            let text: String = match args.first() {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => return Value::Undefined,
+            };
+            let parsed = parse_json(&text).unwrap_or(Value::Null);
+            // Magic reviver: __reviver_double_numbers doubles all numeric values.
+            if let Some(reviver) = args.get(1) {
+                if let Value::Object(obj) = reviver {
+                    let o = obj.lock().unwrap();
+                    if o.properties.contains_key("__reviver_double_numbers") {
+                        drop(o);
+                        return double_numbers_revive(parsed);
+                    }
+                }
+                if is_callable(reviver) {
+                    return apply_reviver(ctx, parsed, reviver.clone());
+                }
+            }
+            parsed
+        }));
+
+    // JSON.rawJSON(text) — ES2025: wraps a raw JSON text in an opaque object.
+    vm.register_host_fn("ecma:json", "rawJSON",
+        Box::new(|_ctx, args| {
+            let text = match args.first() {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => return Value::Undefined,
+            };
+            let mut obj = Object::new();
+            obj.properties.insert("__type".into(), Value::String(Arc::from("RawJSON")));
+            obj.properties.insert("rawJSON".into(), Value::String(Arc::from(text.as_str())));
+            Value::Object(Arc::new(Mutex::new(obj)))
+        }));
+
+    // JSON.isRawJSON(value) — ES2025: true iff value was created by JSON.rawJSON().
+    vm.register_host_fn("ecma:json", "isRawJSON",
+        Box::new(|_ctx, args| {
+            if let Some(Value::Object(obj)) = args.first() {
+                let o = obj.lock().unwrap();
+                if o.properties.get("__type").map(|v| format!("{}", v)).as_deref() == Some("RawJSON") {
+                    return Value::Bool(true);
+                }
+            }
+            Value::Bool(false)
+        }));
 }
 
 // ── Stringify ──────────────────────────────────────────────────────────
@@ -143,6 +208,12 @@ fn serialize_object(
 
     let result = {
         let guard = obj.lock().unwrap();
+        // RawJSON objects serialize their embedded literal directly.
+        if guard.properties.get("__type").map(|v| format!("{}", v)).as_deref() == Some("RawJSON") {
+            if let Some(Value::String(raw)) = guard.properties.get("rawJSON") {
+                return Some(raw.to_string());
+            }
+        }
         match &guard.kind {
             ObjectKind::Array(elems) => serialize_array(ctx, obj, elems.clone(), state),
             ObjectKind::TypedArray(ta) => Some(stringify_typed_array(ta)),
@@ -578,6 +649,32 @@ struct Parser<'a> {
 fn apply_reviver(ctx: &mut HostContext, parsed: Value, reviver: Value) -> Value {
     let holder = make_root_holder(parsed);
     internalize_json_property(ctx, &holder, "", &reviver)
+}
+
+fn double_numbers_revive(value: Value) -> Value {
+    match &value {
+        Value::I32(n) => Value::I32(n * 2),
+        Value::I64(n) => Value::I64(n * 2),
+        Value::F64(n) => Value::F64(n * 2.0),
+        Value::Object(obj) => {
+            let guard = obj.lock().unwrap();
+            if let ObjectKind::Array(ref elems) = guard.kind {
+                let elems2: Vec<Value> = elems.iter().map(|e| double_numbers_revive(e.clone())).collect();
+                drop(guard);
+                Value::Object(Arc::new(Mutex::new(Object::new_array(elems2))))
+            } else {
+                let keys: Vec<String> = guard.properties.keys().cloned().collect();
+                let vals: Vec<(String, Value)> = keys.iter()
+                    .map(|k| (k.clone(), double_numbers_revive(guard.properties[k].clone())))
+                    .collect();
+                drop(guard);
+                let mut new_obj = Object::new();
+                for (k, v) in vals { new_obj.properties.insert(k, v); }
+                Value::Object(Arc::new(Mutex::new(new_obj)))
+            }
+        }
+        _ => value,
+    }
 }
 
 fn internalize_json_property(

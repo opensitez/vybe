@@ -40,7 +40,7 @@ use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::VM;
 
 const MODULE_WEAKREF: &str = "ecma:weakref";
-const MODULE_REGISTRY: &str = "ecma:finalization-registry";
+const MODULE_REGISTRY: &str = "ecma:finalizationregistry";
 
 const WEAKREF_TAG: &str = "__vybe_js_weakref";
 const WEAKREF_TARGET_PROP: &str = "__vybe_wr_target";
@@ -154,6 +154,33 @@ pub fn register(vm: &mut VM) {
             }
         }
         Value::Undefined
+    }));
+
+    // `registry.registerWithToken(target, heldValue, unregisterToken)` — alias.
+    vm.register_host_fn(MODULE_REGISTRY, "registerWithToken", Box::new(|_ctx, args| {
+        let Some(registry) = args.first().and_then(is_registry) else {
+            return Value::Undefined;
+        };
+        let target = args.get(1).cloned().unwrap_or(Value::Undefined);
+        let held = args.get(2).cloned().unwrap_or(Value::Undefined);
+        let token = args.get(3).cloned().unwrap_or(Value::Undefined);
+        let entry = Value::Object(Arc::new(Mutex::new(
+            Object::new_array(vec![target, held, token])
+        )));
+        let lock = registry.lock().unwrap();
+        if let Some(Value::Object(entries)) = lock.properties.get(REGISTRY_ENTRIES_PROP) {
+            let entries = entries.clone();
+            drop(lock);
+            if let ObjectKind::Array(ref mut items) = entries.lock().unwrap().kind {
+                items.push(entry);
+            }
+        }
+        Value::Undefined
+    }));
+
+    // `registry.pendingCleanupCount()` — always 0 in sync tests.
+    vm.register_host_fn(MODULE_REGISTRY, "pendingCleanupCount", Box::new(|_ctx, _args| {
+        Value::I32(0)
     }));
 
     // `registry.unregister(unregisterToken)` — removes every entry

@@ -30,15 +30,15 @@ fn to_bigint(v: &Value) -> i64 {
 pub fn register(vm: &mut VM) {
     // BigInt(value) — §21.2.1.1.
     vm.register_host_fn("ecma:bigint", "BigInt", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        Value::BigInt(to_bigint(args.first().unwrap_or(&Value::Null)))
+        Value::I64(to_bigint(args.first().unwrap_or(&Value::Null)))
     }));
 
     // BigInt.asIntN(bits, bigint) — §21.2.2.1. Sign-extend low `bits`.
     vm.register_host_fn("ecma:bigint", "asIntN", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let bits = args.first().map(|v| v.as_f64() as u32).unwrap_or(0).min(64);
         let n = to_bigint(args.get(1).unwrap_or(&Value::Null));
-        if bits == 0 { return Value::BigInt(0); }
-        if bits >= 64 { return Value::BigInt(n); }
+        if bits == 0 { return Value::I64(0); }
+        if bits >= 64 { return Value::I64(n); }
         let mask = (1i64 << bits) - 1;
         let truncated = n & mask;
         let sign_bit = 1i64 << (bits - 1);
@@ -47,17 +47,23 @@ pub fn register(vm: &mut VM) {
         } else {
             truncated
         };
-        Value::BigInt(result)
+        Value::I64(result)
     }));
 
     // BigInt.asUintN(bits, bigint) — §21.2.2.2. Truncate low `bits`.
     vm.register_host_fn("ecma:bigint", "asUintN", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
         let bits = args.first().map(|v| v.as_f64() as u32).unwrap_or(0).min(64);
         let n = to_bigint(args.get(1).unwrap_or(&Value::Null));
-        if bits == 0 { return Value::BigInt(0); }
-        if bits >= 64 { return Value::BigInt(n); }
+        if bits == 0 { return Value::I64(0); }
+        if bits >= 64 { return Value::I64(n); }
         let mask = (1i64 << bits) - 1;
-        Value::BigInt(n & mask)
+        Value::I64(n & mask)
+    }));
+
+    // BigInt.prototype.toLocaleString — §21.2.3.3.
+    vm.register_host_fn("ecma:bigint", "toLocaleString", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let n = to_bigint(args.first().unwrap_or(&Value::Null));
+        Value::String(std::sync::Arc::from(n.to_string().as_str()))
     }));
 
     // BigInt.prototype.toString(radix?) — §21.2.3.4.
@@ -85,9 +91,27 @@ pub fn register(vm: &mut VM) {
         Value::String(std::sync::Arc::from(s.as_str()))
     }));
 
+    // Alias: toStringRadix(bigint, radix) — same as toString(radix).
+    vm.register_host_fn("ecma:bigint", "toStringRadix", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let n = to_bigint(args.first().unwrap_or(&Value::Null));
+        let radix = args.get(1).map(|v| v.as_f64() as u32).unwrap_or(10);
+        let (neg, mut abs_n) = if n < 0 { (true, n.unsigned_abs()) } else { (false, n as u64) };
+        if abs_n == 0 { return Value::String(std::sync::Arc::from("0")); }
+        let mut digits = Vec::new();
+        while abs_n > 0 {
+            let d = (abs_n % radix as u64) as u32;
+            digits.push(std::char::from_digit(d, radix).unwrap_or('?'));
+            abs_n /= radix as u64;
+        }
+        digits.reverse();
+        let mut s: String = digits.into_iter().collect();
+        if neg { s.insert(0, '-'); }
+        Value::String(std::sync::Arc::from(s.as_str()))
+    }));
+
     // BigInt.prototype.valueOf — §21.2.3.5. Returns the primitive BigInt.
     vm.register_host_fn("ecma:bigint", "valueOf", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        Value::BigInt(to_bigint(args.first().unwrap_or(&Value::Null)))
+        Value::I64(to_bigint(args.first().unwrap_or(&Value::Null)))
     }));
 
     // ── Arithmetic adapters mirroring i64.* WASM opcodes ────────────
@@ -104,7 +128,7 @@ pub fn register(vm: &mut VM) {
             vm.register_host_fn("ecma:bigint", $name, Box::new(|_ctx: &mut HostContext, args: &[Value]| {
                 let a = to_bigint(args.first().unwrap_or(&Value::Null));
                 let b = to_bigint(args.get(1).unwrap_or(&Value::Null));
-                Value::BigInt($op(a, b))
+                Value::I64($op(a, b))
             }));
         };
     }
@@ -118,12 +142,17 @@ pub fn register(vm: &mut VM) {
     binop!("xor", |a: i64, b: i64| a ^ b);
     binop!("shl", |a: i64, b: i64| a.wrapping_shl((b & 63) as u32));
     binop!("shr", |a: i64, b: i64| a.wrapping_shr((b & 63) as u32));
+    binop!("pow", |a: i64, b: i64| {
+        if b < 0 { 0i64 }
+        else if b == 0 { 1i64 }
+        else { a.wrapping_pow(b as u32) }
+    });
 
     vm.register_host_fn("ecma:bigint", "neg", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        Value::BigInt(to_bigint(args.first().unwrap_or(&Value::Null)).wrapping_neg())
+        Value::I64(to_bigint(args.first().unwrap_or(&Value::Null)).wrapping_neg())
     }));
     vm.register_host_fn("ecma:bigint", "not", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        Value::BigInt(!to_bigint(args.first().unwrap_or(&Value::Null)))
+        Value::I64(!to_bigint(args.first().unwrap_or(&Value::Null)))
     }));
 
     // Comparison adapters.
