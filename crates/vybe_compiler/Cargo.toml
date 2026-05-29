@@ -72,5 +72,9 @@ name = "go"
 path = "tests/go/main.rs"
 
 [[test]]
+name = "wast"
+path = "tests/wast/main.rs"
+
+[[test]]
 name = "emitter"
 path = "tests/emitter/main.rs"

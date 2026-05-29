@@ -10,6 +10,7 @@ pub mod php;
 pub mod python;
 pub mod ruby;
 pub mod vb;
+pub mod wast;
 
 use crate::ast::Module;
 
@@ -41,6 +42,7 @@ pub fn all() -> Vec<Language> {
         Language { name: "cobol",   parse: cobol::parse,   profile_source: cobol::profile_source },
         Language { name: "fortran", parse: fortran::parse, profile_source: fortran::profile_source },
         Language { name: "go",      parse: go::parse,      profile_source: go::profile_source },
+        Language { name: "wast",    parse: wast::parse,    profile_source: wast::profile_source },
     ]
 }
 

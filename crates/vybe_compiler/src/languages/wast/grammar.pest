@@ -1,0 +1,472 @@
+// ============================================================================
+// WAST / WAT Grammar for vybex
+// ============================================================================
+// WAT  = WebAssembly Text Format (module syntax only)
+// WAST = WAT + script commands (assert_return, assert_trap, invoke, register…)
+//
+// Both share the same grammar — WAT is a strict subset of WAST.
+// Extensions vs the MVP grammar:
+//   • Exceptions proposal: try/catch/catch_all/delegate/throw/rethrow
+//   • Tail-call proposal: return_call / return_call_indirect
+//   • Reference types: ref.null / ref.is_null / ref.func / ref.extern
+//   • SIMD (v128): abbreviated instruction set
+//   • Bulk memory: memory.init / memory.copy / memory.fill / table.init etc.
+//   • Multi-value: multiple (result …) in typeuse
+//   • Named modules in WAST: (module $name …)
+//   • assert_suspension (threads proposal)
+// ============================================================================
+
+// ── Whitespace & Comments ────────────────────────────────────────────────────
+
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT    = _{ line_comment | block_comment }
+
+line_comment  = _{ ";;" ~ (!"\n" ~ ANY)* }
+// Nested block comments per the spec
+block_comment = _{ "(;" ~ (block_comment | (!";" ~ ANY) | (";" ~ !")"))* ~ ";)" }
+
+// ── Atoms ────────────────────────────────────────────────────────────────────
+
+// $identifier — may contain most printable ASCII except whitespace and parens
+id = @{
+    "$" ~ (ASCII_ALPHANUMERIC | "_" | "." | "-" | "+" | "*" | "/" | "\\"
+         | "^" | "~" | "=" | "<" | ">" | "!" | "?" | "@" | "#" | "&"
+         | "|" | ":" | "'")+
+}
+
+// Numeric literals
+hex_digit = _{ ASCII_HEX_DIGIT | "_" }
+dec_digit = _{ ASCII_DIGIT | "_" }
+
+integer = @{
+    ("+" | "-")? ~ (
+        "0x" ~ hex_digit+
+      | dec_digit+
+    )
+}
+
+float = @{
+    ("+" | "-")? ~ (
+        "nan:0x" ~ hex_digit+
+      | "nan"
+      | "inf"
+      | "0x" ~ hex_digit+ ~ ("." ~ hex_digit*)? ~ (("p" | "P") ~ ("+" | "-")? ~ dec_digit+)?
+      | dec_digit+ ~ "." ~ dec_digit* ~ (("e" | "E") ~ ("+" | "-")? ~ dec_digit+)?
+      | dec_digit+ ~ ("e" | "E") ~ ("+" | "-")? ~ dec_digit+
+    )
+}
+
+// String literals — UTF-8 with WAT escape sequences
+string_char = _{
+    "\\" ~ (
+        "n" | "t" | "r" | "\\" | "\"" | "'"
+      | "u{" ~ ASCII_HEX_DIGIT+ ~ "}"
+      | ASCII_HEX_DIGIT ~ ASCII_HEX_DIGIT
+    )
+  | (!("\"" | "\\") ~ ANY)
+}
+string = @{ "\"" ~ string_char* ~ "\"" }
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+// Numeric / packed value types
+num_type = @{ "i32" | "i64" | "f32" | "f64" }
+vec_type = @{ "v128" }
+// Reference types (MVP + reference-types proposal)
+ref_type = @{ "funcref" | "externref" }
+// All value types
+val_type = @{ "i32" | "i64" | "f32" | "f64" | "v128" | "funcref" | "externref" }
+
+// ── Indices ───────────────────────────────────────────────────────────────────
+
+index = { integer | id }
+
+// ── Type use ──────────────────────────────────────────────────────────────────
+
+// typeuse covers: (type $T) with optional param/result override, or just param*/result*
+typeuse = {
+    "(" ~ "type" ~ index ~ ")" ~ param* ~ result*
+  | param* ~ result*
+}
+
+param  = { "(" ~ "param"  ~ id? ~ val_type+ ~ ")" }
+result = { "(" ~ "result" ~ val_type+ ~ ")" }
+
+// ── Instructions ──────────────────────────────────────────────────────────────
+
+instr = { folded_instr | plain_instr }
+
+// Folded S-expression form.
+// (if …) and (try …) have special sub-block structure.
+// (block …) and (loop …) have optional label + block_type.
+folded_instr = {
+    "(" ~ "if"  ~ id? ~ block_type* ~ instr* ~ then_block ~ else_block? ~ ")"
+  | "(" ~ "try" ~ id? ~ block_type* ~ instr* ~ catch_block+ ~ catch_all_block? ~ ")"
+  | "(" ~ "try" ~ id? ~ block_type* ~ instr* ~ catch_all_block ~ ")"
+  | "(" ~ "block" ~ id? ~ block_type* ~ instr* ~ ")"
+  | "(" ~ "loop"  ~ id? ~ block_type* ~ instr* ~ ")"
+  | "(" ~ instr_name ~ instr_arg* ~ instr* ~ ")"
+}
+
+then_block      = { "(" ~ "then"      ~ instr* ~ ")" }
+else_block      = { "(" ~ "else"      ~ instr* ~ ")" }
+catch_block     = { "(" ~ "catch"     ~ index  ~ instr* ~ ")" }
+catch_all_block = { "(" ~ "catch_all" ~ instr* ~ ")" }
+
+// Plain (non-folded) instruction
+plain_instr = { instr_name ~ instr_arg* }
+
+// ── Instruction names ─────────────────────────────────────────────────────────
+// Ordered longest-match first within each group to avoid prefix ambiguity.
+// All names are atomic so the full dotted token is consumed before instr_arg
+// tries to match val_type (which shares the "i32"/"f64" prefix).
+
+instr_name = @{
+    // ── Control ──────────────────────────────────────────────────────────
+    "block" | "loop" | "if" | "else" | "end"
+  | "br_table" | "br_if" | "br"
+  | "return_call_indirect" | "return_call"
+  | "call_indirect" | "call"
+  | "return" | "unreachable" | "nop"
+    // ── Exceptions proposal ───────────────────────────────────────────────
+  | "try" | "catch_all" | "catch" | "delegate" | "unwind"
+  | "throw" | "rethrow"
+    // ── Parametric ────────────────────────────────────────────────────────
+  | "select" | "drop"
+    // ── Variable ──────────────────────────────────────────────────────────
+  | "local.tee" | "local.set" | "local.get"
+  | "global.set" | "global.get"
+    // ── Table ─────────────────────────────────────────────────────────────
+  | "table.init" | "table.copy" | "table.grow" | "table.size" | "table.fill"
+  | "table.get"  | "table.set"
+    // ── Memory ────────────────────────────────────────────────────────────
+  | "memory.init" | "memory.copy" | "memory.fill" | "memory.grow" | "memory.size"
+  | "i32.load8_s"  | "i32.load8_u"  | "i32.load16_s" | "i32.load16_u"
+  | "i64.load8_s"  | "i64.load8_u"  | "i64.load16_s" | "i64.load16_u"
+  | "i64.load32_s" | "i64.load32_u"
+  | "i32.load" | "i64.load" | "f32.load" | "f64.load"
+  | "i32.store8"  | "i32.store16"
+  | "i64.store8"  | "i64.store16" | "i64.store32"
+  | "i32.store" | "i64.store" | "f32.store" | "f64.store"
+    // ── i32 ───────────────────────────────────────────────────────────────
+  | "i32.const"
+  | "i32.clz" | "i32.ctz" | "i32.popcnt"
+  | "i32.add" | "i32.sub" | "i32.mul"
+  | "i32.div_s" | "i32.div_u" | "i32.rem_s" | "i32.rem_u"
+  | "i32.and" | "i32.or" | "i32.xor"
+  | "i32.shl" | "i32.shr_s" | "i32.shr_u" | "i32.rotl" | "i32.rotr"
+  | "i32.eqz" | "i32.eq" | "i32.ne"
+  | "i32.lt_s" | "i32.lt_u" | "i32.gt_s" | "i32.gt_u"
+  | "i32.le_s" | "i32.le_u" | "i32.ge_s" | "i32.ge_u"
+  | "i32.wrap_i64"
+  | "i32.trunc_sat_f32_s" | "i32.trunc_sat_f32_u"
+  | "i32.trunc_sat_f64_s" | "i32.trunc_sat_f64_u"
+  | "i32.trunc_f32_s" | "i32.trunc_f32_u"
+  | "i32.trunc_f64_s" | "i32.trunc_f64_u"
+  | "i32.reinterpret_f32"
+  | "i32.extend8_s" | "i32.extend16_s"
+    // ── i64 ───────────────────────────────────────────────────────────────
+  | "i64.const"
+  | "i64.clz" | "i64.ctz" | "i64.popcnt"
+  | "i64.add" | "i64.sub" | "i64.mul"
+  | "i64.div_s" | "i64.div_u" | "i64.rem_s" | "i64.rem_u"
+  | "i64.and" | "i64.or" | "i64.xor"
+  | "i64.shl" | "i64.shr_s" | "i64.shr_u" | "i64.rotl" | "i64.rotr"
+  | "i64.eqz" | "i64.eq" | "i64.ne"
+  | "i64.lt_s" | "i64.lt_u" | "i64.gt_s" | "i64.gt_u"
+  | "i64.le_s" | "i64.le_u" | "i64.ge_s" | "i64.ge_u"
+  | "i64.extend_i32_s" | "i64.extend_i32_u"
+  | "i64.trunc_sat_f32_s" | "i64.trunc_sat_f32_u"
+  | "i64.trunc_sat_f64_s" | "i64.trunc_sat_f64_u"
+  | "i64.trunc_f32_s" | "i64.trunc_f32_u"
+  | "i64.trunc_f64_s" | "i64.trunc_f64_u"
+  | "i64.reinterpret_f64"
+  | "i64.extend8_s" | "i64.extend16_s" | "i64.extend32_s"
+    // ── f32 ───────────────────────────────────────────────────────────────
+  | "f32.const"
+  | "f32.abs" | "f32.neg" | "f32.ceil" | "f32.floor" | "f32.trunc" | "f32.nearest" | "f32.sqrt"
+  | "f32.add" | "f32.sub" | "f32.mul" | "f32.div"
+  | "f32.min" | "f32.max" | "f32.copysign"
+  | "f32.eq" | "f32.ne" | "f32.lt" | "f32.gt" | "f32.le" | "f32.ge"
+  | "f32.convert_i32_s" | "f32.convert_i32_u"
+  | "f32.convert_i64_s" | "f32.convert_i64_u"
+  | "f32.demote_f64" | "f32.reinterpret_i32"
+    // ── f64 ───────────────────────────────────────────────────────────────
+  | "f64.const"
+  | "f64.abs" | "f64.neg" | "f64.ceil" | "f64.floor" | "f64.trunc" | "f64.nearest" | "f64.sqrt"
+  | "f64.add" | "f64.sub" | "f64.mul" | "f64.div"
+  | "f64.min" | "f64.max" | "f64.copysign"
+  | "f64.eq" | "f64.ne" | "f64.lt" | "f64.gt" | "f64.le" | "f64.ge"
+  | "f64.convert_i32_s" | "f64.convert_i32_u"
+  | "f64.convert_i64_s" | "f64.convert_i64_u"
+  | "f64.promote_f32" | "f64.reinterpret_i64"
+    // ── Reference types ───────────────────────────────────────────────────
+  | "ref.null" | "ref.is_null" | "ref.func"
+    // ── SIMD v128 (abbreviated) ───────────────────────────────────────────
+  | "v128.const"
+  | "v128.not" | "v128.and" | "v128.andnot" | "v128.or" | "v128.xor"
+  | "v128.bitselect" | "v128.any_true"
+  | "v128.load" | "v128.store"
+  | "i8x16.splat"  | "i16x8.splat"  | "i32x4.splat"  | "i64x2.splat"
+  | "f32x4.splat"  | "f64x2.splat"
+  | "i8x16.shuffle" | "i8x16.swizzle"
+  | "i8x16.add" | "i16x8.add" | "i32x4.add" | "i64x2.add"
+  | "i8x16.sub" | "i16x8.sub" | "i32x4.sub" | "i64x2.sub"
+  | "i32x4.mul" | "i64x2.mul"
+  | "f32x4.add" | "f64x2.add" | "f32x4.sub" | "f64x2.sub"
+  | "f32x4.mul" | "f64x2.mul" | "f32x4.div" | "f64x2.div"
+  | "f32x4.sqrt" | "f64x2.sqrt"
+  | "i32x4.trunc_sat_f32x4_s" | "i32x4.trunc_sat_f32x4_u"
+  | "f32x4.convert_i32x4_s"   | "f32x4.convert_i32x4_u"
+}
+
+// ── Instruction arguments ─────────────────────────────────────────────────────
+// Priority: mem_arg > block_type > folded_instr > id > index > string > float > integer > bare_val_type
+// bare_val_type is last and only matches when NOT followed by "." to avoid
+// consuming "i32" when "i32.add" is the next token.
+
+instr_arg = {
+    mem_arg
+  | block_type
+  | folded_instr
+  | id
+  | string
+  | float
+  | integer
+  | bare_lane_type
+  | bare_val_type
+}
+
+bare_val_type  = @{ val_type ~ !("." | ASCII_ALPHANUMERIC | "_") }
+// SIMD lane types as immediates (i8x16, i16x8, i32x4, i64x2, f32x4, f64x2)
+bare_lane_type = @{ val_lane_type ~ !("." | ASCII_ALPHANUMERIC | "_") }
+
+// Memory immediate: offset=N or align=N
+mem_arg = @{ ("offset=" ~ integer) | ("align=" ~ integer) }
+
+// Block type annotation (inside block/loop/if)
+block_type = {
+    "(" ~ "type"   ~ index ~ ")"
+  | "(" ~ "result" ~ val_type+ ~ ")"
+  | "(" ~ "param"  ~ id? ~ val_type+ ~ ")"
+}
+
+// ── Module fields ─────────────────────────────────────────────────────────────
+
+module_field = {
+    func_field
+  | import_field
+  | export_field
+  | table_field
+  | memory_field
+  | global_field
+  | elem_field
+  | data_field
+  | type_field
+  | tag_field
+  | start_field
+}
+
+// ── Function ──────────────────────────────────────────────────────────────────
+
+func_field = {
+    "(" ~ "func" ~ id? ~ export_inline* ~ import_inline? ~ typeuse ~ local* ~ instr* ~ ")"
+}
+
+local = { "(" ~ "local" ~ id? ~ val_type+ ~ ")" }
+
+export_inline = { "(" ~ "export" ~ string ~ ")" }
+import_inline = { "(" ~ "import" ~ string ~ string ~ ")" }
+
+// ── Import ────────────────────────────────────────────────────────────────────
+
+import_field = { "(" ~ "import" ~ string ~ string ~ import_desc ~ ")" }
+
+import_desc = {
+    "(" ~ "func"   ~ id? ~ typeuse ~ ")"
+  | "(" ~ "table"  ~ id? ~ table_type ~ ")"
+  | "(" ~ "memory" ~ id? ~ mem_type ~ ")"
+  | "(" ~ "global" ~ id? ~ global_type ~ ")"
+  | "(" ~ "tag"    ~ id? ~ tag_type ~ ")"
+}
+
+// ── Export ────────────────────────────────────────────────────────────────────
+
+export_field = { "(" ~ "export" ~ string ~ export_desc ~ ")" }
+
+export_desc = {
+    "(" ~ "func"   ~ index ~ ")"
+  | "(" ~ "table"  ~ index ~ ")"
+  | "(" ~ "memory" ~ index ~ ")"
+  | "(" ~ "global" ~ index ~ ")"
+  | "(" ~ "tag"    ~ index ~ ")"
+}
+
+// ── Table ─────────────────────────────────────────────────────────────────────
+
+table_field = {
+    "(" ~ "table" ~ id? ~ export_inline* ~ import_inline? ~ table_type ~ ")"
+  | "(" ~ "table" ~ id? ~ export_inline* ~ ref_type ~ "(" ~ "elem" ~ index* ~ ")" ~ ")"
+}
+
+table_type = { integer ~ integer? ~ ref_type }
+
+// ── Memory ────────────────────────────────────────────────────────────────────
+
+memory_field = {
+    "(" ~ "memory" ~ id? ~ export_inline* ~ import_inline? ~ mem_type ~ ")"
+}
+
+mem_type = { integer ~ integer? }
+
+// ── Global ────────────────────────────────────────────────────────────────────
+
+global_field = {
+    "(" ~ "global" ~ id? ~ export_inline* ~ import_inline? ~ global_type ~ instr* ~ ")"
+}
+
+global_type = {
+    "(" ~ "mut" ~ val_type ~ ")"
+  | val_type
+}
+
+// ── Tag (exceptions proposal) ─────────────────────────────────────────────────
+
+tag_field = { "(" ~ "tag" ~ id? ~ export_inline* ~ import_inline? ~ tag_type ~ ")" }
+tag_type  = { "(" ~ "func" ~ param* ~ ")" | param* }
+
+// ── Element segment ───────────────────────────────────────────────────────────
+
+elem_field = {
+    "(" ~ "elem" ~ id? ~ elem_mode? ~ ref_type? ~ ("(" ~ "item" ~ instr* ~ ")")* ~ ")"
+  | "(" ~ "elem" ~ id? ~ elem_mode? ~ "func" ~ index* ~ ")"
+}
+
+elem_mode = {
+    "(" ~ "table" ~ index ~ ")" ~ "(" ~ "offset" ~ instr* ~ ")"
+  | "declare"
+}
+
+// ── Data segment ──────────────────────────────────────────────────────────────
+
+data_field = {
+    "(" ~ "data" ~ id? ~ data_mode? ~ string* ~ ")"
+}
+
+data_mode = {
+    "(" ~ "memory" ~ index ~ ")" ~ "(" ~ "offset" ~ instr* ~ ")"
+  | "(" ~ "offset" ~ instr* ~ ")"
+}
+
+// ── Type definition ───────────────────────────────────────────────────────────
+
+type_field = { "(" ~ "type" ~ id? ~ func_type ~ ")" }
+func_type  = { "(" ~ "func" ~ param* ~ result* ~ ")" }
+
+// ── Start ─────────────────────────────────────────────────────────────────────
+
+start_field = { "(" ~ "start" ~ index ~ ")" }
+
+// ── Module ────────────────────────────────────────────────────────────────────
+
+module = { "(" ~ "module" ~ id? ~ module_field* ~ ")" }
+
+// ── WAST Script Commands ──────────────────────────────────────────────────────
+
+// (invoke id? "name" expr*)  — id selects a named module instance
+invoke_cmd = { "(" ~ "invoke" ~ id? ~ string ~ expr* ~ ")" }
+
+// (assert_return action result*)
+assert_return = { "(" ~ "assert_return" ~ action ~ result_val* ~ ")" }
+
+// (assert_trap action "message")  — runtime trap
+assert_trap = { "(" ~ "assert_trap" ~ action ~ string ~ ")" }
+
+// (assert_trap (module …) "message")  — instantiation trap
+assert_instantiation_trap = { "(" ~ "assert_trap" ~ module ~ string ~ ")" }
+
+// (assert_invalid (module …) "message")  — validation error
+assert_invalid = { "(" ~ "assert_invalid" ~ module ~ string ~ ")" }
+
+// (assert_malformed (module …) "message")  — parse/decode error
+assert_malformed = { "(" ~ "assert_malformed" ~ module_or_binary ~ string ~ ")" }
+
+// (assert_unlinkable (module …) "message")  — link error
+assert_unlinkable = { "(" ~ "assert_unlinkable" ~ module ~ string ~ ")" }
+
+// (assert_exhaustion action "message")  — stack overflow
+assert_exhaustion = { "(" ~ "assert_exhaustion" ~ action ~ string ~ ")" }
+
+// (assert_suspension action "message")  — threads proposal
+assert_suspension = { "(" ~ "assert_suspension" ~ action ~ string ~ ")" }
+
+// (register "name" id?)  — register module under a name for imports
+register_cmd = { "(" ~ "register" ~ string ~ id? ~ ")" }
+
+// (get id? "name")  — read a global export
+get_cmd = { "(" ~ "get" ~ id? ~ string ~ ")" }
+
+// Action: invoke or get
+action = { invoke_cmd | get_cmd }
+
+// ── Result values (expected in assert_return) ─────────────────────────────────
+
+result_val = {
+    "(" ~ "i32.const" ~ integer ~ ")"
+  | "(" ~ "i64.const" ~ integer ~ ")"
+  | "(" ~ "f32.const" ~ (float | integer) ~ ")"
+  | "(" ~ "f64.const" ~ (float | integer) ~ ")"
+  | "(" ~ "v128.const" ~ val_lane_type ~ integer+ ~ ")"
+  | "(" ~ "ref.null"   ~ ref_type ~ ")"
+  | "(" ~ "ref.extern" ~ integer ~ ")"
+  | "(" ~ "ref.func"   ~ ")"
+  | "(" ~ "f32.const"  ~ "nan:canonical" ~ ")"
+  | "(" ~ "f32.const"  ~ "nan:arithmetic" ~ ")"
+  | "(" ~ "f64.const"  ~ "nan:canonical" ~ ")"
+  | "(" ~ "f64.const"  ~ "nan:arithmetic" ~ ")"
+}
+
+// Lane type for v128.const in result_val
+val_lane_type = @{
+    "i8x16" | "i16x8" | "i32x4" | "i64x2" | "f32x4" | "f64x2"
+}
+
+// ── Inline expressions (invoke arguments) ─────────────────────────────────────
+
+expr = {
+    "(" ~ "i32.const" ~ integer ~ ")"
+  | "(" ~ "i64.const" ~ integer ~ ")"
+  | "(" ~ "f32.const" ~ (float | integer) ~ ")"
+  | "(" ~ "f64.const" ~ (float | integer) ~ ")"
+  | "(" ~ "v128.const" ~ val_lane_type ~ integer+ ~ ")"
+  | "(" ~ "ref.null"   ~ ref_type ~ ")"
+  | "(" ~ "ref.extern" ~ integer ~ ")"
+  | "(" ~ "ref.func"   ~ index ~ ")"
+}
+
+// ── Module or binary/quote (for assert_malformed) ─────────────────────────────
+
+module_or_binary = {
+    module
+  | "(" ~ "module" ~ "binary" ~ string+ ~ ")"
+  | "(" ~ "module" ~ "quote"  ~ string+ ~ ")"
+}
+
+// ── Top-level WAST program ────────────────────────────────────────────────────
+
+script_cmd = {
+    module
+  | assert_return
+  | assert_instantiation_trap
+  | assert_trap
+  | assert_invalid
+  | assert_malformed
+  | assert_unlinkable
+  | assert_exhaustion
+  | assert_suspension
+  | invoke_cmd
+  | register_cmd
+  | get_cmd
+}
+
+program = { SOI ~ script_cmd* ~ EOI }
