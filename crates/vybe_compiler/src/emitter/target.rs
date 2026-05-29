@@ -61,7 +61,7 @@ impl Target {
                 "vybe:string".into(),
                 "vybe:types".into(), "vybe:convert".into(), "vybe:object".into(),
                 "ecma:regexp".into(), "vybe:crypto".into(),
-                "vybe:database".into(), "vybe:xml".into(),
+                "wasi:sql/types".into(), "wasi:sql/readwrite".into(), "vybe:xml".into(),
                 "vybe:drawing".into(),
                 "wasi:cli".into(), "wasi:filesystem".into(), "wasi:http".into(),
                 "wasi:random/random".into(), "wasi:random/insecure".into(), "wasi:random/insecure-seed".into(),

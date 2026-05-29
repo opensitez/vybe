@@ -477,7 +477,7 @@ impl FormApp {
             if conn_str.is_empty() { continue; }
 
             let sql = format!("SELECT * FROM {}", bs_info.data_member);
-            match vybe_host::modules::database::query_rows(&conn_str, &sql) {
+            match vybe_host::wasi::sql::query_rows(&conn_str, &sql) {
                 Ok((columns, rows)) => {
                     let store = DataStore {
                         columns: columns.clone(),

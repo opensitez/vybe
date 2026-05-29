@@ -311,11 +311,12 @@ pub fn register_all(vm: &mut VM) {
     {
         let mut t = TypeDef::new("SqlConnection");
         for (method, fname) in &[
-            ("open", "open"), ("close", "close"),
-            ("createcommand", "createCommand"),
-            ("begintransaction", "beginTransaction"),
+            ("open", "[method]connection.open"), ("close", "[method]connection.close"),
+            ("createcommand", "[method]connection.create-command"),
+            ("begintransaction", "[method]connection.begin-transaction"),
+            ("getschema", "[method]connection.get-schema"),
         ] {
-            if let Some(idx) = h(vm, "vybe:database", fname) {
+            if let Some(idx) = h(vm, "wasi:sql/types", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }
@@ -327,10 +328,77 @@ pub fn register_all(vm: &mut VM) {
     {
         let mut t = TypeDef::new("SqlCommand");
         for (method, fname) in &[
-            ("executenonquery", "execute"), ("executescalar", "scalar"),
-            ("executereader", "query"),
+            ("executenonquery", "[method]command.execute-non-query"),
+            ("executescalar", "[method]command.execute-scalar"),
+            ("executereader", "[method]command.execute-reader"),
+            ("executenonqueryasync", "[method]command.execute-non-query"),
+            ("executescalarasync", "[method]command.execute-scalar"),
+            ("executereaderasync", "[method]command.execute-reader"),
+            ("createparameter", "[method]command.create-parameter"),
         ] {
-            if let Some(idx) = h(vm, "vybe:database", fname) {
+            if let Some(idx) = h(vm, "wasi:sql/types", fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+
+    // --- SqlDataReader ---
+    {
+        let mut t = TypeDef::new("SqlDataReader");
+        for (method, fname) in &[
+            ("read", "[method]reader.read"),
+            ("getvalue", "[method]reader.get-value"),
+            ("getstring", "[method]reader.get-string"),
+            ("getname", "[method]reader.get-name"),
+            ("isdbnull", "[method]reader.is-dbnull"),
+            ("close", "[method]reader.close"),
+            ("dispose", "[method]reader.close"),
+            ("getschematable", "[method]reader.get-schema-table"),
+        ] {
+            if let Some(idx) = h(vm, "wasi:sql/types", fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+
+    // --- SqlTransaction ---
+    {
+        let mut t = TypeDef::new("SqlTransaction");
+        for (method, fname) in &[
+            ("commit", "[method]transaction.commit"),
+            ("rollback", "[method]transaction.rollback"),
+        ] {
+            if let Some(idx) = h(vm, "wasi:sql/types", fname) {
+                t.methods.insert(method.to_string(), Method::HostFn(idx));
+            }
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+
+    // --- SqlDataAdapter ---
+    {
+        let mut t = TypeDef::new("SqlDataAdapter");
+        if let Some(idx) = h(vm, "wasi:sql/types", "[method]adapter.fill") {
+            t.methods.insert("fill".into(), Method::HostFn(idx));
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+
+    // --- SqlParameterCollection ---
+    {
+        let mut t = TypeDef::new("SqlParameterCollection");
+        for (method, fname) in &[
+            ("addwithvalue", "[method]params.add-with-value"),
+            ("clear", "[method]params.clear"),
+            ("count", "[method]params.count"),
+        ] {
+            if let Some(idx) = h(vm, "wasi:sql/types", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }
@@ -406,6 +474,32 @@ pub fn register_all(vm: &mut VM) {
         }
         if let Some(idx) = h(vm, "vybe:data", "dataTableAddRow") {
             t.methods.insert("rows".into(), Method::HostFn(idx));
+        }
+        if let Some(idx) = h(vm, "vybe:data", "dataTableSelect") {
+            t.methods.insert("select".into(), Method::HostFn(idx));
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+
+    // --- DataSet ---
+    {
+        let mut t = TypeDef::new("DataSet");
+        if let Some(idx) = h(vm, "vybe:data", "dataSetTables") {
+            t.methods.insert("tables".into(), Method::HostFn(idx));
+        }
+        t.parent = Some(0);
+        vm.type_registry.register(t);
+    }
+
+    // --- DataRow ---
+    {
+        let mut t = TypeDef::new("DataRow");
+        if let Some(idx) = h(vm, "vybe:data", "dataRowItem") {
+            t.methods.insert("item".into(), Method::HostFn(idx));
+        }
+        if let Some(idx) = h(vm, "vybe:data", "dataRowIsNull") {
+            t.methods.insert("isnull".into(), Method::HostFn(idx));
         }
         t.parent = Some(0);
         vm.type_registry.register(t);
@@ -837,7 +931,8 @@ pub fn register_all(vm: &mut VM) {
         //     wrapper Component Model dispatch at compile time).
         ("Dictionary", "ecma:map", "new"),
         ("HashSet", "ecma:set", "new"),
-        ("SqlConnection", "vybe:database", "connect"),
+        ("SqlConnection", "wasi:sql/types", "connection.new"),
+        ("SqlDataAdapter", "wasi:sql/types", "data-adapter.new"),
         // StringBuilder / DateTime / TcpClient / TcpListener / UdpClient /
         // Queue / Stack ctor mappings retired — all lower at compile time
         // through the dotnet wrapper Common emit path. Queue/Stack don't

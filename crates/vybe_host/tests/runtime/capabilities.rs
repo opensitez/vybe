@@ -81,7 +81,7 @@ fn all_caps_registers_filesystem() {
 fn all_caps_registers_database() {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::all());
-    let has_db = vm.host_registry.keys().any(|(m, _)| m == "vybe:database");
+    let has_db = vm.host_registry.keys().any(|(m, _)| m.starts_with("wasi:sql"));
     assert!(has_db, "Full caps should register database");
 }
 
@@ -133,7 +133,7 @@ fn safe_blocks_filesystem() {
 fn safe_blocks_database() {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &Capabilities::safe());
-    let has_db = vm.host_registry.keys().any(|(m, _)| m == "vybe:database");
+    let has_db = vm.host_registry.keys().any(|(m, _)| m.starts_with("wasi:sql"));
     assert!(!has_db, "Safe mode should NOT have database");
 }
 
@@ -233,7 +233,7 @@ fn custom_database_only() {
     let mut vm = VM::new();
     register_with_capabilities(&mut vm, &caps);
 
-    let has_db = vm.host_registry.keys().any(|(m, _)| m == "vybe:database");
+    let has_db = vm.host_registry.keys().any(|(m, _)| m.starts_with("wasi:sql"));
     let has_fs = vm.host_registry.keys().any(|(m, _)| m == "wasi:filesystem");
     let has_http = vm.host_registry.keys().any(|(m, _)| m == "wasi:http");
 
@@ -250,7 +250,7 @@ fn custom_network_only() {
 
     let has_http = vm.host_registry.keys().any(|(m, _)| m == "wasi:http");
     let has_sock = vm.host_registry.keys().any(|(m, _)| m.starts_with("wasi:sockets/"));
-    let has_db = vm.host_registry.keys().any(|(m, _)| m == "vybe:database");
+    let has_db = vm.host_registry.keys().any(|(m, _)| m.starts_with("wasi:sql"));
     let has_fs = vm.host_registry.keys().any(|(m, _)| m == "wasi:filesystem");
 
     assert!(has_http, "Should have HTTP");

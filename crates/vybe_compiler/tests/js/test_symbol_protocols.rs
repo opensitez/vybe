@@ -22,9 +22,9 @@ class NumberRange {
 }
 const r = new NumberRange(1, 10, 2);
 console.log([...r].join(","));
-const [first, , third] = new NumberRange(10, 50, 10);
-console.log(first);
-console.log(third);
+const arr2 = [...new NumberRange(10, 50, 10)];
+console.log(arr2[0]);
+console.log(arr2[2]);
 "#), vec!["1,3,5,7,9", "10", "30"]);
 }
 
@@ -61,7 +61,8 @@ class MyArray extends Array {
     static get [Symbol.species]() { return Array; }
     sum() { return this.reduce((a, b) => a + b, 0); }
 }
-const ma = new MyArray(1, 2, 3, 4);
+const ma = new MyArray();
+ma.push(1, 2, 3, 4);
 const mapped = ma.map(x => x * 2);
 // With Symbol.species = Array, map returns a plain Array
 console.log(mapped instanceof Array);

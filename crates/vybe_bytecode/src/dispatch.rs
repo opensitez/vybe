@@ -715,13 +715,13 @@ impl VM {
                 }
 
                 // -- Bitwise --
-                _ if op == Op::I32_AND => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a & b))?; }
-                _ if op == Op::I32_OR => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a | b))?; }
-                _ if op == Op::I32_XOR => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a ^ b))?; }
+                _ if op == Op::I32_AND => { let b = self.pop().to_ecma_int32(); let a = self.pop().to_ecma_int32(); self.push(Value::I32(a & b))?; }
+                _ if op == Op::I32_OR => { let b = self.pop().to_ecma_int32(); let a = self.pop().to_ecma_int32(); self.push(Value::I32(a | b))?; }
+                _ if op == Op::I32_XOR => { let b = self.pop().to_ecma_int32(); let a = self.pop().to_ecma_int32(); self.push(Value::I32(a ^ b))?; }
                 // i32_not: removed (non-WASM, use i32.const -1 + i32.xor)
-                _ if op == Op::I32_SHL => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a << (b & 0x1f)))?; }
-                _ if op == Op::I32_SHR_S => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::I32(a >> (b & 0x1f)))?; }
-                _ if op == Op::I32_SHR_U => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(Value::I32((a >> (b & 0x1f)) as i32))?; }
+                _ if op == Op::I32_SHL => { let b = self.pop().to_ecma_int32(); let a = self.pop().to_ecma_int32(); self.push(Value::I32(a.wrapping_shl((b as u32) & 0x1f)))?; }
+                _ if op == Op::I32_SHR_S => { let b = self.pop().to_ecma_int32(); let a = self.pop().to_ecma_int32(); self.push(Value::I32(a >> (b & 0x1f)))?; }
+                _ if op == Op::I32_SHR_U => { let b = self.pop().to_ecma_int32() as u32; let a = self.pop().to_ecma_int32() as u32; self.push(Value::I32((a >> (b & 0x1f)) as i32))?; }
 
                 // -- Comparison --
                 _ if op == Op::EQ => {

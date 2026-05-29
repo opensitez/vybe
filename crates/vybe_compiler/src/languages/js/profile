@@ -78,7 +78,7 @@ decodeURI               = { emit = "host:ecma:string:decodeURI",             min
 "Math.ceil"         = { emit = "opcode:f64_ceil",     min_args = 1, max_args = 1 }
 "Math.sqrt"         = { emit = "opcode:f64_sqrt",     min_args = 1, max_args = 1 }
 "Math.trunc"        = { emit = "opcode:f64_trunc",    min_args = 1, max_args = 1 }
-"Math.round"        = { emit = "opcode:f64_nearest",  min_args = 1, max_args = 1 }
+"Math.round"        = { emit = "host:ecma:math:round",  min_args = 1, max_args = 1 }
 "Math.min"          = { emit = "host:ecma:math:minOf", min_args = 0, max_args = 255 }
 "Math.max"          = { emit = "host:ecma:math:maxOf", min_args = 0, max_args = 255 }
 
@@ -115,7 +115,7 @@ decodeURI               = { emit = "host:ecma:string:decodeURI",             min
 "Number.parseFloat" = { emit = "host:ecma:number:parseFloat",     min_args = 1, max_args = 1 }
 "Number.isNaN"      = { emit = "host:ecma:number:isNaN",          min_args = 1, max_args = 1 }
 "Number.isFinite"   = { emit = "host:ecma:number:isFinite",       min_args = 1, max_args = 1 }
-"Number.isInteger"  = { emit = "intrinsic:number_isinteger",      min_args = 1, max_args = 1 }
+"Number.isInteger"  = { emit = "host:ecma:number:isInteger",      min_args = 1, max_args = 1 }
 
 # ── Type coercion globals: Boolean(v), Number(v), String(v) ──────────────────
 
@@ -664,13 +664,15 @@ kind = "namespace"
 alias = "xml2js"
 module = "web:dom-parser"
 
-# GUI namespace is now shared globally (added by add_shared_gui_namespace)
-# instead of per-language duplication.
+[[esm_default]]
+kind = "namespace"
+alias = "gui"
+module = "vybe:gui"
 
 [[esm_default]]
 kind = "namespace"
 alias = "db"
-module = "vybe:database"
+module = "wasi:sql"
 
 [[esm_default]]
 kind = "namespace"

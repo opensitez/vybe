@@ -31,7 +31,6 @@ pub mod random;
 // `Op::REF_TEST` (WASM GC ref.test) for static type names + an inline
 // __type/name string-compare fallback for dynamic RHS.
 pub mod runtime;
-pub mod database;
 pub mod gui;
 pub mod types;
 pub mod sockets;
@@ -555,7 +554,7 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
         // `wasi:sockets/*` via `emitter::dotnet::core::sockets_adapter`.
     }
     if caps.has(Capability::Database) {
-        database::register(vm);
+        crate::wasi::sql::register(vm);
     }
     // Capability::Threading — no host-fn module to register. Thread spawn /
     // join / atomics compile to WASM opcodes (Op::THREAD_SPAWN, etc.), and

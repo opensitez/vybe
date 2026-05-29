@@ -1,6 +1,36 @@
 use super::*;
 
 impl Compiler {
+    fn is_known_gui_event_name(&self, event: &str) -> bool {
+        matches!(self.canon(event).as_str(),
+            "click"
+                | "dblclick"
+                | "doubleclick"
+                | "load"
+                | "unload"
+                | "change"
+                | "textchanged"
+                | "selectedindexchanged"
+                | "checkedchanged"
+                | "valuechanged"
+                | "keypress"
+                | "keydown"
+                | "keyup"
+                | "mousedown"
+                | "mouseup"
+                | "mousemove"
+                | "mouseenter"
+                | "mouseleave"
+                | "gotfocus"
+                | "lostfocus"
+                | "enter"
+                | "leave"
+                | "resize"
+                | "paint"
+                | "formclosing"
+        )
+    }
+
     /// Static cases (push a string constant):
     ///   - `Ident("btn")`          -> "btn"
     ///   - `Me` / `This`           -> current class name (lowercased)
@@ -113,6 +143,15 @@ impl Compiler {
     fn should_use_gui_event_host(&self, control: &Expression, event: &str) -> bool {
         if event.is_empty() {
             return false;
+        }
+
+        if self.profile.namespaces.use_dotnet
+            && self.is_known_gui_event_name(event)
+            && self.event_receiver_type_hint(control).as_deref().is_some_and(|type_hint| {
+                matches!(Self::normalize_type_hint(type_hint).as_str(), "object" | "system.object")
+            })
+        {
+            return true;
         }
 
         self.event_receiver_type_hint(control)

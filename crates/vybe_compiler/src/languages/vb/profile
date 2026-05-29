@@ -723,6 +723,10 @@ extra_imports = [
 "vbtab" = "\t"
 "vbcrlf" = "\r\n"
 "vbnewline" = "\r\n"
+"commandtype.text" = 1.0
+"commandtype.storedprocedure" = 4.0
+"connectionstate.closed" = 0.0
+"connectionstate.open" = 1.0
 
 # System.Text.RegularExpressions.RegexOptions enum values
 "regexoptions.none"                    = 0.0

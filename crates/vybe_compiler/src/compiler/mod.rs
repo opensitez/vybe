@@ -8761,9 +8761,33 @@ impl Compiler {
                     .init
                     .as_ref()
                     .and_then(|expr| self.resolve_reflection_binding_expr(expr));
-                let mut inferred_type_hint = decl.type_hint.clone().or_else(|| {
-                    decl.init.as_ref().and_then(|expr| self.infer_expr_type_hint(expr))
-                });
+                let init_type_hint = decl
+                    .init
+                    .as_ref()
+                    .and_then(|expr| self.infer_expr_type_hint(expr));
+                let declared_type_hint = decl.type_hint.clone();
+                let mut inferred_type_hint = declared_type_hint.clone().or_else(|| init_type_hint.clone());
+
+                // VB often spells dynamically-created controls as `As Object`
+                // even though the initializer is a concrete dotnet wrapper such
+                // as `Window.Forms.Button()`. Keep that concrete wrapper type so
+                // later lowering (`AddHandler`, instance method dispatch, etc.)
+                // stays on the same WinForms adapter path as designer forms.
+                if self.profile.namespaces.use_dotnet {
+                    let declared_is_object = declared_type_hint
+                        .as_deref()
+                        .map(|type_hint| self.resolve_source_type_alias(type_hint))
+                        .map(|type_hint| matches!(Self::normalize_type_hint(&type_hint).as_str(), "object" | "system.object"))
+                        .unwrap_or(false);
+                    if declared_is_object {
+                        if let Some(init_type_hint) = init_type_hint.as_deref() {
+                            let resolved_init = self.resolve_source_type_alias(init_type_hint);
+                            if self.resolve_pending_class_name_for_type_hint(&resolved_init).is_some() {
+                                inferred_type_hint = Some(resolved_init);
+                            }
+                        }
+                    }
+                }
                 let resolved_type_hint = inferred_type_hint
                     .as_deref()
                     .map(|type_hint| self.resolve_source_type_alias(type_hint));

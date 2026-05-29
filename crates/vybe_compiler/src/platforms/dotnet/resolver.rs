@@ -51,6 +51,13 @@ pub enum DottedResolution {
         emit: String,
     },
 
+    /// Resolved to an existing global callable, typically a registered
+    /// dotnet wrapper constructor such as `Form` or `TextBox`.
+    GlobalAccess {
+        /// The lowercased global name to load.
+        name: String,
+    },
+
     /// Resolved to a namespace object chain. The compiler should:
     /// - emit global_get for the root namespace
     /// - emit struct_get for each subsequent part
@@ -137,7 +144,16 @@ pub fn resolve_dotted_name(parts: &[&str], ctx: &ResolutionContext) -> DottedRes
         return DottedResolution::Unresolved;
     }
 
-    // ── Step 2c: Known static component class method ───────────────────
+    // ── Step 2c: WinForms constructor aliases (`Window.Forms.X`) ────────
+    // The wrapper classes are installed as real globals (`Form`, `TextBox`,
+    // ...) by `dotnet_register`. Keep `Window.Forms.*` as a pure compile-time
+    // alias to those globals so the dotnet adapter layer stays in the
+    // compiler and the runtime only sees `vybe:gui` underneath.
+    if let Some(res) = try_resolve_component_constructor_alias_refs(&parts_to_refs(&lower_parts)) {
+        return res;
+    }
+
+    // ── Step 2d: Known static component class method ───────────────────
     // Handles fully-qualified static calls like
     // `System.Diagnostics.Debug.WriteLine` before import-based fallback.
     if let Some(res) = try_resolve_static_component_call(&lower_parts) {
@@ -333,8 +349,30 @@ fn try_resolve_static_component_property_refs(lower_parts: &[&str]) -> Option<Do
 }
 
 fn try_resolve_static_component_call(lower_parts: &[String]) -> Option<DottedResolution> {
-    let refs: Vec<&str> = lower_parts.iter().map(|s| s.as_str()).collect();
+    let refs = parts_to_refs(lower_parts);
     try_resolve_static_component_call_refs(&refs)
+}
+
+fn parts_to_refs<'a>(lower_parts: &'a [String]) -> Vec<&'a str> {
+    lower_parts.iter().map(|s| s.as_str()).collect()
+}
+
+fn try_resolve_component_constructor_alias_refs(lower_parts: &[&str]) -> Option<DottedResolution> {
+    if lower_parts.len() < 2 {
+        return None;
+    }
+
+    let type_name = lower_parts.last().copied()?;
+    let prefix = lower_parts[..lower_parts.len() - 1].join(".");
+    let is_winforms_ctor_alias = prefix.eq_ignore_ascii_case("system.windows.forms")
+        || prefix.eq_ignore_ascii_case("window.forms");
+    if !is_winforms_ctor_alias {
+        return None;
+    }
+
+    super::lookup_component_constructor(type_name).map(|_| DottedResolution::GlobalAccess {
+        name: type_name.to_string(),
+    })
 }
 
 fn try_resolve_static_component_call_refs(lower_parts: &[&str]) -> Option<DottedResolution> {
@@ -366,6 +404,7 @@ fn should_prefer_import_match(
 
 fn import_match_kind_rank(resolution: &DottedResolution) -> usize {
     match resolution {
+        DottedResolution::GlobalAccess { .. } => 3,
         DottedResolution::HostCall { .. } => 2,
         DottedResolution::CommonCall { .. } => 2,
         DottedResolution::NamespaceAccess { .. } => 1,
@@ -431,6 +470,32 @@ mod tests {
             res,
             DottedResolution::CommonCall {
                 emit: "threading.task_run".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn resolves_window_forms_constructor_alias_to_global_wrapper() {
+        let imports = vec!["system.windows.forms".to_string()];
+        let ctx = test_ctx(&imports);
+        let res = resolve_dotted_name(&["Window", "Forms", "TextBox"], &ctx);
+        assert_eq!(
+            res,
+            DottedResolution::GlobalAccess {
+                name: "textbox".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn resolves_system_windows_forms_constructor_to_global_wrapper() {
+        let imports = Vec::new();
+        let ctx = test_ctx(&imports);
+        let res = resolve_dotted_name(&["System", "Windows", "Forms", "Form"], &ctx);
+        assert_eq!(
+            res,
+            DottedResolution::GlobalAccess {
+                name: "form".to_string(),
             }
         );
     }

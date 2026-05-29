@@ -41,6 +41,7 @@ pub fn default_interface_imports() -> Vec<String> {
         "system.data".into(),
         "system.data.sqlclient".into(),
         "system.data.oledb".into(),
+        "adodb".into(),
         // Security
         "system.security.cryptography".into(),
         // XML

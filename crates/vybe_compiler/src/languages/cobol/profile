@@ -106,7 +106,7 @@ __move_corresponding = { emit = "common:cobol.move_corresponding", min_args = 2,
 
 # ── EXEC blocks (walker emits as calls) ─────────────────────────────────────
 
-__exec_sql          = { emit = "host:vybe:database:execRaw", min_args = 1, max_args = 1 }
+__exec_sql          = { emit = "host:wasi:sql:execRaw", min_args = 1, max_args = 1 }
 __exec_cics         = { emit = "noop",                        min_args = 1, max_args = 1 }
 __exec_dli          = { emit = "noop",                        min_args = 1, max_args = 1 }
 

@@ -149,7 +149,6 @@ fn is_non_visual_component_type(type_name: &str) -> bool {
             | "pagesetupdialog"
             | "printdocument"
             | "sqlconnection"
-            | "oledbconnection"
             | "dataview"
     )
 }
@@ -518,8 +517,6 @@ pub fn register(
                             g.set_property(&val_str, "Text", &val_str);
                         }
                     }
-                    obj.lock().unwrap().properties.insert("__control_name".into(), val.clone());
-                } else if !live_widget {
                     obj.lock().unwrap().properties.insert("__control_name".into(), val.clone());
                 }
                 if gui_trace_enabled() && matches!(prop_lower.as_str(), "name" | "text") {

@@ -776,10 +776,19 @@ impl Compiler {
                     self.patch_jump(skip);
                     return Ok(());
                 }
-                // Pow → canonical stdlib path: push func ref BEFORE operands
-                // so [func, base, exponent] is on the stack for call_ref.
+                // Pow → BigInt fast path, then canonical stdlib path.
                 if *op == BinOp::Pow {
                     let line = self.line;
+                    if self.is_js_profile()
+                        && self.infer_expr_type_hint(left).as_deref() == Some("bigint")
+                        && self.infer_expr_type_hint(right).as_deref() == Some("bigint")
+                    {
+                        let idx = self.import("ecma:bigint", "pow");
+                        self.compile_expr(left)?;
+                        self.compile_expr(right)?;
+                        self.emit_host_call(idx, 2);
+                        return Ok(());
+                    }
                     common::math::emit_pow_push_func(self.chunk(), line);
                     self.compile_expr(left)?;
                     self.compile_expr(right)?;
@@ -930,6 +939,7 @@ impl Compiler {
                             BinOp::BitAnd => Some("and"),
                             BinOp::BitOr  => Some("or"),
                             BinOp::BitXor => Some("xor"),
+                            BinOp::Pow    => Some("pow"),
                             BinOp::Shl    => Some("shl"),
                             BinOp::Shr    => Some("shr"),
                             BinOp::Eq | BinOp::StrictEq       => Some("eq"),
@@ -1018,7 +1028,15 @@ impl Compiler {
                     _ => {
                         self.compile_expr(inner)?;
                         match op {
-                            UnaryOp::Neg => { let l = self.line; common::math::emit_neg(self.chunk(), l); }
+                            UnaryOp::Neg => {
+                                let l = self.line;
+                                if self.is_js_profile() && self.infer_expr_type_hint(inner).as_deref() == Some("bigint") {
+                                    let idx = self.import("ecma:bigint", "neg");
+                                    self.emit_host_call(idx, 1);
+                                } else {
+                                    common::math::emit_neg(self.chunk(), l);
+                                }
+                            }
                             UnaryOp::Pos => {
                                 // JS `+v` coerces to number — ECMA-262 §7.1.4 ToNumber.
                                 // For Object operands, ToPrimitive(hint=number)
@@ -1033,7 +1051,15 @@ impl Compiler {
                                 self.emit_host_call(idx, 1);
                             }
                             UnaryOp::Not => self.emit(Op::DYN_NOT),
-                            UnaryOp::BitNot => { let l = self.line; common::expressions::emit_i32_not(self.chunk(), l); }
+                            UnaryOp::BitNot => {
+                                let l = self.line;
+                                if self.is_js_profile() && self.infer_expr_type_hint(inner).as_deref() == Some("bigint") {
+                                    let idx = self.import("ecma:bigint", "not");
+                                    self.emit_host_call(idx, 1);
+                                } else {
+                                    common::expressions::emit_i32_not(self.chunk(), l);
+                                }
+                            }
                             UnaryOp::Typeof => self.emit(Op::REF_TYPEOF),
                             UnaryOp::Void => { self.emit(Op::DROP); self.emit(Op::UNDEFINED); }
                             UnaryOp::Delete => { self.emit(Op::DROP); self.emit(Op::TRUE); }
@@ -1335,6 +1361,11 @@ impl Compiler {
                             };
                             let refs: Vec<&str> = lower_parts.iter().map(|part| part.as_str()).collect();
                             match common::dotnet::resolve_dotted_name(&refs, &ctx) {
+                                common::dotnet::DottedResolution::GlobalAccess { name } => {
+                                    let idx = self.str_const(&name);
+                                    self.emit_u16(Op::GLOBAL_GET, idx);
+                                    return Ok(());
+                                }
                                 common::dotnet::DottedResolution::CommonCall { emit } => {
                                     self.emit_common(&emit, 0, self.line);
                                     return Ok(());

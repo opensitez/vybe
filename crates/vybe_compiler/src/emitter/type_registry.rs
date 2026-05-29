@@ -364,8 +364,13 @@ impl FrameworkTypeTable {
         self.add("System.Data.SqlClient.SqlConnection", Some("System.Object"));
         self.add("System.Data.SqlClient.SqlCommand", Some("System.Object"));
         self.add("System.Data.SqlClient.SqlDataReader", Some("System.Object"));
+        self.add("System.Data.SqlClient.SqlDataAdapter", Some("System.Object"));
+        self.add("System.Data.SqlClient.SqlTransaction", Some("System.Object"));
         self.add("System.Data.OleDb.OleDbConnection", Some("System.Object"));
         self.add("System.Data.OleDb.OleDbCommand", Some("System.Object"));
+        self.add("ADODB.Connection", Some("System.Object"));
+        self.add("ADODB.Command", Some("System.Object"));
+        self.add("ADODB.Recordset", Some("System.Object"));
 
         // ── Net ──────────────────────────────────────────────────────────
         self.add("System.Net.Sockets.TcpClient", Some("System.Object"));

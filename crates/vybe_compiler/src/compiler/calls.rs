@@ -2970,6 +2970,13 @@ impl Compiler {
                     let resolution = common::dotnet::resolve_dotted_name(&refs, &ctx);
 
                     match resolution {
+                        common::dotnet::DottedResolution::GlobalAccess { name } => {
+                            let global_idx = self.str_const(&name);
+                            self.emit_u16(Op::GLOBAL_GET, global_idx);
+                            for a in &arg_exprs { self.compile_expr(a)?; }
+                            self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                            return Ok(());
+                        }
                         common::dotnet::DottedResolution::CommonCall { emit } => {
                             if emit.eq_ignore_ascii_case("dotnet.array_resize")
                                 && args.len() == 2

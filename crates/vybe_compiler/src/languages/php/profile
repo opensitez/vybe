@@ -73,7 +73,7 @@ ord                 = { emit = "host:wasm:js-string:charCodeAt", min_args = 1, m
 # arg is an offset rather than JS's direct `indexOf` shape.
 strpos              = { emit = "intrinsic:php_strpos",       min_args = 2, max_args = 3 }
 mb_strpos           = { emit = "intrinsic:php_strpos",       min_args = 2, max_args = 3 }
-stripos             = { emit = "opcode:str_index_of",        min_args = 2, max_args = 3 }
+# stripos walker-normalized to strpos(strtolower(h), strtolower(n)) in walker.rs
 # Path utilities — routed through the PHP filesystem emitter so PHP keeps a
 # language-local boundary even when the underlying host call is a thin path op.
 basename            = { emit = "common:php.basename",  min_args = 1, max_args = 2 }
@@ -101,6 +101,7 @@ strrpos             = { emit = "opcode:str_last_index_of",   min_args = 2, max_a
 strripos            = { emit = "opcode:str_last_index_of",   min_args = 2, max_args = 3 }
 strrchr             = { emit = "common:php.strrchr",         min_args = 2, max_args = 2 }
 md5                 = { emit = "common:php.md5",             min_args = 1, max_args = 1 }
+sha1                = { emit = "common:php.sha1",            min_args = 1, max_args = 1 }
 crc32               = { emit = "common:php.crc32",           min_args = 1, max_args = 1 }
 # `ucfirst` / `lcfirst` walker-rewritten to the `s.charAt(0).toX() + s.slice(1)`
 # composition. Both the `host:ecma:string:*` methods and the value-method

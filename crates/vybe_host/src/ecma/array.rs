@@ -1153,7 +1153,12 @@ fn register_mutators(vm: &mut VM) {
                             let s = start.max(0).min(len) as usize;
                             let e = end.max(0).min(len) as usize;
                             for i in s..e { v[i] = val.clone(); }
+                            // Clear hole markers for the filled range
+                            let mut holes = hole_indices(&o);
+                            for i in s..e { holes.remove(&i); }
+                            store_hole_indices(&mut o, &holes);
                         }
+                        sync_length(&mut o);
                     }
                     ObjectKind::TypedArray(ta) => {
                         let live = ta_live_length(ta) as i32;
@@ -1565,13 +1570,14 @@ fn register_non_mutators(vm: &mut VM) {
         "flat",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let depth = args.get(1).map(|v| v.as_i32()).unwrap_or(1);
-            fn flatten(out: &mut Vec<Value>, input: &[Value], depth: i32) {
-                for v in input {
+            fn flatten(out: &mut Vec<Value>, arr_obj: &Object, elems: &[Value], depth: i32) {
+                for (i, v) in elems.iter().enumerate() {
+                    if is_array_hole(arr_obj, i) { continue; }
                     if depth > 0 {
                         if let Value::Object(o) = v {
                             let lock = o.lock().unwrap();
                             if let ObjectKind::Array(ref inner) = lock.kind {
-                                flatten(out, inner, depth - 1);
+                                flatten(out, &lock, inner, depth - 1);
                                 continue;
                             }
                         }
@@ -1583,7 +1589,7 @@ fn register_non_mutators(vm: &mut VM) {
             if let Some(arr) = array_of(args, 0) {
                 let o = arr.lock().unwrap();
                 if let ObjectKind::Array(ref v) = o.kind {
-                    flatten(&mut out, v, depth);
+                    flatten(&mut out, &o, v, depth);
                 }
             }
             make_array(out)

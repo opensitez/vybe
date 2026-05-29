@@ -15,8 +15,9 @@ vybe_widgets = { workspace = true, optional = true }
 regex = { workspace = true }
 regress = { workspace = true }
 chrono = { workspace = true }
-sqlx = { workspace = true }
-tokio = { workspace = true }
+rusqlite = { workspace = true }
+postgres = { workspace = true }
+mysql = { workspace = true }
 indexmap = { workspace = true }
 sha2 = { workspace = true }
 sha1 = { workspace = true }

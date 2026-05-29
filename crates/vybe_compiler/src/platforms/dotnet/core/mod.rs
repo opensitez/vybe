@@ -24,6 +24,8 @@ pub mod parse_adapter;
 pub mod collections_adapter;
 pub mod environment_adapter;
 pub mod filesystem_adapter;
+pub mod oledb_adapter;
+pub mod adodb_adapter;
 
 use vybe_bytecode::component_model::ComponentDescriptor;
 

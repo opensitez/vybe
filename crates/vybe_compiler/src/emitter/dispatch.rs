@@ -550,6 +550,8 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::php::string_adapter::emit_str_rot13(chunks, current, argc, line),
         "php.md5"
             => crate::emitter::php::string_adapter::emit_md5(chunks, current, argc, line),
+        "php.sha1"
+            => crate::emitter::php::string_adapter::emit_sha1(chunks, current, argc, line),
         "php.crc32"
             => crate::emitter::php::string_adapter::emit_crc32(chunks, current, argc, line),
         "php.str_split"
@@ -824,6 +826,42 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::dotnet::core::environment_adapter::emit_environment_get(chunks, current, line),
         "dotnet.environment_set"
             => crate::emitter::dotnet::core::environment_adapter::emit_environment_set(chunks, current, line),
+
+        // ── OleDb adapter — System.Data.OleDb constructor wrappers ─────────────
+        "dotnet.oledb_connection_new"
+            => crate::emitter::dotnet::core::oledb_adapter::emit_oledb_connection_new(chunks, current, argc, line),
+        "dotnet.oledb_command_new"
+            => crate::emitter::dotnet::core::oledb_adapter::emit_oledb_command_new(chunks, current, argc, line),
+
+        // ── ADODB adapter — ADODB.Connection / Command / Recordset ──────────────
+        "dotnet.adodb_connection_new"
+            => crate::emitter::dotnet::core::adodb_adapter::emit_adodb_connection_new(chunks, current, argc, line),
+        "dotnet.adodb_connection_execute"
+            => crate::emitter::dotnet::core::adodb_adapter::emit_adodb_connection_execute(chunks, current, argc, line),
+        "dotnet.adodb_conn_begin_trans"
+            => crate::emitter::dotnet::core::adodb_adapter::emit_adodb_conn_begin_trans(chunks, current, argc, line),
+        "dotnet.adodb_conn_commit_trans"
+            => crate::emitter::dotnet::core::adodb_adapter::emit_adodb_conn_commit_trans(chunks, current, argc, line),
+        "dotnet.adodb_conn_rollback_trans"
+            => crate::emitter::dotnet::core::adodb_adapter::emit_adodb_conn_rollback_trans(chunks, current, argc, line),
+        "dotnet.adodb_command_new"
+            => crate::emitter::dotnet::core::adodb_adapter::emit_adodb_command_new(chunks, current, argc, line),
+        "dotnet.adodb_command_execute"
+            => crate::emitter::dotnet::core::adodb_adapter::emit_adodb_command_execute(chunks, current, argc, line),
+        "dotnet.adodb_command_create_parameter"
+            => crate::emitter::dotnet::core::adodb_adapter::emit_adodb_command_create_parameter(chunks, current, argc, line),
+        "dotnet.adodb_recordset_new"
+            => crate::emitter::dotnet::core::adodb_adapter::emit_adodb_recordset_new(chunks, current, argc, line),
+        "dotnet.adodb_recordset_open"
+            => crate::emitter::dotnet::core::adodb_adapter::emit_adodb_recordset_open(chunks, current, argc, line),
+        "dotnet.adodb_recordset_move_next"
+            => crate::emitter::dotnet::core::adodb_adapter::emit_adodb_recordset_move_next(chunks, current, line),
+        "dotnet.adodb_recordset_move_first"
+            => crate::emitter::dotnet::core::adodb_adapter::emit_adodb_recordset_move_first(chunks, current, line),
+        "dotnet.adodb_recordset_fields"
+            => crate::emitter::dotnet::core::adodb_adapter::emit_adodb_recordset_fields(chunks, current, line),
+        "dotnet.adodb_recordset_close"
+            => crate::emitter::dotnet::core::adodb_adapter::emit_adodb_recordset_close(chunks, current, line),
 
         // ── LINQ surface — composed bytecode shared by every .NET-shape language ──
         "dotnet.linq_first"

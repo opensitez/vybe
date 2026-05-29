@@ -597,21 +597,9 @@ pub fn build_constructor_chunk(
 
         // Copy backing identity fields: this.<f> = widget.<f>.
         //
-        // NB: `name` is intentionally NOT copied. The backing host fn
-        // pre-stamps `name` with an auto-generated id (e.g. "Form_3"), and
-        // `Control` has a `__set_name` setter bound — so a
-        // `struct_set "name"` would dispatch to that setter which calls
-        // `controlSetProperty(this, "Name", widget.name)`. That writes the
-        // auto-id into the gui state registry under whatever
-        // `__control_name` `this` had at that moment, polluting the
-        // registry. The canonical control name is stamped later by user
-        // code or by the walker normalization (`Me.__control_name = "..."`).
-        //
-        // We also no longer copy `show`/`close`/`focus`/`hide` here. Those
-        // used to be host-stamped on the backing object, but they're now
         // installed via real method thunks bound at this class's level
         // (or inherited from `Control`).
-        for field in &["__control_name", "__control_type"] {
+        for field in &["name", "__control_name", "__control_type"] {
             let key_idx = chunk.add_constant(Value::String(Arc::from(*field)));
             chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
             chunk.emit_op_u16(Op::LOCAL_GET, widget_slot, line);

@@ -119,6 +119,20 @@ impl Value {
         }
     }
 
+    /// ECMA-262 ToInt32 (§7.1.6): truncate to integer, reduce modulo 2^32,
+    /// then interpret as signed 32-bit. This wraps instead of saturating,
+    /// matching the semantics required by JS bitwise operators.
+    pub fn to_ecma_int32(&self) -> i32 {
+        let n = self.as_f64();
+        if n.is_nan() || n.is_infinite() { return 0; }
+        n.trunc().rem_euclid(4_294_967_296.0) as u64 as u32 as i32
+    }
+
+    /// ECMA-262 ToUint32 (§7.1.7): same as ToInt32 but interpret as unsigned.
+    pub fn to_ecma_uint32(&self) -> u32 {
+        self.to_ecma_int32() as u32
+    }
+
     pub fn as_i64(&self) -> i64 {
         match self {
             Value::I64(n) => *n,

@@ -672,7 +672,7 @@ fn emit_new_statement(
 ) {
     let chunk = &mut chunks[current];
     lget(chunk, conn_slot, line);
-    call_import(chunks, current, "vybe:database", "createCommand", 1, line);
+    call_import(chunks, current, "wasi:sql", "createCommand", 1, line);
     let stmt_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, stmt_slot, line);
@@ -743,7 +743,7 @@ pub fn emit_php_pdo_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     let normalized_slot = normalize_pdo_dsn(chunks, current, dsn_slot, username_slot, password_slot, line);
     let chunk = &mut chunks[current];
     lget(chunk, normalized_slot, line);
-    call_import(chunks, current, "vybe:database", "connect", 1, line);
+    call_import(chunks, current, "wasi:sql", "connect", 1, line);
     let conn_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, conn_slot, line);
@@ -760,7 +760,7 @@ pub fn emit_php_pdo_query(chunks: &mut [Chunk], current: usize, _argc: u8, line:
 
     lget(chunk, conn_slot, line);
     lget(chunk, sql_slot, line);
-    call_import(chunks, current, "vybe:database", "query", 2, line);
+    call_import(chunks, current, "wasi:sql", "query", 2, line);
     let rows_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, rows_slot, line);
@@ -777,7 +777,7 @@ pub fn emit_php_pdo_exec(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
 
     lget(chunk, conn_slot, line);
     lget(chunk, sql_slot, line);
-    call_import(chunks, current, "vybe:database", "execute", 2, line);
+    call_import(chunks, current, "wasi:sql", "execute", 2, line);
 }
 
 pub fn emit_php_pdo_prepare(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -806,15 +806,15 @@ pub fn emit_php_pdo_set_attribute(chunks: &mut [Chunk], current: usize, _argc: u
 }
 
 pub fn emit_php_pdo_begin_transaction(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    call_import(chunks, current, "vybe:database", "beginTransaction", 1, line);
+    call_import(chunks, current, "wasi:sql", "beginTransaction", 1, line);
 }
 
 pub fn emit_php_pdo_commit(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    call_import(chunks, current, "vybe:database", "commit", 1, line);
+    call_import(chunks, current, "wasi:sql", "commit", 1, line);
 }
 
 pub fn emit_php_pdo_rollback(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    call_import(chunks, current, "vybe:database", "rollback", 1, line);
+    call_import(chunks, current, "wasi:sql", "rollback", 1, line);
 }
 
 fn emit_php_pdo_statement_bind_common(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -967,7 +967,7 @@ pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc
     lget(chunk, stmt_slot, line);
     lget(chunk, sql_text_slot, line);
     lget(chunk, effective_params_slot, line);
-    call_import(chunks, current, "vybe:database", "query", 3, line);
+    call_import(chunks, current, "wasi:sql", "query", 3, line);
     let rows_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, rows_slot, line);
@@ -987,7 +987,7 @@ pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc
     lget(chunk, stmt_slot, line);
     lget(chunk, sql_text_slot, line);
     lget(chunk, effective_params_slot, line);
-    call_import(chunks, current, "vybe:database", "execute", 3, line);
+    call_import(chunks, current, "wasi:sql", "execute", 3, line);
     let count_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, count_slot, line);
@@ -1273,9 +1273,9 @@ pub fn emit_php_mysqli_real_connect(chunks: &mut [Chunk], current: usize, argc: 
         chunk.patch_jump(skip_db);
     }
 
-    // Call vybe:database.connect with the built URL
+    // Call wasi:sql.connect with the built URL
     lget(chunk, url_slot, line);
-    call_import(chunks, current, "vybe:database", "connect", 1, line);
+    call_import(chunks, current, "wasi:sql", "connect", 1, line);
     let conn_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, conn_slot, line);
@@ -1374,7 +1374,7 @@ pub fn emit_php_mysqli_query(chunks: &mut [Chunk], current: usize, _argc: u8, li
 
     lget(chunk, conn_slot, line);
     lget(chunk, sql_slot, line);
-    call_import(chunks, current, "vybe:database", "query", 2, line);
+    call_import(chunks, current, "wasi:sql", "query", 2, line);
     let rows_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, rows_slot, line);
@@ -1403,7 +1403,7 @@ pub fn emit_php_mysqli_query(chunks: &mut [Chunk], current: usize, _argc: u8, li
 
     lget(chunk, conn_slot, line);
     lget(chunk, sql_slot, line);
-    call_import(chunks, current, "vybe:database", "execute", 2, line);
+    call_import(chunks, current, "wasi:sql", "execute", 2, line);
     let count_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
     lset(chunk, count_slot, line);
@@ -1685,7 +1685,7 @@ pub fn emit_php_mysqli_close(chunks: &mut [Chunk], current: usize, _argc: u8, li
         lget(chunk, dbh_slot, line);
         struct_get_key(chunk, "__connection", line);
     }
-    call_import(chunks, current, "vybe:database", "close", 1, line);
+    call_import(chunks, current, "wasi:sql", "close", 1, line);
     let done = {
         let chunk = &mut chunks[current];
         lget(chunk, dbh_slot, line);

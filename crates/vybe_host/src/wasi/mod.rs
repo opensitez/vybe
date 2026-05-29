@@ -13,6 +13,7 @@
 pub mod crypto;
 pub mod filesystem;
 pub mod http;
+pub mod sql;
 
 use vybe_bytecode::VM;
 

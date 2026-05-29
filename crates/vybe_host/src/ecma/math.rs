@@ -55,7 +55,10 @@ pub fn register(vm: &mut VM) {
 
     vm.register_host_fn("ecma:math", "sign",  Box::new(|_ctx, a| {
         let n = f(a, 0);
-        if n > 0.0 { Value::F64(1.0) } else if n < 0.0 { Value::F64(-1.0) } else { Value::F64(0.0) }
+        if n.is_nan() { Value::F64(f64::NAN) }
+        else if n > 0.0 { Value::F64(1.0) }
+        else if n < 0.0 { Value::F64(-1.0) }
+        else { Value::F64(0.0) }
     }));
     vm.register_host_fn("ecma:math", "log2",  Box::new(|_ctx, a| Value::F64(f(a, 0).log2())));
     vm.register_host_fn("ecma:math", "log10", Box::new(|_ctx, a| Value::F64(f(a, 0).log10())));

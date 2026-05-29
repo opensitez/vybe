@@ -407,6 +407,10 @@ ConvertAll = "__array_map"
 "char.MinValue"         = 0
 "bool.TrueString"       = "True"
 "bool.FalseString"      = "False"
+"CommandType.Text"      = 1.0
+"CommandType.StoredProcedure" = 4.0
+"ConnectionState.Closed" = 0.0
+"ConnectionState.Open"   = 1.0
 
 [namespaces]
 # Use the .NET BCL namespace resolution from the shared dotnet module.

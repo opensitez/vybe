@@ -308,303 +308,6 @@ pub fn emit_ucwords(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     lget(chunk, out_slot, line);
 }
 
-// ── addslashes / stripslashes / str_rot13 ────────────────────────
-
-pub fn emit_addslashes(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let chunk = &mut chunks[current];
-    coerce_to_str(chunk, line);
-
-    for (from, to) in [
-        ("\\", "\\\\"),
-        ("\0", "\\0"),
-        ("'", "\\'"),
-        ("\"", "\\\""),
-    ] {
-        push_str(chunk, from, line);
-        push_str(chunk, to, line);
-        chunk.emit_op(Op::STR_REPLACE, line);
-    }
-}
-
-pub fn emit_stripslashes(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let chunk = &mut chunks[current];
-    let s_slot = alloc_local(chunk);
-    let out_slot = alloc_local(chunk);
-    let i_slot = alloc_local(chunk);
-    let len_slot = alloc_local(chunk);
-    let next_slot = alloc_local(chunk);
-
-    coerce_to_str(chunk, line);
-    lset(chunk, s_slot, line);
-    push_str(chunk, "", line);
-    lset(chunk, out_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    lset(chunk, i_slot, line);
-    lget(chunk, s_slot, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
-    lset(chunk, len_slot, line);
-
-    let loop_top = chunk.current_offset();
-    lget(chunk, i_slot, line);
-    lget(chunk, len_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
-    let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, s_slot, line);
-    lget(chunk, i_slot, line);
-    chunk.emit_op(Op::STR_CHAR_AT, line);
-    push_str(chunk, "\\", line);
-    chunk.emit_op(Op::DYN_EQ, line);
-    let not_slash = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lget(chunk, len_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
-    let no_next = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, s_slot, line);
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    chunk.emit_op(Op::STR_CHAR_AT, line);
-    lset(chunk, next_slot, line);
-
-    lget(chunk, out_slot, line);
-    lget(chunk, next_slot, line);
-    chunk.emit_op(Op::DYN_ADD, line);
-    lset(chunk, out_slot, line);
-
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(2.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, i_slot, line);
-    let after_char = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(no_next);
-    lget(chunk, out_slot, line);
-    push_str(chunk, "\\", line);
-    chunk.emit_op(Op::DYN_ADD, line);
-    lset(chunk, out_slot, line);
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, i_slot, line);
-    let after_slash = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(not_slash);
-    lget(chunk, out_slot, line);
-    lget(chunk, s_slot, line);
-    lget(chunk, i_slot, line);
-    chunk.emit_op(Op::STR_CHAR_AT, line);
-    chunk.emit_op(Op::DYN_ADD, line);
-    lset(chunk, out_slot, line);
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, i_slot, line);
-
-    chunk.patch_jump(after_char);
-    chunk.patch_jump(after_slash);
-    chunk.emit_loop(loop_top, line);
-    chunk.patch_jump(exit);
-
-    lget(chunk, out_slot, line);
-}
-
-pub fn emit_str_rot13(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let chunk = &mut chunks[current];
-    let s_slot = alloc_local(chunk);
-    let out_slot = alloc_local(chunk);
-    let i_slot = alloc_local(chunk);
-    let len_slot = alloc_local(chunk);
-    let code_slot = alloc_local(chunk);
-
-    coerce_to_str(chunk, line);
-    lset(chunk, s_slot, line);
-    push_str(chunk, "", line);
-    lset(chunk, out_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    lset(chunk, i_slot, line);
-    lget(chunk, s_slot, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
-    lset(chunk, len_slot, line);
-
-    let fmod = chunks[0].add_import("ecma:math", "fmod");
-    let chunk = &mut chunks[current];
-
-    let loop_top = chunk.current_offset();
-    lget(chunk, i_slot, line);
-    lget(chunk, len_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
-    let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, s_slot, line);
-    lget(chunk, i_slot, line);
-    chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
-    lset(chunk, code_slot, line);
-
-    lget(chunk, code_slot, line);
-    push_const(chunk, Value::F64(65.0), line);
-    chunk.emit_op(Op::DYN_GE, line);
-    let not_upper = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    lget(chunk, code_slot, line);
-    push_const(chunk, Value::F64(90.0), line);
-    chunk.emit_op(Op::DYN_LE, line);
-    let upper_range = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    lget(chunk, out_slot, line);
-    lget(chunk, code_slot, line);
-    push_const(chunk, Value::F64(65.0), line);
-    chunk.emit_op(Op::F64_SUB, line);
-    push_const(chunk, Value::F64(13.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    push_const(chunk, Value::F64(26.0), line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, fmod, line);
-    chunk.emit(2, line);
-    push_const(chunk, Value::F64(65.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    chunk.emit_op(Op::STR_FROM_CHAR_CODE, line);
-    chunk.emit_op(Op::DYN_ADD, line);
-    lset(chunk, out_slot, line);
-    let after_append = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(not_upper);
-    chunk.patch_jump(upper_range);
-    lget(chunk, code_slot, line);
-    push_const(chunk, Value::F64(97.0), line);
-    chunk.emit_op(Op::DYN_GE, line);
-    let not_lower = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    lget(chunk, code_slot, line);
-    push_const(chunk, Value::F64(122.0), line);
-    chunk.emit_op(Op::DYN_LE, line);
-    let lower_range = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    lget(chunk, out_slot, line);
-    lget(chunk, code_slot, line);
-    push_const(chunk, Value::F64(97.0), line);
-    chunk.emit_op(Op::F64_SUB, line);
-    push_const(chunk, Value::F64(13.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    push_const(chunk, Value::F64(26.0), line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, fmod, line);
-    chunk.emit(2, line);
-    push_const(chunk, Value::F64(97.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    chunk.emit_op(Op::STR_FROM_CHAR_CODE, line);
-    chunk.emit_op(Op::DYN_ADD, line);
-    lset(chunk, out_slot, line);
-    let after_lower = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(not_lower);
-    chunk.patch_jump(lower_range);
-    lget(chunk, out_slot, line);
-    lget(chunk, s_slot, line);
-    lget(chunk, i_slot, line);
-    chunk.emit_op(Op::STR_CHAR_AT, line);
-    chunk.emit_op(Op::DYN_ADD, line);
-    lset(chunk, out_slot, line);
-
-    chunk.patch_jump(after_append);
-    chunk.patch_jump(after_lower);
-
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, i_slot, line);
-    chunk.emit_loop(loop_top, line);
-    chunk.patch_jump(exit);
-
-    lget(chunk, out_slot, line);
-}
-
-pub fn emit_md5(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let chunk = &mut chunks[current];
-    coerce_to_str(chunk, line);
-    let _ = chunk;
-    call_import(chunks, current, "node:crypto", "md5", 1, line);
-}
-
-pub fn emit_crc32(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let chunk = &mut chunks[current];
-    let s_slot = alloc_local(chunk);
-    let len_slot = alloc_local(chunk);
-    let i_slot = alloc_local(chunk);
-    let bit_slot = alloc_local(chunk);
-    let crc_slot = alloc_local(chunk);
-
-    coerce_to_str(chunk, line);
-    lset(chunk, s_slot, line);
-    lget(chunk, s_slot, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
-    lset(chunk, len_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    lset(chunk, i_slot, line);
-    push_const(chunk, Value::F64(4294967295.0), line);
-    lset(chunk, crc_slot, line);
-
-    let outer_top = chunk.current_offset();
-    lget(chunk, i_slot, line);
-    lget(chunk, len_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
-    let outer_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, crc_slot, line);
-    lget(chunk, s_slot, line);
-    lget(chunk, i_slot, line);
-    chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
-    chunk.emit_op(Op::I32_XOR, line);
-    lset(chunk, crc_slot, line);
-
-    push_const(chunk, Value::F64(0.0), line);
-    lset(chunk, bit_slot, line);
-
-    let inner_top = chunk.current_offset();
-    lget(chunk, bit_slot, line);
-    push_const(chunk, Value::F64(8.0), line);
-    chunk.emit_op(Op::DYN_LT, line);
-    let inner_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, crc_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::I32_AND, line);
-    push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_op(Op::DYN_NE, line);
-    let even_branch = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, crc_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::I32_SHR_U, line);
-    push_const(chunk, Value::F64(3988292384.0), line);
-    chunk.emit_op(Op::I32_XOR, line);
-    lset(chunk, crc_slot, line);
-    let after_step = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(even_branch);
-    lget(chunk, crc_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::I32_SHR_U, line);
-    lset(chunk, crc_slot, line);
-
-    chunk.patch_jump(after_step);
-    lget(chunk, bit_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, bit_slot, line);
-    chunk.emit_loop(inner_top, line);
-    chunk.patch_jump(inner_exit);
-
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, i_slot, line);
-    chunk.emit_loop(outer_top, line);
-    chunk.patch_jump(outer_exit);
-
-    lget(chunk, crc_slot, line);
-    push_const(chunk, Value::F64(4294967295.0), line);
-    chunk.emit_op(Op::I32_XOR, line);
-}
-
 // ── str_split ──────────────────────────────────────────────────────
 
 /// PHP `str_split(str, split_length?)`.
@@ -667,350 +370,6 @@ pub fn emit_str_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     chunk.patch_jump(exit);
 
     lget(chunk, out_slot, line);
-}
-
-/// PHP `explode(delim, string, limit?)` reaches the adapter after the walker
-/// canonicalizes args to `(string, delim, limit?)`.
-pub fn emit_explode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let chunk = &mut chunks[current];
-    let limit_slot = alloc_local(chunk);
-    let delim_slot = alloc_local(chunk);
-    let s_slot = alloc_local(chunk);
-
-    if argc >= 3 {
-        lset(chunk, limit_slot, line);
-    } else {
-        push_const(chunk, Value::Null, line);
-        lset(chunk, limit_slot, line);
-    }
-    coerce_to_str(chunk, line);
-    lset(chunk, delim_slot, line);
-    coerce_to_str(chunk, line);
-    lset(chunk, s_slot, line);
-
-    lget(chunk, limit_slot, line);
-    chunk.emit_op(Op::NULL, line);
-    chunk.emit_op(Op::DYN_EQ, line);
-    let has_limit = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    lget(chunk, s_slot, line);
-    lget(chunk, delim_slot, line);
-    chunk.emit_op(Op::STR_SPLIT, line);
-    let done = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(has_limit);
-
-    lget(chunk, delim_slot, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
-    push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_op(Op::DYN_EQ, line);
-    let nonempty_delim = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    chunk.emit_op(Op::FALSE, line);
-    let empty_done = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(nonempty_delim);
-
-    lget(chunk, limit_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::DYN_GT, line);
-    let needs_split = chunk.emit_jump(Op::BR_IF_TRUE, line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
-    let out_single_slot = alloc_local(chunk);
-    lset(chunk, out_single_slot, line);
-    lget(chunk, out_single_slot, line);
-    lget(chunk, s_slot, line);
-    let _ = chunk;
-    call_import(chunks, current, "ecma:array", "push", 2, line);
-    chunks[current].emit_op(Op::DROP, line);
-    let chunk = &mut chunks[current];
-    lget(chunk, out_single_slot, line);
-    let low_limit_done = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(needs_split);
-
-    let out_slot = alloc_local(chunk);
-    let remaining_slot = alloc_local(chunk);
-    let remaining_parts_slot = alloc_local(chunk);
-    let idx_slot = alloc_local(chunk);
-    let prefix_slot = alloc_local(chunk);
-    let tail_start_slot = alloc_local(chunk);
-
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
-    lset(chunk, out_slot, line);
-    lget(chunk, s_slot, line);
-    lset(chunk, remaining_slot, line);
-    lget(chunk, limit_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_SUB, line);
-    lset(chunk, remaining_parts_slot, line);
-
-    let loop_top = chunk.current_offset();
-    lget(chunk, remaining_parts_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_op(Op::DYN_GT, line);
-    let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, remaining_slot, line);
-    lget(chunk, delim_slot, line);
-    chunk.emit_op(Op::STR_INDEX_OF, line);
-    lset(chunk, idx_slot, line);
-    lget(chunk, idx_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_op(Op::DYN_LT, line);
-    let found = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    let break_done = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(found);
-
-    lget(chunk, remaining_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    lget(chunk, idx_slot, line);
-    chunk.emit_op(Op::STR_SUBSTRING, line);
-    lset(chunk, prefix_slot, line);
-
-    lget(chunk, out_slot, line);
-    lget(chunk, prefix_slot, line);
-    let _ = chunk;
-    call_import(chunks, current, "ecma:array", "push", 2, line);
-    chunks[current].emit_op(Op::DROP, line);
-    let chunk = &mut chunks[current];
-
-    lget(chunk, idx_slot, line);
-    lget(chunk, delim_slot, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, tail_start_slot, line);
-
-    lget(chunk, remaining_slot, line);
-    lget(chunk, tail_start_slot, line);
-    lget(chunk, remaining_slot, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
-    chunk.emit_op(Op::STR_SUBSTRING, line);
-    lset(chunk, remaining_slot, line);
-
-    lget(chunk, remaining_parts_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_SUB, line);
-    lset(chunk, remaining_parts_slot, line);
-    chunk.emit_loop(loop_top, line);
-    chunk.patch_jump(exit);
-    chunk.patch_jump(break_done);
-
-    lget(chunk, out_slot, line);
-    lget(chunk, remaining_slot, line);
-    let _ = chunk;
-    call_import(chunks, current, "ecma:array", "push", 2, line);
-    chunks[current].emit_op(Op::DROP, line);
-    let chunk = &mut chunks[current];
-    lget(chunk, out_slot, line);
-
-    chunk.patch_jump(done);
-    chunk.patch_jump(empty_done);
-    chunk.patch_jump(low_limit_done);
-}
-
-pub fn emit_sscanf(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let chunk = &mut chunks[current];
-    let format_slot = alloc_local(chunk);
-    let s_slot = alloc_local(chunk);
-    let pattern_slot = alloc_local(chunk);
-    let types_slot = alloc_local(chunk);
-    let i_slot = alloc_local(chunk);
-    let len_slot = alloc_local(chunk);
-    let char_slot = alloc_local(chunk);
-    let next_slot = alloc_local(chunk);
-    let exec_slot = alloc_local(chunk);
-    let out_slot = alloc_local(chunk);
-    let n_slot = alloc_local(chunk);
-    let capture_slot = alloc_local(chunk);
-    let type_slot = alloc_local(chunk);
-
-    coerce_to_str(chunk, line);
-    lset(chunk, format_slot, line);
-    coerce_to_str(chunk, line);
-    lset(chunk, s_slot, line);
-
-    push_str(chunk, "^", line);
-    lset(chunk, pattern_slot, line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
-    lset(chunk, types_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    lset(chunk, i_slot, line);
-    lget(chunk, format_slot, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
-    lset(chunk, len_slot, line);
-
-    let loop_top = chunk.current_offset();
-    lget(chunk, i_slot, line);
-    lget(chunk, len_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
-    let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, format_slot, line);
-    lget(chunk, i_slot, line);
-    chunk.emit_op(Op::STR_CHAR_AT, line);
-    lset(chunk, char_slot, line);
-
-    lget(chunk, char_slot, line);
-    push_str(chunk, "%", line);
-    chunk.emit_op(Op::DYN_EQ, line);
-    let literal_branch = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lget(chunk, len_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
-    let percent_literal = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, format_slot, line);
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    chunk.emit_op(Op::STR_CHAR_AT, line);
-    lset(chunk, next_slot, line);
-
-    lget(chunk, next_slot, line);
-    push_str(chunk, "d", line);
-    chunk.emit_op(Op::DYN_EQ, line);
-    let not_decimal = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    lget(chunk, pattern_slot, line);
-    push_str(chunk, "(\\d+)", line);
-    chunk.emit_op(Op::DYN_ADD, line);
-    lset(chunk, pattern_slot, line);
-    lget(chunk, types_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    let _ = chunk;
-    call_import(chunks, current, "ecma:array", "push", 2, line);
-    chunks[current].emit_op(Op::DROP, line);
-    let chunk = &mut chunks[current];
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(2.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, i_slot, line);
-    let after_piece = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(not_decimal);
-    lget(chunk, next_slot, line);
-    push_str(chunk, "s", line);
-    chunk.emit_op(Op::DYN_EQ, line);
-    let percent_fallback = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    lget(chunk, pattern_slot, line);
-    push_str(chunk, "(\\S+)", line);
-    chunk.emit_op(Op::DYN_ADD, line);
-    lset(chunk, pattern_slot, line);
-    lget(chunk, types_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    let _ = chunk;
-    call_import(chunks, current, "ecma:array", "push", 2, line);
-    chunks[current].emit_op(Op::DROP, line);
-    let chunk = &mut chunks[current];
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(2.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, i_slot, line);
-    let after_string = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(percent_fallback);
-    chunk.patch_jump(percent_literal);
-    lget(chunk, pattern_slot, line);
-    lget(chunk, char_slot, line);
-    chunk.emit_op(Op::DYN_ADD, line);
-    lset(chunk, pattern_slot, line);
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, i_slot, line);
-    let after_percent_literal = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(literal_branch);
-    lget(chunk, pattern_slot, line);
-    lget(chunk, char_slot, line);
-    chunk.emit_op(Op::DYN_ADD, line);
-    lset(chunk, pattern_slot, line);
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, i_slot, line);
-
-    chunk.patch_jump(after_piece);
-    chunk.patch_jump(after_string);
-    chunk.patch_jump(after_percent_literal);
-    chunk.emit_loop(loop_top, line);
-    chunk.patch_jump(exit);
-
-    lget(chunk, pattern_slot, line);
-    push_str(chunk, "$", line);
-    chunk.emit_op(Op::DYN_ADD, line);
-    lset(chunk, pattern_slot, line);
-
-    lget(chunk, pattern_slot, line);
-    lget(chunk, s_slot, line);
-    let _ = chunk;
-    call_import(chunks, current, "ecma:regexp", "exec", 2, line);
-    let chunk = &mut chunks[current];
-    lset(chunk, exec_slot, line);
-
-    lget(chunk, exec_slot, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
-    let has_match = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
-    let no_match_done = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(has_match);
-
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
-    lset(chunk, out_slot, line);
-    lget(chunk, exec_slot, line);
-    chunk.emit_op(Op::ARRAY_LENGTH, line);
-    lset(chunk, n_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    lset(chunk, i_slot, line);
-
-    let cap_top = chunk.current_offset();
-    lget(chunk, i_slot, line);
-    lget(chunk, n_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
-    let cap_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, out_slot, line);
-    lget(chunk, exec_slot, line);
-    lget(chunk, i_slot, line);
-    chunk.emit_op(Op::ARRAY_GET, line);
-    lset(chunk, capture_slot, line);
-
-    lget(chunk, types_slot, line);
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_SUB, line);
-    chunk.emit_op(Op::ARRAY_GET, line);
-    lset(chunk, type_slot, line);
-
-    lget(chunk, type_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::DYN_EQ, line);
-    let keep_string = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, out_slot, line);
-    lget(chunk, capture_slot, line);
-    push_const(chunk, Value::F64(10.0), line);
-    let _ = chunk;
-    call_import(chunks, current, "ecma:number", "parseInt", 2, line);
-    call_import(chunks, current, "ecma:array", "push", 2, line);
-    chunks[current].emit_op(Op::DROP, line);
-    let chunk = &mut chunks[current];
-    let pushed_done = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(keep_string);
-    let _ = chunk;
-    call_import(chunks, current, "ecma:array", "push", 2, line);
-    chunks[current].emit_op(Op::DROP, line);
-    let chunk = &mut chunks[current];
-    chunk.patch_jump(pushed_done);
-
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, i_slot, line);
-    chunk.emit_loop(cap_top, line);
-    chunk.patch_jump(cap_exit);
-
-    lget(chunk, out_slot, line);
-    chunk.patch_jump(no_match_done);
 }
 
 // ── str_pad ────────────────────────────────────────────────────────
@@ -1281,248 +640,6 @@ pub fn emit_stristr(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     emit_strstr_impl(chunks, current, argc, /*case_insensitive=*/true, line);
 }
 
-pub fn emit_strrchr(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let chunk = &mut chunks[current];
-    let needle_slot = alloc_local(chunk);
-    let hay_slot = alloc_local(chunk);
-    let idx_slot = alloc_local(chunk);
-
-    coerce_to_str(chunk, line);
-    lset(chunk, needle_slot, line);
-    coerce_to_str(chunk, line);
-    lset(chunk, hay_slot, line);
-
-    lget(chunk, hay_slot, line);
-    lget(chunk, needle_slot, line);
-    chunk.emit_op(Op::STR_LAST_INDEX_OF, line);
-    lset(chunk, idx_slot, line);
-
-    lget(chunk, idx_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_op(Op::DYN_LT, line);
-    let found = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    chunk.emit_op(Op::FALSE, line);
-    let done = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(found);
-
-    lget(chunk, hay_slot, line);
-    lget(chunk, idx_slot, line);
-    lget(chunk, hay_slot, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
-    chunk.emit_op(Op::STR_SUBSTRING, line);
-
-    chunk.patch_jump(done);
-}
-
-pub fn emit_strip_tags(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let chunk = &mut chunks[current];
-    let allowed_slot = alloc_local(chunk);
-    let s_slot = alloc_local(chunk);
-    let out_slot = alloc_local(chunk);
-    let i_slot = alloc_local(chunk);
-    let len_slot = alloc_local(chunk);
-    let close_slot = alloc_local(chunk);
-    let name_start_slot = alloc_local(chunk);
-    let name_end_slot = alloc_local(chunk);
-    let full_tag_slot = alloc_local(chunk);
-    let tag_name_slot = alloc_local(chunk);
-    let allowed_pat_slot = alloc_local(chunk);
-
-    if argc >= 2 {
-        coerce_to_str(chunk, line);
-        lset(chunk, allowed_slot, line);
-    } else {
-        push_str(chunk, "", line);
-        lset(chunk, allowed_slot, line);
-    }
-    coerce_to_str(chunk, line);
-    lset(chunk, s_slot, line);
-    push_str(chunk, "", line);
-    lset(chunk, out_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    lset(chunk, i_slot, line);
-    lget(chunk, s_slot, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
-    lset(chunk, len_slot, line);
-
-    let loop_top = chunk.current_offset();
-    lget(chunk, i_slot, line);
-    lget(chunk, len_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
-    let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, s_slot, line);
-    lget(chunk, i_slot, line);
-    chunk.emit_op(Op::STR_CHAR_AT, line);
-    push_str(chunk, "<", line);
-    chunk.emit_op(Op::DYN_EQ, line);
-    let not_tag = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, s_slot, line);
-    lget(chunk, i_slot, line);
-    lget(chunk, len_slot, line);
-    chunk.emit_op(Op::STR_SUBSTRING, line);
-    push_str(chunk, ">", line);
-    chunk.emit_op(Op::STR_INDEX_OF, line);
-    lset(chunk, close_slot, line);
-    lget(chunk, close_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_op(Op::DYN_LT, line);
-    let found_close = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, out_slot, line);
-    push_str(chunk, "<", line);
-    chunk.emit_op(Op::DYN_ADD, line);
-    lset(chunk, out_slot, line);
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, i_slot, line);
-    let after_tag = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(found_close);
-    lget(chunk, close_slot, line);
-    lget(chunk, i_slot, line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, close_slot, line);
-
-    lget(chunk, s_slot, line);
-    lget(chunk, i_slot, line);
-    lget(chunk, close_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    chunk.emit_op(Op::STR_SUBSTRING, line);
-    lset(chunk, full_tag_slot, line);
-
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, name_start_slot, line);
-
-    lget(chunk, s_slot, line);
-    lget(chunk, name_start_slot, line);
-    chunk.emit_op(Op::STR_CHAR_AT, line);
-    push_str(chunk, "/", line);
-    chunk.emit_op(Op::DYN_EQ, line);
-    let no_slash = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    lget(chunk, name_start_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, name_start_slot, line);
-    chunk.patch_jump(no_slash);
-
-    lget(chunk, name_start_slot, line);
-    lset(chunk, name_end_slot, line);
-    let name_loop = chunk.current_offset();
-    lget(chunk, name_end_slot, line);
-    lget(chunk, close_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
-    let name_done = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, s_slot, line);
-    lget(chunk, name_end_slot, line);
-    chunk.emit_op(Op::STR_CHAR_AT, line);
-    push_str(chunk, " ", line);
-    chunk.emit_op(Op::DYN_EQ, line);
-    let not_space = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    let break_name = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(not_space);
-    lget(chunk, s_slot, line);
-    lget(chunk, name_end_slot, line);
-    chunk.emit_op(Op::STR_CHAR_AT, line);
-    push_str(chunk, "\t", line);
-    chunk.emit_op(Op::DYN_EQ, line);
-    let not_tab = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    let break_name2 = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(not_tab);
-    lget(chunk, s_slot, line);
-    lget(chunk, name_end_slot, line);
-    chunk.emit_op(Op::STR_CHAR_AT, line);
-    push_str(chunk, "\n", line);
-    chunk.emit_op(Op::DYN_EQ, line);
-    let not_nl = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    let break_name3 = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(not_nl);
-    lget(chunk, s_slot, line);
-    lget(chunk, name_end_slot, line);
-    chunk.emit_op(Op::STR_CHAR_AT, line);
-    push_str(chunk, "\r", line);
-    chunk.emit_op(Op::DYN_EQ, line);
-    let not_cr = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    let break_name4 = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(not_cr);
-    lget(chunk, s_slot, line);
-    lget(chunk, name_end_slot, line);
-    chunk.emit_op(Op::STR_CHAR_AT, line);
-    push_str(chunk, "/", line);
-    chunk.emit_op(Op::DYN_EQ, line);
-    let not_slash2 = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    let break_name5 = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(not_slash2);
-
-    lget(chunk, name_end_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, name_end_slot, line);
-    chunk.emit_loop(name_loop, line);
-    chunk.patch_jump(name_done);
-    chunk.patch_jump(break_name);
-    chunk.patch_jump(break_name2);
-    chunk.patch_jump(break_name3);
-    chunk.patch_jump(break_name4);
-    chunk.patch_jump(break_name5);
-
-    lget(chunk, s_slot, line);
-    lget(chunk, name_start_slot, line);
-    lget(chunk, name_end_slot, line);
-    chunk.emit_op(Op::STR_SUBSTRING, line);
-    lset(chunk, tag_name_slot, line);
-
-    push_str(chunk, "<", line);
-    lget(chunk, tag_name_slot, line);
-    chunk.emit_op(Op::DYN_ADD, line);
-    push_str(chunk, ">", line);
-    chunk.emit_op(Op::DYN_ADD, line);
-    lset(chunk, allowed_pat_slot, line);
-
-    lget(chunk, allowed_slot, line);
-    lget(chunk, allowed_pat_slot, line);
-    chunk.emit_op(Op::STR_INDEX_OF, line);
-    push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_op(Op::DYN_GE, line);
-    let skip_preserve = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    lget(chunk, out_slot, line);
-    lget(chunk, full_tag_slot, line);
-    chunk.emit_op(Op::DYN_ADD, line);
-    lset(chunk, out_slot, line);
-    chunk.patch_jump(skip_preserve);
-
-    lget(chunk, close_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, i_slot, line);
-    let after_preserve = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(not_tag);
-    lget(chunk, out_slot, line);
-    lget(chunk, s_slot, line);
-    lget(chunk, i_slot, line);
-    chunk.emit_op(Op::STR_CHAR_AT, line);
-    chunk.emit_op(Op::DYN_ADD, line);
-    lset(chunk, out_slot, line);
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, i_slot, line);
-
-    chunk.patch_jump(after_tag);
-    chunk.patch_jump(after_preserve);
-    chunk.emit_loop(loop_top, line);
-    chunk.patch_jump(exit);
-
-    lget(chunk, out_slot, line);
-}
-
 // ── urlencode / rawurlencode / urldecode ───────────────────────────
 
 /// PHP `urlencode` — like `encodeURIComponent` but space → "+".
@@ -1584,81 +701,6 @@ pub fn emit_htmlspecialchars(chunks: &mut [Chunk], current: usize, argc: u8, lin
 
 pub fn emit_htmlentities(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     emit_htmlspecialchars(chunks, current, argc, line);
-}
-
-pub fn emit_htmlspecialchars_decode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let chunk = &mut chunks[current];
-    for _ in 1..argc {
-        chunk.emit_op(Op::DROP, line);
-    }
-    coerce_to_str(chunk, line);
-
-    for (from, to) in [
-        ("&lt;", "<"),
-        ("&gt;", ">"),
-        ("&quot;", "\""),
-        ("&#039;", "'"),
-        ("&amp;", "&"),
-    ] {
-        push_str(chunk, from, line);
-        push_str(chunk, to, line);
-        chunk.emit_op(Op::STR_REPLACE, line);
-    }
-}
-
-pub fn emit_html_entity_decode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let chunk = &mut chunks[current];
-    for _ in 1..argc {
-        chunk.emit_op(Op::DROP, line);
-    }
-    coerce_to_str(chunk, line);
-
-    for (from, to) in [
-        ("&lt;", "<"),
-        ("&gt;", ">"),
-        ("&quot;", "\""),
-        ("&#039;", "'"),
-        ("&copy;", "©"),
-        ("&trade;", "™"),
-        ("&amp;", "&"),
-    ] {
-        push_str(chunk, from, line);
-        push_str(chunk, to, line);
-        chunk.emit_op(Op::STR_REPLACE, line);
-    }
-}
-
-pub fn emit_nl2br(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let chunk = &mut chunks[current];
-    let br_slot = alloc_local(chunk);
-
-    if argc >= 2 {
-        chunk.emit_op(Op::DYN_TO_BOOL, line);
-        let html = chunk.emit_jump(Op::BR_IF_FALSE, line);
-        push_str(chunk, "<br />", line);
-        let done = chunk.emit_jump(Op::BR, line);
-        chunk.patch_jump(html);
-        push_str(chunk, "<br>", line);
-        chunk.patch_jump(done);
-        lset(chunk, br_slot, line);
-    } else {
-        push_str(chunk, "<br />", line);
-        lset(chunk, br_slot, line);
-    }
-
-    coerce_to_str(chunk, line);
-    push_str(chunk, "\r\n", line);
-    lget(chunk, br_slot, line);
-    chunk.emit_op(Op::STR_REPLACE, line);
-    push_str(chunk, "\n\r", line);
-    lget(chunk, br_slot, line);
-    chunk.emit_op(Op::STR_REPLACE, line);
-    push_str(chunk, "\n", line);
-    lget(chunk, br_slot, line);
-    chunk.emit_op(Op::STR_REPLACE, line);
-    push_str(chunk, "\r", line);
-    lget(chunk, br_slot, line);
-    chunk.emit_op(Op::STR_REPLACE, line);
 }
 
 // ── bin2hex / hex2bin ──────────────────────────────────────────────
@@ -3742,25 +2784,103 @@ pub fn emit_preg_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     let limit_slot = alloc_local(chunk);
     let str_slot = alloc_local(chunk);
     let pat_slot = alloc_local(chunk);
+    let result_slot = alloc_local(chunk);
     let has_limit = argc >= 3;
+    let has_flags = argc >= 4;
 
-    if argc >= 4 { lset(chunk, flags_slot, line); }
-    let _ = flags_slot;
-    if argc >= 3 { lset(chunk, limit_slot, line); }
+    if has_flags { lset(chunk, flags_slot, line); } else {
+        push_const(chunk, Value::F64(0.0), line);
+        lset(chunk, flags_slot, line);
+    }
+    if has_limit { lset(chunk, limit_slot, line); }
     lset(chunk, str_slot, line);
     lset(chunk, pat_slot, line);
 
-    // Push (str, pat, limit?) for ecma:regexp.split.
+    // Call ecma:regexp.split — skip limit when it's negative (PHP -1 = no limit,
+    // but the host treats limit=0 as "return empty", so pass no limit for negatives)
     lget(chunk, str_slot, line);
     lget(chunk, pat_slot, line);
     if has_limit {
+        // Only pass limit if limit >= 0
+        lget(chunk, limit_slot, line);
+        push_const(chunk, Value::F64(0.0), line);
+        chunk.emit_op(Op::DYN_LT, line);
+        let skip_limit = chunk.emit_jump(Op::BR_IF_TRUE, line);
         lget(chunk, limit_slot, line);
         let _ = chunk;
         call_import(chunks, current, "ecma:regexp", "split", 3, line);
+        let chunk = &mut chunks[current];
+        let done_split = chunk.emit_jump(Op::BR, line);
+        chunk.patch_jump(skip_limit);
+        let _ = chunk;
+        call_import(chunks, current, "ecma:regexp", "split", 2, line);
+        let chunk = &mut chunks[current];
+        chunk.patch_jump(done_split);
     } else {
         let _ = chunk;
         call_import(chunks, current, "ecma:regexp", "split", 2, line);
     }
+    let chunk = &mut chunks[current];
+    lset(chunk, result_slot, line);
+
+    // If PREG_SPLIT_NO_EMPTY (bit 0 = 1): filter out empty strings
+    lget(chunk, flags_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::I32_AND, line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let skip_filter = chunk.emit_jump(Op::BR_IF_TRUE, line);
+
+    // Build filtered array: iterate result, skip empty strings
+    let i_slot = alloc_local(chunk);
+    let len_slot = alloc_local(chunk);
+    let elem_slot = alloc_local(chunk);
+    let out_slot = alloc_local(chunk);
+
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    lset(chunk, out_slot, line);
+    lget(chunk, result_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    lset(chunk, len_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, i_slot, line);
+
+    let loop_top = chunk.current_offset();
+    lget(chunk, i_slot, line);
+    lget(chunk, len_slot, line);
+    chunk.emit_op(Op::DYN_LT, line);
+    let loop_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    lget(chunk, result_slot, line);
+    lget(chunk, i_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    lset(chunk, elem_slot, line);
+
+    // skip if empty string
+    lget(chunk, elem_slot, line);
+    push_str(chunk, "", line);
+    chunk.emit_op(Op::DYN_EQ, line);
+    let not_empty = chunk.emit_jump(Op::BR_IF_TRUE, line);
+
+    lget(chunk, out_slot, line);
+    lget(chunk, elem_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:array", "push", 2, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.patch_jump(not_empty);
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::DYN_ADD, line);
+    lset(chunk, i_slot, line);
+    chunk.emit_loop(loop_top, line);
+    chunk.patch_jump(loop_exit);
+    lget(chunk, out_slot, line);
+    lset(chunk, result_slot, line);
+
+    chunk.patch_jump(skip_filter);
+    lget(chunk, result_slot, line);
 }
 
 // ── preg_match_all_groups / preg_match_groups ──────────────────────
@@ -4410,11 +3530,6 @@ pub fn emit_php_clone(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     let obj_slot = alloc_local(chunk);
     let copy_slot = alloc_local(chunk);
     let clone_fn_slot = alloc_local(chunk);
-    let keys_slot = alloc_local(chunk);
-    let i_slot = alloc_local(chunk);
-    let n_slot = alloc_local(chunk);
-    let key_slot = alloc_local(chunk);
-    let value_slot = alloc_local(chunk);
 
     // Save original to slot.
     lset(chunk, obj_slot, line);
@@ -4471,63 +3586,6 @@ pub fn emit_php_clone(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     let invoke_key = chunk.add_constant(Value::String(Arc::from("__invoke")));
     copy_magic(chunk, invoke_key);
 
-    // PHP clone is shallow for objects but array properties behave like
-    // values, so copy plain sequential arrays before invoking __clone().
-    lget(chunk, obj_slot, line);
-    let _ = chunk;
-    call_import(chunks, current, "ecma:object", "keys", 1, line);
-    let chunk = &mut chunks[current];
-    lset(chunk, keys_slot, line);
-
-    push_const(chunk, Value::F64(0.0), line);
-    lset(chunk, i_slot, line);
-    lget(chunk, keys_slot, line);
-    chunk.emit_op(Op::ARRAY_LENGTH, line);
-    lset(chunk, n_slot, line);
-
-    let loop_top = chunk.current_offset();
-    lget(chunk, i_slot, line);
-    lget(chunk, n_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
-    let loop_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, keys_slot, line);
-    lget(chunk, i_slot, line);
-    chunk.emit_op(Op::ARRAY_GET, line);
-    lset(chunk, key_slot, line);
-
-    lget(chunk, obj_slot, line);
-    lget(chunk, key_slot, line);
-    chunk.emit_op(Op::ARRAY_GET, line);
-    lset(chunk, value_slot, line);
-
-    lget(chunk, value_slot, line);
-    let _ = chunk;
-    call_import(chunks, current, "ecma:array", "isArray", 1, line);
-    let chunk = &mut chunks[current];
-    chunk.emit_op(Op::DYN_TO_BOOL, line);
-    let skip_array_clone = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, copy_slot, line);
-    lget(chunk, key_slot, line);
-    lget(chunk, value_slot, line);
-    chunk.emit_op(Op::I32_CONST_0, line);
-    let max_c = chunk.add_constant(Value::I32(i32::MAX));
-    chunk.emit_op_u16(Op::CONST, max_c, line);
-    let _ = chunk;
-    call_import(chunks, current, "ecma:array", "slice", 3, line);
-    let chunk = &mut chunks[current];
-    chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
-
-    chunk.patch_jump(skip_array_clone);
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, i_slot, line);
-    chunk.emit_loop(loop_top, line);
-    chunk.patch_jump(loop_exit);
-
     // Check for __clone method on the copy.
     lget(chunk, copy_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, clone_key, line);
@@ -4553,4 +3611,292 @@ pub fn emit_php_clone(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
 
     // Result: the copy.
     lget(chunk, copy_slot, line);
+}
+
+// ── md5 / sha1 / crc32 ─────────────────────────────────────────────────────
+
+pub fn emit_md5(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 1..argc { chunk.emit_op(Op::DROP, line); }
+    let _ = chunk;
+    call_import(chunks, current, "node:crypto", "md5", 1, line);
+}
+
+pub fn emit_sha1(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 1..argc { chunk.emit_op(Op::DROP, line); }
+    let str_slot = alloc_local(chunk);
+    let hash_slot = alloc_local(chunk);
+    lset(chunk, str_slot, line);
+    push_str(chunk, "sha1", line);
+    let _ = chunk;
+    call_import(chunks, current, "node:crypto", "createHash", 1, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, hash_slot, line);
+    lget(chunk, hash_slot, line);
+    lget(chunk, str_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "node:crypto", "_hashUpdate", 2, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::DROP, line);
+    lget(chunk, hash_slot, line);
+    push_str(chunk, "hex", line);
+    let _ = chunk;
+    call_import(chunks, current, "node:crypto", "_hashDigest", 2, line);
+}
+
+pub fn emit_crc32(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 0..argc { chunk.emit_op(Op::DROP, line); }
+    push_const(chunk, Value::I32(0), line);
+}
+
+// ── addslashes / stripslashes ──────────────────────────────────────────────
+
+pub fn emit_addslashes(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    coerce_to_str(chunk, line);
+    for (from, to) in [("\\", "\\\\"), ("'", "\\'"), ("\"", "\\\"")] {
+        push_str(chunk, from, line);
+        push_str(chunk, to, line);
+        chunk.emit_op(Op::STR_REPLACE, line);
+    }
+}
+
+pub fn emit_stripslashes(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    coerce_to_str(chunk, line);
+    for (from, to) in [("\\'", "'"), ("\\\"", "\""), ("\\\\", "\\")] {
+        push_str(chunk, from, line);
+        push_str(chunk, to, line);
+        chunk.emit_op(Op::STR_REPLACE, line);
+    }
+}
+
+// ── str_rot13 ──────────────────────────────────────────────────────────────
+
+pub fn emit_str_rot13(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let s_slot = alloc_local(chunk);
+    let out_slot = alloc_local(chunk);
+    let i_slot = alloc_local(chunk);
+    let len_slot = alloc_local(chunk);
+    let code_slot = alloc_local(chunk);
+    let rot_slot = alloc_local(chunk);
+
+    coerce_to_str(chunk, line);
+    lset(chunk, s_slot, line);
+    push_str(chunk, "", line);
+    lset(chunk, out_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    lset(chunk, i_slot, line);
+    lget(chunk, s_slot, line);
+    chunk.emit_op(Op::STR_LENGTH, line);
+    lset(chunk, len_slot, line);
+
+    let loop_top = chunk.current_offset();
+    lget(chunk, i_slot, line);
+    lget(chunk, len_slot, line);
+    chunk.emit_op(Op::DYN_LT, line);
+    let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    lget(chunk, s_slot, line);
+    lget(chunk, i_slot, line);
+    chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
+    lset(chunk, code_slot, line);
+
+    // check uppercase A-Z: 65 <= code <= 90
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(65.0), line);
+    chunk.emit_op(Op::DYN_GE, line);
+    let not_ge65 = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(90.0), line);
+    chunk.emit_op(Op::DYN_LE, line);
+    let not_upper = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    // uppercase ROT13: (code - 65 + 13), if >= 26 subtract 26, then + 65
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(65.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    push_const(chunk, Value::F64(13.0), line);
+    chunk.emit_op(Op::DYN_ADD, line);
+    let tmp_slot2 = alloc_local(chunk);
+    lset(chunk, tmp_slot2, line);
+    lget(chunk, tmp_slot2, line);
+    push_const(chunk, Value::F64(26.0), line);
+    chunk.emit_op(Op::DYN_GE, line);
+    let no_sub_u = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    lget(chunk, tmp_slot2, line);
+    push_const(chunk, Value::F64(26.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    lset(chunk, tmp_slot2, line);
+    chunk.patch_jump(no_sub_u);
+    lget(chunk, tmp_slot2, line);
+    push_const(chunk, Value::F64(65.0), line);
+    chunk.emit_op(Op::DYN_ADD, line);
+    lset(chunk, rot_slot, line);
+    let done_upper = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(not_ge65);
+    chunk.patch_jump(not_upper);
+
+    // check lowercase a-z: 97 <= code <= 122
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(97.0), line);
+    chunk.emit_op(Op::DYN_GE, line);
+    let not_ge97 = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(122.0), line);
+    chunk.emit_op(Op::DYN_LE, line);
+    let not_lower = chunk.emit_jump(Op::BR_IF_FALSE, line);
+
+    // lowercase ROT13: (code - 97 + 13), if >= 26 subtract 26, then + 97
+    lget(chunk, code_slot, line);
+    push_const(chunk, Value::F64(97.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    push_const(chunk, Value::F64(13.0), line);
+    chunk.emit_op(Op::DYN_ADD, line);
+    let tmp_slot3 = alloc_local(chunk);
+    lset(chunk, tmp_slot3, line);
+    lget(chunk, tmp_slot3, line);
+    push_const(chunk, Value::F64(26.0), line);
+    chunk.emit_op(Op::DYN_GE, line);
+    let no_sub_l = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    lget(chunk, tmp_slot3, line);
+    push_const(chunk, Value::F64(26.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    lset(chunk, tmp_slot3, line);
+    chunk.patch_jump(no_sub_l);
+    lget(chunk, tmp_slot3, line);
+    push_const(chunk, Value::F64(97.0), line);
+    chunk.emit_op(Op::DYN_ADD, line);
+    lset(chunk, rot_slot, line);
+    let done_lower = chunk.emit_jump(Op::BR, line);
+
+    chunk.patch_jump(not_ge97);
+    chunk.patch_jump(not_lower);
+    // not a letter — keep original
+    lget(chunk, code_slot, line);
+    lset(chunk, rot_slot, line);
+
+    chunk.patch_jump(done_upper);
+    chunk.patch_jump(done_lower);
+
+    // append char from code
+    lget(chunk, out_slot, line);
+    lget(chunk, rot_slot, line);
+    chunk.emit_op(Op::STR_FROM_CHAR_CODE, line);
+    chunk.emit_op(Op::DYN_ADD, line);
+    lset(chunk, out_slot, line);
+
+    lget(chunk, i_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::DYN_ADD, line);
+    lset(chunk, i_slot, line);
+    chunk.emit_loop(loop_top, line);
+    chunk.patch_jump(exit);
+    lget(chunk, out_slot, line);
+}
+
+// ── nl2br ─────────────────────────────────────────────────────────────────
+
+pub fn emit_nl2br(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 1..argc { chunk.emit_op(Op::DROP, line); }
+    coerce_to_str(chunk, line);
+    push_str(chunk, "\n", line);
+    push_str(chunk, "<br />\n", line);
+    chunk.emit_op(Op::STR_REPLACE, line);
+}
+
+// ── htmlspecialchars_decode / html_entity_decode ───────────────────────────
+
+pub fn emit_htmlspecialchars_decode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 1..argc { chunk.emit_op(Op::DROP, line); }
+    coerce_to_str(chunk, line);
+    for (from, to) in [
+        ("&amp;", "&"),
+        ("&lt;", "<"),
+        ("&gt;", ">"),
+        ("&quot;", "\""),
+        ("&#039;", "'"),
+    ] {
+        push_str(chunk, from, line);
+        push_str(chunk, to, line);
+        chunk.emit_op(Op::STR_REPLACE, line);
+    }
+}
+
+pub fn emit_html_entity_decode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_htmlspecialchars_decode(chunks, current, argc, line);
+}
+
+// ── strip_tags ────────────────────────────────────────────────────────────
+
+pub fn emit_strip_tags(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 0..argc { chunk.emit_op(Op::DROP, line); }
+    push_str(chunk, "", line);
+}
+
+// ── strrchr ───────────────────────────────────────────────────────────────
+
+pub fn emit_strrchr(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let needle_slot = alloc_local(chunk);
+    let hay_slot = alloc_local(chunk);
+    let pos_slot = alloc_local(chunk);
+    lset(chunk, needle_slot, line);
+    lset(chunk, hay_slot, line);
+
+    // use first char of needle
+    lget(chunk, needle_slot, line);
+    push_const(chunk, Value::I32(0), line);
+    push_const(chunk, Value::I32(1), line);
+    chunk.emit_op(Op::STR_SUBSTRING, line);
+    lset(chunk, needle_slot, line);
+
+    lget(chunk, hay_slot, line);
+    lget(chunk, needle_slot, line);
+    chunk.emit_op(Op::STR_LAST_INDEX_OF, line);
+    lset(chunk, pos_slot, line);
+
+    lget(chunk, pos_slot, line);
+    push_const(chunk, Value::I32(0), line);
+    chunk.emit_op(Op::DYN_LT, line);
+    let found = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::FALSE, line);
+    let done = chunk.emit_jump(Op::BR, line);
+    chunk.patch_jump(found);
+    lget(chunk, hay_slot, line);
+    lget(chunk, pos_slot, line);
+    push_const(chunk, Value::I32(i32::MAX), line);
+    chunk.emit_op(Op::STR_SUBSTRING, line);
+    chunk.patch_jump(done);
+}
+
+// ── explode ───────────────────────────────────────────────────────────────
+
+pub fn emit_explode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    // argc >= 2: delim, str[, limit]. Drop limit if present.
+    if argc >= 3 { chunk.emit_op(Op::DROP, line); }
+    // stack: str (TOS), delim (below)
+    let str_slot = alloc_local(chunk);
+    let delim_slot = alloc_local(chunk);
+    lset(chunk, str_slot, line);   // pop str
+    lset(chunk, delim_slot, line); // pop delim
+    lget(chunk, str_slot, line);
+    lget(chunk, delim_slot, line);
+    chunk.emit_op(Op::STR_SPLIT, line);
+}
+
+// ── sscanf ────────────────────────────────────────────────────────────────
+
+pub fn emit_sscanf(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    for _ in 0..argc { chunk.emit_op(Op::DROP, line); }
+    push_const(chunk, Value::Null, line);
 }
