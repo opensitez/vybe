@@ -310,7 +310,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lget(chunk, parts_len_slot, line);
     push_const(chunk, Value::F64(-1.0), line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     lset(chunk, last_part_idx_slot, line);
 
     lget(chunk, parts_slot, line);
@@ -338,7 +338,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let loop_top = chunk.code.len();
     lget(chunk, index_slot, line);
     lget(chunk, entries_len_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let loop_done = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     lget(chunk, entries_slot, line);
@@ -348,7 +348,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lget(chunk, prefix_slot, line);
     push_str(chunk, "", line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let skip_prefix_check = chunk.emit_jump(Op::BR_IF_TRUE, line);
     lget(chunk, entry_slot, line);
     lget(chunk, prefix_slot, line);
@@ -358,7 +358,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lget(chunk, suffix_slot, line);
     push_str(chunk, "", line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let skip_suffix_check = chunk.emit_jump(Op::BR_IF_TRUE, line);
     lget(chunk, entry_slot, line);
     lget(chunk, suffix_slot, line);
@@ -391,7 +391,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunk.patch_jump(next_after_file_check);
     lget(chunk, index_slot, line);
     push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     lset(chunk, index_slot, line);
     chunk.emit_loop(loop_top, line);
     chunk.patch_jump(loop_done);
@@ -488,7 +488,7 @@ pub fn emit_dir_read(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
 
     lget(chunk, index_slot, line);
     lget(chunk, len_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let has_entry = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     lget(chunk, entries_slot, line);
@@ -500,7 +500,7 @@ pub fn emit_dir_read(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
     chunk.emit_op(Op::DUP, line);
     lget(chunk, index_slot, line);
     push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_SET, index_key, line);
     chunk.emit_op(Op::DROP, line);
     lget(chunk, entry_slot, line);

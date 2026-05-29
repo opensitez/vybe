@@ -52,11 +52,11 @@ pub fn emit_console_writeline(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, v_local, line);
     chunk.emit_op(Op::REF_TYPEOF, line);
     chunk.emit_op_u16(Op::CONST, bool_str, line);
-    chunk.emit_op(Op::DYN_EQ, line);
-    chunk.emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    crate::emitter::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
     chunk.emit_op_u16(Op::LOCAL_GET, v_local, line);
-    chunk.emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     let false_path = chunk.emit_jump(Op::BR_IF_FALSE, line);
     chunk.emit_op_u16(Op::CONST, true_str, line);
     let after_true = chunk.emit_jump(Op::BR, line);
@@ -72,7 +72,7 @@ pub fn emit_console_writeline(chunks: &mut [Chunk], current: usize, line: u32) {
     let not_null = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, v_local, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    chunk.emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
     chunk.emit_op_u16(Op::CONST, empty_str, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);

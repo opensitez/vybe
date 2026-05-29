@@ -65,13 +65,37 @@ impl Op {
     // Memory
     pub const MEMORY_SIZE: Op       = Op::new(0x00, 0x3F);
     pub const MEMORY_GROW: Op       = Op::new(0x00, 0x40);
-    // i32 comparisons
+    // i32 comparisons (WASM MVP 0x45–0x4F)
     pub const I32_EQZ: Op           = Op::new(0x00, 0x45);
+    pub const I32_EQ: Op            = Op::new(0x00, 0x46);
+    pub const I32_NE: Op            = Op::new(0x00, 0x47);
+    pub const I32_LT_S: Op          = Op::new(0x00, 0x48);
+    pub const I32_LT_U: Op          = Op::new(0x00, 0x49);
+    pub const I32_GT_S: Op          = Op::new(0x00, 0x4A);
+    pub const I32_GT_U: Op          = Op::new(0x00, 0x4B);
+    pub const I32_LE_S: Op          = Op::new(0x00, 0x4C);
+    pub const I32_LE_U: Op          = Op::new(0x00, 0x4D);
+    pub const I32_GE_S: Op          = Op::new(0x00, 0x4E);
+    pub const I32_GE_U: Op          = Op::new(0x00, 0x4F);
+    /// Alias for I32_EQ — kept for compatibility with existing emit sites.
     pub const EQ: Op                = Op::new(0x00, 0x46);
+    /// Alias for I32_NE — kept for compatibility with existing emit sites.
     pub const NE: Op                = Op::new(0x00, 0x47);
-    // i64
+    // i64 comparisons (WASM MVP 0x50–0x5A)
     pub const I64_EQZ: Op           = Op::new(0x00, 0x50);
-    // f64 comparisons
+    pub const I64_EQ: Op            = Op::new(0x00, 0x51);
+    pub const I64_NE: Op            = Op::new(0x00, 0x52);
+    pub const I64_LT_S: Op          = Op::new(0x00, 0x53);
+    pub const I64_LT_U: Op          = Op::new(0x00, 0x54);
+    pub const I64_GT_S: Op          = Op::new(0x00, 0x55);
+    pub const I64_GT_U: Op          = Op::new(0x00, 0x56);
+    pub const I64_LE_S: Op          = Op::new(0x00, 0x57);
+    pub const I64_LE_U: Op          = Op::new(0x00, 0x58);
+    pub const I64_GE_S: Op          = Op::new(0x00, 0x59);
+    pub const I64_GE_U: Op          = Op::new(0x00, 0x5A);
+    // f64 comparisons (WASM MVP 0x61–0x66)
+    pub const F64_EQ: Op            = Op::new(0x00, 0x61);
+    pub const F64_NE: Op            = Op::new(0x00, 0x62);
     pub const F64_LT: Op            = Op::new(0x00, 0x63);
     pub const F64_GT: Op            = Op::new(0x00, 0x64);
     pub const F64_LE: Op            = Op::new(0x00, 0x65);
@@ -241,11 +265,31 @@ opcode_category! {
     [0x40] memory_grow => U16, "memory.grow";
     // i32 comparisons
     [0x45] i32_eqz => None, "i32.eqz";
-    [0x46] eq => None, "i32.eq";
-    [0x47] ne => None, "i32.ne";
+    [0x46] eq      => None, "i32.eq";
+    [0x47] ne      => None, "i32.ne";
+    [0x48] i32_lt_s => None, "i32.lt_s";
+    [0x49] i32_lt_u => None, "i32.lt_u";
+    [0x4A] i32_gt_s => None, "i32.gt_s";
+    [0x4B] i32_gt_u => None, "i32.gt_u";
+    [0x4C] i32_le_s => None, "i32.le_s";
+    [0x4D] i32_le_u => None, "i32.le_u";
+    [0x4E] i32_ge_s => None, "i32.ge_s";
+    [0x4F] i32_ge_u => None, "i32.ge_u";
     // i64
     [0x50] i64_eqz => None, "i64.eqz";
+    [0x51] i64_eq  => None, "i64.eq";
+    [0x52] i64_ne  => None, "i64.ne";
+    [0x53] i64_lt_s => None, "i64.lt_s";
+    [0x54] i64_lt_u => None, "i64.lt_u";
+    [0x55] i64_gt_s => None, "i64.gt_s";
+    [0x56] i64_gt_u => None, "i64.gt_u";
+    [0x57] i64_le_s => None, "i64.le_s";
+    [0x58] i64_le_u => None, "i64.le_u";
+    [0x59] i64_ge_s => None, "i64.ge_s";
+    [0x5A] i64_ge_u => None, "i64.ge_u";
     // f64 comparisons
+    [0x61] f64_eq => None, "f64.eq";
+    [0x62] f64_ne => None, "f64.ne";
     [0x63] f64_lt => None, "f64.lt";
     [0x64] f64_gt => None, "f64.gt";
     [0x65] f64_le => None, "f64.le";

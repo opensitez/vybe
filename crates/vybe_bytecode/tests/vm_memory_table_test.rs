@@ -216,7 +216,7 @@ fn function_in_separate_chunk_callable() {
     f.local_count = 2; // slot 0=a, 1=b (WASM convention)
     f.emit_op_u16(Op::LOCAL_GET, 0, 0);
     f.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    f.emit_op(Op::DYN_ADD, 0);
+    f.emit_op(Op::F64_ADD, 0);
     f.emit_op(Op::RETURN, 0);
 
     let mut main = Chunk::new("<script>");

@@ -12,14 +12,14 @@ use vybe_bytecode::opcode::Op;
 pub fn emit_dart_is_empty(chunks: &mut [Chunk], current: usize, line: u32) {
     strings::emit_length(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
-    chunks[current].emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
 }
 
 /// Dart `s.isNotEmpty` — true iff length != 0. Stack: [s] → [bool].
 pub fn emit_dart_is_not_empty(chunks: &mut [Chunk], current: usize, line: u32) {
     strings::emit_length(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
-    chunks[current].emit_op(Op::DYN_NE, line);
+    crate::emitter::ops::emit_dyn_ne(&mut chunks[current], line);
 }
 
 /// Dart `print(value)` — calls value.toString() before logging, per

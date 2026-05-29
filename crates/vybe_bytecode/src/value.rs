@@ -136,6 +136,7 @@ impl Value {
     pub fn as_i64(&self) -> i64 {
         match self {
             Value::I64(n) => *n,
+            Value::BigInt(n) => *n,
             Value::I32(n) => *n as i64,
             Value::F64(n) => *n as i64,
             Value::Bool(b) => if *b { 1 } else { 0 },

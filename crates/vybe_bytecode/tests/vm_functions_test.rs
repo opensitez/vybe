@@ -250,13 +250,13 @@ fn recursive_fibonacci() {
     // if n <= 0, return 0
     fib.emit_op_u16(Op::LOCAL_GET, 0, 0); // n
     fib.emit_op_u16(Op::CONST, c0, 0);  // 0
-    fib.emit_op(Op::DYN_LE, 0);
+    fib.emit_op(Op::I32_LE_S, 0);
     let jump_base0 = fib.emit_jump(Op::BR_IF_TRUE, 0);
 
     // if n == 1, return 1
     fib.emit_op_u16(Op::LOCAL_GET, 0, 0); // n
     fib.emit_op_u16(Op::CONST, c1, 0);  // 1
-    fib.emit_op(Op::DYN_EQ, 0);
+    fib.emit_op(Op::I32_EQ, 0);
     let jump_base1 = fib.emit_jump(Op::BR_IF_TRUE, 0);
 
     // recursive: fib(n-1) + fib(n-2)
@@ -311,7 +311,7 @@ fn recursive_factorial() {
 
     fact.emit_op_u16(Op::LOCAL_GET, 0, 0);
     fact.emit_op_u16(Op::CONST, c1, 0);
-    fact.emit_op(Op::DYN_LE, 0);
+    fact.emit_op(Op::I32_LE_S, 0);
     let jump_base = fact.emit_jump(Op::BR_IF_TRUE, 0);
 
     // n * fact(n-1)

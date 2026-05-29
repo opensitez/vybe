@@ -34,7 +34,7 @@ pub fn emit_parse_int(chunks: &mut [Chunk], current: usize, line: u32) {
     let if_block = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_br_if(0, line);
     // NaN — throw FormatException-shaped object so `e.Message` works.
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
@@ -66,7 +66,7 @@ pub fn emit_parse_double(chunks: &mut [Chunk], current: usize, line: u32) {
     let if_block = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_br_if(0, line);
     let msg = chunk.add_constant(Value::String(Arc::from(
         "Input string was not in a correct format.",
@@ -103,8 +103,8 @@ pub fn emit_parse_bool(chunks: &mut [Chunk], current: usize, line: u32) {
     let not_true = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, lc, line);
     chunk.emit_op_u16(Op::CONST, true_str, line);
-    chunk.emit_op(Op::DYN_EQ, line);
-    chunk.emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    crate::emitter::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
     chunk.emit_op(Op::TRUE, line);
     chunk.emit_br(1, line);
@@ -114,8 +114,8 @@ pub fn emit_parse_bool(chunks: &mut [Chunk], current: usize, line: u32) {
     let not_false = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, lc, line);
     chunk.emit_op_u16(Op::CONST, false_str, line);
-    chunk.emit_op(Op::DYN_EQ, line);
-    chunk.emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
+    crate::emitter::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
     chunk.emit_op(Op::FALSE, line);
     chunk.emit_br(1, line);
@@ -145,7 +145,7 @@ pub fn emit_parse_char(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, value, line);
     chunk.emit_op(Op::STR_LENGTH, line);
     chunk.emit_op(Op::I32_CONST_1, line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_br_if(0, line);
 
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);

@@ -560,6 +560,8 @@ pub fn emit_common(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
             => crate::emitter::php::string_adapter::emit_explode(chunks, current, argc, line),
         "php.sscanf"
             => crate::emitter::php::string_adapter::emit_sscanf(chunks, current, argc, line),
+        "php.uniqid"
+            => crate::emitter::php::string_adapter::emit_php_uniqid(chunks, current, argc, line),
         "php.str_pad"
             => crate::emitter::php::string_adapter::emit_str_pad(chunks, current, argc, line),
         "php.substr_count"
@@ -1146,12 +1148,12 @@ fn emit_isset_all(chunk: &mut Chunk, argc: u8, line: u32) {
     // result = !is_null(args[0])
     chunk.emit_op_u16(Op::LOCAL_GET, base, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    chunk.emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_not(chunk, line);
     // result = result AND !is_null(args[i]) for each remaining
     for i in 1..argc {
         chunk.emit_op_u16(Op::LOCAL_GET, base + i as u16, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
-        chunk.emit_op(Op::DYN_NOT, line);
+        crate::emitter::ops::emit_dyn_not(chunk, line);
         chunk.emit_op(Op::I32_AND, line);
     }
 }

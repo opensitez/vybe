@@ -59,7 +59,7 @@ fn emit_named_field_from_obj(chunk: &mut Chunk, obj_slot: u16, field: &str, line
 fn emit_compare_numeric_slots(chunk: &mut Chunk, left_slot: u16, right_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let not_lt = chunk.emit_jump(Op::BR_IF_FALSE, line);
     push_const(chunk, Value::I32(-1), line);
     let done = chunk.emit_jump(Op::BR, line);
@@ -67,7 +67,7 @@ fn emit_compare_numeric_slots(chunk: &mut Chunk, left_slot: u16, right_slot: u16
 
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    chunk.emit_op(Op::DYN_GT, line);
+    crate::emitter::ops::emit_dyn_gt(chunk, line);
     let not_gt = chunk.emit_jump(Op::BR_IF_FALSE, line);
     push_const(chunk, Value::I32(1), line);
     let done_gt = chunk.emit_jump(Op::BR, line);
@@ -89,7 +89,7 @@ fn emit_day_of_week_string(chunk: &mut Chunk, slot: u16, line: u32) {
     ] {
         chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
         push_const(chunk, Value::I32(index), line);
-        chunk.emit_op(Op::DYN_EQ, line);
+        crate::emitter::ops::emit_dyn_eq(chunk, line);
         let next = chunk.emit_jump(Op::BR_IF_FALSE, line);
         push_const(chunk, Value::String(Arc::from(name)), line);
         done_jumps.push(chunk.emit_jump(Op::BR, line));
@@ -477,7 +477,7 @@ pub fn emit_datetime_is_leap_year(chunks: &mut [Chunk], current: usize, line: u3
     push_const(chunk, Value::I32(2), line);
     emit_datetime_days_in_month(chunks, current, line);
     push_const(&mut chunks[current], Value::I32(29), line);
-    chunks[current].emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
 }
 
 pub fn emit_datetime_compare(chunks: &mut [Chunk], current: usize, line: u32) {

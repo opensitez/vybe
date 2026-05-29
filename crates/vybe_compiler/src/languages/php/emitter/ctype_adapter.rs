@@ -36,7 +36,7 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     let empty = chunk.add_constant(Value::String(Arc::from("")));
     chunk.emit_op_u16(Op::CONST, empty, line);
     chunk.emit_op_u16(Op::LOCAL_GET, v_slot, line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, s_slot, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -50,7 +50,7 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
     let zero = chunk.add_constant(Value::F64(0.0));
     chunk.emit_op_u16(Op::CONST, zero, line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let nonempty = chunk.emit_jump(Op::BR_IF_FALSE, line);
     chunk.emit_op(Op::FALSE, line);
     let done_empty = chunk.emit_jump(Op::BR, line);
@@ -66,7 +66,7 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     let loop_top = chunk.current_offset();
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     // code = s.codePointAt(i)
@@ -84,15 +84,15 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
         chunk.emit_op_u16(Op::LOCAL_GET, code_slot, line);
         let lo_const = chunk.add_constant(Value::F64(rng.lo as f64));
         chunk.emit_op_u16(Op::CONST, lo_const, line);
-        chunk.emit_op(Op::DYN_LT, line);
-        chunk.emit_op(Op::DYN_NOT, line);
+        crate::emitter::ops::emit_dyn_lt(chunk, line);
+        crate::emitter::ops::emit_dyn_not(chunk, line);
         let skip_lo = chunk.emit_jump(Op::BR_IF_FALSE, line);
         // code <= hi  ≡  !(code > hi)
         chunk.emit_op_u16(Op::LOCAL_GET, code_slot, line);
         let hi_const = chunk.add_constant(Value::F64(rng.hi as f64));
         chunk.emit_op_u16(Op::CONST, hi_const, line);
-        chunk.emit_op(Op::DYN_GT, line);
-        chunk.emit_op(Op::DYN_NOT, line);
+        crate::emitter::ops::emit_dyn_gt(chunk, line);
+        crate::emitter::ops::emit_dyn_not(chunk, line);
         let skip_hi = chunk.emit_jump(Op::BR_IF_FALSE, line);
         accept_jumps.push(chunk.emit_jump(Op::BR, line));
         chunk.patch_jump(skip_hi);

@@ -1,31 +1,22 @@
 //! # `wasm:*` host imports — real WebAssembly CG proposals.
 //!
-//! This folder hosts Rust implementations of imports defined by actual
-//! WebAssembly proposals (merged or staged through the CG process). Only
-//! names that appear in a real Overview.md under `proposals/` may live
-//! here — everything else that looks "WASM-ish" is Vybe-invented and
-//! belongs under `ecma/` or another honest namespace.
+//! Each file corresponds to one proposal.
 //!
-//! Current entries:
-//! - `wasm:js-string`       (**merged** js-string-builtins; V8 native)
-//! - `wasm:js-number`       (stage-1 js-primitive-builtins)
-//! - `wasm:js-boolean`      (stage-1 js-primitive-builtins)
-//! - `wasm:js-undefined`    (stage-1 js-primitive-builtins)
+//! - `js_string_builtins`   — **merged** js-string-builtins (V8 native);
+//!                            also includes the wasm:js-string extensions
+//!                            from the Stage-1 js-primitive-builtins proposal
+//! - `js_primitive_builtins`— Stage-1 js-primitive-builtins
+//!                            (wasm:js-{number,boolean,undefined,symbol,bigint})
 //!
-//! See `crates/vybe_bytecode/src/wasm/JS_BUILTIN_CONVENTIONS.md` for
-//! the marshaling + error-handling contract every entry must satisfy.
+//! See `crates/vybe_bytecode/src/wasm/JS_BUILTIN_CONVENTIONS.md` for the
+//! marshaling + error-handling contract every entry must satisfy.
 
-pub mod js_string;
-pub mod js_number;
-pub mod js_boolean;
-pub mod js_undefined;
+pub mod js_string_builtins;
+pub mod js_primitive_builtins;
 
 use vybe_bytecode::VM;
 
-/// Register every `wasm:*` host fn on the VM.
 pub fn register(vm: &mut VM) {
-    js_string::register(vm);
-    js_number::register(vm);
-    js_boolean::register(vm);
-    js_undefined::register(vm);
+    js_string_builtins::register(vm);
+    js_primitive_builtins::register(vm);
 }

@@ -58,7 +58,7 @@ pub fn emit_parse_float(chunk: &mut Chunk, line: u32) {
 
 /// Dynamic truthiness conversion. Stack: [value] → [bool]
 pub fn emit_to_bool(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
 }
 
 // ── Target-aware variants ───────────────────────────────────

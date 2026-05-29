@@ -142,7 +142,7 @@ fn emit_version_compare_internal(chunks: &mut [Chunk], current: usize, line: u32
 
         chunk.emit_op_u16(Op::LOCAL_GET, left_part_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, right_part_slot, line);
-        chunk.emit_op(Op::DYN_LT, line);
+        crate::emitter::ops::emit_dyn_lt(chunk, line);
         let not_lt = chunk.emit_jump(Op::BR_IF_FALSE, line);
         push_const(chunk, Value::F64(-1.0), line);
         done_jumps.push(chunk.emit_jump(Op::BR, line));
@@ -150,7 +150,7 @@ fn emit_version_compare_internal(chunks: &mut [Chunk], current: usize, line: u32
 
         chunk.emit_op_u16(Op::LOCAL_GET, left_part_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, right_part_slot, line);
-        chunk.emit_op(Op::DYN_GT, line);
+        crate::emitter::ops::emit_dyn_gt(chunk, line);
         let not_gt = chunk.emit_jump(Op::BR_IF_FALSE, line);
         push_const(chunk, Value::F64(1.0), line);
         done_jumps.push(chunk.emit_jump(Op::BR, line));
@@ -270,26 +270,26 @@ pub fn emit_version_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
     push_const(chunk, Value::String(Arc::from(".")), line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     emit_version_part(chunk, obj_slot, MINOR_KEY, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, to_str_idx, line);
     chunk.emit(1, line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
     chunk.emit_op(Op::DROP, line);
 
     for key in [BUILD_KEY, REVISION_KEY] {
         emit_version_part(chunk, obj_slot, key, line);
         push_const(chunk, Value::F64(-1.0), line);
-        chunk.emit_op(Op::DYN_GT, line);
+        crate::emitter::ops::emit_dyn_gt(chunk, line);
         let skip = chunk.emit_jump(Op::BR_IF_FALSE, line);
         chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
         push_const(chunk, Value::String(Arc::from(".")), line);
-        chunk.emit_op(Op::DYN_ADD, line);
+        crate::emitter::ops::emit_dyn_add(chunk, line);
         emit_version_part(chunk, obj_slot, key, line);
         chunk.emit_op_u16(Op::CALL_IMPORT, to_str_idx, line);
         chunk.emit(1, line);
-        chunk.emit_op(Op::DYN_ADD, line);
+        crate::emitter::ops::emit_dyn_add(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
         chunk.emit_op(Op::DROP, line);
         chunk.patch_jump(skip);
@@ -306,21 +306,21 @@ pub fn emit_version_equals(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_version_compare_internal(chunks, current, line);
     let chunk = &mut chunks[current];
     push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
 }
 
 pub fn emit_version_lt(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_version_compare_internal(chunks, current, line);
     let chunk = &mut chunks[current];
     push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
 }
 
 pub fn emit_version_gt(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_version_compare_internal(chunks, current, line);
     let chunk = &mut chunks[current];
     push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_op(Op::DYN_GT, line);
+    crate::emitter::ops::emit_dyn_gt(chunk, line);
 }
 
 pub fn emit_version_eq(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -330,5 +330,5 @@ pub fn emit_version_eq(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_version_ne(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_version_equals(chunks, current, line);
     let chunk = &mut chunks[current];
-    chunk.emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_not(chunk, line);
 }

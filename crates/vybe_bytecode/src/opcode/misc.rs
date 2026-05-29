@@ -1,9 +1,22 @@
 //! Misc proposal opcodes (prefix 0xFC).
+//!
+//! Includes the nontrapping-float-to-int-conversions proposal (0xFC 0x00–0x07):
+//! saturating truncation that clamps instead of trapping on overflow / NaN.
 
 use super::Op;
 use super::opcode_category;
 
 impl Op {
+    // nontrapping-float-to-int-conversions proposal — 0xFC 0x00–0x07
+    pub const I32_TRUNC_SAT_F32_S: Op = Op::new(0xFC, 0x00);
+    pub const I32_TRUNC_SAT_F32_U: Op = Op::new(0xFC, 0x01);
+    pub const I32_TRUNC_SAT_F64_S: Op = Op::new(0xFC, 0x02);
+    pub const I32_TRUNC_SAT_F64_U: Op = Op::new(0xFC, 0x03);
+    pub const I64_TRUNC_SAT_F32_S: Op = Op::new(0xFC, 0x04);
+    pub const I64_TRUNC_SAT_F32_U: Op = Op::new(0xFC, 0x05);
+    pub const I64_TRUNC_SAT_F64_S: Op = Op::new(0xFC, 0x06);
+    pub const I64_TRUNC_SAT_F64_U: Op = Op::new(0xFC, 0x07);
+
     pub const MEMORY_INIT: Op = Op::new(0xFC, 0x08);
     // Reference-types table operations (reference-types proposal, 0xFC prefix).
     pub const DATA_DROP: Op   = Op::new(0xFC, 0x09);
@@ -18,6 +31,15 @@ impl Op {
 }
 
 opcode_category! {
+    // nontrapping-float-to-int-conversions — no immediates
+    [0x00] i32_trunc_sat_f32_s => None, "i32.trunc_sat_f32_s";
+    [0x01] i32_trunc_sat_f32_u => None, "i32.trunc_sat_f32_u";
+    [0x02] i32_trunc_sat_f64_s => None, "i32.trunc_sat_f64_s";
+    [0x03] i32_trunc_sat_f64_u => None, "i32.trunc_sat_f64_u";
+    [0x04] i64_trunc_sat_f32_s => None, "i64.trunc_sat_f32_s";
+    [0x05] i64_trunc_sat_f32_u => None, "i64.trunc_sat_f32_u";
+    [0x06] i64_trunc_sat_f64_s => None, "i64.trunc_sat_f64_s";
+    [0x07] i64_trunc_sat_f64_u => None, "i64.trunc_sat_f64_u";
     // Spec-correct operands:
     //   memory.init   : u8 data_idx, u8 memory_idx (we encode 0, 0)
     //   data.drop     : u8 data_idx

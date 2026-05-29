@@ -36,9 +36,9 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
 fn emit_host_port_string(chunk: &mut Chunk, host_slot: u16, port_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, host_slot, line);
     push_const(chunk, Value::String(Arc::from(":")), line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, port_slot, line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
 }
 
 // ─── Dns ─────────────────────────────────────────────────────────────────
@@ -190,9 +190,9 @@ pub fn emit_tcp_listener_new(chunks: &mut Vec<Chunk>, current: usize, line: u32)
     chunk.emit_op(Op::NULL, line);
     push_const(chunk, Value::String(Arc::from("0.0.0.0")), line);
     push_const(chunk, Value::String(Arc::from(":")), line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, port_slot, line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     let bind_idx = chunks[0].add_import("wasi:sockets/tcp", "start-bind");
     chunks[current].emit_op_u16(Op::CALL_IMPORT, bind_idx, line);
     chunks[current].emit(3, line);
@@ -299,9 +299,9 @@ pub fn emit_udp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunk.emit_op(Op::NULL, line);
     push_const(chunk, Value::String(Arc::from("0.0.0.0")), line);
     push_const(chunk, Value::String(Arc::from(":")), line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, port_slot, line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     let bind_idx = chunks[0].add_import("wasi:sockets/udp", "start-bind");
     chunks[current].emit_op_u16(Op::CALL_IMPORT, bind_idx, line);
     chunks[current].emit(3, line);

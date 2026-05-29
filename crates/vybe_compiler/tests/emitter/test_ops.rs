@@ -1,0 +1,308 @@
+//! Tests for `emitter::ops` — the spec-compliant replacements for DYN_* opcodes.
+//!
+//! Each function emits through the ops.rs sequence, runs the VM with the
+//! wasm:js-* host functions registered, and asserts the result.
+
+use std::sync::Arc;
+use vybe_bytecode::{Chunk, Value, VM};
+use vybe_bytecode::opcode::Op;
+use vybe_compiler::emitter::ops;
+use vybe_host::register_all;
+
+fn run(emit: impl FnOnce(&mut Chunk)) -> Value {
+    let mut chunk = Chunk::new("<test>");
+    emit(&mut chunk);
+    chunk.emit_op(Op::RETURN, 0);
+    let mut vm = VM::new();
+    register_all(&mut vm);
+    vm.run(vec![chunk]).expect("VM run failed")
+}
+
+fn push(c: &mut Chunk, v: Value) {
+    let k = c.add_constant(v);
+    c.emit_op_u16(Op::CONST, k, 0);
+}
+
+// ── emit_dyn_to_bool ─────────────────────────────────────────────────
+
+#[test]
+fn to_bool_null_is_false() {
+    let r = run(|c| { c.emit_op(Op::NULL, 0); ops::emit_dyn_to_bool(c, 0); });
+    assert_eq!(r.as_i32(), 0);
+}
+
+#[test]
+fn to_bool_undefined_is_false() {
+    let r = run(|c| { c.emit_op(Op::UNDEFINED, 0); ops::emit_dyn_to_bool(c, 0); });
+    assert_eq!(r.as_i32(), 0);
+}
+
+#[test]
+fn to_bool_zero_is_false() {
+    let r = run(|c| { push(c, Value::F64(0.0)); ops::emit_dyn_to_bool(c, 0); });
+    assert_eq!(r.as_i32(), 0);
+}
+
+#[test]
+fn to_bool_nan_is_false() {
+    let r = run(|c| { push(c, Value::F64(f64::NAN)); ops::emit_dyn_to_bool(c, 0); });
+    assert_eq!(r.as_i32(), 0);
+}
+
+#[test]
+fn to_bool_empty_string_is_false() {
+    let r = run(|c| { push(c, Value::String(Arc::from(""))); ops::emit_dyn_to_bool(c, 0); });
+    assert_eq!(r.as_i32(), 0);
+}
+
+#[test]
+fn to_bool_nonempty_string_is_true() {
+    let r = run(|c| { push(c, Value::String(Arc::from("x"))); ops::emit_dyn_to_bool(c, 0); });
+    assert_eq!(r.as_i32(), 1);
+}
+
+#[test]
+fn to_bool_nonzero_number_is_true() {
+    let r = run(|c| { push(c, Value::F64(1.0)); ops::emit_dyn_to_bool(c, 0); });
+    assert_eq!(r.as_i32(), 1);
+}
+
+#[test]
+fn to_bool_false_bool_is_false() {
+    let r = run(|c| { c.emit_op(Op::FALSE, 0); ops::emit_dyn_to_bool(c, 0); });
+    assert_eq!(r.as_i32(), 0);
+}
+
+#[test]
+fn to_bool_true_bool_is_true() {
+    let r = run(|c| { c.emit_op(Op::TRUE, 0); ops::emit_dyn_to_bool(c, 0); });
+    assert_eq!(r.as_i32(), 1);
+}
+
+#[test]
+fn to_bool_bigint_zero_is_false() {
+    let r = run(|c| { push(c, Value::BigInt(0)); ops::emit_dyn_to_bool(c, 0); });
+    assert_eq!(r.as_i32(), 0);
+}
+
+#[test]
+fn to_bool_bigint_nonzero_is_true() {
+    let r = run(|c| { push(c, Value::BigInt(-1)); ops::emit_dyn_to_bool(c, 0); });
+    assert_eq!(r.as_i32(), 1);
+}
+
+// ── emit_dyn_not ─────────────────────────────────────────────────────
+
+#[test]
+fn not_true_gives_false() {
+    let r = run(|c| { c.emit_op(Op::TRUE, 0); ops::emit_dyn_not(c, 0); });
+    assert_eq!(r.as_i32(), 0);
+}
+
+#[test]
+fn not_false_gives_true() {
+    let r = run(|c| { c.emit_op(Op::FALSE, 0); ops::emit_dyn_not(c, 0); });
+    assert_eq!(r.as_i32(), 1);
+}
+
+#[test]
+fn not_null_gives_true() {
+    let r = run(|c| { c.emit_op(Op::NULL, 0); ops::emit_dyn_not(c, 0); });
+    assert_eq!(r.as_i32(), 1);
+}
+
+#[test]
+fn not_nonzero_gives_false() {
+    let r = run(|c| { push(c, Value::F64(42.0)); ops::emit_dyn_not(c, 0); });
+    assert_eq!(r.as_i32(), 0);
+}
+
+// ── emit_dyn_eq ──────────────────────────────────────────────────────
+
+#[test]
+fn eq_same_numbers() {
+    let r = run(|c| { push(c, Value::F64(3.0)); push(c, Value::F64(3.0)); ops::emit_dyn_eq(c, 0); });
+    assert_eq!(r.as_i32(), 1);
+}
+
+#[test]
+fn eq_different_numbers() {
+    let r = run(|c| { push(c, Value::F64(1.0)); push(c, Value::F64(2.0)); ops::emit_dyn_eq(c, 0); });
+    assert_eq!(r.as_i32(), 0);
+}
+
+#[test]
+fn eq_nan_is_not_equal_to_itself() {
+    let r = run(|c| { push(c, Value::F64(f64::NAN)); push(c, Value::F64(f64::NAN)); ops::emit_dyn_eq(c, 0); });
+    assert_eq!(r.as_i32(), 0);
+}
+
+#[test]
+fn eq_same_strings() {
+    let r = run(|c| {
+        push(c, Value::String(Arc::from("hello")));
+        push(c, Value::String(Arc::from("hello")));
+        ops::emit_dyn_eq(c, 0);
+    });
+    assert_eq!(r.as_i32(), 1);
+}
+
+#[test]
+fn eq_different_strings() {
+    let r = run(|c| {
+        push(c, Value::String(Arc::from("a")));
+        push(c, Value::String(Arc::from("b")));
+        ops::emit_dyn_eq(c, 0);
+    });
+    assert_eq!(r.as_i32(), 0);
+}
+
+#[test]
+fn eq_both_null() {
+    let r = run(|c| { c.emit_op(Op::NULL, 0); c.emit_op(Op::NULL, 0); ops::emit_dyn_eq(c, 0); });
+    assert_eq!(r.as_i32(), 1);
+}
+
+#[test]
+fn eq_null_and_undefined_are_equal() {
+    let r = run(|c| { c.emit_op(Op::NULL, 0); c.emit_op(Op::UNDEFINED, 0); ops::emit_dyn_eq(c, 0); });
+    assert_eq!(r.as_i32(), 1);
+}
+
+#[test]
+fn eq_same_bigints() {
+    let r = run(|c| { push(c, Value::BigInt(42)); push(c, Value::BigInt(42)); ops::emit_dyn_eq(c, 0); });
+    assert_eq!(r.as_i32(), 1);
+}
+
+#[test]
+fn eq_different_bigints() {
+    let r = run(|c| { push(c, Value::BigInt(1)); push(c, Value::BigInt(2)); ops::emit_dyn_eq(c, 0); });
+    assert_eq!(r.as_i32(), 0);
+}
+
+#[test]
+fn eq_true_booleans() {
+    let r = run(|c| { c.emit_op(Op::TRUE, 0); c.emit_op(Op::TRUE, 0); ops::emit_dyn_eq(c, 0); });
+    assert_eq!(r.as_i32(), 1);
+}
+
+// ── emit_dyn_ne ──────────────────────────────────────────────────────
+
+#[test]
+fn ne_same_returns_false() {
+    let r = run(|c| { push(c, Value::F64(5.0)); push(c, Value::F64(5.0)); ops::emit_dyn_ne(c, 0); });
+    assert_eq!(r.as_i32(), 0);
+}
+
+#[test]
+fn ne_different_returns_true() {
+    let r = run(|c| { push(c, Value::F64(1.0)); push(c, Value::F64(2.0)); ops::emit_dyn_ne(c, 0); });
+    assert_eq!(r.as_i32(), 1);
+}
+
+// ── emit_dyn_lt / gt / le / ge ───────────────────────────────────────
+
+#[test]
+fn lt_numbers() {
+    let r = run(|c| { push(c, Value::F64(1.0)); push(c, Value::F64(2.0)); ops::emit_dyn_lt(c, 0); });
+    assert_eq!(r.as_i32(), 1);
+    let r2 = run(|c| { push(c, Value::F64(2.0)); push(c, Value::F64(1.0)); ops::emit_dyn_lt(c, 0); });
+    assert_eq!(r2.as_i32(), 0);
+}
+
+#[test]
+fn gt_numbers() {
+    let r = run(|c| { push(c, Value::F64(5.0)); push(c, Value::F64(2.0)); ops::emit_dyn_gt(c, 0); });
+    assert_eq!(r.as_i32(), 1);
+}
+
+#[test]
+fn le_equal_numbers() {
+    let r = run(|c| { push(c, Value::F64(3.0)); push(c, Value::F64(3.0)); ops::emit_dyn_le(c, 0); });
+    assert_eq!(r.as_i32(), 1);
+}
+
+#[test]
+fn ge_greater_number() {
+    let r = run(|c| { push(c, Value::F64(10.0)); push(c, Value::F64(9.0)); ops::emit_dyn_ge(c, 0); });
+    assert_eq!(r.as_i32(), 1);
+}
+
+#[test]
+fn lt_strings_lexicographic() {
+    let r = run(|c| {
+        push(c, Value::String(Arc::from("apple")));
+        push(c, Value::String(Arc::from("banana")));
+        ops::emit_dyn_lt(c, 0);
+    });
+    assert_eq!(r.as_i32(), 1);
+}
+
+#[test]
+fn lt_bigints() {
+    let r = run(|c| { push(c, Value::BigInt(1)); push(c, Value::BigInt(2)); ops::emit_dyn_lt(c, 0); });
+    assert_eq!(r.as_i32(), 1);
+    let r2 = run(|c| { push(c, Value::BigInt(5)); push(c, Value::BigInt(2)); ops::emit_dyn_lt(c, 0); });
+    assert_eq!(r2.as_i32(), 0);
+}
+
+#[test]
+fn ge_bigints() {
+    let r = run(|c| { push(c, Value::BigInt(10)); push(c, Value::BigInt(10)); ops::emit_dyn_ge(c, 0); });
+    assert_eq!(r.as_i32(), 1);
+}
+
+// ── emit_dyn_add ─────────────────────────────────────────────────────
+
+#[test]
+fn add_numbers() {
+    let r = run(|c| { push(c, Value::F64(3.0)); push(c, Value::F64(4.0)); ops::emit_dyn_add(c, 0); });
+    assert_eq!(r.as_f64(), 7.0);
+}
+
+#[test]
+fn add_string_concat() {
+    let r = run(|c| {
+        push(c, Value::String(Arc::from("foo")));
+        push(c, Value::String(Arc::from("bar")));
+        ops::emit_dyn_add(c, 0);
+    });
+    assert_eq!(format!("{}", r), "foobar");
+}
+
+#[test]
+fn add_string_and_number_coerces() {
+    let r = run(|c| {
+        push(c, Value::String(Arc::from("n=")));
+        push(c, Value::F64(42.0));
+        ops::emit_dyn_add(c, 0);
+    });
+    assert_eq!(format!("{}", r), "n=42");
+}
+
+#[test]
+fn add_bigints() {
+    let r = run(|c| { push(c, Value::BigInt(10)); push(c, Value::BigInt(32)); ops::emit_dyn_add(c, 0); });
+    assert_eq!(r.as_i64(), 42);
+}
+
+// ── emit_dyn_neg ─────────────────────────────────────────────────────
+
+#[test]
+fn neg_number() {
+    let r = run(|c| { push(c, Value::F64(5.0)); ops::emit_dyn_neg(c, 0); });
+    assert_eq!(r.as_f64(), -5.0);
+}
+
+#[test]
+fn neg_bigint() {
+    let r = run(|c| { push(c, Value::BigInt(7)); ops::emit_dyn_neg(c, 0); });
+    assert_eq!(r.as_i64(), -7);
+}
+
+#[test]
+fn neg_negative_number() {
+    let r = run(|c| { push(c, Value::F64(-3.0)); ops::emit_dyn_neg(c, 0); });
+    assert_eq!(r.as_f64(), 3.0);
+}

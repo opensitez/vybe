@@ -8,5 +8,6 @@ mod test_errors;
 mod test_expressions;
 mod test_functions;
 mod test_loops;
+mod test_ops;
 mod test_stdlib;
 mod test_strings;

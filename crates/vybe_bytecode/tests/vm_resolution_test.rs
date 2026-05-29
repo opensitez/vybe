@@ -316,7 +316,7 @@ fn invoke_multiple_times_globals_accumulate() {
     let one = f.add_constant(Value::F64(1.0));
     f.emit_op_u16(Op::GLOBAL_GET, name, 0);
     f.emit_op_u16(Op::CONST, one, 0);
-    f.emit_op(Op::DYN_ADD, 0);
+    f.emit_op(Op::F64_ADD, 0);
     f.emit_op_u16(Op::GLOBAL_SET, name, 0);
     f.emit_op(Op::RETURN, 0);
 
@@ -357,7 +357,7 @@ fn method_on_object_via_struct_get_call() {
     method.emit_op_u16(Op::LOCAL_GET, 0, 0); // this is at slot 0
     method.emit_op_u16(Op::STRUCT_GET, x, 0);
     method.emit_op_u16(Op::CONST, one, 0);
-    method.emit_op(Op::DYN_ADD, 0);
+    method.emit_op(Op::F64_ADD, 0);
     method.emit_op(Op::RETURN, 0);
 
     let mut main = Chunk::new("<script>");
@@ -408,8 +408,8 @@ fn single_byte_opcode_encodes_correctly() {
 
 #[test]
 fn opcode_encoding_consistency() {
-    // Verify that decode(encode()) roundtrips for all opcodes
-    let op = Op::DYN_ADD;
+    // Verify that decode(encode()) roundtrips for a standard WASM opcode
+    let op = Op::F64_ADD;
     let (prefix, sub) = op.encode();
     let decoded = Op::decode(prefix, sub);
     assert!(decoded.is_some());

@@ -147,9 +147,7 @@ fn count_temp_locals(chunk: &Chunk) -> u32 {
             } else if is_binary_typed_op(op) || op == Op::GLOBAL_SET || op == Op::DUP
                 || op == Op::ARRAY_GET || op == Op::ARRAY_LENGTH
                 || op == Op::REF_TYPEOF || op == Op::REF_IS_NULL
-                // Dynamic binary ops also use temp for unbox pattern
-                || op == Op::DYN_ADD || op == Op::DYN_LT || op == Op::DYN_GT
-                || op == Op::DYN_LE || op == Op::DYN_GE || op == Op::DYN_EQ || op == Op::DYN_NE {
+                {
                 need = need.max(1);
             }
             // Phase E: the `0xFF` ARRAY_* (PUSH/POP/SLICE/JOIN/REVERSE/
@@ -1319,40 +1317,6 @@ fn emit_vm_internal_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize
             emit_unbox_i32(body, rt_idx);
             body.push(0x0D); // br_if
             write_leb128_u32(body, depth as u32);
-        }
-
-        // ── Dynamic ops → inline WASM sequences using wasm:js-* builtins ──
-
-        // dyn_add: type check → number add or string concat
-        _ if op == Op::DYN_ADD => {
-            // Stack: [externref_a, externref_b]
-            // Save b, check if a is number
-            emit_dyn_binary_numeric(body, rt_idx, temp_idx, 0xA0); // f64.add
-            // Fallback: wasm:js-string concat
-        }
-        // dyn comparisons: unbox both as f64, compare, box result as i32
-        _ if op == Op::DYN_LT => emit_dyn_binary_cmp(body, rt_idx, temp_idx, 0x63), // f64.lt
-        _ if op == Op::DYN_GT => emit_dyn_binary_cmp(body, rt_idx, temp_idx, 0x64), // f64.gt
-        _ if op == Op::DYN_LE => emit_dyn_binary_cmp(body, rt_idx, temp_idx, 0x65), // f64.le
-        _ if op == Op::DYN_GE => emit_dyn_binary_cmp(body, rt_idx, temp_idx, 0x66), // f64.ge
-        _ if op == Op::DYN_EQ => emit_dyn_binary_cmp(body, rt_idx, temp_idx, 0x61), // f64.eq (0x61)
-        _ if op == Op::DYN_NE => emit_dyn_binary_cmp(body, rt_idx, temp_idx, 0x62), // f64.ne (0x62)
-        // dyn unary: unbox → op → rebox
-        _ if op == Op::DYN_NEG => {
-            emit_unbox_f64(body, rt_idx);
-            body.push(0x9A); // f64.neg
-            emit_box_f64(body, rt_idx);
-        }
-        _ if op == Op::DYN_NOT => {
-            // Truthy check: toI32, eqz (invert), fromI32
-            emit_unbox_i32(body, rt_idx);
-            body.push(0x45); // i32.eqz
-            emit_box_i32(body, rt_idx);
-        }
-        _ if op == Op::DYN_TO_BOOL => {
-            // Convert to boolean: toI32 (0 = false, nonzero = true), fromI32
-            emit_unbox_i32(body, rt_idx);
-            emit_box_i32(body, rt_idx);
         }
 
         // ── String ops → wasm:js-string builtins (standard WASM proposal) ──

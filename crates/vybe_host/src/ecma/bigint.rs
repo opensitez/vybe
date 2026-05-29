@@ -30,7 +30,9 @@ fn to_bigint(v: &Value) -> i64 {
 pub fn register(vm: &mut VM) {
     // BigInt(value) — §21.2.1.1.
     vm.register_host_fn("ecma:bigint", "BigInt", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-        Value::I64(to_bigint(args.first().unwrap_or(&Value::Null)))
+        // §21.2.1.1: return Value::BigInt so strict equality (===) against
+        // BigInt literals works — I64 and BigInt are different types.
+        Value::BigInt(to_bigint(args.first().unwrap_or(&Value::Null)))
     }));
 
     // BigInt.asIntN(bits, bigint) — §21.2.2.1. Sign-extend low `bits`.

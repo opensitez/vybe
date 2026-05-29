@@ -5,6 +5,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[package.metadata.cargo-machete]
+# package name "md-5" is imported as crate name "md5" — machete false positive
+ignored = ["md-5"]
+
 [features]
 gui = ["vybe_widgets"]
 gui_forms = ["gui"]
@@ -15,10 +19,12 @@ vybe_widgets = { workspace = true, optional = true }
 regex = { workspace = true }
 regress = { workspace = true }
 chrono = { workspace = true }
+indexmap = { workspace = true }
+
+# wasi:sql native sync drivers — replaced sqlx
 rusqlite = { workspace = true }
 postgres = { workspace = true }
 mysql = { workspace = true }
-indexmap = { workspace = true }
 sha2 = { workspace = true }
 sha1 = { workspace = true }
 md-5 = { workspace = true }

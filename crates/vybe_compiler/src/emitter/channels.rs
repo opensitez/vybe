@@ -38,7 +38,7 @@ fn emit_autoderef_cell(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::STRUCT_GET, kind_key, line);
     let cell_value = chunks[current].add_constant(Value::String(Arc::from("cell")));
     chunks[current].emit_op_u16(Op::CONST, cell_value, line);
-    chunks[current].emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
     let not_cell = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
 
     lget(&mut chunks[current], obj_slot, line);

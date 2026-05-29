@@ -89,7 +89,7 @@ pub fn emit_sb_append(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::STRUCT_GET, buffer_key, line);
     // [sb, buffer] → push s → [sb, buffer, s] → DYN_ADD → [sb, buffer+s]
     chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     // STRUCT_SET pops [sb, buffer+s], pushes [buffer+s]; drop it.
     chunk.emit_op_u16(Op::STRUCT_SET, buffer_key, line);
     chunk.emit_op(Op::DROP, line);
@@ -109,9 +109,9 @@ pub fn emit_sb_append_line(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::DUP, line);
     chunk.emit_op_u16(Op::STRUCT_GET, buffer_key, line);
     chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     push_const(chunk, Value::String(Arc::from("\n")), line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_SET, buffer_key, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op(Op::NULL, line);
@@ -181,7 +181,7 @@ pub fn emit_sb_insert(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // before + text
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     // Stack: [sb, before+text]
 
     // after = buf.substring(idx, buf.length)
@@ -193,7 +193,7 @@ pub fn emit_sb_insert(chunks: &mut [Chunk], current: usize, line: u32) {
     // Stack: [sb, before+text, after]
 
     // (before + text) + after
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     // Stack: [sb, full]
 
     // sb.__buffer = full
@@ -235,7 +235,7 @@ pub fn emit_sb_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::STR_LENGTH, line);
     chunk.emit_op(Op::STR_SUBSTRING, line);
 
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_SET, buffer_key, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op(Op::NULL, line);

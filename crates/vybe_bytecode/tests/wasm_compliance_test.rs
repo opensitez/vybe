@@ -342,9 +342,9 @@ fn simple_while_loop() {
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
         let three = c.add_constant(Value::I32(3));
         c.emit_op_u16(Op::CONST, three, 0);
-        c.emit_op(Op::DYN_LT, 0);
+        c.emit_op(Op::I32_LT_S, 0);
         // Invert: if false (i >= 3), exit block (depth 1)
-        c.emit_op(Op::DYN_NOT, 0);
+        c.emit_op(Op::I32_EQZ, 0);
         c.emit_br_if(1, 0);
 
         // i++
@@ -398,8 +398,8 @@ fn nested_loops_break_with_labels() {
         c.emit_op_u16(Op::LOCAL_GET, 1, 0);
         let three = c.add_constant(Value::I32(3));
         c.emit_op_u16(Op::CONST, three, 0);
-        c.emit_op(Op::DYN_LT, 0);
-        c.emit_op(Op::DYN_NOT, 0);
+        c.emit_op(Op::I32_LT_S, 0);
+        c.emit_op(Op::I32_EQZ, 0);
         c.emit_br_if(1, 0); // exit outer block if !(i_outer<3)
 
         // Reset i_inner = 0
@@ -413,8 +413,8 @@ fn nested_loops_break_with_labels() {
         c.emit_op_u16(Op::LOCAL_GET, 2, 0);
         let two = c.add_constant(Value::I32(2));
         c.emit_op_u16(Op::CONST, two, 0);
-        c.emit_op(Op::DYN_LT, 0);
-        c.emit_op(Op::DYN_NOT, 0);
+        c.emit_op(Op::I32_LT_S, 0);
+        c.emit_op(Op::I32_EQZ, 0);
         c.emit_br_if(1, 0); // exit inner block if !(i_inner<2)
 
         // total++
@@ -706,69 +706,70 @@ fn f64_ceil() {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// 9. DYN_* operations (dynamic dispatch)
+// 9. Typed arithmetic and comparison operations
 // ──────────────────────────────────────────────────────────────────────
 
 #[test]
-fn dyn_add_numbers() {
+fn f64_add_numbers() {
     let r = run_script(|c| {
         let a = c.add_constant(Value::F64(1.5));
         let b = c.add_constant(Value::F64(2.25));
         c.emit_op_u16(Op::CONST, a, 0);
         c.emit_op_u16(Op::CONST, b, 0);
-        c.emit_op(Op::DYN_ADD, 0);
+        c.emit_op(Op::F64_ADD, 0);
     });
     assert_eq!(r.as_f64(), 3.75);
 }
 
 #[test]
-fn dyn_lt_true() {
+fn f64_lt_true() {
     let r = run_script(|c| {
         let a = c.add_constant(Value::F64(1.0));
         let b = c.add_constant(Value::F64(2.0));
         c.emit_op_u16(Op::CONST, a, 0);
         c.emit_op_u16(Op::CONST, b, 0);
-        c.emit_op(Op::DYN_LT, 0);
-    });
-    assert!(r.as_bool() || r.as_i32() == 1);
-}
-
-#[test]
-fn dyn_eq_true() {
-    let r = run_script(|c| {
-        let a = c.add_constant(Value::F64(3.14));
-        let b = c.add_constant(Value::F64(3.14));
-        c.emit_op_u16(Op::CONST, a, 0);
-        c.emit_op_u16(Op::CONST, b, 0);
-        c.emit_op(Op::DYN_EQ, 0);
-    });
-    assert!(r.as_bool() || r.as_i32() == 1);
-}
-
-#[test]
-fn dyn_not_true() {
-    let r = run_script(|c| {
-        c.emit_op(Op::TRUE, 0);
-        c.emit_op(Op::DYN_NOT, 0);
-    });
-    assert!(!r.as_bool());
-}
-
-#[test]
-fn dyn_not_false() {
-    let r = run_script(|c| {
-        c.emit_op(Op::FALSE, 0);
-        c.emit_op(Op::DYN_NOT, 0);
+        c.emit_op(Op::F64_LT, 0);
     });
     assert!(r.as_bool());
 }
 
 #[test]
-fn dyn_neg() {
+fn f64_eq_true() {
+    let r = run_script(|c| {
+        let a = c.add_constant(Value::F64(3.14));
+        let b = c.add_constant(Value::F64(3.14));
+        c.emit_op_u16(Op::CONST, a, 0);
+        c.emit_op_u16(Op::CONST, b, 0);
+        c.emit_op(Op::F64_EQ, 0);
+    });
+    assert!(r.as_bool());
+}
+
+#[test]
+fn i32_eqz_true_negates_truthy() {
+    // I32_EQZ is the WASM-compliant way to invert a boolean i32
+    let r = run_script(|c| {
+        c.emit_op(Op::TRUE, 0);
+        c.emit_op(Op::I32_EQZ, 0); // Bool(true).as_i32()=1, I32_EQZ(1)=false
+    });
+    assert!(!r.as_bool());
+}
+
+#[test]
+fn i32_eqz_false_negates_falsy() {
+    let r = run_script(|c| {
+        c.emit_op(Op::FALSE, 0);
+        c.emit_op(Op::I32_EQZ, 0); // Bool(false).as_i32()=0, I32_EQZ(0)=true
+    });
+    assert!(r.as_bool());
+}
+
+#[test]
+fn f64_neg_negates() {
     let r = run_script(|c| {
         let a = c.add_constant(Value::F64(5.0));
         c.emit_op_u16(Op::CONST, a, 0);
-        c.emit_op(Op::DYN_NEG, 0);
+        c.emit_op(Op::F64_NEG, 0);
     });
     assert_eq!(r.as_f64(), -5.0);
 }
@@ -959,11 +960,11 @@ fn recursive_function_fibonacci() {
     fib.emit_op_u16(Op::LOCAL_GET, 0, 0);
     let two = fib.add_constant(Value::F64(2.0));
     fib.emit_op_u16(Op::CONST, two, 0);
-    fib.emit_op(Op::DYN_LT, 0);
+    fib.emit_op(Op::F64_LT, 0);
     // if truthy, return n
     // Use structured CF: block { br_if_label 0 if not <2; return }
     let bp = fib.emit_block(0);
-    fib.emit_op(Op::DYN_NOT, 0);
+    fib.emit_op(Op::I32_EQZ, 0);
     fib.emit_br_if(0, 0); // skip if not less than 2
     fib.emit_op_u16(Op::LOCAL_GET, 0, 0);
     fib.emit_op(Op::RETURN, 0);
@@ -1035,8 +1036,8 @@ fn loop_restarts_at_top() {
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
         let five = c.add_constant(Value::I32(5));
         c.emit_op_u16(Op::CONST, five, 0);
-        c.emit_op(Op::DYN_LT, 0);
-        c.emit_op(Op::DYN_NOT, 0);
+        c.emit_op(Op::I32_LT_S, 0);
+        c.emit_op(Op::I32_EQZ, 0);
         c.emit_br_if(1, 0); // exit if !(i < 5)
         // i++
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
@@ -1119,8 +1120,8 @@ fn round_trip_loop_execution_matches() {
     chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
     let ten = chunk.add_constant(Value::I32(10));
     chunk.emit_op_u16(Op::CONST, ten, 0);
-    chunk.emit_op(Op::DYN_LT, 0);
-    chunk.emit_op(Op::DYN_NOT, 0);
+    chunk.emit_op(Op::I32_LT_S, 0);
+    chunk.emit_op(Op::I32_EQZ, 0);
     chunk.emit_br_if(1, 0);
     chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
     chunk.emit_op(Op::I32_CONST_1, 0);
@@ -1208,8 +1209,6 @@ fn vm_internal_opcodes_have_prefix_0xFF() {
     // ARRAY_* opcodes no longer exist; callers emit
     // `vybe:js-array.*` imports instead.)
     assert_eq!(Op::CONST.prefix(), 0xFF);
-    assert_eq!(Op::DYN_ADD.prefix(), 0xFF);
-    assert_eq!(Op::DYN_LT.prefix(), 0xFF);
     assert_eq!(Op::CALL_IMPORT.prefix(), 0xFF);
     assert_eq!(Op::BR_LABEL.prefix(), 0xFF);
     assert_eq!(Op::STR_CONCAT.prefix(), 0xFF);
@@ -1660,7 +1659,7 @@ fn f64_nan_is_not_equal_to_itself() {
         let nan = c.add_constant(Value::F64(f64::NAN));
         c.emit_op_u16(Op::CONST, nan, 0);
         c.emit_op_u16(Op::CONST, nan, 0);
-        c.emit_op(Op::DYN_EQ, 0);
+        c.emit_op(Op::F64_EQ, 0);
     });
     assert_eq!(result.as_bool(), false, "NaN != NaN per IEEE-754");
 }
@@ -1967,7 +1966,7 @@ fn symbols_have_identity_equality_not_structural() {
     let k = chunk.add_constant(Value::String(Arc::from("x")));
     chunk.emit_op_u16(Op::SYMBOL, k, 0);
     chunk.emit_op_u16(Op::SYMBOL, k, 0);
-    chunk.emit_op(Op::DYN_EQ, 0);
+    chunk.emit_op(Op::EQ, 0);
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
     // Two fresh Symbol(x) calls produce distinct values even with the same description.
@@ -2492,7 +2491,7 @@ fn multi_value_block_emits_typeidx_blocktype() {
 fn multi_value_return_pushes_n_results_on_caller_stack() {
     // A callee declares result_arity=3, pushes three constants, and
     // RETURNs. The caller must see all three on its stack afterwards —
-    // verified by summing them via DYN_ADD and asserting the total.
+    // verified by summing them via F64_ADD and asserting the total.
     let mut callee = Chunk::new("triple");
     callee.arity = 0;
     callee.result_arity = 3;
@@ -2511,8 +2510,8 @@ fn multi_value_return_pushes_n_results_on_caller_stack() {
     script.emit(0, 0); // uv_count = 0
     script.emit_op_u8(Op::CALL, 0, 0);
     // Stack now holds [100, 10, 1] — sum them to 111.
-    script.emit_op(Op::DYN_ADD, 0);
-    script.emit_op(Op::DYN_ADD, 0);
+    script.emit_op(Op::F64_ADD, 0);
+    script.emit_op(Op::F64_ADD, 0);
     script.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();

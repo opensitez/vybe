@@ -38,6 +38,7 @@ pub fn emit_round(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::F64_NEAREST,
 pub fn emit_sqrt(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::F64_SQRT, line); }
 pub fn emit_min(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::F64_MIN, line); }
 pub fn emit_max(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::F64_MAX, line); }
+
 pub fn emit_neg(chunk: &mut Chunk, line: u32) { chunk.emit_op(Op::F64_NEG, line); }
 
 // ── Host imports (standard math, same across all languages) ──

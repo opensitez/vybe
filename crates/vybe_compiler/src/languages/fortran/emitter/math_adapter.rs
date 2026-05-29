@@ -44,7 +44,7 @@ fn emit_numeric_one(chunk: &mut Chunk, line: u32) {
 
 fn emit_numeric_coerce_from_top(chunk: &mut Chunk, line: u32) {
     emit_numeric_zero(chunk, line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
 }
 
 fn emit_array_get_into_slot(chunk: &mut Chunk, array_slot: u16, index_slot: u16, out_slot: u16, line: u32) {
@@ -57,7 +57,7 @@ fn emit_array_get_into_slot(chunk: &mut Chunk, array_slot: u16, index_slot: u16,
 fn emit_increment_slot(chunk: &mut Chunk, slot: u16, line: u32) {
     lget(chunk, slot, line);
     emit_numeric_one(chunk, line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     lset(chunk, slot, line);
 }
 
@@ -114,7 +114,7 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
 
     lget(chunk, right_len_slot, line);
     emit_numeric_zero(chunk, line);
-    chunk.emit_op(Op::DYN_GT, line);
+    crate::emitter::ops::emit_dyn_gt(chunk, line);
     let right_empty = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     emit_numeric_zero(chunk, line);
@@ -138,7 +138,7 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     let outer_loop = chunk.current_offset();
     lget(chunk, i_slot, line);
     lget(chunk, left_len_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let outer_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     emit_array_get_into_slot(chunk, left_slot, i_slot, row_slot, line);
@@ -160,7 +160,7 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     let col_loop = chunk.current_offset();
     lget(chunk, j_slot, line);
     lget(chunk, col_count_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let col_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     emit_numeric_zero(chunk, line);
@@ -171,7 +171,7 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     let dot_loop = chunk.current_offset();
     lget(chunk, k_slot, line);
     lget(chunk, row_len_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let dot_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     emit_array_get_into_slot(chunk, row_slot, k_slot, left_value_slot, line);
@@ -218,7 +218,7 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     let vec_dot_loop = chunk.current_offset();
     lget(chunk, k_slot, line);
     lget(chunk, row_len_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let vec_dot_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     emit_array_get_into_slot(chunk, row_slot, k_slot, left_value_slot, line);

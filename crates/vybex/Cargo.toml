@@ -14,7 +14,6 @@ vybe_compiler = { workspace = true }
 vybe_bytecode = { workspace = true }
 vybe_host = { workspace = true, features = ["gui"] }
 vybe_widgets = { workspace = true }
-chrono = { workspace = true }
 uuid = { workspace = true }
 tokio = { workspace = true }
 hyper = { workspace = true }
@@ -22,12 +21,9 @@ hyper-util = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
 bytes = { workspace = true }
-tower = { workspace = true }
-tower-http = { workspace = true }
 percent-encoding = { workspace = true }
 form_urlencoded = { workspace = true }
 indexmap = { workspace = true }
 mime_guess = { workspace = true }
-httpdate = { workspace = true }
 dashmap = { workspace = true }
 

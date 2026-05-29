@@ -48,6 +48,7 @@ printf              = { emit = "intrinsic:php_printf",       min_args = 1, max_a
 vprintf             = { emit = "intrinsic:php_vprintf",      min_args = 2, max_args = 2 }
 vsprintf            = { emit = "intrinsic:php_vsprintf",     min_args = 2, max_args = 2 }
 sscanf              = { emit = "common:php.sscanf",          min_args = 2, max_args = 2 }
+uniqid              = { emit = "common:php.uniqid",          min_args = 0, max_args = 2 }
 __php_dynamic_include = { emit = "host:vybe:php:dynamic_include", min_args = 2, max_args = 2 }
 readline            = { emit = "host:wasi:cli:readLine",     min_args = 0, max_args = 1 }
 error_log           = { emit = "host:wasi:cli:error",        min_args = 1, max_args = 4 }

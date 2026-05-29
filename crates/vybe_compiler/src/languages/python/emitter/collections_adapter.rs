@@ -91,7 +91,7 @@ pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     call_import(chunks, current, "ecma:array", "isArray", 1, line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
-    chunks[current].emit_op(Op::DYN_NE, line);
+    crate::emitter::ops::emit_dyn_ne(&mut chunks[current], line);
     let set_path = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
@@ -125,7 +125,7 @@ fn emit_remove_impl(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     call_import(chunks, current, "ecma:array", "isArray", 1, line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
-    chunks[current].emit_op(Op::DYN_NE, line);
+    crate::emitter::ops::emit_dyn_ne(&mut chunks[current], line);
     let set_path = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
@@ -174,7 +174,7 @@ pub fn emit_copy(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     call_import(chunks, current, "ecma:array", "isArray", 1, line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
-    chunks[current].emit_op(Op::DYN_NE, line);
+    crate::emitter::ops::emit_dyn_ne(&mut chunks[current], line);
     let set_path = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
@@ -344,7 +344,7 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     call_import(chunks, current, "ecma:array", "isArray", 1, line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
-    chunks[current].emit_op(Op::DYN_NE, line);
+    crate::emitter::ops::emit_dyn_ne(&mut chunks[current], line);
     let set_path = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     collections::emit_len(chunks, current, line);

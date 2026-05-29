@@ -42,7 +42,7 @@ fn emit_is_array(chunks: &mut [Chunk], current: usize, arr_slot: u16, line: u32)
     lget(chunk, arr_slot, line);
     let _ = chunk;
     call_import(chunks, current, "ecma:array", "isArray", 1, line);
-    chunks[current].emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
 }
 
 fn emit_json_stringify_slots(
@@ -90,7 +90,7 @@ fn emit_php_key_list_from_slot(chunks: &mut [Chunk], current: usize, value_slot:
     lset(chunk, len_slot, line);
     lget(chunk, len_slot, line);
     chunk.emit_op(Op::I32_CONST_0, line);
-    chunk.emit_op(Op::DYN_GT, line);
+    crate::emitter::ops::emit_dyn_gt(chunk, line);
     let have_keys = chunk.emit_jump(Op::BR_IF_TRUE, line);
 
     chunk.patch_jump(no_keys);
@@ -126,7 +126,7 @@ fn emit_php_key_list_from_slot(chunks: &mut [Chunk], current: usize, value_slot:
     lset(chunk, len_slot, line);
     lget(chunk, len_slot, line);
     chunk.emit_op(Op::I32_CONST_0, line);
-    chunk.emit_op(Op::DYN_GT, line);
+    crate::emitter::ops::emit_dyn_gt(chunk, line);
     let have_csv_keys = chunk.emit_jump(Op::BR_IF_TRUE, line);
 
     chunk.patch_jump(no_csv);
@@ -199,7 +199,7 @@ pub fn emit_php_array_keys(chunks: &mut [Chunk], current: usize, argc: u8, line:
     let loop_top = chunk.current_offset();
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     lget(chunk, keys_slot, line);
@@ -211,7 +211,7 @@ pub fn emit_php_array_keys(chunks: &mut [Chunk], current: usize, argc: u8, line:
     lget(chunk, key_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
     lget(chunk, search_slot, line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let skip_key = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     lget(chunk, out_slot, line);
@@ -261,7 +261,7 @@ pub fn emit_array_fill(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
 
     lget(chunk, start_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     lset(chunk, sequential_slot, line);
 
     lget(chunk, sequential_slot, line);
@@ -282,12 +282,12 @@ pub fn emit_array_fill(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     let loop_top = chunk.current_offset();
     lget(chunk, i_slot, line);
     lget(chunk, count_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     lget(chunk, start_slot, line);
     lget(chunk, i_slot, line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     lset(chunk, key_slot, line);
 
     lget(chunk, sequential_slot, line);
@@ -339,7 +339,7 @@ pub fn emit_php_end(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lget(chunk, len_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let nonempty = chunk.emit_jump(Op::BR_IF_FALSE, line);
     chunk.emit_op(Op::FALSE, line);
     let done_empty = chunk.emit_jump(Op::BR, line);
@@ -377,7 +377,7 @@ fn emit_object_from_keys(chunks: &mut [Chunk], current: usize, source_slot: u16,
     let loop_top = chunk.current_offset();
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     lget(chunk, keys_slot, line);
@@ -458,7 +458,7 @@ pub fn emit_php_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     lset(chunk, extra_len_slot, line);
     lget(chunk, base_len_slot, line);
     lget(chunk, extra_len_slot, line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     let done = chunk.emit_jump(Op::BR, line);
 
     chunk.patch_jump(no_keys);
@@ -509,7 +509,7 @@ pub fn emit_php_json_encode(chunks: &mut [Chunk], current: usize, argc: u8, line
     lget(chunk, assoc_keys_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
     chunk.emit_op(Op::I32_CONST_0, line);
-    chunk.emit_op(Op::DYN_GT, line);
+    crate::emitter::ops::emit_dyn_gt(chunk, line);
     let has_assoc = chunk.emit_jump(Op::BR_IF_TRUE, line);
 
     lget(chunk, value_slot, line);
@@ -537,7 +537,7 @@ pub fn emit_php_json_encode(chunks: &mut [Chunk], current: usize, argc: u8, line
     lget(chunk, object_keys_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
     chunk.emit_op(Op::I32_CONST_0, line);
-    chunk.emit_op(Op::DYN_GT, line);
+    crate::emitter::ops::emit_dyn_gt(chunk, line);
     let has_object_keys = chunk.emit_jump(Op::BR_IF_TRUE, line);
 
     lget(chunk, value_slot, line);
@@ -577,7 +577,7 @@ fn emit_call_via_invoke_dispatch<F>(
     lget(chunk, fn_slot, line);
     chunk.emit_op(Op::REF_TYPEOF, line);
     push_str(chunk, "function", line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let not_func = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     // Function: call directly.
@@ -648,7 +648,7 @@ pub fn emit_array_map(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     let loop_top = chunk.current_offset();
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     lget(chunk, keys_slot, line);
@@ -748,7 +748,7 @@ pub fn emit_array_filter(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     let loop_top = chunk.current_offset();
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     lget(chunk, keys_slot, line);
@@ -764,13 +764,13 @@ pub fn emit_array_filter(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     chunk.emit_op(Op::REF_IS_NULL, line);
     let has_callback = chunk.emit_jump(Op::BR_IF_FALSE, line);
     lget(chunk, value_slot, line);
-    chunk.emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     let after_predicate = chunk.emit_jump(Op::BR, line);
     chunk.patch_jump(has_callback);
 
     lget(chunk, flag_slot, line);
     push_const(chunk, Value::F64(2.0), line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let not_use_key = chunk.emit_jump(Op::BR_IF_FALSE, line);
     lget(chunk, fn_slot, line);
     lget(chunk, key_slot, line);
@@ -780,7 +780,7 @@ pub fn emit_array_filter(chunks: &mut [Chunk], current: usize, argc: u8, line: u
 
     lget(chunk, flag_slot, line);
     push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let not_use_both = chunk.emit_jump(Op::BR_IF_FALSE, line);
     lget(chunk, fn_slot, line);
     lget(chunk, value_slot, line);
@@ -794,7 +794,7 @@ pub fn emit_array_filter(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     chunk.emit_op_u8(Op::CALL_REF, 1, line);
     chunk.patch_jump(after_both);
     chunk.patch_jump(after_callback);
-    chunk.emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.patch_jump(after_predicate);
 
     let skip_store = chunk.emit_jump(Op::BR_IF_FALSE, line);
@@ -861,7 +861,7 @@ pub fn emit_array_walk_recursive(chunks: &mut [Chunk], current: usize, argc: u8,
     lget(chunk, work_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
     push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_op(Op::DYN_GT, line);
+    crate::emitter::ops::emit_dyn_gt(chunk, line);
     let done = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     lget(chunk, work_slot, line);
@@ -882,7 +882,7 @@ pub fn emit_array_walk_recursive(chunks: &mut [Chunk], current: usize, argc: u8,
 
     lget(chunk, ty_slot, line);
     push_str(chunk, "array", line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let not_array = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     lget(chunk, cur_slot, line);
@@ -897,7 +897,7 @@ pub fn emit_array_walk_recursive(chunks: &mut [Chunk], current: usize, argc: u8,
     let array_loop = chunk.current_offset();
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_op(Op::DYN_GT, line);
+    crate::emitter::ops::emit_dyn_gt(chunk, line);
     let array_done = chunk.emit_jump(Op::BR_IF_FALSE, line);
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -924,7 +924,7 @@ pub fn emit_array_walk_recursive(chunks: &mut [Chunk], current: usize, argc: u8,
 
     lget(chunk, ty_slot, line);
     push_str(chunk, "object", line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let not_object = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     lget(chunk, cur_slot, line);
@@ -939,7 +939,7 @@ pub fn emit_array_walk_recursive(chunks: &mut [Chunk], current: usize, argc: u8,
     let object_loop = chunk.current_offset();
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_op(Op::DYN_GT, line);
+    crate::emitter::ops::emit_dyn_gt(chunk, line);
     let object_done = chunk.emit_jump(Op::BR_IF_FALSE, line);
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -1006,7 +1006,7 @@ pub fn emit_array_pad(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     // target = abs(size)
     lget(chunk, size_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let nonneg = chunk.emit_jump(Op::BR_IF_FALSE, line);
     push_const(chunk, Value::F64(0.0), line);
     lget(chunk, size_slot, line);
@@ -1020,7 +1020,7 @@ pub fn emit_array_pad(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     // if target <= len: return arr.slice() (just a clone)
     lget(chunk, target_slot, line);
     lget(chunk, len_slot, line);
-    chunk.emit_op(Op::DYN_GT, line);
+    crate::emitter::ops::emit_dyn_gt(chunk, line);
     let needs_pad = chunk.emit_jump(Op::BR_IF_TRUE, line);
     // No pad: clone via ecma:array.slice(arr)
     lget(chunk, arr_slot, line);
@@ -1046,7 +1046,7 @@ pub fn emit_array_pad(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     let loop_top = chunk.current_offset();
     lget(chunk, i_slot, line);
     lget(chunk, diff_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     lget(chunk, pad_slot, line);
@@ -1066,7 +1066,7 @@ pub fn emit_array_pad(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     // result = size < 0 ? pad.concat(arr) : arr.slice().concat(pad)
     lget(chunk, size_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let pad_right = chunk.emit_jump(Op::BR_IF_FALSE, line);
     // Pad-left: pad.concat(arr)
     lget(chunk, pad_slot, line);
@@ -1109,7 +1109,7 @@ pub fn emit_array_chunk(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     let key_slot = alloc_local(chunk);
 
     if argc >= 3 {
-        chunk.emit_op(Op::DYN_TO_BOOL, line);
+        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
         lset(chunk, preserve_slot, line);
     } else {
         chunk.emit_op(Op::FALSE, line);
@@ -1125,7 +1125,7 @@ pub fn emit_array_chunk(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     // if size < 1: return out
     lget(chunk, size_slot, line);
     push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let valid = chunk.emit_jump(Op::BR_IF_FALSE, line);
     lget(chunk, out_slot, line);
     let done_invalid = chunk.emit_jump(Op::BR, line);
@@ -1149,7 +1149,7 @@ pub fn emit_array_chunk(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     let outer_top = chunk.current_offset();
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let outer_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     // end = min(i + size, n)
@@ -1159,7 +1159,7 @@ pub fn emit_array_chunk(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     lset(chunk, end_slot, line);
     lget(chunk, end_slot, line);
     lget(chunk, n_slot, line);
-    chunk.emit_op(Op::DYN_GT, line);
+    crate::emitter::ops::emit_dyn_gt(chunk, line);
     let in_bounds = chunk.emit_jump(Op::BR_IF_FALSE, line);
     lget(chunk, n_slot, line);
     lset(chunk, end_slot, line);
@@ -1185,7 +1185,7 @@ pub fn emit_array_chunk(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     let inner_top = chunk.current_offset();
     lget(chunk, j_slot, line);
     lget(chunk, end_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let inner_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     // key = keys[j]
@@ -1269,7 +1269,7 @@ pub fn emit_array_combine(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     let loop_top = chunk.current_offset();
     lget(chunk, i_slot, line);
     lget(chunk, len_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     // out[keys[i]] = values[i]
@@ -1319,7 +1319,7 @@ pub fn emit_array_fill_keys(chunks: &mut [Chunk], current: usize, _argc: u8, lin
     let loop_top = chunk.current_offset();
     lget(chunk, i_slot, line);
     lget(chunk, len_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     lget(chunk, out_slot, line);
@@ -1376,7 +1376,7 @@ pub fn emit_array_flip(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     let loop_top = chunk.current_offset();
     lget(chunk, i_slot, line);
     lget(chunk, len_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     // k = keys[i]; out[arr[k]] = k
@@ -1446,14 +1446,14 @@ fn emit_array_diff_or_intersect(
     let loop1_top = chunk.current_offset();
     lget(chunk, i_slot, line);
     lget(chunk, blen_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let exit1 = chunk.emit_jump(Op::BR_IF_FALSE, line);
     lget(chunk, b_slot, line);
     lget(chunk, i_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
     push_str(chunk, "", line);
     let _ = chunk;
-    chunks[current].emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(&mut chunks[current], line);
     let chunk = &mut chunks[current];
     lset(chunk, key_slot, line);
     lget(chunk, seen_slot, line);
@@ -1478,7 +1478,7 @@ fn emit_array_diff_or_intersect(
     let loop2_top = chunk.current_offset();
     lget(chunk, j_slot, line);
     lget(chunk, alen_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let exit2 = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     // v = a[j]; key = "" + v; has = seen[key]
@@ -1488,7 +1488,7 @@ fn emit_array_diff_or_intersect(
     lset(chunk, v_slot, line);
     push_str(chunk, "", line);
     lget(chunk, v_slot, line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     lset(chunk, key_slot, line);
     lget(chunk, seen_slot, line);
     lget(chunk, key_slot, line);
@@ -1554,7 +1554,7 @@ pub fn emit_array_count_values(chunks: &mut [Chunk], current: usize, _argc: u8, 
     let loop_top = chunk.current_offset();
     lget(chunk, i_slot, line);
     lget(chunk, len_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     // key = "" + arr[i]
@@ -1562,7 +1562,7 @@ pub fn emit_array_count_values(chunks: &mut [Chunk], current: usize, _argc: u8, 
     lget(chunk, arr_slot, line);
     lget(chunk, i_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     lset(chunk, key_slot, line);
 
     // cur = (out[key] || 0) + 1
@@ -1637,7 +1637,7 @@ pub fn emit_array_column(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         let chunk = &mut chunks[current];
         lget(chunk, i_slot, line);
         lget(chunk, len_slot, line);
-        chunk.emit_op(Op::DYN_LT, line);
+        crate::emitter::ops::emit_dyn_lt(chunk, line);
         let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
         lget(chunk, rows_slot, line);
@@ -1647,7 +1647,7 @@ pub fn emit_array_column(chunks: &mut [Chunk], current: usize, argc: u8, line: u
 
         lget(chunk, col_slot, line);
         chunk.emit_op(Op::NULL, line);
-        chunk.emit_op(Op::DYN_EQ, line);
+        crate::emitter::ops::emit_dyn_eq(chunk, line);
         let value_from_column = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
         lget(chunk, row_slot, line);
@@ -1717,7 +1717,7 @@ fn emit_array_key_first_or_last(
 
     lget(chunk, len_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let nonempty = chunk.emit_jump(Op::BR_IF_FALSE, line);
     chunk.emit_op(Op::NULL, line);
     let done_empty = chunk.emit_jump(Op::BR, line);
@@ -1785,7 +1785,7 @@ pub fn emit_array_diff_key(chunks: &mut [Chunk], current: usize, _argc: u8, line
         let chunk = &mut chunks[current];
         lget(chunk, i_slot, line);
         lget(chunk, len_slot, line);
-        chunk.emit_op(Op::DYN_LT, line);
+        crate::emitter::ops::emit_dyn_lt(chunk, line);
         let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
         lget(chunk, keys_slot, line);
@@ -1862,7 +1862,7 @@ pub fn emit_array_diff_assoc(chunks: &mut [Chunk], current: usize, _argc: u8, li
         let chunk = &mut chunks[current];
         lget(chunk, i_slot, line);
         lget(chunk, len_slot, line);
-        chunk.emit_op(Op::DYN_LT, line);
+        crate::emitter::ops::emit_dyn_lt(chunk, line);
         let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
         // k = keys[i]
@@ -1886,11 +1886,11 @@ pub fn emit_array_diff_assoc(chunks: &mut [Chunk], current: usize, _argc: u8, li
         // if String(bv) !== String(av): out[k] = av
         push_str(chunk, "", line);
         lget(chunk, bv_slot, line);
-        chunk.emit_op(Op::DYN_ADD, line);
+        crate::emitter::ops::emit_dyn_add(chunk, line);
         push_str(chunk, "", line);
         lget(chunk, av_slot, line);
-        chunk.emit_op(Op::DYN_ADD, line);
-        chunk.emit_op(Op::DYN_EQ, line);
+        crate::emitter::ops::emit_dyn_add(chunk, line);
+        crate::emitter::ops::emit_dyn_eq(chunk, line);
         let same = chunk.emit_jump(Op::BR_IF_TRUE, line);
         // differ → keep
         lget(chunk, out_slot, line);
@@ -1951,7 +1951,7 @@ pub fn emit_array_intersect_assoc(chunks: &mut [Chunk], current: usize, _argc: u
         let chunk = &mut chunks[current];
         lget(chunk, i_slot, line);
         lget(chunk, len_slot, line);
-        chunk.emit_op(Op::DYN_LT, line);
+        crate::emitter::ops::emit_dyn_lt(chunk, line);
         let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
         lget(chunk, keys_slot, line);
@@ -1971,11 +1971,11 @@ pub fn emit_array_intersect_assoc(chunks: &mut [Chunk], current: usize, _argc: u
 
         push_str(chunk, "", line);
         lget(chunk, bv_slot, line);
-        chunk.emit_op(Op::DYN_ADD, line);
+        crate::emitter::ops::emit_dyn_add(chunk, line);
         push_str(chunk, "", line);
         lget(chunk, av_slot, line);
-        chunk.emit_op(Op::DYN_ADD, line);
-        chunk.emit_op(Op::DYN_EQ, line);
+        crate::emitter::ops::emit_dyn_add(chunk, line);
+        crate::emitter::ops::emit_dyn_eq(chunk, line);
         let different = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
         lget(chunk, out_slot, line);
@@ -2034,7 +2034,7 @@ pub fn emit_array_intersect_key(chunks: &mut [Chunk], current: usize, _argc: u8,
         let chunk = &mut chunks[current];
         lget(chunk, i_slot, line);
         lget(chunk, len_slot, line);
-        chunk.emit_op(Op::DYN_LT, line);
+        crate::emitter::ops::emit_dyn_lt(chunk, line);
         let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
         lget(chunk, keys_slot, line);
@@ -2108,7 +2108,7 @@ pub fn emit_array_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line:
             let chunk = &mut chunks[current];
             lget(chunk, i_slot, line);
             lget(chunk, len_slot, line);
-            chunk.emit_op(Op::DYN_LT, line);
+            crate::emitter::ops::emit_dyn_lt(chunk, line);
             let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
             lget(chunk, keys_slot, line);
@@ -2170,7 +2170,7 @@ fn emit_copy_object_entries(chunks: &mut [Chunk], current: usize, src_slot: u16,
         let chunk = &mut chunks[current];
         lget(chunk, i_slot, line);
         lget(chunk, len_slot, line);
-        chunk.emit_op(Op::DYN_LT, line);
+        crate::emitter::ops::emit_dyn_lt(chunk, line);
         let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
         lget(chunk, keys_slot, line);
@@ -2212,7 +2212,7 @@ fn emit_generator_yield_value_from_slot(chunks: &mut [Chunk], current: usize, yi
     lget(chunk, yielded_slot, line);
     let marker_key = chunk.add_constant(Value::String(Arc::from("__vybe_generator_yield")));
     chunk.emit_op_u16(Op::STRUCT_GET, marker_key, line);
-    chunk.emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     let not_packet = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     lget(chunk, yielded_slot, line);
@@ -2258,7 +2258,7 @@ fn emit_generator_yield_key_or_fallback_from_slot(
     lget(chunk, yielded_slot, line);
     let marker_key = chunk.add_constant(Value::String(Arc::from("__vybe_generator_yield")));
     chunk.emit_op_u16(Op::STRUCT_GET, marker_key, line);
-    chunk.emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     let not_packet = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     lget(chunk, yielded_slot, line);
@@ -2299,7 +2299,7 @@ pub fn emit_iterator_to_array(chunks: &mut [Chunk], current: usize, argc: u8, li
     {
         let chunk = &mut chunks[current];
         lget(chunk, preserve_keys_slot, line);
-        chunk.emit_op(Op::DYN_TO_BOOL, line);
+        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
         let use_array = chunk.emit_jump(Op::BR_IF_FALSE, line);
         let _ = chunk;
         call_import(chunks, current, "ecma:map", "new", 0, line);
@@ -2315,7 +2315,7 @@ pub fn emit_iterator_to_array(chunks: &mut [Chunk], current: usize, argc: u8, li
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, iter_slot, line);
     call_import(chunks, current, "ecma:value", "isGenerator", 1, line);
-    chunks[current].emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     let not_generator = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
 
     {
@@ -2333,11 +2333,11 @@ pub fn emit_iterator_to_array(chunks: &mut [Chunk], current: usize, argc: u8, li
         lset(chunk, value_slot, line);
 
         lget(chunk, has_more_slot, line);
-        chunk.emit_op(Op::DYN_TO_BOOL, line);
+        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
         let gen_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
         lget(chunk, preserve_keys_slot, line);
-        chunk.emit_op(Op::DYN_TO_BOOL, line);
+        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
         let no_keys = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
         lget(chunk, out_slot, line);
@@ -2372,7 +2372,7 @@ pub fn emit_iterator_to_array(chunks: &mut [Chunk], current: usize, argc: u8, li
     let done_map = {
         let chunk = &mut chunks[current];
         lget(chunk, preserve_keys_slot, line);
-        chunk.emit_op(Op::DYN_TO_BOOL, line);
+        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
         let no_keys_plain = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
         let _ = chunk;
@@ -2402,7 +2402,7 @@ pub fn emit_iterator_to_array(chunks: &mut [Chunk], current: usize, argc: u8, li
         let chunk = &mut chunks[current];
         lget(chunk, i_slot, line);
         lget(chunk, len_slot, line);
-        chunk.emit_op(Op::DYN_LT, line);
+        crate::emitter::ops::emit_dyn_lt(chunk, line);
         let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
         lget(chunk, keys_slot, line);
         lget(chunk, i_slot, line);
@@ -2472,7 +2472,7 @@ pub fn emit_array_replace_recursive(chunks: &mut [Chunk], current: usize, _argc:
         let chunk = &mut chunks[current];
         lget(chunk, i_slot, line);
         lget(chunk, len_slot, line);
-        chunk.emit_op(Op::DYN_LT, line);
+        crate::emitter::ops::emit_dyn_lt(chunk, line);
         let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
         lget(chunk, keys_slot, line);
@@ -2504,7 +2504,7 @@ pub fn emit_array_replace_recursive(chunks: &mut [Chunk], current: usize, _argc:
         lget(chunk, cur_keys_slot, line);
         chunk.emit_op(Op::ARRAY_LENGTH, line);
         chunk.emit_op(Op::I32_CONST_0, line);
-        chunk.emit_op(Op::DYN_GT, line);
+        crate::emitter::ops::emit_dyn_gt(chunk, line);
         let cur_object = chunk.emit_jump(Op::BR_IF_FALSE, line);
         let replace_direct2 = chunk.emit_jump(Op::BR, line);
 
@@ -2523,7 +2523,7 @@ pub fn emit_array_replace_recursive(chunks: &mut [Chunk], current: usize, _argc:
         lget(chunk, over_keys_slot, line);
         chunk.emit_op(Op::ARRAY_LENGTH, line);
         chunk.emit_op(Op::I32_CONST_0, line);
-        chunk.emit_op(Op::DYN_GT, line);
+        crate::emitter::ops::emit_dyn_gt(chunk, line);
         let over_object = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
         call_import(chunks, current, "ecma:map", "new", 0, line);
@@ -2629,7 +2629,7 @@ fn emit_assoc_sort_impl(
     let outer_top = chunk.current_offset();
     lget(chunk, outer_slot, line);
     lget(chunk, n_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let outer_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     // best = -1
@@ -2643,14 +2643,14 @@ fn emit_assoc_sort_impl(
     let inner_top = chunk.current_offset();
     lget(chunk, inner_slot, line);
     lget(chunk, n_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let inner_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     // if used[inner]: skip
     lget(chunk, used_slot, line);
     lget(chunk, inner_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    chunk.emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     let unused = chunk.emit_jump(Op::BR_IF_FALSE, line);
     let skip_used = chunk.emit_jump(Op::BR, line);
     chunk.patch_jump(unused);
@@ -2658,7 +2658,7 @@ fn emit_assoc_sort_impl(
     // if best === -1: best = inner ; else compare
     lget(chunk, best_slot, line);
     push_const(chunk, Value::F64(-1.0), line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let have_best = chunk.emit_jump(Op::BR_IF_FALSE, line);
     lget(chunk, inner_slot, line);
     lset(chunk, best_slot, line);
@@ -2681,18 +2681,18 @@ fn emit_assoc_sort_impl(
             chunk.emit_op(Op::ARRAY_GET, line);
             chunk.emit_op(Op::ARRAY_GET, line);
             push_const(chunk, Value::F64(0.0), line);
-            chunk.emit_op(Op::DYN_ADD, line);
+            crate::emitter::ops::emit_dyn_add(chunk, line);
             lget(chunk, obj_slot, line);
             lget(chunk, keys_slot, line);
             lget(chunk, best_slot, line);
             chunk.emit_op(Op::ARRAY_GET, line);
             chunk.emit_op(Op::ARRAY_GET, line);
             push_const(chunk, Value::F64(0.0), line);
-            chunk.emit_op(Op::DYN_ADD, line);
+            crate::emitter::ops::emit_dyn_add(chunk, line);
             if mode == 0 {
-                chunk.emit_op(Op::DYN_LT, line);
+                crate::emitter::ops::emit_dyn_lt(chunk, line);
             } else {
-                chunk.emit_op(Op::DYN_GT, line);
+                crate::emitter::ops::emit_dyn_gt(chunk, line);
             }
         }
         2 | 3 => {
@@ -2706,9 +2706,9 @@ fn emit_assoc_sort_impl(
             chunk.emit_op(Op::STR_COMPARE, line);
             push_const(chunk, Value::F64(0.0), line);
             if mode == 2 {
-                chunk.emit_op(Op::DYN_LT, line);
+                crate::emitter::ops::emit_dyn_lt(chunk, line);
             } else {
-                chunk.emit_op(Op::DYN_GT, line);
+                crate::emitter::ops::emit_dyn_gt(chunk, line);
             }
         }
         4 => {
@@ -2727,7 +2727,7 @@ fn emit_assoc_sort_impl(
             chunk.emit_op(Op::ARRAY_GET, line);
             chunk.emit_op_u8(Op::CALL_REF, 2, line);
             push_const(chunk, Value::F64(0.0), line);
-            chunk.emit_op(Op::DYN_LT, line);
+            crate::emitter::ops::emit_dyn_lt(chunk, line);
         }
         5 => {
             // user(key): cmp(keys[inner], keys[best]) < 0
@@ -2741,7 +2741,7 @@ fn emit_assoc_sort_impl(
             chunk.emit_op(Op::ARRAY_GET, line);
             chunk.emit_op_u8(Op::CALL_REF, 2, line);
             push_const(chunk, Value::F64(0.0), line);
-            chunk.emit_op(Op::DYN_LT, line);
+            crate::emitter::ops::emit_dyn_lt(chunk, line);
         }
         _ => { chunk.emit_op(Op::FALSE, line); }
     }
@@ -2803,7 +2803,7 @@ fn emit_assoc_sort_impl(
     let del_top = chunk.current_offset();
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let del_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
     lget(chunk, obj_slot, line);
     lget(chunk, keys_slot, line);
@@ -2829,7 +2829,7 @@ fn emit_assoc_sort_impl(
     let ins_top = chunk.current_offset();
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let ins_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
     lget(chunk, obj_slot, line);
     lget(chunk, sorted_keys_slot, line);

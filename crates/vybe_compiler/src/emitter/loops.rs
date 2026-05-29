@@ -73,8 +73,8 @@ pub fn emit_loop_start(chunks: &mut [Chunk], current: usize, line: u32) -> LoopS
 
 /// After condition is on stack: convert to bool, branch out of block if false.
 pub fn emit_loop_cond(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_op(Op::DYN_TO_BOOL, line);
-    chunks[current].emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
     // br_if_label 1 = break out of loop to block end (depth 0=loop, 1=block)
     chunks[current].emit_br_if(1, line);
 }
@@ -100,9 +100,9 @@ pub fn emit_do_loop_start(chunks: &mut [Chunk], current: usize, line: u32) -> Lo
 /// End of do-while: condition on stack, branch back to loop if true.
 /// `negate` = true for `until` (loop while condition is FALSE).
 pub fn emit_do_loop_end(chunks: &mut [Chunk], current: usize, state: LoopState, negate: bool, line: u32) {
-    chunks[current].emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     if negate {
-        chunks[current].emit_op(Op::DYN_NOT, line);
+        crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
     }
     // br_if_label 0 = continue loop if condition is true
     chunks[current].emit_br_if(0, line);
@@ -142,7 +142,7 @@ pub fn emit_for_in_start(chunks: &mut [Chunk], current: usize, arr_slot: u16, id
         chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
         chunks[current].emit(1u8, line);
     }
-    chunks[current].emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(&mut chunks[current], line);
     emit_loop_cond(chunks, current, line);
 
     // block $body { — continue targets this, skips to increment
@@ -231,10 +231,10 @@ pub fn emit_filter(chunks: &mut [Chunk], current: usize, fn_slot: u16, arr_slot:
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
-    chunks[current].emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     // Use structured if for the conditional push
     let if_block = chunks[current].emit_block(line);
-    chunks[current].emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
     chunks[current].emit_br_if(0, line); // skip push if false
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
@@ -299,7 +299,7 @@ pub fn emit_reduce(chunks: &mut [Chunk], current: usize, fn_slot: u16, arr_slot:
         chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
         chunks[current].emit(1u8, line);
     }
-    chunks[current].emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(&mut chunks[current], line);
     emit_loop_cond(chunks, current, line);
 
     // acc = fn(acc, arr[i], i)  — ECMA-262 §23.1.3.26: callback(acc, elem, index, array)
@@ -355,13 +355,13 @@ pub fn emit_any_every(chunks: &mut [Chunk], current: usize, fn_slot: u16, arr_sl
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     crate::emitter::collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
-    chunks[current].emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     // Structure from emit_for_in_start: block $exit { loop $loop { cond, block $body {
     // From here: depth 0=$body, 1=$loop, 2=$exit
     // With an extra block $skip: depth 0=$skip, 1=$body, 2=$loop, 3=$exit
     if is_any {
         let skip = chunks[current].emit_block(line);
-        chunks[current].emit_op(Op::DYN_NOT, line);
+        crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
         chunks[current].emit_br_if(0, line); // skip if false
         chunks[current].emit_op(Op::TRUE, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, result_local, line);

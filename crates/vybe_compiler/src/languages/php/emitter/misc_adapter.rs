@@ -120,7 +120,7 @@ pub fn emit_php_header(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     let skip_implicit_redirect = if let Some(slot) = response_code_slot {
         lget(chunk, slot, line);
         push_const(chunk, Value::F64(0.0), line);
-        chunk.emit_op(Op::DYN_EQ, line);
+        crate::emitter::ops::emit_dyn_eq(chunk, line);
         Some(chunk.emit_jump(Op::BR_IF_FALSE, line))
     } else {
         None
@@ -134,13 +134,13 @@ pub fn emit_php_header(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     push_str(chunk, "location:", line);
     chunk.emit_op_u16(Op::CALL_IMPORT, starts_with_import, line);
     chunk.emit(2, line);
-    chunk.emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     let not_location = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     chunk.emit_op_u16(Op::CALL_IMPORT, response_code_import, line);
     chunk.emit(0, line);
     push_const(chunk, Value::F64(200.0), line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let not_default_status = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     push_const(chunk, Value::F64(302.0), line);
@@ -181,7 +181,7 @@ pub fn emit_php_extension_loaded(chunks: &mut [Chunk], current: usize, argc: u8,
 
     lget(chunk, ext_slot, line);
     push_str(chunk, "mysqli", line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let not_mysqli = chunk.emit_jump(Op::BR_IF_FALSE, line);
     chunk.emit_op(Op::TRUE, line);
     let done = chunk.emit_jump(Op::BR, line);
@@ -189,7 +189,7 @@ pub fn emit_php_extension_loaded(chunks: &mut [Chunk], current: usize, argc: u8,
 
     lget(chunk, ext_slot, line);
     push_str(chunk, "mysqlnd", line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let not_mysqlnd = chunk.emit_jump(Op::BR_IF_FALSE, line);
     chunk.emit_op(Op::TRUE, line);
     let done_mysqlnd = chunk.emit_jump(Op::BR, line);
@@ -197,7 +197,7 @@ pub fn emit_php_extension_loaded(chunks: &mut [Chunk], current: usize, argc: u8,
 
     lget(chunk, ext_slot, line);
     push_str(chunk, "pdo_mysql", line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let not_pdo_mysql = chunk.emit_jump(Op::BR_IF_FALSE, line);
     chunk.emit_op(Op::TRUE, line);
     let done_pdo_mysql = chunk.emit_jump(Op::BR, line);
@@ -205,7 +205,7 @@ pub fn emit_php_extension_loaded(chunks: &mut [Chunk], current: usize, argc: u8,
 
     lget(chunk, ext_slot, line);
     push_str(chunk, "mysql", line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let not_mysql = chunk.emit_jump(Op::BR_IF_FALSE, line);
     chunk.emit_op(Op::TRUE, line);
     let done_mysql = chunk.emit_jump(Op::BR, line);
@@ -259,7 +259,7 @@ pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, _argc: u8, l
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::GLOBAL_GET, needs_cookie, line);
-    chunk.emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     let no_cookie = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     push_str(chunk, "PHPSESSID", line);
@@ -333,7 +333,7 @@ fn emit_nullish_return(chunk: &mut Chunk, value_slot: u16, line: u32) -> usize {
 fn emit_is_array_into(imports: &mut Chunk, code: &mut Chunk, value_slot: u16, line: u32) {
     lget(code, value_slot, line);
     call_import_into(imports, code, "ecma:array", "isArray", 1, line);
-    code.emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(code, line);
 }
 
 fn bump_loop_index(chunk: &mut Chunk, i_slot: u16, loop_top: usize, line: u32) {
@@ -361,7 +361,7 @@ fn build_php_alloc_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         for ty in types.iter().filter(|ty| !ty.is_interface) {
             lget(&mut helper, class_slot, line);
             push_str(&mut helper, &ty.name, line);
-            helper.emit_op(Op::DYN_EQ, line);
+            crate::emitter::ops::emit_dyn_eq(&mut helper, line);
             let next = helper.emit_jump(Op::BR_IF_FALSE, line);
 
             helper.emit_op_u16(Op::STRUCT_NEW, 0, line);
@@ -441,7 +441,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         for primitive in ["boolean", "number", "string"] {
             lget(&mut helper, type_slot, line);
             push_str(&mut helper, primitive, line);
-            helper.emit_op(Op::DYN_EQ, line);
+            crate::emitter::ops::emit_dyn_eq(&mut helper, line);
             let next = helper.emit_jump(Op::BR_IF_FALSE, line);
             lget(&mut helper, value_slot, line);
             helper.emit_op(Op::RETURN, line);
@@ -467,7 +467,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         let items_loop = helper.current_offset();
         lget(&mut helper, i_slot, line);
         lget(&mut helper, n_slot, line);
-        helper.emit_op(Op::DYN_LT, line);
+        crate::emitter::ops::emit_dyn_lt(&mut helper, line);
         let items_exit = helper.emit_jump(Op::BR_IF_FALSE, line);
         lget(&mut helper, items_slot, line);
         ref_func(&mut helper, helper_idx, line);
@@ -504,7 +504,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         let assoc_loop = helper.current_offset();
         lget(&mut helper, i_slot, line);
         lget(&mut helper, n_slot, line);
-        helper.emit_op(Op::DYN_LT, line);
+        crate::emitter::ops::emit_dyn_lt(&mut helper, line);
         let assoc_exit = helper.emit_jump(Op::BR_IF_FALSE, line);
         lget(&mut helper, names_slot, line);
         lget(&mut helper, i_slot, line);
@@ -534,7 +534,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lget(&mut helper, method_slot, line);
         helper.emit_op(Op::REF_TYPEOF, line);
         push_str(&mut helper, "function", line);
-        helper.emit_op(Op::DYN_EQ, line);
+        crate::emitter::ops::emit_dyn_eq(&mut helper, line);
         let no_custom = helper.emit_jump(Op::BR_IF_FALSE, line);
         call_import_into(imports, &mut helper, "ecma:object", "new", 0, line);
         lset(&mut helper, out_slot, line);
@@ -564,7 +564,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lget(&mut helper, method_slot, line);
         helper.emit_op(Op::REF_TYPEOF, line);
         push_str(&mut helper, "function", line);
-        helper.emit_op(Op::DYN_EQ, line);
+        crate::emitter::ops::emit_dyn_eq(&mut helper, line);
         let no_sleep = helper.emit_jump(Op::BR_IF_FALSE, line);
         call_import_into(imports, &mut helper, "ecma:object", "new", 0, line);
         lset(&mut helper, out_slot, line);
@@ -589,7 +589,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         let sleep_loop = helper.current_offset();
         lget(&mut helper, i_slot, line);
         lget(&mut helper, n_slot, line);
-        helper.emit_op(Op::DYN_LT, line);
+        crate::emitter::ops::emit_dyn_lt(&mut helper, line);
         let sleep_exit = helper.emit_jump(Op::BR_IF_FALSE, line);
         lget(&mut helper, names_slot, line);
         lget(&mut helper, i_slot, line);
@@ -631,7 +631,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         let object_loop = helper.current_offset();
         lget(&mut helper, i_slot, line);
         lget(&mut helper, n_slot, line);
-        helper.emit_op(Op::DYN_LT, line);
+        crate::emitter::ops::emit_dyn_lt(&mut helper, line);
         let object_exit = helper.emit_jump(Op::BR_IF_FALSE, line);
         lget(&mut helper, names_slot, line);
         lget(&mut helper, i_slot, line);
@@ -641,7 +641,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         for internal_key in ["__type", "__types", "__control_name", "__super", "vybe$assoc_keys_csv"] {
             lget(&mut helper, key_slot, line);
             push_str(&mut helper, internal_key, line);
-            helper.emit_op(Op::DYN_EQ, line);
+            crate::emitter::ops::emit_dyn_eq(&mut helper, line);
             let next = helper.emit_jump(Op::BR_IF_FALSE, line);
             bump_loop_index(&mut helper, i_slot, object_loop, line);
             helper.patch_jump(next);
@@ -652,7 +652,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lget(&mut helper, tmp_slot, line);
         helper.emit_op(Op::REF_TYPEOF, line);
         push_str(&mut helper, "function", line);
-        helper.emit_op(Op::DYN_EQ, line);
+        crate::emitter::ops::emit_dyn_eq(&mut helper, line);
         let keep_field = helper.emit_jump(Op::BR_IF_FALSE, line);
         bump_loop_index(&mut helper, i_slot, object_loop, line);
         helper.patch_jump(keep_field);
@@ -703,7 +703,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         for primitive in ["boolean", "number", "string"] {
             lget(&mut helper, type_slot, line);
             push_str(&mut helper, primitive, line);
-            helper.emit_op(Op::DYN_EQ, line);
+            crate::emitter::ops::emit_dyn_eq(&mut helper, line);
             let next = helper.emit_jump(Op::BR_IF_FALSE, line);
             lget(&mut helper, node_slot, line);
             helper.emit_op(Op::RETURN, line);
@@ -722,7 +722,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
 
         lget(&mut helper, kind_slot, line);
         push_str(&mut helper, "array", line);
-        helper.emit_op(Op::DYN_EQ, line);
+        crate::emitter::ops::emit_dyn_eq(&mut helper, line);
         let not_array = helper.emit_jump(Op::BR_IF_FALSE, line);
         helper.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
         lset(&mut helper, out_slot, line);
@@ -737,7 +737,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         let items_loop = helper.current_offset();
         lget(&mut helper, i_slot, line);
         lget(&mut helper, n_slot, line);
-        helper.emit_op(Op::DYN_LT, line);
+        crate::emitter::ops::emit_dyn_lt(&mut helper, line);
         let items_exit = helper.emit_jump(Op::BR_IF_FALSE, line);
         ref_func(&mut helper, helper_idx, line);
         lget(&mut helper, items_slot, line);
@@ -772,7 +772,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         let assoc_loop = helper.current_offset();
         lget(&mut helper, i_slot, line);
         lget(&mut helper, n_slot, line);
-        helper.emit_op(Op::DYN_LT, line);
+        crate::emitter::ops::emit_dyn_lt(&mut helper, line);
         let assoc_exit = helper.emit_jump(Op::BR_IF_FALSE, line);
         lget(&mut helper, names_slot, line);
         lget(&mut helper, i_slot, line);
@@ -808,7 +808,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
 
         lget(&mut helper, kind_slot, line);
         push_str(&mut helper, "custom_object", line);
-        helper.emit_op(Op::DYN_EQ, line);
+        crate::emitter::ops::emit_dyn_eq(&mut helper, line);
         let not_custom = helper.emit_jump(Op::BR_IF_FALSE, line);
         lget(&mut helper, out_slot, line);
         struct_get_key(&mut helper, "__unserialize", line);
@@ -816,7 +816,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         lget(&mut helper, method_slot, line);
         helper.emit_op(Op::REF_TYPEOF, line);
         push_str(&mut helper, "function", line);
-        helper.emit_op(Op::DYN_EQ, line);
+        crate::emitter::ops::emit_dyn_eq(&mut helper, line);
         let no_unserialize = helper.emit_jump(Op::BR_IF_FALSE, line);
         lget(&mut helper, method_slot, line);
         lget(&mut helper, out_slot, line);
@@ -845,7 +845,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         let fields_loop = helper.current_offset();
         lget(&mut helper, i_slot, line);
         lget(&mut helper, n_slot, line);
-        helper.emit_op(Op::DYN_LT, line);
+        crate::emitter::ops::emit_dyn_lt(&mut helper, line);
         let fields_exit = helper.emit_jump(Op::BR_IF_FALSE, line);
         lget(&mut helper, names_slot, line);
         lget(&mut helper, i_slot, line);
@@ -861,7 +861,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
 
         lget(&mut helper, kind_slot, line);
         push_str(&mut helper, "sleep_object", line);
-        helper.emit_op(Op::DYN_EQ, line);
+        crate::emitter::ops::emit_dyn_eq(&mut helper, line);
         let no_wakeup = helper.emit_jump(Op::BR_IF_FALSE, line);
         lget(&mut helper, out_slot, line);
         struct_get_key(&mut helper, "__wakeup", line);
@@ -869,7 +869,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         lget(&mut helper, method_slot, line);
         helper.emit_op(Op::REF_TYPEOF, line);
         push_str(&mut helper, "function", line);
-        helper.emit_op(Op::DYN_EQ, line);
+        crate::emitter::ops::emit_dyn_eq(&mut helper, line);
         let wakeup_missing = helper.emit_jump(Op::BR_IF_FALSE, line);
         lget(&mut helper, method_slot, line);
         lget(&mut helper, out_slot, line);
@@ -918,37 +918,37 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
 
     lget(chunk, type_slot, line);
     push_str(chunk, "boolean", line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let not_bool = chunk.emit_jump(Op::BR_IF_FALSE, line);
     lget(chunk, value_slot, line);
-    chunk.emit_op(Op::DYN_TO_BOOL, line);
-    chunk.emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    crate::emitter::ops::emit_dyn_not(chunk, line);
     let done_bool = chunk.emit_jump(Op::BR, line);
     chunk.patch_jump(not_bool);
 
     lget(chunk, type_slot, line);
     push_str(chunk, "number", line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let not_number = chunk.emit_jump(Op::BR_IF_FALSE, line);
     lget(chunk, value_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let done_number = chunk.emit_jump(Op::BR, line);
     chunk.patch_jump(not_number);
 
     lget(chunk, type_slot, line);
     push_str(chunk, "string", line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let not_string = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     lget(chunk, value_slot, line);
     push_str(chunk, "", line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let empty_string = chunk.emit_jump(Op::BR_IF_TRUE, line);
 
     lget(chunk, value_slot, line);
     push_str(chunk, "0", line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let done_string = chunk.emit_jump(Op::BR, line);
 
     chunk.patch_jump(empty_string);
@@ -959,7 +959,7 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
 
     lget(chunk, type_slot, line);
     push_str(chunk, "array", line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let not_array = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     lget(chunk, value_slot, line);
@@ -982,16 +982,16 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     lset(chunk, extra_len_slot, line);
     lget(chunk, base_len_slot, line);
     lget(chunk, extra_len_slot, line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op(Op::I32_CONST_0, line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let done_array = chunk.emit_jump(Op::BR, line);
 
     chunk.patch_jump(no_assoc_keys);
     chunk.emit_op(Op::DROP, line);
     lget(chunk, base_len_slot, line);
     chunk.emit_op(Op::I32_CONST_0, line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let done_array_no_keys = chunk.emit_jump(Op::BR, line);
     chunk.patch_jump(not_array);
 

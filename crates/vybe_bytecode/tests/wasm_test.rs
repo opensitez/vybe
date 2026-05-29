@@ -585,7 +585,7 @@ fn bool_in_arithmetic() {
     // 5 < 3 = false → 0
     chunk.emit_op_u16(Op::CONST, c5, 0);
     chunk.emit_op_u16(Op::CONST, c3, 0);
-    chunk.emit_op(Op::DYN_LT, 0);
+    chunk.emit_op(Op::I32_LT_S, 0);
     // Result is Bool(false), add 10 → should be 10
     let c10 = chunk.add_constant(Value::I32(10));
     chunk.emit_op_u16(Op::CONST, c10, 0);
@@ -604,7 +604,7 @@ fn bool_true_as_one() {
     // 3 < 5 = true → 1
     chunk.emit_op_u16(Op::CONST, c3, 0);
     chunk.emit_op_u16(Op::CONST, c5, 0);
-    chunk.emit_op(Op::DYN_LT, 0);
+    chunk.emit_op(Op::I32_LT_S, 0);
     // Bool(true) + 10 → 11
     let c10 = chunk.add_constant(Value::I32(10));
     chunk.emit_op_u16(Op::CONST, c10, 0);

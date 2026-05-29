@@ -31,17 +31,7 @@ impl Op {
     pub const REF_IS_FUNC: Op       = Op::new(0xFF, 0x12);
     pub const REF_TYPEOF: Op        = Op::new(0xFF, 0x13);
     pub const REF_IS_ARRAY: Op      = Op::new(0xFF, 0x14);
-    // Dynamic dispatch
-    pub const DYN_ADD: Op           = Op::new(0xFF, 0x15);
-    pub const DYN_EQ: Op            = Op::new(0xFF, 0x16);
-    pub const DYN_NE: Op            = Op::new(0xFF, 0x17);
-    pub const DYN_LT: Op            = Op::new(0xFF, 0x18);
-    pub const DYN_GT: Op            = Op::new(0xFF, 0x19);
-    pub const DYN_LE: Op            = Op::new(0xFF, 0x1A);
-    pub const DYN_GE: Op            = Op::new(0xFF, 0x1B);
-    pub const DYN_NEG: Op           = Op::new(0xFF, 0x1C);
-    pub const DYN_NOT: Op           = Op::new(0xFF, 0x1D);
-    pub const DYN_TO_BOOL: Op       = Op::new(0xFF, 0x1E);
+    // 0xFF 0x15–0x1E: retired (DYN_* opcodes removed; replaced by wasm:js-* emitter sequences)
     // Exception handling
     pub const TRY_START: Op         = Op::new(0xFF, 0x1F);
     pub const TRY_END: Op           = Op::new(0xFF, 0x20);

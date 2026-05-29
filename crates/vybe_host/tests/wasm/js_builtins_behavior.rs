@@ -1212,3 +1212,4 @@ fn two_typedarray_views_on_same_buffer_see_each_others_writes() {
     assert_eq!(got.as_i32(), 0x1234,
         "Int16Array.get should see the bytes written via Uint8Array on the same buffer");
 }
+

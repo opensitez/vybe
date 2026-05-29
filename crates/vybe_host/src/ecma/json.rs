@@ -191,7 +191,13 @@ fn serialize_json_value(
         Value::I64(n) => Some(n.to_string()),
         Value::F64(n) => Some(json_number_string(*n)),
         Value::String(s) => Some(quote_string(s)),
-        Value::BigInt(_) | Value::V128(_) | Value::WeakRef(_) => Some("null".to_string()),
+        Value::V128(_) | Value::WeakRef(_) => Some("null".to_string()),
+        // ECMA-262 §25.5.2: BigInt values must throw TypeError.
+        Value::BigInt(_) => {
+            let err = crate::ecma::error::new_error("TypeError", "Do not know how to serialize a BigInt");
+            ctx.throw_value(err);
+            return None;
+        }
         Value::Object(obj) => serialize_object(ctx, obj, state),
     }
 }

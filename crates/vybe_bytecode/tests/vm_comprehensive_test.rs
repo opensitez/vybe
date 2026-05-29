@@ -228,7 +228,7 @@ fn recursive_call_factorial() {
     // if n <= 1, branch to return 1
     fact.emit_op_u16(Op::LOCAL_GET, 0, 0); // n
     fact.emit_op_u16(Op::CONST, c1, 0);  // 1
-    fact.emit_op(Op::DYN_LE, 0);           // n <= 1 ?
+    fact.emit_op(Op::I32_LE_S, 0);          // n <= 1 ?
     let jump_to_base = fact.emit_jump(Op::BR_IF_TRUE, 0);
 
     // recursive case: n * fact(n-1)
@@ -561,7 +561,7 @@ fn dyn_eq_numbers() {
     let b = chunk.add_constant(Value::I32(5));
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
-    chunk.emit_op(Op::DYN_EQ, 0);
+    chunk.emit_op(Op::I32_EQ, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), true);
 }
@@ -574,7 +574,7 @@ fn dyn_eq_different_numbers() {
     let b = chunk.add_constant(Value::I32(6));
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
-    chunk.emit_op(Op::DYN_EQ, 0);
+    chunk.emit_op(Op::I32_EQ, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), false);
 }
@@ -587,7 +587,7 @@ fn dyn_eq_strings() {
     let b = chunk.add_constant(Value::String(Arc::from("hello")));
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
-    chunk.emit_op(Op::DYN_EQ, 0);
+    chunk.emit_op(Op::STR_EQUALS, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), true);
 }
@@ -598,7 +598,7 @@ fn dyn_eq_null_null() {
     chunk.local_count = 1;
     chunk.emit_op(Op::NULL, 0);
     chunk.emit_op(Op::NULL, 0);
-    chunk.emit_op(Op::DYN_EQ, 0);
+    chunk.emit_op(Op::EQ, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), true);
 }
@@ -609,7 +609,7 @@ fn dyn_eq_booleans() {
     chunk.local_count = 1;
     chunk.emit_op(Op::TRUE, 0);
     chunk.emit_op(Op::TRUE, 0);
-    chunk.emit_op(Op::DYN_EQ, 0);
+    chunk.emit_op(Op::EQ, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), true);
 }
@@ -621,23 +621,23 @@ fn dyn_eq_nan_is_false() {
     let nan = chunk.add_constant(Value::F64(f64::NAN));
     chunk.emit_op_u16(Op::CONST, nan, 0);
     chunk.emit_op_u16(Op::CONST, nan, 0);
-    chunk.emit_op(Op::DYN_EQ, 0);
+    chunk.emit_op(Op::F64_EQ, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), false);
 }
 
 #[test]
-fn dyn_ne_different_types() {
-    // With loose equality: 5 == "5" is true (string→number coercion), so 5 != "5" is false
+fn dyn_ne_different_numbers() {
+    // F64_NE: 5.0 != 6.0 is true
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
-    let a = chunk.add_constant(Value::I32(5));
-    let b = chunk.add_constant(Value::String(Arc::from("5")));
+    let a = chunk.add_constant(Value::F64(5.0));
+    let b = chunk.add_constant(Value::F64(6.0));
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
-    chunk.emit_op(Op::DYN_NE, 0);
+    chunk.emit_op(Op::F64_NE, 0);
     chunk.emit_op(Op::HALT, 0);
-    assert_bool(&run_chunks(vec![chunk]), false);
+    assert_bool(&run_chunks(vec![chunk]), true);
 }
 
 #[test]
@@ -648,9 +648,9 @@ fn dyn_eq_mixed_i32_f64() {
     let b = chunk.add_constant(Value::F64(5.0));
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
-    chunk.emit_op(Op::DYN_EQ, 0);
+    chunk.emit_op(Op::F64_EQ, 0);
     chunk.emit_op(Op::HALT, 0);
-    // dyn_eq coerces I32/F64 cross-type
+    // F64_EQ coerces both to f64: I32(5) → 5.0, F64(5.0) → 5.0, equal
     assert_bool(&run_chunks(vec![chunk]), true);
 }
 
@@ -662,7 +662,7 @@ fn dyn_lt_numbers() {
     let b = chunk.add_constant(Value::I32(5));
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
-    chunk.emit_op(Op::DYN_LT, 0);
+    chunk.emit_op(Op::I32_LT_S, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), true);
 }
@@ -675,7 +675,7 @@ fn dyn_gt_numbers() {
     let b = chunk.add_constant(Value::I32(5));
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
-    chunk.emit_op(Op::DYN_GT, 0);
+    chunk.emit_op(Op::I32_GT_S, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), true);
 }
@@ -688,7 +688,7 @@ fn dyn_le_equal() {
     let b = chunk.add_constant(Value::I32(5));
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
-    chunk.emit_op(Op::DYN_LE, 0);
+    chunk.emit_op(Op::I32_LE_S, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), true);
 }
@@ -701,7 +701,7 @@ fn dyn_ge_less() {
     let b = chunk.add_constant(Value::I32(5));
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
-    chunk.emit_op(Op::DYN_GE, 0);
+    chunk.emit_op(Op::I32_GE_S, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), false);
 }
@@ -712,9 +712,12 @@ fn dyn_lt_strings() {
     chunk.local_count = 1;
     let a = chunk.add_constant(Value::String(Arc::from("apple")));
     let b = chunk.add_constant(Value::String(Arc::from("banana")));
+    let zero = chunk.add_constant(Value::I32(0));
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
-    chunk.emit_op(Op::DYN_LT, 0);
+    chunk.emit_op(Op::STR_COMPARE, 0); // returns I32(-1/0/1)
+    chunk.emit_op_u16(Op::CONST, zero, 0);
+    chunk.emit_op(Op::I32_LT_S, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), true);
 }
@@ -725,9 +728,12 @@ fn dyn_le_strings() {
     chunk.local_count = 1;
     let a = chunk.add_constant(Value::String(Arc::from("abc")));
     let b = chunk.add_constant(Value::String(Arc::from("abc")));
+    let zero = chunk.add_constant(Value::I32(0));
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
-    chunk.emit_op(Op::DYN_LE, 0);
+    chunk.emit_op(Op::STR_COMPARE, 0); // returns I32(-1/0/1)
+    chunk.emit_op_u16(Op::CONST, zero, 0);
+    chunk.emit_op(Op::I32_LE_S, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), true);
 }
@@ -738,9 +744,12 @@ fn dyn_ge_strings() {
     chunk.local_count = 1;
     let a = chunk.add_constant(Value::String(Arc::from("z")));
     let b = chunk.add_constant(Value::String(Arc::from("a")));
+    let zero = chunk.add_constant(Value::I32(0));
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
-    chunk.emit_op(Op::DYN_GE, 0);
+    chunk.emit_op(Op::STR_COMPARE, 0); // returns I32(-1/0/1)
+    chunk.emit_op_u16(Op::CONST, zero, 0);
+    chunk.emit_op(Op::I32_GE_S, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), true);
 }
@@ -799,73 +808,88 @@ fn conv_i32_wrap_i64() {
 
 #[test]
 fn dyn_to_bool_falsy_values() {
-    // 0 => false
+    // I32(0) is falsy: I32_EQZ(0) = true (is zero), I32_EQZ(1) = false (not nonzero)
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
     chunk.emit_op(Op::I32_CONST_0, 0);
-    chunk.emit_op(Op::DYN_TO_BOOL, 0);
+    chunk.emit_op(Op::I32_EQZ, 0); // is zero? → Bool(true)
+    chunk.emit_op(Op::I32_EQZ, 0); // not (is zero)? → Bool(false)
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), false);
 }
 
 #[test]
 fn dyn_to_bool_empty_string() {
+    // empty string is falsy: length==0
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
     let c = chunk.add_constant(Value::String(Arc::from("")));
     chunk.emit_op_u16(Op::CONST, c, 0);
-    chunk.emit_op(Op::DYN_TO_BOOL, 0);
+    chunk.emit_op(Op::STR_LENGTH, 0); // 0
+    chunk.emit_op(Op::I32_EQZ, 0);   // is zero? → Bool(true)
+    chunk.emit_op(Op::I32_EQZ, 0);   // not zero? → Bool(false)
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), false);
 }
 
 #[test]
 fn dyn_to_bool_null() {
+    // null is falsy: REF_IS_NULL(null) = true, then invert = false
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
     chunk.emit_op(Op::NULL, 0);
-    chunk.emit_op(Op::DYN_TO_BOOL, 0);
+    chunk.emit_op(Op::REF_IS_NULL, 0); // is null? → Bool(true)
+    chunk.emit_op(Op::I32_EQZ, 0);    // not null? → Bool(false)
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), false);
 }
 
 #[test]
 fn dyn_to_bool_undefined() {
+    // undefined is falsy: REF_IS_UNDEFINED(undefined) = true, then invert = false
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
     { let c = chunk.add_constant(Value::Undefined); chunk.emit_op_u16(Op::CONST, c, 0); }
-    chunk.emit_op(Op::DYN_TO_BOOL, 0);
+    chunk.emit_op(Op::REF_IS_UNDEFINED, 0); // is undefined? → Bool(true)
+    chunk.emit_op(Op::I32_EQZ, 0);          // not undefined? → Bool(false)
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), false);
 }
 
 #[test]
 fn dyn_to_bool_truthy_number() {
+    // I32(1) is truthy: I32_EQZ(1) = false, I32_EQZ(false=0) = true
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
     chunk.emit_op(Op::I32_CONST_1, 0);
-    chunk.emit_op(Op::DYN_TO_BOOL, 0);
+    chunk.emit_op(Op::I32_EQZ, 0); // is zero? → Bool(false)
+    chunk.emit_op(Op::I32_EQZ, 0); // not zero? → Bool(true)
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), true);
 }
 
 #[test]
 fn dyn_to_bool_truthy_string() {
+    // non-empty string is truthy: length > 0
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
     let c = chunk.add_constant(Value::String(Arc::from("x")));
     chunk.emit_op_u16(Op::CONST, c, 0);
-    chunk.emit_op(Op::DYN_TO_BOOL, 0);
+    chunk.emit_op(Op::STR_LENGTH, 0); // 1
+    chunk.emit_op(Op::I32_EQZ, 0);   // is zero? → Bool(false)
+    chunk.emit_op(Op::I32_EQZ, 0);   // not zero? → Bool(true)
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), true);
 }
 
 #[test]
 fn dyn_to_bool_true_literal() {
+    // TRUE is truthy: I32_EQZ(1) = false, I32_EQZ(0) = true
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
     chunk.emit_op(Op::TRUE, 0);
-    chunk.emit_op(Op::DYN_TO_BOOL, 0);
+    chunk.emit_op(Op::I32_EQZ, 0); // is zero? Bool(true).as_i32()=1 → false
+    chunk.emit_op(Op::I32_EQZ, 0); // not zero? → true
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), true);
 }
@@ -1428,7 +1452,7 @@ fn loop_sum_1_to_5() {
     chunk.emit_op_u16(Op::LOCAL_GET, 2, 0);
     let c5 = chunk.add_constant(Value::I32(5));
     chunk.emit_op_u16(Op::CONST, c5, 0);
-    chunk.emit_op(Op::DYN_GT, 0);
+    chunk.emit_op(Op::I32_GT_S, 0);
     let exit_jump = chunk.emit_jump(Op::BR_IF_TRUE, 0);
 
     // sum += i
@@ -1752,8 +1776,7 @@ fn bool_not() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
     chunk.emit_op(Op::TRUE, 0);
-    chunk.emit_op(Op::DYN_TO_BOOL, 0);
-    chunk.emit_op(Op::I32_EQZ, 0);
+    chunk.emit_op(Op::I32_EQZ, 0); // Bool(true).as_i32()=1, I32_EQZ(1)=false
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), false);
 }
@@ -1766,16 +1789,9 @@ fn dyn_add_numbers() {
     let b = chunk.add_constant(Value::I32(4));
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
-    chunk.emit_op(Op::DYN_ADD, 0);
+    chunk.emit_op(Op::I32_ADD, 0);
     chunk.emit_op(Op::HALT, 0);
-    // dyn_add with numbers should add
-    let result = run_chunks(vec![chunk]);
-    // Could be I32 or F64 depending on implementation
-    match &result {
-        Value::I32(7) => {}
-        Value::F64(v) if *v == 7.0 => {}
-        _ => panic!("Expected 7, got {:?}", result),
-    }
+    assert_i32(&run_chunks(vec![chunk]), 7);
 }
 
 #[test]
@@ -1786,7 +1802,7 @@ fn dyn_add_string_concat() {
     let b = chunk.add_constant(Value::String(Arc::from("bar")));
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
-    chunk.emit_op(Op::DYN_ADD, 0);
+    chunk.emit_op(Op::STR_CONCAT, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_string(&run_chunks(vec![chunk]), "foobar");
 }
@@ -1797,7 +1813,7 @@ fn dyn_neg() {
     chunk.local_count = 1;
     let a = chunk.add_constant(Value::F64(5.0));
     chunk.emit_op_u16(Op::CONST, a, 0);
-    chunk.emit_op(Op::DYN_NEG, 0);
+    chunk.emit_op(Op::F64_NEG, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_f64(&run_chunks(vec![chunk]), -5.0);
 }
@@ -1807,7 +1823,7 @@ fn dyn_not_truthy() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
     chunk.emit_op(Op::I32_CONST_1, 0);
-    chunk.emit_op(Op::DYN_NOT, 0);
+    chunk.emit_op(Op::I32_EQZ, 0); // 1 == 0? → false
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), false);
 }
@@ -1817,7 +1833,7 @@ fn dyn_not_falsy() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
     chunk.emit_op(Op::I32_CONST_0, 0);
-    chunk.emit_op(Op::DYN_NOT, 0);
+    chunk.emit_op(Op::I32_EQZ, 0); // 0 == 0? → true
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), true);
 }
@@ -1940,24 +1956,26 @@ fn str_length_empty() {
 
 #[test]
 fn dyn_to_bool_nan_is_false() {
+    // NaN is falsy: NaN == NaN is false per IEEE-754 (F64_EQ)
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
     let nan = chunk.add_constant(Value::F64(f64::NAN));
     chunk.emit_op_u16(Op::CONST, nan, 0);
-    chunk.emit_op(Op::DYN_TO_BOOL, 0);
+    chunk.emit_op_u16(Op::CONST, nan, 0);
+    chunk.emit_op(Op::F64_EQ, 0); // NaN == NaN → false per IEEE-754
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), false);
 }
 
 #[test]
 fn dyn_ne_nan_nan() {
-    // NaN != NaN should be true
+    // NaN != NaN should be true per IEEE-754 (F64_NE)
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
     let nan = chunk.add_constant(Value::F64(f64::NAN));
     chunk.emit_op_u16(Op::CONST, nan, 0);
     chunk.emit_op_u16(Op::CONST, nan, 0);
-    chunk.emit_op(Op::DYN_NE, 0);
+    chunk.emit_op(Op::F64_NE, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), true);
 }

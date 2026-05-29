@@ -82,8 +82,8 @@ fn emit_hashset_mutation(chunks: &mut [Chunk], current: usize, func: &str, line:
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     collections::emit_len(chunks, current, line);
-    chunks[current].emit_op(Op::DYN_LT, line);
-    chunks[current].emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
     chunks[current].emit_br_if(1, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
@@ -136,8 +136,8 @@ pub fn emit_hashset_union_with(chunks: &mut [Chunk], current: usize, line: u32) 
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     collections::emit_len(chunks, current, line);
-    chunks[current].emit_op(Op::DYN_LT, line);
-    chunks[current].emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
     chunks[current].emit_br_if(1, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
@@ -199,8 +199,8 @@ pub fn emit_hashset_intersect_with(chunks: &mut [Chunk], current: usize, line: u
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_arr_slot, line);
     collections::emit_len(chunks, current, line);
-    chunks[current].emit_op(Op::DYN_LT, line);
-    chunks[current].emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
     chunks[current].emit_br_if(1, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_arr_slot, line);
@@ -270,8 +270,8 @@ pub fn emit_sorted_dictionary_entries(chunks: &mut [Chunk], current: usize, line
     let (outer_loop, _) = chunks[current].emit_loop_s(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
-    chunks[current].emit_op(Op::DYN_LT, line);
-    chunks[current].emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
     chunks[current].emit_br_if(1, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
@@ -290,8 +290,8 @@ pub fn emit_sorted_dictionary_entries(chunks: &mut [Chunk], current: usize, line
     let (inner_loop, _) = chunks[current].emit_loop_s(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
-    chunks[current].emit_op(Op::DYN_GE, line);
-    chunks[current].emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_ge(&mut chunks[current], line);
+    crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
     chunks[current].emit_br_if(1, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
@@ -302,8 +302,8 @@ pub fn emit_sorted_dictionary_entries(chunks: &mut [Chunk], current: usize, line
     chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
     collections::emit_get(chunks, current, line);
-    chunks[current].emit_op(Op::DYN_GT, line);
-    chunks[current].emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_gt(&mut chunks[current], line);
+    crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
     chunks[current].emit_br_if(1, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
@@ -384,7 +384,7 @@ pub fn emit_linked_list_find(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
-    chunks[current].emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(&mut chunks[current], line);
     let missing = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);

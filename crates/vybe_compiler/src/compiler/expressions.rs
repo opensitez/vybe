@@ -125,7 +125,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, control_slot);
         let marker_key = self.str_const("__vybe_generator_control");
         self.emit_u16(Op::STRUCT_GET, marker_key);
-        self.emit(Op::DYN_TO_BOOL);
+        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
         let not_control = self.emit_jump(Op::BR_IF_FALSE);
 
         self.emit_u16(Op::LOCAL_GET, control_slot);
@@ -167,7 +167,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, ctor_slot);
         self.emit(Op::REF_TYPEOF);
         self.emit_const(Value::String(Arc::from("undefined")));
-        self.emit(Op::DYN_EQ);
+        { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
         let skip_autoload = self.emit_jump(Op::BR_IF_FALSE);
 
         let autoload_slot = self.define_local("__php_autoload_ref");
@@ -179,7 +179,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, autoload_slot);
         self.emit(Op::REF_TYPEOF);
         self.emit_const(Value::String(Arc::from("undefined")));
-        self.emit(Op::DYN_EQ);
+        { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
         let no_autoload = self.emit_jump(Op::BR_IF_TRUE);
 
         let receiver_slot = self.define_local("__php_autoload_receiver");
@@ -191,7 +191,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, receiver_slot);
         self.emit(Op::REF_TYPEOF);
         self.emit_const(Value::String(Arc::from("undefined")));
-        self.emit(Op::DYN_EQ);
+        { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
         let no_receiver = self.emit_jump(Op::BR_IF_TRUE);
 
         self.emit_u16(Op::LOCAL_GET, autoload_slot);
@@ -232,7 +232,7 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, ctor_slot);
             self.emit(Op::REF_TYPEOF);
             self.emit_const(Value::String(Arc::from("undefined")));
-            self.emit(Op::DYN_EQ);
+            { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
             let skip_fallback = self.emit_jump(Op::BR_IF_FALSE);
             let fallback_idx = self.str_const(fallback);
             self.emit_u16(Op::GLOBAL_GET, fallback_idx);
@@ -244,7 +244,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, ctor_slot);
         self.emit(Op::REF_TYPEOF);
         self.emit_const(Value::String(Arc::from("undefined")));
-        self.emit(Op::DYN_EQ);
+        { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
         let skip_autoload = self.emit_jump(Op::BR_IF_FALSE);
 
         let autoload_slot = self.define_local("__php_dyn_autoload_ref");
@@ -256,7 +256,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, autoload_slot);
         self.emit(Op::REF_TYPEOF);
         self.emit_const(Value::String(Arc::from("undefined")));
-        self.emit(Op::DYN_EQ);
+        { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
         let no_autoload = self.emit_jump(Op::BR_IF_TRUE);
 
         let receiver_slot = self.define_local("__php_dyn_autoload_receiver");
@@ -268,7 +268,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, receiver_slot);
         self.emit(Op::REF_TYPEOF);
         self.emit_const(Value::String(Arc::from("undefined")));
-        self.emit(Op::DYN_EQ);
+        { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
         let no_receiver = self.emit_jump(Op::BR_IF_TRUE);
 
         self.emit_u16(Op::LOCAL_GET, autoload_slot);
@@ -294,7 +294,7 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, ctor_slot);
             self.emit(Op::REF_TYPEOF);
             self.emit_const(Value::String(Arc::from("undefined")));
-            self.emit(Op::DYN_EQ);
+            { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
             let skip_fallback = self.emit_jump(Op::BR_IF_FALSE);
             let fallback_idx = self.str_const(fallback);
             self.emit_u16(Op::GLOBAL_GET, fallback_idx);
@@ -331,13 +331,13 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, gen_slot);
         let started_key = self.str_const("__php_gen_started");
         self.emit_u16(Op::STRUCT_GET, started_key);
-        self.emit(Op::DYN_TO_BOOL);
+        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
         let not_started = self.emit_jump(Op::BR_IF_FALSE);
 
         self.emit_u16(Op::LOCAL_GET, gen_slot);
         let done_key = self.str_const("__php_gen_done");
         self.emit_u16(Op::STRUCT_GET, done_key);
-        self.emit(Op::DYN_TO_BOOL);
+        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
         let already_done = self.emit_jump(Op::BR_IF_TRUE);
 
         self.emit_u16(Op::LOCAL_GET, gen_slot);
@@ -362,7 +362,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         let marker_key = self.str_const("__vybe_generator_control");
         self.emit_u16(Op::STRUCT_GET, marker_key);
-        self.emit(Op::DYN_TO_BOOL);
+        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
         let not_control = self.emit_jump(Op::BR_IF_FALSE);
 
         self.emit_u16(Op::LOCAL_GET, resume_slot);
@@ -466,7 +466,7 @@ impl Compiler {
 
         self.emit_u16(Op::LOCAL_GET, id_slot);
         self.emit_const(Value::F64(1.0));
-        self.emit(Op::DYN_ADD);
+        { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
         self.emit_u16(Op::GLOBAL_SET, next_global);
         self.emit(Op::DROP);
 
@@ -481,7 +481,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, yielded_slot);
         let marker_key = self.str_const("__vybe_generator_yield");
         self.emit_u16(Op::STRUCT_GET, marker_key);
-        self.emit(Op::DYN_TO_BOOL);
+        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
         let not_packet = self.emit_jump(Op::BR_IF_FALSE);
 
         self.emit_u16(Op::LOCAL_GET, yielded_slot);
@@ -521,7 +521,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, yielded_slot);
         let marker_key = self.str_const("__vybe_generator_yield");
         self.emit_u16(Op::STRUCT_GET, marker_key);
-        self.emit(Op::DYN_TO_BOOL);
+        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
         let not_packet = self.emit_jump(Op::BR_IF_FALSE);
 
         self.emit_u16(Op::LOCAL_GET, yielded_slot);
@@ -875,7 +875,7 @@ impl Compiler {
                         self.compile_expr(left)?;
                         common::collections::emit_contains(&mut self.chunks, self.current, line);
                         if *op == BinOp::NotIn {
-                            self.emit(Op::DYN_NOT);
+                            { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
                         }
                         return Ok(());
                     }
@@ -1007,7 +1007,7 @@ impl Compiler {
                         self.compile_expr(inner)?;
                         if *op == UnaryOp::PostInc { self.emit(Op::DUP); }
                         self.emit_const(Value::F64(1.0));
-                        self.emit(Op::DYN_ADD);
+                        { let line = self.line; crate::emitter::ops::emit_dyn_add(self.chunk(), line); };
                         if *op == UnaryOp::PreInc { self.emit(Op::DUP); }
                         self.compile_assign_target(inner)?;
                     }
@@ -1050,7 +1050,7 @@ impl Compiler {
                                 let idx = self.import("ecma:number", "Number");
                                 self.emit_host_call(idx, 1);
                             }
-                            UnaryOp::Not => self.emit(Op::DYN_NOT),
+                            UnaryOp::Not => { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); },
                             UnaryOp::BitNot => {
                                 let l = self.line;
                                 if self.is_js_profile() && self.infer_expr_type_hint(inner).as_deref() == Some("bigint") {
@@ -1512,7 +1512,7 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             self.emit(Op::REF_TYPEOF);
                             self.emit_const(Value::String(Arc::from("symbol")));
-                            self.emit(Op::DYN_EQ);
+                            { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
                             let not_symbol = self.emit_jump(Op::BR_IF_FALSE);
                             let invoke = self.import("ecma:value", "invokeMethod");
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
@@ -1633,7 +1633,7 @@ impl Compiler {
                         "HasValue" => {
                             self.compile_expr(object)?;
                             self.emit(Op::REF_IS_NULL);
-                            self.emit(Op::DYN_NOT);
+                            { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
                             return Ok(());
                         }
                         "Value" => {
@@ -1874,7 +1874,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, value_slot);
                     self.emit(Op::REF_TYPEOF);
                     self.emit_const(Value::String(Arc::from("function")));
-                    self.emit(Op::DYN_EQ);
+                    { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
                     let return_value = self.emit_jump(Op::BR_IF_FALSE);
 
                     self.emit_u16(Op::LOCAL_GET, value_slot);
@@ -2125,8 +2125,8 @@ impl Compiler {
                                 let (stride_loop, _) = self.chunk().emit_loop_s(line);
                                 self.emit_u16(Op::LOCAL_GET, index_slot);
                                 self.emit_u16(Op::LOCAL_GET, len_slot);
-                                self.emit(Op::DYN_LT);
-                                self.emit(Op::DYN_NOT);
+                                { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
+                                { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
                                 self.chunk().emit_br_if(1, line);
 
                                 self.emit_u16(Op::LOCAL_GET, result_slot);
@@ -3327,7 +3327,7 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             self.emit(Op::DUP);
                             self.emit(Op::F64_TRUNC);
-                            self.emit(Op::DYN_EQ);
+                            { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
                             let done = self.emit_jump(Op::BR);
                             self.patch_jump(not_number);
                             self.emit(Op::FALSE);
@@ -3341,7 +3341,7 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             self.emit(Op::DUP);
                             self.emit(Op::F64_TRUNC);
-                            self.emit(Op::DYN_EQ);
+                            { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
                             let is_integer = self.emit_jump(Op::BR_IF_TRUE);
                             self.emit(Op::TRUE);
                             let done = self.emit_jump(Op::BR);
@@ -3391,7 +3391,7 @@ impl Compiler {
                 let type_key = self.str_const("__type");
                 self.emit_u16(Op::STRUCT_GET, type_key);
                 self.emit_const(Value::String(Arc::from(canon_type.as_str())));
-                self.emit(Op::DYN_EQ);
+                { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
                 match_patches.push(self.emit_jump(Op::BR_IF_TRUE));
 
                 let reflection_matches: Vec<String> = self
@@ -3415,7 +3415,7 @@ impl Compiler {
                     let type_key = self.str_const("__type");
                     self.emit_u16(Op::STRUCT_GET, type_key);
                     self.emit_const(Value::String(Arc::from(candidate.as_str())));
-                    self.emit(Op::DYN_EQ);
+                    { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
                     match_patches.push(self.emit_jump(Op::BR_IF_TRUE));
                 }
 
@@ -3623,7 +3623,7 @@ impl Compiler {
                                             let type_key = self.str_const("__type");
                                             self.emit_u16(Op::STRUCT_GET, type_key);
                                             self.emit_const(Value::String(Arc::from(expected.as_str())));
-                                            self.emit(Op::DYN_EQ);
+                                            { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
                                             matches.push(self.emit_jump(Op::BR_IF_TRUE));
                                         }
                                         for expected in &expected_names {
@@ -3882,7 +3882,7 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, has_more_slot); self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_SET, val_slot); self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, has_more_slot);
-                self.emit(Op::DYN_TO_BOOL);
+                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
                 let exit = self.emit_jump(Op::BR_IF_FALSE);
                 self.emit_u16(Op::LOCAL_GET, val_slot);
                 self.emit_u16(Op::SUSPEND, 0);
@@ -3914,7 +3914,7 @@ impl Compiler {
                 let iter_loop_start = self.chunks[self.current].code.len();
                 self.emit_u16(Op::LOCAL_GET, idx_slot);
                 self.emit_u16(Op::LOCAL_GET, len_slot);
-                self.emit(Op::DYN_LT);
+                { let line = self.line; crate::emitter::ops::emit_dyn_lt(self.chunk(), line); };
                 let iter_exit = self.emit_jump(Op::BR_IF_FALSE);
                 self.emit_u16(Op::LOCAL_GET, iter_slot);
                 self.emit_u16(Op::LOCAL_GET, idx_slot);
@@ -4098,7 +4098,7 @@ impl Compiler {
 
                     for cond_expr in &generator.conditions {
                         self.compile_expr(cond_expr)?;
-                        self.emit(Op::DYN_TO_BOOL);
+                        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
                         cond_skips.push(self.emit_jump(Op::BR_IF_FALSE));
                     }
                     loop_info.push((idx_slot, lp));
@@ -4346,7 +4346,7 @@ impl Compiler {
                         for c in conditions {
                             self.emit_u16(Op::LOCAL_GET, subject_slot);
                             self.compile_expr(c)?;
-                            self.emit(Op::DYN_EQ);
+                            { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
                             match_patches.push(self.emit_jump(Op::BR_IF_TRUE));
                         }
                         let skip = self.emit_jump(Op::BR);
@@ -4417,7 +4417,7 @@ impl Compiler {
         ];
         self.compile_call(&callee, &args)?;
         if *op == BinOp::NotEq {
-            self.emit(Op::DYN_NOT);
+            { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
         }
         Ok(true)
     }
@@ -4512,7 +4512,7 @@ impl Compiler {
         if let Some(chunk_idx) = self.resolve_static_method_overload_chunk_for_type(&left_type, method_name, &arg_exprs) {
             self.emit_direct_static_method_call(chunk_idx, &arg_exprs)?;
             if negate_result {
-                self.emit(Op::DYN_NOT);
+                { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
             }
             return Ok(true);
         }
@@ -4532,7 +4532,7 @@ impl Compiler {
         ];
         self.compile_call(&callee, &args)?;
         if negate_result {
-            self.emit(Op::DYN_NOT);
+            { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
         }
         Ok(true)
     }

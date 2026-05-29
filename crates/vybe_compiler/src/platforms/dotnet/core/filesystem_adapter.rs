@@ -74,13 +74,13 @@ fn emit_directory_entries(chunks: &mut [Chunk], current: usize, line: u32, want_
     chunk.emit_op_u16(Op::LOCAL_GET, full_path_slot, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, is_dir_idx, line);
     chunk.emit(1, line);
-    chunk.emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     if !want_directories {
-        chunk.emit_op(Op::DYN_NOT, line);
+        crate::emitter::ops::emit_dyn_not(chunk, line);
     }
 
     let skip_push = chunk.emit_block(line);
-    chunk.emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);

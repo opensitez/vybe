@@ -114,10 +114,10 @@ pub fn emit_linq_first_or_default(chunks: &mut [Chunk], current: usize, line: u3
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     collections::emit_len(chunks, current, line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
-    chunks[current].emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
 
     // Branch: if empty push default(0), else push arr[0].
-    chunks[current].emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     let empty = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
     // non-empty path
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
@@ -165,7 +165,7 @@ pub fn emit_linq_distinct(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     collections::emit_index_of(chunks, current, line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
-    chunks[current].emit_op(Op::DYN_GE, line);
+    crate::emitter::ops::emit_dyn_ge(&mut chunks[current], line);
     let if_block = chunks[current].emit_block(line);
     chunks[current].emit_br_if(0, line); // skip push if duplicate (>= 0)
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
@@ -216,7 +216,7 @@ pub fn emit_linq_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32)
     chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
     collections::emit_len(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    chunks[current].emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
     let lengths_match = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
     chunks[current].emit_op(Op::FALSE, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
@@ -232,8 +232,8 @@ pub fn emit_linq_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32)
     let (outer_loop, _) = chunks[current].emit_loop_s(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    chunks[current].emit_op(Op::DYN_LT, line);
-    chunks[current].emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
     chunks[current].emit_br_if(1, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
@@ -246,7 +246,7 @@ pub fn emit_linq_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32)
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, right_elem_slot, line);
-    chunks[current].emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
     let equal_values = chunks[current].emit_block(line);
     chunks[current].emit_br_if(0, line);
 
@@ -261,7 +261,7 @@ pub fn emit_linq_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32)
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     let one = chunks[current].add_constant(Value::I32(1));
     chunks[current].emit_op_u16(Op::CONST, one, line);
-    chunks[current].emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_br(0, line);
@@ -315,15 +315,15 @@ pub fn emit_linq_count_pred(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
-    chunks[current].emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     let if_block = chunks[current].emit_block(line);
-    chunks[current].emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
     chunks[current].emit_br_if(0, line); // skip increment if false
     // count++
     chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
     let one = chunks[current].add_constant(Value::I32(1));
     chunks[current].emit_op_u16(Op::CONST, one, line);
-    chunks[current].emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
@@ -523,7 +523,7 @@ pub fn emit_linq_group_by(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, map_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     emit_import_call(chunks, current, "ecma:map", "has", 2, line);
-    chunks[current].emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     let maybe_new = chunks[current].emit_block(line);
     chunks[current].emit_br_if(0, line); // already exists
 
@@ -675,7 +675,7 @@ pub fn emit_linq_zip(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, other_slot, line);
     collections::emit_len(chunks, current, line);
-    chunks[current].emit_op(Op::DYN_GE, line);
+    crate::emitter::ops::emit_dyn_ge(&mut chunks[current], line);
     let too_short = chunks[current].emit_block(line);
     chunks[current].emit_br_if(0, line);
 

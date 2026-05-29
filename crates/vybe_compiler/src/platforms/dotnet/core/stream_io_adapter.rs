@@ -139,8 +139,8 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
     // if pos >= len: result stays null → exit
     chunk.emit_op_u16(Op::LOCAL_GET, pos_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
-    chunk.emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    crate::emitter::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
 
     // end = pos
@@ -153,8 +153,8 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
     let (scan_loop, _) = chunk.emit_loop_s(line);
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
-    chunk.emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    crate::emitter::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(1, line); // exit scan_block
 
     chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
@@ -162,7 +162,7 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
     chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
     let nl = chunk.add_constant(Value::I32(10)); // '\n'
     chunk.emit_op_u16(Op::CONST, nl, line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_br_if(1, line); // newline → exit scan_block
 
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
@@ -258,8 +258,8 @@ pub fn emit_stream_reader_at_end(chunks: &mut [Chunk], current: usize, line: u32
     chunk.emit_op_u16(Op::STRUCT_GET, content_key, line);
     chunk.emit_op(Op::STR_LENGTH, line);
     // pos < len → DYN_NOT → at-end
-    chunk.emit_op(Op::DYN_LT, line);
-    chunk.emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    crate::emitter::ops::emit_dyn_not(chunk, line);
 }
 
 /// `new StreamWriter(path)` — initialise `__path` + empty `__buf`.
@@ -307,7 +307,7 @@ pub fn emit_stream_writer_write(chunks: &mut [Chunk], current: usize, line: u32)
     chunk.emit_op(Op::DUP, line);
     chunk.emit_op_u16(Op::STRUCT_GET, buf_key, line);
     chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_SET, buf_key, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op(Op::NULL, line);
@@ -325,9 +325,9 @@ pub fn emit_stream_writer_write_line(chunks: &mut [Chunk], current: usize, line:
     chunk.emit_op(Op::DUP, line);
     chunk.emit_op_u16(Op::STRUCT_GET, buf_key, line);
     chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     push_const(chunk, Value::String(Arc::from("\n")), line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_SET, buf_key, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op(Op::NULL, line);
@@ -373,10 +373,10 @@ pub fn emit_stream_close(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, type_key, line);
     push_const(chunk, Value::String(Arc::from(WRITER_TYPE)), line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
 
     let skip_flush = chunk.emit_block(line);
-    chunk.emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);

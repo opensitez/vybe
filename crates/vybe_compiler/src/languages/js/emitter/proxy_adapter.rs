@@ -108,7 +108,7 @@ pub fn emit_proxy_get_dispatch(chunks: &mut [Chunk], current: usize, line: u32) 
     let no_handler = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, handler_local, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    chunk.emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_local, line);
     chunk.emit_op_u16(Op::LOCAL_GET, key_local, line);
@@ -129,7 +129,7 @@ pub fn emit_proxy_get_dispatch(chunks: &mut [Chunk], current: usize, line: u32) 
     chunk.emit_op_u16(Op::LOCAL_GET, trap_local, line);
     chunk.emit_op(Op::REF_TYPEOF, line);
     chunk.emit_op_u16(Op::CONST, func_str, line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_br_if(0, line);
     chunk.emit_op_u16(Op::LOCAL_GET, target_local, line);
     chunk.emit_op_u16(Op::LOCAL_GET, key_local, line);
@@ -188,7 +188,7 @@ pub fn emit_proxy_set_dispatch(chunks: &mut [Chunk], current: usize, line: u32) 
     let no_handler = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, handler_local, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    chunk.emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_local, line);
     chunk.emit_op_u16(Op::LOCAL_GET, key_local, line);
@@ -210,7 +210,7 @@ pub fn emit_proxy_set_dispatch(chunks: &mut [Chunk], current: usize, line: u32) 
     chunk.emit_op_u16(Op::LOCAL_GET, trap_local, line);
     chunk.emit_op(Op::REF_TYPEOF, line);
     chunk.emit_op_u16(Op::CONST, func_str, line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_br_if(0, line);
     chunk.emit_op_u16(Op::LOCAL_GET, target_local, line);
     chunk.emit_op_u16(Op::LOCAL_GET, key_local, line);
@@ -275,7 +275,7 @@ pub fn emit_proxy_has_dispatch(chunks: &mut [Chunk], current: usize, line: u32) 
     let no_handler = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, handler_local, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    chunk.emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_local, line);
     chunk.emit_op_u16(Op::LOCAL_GET, key_local, line);
@@ -297,7 +297,7 @@ pub fn emit_proxy_has_dispatch(chunks: &mut [Chunk], current: usize, line: u32) 
     chunk.emit_op_u16(Op::LOCAL_GET, trap_local, line);
     chunk.emit_op(Op::REF_TYPEOF, line);
     chunk.emit_op_u16(Op::CONST, func_str, line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_br_if(0, line);
     chunk.emit_op_u16(Op::LOCAL_GET, target_local, line);
     chunk.emit_op_u16(Op::LOCAL_GET, key_local, line);
@@ -316,7 +316,7 @@ pub fn emit_proxy_has_dispatch(chunks: &mut [Chunk], current: usize, line: u32) 
     chunk.emit_op_u16(Op::LOCAL_GET, target_local, line);
     chunk.emit_op_u16(Op::LOCAL_GET, key_local, line);
     chunk.emit_op_u8(Op::CALL_REF, 2, line);
-    chunk.emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_local, line); chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, saved_this_local, line);

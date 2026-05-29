@@ -177,7 +177,7 @@ pub fn emit_method_has(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     crate::emitter::collections::emit_get(chunks, current, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
-    chunks[current].emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
     let end = chunks[current].emit_jump(Op::BR, line);
 
     chunks[current].patch_jump(no_keys);
@@ -186,7 +186,7 @@ pub fn emit_method_has(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     crate::emitter::collections::emit_get(chunks, current, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
-    chunks[current].emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
     let no_keys_end = chunks[current].emit_jump(Op::BR, line);
 
     chunks[current].patch_jump(key_found);
@@ -218,7 +218,7 @@ pub fn emit_method_delete(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
-    chunks[current].emit_op(Op::DYN_GE, line);
+    crate::emitter::ops::emit_dyn_ge(&mut chunks[current], line);
     let missing = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);

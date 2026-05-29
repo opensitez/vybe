@@ -162,7 +162,7 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunk.emit_op(Op::DUP, line);
     chunk.emit_op(Op::STR_LENGTH, line);
     push_const(chunk, Value::I32(0), line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let split_args = chunk.emit_jump(Op::BR_IF_FALSE, line);
     chunk.emit_op(Op::DROP, line);
     crate::emitter::collections::emit_array_new(chunks, current, 0, line);

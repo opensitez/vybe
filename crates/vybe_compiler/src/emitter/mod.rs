@@ -29,6 +29,7 @@ pub mod target;
 pub mod stdlib;
 pub mod bundle;
 pub mod imports;
+pub mod ops;
 pub mod gui;
 pub mod dotnet;
 pub mod dispatch;

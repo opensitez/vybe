@@ -1,6 +1,7 @@
 use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
 use vybe_compiler::emitter::expressions;
+use vybe_compiler::emitter::ops;
 
 #[test]
 fn ternary_emits_jumps() {
@@ -60,7 +61,7 @@ fn null_safe_access() {
 fn rich_compare_locals_emits_dispatch() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 5;
-    expressions::emit_rich_compare_locals(&mut chunk, 1, 2, "__lt__", Op::DYN_LT, 0);
+    expressions::emit_rich_compare_locals(&mut chunk, 1, 2, "__lt__", ops::emit_dyn_lt, 0);
     // Should have: struct_get, dup, ref_is_null, br_if_true, call_ref, br, drop, drop, dyn_lt
     assert!(chunk.code.len() > 15, "rich compare should emit dispatch bytecode");
     let has_lt = chunk.constants.iter().any(|c| matches!(c, Value::String(s) if s.as_ref() == "__lt__"));
@@ -82,7 +83,7 @@ fn rich_compare_fallback_emits_primitive() {
     // When no dunder found, should fall back to the primitive op
     let mut chunk = Chunk::new("test");
     chunk.local_count = 5;
-    expressions::emit_rich_compare(&mut chunk, "__lt__", Op::DYN_LT, 0);
+    expressions::emit_rich_compare(&mut chunk, "__lt__", ops::emit_dyn_lt, 0);
     // Simple fallback version just emits the opcode directly
     assert!(!chunk.code.is_empty());
 }

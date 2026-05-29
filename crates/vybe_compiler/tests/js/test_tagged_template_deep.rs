@@ -70,7 +70,7 @@ fn tagged_template_html_escape() {
 function html(strings, ...values) {
     return strings.reduce((acc, str, i) => {
         const val = values[i - 1] != null
-            ? String(values[i - 1]).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+            ? String(values[i - 1]).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
             : "";
         return acc + val + str;
     });

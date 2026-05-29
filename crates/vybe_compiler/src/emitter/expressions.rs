@@ -58,7 +58,7 @@ pub fn emit_f64_mod(chunk: &mut Chunk, line: u32) {
 /// WASM equivalent: dyn_to_bool + i32.eqz.
 /// Stack: [value] → [bool]
 pub fn emit_bool_not(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
 }
 
@@ -75,7 +75,7 @@ pub fn emit_bool_not(chunk: &mut Chunk, line: u32) {
 /// After condition is on stack: convert to bool, jump to else if false.
 /// Stack before: [condition]  Stack after: []
 pub fn emit_ternary_start(chunk: &mut Chunk, line: u32) -> usize {
-    chunk.emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_jump(Op::BR_IF_FALSE, line)
 }
 
@@ -105,7 +105,7 @@ pub fn emit_ternary_end(chunk: &mut Chunk, end_jump: usize) {
 /// Stack before: [left]  Stack after: [] (right will be compiled next)
 pub fn emit_and_start(chunk: &mut Chunk, line: u32) -> usize {
     chunk.emit_op(Op::DUP, line);
-    chunk.emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     let jump = chunk.emit_jump(Op::BR_IF_FALSE, line);
     chunk.emit_op(Op::DROP, line); // discard left, right becomes result
     jump
@@ -123,7 +123,7 @@ pub fn emit_and_start(chunk: &mut Chunk, line: u32) -> usize {
 /// Stack before: [left]  Stack after: [] (right will be compiled next)
 pub fn emit_or_start(chunk: &mut Chunk, line: u32) -> usize {
     chunk.emit_op(Op::DUP, line);
-    chunk.emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     let jump = chunk.emit_jump(Op::BR_IF_TRUE, line);
     chunk.emit_op(Op::DROP, line); // discard left, right becomes result
     jump
@@ -246,9 +246,8 @@ pub fn emit_try_method_end(chunk: &mut Chunk, done: usize) {
 /// Emit rich arithmetic: tries user-defined __add__/etc, falls back to primitive opcode.
 /// Caller must store left in `left_slot` and right in `right_slot`.
 /// Stack before: []  Stack after: [result_value]
-pub fn emit_rich_arithmetic(chunk: &mut Chunk, left_slot: u16, right_slot: u16, dunder: &str, fallback_op: Op, line: u32) {
-    // Same dispatch pattern as rich_compare
-    emit_rich_compare_locals(chunk, left_slot, right_slot, dunder, fallback_op, line);
+pub fn emit_rich_arithmetic(chunk: &mut Chunk, left_slot: u16, right_slot: u16, dunder: &str, fallback_fn: fn(&mut Chunk, u32), line: u32) {
+    emit_rich_compare_locals(chunk, left_slot, right_slot, dunder, fallback_fn, line);
 }
 
 // ── Rich toString (user-defined __str__ / toString) ─────────────────────
@@ -289,7 +288,7 @@ pub fn emit_rich_bool(chunk: &mut Chunk, obj_slot: u16, line: u32) {
 
     // Fallback: use dyn_to_bool
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op(Op::DYN_TO_BOOL, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
 
     emit_try_method_end(chunk, done);
 }
@@ -309,8 +308,8 @@ pub fn emit_rich_bool(chunk: &mut Chunk, obj_slot: u16, line: u32) {
 /// Stack after: [bool_result]
 ///
 /// `dunder`: the method name to look for (e.g. "__lt__", "__gt__")
-/// `fallback_op`: the primitive opcode to use if no method (e.g. Op::DYN_LT)
-pub fn emit_rich_compare(chunk: &mut Chunk, _dunder: &str, fallback_op: Op, line: u32) {
+/// `fallback_fn`: the emitter to use if no method (e.g. `crate::emitter::ops::emit_dyn_lt`)
+pub fn emit_rich_compare(chunk: &mut Chunk, _dunder: &str, fallback_fn: fn(&mut Chunk, u32), line: u32) {
     // Stack: [left, right]
     // Save right to temp, check left for dunder method
     // We need to: peek at left (under right), struct_get dunder, check null
@@ -332,7 +331,7 @@ pub fn emit_rich_compare(chunk: &mut Chunk, _dunder: &str, fallback_op: Op, line
 
     // For now, just use the fallback op. Rich compare requires local slots
     // which the caller must provide. Use emit_rich_compare_with_locals instead.
-    chunk.emit_op(fallback_op, line);
+    fallback_fn(chunk, line);
 }
 
 /// Emit a rich comparison with pre-allocated local slots.
@@ -340,7 +339,7 @@ pub fn emit_rich_compare(chunk: &mut Chunk, _dunder: &str, fallback_op: Op, line
 /// Stack before: []  Stack after: [bool_result]
 ///
 /// Emits: check left.__lt__ → if found, call it(right) → else dyn_lt(left, right)
-pub fn emit_rich_compare_locals(chunk: &mut Chunk, left_slot: u16, right_slot: u16, dunder: &str, fallback_op: Op, line: u32) {
+pub fn emit_rich_compare_locals(chunk: &mut Chunk, left_slot: u16, right_slot: u16, dunder: &str, fallback_fn: fn(&mut Chunk, u32), line: u32) {
     // Try struct_get dunder on left
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     let key = chunk.add_constant(Value::String(Arc::from(dunder)));
@@ -374,7 +373,7 @@ pub fn emit_rich_compare_locals(chunk: &mut Chunk, left_slot: u16, right_slot: u
         chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
         chunk.emit_op_u8(Op::CALL_REF, 2, line);
         chunk.emit_op(Op::I32_CONST_0, line);
-        chunk.emit_op(fallback_op, line);
+        fallback_fn(chunk, line);
         compare_done.push(chunk.emit_jump(Op::BR, line));
         chunk.patch_jump(compare_missing);
         chunk.emit_op(Op::DROP, line);
@@ -383,7 +382,7 @@ pub fn emit_rich_compare_locals(chunk: &mut Chunk, left_slot: u16, right_slot: u
 
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    chunk.emit_op(fallback_op, line);
+    fallback_fn(chunk, line);
 
     for jump in compare_done {
         chunk.patch_jump(jump);

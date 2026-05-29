@@ -102,7 +102,7 @@ fn emit_reader_to_adodb_recordset(chunks: &mut [Chunk], current: usize, reader_s
         chunk.emit_op(Op::DROP, line);
         chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
         chunk.emit_op(Op::I32_CONST_0, line);
-        chunk.emit_op(Op::DYN_EQ, line);
+        crate::emitter::ops::emit_dyn_eq(chunk, line);
         let eof_slot = reserve_slot(chunk);
         chunk.emit_op_u16(Op::LOCAL_SET, eof_slot, line);
         chunk.emit_op(Op::DROP, line);
@@ -342,7 +342,7 @@ pub fn emit_adodb_recordset_open(chunks: &mut [Chunk], current: usize, _argc: u8
         let slot = reserve_slot(chunk);
         chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
         chunk.emit_op(Op::I32_CONST_0, line);
-        chunk.emit_op(Op::DYN_EQ, line);
+        crate::emitter::ops::emit_dyn_eq(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
         chunk.emit_op(Op::DROP, line);
         slot
@@ -382,7 +382,7 @@ pub fn emit_adodb_recordset_move_next(chunks: &mut [Chunk], current: usize, line
         set_object_local_prop(chunk, rs_slot, POS_KEY, pos_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, pos_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-        chunk.emit_op(Op::DYN_GE, line);
+        crate::emitter::ops::emit_dyn_ge(chunk, line);
         let eof_slot = reserve_slot(chunk);
         chunk.emit_op_u16(Op::LOCAL_SET, eof_slot, line);
         chunk.emit_op(Op::DROP, line);
@@ -415,7 +415,7 @@ pub fn emit_adodb_recordset_move_first(chunks: &mut [Chunk], current: usize, lin
         chunk.emit_op(Op::DROP, line);
         chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
         chunk.emit_op(Op::I32_CONST_0, line);
-        chunk.emit_op(Op::DYN_EQ, line);
+        crate::emitter::ops::emit_dyn_eq(chunk, line);
         let eof_slot = reserve_slot(chunk);
         chunk.emit_op_u16(Op::LOCAL_SET, eof_slot, line);
         chunk.emit_op(Op::DROP, line);

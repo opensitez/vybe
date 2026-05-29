@@ -181,7 +181,7 @@ fn multi_table_routes_by_tableidx() {
 
     chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    chunk.emit_op(Op::DYN_ADD, 0);
+    chunk.emit_op(Op::I32_ADD, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let result = vm.run(vec![chunk]).unwrap();

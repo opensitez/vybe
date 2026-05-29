@@ -27,7 +27,7 @@ impl Compiler {
         self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, has_more_slot);
-        self.emit(Op::DYN_TO_BOOL);
+        { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
         let exhausted = self.emit_jump(Op::BR_IF_FALSE);
 
         self.emit_u16(Op::LOCAL_GET, cont_slot);
@@ -103,13 +103,13 @@ impl Compiler {
             "valid" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_u16(Op::STRUCT_GET, started_key);
-                self.emit(Op::DYN_TO_BOOL);
+                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
                 let need_start = self.emit_jump(Op::BR_IF_FALSE);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_u16(Op::STRUCT_GET, done_key);
-                self.emit(Op::DYN_TO_BOOL);
-                self.emit(Op::DYN_NOT);
+                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
+                { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
                 let handled = self.emit_jump(Op::BR);
 
                 self.patch_jump(need_start);
@@ -126,7 +126,7 @@ impl Compiler {
                 self.emit(Op::DROP);
 
                 self.emit_u16(Op::LOCAL_GET, has_more_slot);
-                self.emit(Op::DYN_TO_BOOL);
+                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
                 let no_more = self.emit_jump(Op::BR_IF_FALSE);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -161,12 +161,12 @@ impl Compiler {
             "current" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_u16(Op::STRUCT_GET, started_key);
-                self.emit(Op::DYN_TO_BOOL);
+                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
                 let need_start = self.emit_jump(Op::BR_IF_FALSE);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_u16(Op::STRUCT_GET, done_key);
-                self.emit(Op::DYN_TO_BOOL);
+                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
                 let not_done = self.emit_jump(Op::BR_IF_FALSE);
                 self.emit_const(Value::Bool(false));
                 let current_done = self.emit_jump(Op::BR);
@@ -190,7 +190,7 @@ impl Compiler {
                 self.emit(Op::DROP);
 
                 self.emit_u16(Op::LOCAL_GET, has_more_slot);
-                self.emit(Op::DYN_TO_BOOL);
+                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
                 let no_more = self.emit_jump(Op::BR_IF_FALSE);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -226,12 +226,12 @@ impl Compiler {
             "send" | "next" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_u16(Op::STRUCT_GET, started_key);
-                self.emit(Op::DYN_TO_BOOL);
+                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
                 let need_start = self.emit_jump(Op::BR_IF_FALSE);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_u16(Op::STRUCT_GET, done_key);
-                self.emit(Op::DYN_TO_BOOL);
+                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
                 let can_resume = self.emit_jump(Op::BR_IF_FALSE);
                 self.emit_const(Value::Bool(false));
                 let done_already = self.emit_jump(Op::BR);
@@ -293,7 +293,7 @@ impl Compiler {
                 self.emit(Op::DROP);
 
                 self.emit_u16(Op::LOCAL_GET, has_more_slot);
-                self.emit(Op::DYN_TO_BOOL);
+                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
                 let start_no_more = self.emit_jump(Op::BR_IF_FALSE);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -330,12 +330,12 @@ impl Compiler {
             "throw" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_u16(Op::STRUCT_GET, started_key);
-                self.emit(Op::DYN_TO_BOOL);
+                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
                 let need_start = self.emit_jump(Op::BR_IF_FALSE);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_u16(Op::STRUCT_GET, done_key);
-                self.emit(Op::DYN_TO_BOOL);
+                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
                 let can_resume = self.emit_jump(Op::BR_IF_FALSE);
                 self.emit_const(Value::Bool(false));
                 let done_already = self.emit_jump(Op::BR);
@@ -394,7 +394,7 @@ impl Compiler {
                 self.emit(Op::DROP);
 
                 self.emit_u16(Op::LOCAL_GET, has_more_slot);
-                self.emit(Op::DYN_TO_BOOL);
+                { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
                 let start_no_more = self.emit_jump(Op::BR_IF_FALSE);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);

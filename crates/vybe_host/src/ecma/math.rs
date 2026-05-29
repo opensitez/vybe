@@ -129,10 +129,14 @@ pub fn register(vm: &mut VM) {
 
     vm.register_host_fn("ecma:math", "minOf", Box::new(|_ctx, args| {
         let nums = collect_nums(args);
+        // ECMA-262 §21.3.2.25: if any value is NaN, return NaN.
+        if nums.iter().any(|x| x.is_nan()) { return Value::F64(f64::NAN); }
         Value::F64(nums.iter().cloned().fold(f64::INFINITY, f64::min))
     }));
     vm.register_host_fn("ecma:math", "maxOf", Box::new(|_ctx, args| {
         let nums = collect_nums(args);
+        // ECMA-262 §21.3.2.24: if any value is NaN, return NaN.
+        if nums.iter().any(|x| x.is_nan()) { return Value::F64(f64::NAN); }
         Value::F64(nums.iter().cloned().fold(f64::NEG_INFINITY, f64::max))
     }));
     vm.register_host_fn("ecma:math", "sumPrecise", Box::new(|_ctx, args| {

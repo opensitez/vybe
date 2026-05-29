@@ -233,7 +233,7 @@ pub fn emit_catch_dispatch(chunk: &mut Chunk, expected_canon: &str, line: u32) -
     chunk.emit_op_u16(Op::STRUCT_GET, k, line);
     let v = chunk.add_constant(Value::String(Arc::from(expected_canon)));
     chunk.emit_op_u16(Op::CONST, v, line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_jump(Op::BR_IF_FALSE, line)
 }
 

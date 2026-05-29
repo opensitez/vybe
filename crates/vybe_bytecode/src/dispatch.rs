@@ -724,16 +724,37 @@ impl VM {
                 _ if op == Op::I32_SHR_U => { let b = self.pop().to_ecma_int32() as u32; let a = self.pop().to_ecma_int32() as u32; self.push(Value::I32((a >> (b & 0x1f)) as i32))?; }
 
                 // -- Comparison --
-                _ if op == Op::EQ => {
-                    let b = self.pop();
-                    let a = self.pop();
+                // i32 comparisons (WASM MVP 0x46–0x4F)
+                _ if op == Op::I32_EQ => {
+                    let b = self.pop(); let a = self.pop();
                     self.push(Value::Bool(a.eq(&b)))?;
                 }
-                _ if op == Op::NE => {
-                    let b = self.pop();
-                    let a = self.pop();
+                _ if op == Op::I32_NE => {
+                    let b = self.pop(); let a = self.pop();
                     self.push(Value::Bool(!a.eq(&b)))?;
                 }
+                _ if op == Op::I32_LT_S => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::Bool(a < b))?; }
+                _ if op == Op::I32_LT_U => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(Value::Bool(a < b))?; }
+                _ if op == Op::I32_GT_S => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::Bool(a > b))?; }
+                _ if op == Op::I32_GT_U => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(Value::Bool(a > b))?; }
+                _ if op == Op::I32_LE_S => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::Bool(a <= b))?; }
+                _ if op == Op::I32_LE_U => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(Value::Bool(a <= b))?; }
+                _ if op == Op::I32_GE_S => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::Bool(a >= b))?; }
+                _ if op == Op::I32_GE_U => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(Value::Bool(a >= b))?; }
+                // i64 comparisons (WASM MVP 0x51–0x5A)
+                _ if op == Op::I64_EQ => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::Bool(a == b))?; }
+                _ if op == Op::I64_NE => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::Bool(a != b))?; }
+                _ if op == Op::I64_LT_S => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::Bool(a < b))?; }
+                _ if op == Op::I64_LT_U => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(Value::Bool(a < b))?; }
+                _ if op == Op::I64_GT_S => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::Bool(a > b))?; }
+                _ if op == Op::I64_GT_U => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(Value::Bool(a > b))?; }
+                _ if op == Op::I64_LE_S => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::Bool(a <= b))?; }
+                _ if op == Op::I64_LE_U => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(Value::Bool(a <= b))?; }
+                _ if op == Op::I64_GE_S => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::Bool(a >= b))?; }
+                _ if op == Op::I64_GE_U => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(Value::Bool(a >= b))?; }
+                // f64 comparisons (WASM MVP 0x61–0x66)
+                _ if op == Op::F64_EQ => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a == b))?; }
+                _ if op == Op::F64_NE => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a != b))?; }
                 _ if op == Op::F64_LT => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a < b))?; }
                 _ if op == Op::F64_GT => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a > b))?; }
                 _ if op == Op::F64_LE => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a <= b))?; }
@@ -1467,220 +1488,39 @@ impl VM {
                     self.push(Value::I32(v.as_i32()))?;
                 }
 
-                // -- Dynamic ops (inline type dispatch, no host call) --
-                _ if op == Op::DYN_ADD => {
-                    let b = self.pop();
-                    let a = self.pop();
-                    let result = match (&a, &b) {
-                        (Value::F64(x), Value::F64(y)) => Value::F64(x + y),
-                        (Value::I32(x), Value::I32(y)) => Value::I32(x.wrapping_add(*y)),
-                        // Delegate combine: callable + callable -> multicast array.
-                        // C# `Action a = f + g` and `a += h` lower here.
-                        (Value::Null, _) | (Value::Undefined, _) => b.clone(),
-                        (_, Value::Null) | (_, Value::Undefined) => a.clone(),
-                        (Value::Object(_), Value::Object(_)) => {
-                            let is_callable_like = |v: &Value| -> bool {
-                                match v {
-                                    Value::Object(obj) => {
-                                        let o = obj.lock().unwrap();
-                                        match &o.kind {
-                                            ObjectKind::Function(_) | ObjectKind::HostFunction(_) => true,
-                                            ObjectKind::Array(_) => true,
-                                            _ => o.properties.get("__call__").is_some(),
-                                        }
-                                    }
-                                    _ => false,
-                                }
-                            };
-
-                            if is_callable_like(&a) && is_callable_like(&b) {
-                                let mut handlers: Vec<Value> = Vec::new();
-                                let mut append_value = |v: &Value| {
-                                    if let Value::Object(obj) = v {
-                                        let o = obj.lock().unwrap();
-                                        if let ObjectKind::Array(elems) = &o.kind {
-                                            handlers.extend(elems.iter().cloned());
-                                            return;
-                                        }
-                                    }
-                                    handlers.push(v.clone());
-                                };
-                                append_value(&a);
-                                append_value(&b);
-                                Value::Object(Arc::new(Mutex::new(Object::new_array(handlers))))
-                            } else {
-                                Value::F64(a.as_f64() + b.as_f64())
-                            }
-                        }
-                        (Value::String(_), _) | (_, Value::String(_)) => {
-                            Value::String(Arc::from(format!("{}{}", a, b).as_str()))
-                        }
-                        // Object with __add__ dunder → cross-language operator overloading
-                        (Value::Object(obj), _) => {
-                            self.try_dunder_binary(obj, &b, "__add__")
-                                .unwrap_or_else(|| Value::F64(a.as_f64() + b.as_f64()))
-                        }
-                        _ => Value::F64(a.as_f64() + b.as_f64()),
-                    };
-                    self.push(result)?;
+                // nontrapping-float-to-int-conversions proposal (0xFC 0x00–0x07).
+                // Rust `as` casts saturate since 1.45: NaN → 0, overflow → min/max.
+                _ if op == Op::I32_TRUNC_SAT_F32_S => {
+                    let v = self.pop().as_f64();
+                    self.push(Value::I32(v as i32))?;
                 }
-                _ if op == Op::DYN_EQ => {
-                    let b = self.pop();
-                    let a = self.pop();
-                    // JS abstract equality (==) coercion rules
-                    fn callable_object_eq(x: &Arc<Mutex<Object>>, y: &Arc<Mutex<Object>>) -> bool {
-                        if Arc::ptr_eq(x, y) {
-                            return true;
-                        }
-                        let ox = x.lock().unwrap();
-                        let oy = y.lock().unwrap();
-                        match (&ox.kind, &oy.kind) {
-                            (ObjectKind::Function(fx), ObjectKind::Function(fy)) => {
-                                fx.chunk_index == fy.chunk_index
-                            }
-                            (ObjectKind::HostFunction(ix), ObjectKind::HostFunction(iy)) => ix == iy,
-                            _ => false,
-                        }
-                    }
-                    fn loose_eq(a: &Value, b: &Value) -> bool {
-                        match (a, b) {
-                            // null/undefined: equal to each other, nothing else
-                            (Value::Null, Value::Null) | (Value::Undefined, Value::Undefined) => true,
-                            (Value::Null, Value::Undefined) | (Value::Undefined, Value::Null) => true,
-                            (Value::Null, _) | (_, Value::Null) => false,
-                            (Value::Undefined, _) | (_, Value::Undefined) => false,
-                            // Same primitive types
-                            (Value::Bool(x), Value::Bool(y)) => x == y,
-                            (Value::F64(x), Value::F64(y)) => if x.is_nan() || y.is_nan() { false } else { x == y },
-                            (Value::I32(x), Value::I32(y)) => x == y,
-                            (Value::F64(x), Value::I32(y)) => *x == *y as f64,
-                            (Value::I32(x), Value::F64(y)) => *x as f64 == *y,
-                            (Value::String(x), Value::String(y)) => x == y,
-                            (Value::Symbol(x), Value::Symbol(y)) => Arc::ptr_eq(x, y),
-                            // Bool with anything else → coerce bool to number, retry
-                            (Value::Bool(x), other) | (other, Value::Bool(x)) => {
-                                let n = if *x { 1.0 } else { 0.0 };
-                                loose_eq(&Value::F64(n), other)
-                            }
-                            // String == Number: parse string, NaN if invalid
-                            (Value::String(s), Value::F64(n)) | (Value::F64(n), Value::String(s)) => {
-                                let trimmed = s.trim();
-                                if trimmed.is_empty() { *n == 0.0 }
-                                else if let Ok(sv) = trimmed.parse::<f64>() { sv == *n } else { false }
-                            }
-                            (Value::String(s), Value::I32(n)) | (Value::I32(n), Value::String(s)) => {
-                                let trimmed = s.trim();
-                                if trimmed.is_empty() { *n == 0 }
-                                else if let Ok(sv) = trimmed.parse::<f64>() { sv == *n as f64 } else { false }
-                            }
-                            // Object: same-reference, OR compare via toPrimitive (Array → string)
-                            (Value::Object(x), Value::Object(y)) => callable_object_eq(x, y),
-                            // Object with primitive: coerce object to primitive (Array → joined string)
-                            (Value::Object(o), other) | (other, Value::Object(o)) => {
-                                let obj = o.lock().unwrap();
-                                if let ObjectKind::Array(elems) = &obj.kind {
-                                    let s = elems.iter().map(|v| format!("{}", v))
-                                        .collect::<Vec<_>>().join(",");
-                                    drop(obj);
-                                    loose_eq(&Value::String(Arc::from(s.as_str())), other)
-                                } else {
-                                    false
-                                }
-                            }
-                            _ => false,
-                        }
-                    }
-                    self.push(Value::Bool(loose_eq(&a, &b)))?;
+                _ if op == Op::I32_TRUNC_SAT_F32_U => {
+                    let v = self.pop().as_f64();
+                    self.push(Value::I32((v as u32) as i32))?;
                 }
-                _ if op == Op::DYN_NE => {
-                    let b = self.pop();
-                    let a = self.pop();
-                    fn callable_object_eq(x: &Arc<Mutex<Object>>, y: &Arc<Mutex<Object>>) -> bool {
-                        if Arc::ptr_eq(x, y) {
-                            return true;
-                        }
-                        let ox = x.lock().unwrap();
-                        let oy = y.lock().unwrap();
-                        match (&ox.kind, &oy.kind) {
-                            (ObjectKind::Function(fx), ObjectKind::Function(fy)) => {
-                                fx.chunk_index == fy.chunk_index
-                            }
-                            (ObjectKind::HostFunction(ix), ObjectKind::HostFunction(iy)) => ix == iy,
-                            _ => false,
-                        }
-                    }
-                    let result = match (&a, &b) {
-                        (Value::Null, Value::Null) | (Value::Undefined, Value::Undefined) => false,
-                        (Value::Null, Value::Undefined) | (Value::Undefined, Value::Null) => false,
-                        (Value::Bool(x), Value::Bool(y)) => x != y,
-                        (Value::F64(x), Value::F64(y)) => if x.is_nan() || y.is_nan() { true } else { x != y },
-                        (Value::I32(x), Value::I32(y)) => x != y,
-                        (Value::F64(x), Value::I32(y)) => *x != *y as f64,
-                        (Value::I32(x), Value::F64(y)) => *x as f64 != *y,
-                        (Value::String(s), Value::F64(n)) | (Value::F64(n), Value::String(s)) => {
-                            if let Ok(sv) = s.parse::<f64>() { sv != *n } else { true }
-                        }
-                        (Value::String(s), Value::I32(n)) | (Value::I32(n), Value::String(s)) => {
-                            if let Ok(sv) = s.parse::<f64>() { sv != *n as f64 } else { true }
-                        }
-                        (Value::String(x), Value::String(y)) => x != y,
-                        (Value::Symbol(x), Value::Symbol(y)) => !Arc::ptr_eq(x, y),
-                        (Value::Object(x), Value::Object(y)) => !callable_object_eq(x, y),
-                        _ => true,
-                    };
-                    self.push(Value::Bool(result))?;
+                _ if op == Op::I32_TRUNC_SAT_F64_S => {
+                    let v = self.pop().as_f64();
+                    self.push(Value::I32(v as i32))?;
                 }
-                _ if op == Op::DYN_LT => {
-                    let b = self.pop(); let a = self.pop();
-                    let r = match (&a, &b) {
-                        (Value::String(x), Value::String(y)) => *x < *y,
-                        (Value::Object(obj), _) => self.try_dunder_binary(obj, &b, "__lt__")
-                            .map(|v| v.as_bool()).unwrap_or(a.as_f64() < b.as_f64()),
-                        _ => a.as_f64() < b.as_f64(),
-                    };
-                    self.push(Value::Bool(r))?;
+                _ if op == Op::I32_TRUNC_SAT_F64_U => {
+                    let v = self.pop().as_f64();
+                    self.push(Value::I32((v as u32) as i32))?;
                 }
-                _ if op == Op::DYN_GT => {
-                    let b = self.pop(); let a = self.pop();
-                    let r = match (&a, &b) {
-                        (Value::String(x), Value::String(y)) => *x > *y,
-                        (Value::Object(obj), _) => self.try_dunder_binary(obj, &b, "__gt__")
-                            .map(|v| v.as_bool()).unwrap_or(a.as_f64() > b.as_f64()),
-                        _ => a.as_f64() > b.as_f64(),
-                    };
-                    self.push(Value::Bool(r))?;
+                _ if op == Op::I64_TRUNC_SAT_F32_S => {
+                    let v = self.pop().as_f64();
+                    self.push(Value::I64(v as i64))?;
                 }
-                _ if op == Op::DYN_LE => {
-                    let b = self.pop(); let a = self.pop();
-                    let r = match (&a, &b) {
-                        (Value::String(x), Value::String(y)) => *x <= *y,
-                        (Value::Object(obj), _) => self.try_dunder_binary(obj, &b, "__le__")
-                            .map(|v| v.as_bool()).unwrap_or(a.as_f64() <= b.as_f64()),
-                        _ => a.as_f64() <= b.as_f64(),
-                    };
-                    self.push(Value::Bool(r))?;
+                _ if op == Op::I64_TRUNC_SAT_F32_U => {
+                    let v = self.pop().as_f64();
+                    self.push(Value::I64((v as u64) as i64))?;
                 }
-                _ if op == Op::DYN_GE => {
-                    let b = self.pop(); let a = self.pop();
-                    let r = match (&a, &b) {
-                        (Value::String(x), Value::String(y)) => *x >= *y,
-                        (Value::Object(obj), _) => self.try_dunder_binary(obj, &b, "__ge__")
-                            .map(|v| v.as_bool()).unwrap_or(a.as_f64() >= b.as_f64()),
-                        _ => a.as_f64() >= b.as_f64(),
-                    };
-                    self.push(Value::Bool(r))?;
+                _ if op == Op::I64_TRUNC_SAT_F64_S => {
+                    let v = self.pop().as_f64();
+                    self.push(Value::I64(v as i64))?;
                 }
-                _ if op == Op::DYN_NEG => {
-                    let a = self.pop();
-                    self.push(Value::F64(-a.as_f64()))?;
-                }
-                _ if op == Op::DYN_NOT => {
-                    let a = self.pop();
-                    self.push(Value::Bool(!dyn_truthy(&a)))?;
-                }
-                _ if op == Op::DYN_TO_BOOL => {
-                    let a = self.pop();
-                    self.push(Value::Bool(dyn_truthy(&a)))?;
+                _ if op == Op::I64_TRUNC_SAT_F64_U => {
+                    let v = self.pop().as_f64();
+                    self.push(Value::I64((v as u64) as i64))?;
                 }
 
                 // -- Async (await) --

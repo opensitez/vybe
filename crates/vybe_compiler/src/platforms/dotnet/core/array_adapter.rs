@@ -49,13 +49,13 @@ pub fn emit_array_clear(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
-    chunk.emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    crate::emitter::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(1, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, target_slot, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -94,7 +94,7 @@ pub fn emit_array_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     let one = chunk.add_constant(Value::I32(1));
     chunk.emit_op_u16(Op::CONST, one, line);
-    chunk.emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
     chunk.emit_op(Op::DROP, line);
 

@@ -110,7 +110,7 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     let loop_start = chunks[current].current_offset();
     chunks[current].emit_op_u16(Op::LOCAL_GET, loop_counter, line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
-    chunks[current].emit_op(Op::DYN_GE, line);
+    crate::emitter::ops::emit_dyn_ge(&mut chunks[current], line);
     let loop_end = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur_slot, line);
@@ -120,7 +120,7 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, handler_slot, line);
-    chunks[current].emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
     let matched = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, loop_counter, line);
@@ -136,7 +136,7 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
-    chunks[current].emit_op(Op::DYN_GE, line);
+    crate::emitter::ops::emit_dyn_ge(&mut chunks[current], line);
     let no_remove = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur_slot, line);
@@ -152,7 +152,7 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
-    chunks[current].emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
     let len_not_zero = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
     chunks[current].emit_op(Op::NULL, line);
     let done2 = chunks[current].emit_jump(Op::BR, line);
@@ -160,7 +160,7 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
     chunks[current].emit_op(Op::I32_CONST_1, line);
-    chunks[current].emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
     let len_not_one = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur_slot, line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
@@ -173,7 +173,7 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].patch_jump(not_array);
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, handler_slot, line);
-    chunks[current].emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
     let neq = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
     chunks[current].emit_op(Op::NULL, line);
     let done5 = chunks[current].emit_jump(Op::BR, line);

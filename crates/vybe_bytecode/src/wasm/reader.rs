@@ -185,8 +185,8 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
             // if blocktype — conditional block
             0x04 => {
                 skip_leb128(wasm, &mut pos);
-                chunk.emit_op(Op::DYN_TO_BOOL, 0);
-                let patch = chunk.emit_jump(Op::BR_IF_FALSE, 0);
+                chunk.emit_op(Op::I32_EQZ, 0);   // i32 condition: 0→Bool(true), non-zero→Bool(false)
+                let patch = chunk.emit_jump(Op::BR_IF_TRUE, 0); // branch if condition was 0 (false)
                 label_stack.push(WasmLabel {
                     start_offset: chunk.current_offset(),
                     is_loop: false,
@@ -247,7 +247,8 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
                 let (depth, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
                 let depth = depth as usize;
-                chunk.emit_op(Op::DYN_TO_BOOL, 0);
+                chunk.emit_op(Op::I32_EQZ, 0);  // convert i32 condition to Bool
+                chunk.emit_op(Op::I32_EQZ, 0);  // flip back: 0→false, non-zero→true (as Bool)
                 if let Some(label) = label_stack.iter().rev().nth(depth) {
                     if label.is_loop {
                         // Loop: conditional jump back
@@ -380,29 +381,29 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
 
             // i64 comparison
             0x50 => chunk.emit_op(Op::I64_EQZ, 0),
-            0x51 => chunk.emit_op(Op::DYN_EQ, 0),    // i64.eq
-            0x52 => chunk.emit_op(Op::DYN_NE, 0),    // i64.ne
-            0x53 => chunk.emit_op(Op::DYN_LT, 0),    // i64.lt_s
-            0x54 => chunk.emit_op(Op::DYN_LT, 0),    // i64.lt_u
-            0x55 => chunk.emit_op(Op::DYN_GT, 0),    // i64.gt_s
-            0x56 => chunk.emit_op(Op::DYN_GT, 0),    // i64.gt_u
-            0x57 => chunk.emit_op(Op::DYN_LE, 0),    // i64.le_s
-            0x58 => chunk.emit_op(Op::DYN_LE, 0),    // i64.le_u
-            0x59 => chunk.emit_op(Op::DYN_GE, 0),    // i64.ge_s
-            0x5A => chunk.emit_op(Op::DYN_GE, 0),    // i64.ge_u
+            0x51 => chunk.emit_op(Op::I64_EQ, 0),
+            0x52 => chunk.emit_op(Op::I64_NE, 0),
+            0x53 => chunk.emit_op(Op::I64_LT_S, 0),
+            0x54 => chunk.emit_op(Op::I64_LT_U, 0),
+            0x55 => chunk.emit_op(Op::I64_GT_S, 0),
+            0x56 => chunk.emit_op(Op::I64_GT_U, 0),
+            0x57 => chunk.emit_op(Op::I64_LE_S, 0),
+            0x58 => chunk.emit_op(Op::I64_LE_U, 0),
+            0x59 => chunk.emit_op(Op::I64_GE_S, 0),
+            0x5A => chunk.emit_op(Op::I64_GE_U, 0),
 
             // i32 comparison
             0x45 => chunk.emit_op(Op::I32_EQZ, 0),
-            0x46 => chunk.emit_op(Op::DYN_EQ, 0),     // i32.eq
-            0x47 => chunk.emit_op(Op::DYN_NE, 0),     // i32.ne
-            0x48 => chunk.emit_op(Op::DYN_LT, 0),     // i32.lt_s
-            0x49 => chunk.emit_op(Op::DYN_LT, 0),     // i32.lt_u
-            0x4A => chunk.emit_op(Op::DYN_GT, 0),     // i32.gt_s
-            0x4B => chunk.emit_op(Op::DYN_GT, 0),     // i32.gt_u
-            0x4C => chunk.emit_op(Op::DYN_LE, 0),     // i32.le_s
-            0x4D => chunk.emit_op(Op::DYN_LE, 0),     // i32.le_u
-            0x4E => chunk.emit_op(Op::DYN_GE, 0),     // i32.ge_s
-            0x4F => chunk.emit_op(Op::DYN_GE, 0),     // i32.ge_u
+            0x46 => chunk.emit_op(Op::I32_EQ, 0),
+            0x47 => chunk.emit_op(Op::I32_NE, 0),
+            0x48 => chunk.emit_op(Op::I32_LT_S, 0),
+            0x49 => chunk.emit_op(Op::I32_LT_U, 0),
+            0x4A => chunk.emit_op(Op::I32_GT_S, 0),
+            0x4B => chunk.emit_op(Op::I32_GT_U, 0),
+            0x4C => chunk.emit_op(Op::I32_LE_S, 0),
+            0x4D => chunk.emit_op(Op::I32_LE_U, 0),
+            0x4E => chunk.emit_op(Op::I32_GE_S, 0),
+            0x4F => chunk.emit_op(Op::I32_GE_U, 0),
 
             // f64 arithmetic — ALL opcodes
             0xA0 => chunk.emit_op(Op::F64_ADD, 0),
@@ -413,21 +414,21 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
             0xA5 => chunk.emit_op(Op::F64_MAX, 0),
             0xA6 => chunk.emit_op(Op::F64_COPYSIGN, 0),
 
-            // f32 comparison
-            0x5B => chunk.emit_op(Op::DYN_EQ, 0),    // f32.eq
-            0x5C => chunk.emit_op(Op::DYN_NE, 0),    // f32.ne
-            0x5D => chunk.emit_op(Op::DYN_LT, 0),    // f32.lt
-            0x5E => chunk.emit_op(Op::DYN_GT, 0),    // f32.gt
-            0x5F => chunk.emit_op(Op::DYN_LE, 0),    // f32.le
-            0x60 => chunk.emit_op(Op::DYN_GE, 0),    // f32.ge
+            // f32 comparison (mapped to f64 ops — Vybe uses f64 internally)
+            0x5B => chunk.emit_op(Op::F64_EQ, 0),
+            0x5C => chunk.emit_op(Op::F64_NE, 0),
+            0x5D => chunk.emit_op(Op::F64_LT, 0),
+            0x5E => chunk.emit_op(Op::F64_GT, 0),
+            0x5F => chunk.emit_op(Op::F64_LE, 0),
+            0x60 => chunk.emit_op(Op::F64_GE, 0),
 
             // f64 comparison
-            0x61 => chunk.emit_op(Op::DYN_EQ, 0),    // f64.eq
-            0x62 => chunk.emit_op(Op::DYN_NE, 0),    // f64.ne
-            0x63 => chunk.emit_op(Op::DYN_LT, 0),    // f64.lt
-            0x64 => chunk.emit_op(Op::DYN_GT, 0),    // f64.gt
-            0x65 => chunk.emit_op(Op::DYN_LE, 0),    // f64.le
-            0x66 => chunk.emit_op(Op::DYN_GE, 0),    // f64.ge
+            0x61 => chunk.emit_op(Op::F64_EQ, 0),
+            0x62 => chunk.emit_op(Op::F64_NE, 0),
+            0x63 => chunk.emit_op(Op::F64_LT, 0),
+            0x64 => chunk.emit_op(Op::F64_GT, 0),
+            0x65 => chunk.emit_op(Op::F64_LE, 0),
+            0x66 => chunk.emit_op(Op::F64_GE, 0),
 
             // Memory — ALL load/store opcodes
             0x28 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); chunk.emit_op(Op::I32_LOAD, 0); }
@@ -531,6 +532,24 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
 
             // call_indirect
             0x11 => { skip_leb128(wasm, &mut pos); skip_leb128(wasm, &mut pos); }
+
+            // 0xFC prefix — nontrapping-float-to-int (0x00–0x07) + bulk-memory/table ops
+            0xFC => {
+                let (sub, read) = read_leb128_u32(&wasm[pos..]);
+                pos += read;
+                match sub {
+                    0x00 => chunk.emit_op(Op::I32_TRUNC_SAT_F32_S, 0),
+                    0x01 => chunk.emit_op(Op::I32_TRUNC_SAT_F32_U, 0),
+                    0x02 => chunk.emit_op(Op::I32_TRUNC_SAT_F64_S, 0),
+                    0x03 => chunk.emit_op(Op::I32_TRUNC_SAT_F64_U, 0),
+                    0x04 => chunk.emit_op(Op::I64_TRUNC_SAT_F32_S, 0),
+                    0x05 => chunk.emit_op(Op::I64_TRUNC_SAT_F32_U, 0),
+                    0x06 => chunk.emit_op(Op::I64_TRUNC_SAT_F64_S, 0),
+                    0x07 => chunk.emit_op(Op::I64_TRUNC_SAT_F64_U, 0),
+                    // bulk-memory / table ops have immediates — skip them
+                    _ => { skip_leb128(wasm, &mut pos); }
+                }
+            }
 
             // Unknown — skip
             _ => {}

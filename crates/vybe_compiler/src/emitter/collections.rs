@@ -102,7 +102,7 @@ fn emit_php_array_iter(chunks: &mut [Chunk], current: usize, line: u32, want_ent
     lset(chunk, len_slot, line);
     lget(chunk, len_slot, line);
     chunk.emit_op(Op::I32_CONST_0, line);
-    chunk.emit_op(Op::DYN_GT, line);
+    crate::emitter::ops::emit_dyn_gt(chunk, line);
     let have_keys = chunk.emit_jump(Op::BR_IF_TRUE, line);
 
     chunk.patch_jump(no_keys);
@@ -135,7 +135,7 @@ fn emit_php_array_iter(chunks: &mut [Chunk], current: usize, line: u32, want_ent
     lset(chunk, len_slot, line);
     lget(chunk, len_slot, line);
     chunk.emit_op(Op::I32_CONST_0, line);
-    chunk.emit_op(Op::DYN_GT, line);
+    crate::emitter::ops::emit_dyn_gt(chunk, line);
     let have_csv_keys = chunk.emit_jump(Op::BR_IF_TRUE, line);
 
     chunk.patch_jump(no_csv);
@@ -168,7 +168,7 @@ fn emit_php_array_iter(chunks: &mut [Chunk], current: usize, line: u32, want_ent
     let loop_top = chunk.current_offset();
     lget(chunk, i_slot, line);
     lget(chunk, len_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let loop_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     lget(chunk, out_slot, line);
@@ -210,7 +210,7 @@ fn emit_php_array_iter(chunks: &mut [Chunk], current: usize, line: u32, want_ent
     let csv_loop_top = chunk.current_offset();
     lget(chunk, i_slot, line);
     lget(chunk, len_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let csv_loop_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
     lget(chunk, out_slot, line);
@@ -311,7 +311,7 @@ pub fn emit_len(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, map_len_slot, line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
-    chunks[current].emit_op(Op::DYN_NE, line);
+    crate::emitter::ops::emit_dyn_ne(&mut chunks[current], line);
     let use_map_len = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
 
     emit_import_call(chunks, current, "ecma:object", "keys", 1, line);
@@ -587,7 +587,7 @@ pub fn emit_get_range(chunks: &mut [Chunk], current: usize, line: u32) {
     // stack: [arr, index]
     chunks[current].emit_op(Op::DUP, line); // [arr, index, index]
     chunks[current].emit_op_u16(Op::LOCAL_GET, count_local, line); // [arr, index, index, count]
-    chunks[current].emit_op(Op::DYN_ADD, line); // [arr, index, end]
+    crate::emitter::ops::emit_dyn_add(&mut chunks[current], line); // [arr, index, end]
     emit_import_call(chunks, current, "ecma:array", "slice", 3, line);
 }
 
@@ -622,7 +622,7 @@ pub fn emit_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], right_slot, line);
     emit_len(chunks, current, line);
     lget(&mut chunks[current], len_slot, line);
-    chunks[current].emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
     let lengths_match = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
     chunks[current].emit_op(Op::FALSE, line);
     lset(&mut chunks[current], result_slot, line);
@@ -636,8 +636,8 @@ pub fn emit_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32) {
     let (outer_loop, _) = chunks[current].emit_loop_s(line);
     lget(&mut chunks[current], idx_slot, line);
     lget(&mut chunks[current], len_slot, line);
-    chunks[current].emit_op(Op::DYN_LT, line);
-    chunks[current].emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
     chunks[current].emit_br_if(1, line);
 
     lget(&mut chunks[current], right_slot, line);
@@ -649,7 +649,7 @@ pub fn emit_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], idx_slot, line);
     emit_get(chunks, current, line);
     lget(&mut chunks[current], right_elem_slot, line);
-    chunks[current].emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
     let equal_values = chunks[current].emit_block(line);
     chunks[current].emit_br_if(0, line);
 
@@ -663,7 +663,7 @@ pub fn emit_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], idx_slot, line);
     let one = chunks[current].add_constant(Value::I32(1));
     chunks[current].emit_op_u16(Op::CONST, one, line);
-    chunks[current].emit_op(Op::DYN_ADD, line);
+    crate::emitter::ops::emit_dyn_add(&mut chunks[current], line);
     lset(&mut chunks[current], idx_slot, line);
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
@@ -848,7 +848,7 @@ pub fn emit_len_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
     let str_block = code.emit_block(line);
     code.emit_op_u16(Op::LOCAL_GET, scratch_val, line);
     code.emit_op(Op::REF_IS_STRING, line);
-    code.emit_op(Op::DYN_NOT, line);
+    crate::emitter::ops::emit_dyn_not(code, line);
     // `br_if 0` pops the bool. When `!is_string` is true we jump out of
     // `str_block`, falling through to the array-length branch.
     code.emit_br_if(0, line);
@@ -983,7 +983,7 @@ pub fn emit_range_targeted(chunks: &mut [Chunk], current: usize, arg_count: u8, 
             let loop_start = chunk.current_offset();
             chunk.emit_op_u16(Op::LOCAL_GET, i_local, line);
             chunk.emit_op_u16(Op::LOCAL_GET, stop_local, line);
-            chunk.emit_op(Op::DYN_LT, line);
+            crate::emitter::ops::emit_dyn_lt(chunk, line);
             let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
 
             chunk.emit_op_u16(Op::LOCAL_GET, result_local, line);

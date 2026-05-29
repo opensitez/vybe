@@ -93,7 +93,7 @@ pub fn emit_lock_acquire(chunk: &mut Chunk, addr_slot: u16, line: u32) {
     chunk.emit_op(Op::I32_ATOMIC_RMW_XCHG, line);
     // If old value was 0, we acquired the lock
     chunk.emit_op(Op::I32_CONST_0, line);
-    chunk.emit_op(Op::DYN_EQ, line);
+    crate::emitter::ops::emit_dyn_eq(chunk, line);
     let acquired = chunk.emit_jump(Op::BR_IF_TRUE, line);
     // Not acquired — wait and retry
     chunk.emit_op_u16(Op::LOCAL_GET, addr_slot, line);

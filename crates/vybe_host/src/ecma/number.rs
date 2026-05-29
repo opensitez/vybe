@@ -105,10 +105,9 @@ fn register_constructor(vm: &mut VM) {
 fn coerce_to_number_with_context(ctx: &mut HostContext, value: &Value) -> Result<f64, Value> {
     let primitive = crate::ecma::value::to_primitive(ctx, value, "number");
     match primitive {
-        Value::BigInt(_) => Err(crate::ecma::error::new_error(
-            "TypeError",
-            "Cannot convert a BigInt value to a number",
-        )),
+        // ECMA-262 §21.1.1.1: Number(bigint) converts to the nearest f64.
+        // Throwing TypeError here is wrong — that only applies to mixed arithmetic.
+        Value::BigInt(n) => Ok(n as f64),
         Value::Symbol(_) => Err(crate::ecma::error::new_error(
             "TypeError",
             "Cannot convert a Symbol value to a number",

@@ -54,7 +54,7 @@ fn emit_local_abs_lt(chunk: &mut Chunk, slot: u16, limit: f64, line: u32) {
     lget(chunk, slot, line);
     chunk.emit_op(Op::F64_ABS, line);
     push_f64(chunk, limit, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
 }
 
 fn init_slots_3(chunk: &mut Chunk, line: u32) -> [u16; 3] {
@@ -350,7 +350,7 @@ fn emit_ipmt_formula(chunks: &mut [Chunk], current: usize, rate: u16, per: u16, 
         let chunk = &mut chunks[current];
         lget(chunk, typ, line);
         push_f64(chunk, 0.0, line);
-        chunk.emit_op(Op::DYN_EQ, line);
+        crate::emitter::ops::emit_dyn_eq(chunk, line);
     }
     let due_branch = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
 
@@ -387,7 +387,7 @@ fn emit_ipmt_formula(chunks: &mut [Chunk], current: usize, rate: u16, per: u16, 
         let chunk = &mut chunks[current];
         lget(chunk, per, line);
         push_f64(chunk, 1.0, line);
-        chunk.emit_op(Op::DYN_EQ, line);
+        crate::emitter::ops::emit_dyn_eq(chunk, line);
     }
     let not_first_due = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
     push_f64(&mut chunks[current], 0.0, line);
@@ -648,7 +648,7 @@ pub fn emit_vb_rate(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         let chunk = &mut chunks[current];
         lget(chunk, iter_slot, line);
         push_f64(chunk, MAX_RATE_ITERATIONS, line);
-        chunk.emit_op(Op::DYN_LT, line);
+        crate::emitter::ops::emit_dyn_lt(chunk, line);
     }
     let exit = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
 
@@ -659,7 +659,7 @@ pub fn emit_vb_rate(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         lget(chunk, f_slot, line);
         chunk.emit_op(Op::F64_ABS, line);
         push_f64(chunk, SOLVER_EPSILON, line);
-        chunk.emit_op(Op::DYN_LT, line);
+        crate::emitter::ops::emit_dyn_lt(chunk, line);
     }
     let converged = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
 
@@ -683,7 +683,7 @@ pub fn emit_vb_rate(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         lget(chunk, deriv_slot, line);
         chunk.emit_op(Op::F64_ABS, line);
         push_f64(chunk, RATE_EPSILON, line);
-        chunk.emit_op(Op::DYN_LT, line);
+        crate::emitter::ops::emit_dyn_lt(chunk, line);
     }
     let zero_derivative = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
 

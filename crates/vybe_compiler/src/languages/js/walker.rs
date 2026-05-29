@@ -1817,7 +1817,15 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let operand = walk_expression(inner.next().ok_or("Missing unary operand")?)?;
             if op_str.starts_with("typeof") { return Ok(ExprKind::TypeOf(Box::new(operand))); }
             if op_str.starts_with("void") { return Ok(ExprKind::Void(Box::new(operand))); }
-            if op_str.starts_with("delete") { return Ok(ExprKind::Delete(Box::new(operand))); }
+            if op_str.starts_with("delete") {
+                // `delete varName` — deleting a bare variable always returns false
+                // (var/let/const bindings are non-configurable). Only member/index
+                // delete goes through the runtime property-deletion path.
+                if matches!(operand.kind, ExprKind::Ident(_)) {
+                    return Ok(ExprKind::Lit(crate::ast::Literal::Bool(false)));
+                }
+                return Ok(ExprKind::Delete(Box::new(operand)));
+            }
             if op_str.starts_with("await") { return Ok(ExprKind::Await(Box::new(operand))); }
             let op = match op_str {
                 "-" => UnaryOp::Neg, "+" => UnaryOp::Pos,

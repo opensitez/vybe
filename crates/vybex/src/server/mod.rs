@@ -26,9 +26,13 @@ use std::net::SocketAddr;
 /// Entry point for directory mode. Called from `main.rs` when `--serve`
 /// is passed. Never returns — the tokio runtime parks until SIGINT.
 pub fn serve_directory(config: ServeConfig) -> ! {
+    // 32 MB blocking-thread stack — PHP compilation of large combined files
+    // (many require_once classes) uses significant Rust stack depth and overflows
+    // the default 2 MB tokio blocking-worker stack on complex requests.
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("vybex-serve")
+        .thread_stack_size(32 * 1024 * 1024)
         .build()
         .expect("failed to build tokio runtime");
 

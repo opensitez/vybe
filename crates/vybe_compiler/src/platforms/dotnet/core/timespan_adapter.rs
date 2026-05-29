@@ -236,7 +236,7 @@ pub fn emit_timespan_zero(chunks: &mut [Chunk], current: usize, line: u32) {
 fn emit_compare_numeric_slots(chunk: &mut Chunk, left_slot: u16, right_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    chunk.emit_op(Op::DYN_LT, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
     let not_lt = chunk.emit_jump(Op::BR_IF_FALSE, line);
     push_const(chunk, Value::I32(-1), line);
     let done = chunk.emit_jump(Op::BR, line);
@@ -244,7 +244,7 @@ fn emit_compare_numeric_slots(chunk: &mut Chunk, left_slot: u16, right_slot: u16
 
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    chunk.emit_op(Op::DYN_GT, line);
+    crate::emitter::ops::emit_dyn_gt(chunk, line);
     let not_gt = chunk.emit_jump(Op::BR_IF_FALSE, line);
     push_const(chunk, Value::I32(1), line);
     let done_gt = chunk.emit_jump(Op::BR, line);

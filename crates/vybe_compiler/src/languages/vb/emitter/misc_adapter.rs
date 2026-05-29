@@ -249,7 +249,7 @@ pub fn emit_vb_eof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
         lset(chunk, len_slot, line);
         lget(chunk, next_slot, line);
         lget(chunk, len_slot, line);
-        chunk.emit_op(Op::DYN_GE, line);
+        crate::emitter::ops::emit_dyn_ge(chunk, line);
     }
     let done = chunks[current].emit_jump(Op::BR, line);
 
