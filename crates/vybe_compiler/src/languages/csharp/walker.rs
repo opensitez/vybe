@@ -3378,6 +3378,23 @@ fn classify_expr_stmt(expr: Expression) -> StmtKind {
                 };
                 if is_same_target {
                     if let Some(compound_op) = compound_op {
+                        // `btn.Click += handler` / `-=` → AddHandler / RemoveHandler so
+                        // the compiler routes through vybe:gui:bindEvent like VB does.
+                        if matches!(compound_op, CompoundOp::Add | CompoundOp::Sub) {
+                            if let ExprKind::Member { object, field, .. } = &target.kind {
+                                if crate::common::events::is_known_gui_event_field(field)
+                                    && crate::common::events::is_event_handler_expr(&right)
+                                {
+                                    let control = (**object).clone();
+                                    let event = field.to_lowercase();
+                                    let handler = (**right).clone();
+                                    return match compound_op {
+                                        CompoundOp::Add => StmtKind::AddHandler { control, event, handler },
+                                        _ => StmtKind::RemoveHandler { control, event, handler },
+                                    };
+                                }
+                            }
+                        }
                         return StmtKind::CompoundAssign {
                             target: *target,
                             op: compound_op,

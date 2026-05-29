@@ -64,10 +64,44 @@ fn unwrap_event_handler(expr: &Expression) -> Option<&Expression> {
     }
 }
 
-fn is_event_handler_expr(expr: &Expression) -> bool {
+pub fn is_event_handler_expr(expr: &Expression) -> bool {
     matches!(
         &expr.kind,
         ExprKind::Ident(_) | ExprKind::Member { .. } | ExprKind::Lambda { .. }
+    )
+}
+
+/// True if `field` is a known WinForms/GUI event name (case-insensitive).
+/// Used by language walkers to recognise `control.Click += handler` as event
+/// subscription rather than ordinary numeric compound-assignment.
+pub fn is_known_gui_event_field(field: &str) -> bool {
+    matches!(
+        field.to_lowercase().as_str(),
+        "click"
+            | "dblclick"
+            | "doubleclick"
+            | "load"
+            | "unload"
+            | "change"
+            | "textchanged"
+            | "selectedindexchanged"
+            | "checkedchanged"
+            | "valuechanged"
+            | "keypress"
+            | "keydown"
+            | "keyup"
+            | "mousedown"
+            | "mouseup"
+            | "mousemove"
+            | "mouseenter"
+            | "mouseleave"
+            | "gotfocus"
+            | "lostfocus"
+            | "enter"
+            | "leave"
+            | "resize"
+            | "paint"
+            | "formclosing"
     )
 }
 

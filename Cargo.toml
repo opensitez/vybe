@@ -29,8 +29,13 @@ uuid = { version = "1.10", features = ["serde", "v4"] }
 thiserror = "1.0"
 regex = "1"
 regress = "0.11.1"
-sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite", "postgres", "mysql", "any"] }
+# sqlx retired — replaced by wasi:sql (crate::wasi::sql) using native sync drivers.
+# tokio kept for the HTTP server stack (hyper, wasi:http, node:http).
 tokio = { version = "1", features = ["full"] }
+# Native SQL drivers — no async overhead, no proc-macro machinery.
+rusqlite = { version = "0.31", features = ["bundled"] }   # SQLite: bundles libsqlite3, no system dep
+postgres = "0.19"                                           # PostgreSQL: sync wrapper (pure Rust)
+mysql = "25"                                                # MySQL: sync, pure Rust
 chrono = "0.4"
 indexmap = "2"
 dashmap = "6"
@@ -55,12 +60,18 @@ httpdate = "1"
 # Cryptographic hashes — RustCrypto family. Replaces hand-rolled
 # SHA-256 / MD5 in `vybe_host::modules::crypto`.
 sha2 = "0.10"
+sha1 = "0.10"
 md-5 = "0.10"
+hmac = "0.12"
 
 # WHATWG DOM Parsing & Serialization backing — pull-based XML parser.
 # `web:dom-parser` (the `DOMParser` / `XMLSerializer` host module)
 # uses this to materialise spec-compliant Document trees.
 quick-xml = "0.36"
+
+# Compression — backs node:zlib host module.
+flate2 = "1"
+brotli = "7"
 
 # Internal crates
 vybe_bytecode = { path = "crates/vybe_bytecode" }
