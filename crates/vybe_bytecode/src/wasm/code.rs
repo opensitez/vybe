@@ -13,7 +13,7 @@ use super::types::WasmTypeContext;
 use super::sections::{emit_import_call, emit_box_i32, emit_box_f64, emit_unbox_f64, emit_unbox_i32};
 use crate::{Chunk, Op};
 use crate::value::Value;
-use crate::opcode::OperandFormat;
+use crate::opcode::{OperandFormat, read_leb_u32};
 
 
 /// A try/catch region extracted from the bytecode.
@@ -128,6 +128,34 @@ fn collect_try_regions(chunk: &Chunk) -> std::collections::HashMap<usize, TryReg
     regions
 }
 
+/// Byte size of the LEB128-encoded value (unsigned).
+fn leb128_u32_size(v: u32) -> u32 {
+    if v < 0x80 { 1 }
+    else if v < 0x4000 { 2 }
+    else if v < 0x20_0000 { 3 }
+    else if v < 0x1000_0000 { 4 }
+    else { 5 }
+}
+
+/// Size in bytes of the locals declaration prefix written at the start of a
+/// function body. The spec says branch hint offsets are relative to this
+/// position, so the hint scanner adds this value to every `chunk.code` offset.
+pub(crate) fn locals_prefix_size(chunk: &Chunk) -> u32 {
+    let wasm_params = chunk.arity as u32;
+    let extra_locals = if chunk.local_count as u32 > wasm_params {
+        chunk.local_count as u32 - wasm_params
+    } else { 0 };
+    let temp_count = count_temp_locals(chunk);
+    let declared_locals = extra_locals + temp_count;
+    if declared_locals > 0 {
+        // 1 group count (1 byte) + leb128(declared_locals) + 1 type byte
+        1 + leb128_u32_size(declared_locals) + 1
+    } else {
+        // vec-count of 0 (1 byte for LEB128 encoding of 0)
+        1
+    }
+}
+
 /// Count how many temp locals a chunk needs for stack manipulation.
 /// Returns 0, 1, or 2 depending on which ops are used.
 fn count_temp_locals(chunk: &Chunk) -> u32 {
@@ -216,7 +244,7 @@ pub fn encode_code_section(chunks: &[Chunk], rt_imports: &[(&str, &str)], type_c
             write_leb128_u32(&mut body, 0);
         }
 
-        // Structured control flow: the compiler now emits BLOCK/LOOP/END/BR_LABEL/BR_IF_LABEL.
+        // Structured control flow: the compiler now emits BLOCK/LOOP/END/BR/BR_IF.
         // The WASM emitter just passes them through — no relooper needed.
 
         // Pre-pass: identify try regions so we can wrap them in proper
@@ -343,13 +371,13 @@ pub fn encode_code_section(chunks: &[Chunk], rt_imports: &[(&str, &str)], type_c
                         write_leb128_u32(&mut body, table_idx as u32);
                     }
                     _ => {
-                        ip += op.operand_format().fixed_size();
+                        ip += op.operand_format().size_in(&chunk.code, ip);
                     }
                 }
             } else if op.prefix() >= 0xFD && op.prefix() <= 0xFE {
                 body.push(op.prefix());
                 write_leb128_u32(&mut body, op.sub() as u32);
-                ip += op.operand_format().fixed_size();
+                ip += op.operand_format().size_in(&chunk.code, ip);
             } else if op.prefix() == 0xDD {
                 // Relaxed-SIMD proposal — internal prefix 0xDD with
                 // sub-values 0x00..=0x13 maps to WASM `0xFD` prefix and
@@ -360,7 +388,7 @@ pub fn encode_code_section(chunks: &[Chunk], rt_imports: &[(&str, &str)], type_c
                     &mut body,
                     crate::opcode::relaxed_simd::spec_sub(op.sub()),
                 );
-                ip += op.operand_format().fixed_size();
+                ip += op.operand_format().size_in(&chunk.code, ip);
             } else {
                 emit_vm_internal_op(&mut body, op, chunk, &mut ip, &rt_idx, temp_local_idx, type_ctx);
             }
@@ -419,40 +447,48 @@ fn emit_core_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize,
             }
         }
         _ if op == Op::BR => {
-            // Legacy flat jump — skip operand, emit nop
-            let _offset = read_i16(&chunk.code, ip);
-            body.push(0x01); // nop
+            let depth = read_leb_u32(&chunk.code, ip);
+            body.push(0x0C);
+            write_leb128_u32(body, depth);
         }
-        _ if op == Op::BR_IF_TRUE => {
-            let _offset = read_i16(&chunk.code, ip);
-            body.push(0x01); // nop
+        _ if op == Op::BR_IF => {
+            let depth = read_leb_u32(&chunk.code, ip);
+            body.push(0x0D);
+            write_leb128_u32(body, depth);
+        }
+        _ if op == Op::BR_TABLE => {
+            let count = read_leb_u32(&chunk.code, ip);
+            body.push(0x0E);
+            write_leb128_u32(body, count);
+            for _ in 0..count {
+                let depth = read_leb_u32(&chunk.code, ip);
+                write_leb128_u32(body, depth);
+            }
+            let default_depth = read_leb_u32(&chunk.code, ip);
+            write_leb128_u32(body, default_depth);
         }
         // END pops a label from the structured CF stack
         _ if op == Op::END => {
             body.push(0x0B); // end
         }
-        _ if op == Op::BLOCK || op == Op::LOOP => {
-            // Our bytecode block header is (u16 end_offset, u8 result_count).
-            // Translate result_count to WASM blocktype:
-            //   0 → 0x40 (void)
-            //   1 → 0x6F (externref)
-            //   N → signed-LEB128 typeidx referencing a shared `() -> externref^N`
-            //       function type registered by types.rs.
-            let _ = read_u16(&chunk.code, ip);
+        // BLOCK/LOOP/IF carry a result_count byte (0=void, 1=externref, N≥2=type-idx).
+        // Translate to WASM blocktype (negative valtype or positive type-index LEB128).
+        _ if op == Op::BLOCK || op == Op::LOOP || op == Op::IF => {
             let result_count = chunk.code[*ip]; *ip += 1;
-            body.push(op.sub());
+            body.push(op.sub()); // 0x02 / 0x03 / 0x04
             match result_count {
                 0 => body.push(TYPE_VOID),
                 1 => body.push(TYPE_EXTERNREF),
                 n => {
                     let tidx = *type_ctx.block_type_by_results.get(&n)
                         .expect("block multi-value type was not pre-registered");
-                    // blocktype typeidx is encoded as signed LEB128 (s33) —
-                    // use the i32 writer so large indices don't collide with
-                    // the negative-valued single-valtype encodings.
                     write_leb128_i32(body, tidx as i32);
                 }
             }
+        }
+        // ELSE: no operands.
+        _ if op == Op::ELSE => {
+            body.push(0x05); // else
         }
         _ if op == Op::MEMORY_SIZE || op == Op::MEMORY_GROW => { body.push(op.sub()); body.push(0x00); }
         // Memory load/store with alignment + offset
@@ -663,7 +699,7 @@ fn emit_core_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize,
         _ => {
             // Other core ops: emit WASM byte directly
             body.push(op.sub());
-            *ip += op.operand_format().fixed_size();
+            *ip += op.operand_format().size_in(&chunk.code, *ip);
         }
     }
 }
@@ -885,13 +921,13 @@ fn emit_gc_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize, _rt_idx
             // a conservative `anyref` heaptype so the module validates on
             // any GC-capable engine. Precise per-type dispatch still runs
             // in the VM via `test_type`.
-            *ip += op.operand_format().fixed_size();
+            *ip += op.operand_format().size_in(&chunk.code, *ip);
             body.push(0xFB); write_leb128_u32(body, 0x15);
             body.push(HT_ANY);
             emit_box_i32(body, _rt_idx);
         }
         _ if op == Op::REF_CAST_NULL => {
-            *ip += op.operand_format().fixed_size();
+            *ip += op.operand_format().size_in(&chunk.code, *ip);
             body.push(0xFB); write_leb128_u32(body, 0x17);
             body.push(HT_ANY);
         }
@@ -1010,7 +1046,7 @@ fn emit_gc_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize, _rt_idx
             // Other GC ops: emit directly
             body.push(0xFB);
             write_leb128_u32(body, op.sub() as u32);
-            *ip += op.operand_format().fixed_size();
+            *ip += op.operand_format().size_in(&chunk.code, *ip);
         }
     }
 }
@@ -1295,28 +1331,13 @@ fn emit_vm_internal_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize
         }
         _ if op == Op::BR_IF_FALSE => {
             // Legacy flat jump — skip operand, emit nop
-            // (compiler should use BR_IF_LABEL instead)
+            // (compiler should use structured BR_IF instead)
             let _offset = read_i16(&chunk.code, ip);
             body.push(0x01); // nop
         }
         _ if op == Op::BR_IF_NULL => {
             let _offset = read_i16(&chunk.code, ip);
             body.push(0x01); // nop
-        }
-        // ── Structured control flow: BR_LABEL/BR_IF_LABEL → WASM br/br_if ──
-        _ if op == Op::BR_LABEL => {
-            let depth = chunk.code[*ip]; *ip += 1;
-            body.push(0x0C); // br
-            write_leb128_u32(body, depth as u32);
-        }
-        _ if op == Op::BR_IF_LABEL => {
-            let depth = chunk.code[*ip]; *ip += 1;
-            // BR_IF_LABEL pops value and branches if truthy.
-            // WASM br_if pops i32 and branches if non-zero.
-            // Need to convert: unbox to i32 first.
-            emit_unbox_i32(body, rt_idx);
-            body.push(0x0D); // br_if
-            write_leb128_u32(body, depth as u32);
         }
 
         // ── String ops → wasm:js-string builtins (standard WASM proposal) ──
@@ -1601,15 +1622,11 @@ fn emit_vm_internal_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize
                     let uv = chunk.code.get(*ip).copied().unwrap_or(0) as usize;
                     *ip += 1 + uv * 2;
                 }
-                OperandFormat::BrTable => {
-                    let count = chunk.code.get(*ip).copied().unwrap_or(0) as usize;
-                    *ip += 2 + count;
-                }
                 OperandFormat::TryTable => {
                     let count = chunk.code.get(*ip).copied().unwrap_or(0) as usize;
                     *ip += 1 + count * 3;
                 }
-                _ => { *ip += fmt.fixed_size(); }
+                _ => { *ip += fmt.size_in(&chunk.code, *ip); }
             }
             body.push(0x01); // nop
         }
@@ -1619,19 +1636,5 @@ fn emit_vm_internal_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize
 /// Total instruction size: 2-byte opcode + operand bytes.
 pub fn opcode_size(op: Op, code: &[u8], ip: usize) -> usize {
     let base = 2;
-    match op.operand_format() {
-        OperandFormat::Closure => {
-            let uv_count = code.get(ip + 4).copied().unwrap_or(0) as usize;
-            base + 2 + 1 + uv_count * 2
-        }
-        OperandFormat::BrTable => {
-            let count = code.get(ip + 2).copied().unwrap_or(0) as usize;
-            base + 2 + count
-        }
-        OperandFormat::TryTable => {
-            let count = code.get(ip + 2).copied().unwrap_or(0) as usize;
-            base + 1 + count * 3
-        }
-        fmt => base + fmt.fixed_size(),
-    }
+    base + op.operand_format().size_in(code, ip + base)
 }

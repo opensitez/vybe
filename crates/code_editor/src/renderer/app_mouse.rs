@@ -75,6 +75,7 @@ impl App {
 
         if self.is_dragging_splitter {
             self.explorer_width = (mx - SPLITTER_WIDTH / 2.0).max(50.0).min(600.0);
+            self.relayout();
         }
 
         // Check if hovering a resource editor column separator
@@ -98,20 +99,17 @@ impl App {
 
         if let Some(mut dropdown) = self.lang_dropdown.take() {
             let (w, h) = dropdown.get_size();
-            let menu_x = (self.win_width * SCALE / SCALE - w - 20.0).max(10.0);
-            let menu_y = (height - FOOTER_HEIGHT - h - 10.0).max(10.0);
+            let menu_x = (self.win_width - w - 10.0).max(10.0);
+            let menu_y = (height - FOOTER_HEIGHT - h - 5.0).max(0.0);
             dropdown.handle_mouse_at(mx, my, menu_x, menu_y, false);
             self.lang_dropdown = Some(dropdown);
         }
-        
+
         if let Some(mut dropdown) = self.theme_dropdown.take() {
             let (w, h) = dropdown.get_size();
-            let theme_label = format!("Theme: {}", self.get_theme_name());
-            let lang_label = format!("Language: {}", self.current_lang);
-            let label_x = (self.win_width * SCALE / SCALE) - (lang_label.len() as f32 * 9.0 + 20.0);
-            let theme_x = label_x - (theme_label.len() as f32 * 9.0 + 30.0);
-            let menu_x = theme_x.min(self.win_width * SCALE / SCALE - w - 10.0).max(10.0);
-            let menu_y = (height - FOOTER_HEIGHT - h - 10.0).max(10.0);
+            let lang_w = format!("Language: {}", self.current_lang).len() as f32 * 7.5 + 16.0;
+            let menu_x = (self.win_width - lang_w - w - 10.0).max(10.0);
+            let menu_y = (height - FOOTER_HEIGHT - h - 5.0).max(0.0);
             dropdown.handle_mouse_at(mx, my, menu_x, menu_y, false);
             self.theme_dropdown = Some(dropdown);
         }
@@ -340,16 +338,15 @@ impl App {
             // 0a. Language Picker Menu Intercept
             if let Some(mut dropdown) = self.lang_dropdown.take() {
                 let (w, h) = dropdown.get_size();
-                let label_x = (pw / SCALE) - (format!("Language: {}", self.current_lang).len() as f32 * 9.0 + 20.0);
-                let menu_x = label_x.min(pw / SCALE - w - 10.0).max(10.0);
-                let menu_y = (height - FOOTER_HEIGHT - h - 10.0).max(10.0);
-                
+                let menu_x = (self.win_width - w - 10.0).max(10.0);
+                let menu_y = (height - FOOTER_HEIGHT - h - 5.0).max(0.0);
+
                 match dropdown.handle_mouse_at(mx, my, menu_x, menu_y, true) {
                     DropdownEvent::Selected(idx) => {
                         if let Some(new_lang) = self.all_languages.get(idx).cloned() {
                             self.current_lang = new_lang.clone();
                             let tab = &mut self.tabs[self.active_tab];
-                            let uri = tab.path.clone().unwrap_or_else(|| format!("file:///Users/youness/www/html/vybe/{}", tab.name));
+                            let uri = App::tab_uri(tab);
                             if let TabContent::Code(cw) = &mut tab.content {
                                 { cw.set_language(&new_lang); let t = cw.my_editor.rope.to_string(); self.lsp.send(LspRequest::Init(t, new_lang.clone(), uri)); };
                             }
@@ -365,13 +362,10 @@ impl App {
             // 0b. Theme Picker Menu Intercept
             if let Some(mut dropdown) = self.theme_dropdown.take() {
                 let (w, h) = dropdown.get_size();
-                let theme_label = format!("Theme: {}", self.get_theme_name());
-                let lang_label = format!("Language: {}", self.current_lang);
-                let label_x = (pw / SCALE) - (lang_label.len() as f32 * 9.0 + 20.0);
-                let theme_x = label_x - (theme_label.len() as f32 * 9.0 + 30.0);
-                let menu_x = theme_x.min(pw / SCALE - w - 10.0).max(10.0);
-                let menu_y = (height - FOOTER_HEIGHT - h - 10.0).max(10.0);
-                
+                let lang_w = format!("Language: {}", self.current_lang).len() as f32 * 7.5 + 16.0;
+                let menu_x = (self.win_width - lang_w - w - 10.0).max(10.0);
+                let menu_y = (height - FOOTER_HEIGHT - h - 5.0).max(0.0);
+
                 match dropdown.handle_mouse_at(mx, my, menu_x, menu_y, true) {
                     DropdownEvent::Selected(idx) => {
                         self.current_theme_idx = idx;
@@ -407,7 +401,7 @@ impl App {
             if my >= height - FOOTER_HEIGHT {
                 for (rect, path) in &self.breadcrumb_rects {
                     if mx * SCALE >= rect.left() && mx * SCALE <= rect.right() && my * SCALE >= rect.top() && my * SCALE <= rect.bottom() {
-                        println!("Revealing in explorer: {}", path);
+                        let _ = path;
                         continue;
                     }
                 }
@@ -419,7 +413,7 @@ impl App {
 
                 if mx >= label_x {
                     let active_idx = self.all_languages.iter().position(|l| l == &self.current_lang).unwrap_or(0);
-                    self.lang_dropdown = Some(Dropdown::new(self.all_languages.clone(), active_idx, SCALE, None));
+                    self.lang_dropdown = Some(Dropdown::new(self.all_languages.clone(), active_idx, self.display_scale, None));
                 } else if mx >= theme_x && mx < label_x {
                     let theme_names = vec![
                         "Silicon Green".into(), "Cloud Blue".into(), "Coffee Cream".into(), "Sakura Pink".into(), 
@@ -427,7 +421,7 @@ impl App {
                         "Midnight".into(), "Aura".into(), "Veridian".into(), "Rose".into(),
                         "Cyber".into(), "Titanium".into(), "Indigo Night".into()
                     ];
-                    let mut d = Dropdown::new(theme_names, self.current_theme_idx, SCALE, None);
+                    let mut d = Dropdown::new(theme_names, self.current_theme_idx, self.display_scale, None);
                     d.num_cols = 2; d.col_w = 160.0;
                     self.theme_dropdown = Some(d);
                 }
@@ -483,7 +477,7 @@ impl App {
                                                     self.project = proj;
                                                     self.project_path = Some(path_str);
                                                 }
-                                                Err(e) => { println!("Error loading project: {}", e); }
+                                                Err(e) => { eprintln!("Error loading project: {}", e); }
                                             }
                                         }
                                     }
@@ -499,8 +493,8 @@ impl App {
                                             let path_str = path.to_string_lossy().to_string();
                                             self.project_path = Some(path_str.clone());
                                             match vybe_compiler::projects::serialization::save_project_auto(&self.project, &path_str) {
-                                                Ok(_) => { println!("Saved: {}", path_str); }
-                                                Err(e) => { println!("Save error: {}", e); }
+                                                Ok(_) => {}
+                                                Err(e) => { eprintln!("Save error: {}", e); }
                                             }
                                         }
                                     }
@@ -763,18 +757,19 @@ impl App {
                                       return;
                                  }
                                  if let Ok(content) = fs::read_to_string(&path) {
-                                     let ext = path.split('.').last().unwrap_or("txt");
-                                     let lang_name = match ext { "rs" => "rust", "js" => "javascript", "bas" | "vb" => "vb", "cs" => "csharp", _ => "text" };
-                                     let lang = load_language(lang_name).or_else(|| load_language("rust")).expect("rust language not found");
+                                     let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
+                                     let lang_name = App::lang_from_ext(&ext);
+                                     let lang = load_language(lang_name).or_else(|| load_language("plaintext")).or_else(|| load_language("rust")).expect("rust language not found");
                                      let my_editor = MyEditor::from_text(&content, &lang);
                                      let uri = format!("file://{}", path);
                                      let mut widget = {
                                         let text = my_editor.rope.to_string();
-                                        self.lsp.send(LspRequest::Init(text, "rust".to_string(), uri.clone()));
+                                        self.lsp.send(LspRequest::Init(text, lang_name.to_string(), uri.clone()));
                                         CodeEditorWidget::new(my_editor.inner, &mut self.font_system)
                                      };
-                                     { widget.set_language(lang_name); let t = widget.my_editor.rope.to_string(); self.lsp.send(LspRequest::Init(t, lang_name.to_string(), uri)); };
+                                     widget.set_language(lang_name);
                                      let name = Path::new(&path).file_name().unwrap_or_default().to_string_lossy().to_string();
+                                     self.current_lang = lang_name.to_string();
                                      let new_tab = Tab { name, path: Some(path.clone()), content: TabContent::Code(widget), is_sticky: is_double, buffer: None, is_modified: false };
                                      self.tabs.push(new_tab); self.active_tab = self.tabs.len() - 1; self.tree_view.reveal_path(&path);
                                  }
@@ -894,7 +889,6 @@ impl App {
 
             // 4. Splitter Click
             if self.hovering_splitter {
-                println!("DEBUG: Splitter Click -> Start Resizing");
                 self.is_dragging_splitter = true;  return;
             }
 
@@ -903,7 +897,6 @@ impl App {
                 let ed_top = (tch + TAB_BAR_HEIGHT) * SCALE;
                 let ed_bottom = height * SCALE - FOOTER_HEIGHT * SCALE;
                 if self.mouse_pos.1 >= ed_top && self.mouse_pos.1 < ed_bottom && mx >= self.explorer_width + SPLITTER_WIDTH {
-                    println!("DEBUG: Editor Click at mx={}, my={}", mx, my);
                     let rect = Rect::from_xywh(ed_start_x * SCALE, ed_top, self.win_width * SCALE - ed_start_x * SCALE, ed_bottom - ed_top).unwrap();
                     self.click_count = if Instant::now().duration_since(self.last_click_time) < Duration::from_millis(500) { (self.click_count % 3) + 1 } else { 1 }; self.last_click_time = Instant::now();
                     
@@ -949,7 +942,6 @@ impl App {
             }
         } else if state == ElementState::Released {
             self.tab_drag_idx = None;
-            println!("DEBUG: Mouse Released");
             let tch_rel = self.top_chrome_h();
             if self.active_tab < self.tabs.len() {
                 if let TabContent::Form(f) = &mut self.tabs[self.active_tab].content {

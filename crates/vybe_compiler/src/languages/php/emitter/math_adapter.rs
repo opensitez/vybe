@@ -85,10 +85,10 @@ fn emit_min_or_max(chunks: &mut [Chunk], current: usize, argc: u8, want_lt: bool
         push_const(chunk, Value::F64(0.0), line);
         crate::emitter::ops::emit_dyn_add(chunk, line);
         if want_lt { crate::emitter::ops::emit_dyn_lt(chunk, line) } else { crate::emitter::ops::emit_dyn_gt(chunk, line) };
-        let skip = chunk.emit_jump(Op::BR_IF_FALSE, line);
+        chunk.emit_if(line);
         lget(chunk, base + i as u16, line);
         lset(chunk, best_slot, line);
-        chunk.patch_jump(skip);
+        chunk.emit_end(line);
     }
     lget(chunk, best_slot, line);
 }
@@ -99,20 +99,24 @@ fn emit_reduce_array(chunk: &mut Chunk, arr_slot: u16, want_lt: bool, line: u32)
     let len_slot = alloc_local(chunk);
     let i_slot = alloc_local(chunk);
     let best_slot = alloc_local(chunk);
+    let result_slot = alloc_local(chunk);
 
     // len = arr.length
     lget(chunk, arr_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
     lset(chunk, len_slot, line);
 
-    // if len === 0: push false and exit
+    let outer = chunk.emit_block(line);
+
+    // if len === 0: result = false; break
     lget(chunk, len_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
-    let nonempty = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_if(line);
     chunk.emit_op(Op::FALSE, line);
-    let done_empty = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(nonempty);
+    lset(chunk, result_slot, line);
+    chunk.emit_br(1, line);
+    chunk.emit_end(line);
 
     // best = arr[0]
     lget(chunk, arr_slot, line);
@@ -124,11 +128,12 @@ fn emit_reduce_array(chunk: &mut Chunk, arr_slot: u16, want_lt: bool, line: u32)
     push_const(chunk, Value::F64(1.0), line);
     lset(chunk, i_slot, line);
 
-    let loop_top = chunk.current_offset();
+    let (loop_patch, _) = chunk.emit_loop_s(line);
     lget(chunk, i_slot, line);
     lget(chunk, len_slot, line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
-    let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(1, line);
 
     // tmp = +arr[i]
     lget(chunk, arr_slot, line);
@@ -141,23 +146,27 @@ fn emit_reduce_array(chunk: &mut Chunk, arr_slot: u16, want_lt: bool, line: u32)
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
     if want_lt { crate::emitter::ops::emit_dyn_lt(chunk, line) } else { crate::emitter::ops::emit_dyn_gt(chunk, line) };
-    let skip = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_if(line);
     lget(chunk, arr_slot, line);
     lget(chunk, i_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
     lset(chunk, best_slot, line);
-    chunk.patch_jump(skip);
+    chunk.emit_end(line);
 
     // i++
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
-    chunk.emit_loop(loop_top, line);
-    chunk.patch_jump(exit);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.patch_loop(loop_patch);
 
     lget(chunk, best_slot, line);
-    chunk.patch_jump(done_empty);
+    lset(chunk, result_slot, line);
+    chunk.emit_end(line);
+    chunk.patch_block(outer);
+    lget(chunk, result_slot, line);
 }
 
 pub fn emit_php_decbin(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -184,14 +193,16 @@ fn emit_dec_to_radix(chunks: &mut [Chunk], current: usize, radix: i32, hex_digit
     crate::emitter::ops::emit_dyn_add(chunk, line);
     lset(chunk, n_slot, line);
 
-    // if n === 0: push "0" and BR to end
+    let outer = chunk.emit_block(line);
+
+    // if n === 0: push "0" and break
     lget(chunk, n_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
-    let nonzero = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_if(line);
     push_str(chunk, "0", line);
-    let done_zero = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(nonzero);
+    chunk.emit_br(1, line);
+    chunk.emit_end(line);
 
     // out = ""
     push_str(chunk, "", line);
@@ -201,11 +212,12 @@ fn emit_dec_to_radix(chunks: &mut [Chunk], current: usize, radix: i32, hex_digit
     let chunk = &mut chunks[current];
 
     // while n > 0
-    let loop_top = chunk.current_offset();
+    let (loop_patch, _) = chunk.emit_loop_s(line);
     lget(chunk, n_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_gt(chunk, line);
-    let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(1, line);
 
     // digit = n % radix
     lget(chunk, n_slot, line);
@@ -235,11 +247,13 @@ fn emit_dec_to_radix(chunks: &mut [Chunk], current: usize, radix: i32, hex_digit
     chunk.emit_op(Op::F64_FLOOR, line);
     lset(chunk, n_slot, line);
 
-    chunk.emit_loop(loop_top, line);
-    chunk.patch_jump(exit);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.patch_loop(loop_patch);
 
     lget(chunk, out_slot, line);
-    chunk.patch_jump(done_zero);
+    chunk.emit_end(line);
+    chunk.patch_block(outer);
 }
 
 /// PHP `base_convert(num_str, from_radix, to_radix)`.
@@ -278,11 +292,12 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, i_slot, line);
 
-    let loop_top = chunk.current_offset();
+    let (scan_loop_patch, _) = chunk.emit_loop_s(line);
     lget(chunk, i_slot, line);
     lget(chunk, len_slot, line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
-    let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(1, line);
 
     // d = table.indexOf(s.charAt(i))
     push_str(chunk, table_str, line);
@@ -297,36 +312,39 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
     crate::emitter::ops::emit_dyn_not(chunk, line);
-    let skip = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_if(line);
     lget(chunk, d_slot, line);
     lget(chunk, from_slot, line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
-    let skip2 = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_if(line);
     lget(chunk, n_slot, line);
     lget(chunk, from_slot, line);
     chunk.emit_op(Op::F64_MUL, line);
     lget(chunk, d_slot, line);
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, n_slot, line);
-    chunk.patch_jump(skip2);
-    chunk.patch_jump(skip);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
 
     // i++
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
-    chunk.emit_loop(loop_top, line);
-    chunk.patch_jump(exit);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.patch_loop(scan_loop_patch);
 
-    // if n === 0: push "0" and BR to end
+    let outer = chunk.emit_block(line);
+
+    // if n === 0: push "0" and break
     lget(chunk, n_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
-    let nonzero = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_if(line);
     push_str(chunk, "0", line);
-    let done_zero = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(nonzero);
+    chunk.emit_br(1, line);
+    chunk.emit_end(line);
 
     // out = ""
     push_str(chunk, "", line);
@@ -336,11 +354,12 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
     let chunk = &mut chunks[current];
 
     // while n > 0: out = table.charAt(n % to) + out; n = floor(n / to)
-    let loop2_top = chunk.current_offset();
+    let (out_loop_patch, _) = chunk.emit_loop_s(line);
     lget(chunk, n_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     crate::emitter::ops::emit_dyn_gt(chunk, line);
-    let exit2 = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(1, line);
 
     // digit_idx = n % to
     lget(chunk, n_slot, line);
@@ -364,9 +383,11 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
     chunk.emit_op(Op::F64_FLOOR, line);
     lset(chunk, n_slot, line);
 
-    chunk.emit_loop(loop2_top, line);
-    chunk.patch_jump(exit2);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.patch_loop(out_loop_patch);
 
     lget(chunk, out_slot, line);
-    chunk.patch_jump(done_zero);
+    chunk.emit_end(line);
+    chunk.patch_block(outer);
 }

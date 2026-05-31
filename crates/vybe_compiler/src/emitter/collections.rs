@@ -74,6 +74,68 @@ fn push_f64(chunk: &mut Chunk, value: f64, line: u32) {
     chunk.emit_op_u16(Op::CONST, idx, line);
 }
 
+fn emit_php_array_iter_tracked_loop(
+    chunks: &mut [Chunk],
+    current: usize,
+    line: u32,
+    want_entries: bool,
+    iter_slot: u16,
+    out_slot: u16,
+    i_slot: u16,
+    len_slot: u16,
+    keys_slot: u16,
+) {
+    emit_array_new(chunks, current, 0, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, out_slot, line);
+    push_f64(chunk, 0.0, line);
+    lset(chunk, i_slot, line);
+
+    let block_patch = chunk.emit_block(line);
+    let (loop_patch, _) = chunk.emit_loop_s(line);
+    lget(chunk, i_slot, line);
+    lget(chunk, len_slot, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(1, line);
+
+    lget(chunk, out_slot, line);
+    if want_entries {
+        lget(chunk, keys_slot, line);
+        lget(chunk, i_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        lget(chunk, iter_slot, line);
+        lget(chunk, keys_slot, line);
+        lget(chunk, i_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        let _ = chunk;
+        emit_get(chunks, current, line);
+        emit_array_new(chunks, current, 2, line);
+    } else {
+        lget(chunk, iter_slot, line);
+        lget(chunk, keys_slot, line);
+        lget(chunk, i_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        let _ = chunk;
+        emit_get(chunks, current, line);
+    }
+
+    emit_import_call(chunks, current, "ecma:array", "push", 2, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::DROP, line);
+    lget(chunk, i_slot, line);
+    push_f64(chunk, 1.0, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    lset(chunk, i_slot, line);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.patch_loop(loop_patch);
+    chunk.emit_end(line);
+    chunk.patch_block(block_patch);
+    lget(chunk, out_slot, line);
+}
+
 fn emit_php_array_iter(chunks: &mut [Chunk], current: usize, line: u32, want_entries: bool) {
     let chunk = &mut chunks[current];
     let iter_slot = alloc_local(chunk);
@@ -82,8 +144,11 @@ fn emit_php_array_iter(chunks: &mut [Chunk], current: usize, line: u32, want_ent
     let len_slot = alloc_local(chunk);
     let keys_slot = alloc_local(chunk);
     let csv_slot = alloc_local(chunk);
+    let source_slot = alloc_local(chunk);
 
     lset(chunk, iter_slot, line);
+    chunk.emit_op(Op::I32_CONST_0, line);
+    lset(chunk, source_slot, line);
 
     lget(chunk, iter_slot, line);
     let keys_key = chunk.add_constant(Value::String(Arc::from("__keys")));
@@ -91,40 +156,48 @@ fn emit_php_array_iter(chunks: &mut [Chunk], current: usize, line: u32, want_ent
     lset(chunk, keys_slot, line);
 
     lget(chunk, keys_slot, line);
-    chunk.emit_op(Op::DUP, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    let no_keys = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    lget(chunk, keys_slot, line);
     chunk.emit_op(Op::REF_IS_UNDEFINED, line);
-    let no_keys_undef = chunk.emit_jump(Op::BR_IF_TRUE, line);
-    chunk.emit_op(Op::DROP, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
     lget(chunk, keys_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
     lset(chunk, len_slot, line);
     lget(chunk, len_slot, line);
     chunk.emit_op(Op::I32_CONST_0, line);
     crate::emitter::ops::emit_dyn_gt(chunk, line);
-    let have_keys = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    chunk.emit_op(Op::I32_CONST_1, line);
+    lset(chunk, source_slot, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
 
-    chunk.patch_jump(no_keys);
-    chunk.emit_op(Op::DROP, line);
-    let after_keys_null = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(no_keys_undef);
-    chunk.emit_op(Op::DROP, line);
-    chunk.patch_jump(after_keys_null);
-
+    lget(chunk, source_slot, line);
+    chunk.emit_op(Op::I32_CONST_0, line);
+    chunk.emit_op(Op::I32_EQ, line);
+    chunk.emit_if(line);
     lget(chunk, iter_slot, line);
     let csv_key = chunk.add_constant(Value::String(Arc::from("vybe$assoc_keys_csv")));
     chunk.emit_op_u16(Op::STRUCT_GET, csv_key, line);
     lset(chunk, csv_slot, line);
 
     lget(chunk, csv_slot, line);
-    chunk.emit_op(Op::DUP, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    let no_csv = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    lget(chunk, csv_slot, line);
     chunk.emit_op(Op::REF_IS_UNDEFINED, line);
-    let no_csv_undef = chunk.emit_jump(Op::BR_IF_TRUE, line);
-    chunk.emit_op(Op::DROP, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
     lget(chunk, csv_slot, line);
     push_str(chunk, "\x1F", line);
     emit_import_call(chunks, current, "ecma:string", "split", 2, line);
@@ -136,16 +209,20 @@ fn emit_php_array_iter(chunks: &mut [Chunk], current: usize, line: u32, want_ent
     lget(chunk, len_slot, line);
     chunk.emit_op(Op::I32_CONST_0, line);
     crate::emitter::ops::emit_dyn_gt(chunk, line);
-    let have_csv_keys = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    let csv_source = chunk.add_constant(Value::I32(2));
+    chunk.emit_op_u16(Op::CONST, csv_source, line);
+    lset(chunk, source_slot, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
 
-    chunk.patch_jump(no_csv);
-    chunk.emit_op(Op::DROP, line);
-    let after_csv_null = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(no_csv_undef);
-    chunk.emit_op(Op::DROP, line);
-    chunk.patch_jump(after_csv_null);
-
+    lget(chunk, source_slot, line);
+    chunk.emit_op(Op::I32_CONST_0, line);
+    chunk.emit_op(Op::I32_EQ, line);
+    chunk.emit_if_value(line);
     lget(chunk, iter_slot, line);
     let _ = chunk;
     emit_import_call(
@@ -157,93 +234,40 @@ fn emit_php_array_iter(chunks: &mut [Chunk], current: usize, line: u32, want_ent
         line,
     );
     let chunk = &mut chunks[current];
-    let done_fallback = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(have_keys);
-    emit_array_new(chunks, current, 0, line);
+    chunk.emit_else(line);
+    lget(chunk, source_slot, line);
+    chunk.emit_op(Op::I32_CONST_1, line);
+    chunk.emit_op(Op::I32_EQ, line);
+    chunk.emit_if_value(line);
+    let _ = chunk;
+    emit_php_array_iter_tracked_loop(
+        chunks,
+        current,
+        line,
+        want_entries,
+        iter_slot,
+        out_slot,
+        i_slot,
+        len_slot,
+        keys_slot,
+    );
     let chunk = &mut chunks[current];
-    lset(chunk, out_slot, line);
-    push_f64(chunk, 0.0, line);
-    lset(chunk, i_slot, line);
-    let loop_top = chunk.current_offset();
-    lget(chunk, i_slot, line);
-    lget(chunk, len_slot, line);
-    crate::emitter::ops::emit_dyn_lt(chunk, line);
-    let loop_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, out_slot, line);
-    if want_entries {
-        lget(chunk, keys_slot, line);
-        lget(chunk, i_slot, line);
-        chunk.emit_op(Op::ARRAY_GET, line);
-        lget(chunk, iter_slot, line);
-        lget(chunk, keys_slot, line);
-        lget(chunk, i_slot, line);
-        chunk.emit_op(Op::ARRAY_GET, line);
-        emit_get(chunks, current, line);
-        emit_array_new(chunks, current, 2, line);
-    } else {
-        lget(chunk, iter_slot, line);
-        lget(chunk, keys_slot, line);
-        lget(chunk, i_slot, line);
-        chunk.emit_op(Op::ARRAY_GET, line);
-        emit_get(chunks, current, line);
-    }
-    emit_import_call(chunks, current, "ecma:array", "push", 2, line);
+    chunk.emit_else(line);
+    let _ = chunk;
+    emit_php_array_iter_tracked_loop(
+        chunks,
+        current,
+        line,
+        want_entries,
+        iter_slot,
+        out_slot,
+        i_slot,
+        len_slot,
+        keys_slot,
+    );
     let chunk = &mut chunks[current];
-    chunk.emit_op(Op::DROP, line);
-    lget(chunk, i_slot, line);
-    push_f64(chunk, 1.0, line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, i_slot, line);
-    chunk.emit_loop(loop_top, line);
-    chunk.patch_jump(loop_exit);
-    lget(chunk, out_slot, line);
-    let done_tracked = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(have_csv_keys);
-    emit_array_new(chunks, current, 0, line);
-    let chunk = &mut chunks[current];
-    lset(chunk, out_slot, line);
-    push_f64(chunk, 0.0, line);
-    lset(chunk, i_slot, line);
-    let csv_loop_top = chunk.current_offset();
-    lget(chunk, i_slot, line);
-    lget(chunk, len_slot, line);
-    crate::emitter::ops::emit_dyn_lt(chunk, line);
-    let csv_loop_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, out_slot, line);
-    if want_entries {
-        lget(chunk, keys_slot, line);
-        lget(chunk, i_slot, line);
-        chunk.emit_op(Op::ARRAY_GET, line);
-        lget(chunk, iter_slot, line);
-        lget(chunk, keys_slot, line);
-        lget(chunk, i_slot, line);
-        chunk.emit_op(Op::ARRAY_GET, line);
-        emit_get(chunks, current, line);
-        emit_array_new(chunks, current, 2, line);
-    } else {
-        lget(chunk, iter_slot, line);
-        lget(chunk, keys_slot, line);
-        lget(chunk, i_slot, line);
-        chunk.emit_op(Op::ARRAY_GET, line);
-        emit_get(chunks, current, line);
-    }
-    emit_import_call(chunks, current, "ecma:array", "push", 2, line);
-    let chunk = &mut chunks[current];
-    chunk.emit_op(Op::DROP, line);
-    lget(chunk, i_slot, line);
-    push_f64(chunk, 1.0, line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, i_slot, line);
-    chunk.emit_loop(csv_loop_top, line);
-    chunk.patch_jump(csv_loop_exit);
-    lget(chunk, out_slot, line);
-
-    chunks[current].patch_jump(done_fallback);
-    chunks[current].patch_jump(done_tracked);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
 }
 
 /// Create an empty array (common case). Stack: [] → [array] via
@@ -278,15 +302,24 @@ pub fn emit_new_with_length(chunks: &mut [Chunk], current: usize, line: u32) {
 /// branch selects the right import — same pattern v8 uses for
 /// property dispatch on auto-boxed primitives.
 pub fn emit_len(chunks: &mut [Chunk], current: usize, line: u32) {
-    let c = &mut chunks[current];
-    c.emit_op(Op::DUP, line);                     // [v, v]
-    c.emit_op(Op::REF_IS_STRING, line);            // [v, is_string]
-    let to_str = c.emit_jump(Op::BR_IF_TRUE, line); // consumes bool
+    let value_slot = alloc_local(&mut chunks[current]);
+    lset(&mut chunks[current], value_slot, line);
+
+    lget(&mut chunks[current], value_slot, line);
+    chunks[current].emit_op(Op::REF_IS_STRING, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+
+    // String — wasm:js-string.length.
+    lget(&mut chunks[current], value_slot, line);
+    emit_import_call(chunks, current, "wasm:js-string", "length", 1, line);
+
+    chunks[current].emit_else(line);
 
     // Not a string — try array length first. A null result means the
     // value wasn't array-like; a numeric 0 is a real empty length and
     // must not fall through to Object.keys(...).length.
-    c.emit_op(Op::DUP, line);
+    lget(&mut chunks[current], value_slot, line);
     emit_import_call(chunks, current, "ecma:array", "length", 1, line);
     let arr_len_slot = chunks[current].local_count;
     chunks[current].local_count += 1;
@@ -295,14 +328,10 @@ pub fn emit_len(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_len_slot, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
-    let try_map_len = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
 
-    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_len_slot, line);
-    let use_arr_len = chunks[current].emit_jump(Op::BR, line);
-
-    chunks[current].patch_jump(try_map_len);
-
-    chunks[current].emit_op(Op::DUP, line);
+    lget(&mut chunks[current], value_slot, line);
     emit_import_call(chunks, current, "ecma:map", "size", 1, line);
     let map_len_slot = chunks[current].local_count;
     chunks[current].local_count += 1;
@@ -312,29 +341,19 @@ pub fn emit_len(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, map_len_slot, line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
     crate::emitter::ops::emit_dyn_ne(&mut chunks[current], line);
-    let use_map_len = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
 
+    chunks[current].emit_op_u16(Op::LOCAL_GET, map_len_slot, line);
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], value_slot, line);
     emit_import_call(chunks, current, "ecma:object", "keys", 1, line);
     emit_import_call(chunks, current, "ecma:array", "length", 1, line);
-    let end = chunks[current].emit_jump(Op::BR, line);
-
-    chunks[current].patch_jump(use_map_len);
-    chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, map_len_slot, line);
-    let end_map = chunks[current].emit_jump(Op::BR, line);
-
-    chunks[current].patch_jump(use_arr_len);
-    chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_len_slot, line);
-    let end_arr = chunks[current].emit_jump(Op::BR, line);
-
-    chunks[current].patch_jump(to_str);
-    // String — wasm:js-string.length.
-    emit_import_call(chunks, current, "wasm:js-string", "length", 1, line);
-    chunks[current].patch_jump(end);
-    chunks[current].patch_jump(end_map);
-    chunks[current].patch_jump(end_arr);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
 }
 
 /// Direct WASM `array.length` — the GC bytecode `0xFB 0x0F` opcode.
@@ -623,12 +642,9 @@ pub fn emit_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_len(chunks, current, line);
     lget(&mut chunks[current], len_slot, line);
     crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    let lengths_match = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
-    chunks[current].emit_op(Op::FALSE, line);
-    lset(&mut chunks[current], result_slot, line);
-    let done = chunks[current].emit_jump(Op::BR, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
 
-    chunks[current].patch_jump(lengths_match);
     chunks[current].emit_op(Op::I32_CONST_0, line);
     lset(&mut chunks[current], idx_slot, line);
 
@@ -638,6 +654,7 @@ pub fn emit_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], len_slot, line);
     crate::emitter::ops::emit_dyn_lt(&mut chunks[current], line);
     crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_br_if(1, line);
 
     lget(&mut chunks[current], right_slot, line);
@@ -650,6 +667,7 @@ pub fn emit_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_get(chunks, current, line);
     lget(&mut chunks[current], right_elem_slot, line);
     crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
     let equal_values = chunks[current].emit_block(line);
     chunks[current].emit_br_if(0, line);
 
@@ -671,7 +689,11 @@ pub fn emit_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
     chunks[current].patch_block(outer_block);
 
-    chunks[current].patch_jump(done);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op(Op::FALSE, line);
+    lset(&mut chunks[current], result_slot, line);
+    chunks[current].emit_end(line);
+
     lget(&mut chunks[current], result_slot, line);
 }
 
@@ -826,9 +848,7 @@ pub fn emit_new_with_length_into(imports: &mut Chunk, code: &mut Chunk, line: u3
 }
 
 pub fn emit_len_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    // Runtime-typed length. `emit_jump(Op::BR_IF_TRUE)` uses flat
-    // offsets that the wasm emitter writes as `nop`, so the jump would
-    // vanish on v8. Use structured control flow instead.
+    // Runtime-typed length implemented with structured control flow.
     //
     // WASM blocks with `() -> ()` type can't leave a value on the stack
     // at the end — to hand the computed length out of the dispatch we
@@ -980,11 +1000,14 @@ pub fn emit_range_targeted(chunks: &mut [Chunk], current: usize, arg_count: u8, 
             chunk.emit_op_u16(Op::LOCAL_SET, i_local, line);
             chunk.emit_op(Op::DROP, line);
 
-            let loop_start = chunk.current_offset();
+            let block_patch = chunk.emit_block(line);
+            let (loop_patch, _) = chunk.emit_loop_s(line);
             chunk.emit_op_u16(Op::LOCAL_GET, i_local, line);
             chunk.emit_op_u16(Op::LOCAL_GET, stop_local, line);
             crate::emitter::ops::emit_dyn_lt(chunk, line);
-            let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
+            crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+            chunk.emit_op(Op::I32_EQZ, line);
+            chunk.emit_br_if(1, line);
 
             chunk.emit_op_u16(Op::LOCAL_GET, result_local, line);
             chunk.emit_op_u16(Op::LOCAL_GET, i_local, line);
@@ -999,8 +1022,11 @@ pub fn emit_range_targeted(chunks: &mut [Chunk], current: usize, arg_count: u8, 
             chunk.emit_op_u16(Op::LOCAL_SET, i_local, line);
             chunk.emit_op(Op::DROP, line);
 
-            chunk.emit_loop(loop_start, line);
-            chunk.patch_jump(exit);
+            chunk.emit_br(0, line);
+            chunk.emit_end(line);
+            chunk.patch_loop(loop_patch);
+            chunk.emit_end(line);
+            chunk.patch_block(block_patch);
 
             chunk.emit_op_u16(Op::LOCAL_GET, result_local, line);
         } else {

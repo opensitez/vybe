@@ -89,8 +89,8 @@ pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str
 /// dup                     // [this, this]
 /// struct_get "__types"    // [this, types_or_null]
 /// dup                     // [this, types_or_null, types_or_null]
-/// ref_is_null             // [this, types_or_null, bool]
-/// br_if_false skip        // [this, types_or_null]
+/// ref_is_null             // [this, types_or_null, i32]
+/// i32.eqz; br_if 0        // [this, types_or_null]
 /// drop                    // [this]
 /// array_new 0             // [this, []]
 /// skip:                   // [this, array]
@@ -110,10 +110,13 @@ pub fn emit_instanceof_chain(chunks: &mut [Chunk], current: usize, this_slot: u1
     chunks[current].emit_op_u16(Op::STRUCT_GET, types_key, line);  // [this, types_or_null]
     chunks[current].emit_op(Op::DUP, line);                        // [this, tn, tn]
     chunks[current].emit_op(Op::REF_IS_NULL, line);                // [this, tn, bool]
-    let skip_jump = chunks[current].emit_jump(Op::BR_IF_FALSE, line); // consumes bool
+    let init_block = chunks[current].emit_block(line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(0, line);
     chunks[current].emit_op(Op::DROP, line);                       // [this] (drop the null)
     crate::emitter::collections::emit_array_new(chunks, current, 0, line);  // [this, []]
-    chunks[current].patch_jump(skip_jump);                         // skip lands here; [this, array]
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(init_block);                       // skip lands here; [this, array]
 
     // Push class_name onto array while preserving array on stack.
     // ecma:array.push is [arr, val] → [new_length], so DUP the array

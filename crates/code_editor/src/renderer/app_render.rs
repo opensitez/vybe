@@ -2,18 +2,58 @@ use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use tiny_skia::{Paint, Pixmap, Rect, Transform, Stroke, PathBuilder};
 
-use super::{App, TabContent, SidebarTab, SCALE, TAB_BAR_HEIGHT, MINIMAP_WIDTH, UI_BAR_HEIGHT, FOOTER_HEIGHT, GUTTER_WIDTH, SPLITTER_WIDTH, SIDEBAR_TAB_H};
+use super::{App, TabContent, SidebarTab, SCALE, TAB_BAR_HEIGHT, MINIMAP_WIDTH, UI_BAR_HEIGHT, FOOTER_HEIGHT, GUTTER_WIDTH, SPLITTER_WIDTH, SIDEBAR_TAB_H, Keybinding, PaletteAction, EditAction};
+use crate::form_designer_tab::MenuAction;
 use crate::lsp_client::{LspRequest, LspEvent};
 use vybe_widgets::layout::RenderContext;
 use vybe_widgets::PanelWidget;
 use vybe_widgets::output_panel::{ProblemEntry, ProblemSeverity};
 use vybe_widgets::TextColor;
 
+fn format_kb(kb: &Keybinding) -> String {
+    let mut s = String::new();
+    if kb.cmd   { s.push('⌘'); }
+    if kb.shift { s.push('⇧'); }
+    if kb.alt   { s.push('⌥'); }
+    let key = match kb.key.as_str() {
+        "ArrowUp" => "↑", "ArrowDown" => "↓", "ArrowLeft" => "←", "ArrowRight" => "→",
+        "Enter" => "↵", "Tab" => "⇥", "Backspace" => "⌫", "Delete" => "⌦",
+        "Escape" => "⎋", "Space" => "␣",
+        k => k,
+    };
+    s.push_str(key);
+    s
+}
+
+fn kb_hint_for_palette(kbs: &[Keybinding], action: PaletteAction) -> String {
+    let target: Option<&str> = match action {
+        PaletteAction::Edit(EditAction::Undo)   => Some("Undo"),
+        PaletteAction::Edit(EditAction::Redo)   => Some("Redo"),
+        PaletteAction::Edit(EditAction::Cut)    => Some("Cut"),
+        PaletteAction::Edit(EditAction::Copy)   => Some("Copy"),
+        PaletteAction::Edit(EditAction::Paste)  => Some("Paste"),
+        PaletteAction::Edit(EditAction::Delete) => None,
+        PaletteAction::Menu(MenuAction::SaveProject) | PaletteAction::Menu(MenuAction::SaveAs) => Some("Save"),
+        PaletteAction::FindInFile    => Some("Find"),
+        PaletteAction::FindInProject => None,
+        PaletteAction::GoToLine      => None,
+        PaletteAction::ToggleOutput  => Some("ToggleOutput"),
+        PaletteAction::CloseTab      => None,
+        PaletteAction::NextTab       => None,
+        PaletteAction::PrevTab       => None,
+        _ => None,
+    };
+    if let Some(action_str) = target {
+        if let Some(kb) = kbs.iter().find(|k| k.action == action_str) {
+            return format_kb(kb);
+        }
+    }
+    String::new()
+}
+
 impl App {
     pub(super) fn render_internal(&mut self, pix: &mut Pixmap) {
-        // Process pending widget events
         self.process_widget_events();
-        self.relayout();
 
         // Debounce LSP Update
         if self.pending_lsp_update && self.last_lsp_update.elapsed().as_millis() > 300 {
@@ -21,7 +61,7 @@ impl App {
             if let Some(tab) = self.tabs.get(self.active_tab) {
                 if let TabContent::Code(cw) = &tab.content {
                     let text = cw.my_editor.rope.to_string();
-                    let uri = tab.path.clone().unwrap_or_else(|| format!("file:///Users/youness/www/html/vybe/{}", tab.name));
+                    let uri = App::tab_uri(tab);
                     lsp_text = Some((text, uri));
                 }
             }
@@ -134,7 +174,6 @@ impl App {
                 (theme.active_tab_text.r(), theme.active_tab_text.g(), theme.active_tab_text.b(), theme.active_tab_text.a()),
                 (theme.kw.r(), theme.kw.g(), theme.kw.b(), 255),
             );
-            self.sync_tab_headers();
             let mut ctx = RenderContext {
                 pixmap: pix,
                 font_system: &mut self.font_system,
@@ -184,7 +223,7 @@ impl App {
                 match evt {
                     LspEvent::Diagnostics(uri, diags) => { 
                         for t in &mut self.tabs {
-                            let t_uri = t.path.clone().unwrap_or_else(|| format!("file:///Users/youness/www/html/vybe/{}", t.name));
+                            let t_uri = App::tab_uri(t);
                             if t_uri == uri {
                                 if let TabContent::Code(cw) = &mut t.content {
                                     cw.my_editor.diagnostics = diags.iter().map(|d| {
@@ -355,7 +394,8 @@ impl App {
                         let text = cw.my_editor.rope.to_string();
                         let line_endings = if text.contains("\r\n") { "CRLF" } else { "LF" };
                         let zoom_pct = (cw.font_size / 14.0 * 100.0) as i32;
-                        format!("Ln {}, Col {} | {}% | {} | UTF-8", cursor.0 + 1, cursor.1 + 1, zoom_pct, line_endings)
+                        let ws = if cw.show_whitespace { " | WS" } else { "" };
+                        format!("Ln {}, Col {} | {}% | {}{} | UTF-8", cursor.0 + 1, cursor.1 + 1, zoom_pct, line_endings, ws)
                     }
                     TabContent::Form(f) => {
                         format!("{} Selected | Form Designer", f.selected_controls.len())
@@ -375,6 +415,12 @@ impl App {
             let config_label = match self.build_config { super::BuildConfig::Debug => "[Debug]", super::BuildConfig::Release => "[Release]" };
             self.status_bar.add_section_with_id(config_label, config_label.len() as f32 * 7.5, true, "config");
 
+            // Apply theme text color to all sections (default is white, wrong on light themes)
+            let (ftr, ftg, ftb, fta) = (theme.footer_text.r(), theme.footer_text.g(), theme.footer_text.b(), theme.footer_text.a());
+            for sec in self.status_bar.sections_mut() {
+                sec.fg = (ftr, ftg, ftb, fta);
+            }
+
             let mut ctx = RenderContext {
                 pixmap: pix,
                 font_system: &mut self.font_system,
@@ -384,36 +430,41 @@ impl App {
             self.status_bar.render(&mut ctx);
         }
 
-        // Dropdown overlays (floating above everything)
-        if let Some(tab) = self.tabs.get(self.active_tab) {
-            let _dummy = &tab.content; // keep borrow checker happy
-            let lang_label = format!("Language: {}", self.current_lang);
-            let label_x = pix.width() as f32 / SCALE - (lang_label.len() as f32 * 9.0 + 20.0);
-            let theme_label = format!("Theme: {}", theme_name);
-            let theme_x = label_x - (theme_label.len() as f32 * 9.0 + 30.0);
+        // Dropdown overlays — positions in true logical pixels (physical / display_scale).
+        // render_list(x,y) multiplies by dropdown.scale == display_scale → correct physical coords.
+        // Hover/click handlers use self.win_width which is also physical / display_scale.
+        {
+            let win_w = self.win_width;
+            let win_h = self.win_height;
+            let menu_y_base = win_h - FOOTER_HEIGHT;
+            let dd_colors = (
+                (theme.sidebar_bg.r(), theme.sidebar_bg.g(), theme.sidebar_bg.b(), 255u8),
+                (theme.gutter_divider.r(), theme.gutter_divider.g(), theme.gutter_divider.b(), 255u8),
+                (theme.selection.r(), theme.selection.g(), theme.selection.b(), 100u8),
+                (theme.current_line.r(), theme.current_line.g(), theme.current_line.b(), 255u8),
+                theme.active_tab_text,
+                theme.inactive_tab_text,
+            );
 
             if let Some(dropdown) = &self.lang_dropdown {
                 let (w, h) = dropdown.get_size();
-                let menu_x = (pix.width() as f32 / SCALE - w - 20.0).max(10.0);
-                let menu_y = (pix.height() as f32 / SCALE - FOOTER_HEIGHT - h - 10.0).max(10.0);
-                dropdown.render_list(pix, &mut self.font_system, &mut self.swash_cache, menu_x, menu_y,
-                    (theme.sidebar_bg.r(), theme.sidebar_bg.g(), theme.sidebar_bg.b(), 255),
-                    (theme.gutter_divider.r(), theme.gutter_divider.g(), theme.gutter_divider.b(), 255),
-                    (theme.selection.r(), theme.selection.g(), theme.selection.b(), 100),
-                    (theme.current_line.r(), theme.current_line.g(), theme.current_line.b(), 255),
-                    theme.active_tab_text, theme.inactive_tab_text);
+                let menu_x = (win_w - w - 10.0).max(10.0);
+                let menu_y = (menu_y_base - h - 5.0).max(0.0);
+                dropdown.render_list(pix, &mut self.font_system, &mut self.swash_cache,
+                    menu_x, menu_y,
+                    dd_colors.0, dd_colors.1, dd_colors.2, dd_colors.3,
+                    dd_colors.4, dd_colors.5);
             }
             if let Some(dropdown) = &self.theme_dropdown {
                 let (w, h) = dropdown.get_size();
-                let menu_x = (theme_x / SCALE - 10.0).max(10.0);
-                let menu_x = menu_x.min(pix.width() as f32 / SCALE - w - 10.0).max(10.0);
-                let menu_y = (pix.height() as f32 / SCALE - FOOTER_HEIGHT - h - 10.0).max(10.0);
-                dropdown.render_list(pix, &mut self.font_system, &mut self.swash_cache, menu_x, menu_y,
-                    (theme.sidebar_bg.r(), theme.sidebar_bg.g(), theme.sidebar_bg.b(), 255),
-                    (theme.gutter_divider.r(), theme.gutter_divider.g(), theme.gutter_divider.b(), 255),
-                    (theme.selection.r(), theme.selection.g(), theme.selection.b(), 100),
-                    (theme.current_line.r(), theme.current_line.g(), theme.current_line.b(), 255),
-                    theme.active_tab_text, theme.inactive_tab_text);
+                // Anchor theme dropdown just to the left of the language dropdown
+                let lang_w = format!("Language: {}", self.current_lang).len() as f32 * 7.5 + 16.0;
+                let menu_x = (win_w - lang_w - w - 10.0).max(10.0);
+                let menu_y = (menu_y_base - h - 5.0).max(0.0);
+                dropdown.render_list(pix, &mut self.font_system, &mut self.swash_cache,
+                    menu_x, menu_y,
+                    dd_colors.0, dd_colors.1, dd_colors.2, dd_colors.3,
+                    dd_colors.4, dd_colors.5);
             }
         }
 
@@ -440,9 +491,9 @@ impl App {
                 }).collect();
             matches.sort_by_key(|m| -m.0);
             let mut i_y = o_y + 50.0 * SCALE;
-            for (idx, (score, _tab_idx, name)) in matches.iter().take(10).enumerate() {
+            for (idx, (_score, _tab_idx, name)) in matches.iter().take(10).enumerate() {
                 let col = if idx == 0 { TextColor::rgb(0, 122, 204) } else { TextColor::rgb(200, 200, 200) };
-                let display_text = if *score > 0 { format!("{} (score: {})", name, score) } else { name.to_string() };
+                let display_text = name.to_string();
                 App::draw_ui_text(pix, &mut self.font_system, &mut self.swash_cache, &display_text, o_x + 20.0 * SCALE, i_y, col);
                 i_y += 25.0 * SCALE;
             }
@@ -491,6 +542,15 @@ impl App {
                     pix, &mut self.font_system, &mut self.swash_cache,
                     cmds[*idx].label, o_x + 20.0 * SCALE, iy, col,
                 );
+                // Keybinding hint on the right
+                let hint = kb_hint_for_palette(&self.keybindings, cmds[*idx].action);
+                if !hint.is_empty() {
+                    App::draw_ui_text(
+                        pix, &mut self.font_system, &mut self.swash_cache,
+                        &hint, o_x + o_w - hint.len() as f32 * 8.0 * SCALE - 16.0, iy,
+                        TextColor::rgb(120, 120, 130),
+                    );
+                }
                 iy += 22.0 * SCALE;
             }
             if matches.is_empty() {

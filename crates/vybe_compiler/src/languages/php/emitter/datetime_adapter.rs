@@ -142,21 +142,20 @@ fn emit_datetime_create_from_format_impl(
     local_get(chunk, fmt_slot, line);
     push_str(chunk, "U", line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
-    let not_unix = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_if(line);
     emit_parse_int_base10(chunks, current, value_slot, line);
     let chunk = &mut chunks[current];
     push_const(chunk, Value::F64(MS_PER_SECOND), line);
     chunk.emit_op(Op::F64_MUL, line);
     emit_wrap_ms(chunk, type_tag, line);
-    let done_unix = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(not_unix);
+    chunk.emit_else(line);
 
     // `d/m/Y` → UTC(y, m-1, d)
     let chunk = &mut chunks[current];
     local_get(chunk, fmt_slot, line);
     push_str(chunk, "d/m/Y", line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
-    let not_dmy = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_if(line);
     local_get(chunk, value_slot, line);
     push_str(chunk, "/", line);
     chunk.emit_op(Op::STR_SPLIT, line);
@@ -188,15 +187,14 @@ fn emit_datetime_create_from_format_impl(
     call_import(chunks, current, "ecma:date", "UTC", 3, line);
     let chunk = &mut chunks[current];
     emit_wrap_ms(chunk, type_tag, line);
-    let done_dmy = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(not_dmy);
+    chunk.emit_else(line);
 
     // `d/m/Y H:i` → UTC(y, m-1, d, h, i, 0)
     let chunk = &mut chunks[current];
     local_get(chunk, fmt_slot, line);
     push_str(chunk, "d/m/Y H:i", line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
-    let not_dmy_hi = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_if(line);
     local_get(chunk, value_slot, line);
     push_str(chunk, " ", line);
     chunk.emit_op(Op::STR_SPLIT, line);
@@ -265,8 +263,7 @@ fn emit_datetime_create_from_format_impl(
     call_import(chunks, current, "ecma:date", "UTC", 6, line);
     let chunk = &mut chunks[current];
     emit_wrap_ms(chunk, type_tag, line);
-    let done_dmy_hi = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(not_dmy_hi);
+    chunk.emit_else(line);
 
     // Fallback: best-effort ECMA parse for already-ISO-ish inputs.
     let chunk = &mut chunks[current];
@@ -275,9 +272,9 @@ fn emit_datetime_create_from_format_impl(
     let chunk = &mut chunks[current];
     emit_wrap_ms(chunk, type_tag, line);
 
-    chunk.patch_jump(done_unix);
-    chunk.patch_jump(done_dmy);
-    chunk.patch_jump(done_dmy_hi);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
 }
 
 pub fn emit_datetime_create_from_format(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -360,40 +357,47 @@ fn emit_pad_to_width(chunk: &mut Chunk, width: u32, line: u32) {
         let idx = chunk.add_constant(Value::F64(width as f64));
         chunk.emit_op_u16(Op::CONST, idx, line);
         crate::emitter::ops::emit_dyn_lt(chunk, line);
-        let skip = chunk.emit_jump(Op::BR_IF_FALSE, line);
+        chunk.emit_if(line);
         push_str(chunk, "0", line);
         chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
         crate::emitter::ops::emit_dyn_add(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_SET, s_slot, line);
         chunk.emit_op(Op::DROP, line);
-        chunk.patch_jump(skip);
+        chunk.emit_end(line);
     }
     chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
 }
 
-/// One arm in the format-code dispatch: `if c == "X" { body; jump end }`.
-/// Caller supplies the body via the `body` closure. Returns the patch
-/// position of the unconditional `BR` so the caller can patch it after
-/// emitting the chain's tail.
+/// One arm in the format-code dispatch. Each arm only runs while no
+/// earlier arm has matched, then marks the dispatch as matched.
 fn emit_code_arm(
     chunks: &mut [Chunk],
     current: usize,
+    matched_slot: u16,
     c_slot: u16,
     code: &str,
     line: u32,
     body: impl FnOnce(&mut [Chunk], usize),
-) -> usize {
+) {
     {
         let chunk = &mut chunks[current];
+        chunk.emit_op_u16(Op::LOCAL_GET, matched_slot, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_if(line);
         chunk.emit_op_u16(Op::LOCAL_GET, c_slot, line);
         push_str(chunk, code, line);
         crate::emitter::ops::emit_dyn_eq(chunk, line);
+        chunk.emit_if(line);
     }
-    let skip = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
     body(chunks, current);
-    let done = chunks[current].emit_jump(Op::BR, line);
-    chunks[current].patch_jump(skip);
-    done
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_op(Op::I32_CONST_1, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, matched_slot, line);
+        chunk.emit_op(Op::DROP, line);
+        chunk.emit_end(line);
+        chunk.emit_end(line);
+    }
 }
 
 /// PHP `date()` per-character format dispatcher. Reads a single
@@ -413,18 +417,25 @@ fn emit_format_code_dispatch(
     mode_strftime: bool,
     line: u32,
 ) {
-    let mut done_jumps: Vec<usize> = Vec::new();
+    let matched_slot = {
+        let chunk = &mut chunks[current];
+        let slot = alloc_local(chunk);
+        chunk.emit_op(Op::I32_CONST_0, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+        chunk.emit_op(Op::DROP, line);
+        slot
+    };
 
     if !mode_strftime {
         // PHP `date()` codes.
         // Y: full year as string
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "Y", line, |chunks, current| {
+        emit_code_arm(chunks, current, matched_slot, c_slot, "Y", line, |chunks, current| {
             emit_dt_getter(chunks, current, dt_slot, "getFullYear", line);
             emit_stringify(&mut chunks[current], line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
+        });
         // y: last two digits, zero-padded
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "y", line, |chunks, current| {
+        emit_code_arm(chunks, current, matched_slot, c_slot, "y", line, |chunks, current| {
             emit_dt_getter(chunks, current, dt_slot, "getFullYear", line);
             // % 100
             let idx = chunks[current].add_constant(Value::F64(100.0));
@@ -432,63 +443,63 @@ fn emit_format_code_dispatch(
             crate::emitter::expressions::emit_f64_mod(&mut chunks[current], line);
             emit_pad_to_width(&mut chunks[current], 2, line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
+        });
         // m: month 01-12, zero-padded
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "m", line, |chunks, current| {
+        emit_code_arm(chunks, current, matched_slot, c_slot, "m", line, |chunks, current| {
             emit_dt_getter(chunks, current, dt_slot, "getMonth", line);
             let idx = chunks[current].add_constant(Value::F64(1.0));
             chunks[current].emit_op_u16(Op::CONST, idx, line);
             chunks[current].emit_op(Op::F64_ADD, line);
             emit_pad_to_width(&mut chunks[current], 2, line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
+        });
         // n: month 1-12, no padding
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "n", line, |chunks, current| {
+        emit_code_arm(chunks, current, matched_slot, c_slot, "n", line, |chunks, current| {
             emit_dt_getter(chunks, current, dt_slot, "getMonth", line);
             let idx = chunks[current].add_constant(Value::F64(1.0));
             chunks[current].emit_op_u16(Op::CONST, idx, line);
             chunks[current].emit_op(Op::F64_ADD, line);
             emit_stringify(&mut chunks[current], line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
+        });
         // d: day 01-31, zero-padded
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "d", line, |chunks, current| {
+        emit_code_arm(chunks, current, matched_slot, c_slot, "d", line, |chunks, current| {
             emit_dt_getter(chunks, current, dt_slot, "getDate", line);
             emit_pad_to_width(&mut chunks[current], 2, line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
+        });
         // j: day 1-31, no padding
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "j", line, |chunks, current| {
+        emit_code_arm(chunks, current, matched_slot, c_slot, "j", line, |chunks, current| {
             emit_dt_getter(chunks, current, dt_slot, "getDate", line);
             emit_stringify(&mut chunks[current], line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
+        });
         // H: hour 00-23, zero-padded
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "H", line, |chunks, current| {
+        emit_code_arm(chunks, current, matched_slot, c_slot, "H", line, |chunks, current| {
             emit_dt_getter(chunks, current, dt_slot, "getHours", line);
             emit_pad_to_width(&mut chunks[current], 2, line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
+        });
         // G: hour 0-23, no padding
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "G", line, |chunks, current| {
+        emit_code_arm(chunks, current, matched_slot, c_slot, "G", line, |chunks, current| {
             emit_dt_getter(chunks, current, dt_slot, "getHours", line);
             emit_stringify(&mut chunks[current], line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
+        });
         // i: minute 00-59, zero-padded
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "i", line, |chunks, current| {
+        emit_code_arm(chunks, current, matched_slot, c_slot, "i", line, |chunks, current| {
             emit_dt_getter(chunks, current, dt_slot, "getMinutes", line);
             emit_pad_to_width(&mut chunks[current], 2, line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
+        });
         // s: second 00-59, zero-padded
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "s", line, |chunks, current| {
+        emit_code_arm(chunks, current, matched_slot, c_slot, "s", line, |chunks, current| {
             emit_dt_getter(chunks, current, dt_slot, "getSeconds", line);
             emit_pad_to_width(&mut chunks[current], 2, line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
+        });
         // U: secs since epoch (floor of __time / 1000)
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "U", line, |chunks, current| {
+        emit_code_arm(chunks, current, matched_slot, c_slot, "U", line, |chunks, current| {
             let chunk = &mut chunks[current];
             chunk.emit_op_u16(Op::LOCAL_GET, dt_slot, line);
             struct_get(chunk, TIME_KEY, line);
@@ -497,135 +508,134 @@ fn emit_format_code_dispatch(
             chunk.emit_op(Op::F64_FLOOR, line);
             emit_stringify(chunk, line);
             emit_append_to_result(chunk, result_slot, line);
-        }));
+        });
         // a / A: am/pm
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "a", line, |chunks, current| {
+        emit_code_arm(chunks, current, matched_slot, c_slot, "a", line, |chunks, current| {
             emit_am_pm(chunks, current, dt_slot, /*upper=*/false, result_slot, line);
-        }));
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "A", line, |chunks, current| {
+        });
+        emit_code_arm(chunks, current, matched_slot, c_slot, "A", line, |chunks, current| {
             emit_am_pm(chunks, current, dt_slot, /*upper=*/true, result_slot, line);
-        }));
+        });
         // l (lowercase L): full weekday name
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "l", line, |chunks, current| {
+        emit_code_arm(chunks, current, matched_slot, c_slot, "l", line, |chunks, current| {
             emit_weekday_name(chunks, current, dt_slot, /*full=*/true, line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
+        });
         // D: short weekday name
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "D", line, |chunks, current| {
+        emit_code_arm(chunks, current, matched_slot, c_slot, "D", line, |chunks, current| {
             emit_weekday_name(chunks, current, dt_slot, /*full=*/false, line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
+        });
         // F: full month name
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "F", line, |chunks, current| {
+        emit_code_arm(chunks, current, matched_slot, c_slot, "F", line, |chunks, current| {
             emit_month_name(chunks, current, dt_slot, /*full=*/true, line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
+        });
         // M: short month name
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "M", line, |chunks, current| {
+        emit_code_arm(chunks, current, matched_slot, c_slot, "M", line, |chunks, current| {
             emit_month_name(chunks, current, dt_slot, /*full=*/false, line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
+        });
         // w: numeric day-of-week (Sunday=0..6)
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "w", line, |chunks, current| {
+        emit_code_arm(chunks, current, matched_slot, c_slot, "w", line, |chunks, current| {
             emit_dt_getter(chunks, current, dt_slot, "getDay", line);
             emit_stringify(&mut chunks[current], line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
+        });
         // T: literal "UTC"
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "T", line, |chunks, current| {
+        emit_code_arm(chunks, current, matched_slot, c_slot, "T", line, |chunks, current| {
             push_str(&mut chunks[current], "UTC", line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
+        });
     } else {
         // POSIX strftime codes — same shape, different code letters.
         // Y, y, m, d, e (no-pad day), H, M, S, A (full weekday),
         // a (short weekday), B (full month), b/h (short month), p, P, %.
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "Y", line, |chunks, current| {
+        emit_code_arm(chunks, current, matched_slot, c_slot, "Y", line, |chunks, current| {
             emit_dt_getter(chunks, current, dt_slot, "getFullYear", line);
             emit_stringify(&mut chunks[current], line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "y", line, |chunks, current| {
+        });
+        emit_code_arm(chunks, current, matched_slot, c_slot, "y", line, |chunks, current| {
             emit_dt_getter(chunks, current, dt_slot, "getFullYear", line);
             let idx = chunks[current].add_constant(Value::F64(100.0));
             chunks[current].emit_op_u16(Op::CONST, idx, line);
             crate::emitter::expressions::emit_f64_mod(&mut chunks[current], line);
             emit_pad_to_width(&mut chunks[current], 2, line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "m", line, |chunks, current| {
+        });
+        emit_code_arm(chunks, current, matched_slot, c_slot, "m", line, |chunks, current| {
             emit_dt_getter(chunks, current, dt_slot, "getMonth", line);
             let idx = chunks[current].add_constant(Value::F64(1.0));
             chunks[current].emit_op_u16(Op::CONST, idx, line);
             chunks[current].emit_op(Op::F64_ADD, line);
             emit_pad_to_width(&mut chunks[current], 2, line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "d", line, |chunks, current| {
+        });
+        emit_code_arm(chunks, current, matched_slot, c_slot, "d", line, |chunks, current| {
             emit_dt_getter(chunks, current, dt_slot, "getDate", line);
             emit_pad_to_width(&mut chunks[current], 2, line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "e", line, |chunks, current| {
+        });
+        emit_code_arm(chunks, current, matched_slot, c_slot, "e", line, |chunks, current| {
             emit_dt_getter(chunks, current, dt_slot, "getDate", line);
             emit_stringify(&mut chunks[current], line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "H", line, |chunks, current| {
+        });
+        emit_code_arm(chunks, current, matched_slot, c_slot, "H", line, |chunks, current| {
             emit_dt_getter(chunks, current, dt_slot, "getHours", line);
             emit_pad_to_width(&mut chunks[current], 2, line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "M", line, |chunks, current| {
+        });
+        emit_code_arm(chunks, current, matched_slot, c_slot, "M", line, |chunks, current| {
             emit_dt_getter(chunks, current, dt_slot, "getMinutes", line);
             emit_pad_to_width(&mut chunks[current], 2, line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "S", line, |chunks, current| {
+        });
+        emit_code_arm(chunks, current, matched_slot, c_slot, "S", line, |chunks, current| {
             emit_dt_getter(chunks, current, dt_slot, "getSeconds", line);
             emit_pad_to_width(&mut chunks[current], 2, line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "A", line, |chunks, current| {
+        });
+        emit_code_arm(chunks, current, matched_slot, c_slot, "A", line, |chunks, current| {
             emit_weekday_name(chunks, current, dt_slot, /*full=*/true, line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "a", line, |chunks, current| {
+        });
+        emit_code_arm(chunks, current, matched_slot, c_slot, "a", line, |chunks, current| {
             emit_weekday_name(chunks, current, dt_slot, /*full=*/false, line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "B", line, |chunks, current| {
+        });
+        emit_code_arm(chunks, current, matched_slot, c_slot, "B", line, |chunks, current| {
             emit_month_name(chunks, current, dt_slot, /*full=*/true, line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
+        });
         for code in &["b", "h"] {
-            done_jumps.push(emit_code_arm(chunks, current, c_slot, code, line, |chunks, current| {
+            emit_code_arm(chunks, current, matched_slot, c_slot, code, line, |chunks, current| {
                 emit_month_name(chunks, current, dt_slot, /*full=*/false, line);
                 emit_append_to_result(&mut chunks[current], result_slot, line);
-            }));
+            });
         }
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "p", line, |chunks, current| {
+        emit_code_arm(chunks, current, matched_slot, c_slot, "p", line, |chunks, current| {
             emit_am_pm(chunks, current, dt_slot, /*upper=*/true, result_slot, line);
-        }));
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "P", line, |chunks, current| {
+        });
+        emit_code_arm(chunks, current, matched_slot, c_slot, "P", line, |chunks, current| {
             emit_am_pm(chunks, current, dt_slot, /*upper=*/false, result_slot, line);
-        }));
-        done_jumps.push(emit_code_arm(chunks, current, c_slot, "%", line, |chunks, current| {
+        });
+        emit_code_arm(chunks, current, matched_slot, c_slot, "%", line, |chunks, current| {
             push_str(&mut chunks[current], "%", line);
             emit_append_to_result(&mut chunks[current], result_slot, line);
-        }));
+        });
     }
 
-    // Default arm: append the raw character itself.
+    // Default arm: append the raw character itself when no format arm matched.
     {
         let chunk = &mut chunks[current];
+        chunk.emit_op_u16(Op::LOCAL_GET, matched_slot, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_if(line);
         chunk.emit_op_u16(Op::LOCAL_GET, c_slot, line);
         emit_append_to_result(chunk, result_slot, line);
-    }
-
-    // Patch every "done" jump to land here (after the default arm).
-    for j in done_jumps {
-        chunks[current].patch_jump(j);
+        chunk.emit_end(line);
     }
 }
 
@@ -642,12 +652,11 @@ fn emit_am_pm(
     let idx = chunk.add_constant(Value::F64(12.0));
     chunk.emit_op_u16(Op::CONST, idx, line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
-    let skip = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_if(line);
     push_str(chunk, if upper { "AM" } else { "am" }, line);
-    let done = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(skip);
+    chunk.emit_else(line);
     push_str(chunk, if upper { "PM" } else { "pm" }, line);
-    chunk.patch_jump(done);
+    chunk.emit_end(line);
     emit_append_to_result(chunk, result_slot, line);
 }
 
@@ -727,11 +736,12 @@ fn emit_format_dt_runtime(
     local_set(chunk, len_slot, line);
 
     // while i < len:
-    let loop_top = chunk.current_offset();
+    let (loop_patch, _) = chunk.emit_loop_s(line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
-    let exit_jump = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(1, line);
 
     //   c = fmt.charAt(i)
     chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
@@ -744,7 +754,7 @@ fn emit_format_dt_runtime(
         chunk.emit_op_u16(Op::LOCAL_GET, c_slot, line);
         push_str(chunk, "\\", line);
         crate::emitter::ops::emit_dyn_eq(chunk, line);
-        let not_bs = chunk.emit_jump(Op::BR_IF_FALSE, line);
+        chunk.emit_if(line);
         // i++
         chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
         push_const(chunk, Value::F64(1.0), line);
@@ -754,42 +764,41 @@ fn emit_format_dt_runtime(
         chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
         crate::emitter::ops::emit_dyn_lt(chunk, line);
-        let oob = chunk.emit_jump(Op::BR_IF_FALSE, line);
+        chunk.emit_if(line);
         chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
         chunk.emit_op(Op::STR_CHAR_AT, line);
         emit_append_to_result(chunk, result_slot, line);
-        chunk.patch_jump(oob);
+        chunk.emit_end(line);
         // i++
         chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
         push_const(chunk, Value::F64(1.0), line);
         chunk.emit_op(Op::F64_ADD, line);
         local_set(chunk, i_slot, line);
         // continue
-        let after_bs = chunk.emit_jump(Op::BR, line);
-        chunk.patch_jump(not_bs);
+        chunk.emit_br(1, line);
+        chunk.emit_end(line);
         // Fall through to dispatch on c.
         emit_format_code_dispatch(
             chunks, current, dt_slot, c_slot, result_slot, /*mode_strftime=*/false, line,
         );
-        chunks[current].patch_jump(after_bs);
     } else {
         // strftime mode: each `%` introduces a code; consume next char.
         let chunk = &mut chunks[current];
         chunk.emit_op_u16(Op::LOCAL_GET, c_slot, line);
         push_str(chunk, "%", line);
         crate::emitter::ops::emit_dyn_eq(chunk, line);
-        let not_pct = chunk.emit_jump(Op::BR_IF_FALSE, line);
+        chunk.emit_if(line);
         // i++
         chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
         push_const(chunk, Value::F64(1.0), line);
         chunk.emit_op(Op::F64_ADD, line);
         local_set(chunk, i_slot, line);
-        // if i >= len: break (just append "%")
+        // if i < len: dispatch next code, else append "%"
         chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
         crate::emitter::ops::emit_dyn_lt(chunk, line);
-        let in_bounds = chunk.emit_jump(Op::BR_IF_FALSE, line);
+        chunk.emit_if(line);
         // c = fmt.charAt(i)
         chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
@@ -798,21 +807,19 @@ fn emit_format_dt_runtime(
         emit_format_code_dispatch(
             chunks, current, dt_slot, c_slot, result_slot, /*mode_strftime=*/true, line,
         );
-        let done_pct = chunks[current].emit_jump(Op::BR, line);
-        chunks[current].patch_jump(in_bounds);
-        // OOB: append "%" and break loop
+        chunks[current].emit_else(line);
+        // OOB: append "%"
         push_str(&mut chunks[current], "%", line);
         emit_append_to_result(&mut chunks[current], result_slot, line);
-        chunks[current].patch_jump(done_pct);
-        let after = chunks[current].emit_jump(Op::BR, line);
-        chunks[current].patch_jump(not_pct);
+        chunks[current].emit_end(line);
+        chunks[current].emit_else(line);
         // Plain char path: append c.
         {
             let chunk = &mut chunks[current];
             chunk.emit_op_u16(Op::LOCAL_GET, c_slot, line);
             emit_append_to_result(chunk, result_slot, line);
         }
-        chunks[current].patch_jump(after);
+        chunks[current].emit_end(line);
     }
 
     // i++
@@ -822,9 +829,9 @@ fn emit_format_dt_runtime(
         push_const(chunk, Value::F64(1.0), line);
         chunk.emit_op(Op::F64_ADD, line);
         local_set(chunk, i_slot, line);
-        // back to loop_top
-        chunk.emit_loop(loop_top, line);
-        chunk.patch_jump(exit_jump);
+        chunk.emit_br(0, line);
+        chunk.emit_end(line);
+        chunk.patch_loop(loop_patch);
         // push result
         chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     }
@@ -1006,22 +1013,26 @@ pub fn emit_php_checkdate(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     local_set(chunk, d_slot, line);
     local_set(chunk, m_slot, line);
 
-    // Range checks: 1<=m<=12, 1<=d<=31, 1<=y<=32767
-    // if m<1 or m>12 or d<1 or d>31 or y<1 or y>32767: return false
-    let bail_jumps: Vec<usize> = {
-        let mut v = Vec::new();
-        for &(slot, lo, hi) in &[(m_slot, 1.0_f64, 12.0_f64), (d_slot, 1.0, 31.0), (y_slot, 1.0, 32767.0)] {
-            local_get(chunk, slot, line);
-            push_const(chunk, Value::F64(lo), line);
-            crate::emitter::ops::emit_dyn_lt(chunk, line);
-            v.push(chunk.emit_jump(Op::BR_IF_TRUE, line));
-            local_get(chunk, slot, line);
-            push_const(chunk, Value::F64(hi), line);
-            crate::emitter::ops::emit_dyn_gt(chunk, line);
-            v.push(chunk.emit_jump(Op::BR_IF_TRUE, line));
-        }
-        v
-    };
+    // Range checks: 1<=m<=12, 1<=d<=31, 1<=y<=32767.
+    let result_slot = alloc_local(chunk);
+    chunk.emit_op(Op::TRUE, line);
+    local_set(chunk, result_slot, line);
+    for &(slot, lo, hi) in &[(m_slot, 1.0_f64, 12.0_f64), (d_slot, 1.0, 31.0), (y_slot, 1.0, 32767.0)] {
+        local_get(chunk, slot, line);
+        push_const(chunk, Value::F64(lo), line);
+        crate::emitter::ops::emit_dyn_lt(chunk, line);
+        chunk.emit_if(line);
+        chunk.emit_op(Op::FALSE, line);
+        local_set(chunk, result_slot, line);
+        chunk.emit_end(line);
+        local_get(chunk, slot, line);
+        push_const(chunk, Value::F64(hi), line);
+        crate::emitter::ops::emit_dyn_gt(chunk, line);
+        chunk.emit_if(line);
+        chunk.emit_op(Op::FALSE, line);
+        local_set(chunk, result_slot, line);
+        chunk.emit_end(line);
+    }
 
     // d = ecma:date.UTC(y, m-1, d)  → ms
     local_get(chunk, y_slot, line);
@@ -1066,26 +1077,18 @@ pub fn emit_php_checkdate(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     local_set(chunk, db_slot, line);
 
     // Each must equal input.
-    let bad_jumps: Vec<usize> = {
-        let mut v = Vec::new();
-        for &(in_slot, back_slot) in &[(y_slot, yb_slot), (m_slot, mb_slot), (d_slot, db_slot)] {
-            local_get(chunk, in_slot, line);
-            local_get(chunk, back_slot, line);
-            crate::emitter::ops::emit_dyn_eq(chunk, line);
-            v.push(chunk.emit_jump(Op::BR_IF_FALSE, line));
-        }
-        v
-    };
+    for &(in_slot, back_slot) in &[(y_slot, yb_slot), (m_slot, mb_slot), (d_slot, db_slot)] {
+        local_get(chunk, in_slot, line);
+        local_get(chunk, back_slot, line);
+        crate::emitter::ops::emit_dyn_eq(chunk, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_if(line);
+        chunk.emit_op(Op::FALSE, line);
+        local_set(chunk, result_slot, line);
+        chunk.emit_end(line);
+    }
 
-    chunk.emit_op(Op::TRUE, line);
-    let done_true = chunk.emit_jump(Op::BR, line);
-
-    // Bail-out paths land here.
-    for j in bail_jumps { chunk.patch_jump(j); }
-    for j in bad_jumps { chunk.patch_jump(j); }
-    chunk.emit_op(Op::FALSE, line);
-
-    chunk.patch_jump(done_true);
+    local_get(chunk, result_slot, line);
 }
 
 /// PHP `getdate(timestamp?)` — assoc array with date components.
@@ -1225,25 +1228,10 @@ pub fn emit_php_strtotime_rel_calendar(chunks: &mut [Chunk], current: usize, _ar
 
     // is_year ? setFullYear : setMonth
     local_get(chunk, is_year_slot, line);
-    let do_year = chunk.emit_jump(Op::BR_IF_TRUE, line);
-    // setMonth path
-    local_get(chunk, dt_slot, line);
-    let _ = chunk;
-    call_import(chunks, current, "ecma:date", "getMonth", 1, line);
-    let chunk = &mut chunks[current];
-    local_get(chunk, n_slot, line);
-    chunk.emit_op(Op::F64_ADD, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     let new_comp_slot = alloc_local(chunk);
-    local_set(chunk, new_comp_slot, line);
-    local_get(chunk, dt_slot, line);
-    local_get(chunk, new_comp_slot, line);
-    let _ = chunk;
-    call_import(chunks, current, "ecma:date", "setMonth", 2, line);
-    let chunk = &mut chunks[current];
     let new_ms_slot = alloc_local(chunk);
-    local_set(chunk, new_ms_slot, line);
-    let after_calendar = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(do_year);
+    chunk.emit_if(line);
 
     // setFullYear path
     local_get(chunk, dt_slot, line);
@@ -1259,7 +1247,23 @@ pub fn emit_php_strtotime_rel_calendar(chunks: &mut [Chunk], current: usize, _ar
     call_import(chunks, current, "ecma:date", "setFullYear", 2, line);
     let chunk = &mut chunks[current];
     local_set(chunk, new_ms_slot, line);
-    chunk.patch_jump(after_calendar);
+    chunk.emit_else(line);
+
+    // setMonth path
+    local_get(chunk, dt_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:date", "getMonth", 1, line);
+    let chunk = &mut chunks[current];
+    local_get(chunk, n_slot, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    local_set(chunk, new_comp_slot, line);
+    local_get(chunk, dt_slot, line);
+    local_get(chunk, new_comp_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:date", "setMonth", 2, line);
+    let chunk = &mut chunks[current];
+    local_set(chunk, new_ms_slot, line);
+    chunk.emit_end(line);
 
     // floor(new_ms / 1000)
     local_get(chunk, new_ms_slot, line);
@@ -1309,7 +1313,7 @@ fn emit_clone_if_immutable(chunk: &mut Chunk, dt_slot: u16, line: u32) {
     struct_get(chunk, TYPE_KEY, line);
     push_str(chunk, "DateTimeImmutable", line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
-    let skip_clone = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_if(line);
     // Build the clone: STRUCT_NEW + copy __type + copy __time.
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunk.emit_op(Op::DUP, line);
@@ -1321,7 +1325,7 @@ fn emit_clone_if_immutable(chunk: &mut Chunk, dt_slot: u16, line: u32) {
     struct_set(chunk, TIME_KEY, line);
     // Stack: [clone]; replace dt_slot with the clone.
     local_set(chunk, dt_slot, line);
-    chunk.patch_jump(skip_clone);
+    chunk.emit_end(line);
 }
 
 /// Apply a fixed-duration delta (n × ms_per_unit) to the receiver's

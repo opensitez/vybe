@@ -106,6 +106,15 @@ impl OutputPanel {
     pub fn scroll_y(&self) -> f32 { self.scroll_y }
     pub fn set_scroll_y(&mut self, y: f32) { self.scroll_y = y; }
 
+    /// Scroll to the last line of the active tab's content.
+    pub fn scroll_to_bottom(&mut self) {
+        let total = match self.active_tab {
+            OutputTab::Output => self.output_lines.len(),
+            OutputTab::Problems => self.problems.len(),
+        };
+        self.scroll_y = (total as f32 * Self::LINE_H - (self.rect.h - Self::HEADER_H)).max(0.0);
+    }
+
     /// Drain pending OutputPanelEvent actions from WidgetEvent::Action
     pub fn drain_panel_events(&mut self) -> Vec<OutputPanelEvent> {
         let mut result = Vec::new();

@@ -137,9 +137,11 @@ pub enum OperandFormat {
     U16_U16,
     /// 4 bytes: u16 + i16 (br_on_cast: type index + branch offset).
     U16_I16,
+    /// Unsigned LEB128 u32.
+    U32Leb,
     /// Variable: u16 func_idx + u8 upvalue_count + descriptors.
     Closure,
-    /// Variable: u8 count + u8 default + count × u8 labels.
+    /// Variable: u32 LEB count + count × u32 LEB labels + u32 LEB default.
     BrTable,
     /// Variable: u8 handler_count + handlers.
     TryTable,
@@ -159,9 +161,61 @@ impl OperandFormat {
             Self::U16_U8 => 3,
             Self::U16_U16 | Self::U16_I16 => 4,
             Self::V128Const | Self::Shuffle => 16,
-            Self::Closure | Self::BrTable | Self::TryTable => 0,
+            Self::Closure | Self::U32Leb | Self::BrTable | Self::TryTable => 0,
         }
     }
+
+    /// Operand size for formats whose size depends on operand bytes.
+    pub fn size_in(self, code: &[u8], operand_start: usize) -> usize {
+        match self {
+            Self::U32Leb => leb_u32_size(code, operand_start),
+            Self::Closure => {
+                let uv_count_pos = operand_start + 2;
+                let uv_count = code.get(uv_count_pos).copied().unwrap_or(0) as usize;
+                2 + 1 + uv_count * 2
+            }
+            Self::BrTable => br_table_size(code, operand_start),
+            Self::TryTable => {
+                let count = code.get(operand_start).copied().unwrap_or(0) as usize;
+                1 + count * 3
+            }
+            fmt => fmt.fixed_size(),
+        }
+    }
+}
+
+pub fn leb_u32_size(code: &[u8], start: usize) -> usize {
+    let mut len = 0usize;
+    while let Some(byte) = code.get(start + len) {
+        len += 1;
+        if byte & 0x80 == 0 { break; }
+        if len >= 5 { break; }
+    }
+    len
+}
+
+pub fn read_leb_u32(code: &[u8], ip: &mut usize) -> u32 {
+    let mut result = 0u32;
+    let mut shift = 0u32;
+    loop {
+        let byte = code.get(*ip).copied().unwrap_or(0);
+        *ip += 1;
+        result |= ((byte & 0x7f) as u32) << shift;
+        if byte & 0x80 == 0 { break; }
+        shift += 7;
+        if shift >= 35 { break; }
+    }
+    result
+}
+
+pub fn br_table_size(code: &[u8], operand_start: usize) -> usize {
+    let mut ip = operand_start;
+    let count = read_leb_u32(code, &mut ip) as usize;
+    for _ in 0..count {
+        let _ = read_leb_u32(code, &mut ip);
+    }
+    let _default = read_leb_u32(code, &mut ip);
+    ip.saturating_sub(operand_start)
 }
 
 /// Helper macro for category files. Generates name() and operand_format() functions

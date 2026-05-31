@@ -29,9 +29,14 @@ fn emit_autoderef_cell(chunks: &mut [Chunk], current: usize, line: u32) {
     let obj_slot = alloc_local(&mut chunks[current]);
     lset(&mut chunks[current], obj_slot, line);
 
+    let done_block = chunks[current].emit_block(line);
+    let fallback_block = chunks[current].emit_block(line);
+
     lget(&mut chunks[current], obj_slot, line);
     chunks[current].emit_op(Op::REF_IS_OBJECT, line);
-    let not_object = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(0, line);
 
     lget(&mut chunks[current], obj_slot, line);
     let kind_key = struct_key(&mut chunks[current], "__ref_kind");
@@ -39,17 +44,19 @@ fn emit_autoderef_cell(chunks: &mut [Chunk], current: usize, line: u32) {
     let cell_value = chunks[current].add_constant(Value::String(Arc::from("cell")));
     chunks[current].emit_op_u16(Op::CONST, cell_value, line);
     crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    let not_cell = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(0, line);
 
     lget(&mut chunks[current], obj_slot, line);
     let value_key = struct_key(&mut chunks[current], "__value");
     chunks[current].emit_op_u16(Op::STRUCT_GET, value_key, line);
-    let done = chunks[current].emit_jump(Op::BR, line);
+    chunks[current].emit_br(1, line);
 
-    chunks[current].patch_jump(not_cell);
-    chunks[current].patch_jump(not_object);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(fallback_block);
     lget(&mut chunks[current], obj_slot, line);
-    chunks[current].patch_jump(done);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(done_block);
 }
 
 pub fn emit_send(chunks: &mut [Chunk], current: usize, line: u32) {

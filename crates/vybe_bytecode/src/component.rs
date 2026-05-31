@@ -323,32 +323,9 @@ impl Linker {
                                     }
                                 }
                             }
-                            // Skip using operand_format
-                            use crate::opcode::OperandFormat;
                             let fmt = op.operand_format();
                             ip += 2; // 2-byte opcode
-                            match fmt {
-                                OperandFormat::Closure => {
-                                    ip += 2 + 1; // u16 + u8 uv_count
-                                    if ip > 0 && ip - 1 < code.len() {
-                                        let uv = code[ip - 1] as usize;
-                                        ip += uv * 2;
-                                    }
-                                }
-                                OperandFormat::BrTable => {
-                                    if ip < code.len() {
-                                        let count = code[ip] as usize;
-                                        ip += 2 + count;
-                                    }
-                                }
-                                OperandFormat::TryTable => {
-                                    if ip < code.len() {
-                                        let count = code[ip] as usize;
-                                        ip += 1 + count * 3;
-                                    }
-                                }
-                                _ => { ip += fmt.fixed_size(); }
-                            }
+                            ip += fmt.size_in(code, ip);
                         } else {
                             ip += 2;
                         }

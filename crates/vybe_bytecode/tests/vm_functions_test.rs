@@ -251,13 +251,19 @@ fn recursive_fibonacci() {
     fib.emit_op_u16(Op::LOCAL_GET, 0, 0); // n
     fib.emit_op_u16(Op::CONST, c0, 0);  // 0
     fib.emit_op(Op::I32_LE_S, 0);
-    let jump_base0 = fib.emit_jump(Op::BR_IF_TRUE, 0);
+    fib.emit_if(0);
+    fib.emit_op_u16(Op::CONST, c0, 0);
+    fib.emit_op(Op::RETURN, 0);
+    fib.emit_end(0);
 
     // if n == 1, return 1
     fib.emit_op_u16(Op::LOCAL_GET, 0, 0); // n
     fib.emit_op_u16(Op::CONST, c1, 0);  // 1
     fib.emit_op(Op::I32_EQ, 0);
-    let jump_base1 = fib.emit_jump(Op::BR_IF_TRUE, 0);
+    fib.emit_if(0);
+    fib.emit_op_u16(Op::CONST, c1, 0);
+    fib.emit_op(Op::RETURN, 0);
+    fib.emit_end(0);
 
     // recursive: fib(n-1) + fib(n-2)
     fib.emit_op_u16(Op::REF_FUNC, 1, 0);
@@ -275,16 +281,6 @@ fn recursive_fibonacci() {
     fib.emit_op_u8(Op::CALL, 1, 0); // fib(n-2)
 
     fib.emit_op(Op::I32_ADD, 0);
-    fib.emit_op(Op::RETURN, 0);
-
-    // base case 0: return 0
-    fib.patch_jump(jump_base0);
-    fib.emit_op_u16(Op::CONST, c0, 0);
-    fib.emit_op(Op::RETURN, 0);
-
-    // base case 1: return 1
-    fib.patch_jump(jump_base1);
-    fib.emit_op_u16(Op::CONST, c1, 0);
     fib.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, fib]);
@@ -312,7 +308,10 @@ fn recursive_factorial() {
     fact.emit_op_u16(Op::LOCAL_GET, 0, 0);
     fact.emit_op_u16(Op::CONST, c1, 0);
     fact.emit_op(Op::I32_LE_S, 0);
-    let jump_base = fact.emit_jump(Op::BR_IF_TRUE, 0);
+    fact.emit_if(0);
+    fact.emit_op_u16(Op::CONST, c1, 0);
+    fact.emit_op(Op::RETURN, 0);
+    fact.emit_end(0);
 
     // n * fact(n-1)
     fact.emit_op_u16(Op::LOCAL_GET, 0, 0);
@@ -323,11 +322,6 @@ fn recursive_factorial() {
     fact.emit_op(Op::I32_SUB, 0);
     fact.emit_op_u8(Op::CALL, 1, 0);
     fact.emit_op(Op::I32_MUL, 0);
-    fact.emit_op(Op::RETURN, 0);
-
-    // base: return 1
-    fact.patch_jump(jump_base);
-    fact.emit_op_u16(Op::CONST, c1, 0);
     fact.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, fact]);

@@ -24,7 +24,7 @@
 //! ```
 
 use crate::chunk::Chunk;
-use crate::opcode::{Op, OperandFormat};
+use crate::opcode::{Op, OperandFormat, read_leb_u32};
 use crate::value::Value;
 use std::fmt::Write;
 
@@ -169,10 +169,25 @@ fn render_instruction(out: &mut String, chunk: &Chunk, op: Op, ip: usize) {
             let raw = ((chunk.code[ip + 4] as u16) << 8) | chunk.code[ip + 5] as u16;
             let _ = write!(out, " {a} {}", raw as i16);
         }
+        OperandFormat::U32Leb => {
+            let mut operand_ip = ip + 2;
+            let value = read_leb_u32(&chunk.code, &mut operand_ip);
+            let _ = write!(out, " {value}");
+        }
+        OperandFormat::BrTable => {
+            let mut operand_ip = ip + 2;
+            let count = read_leb_u32(&chunk.code, &mut operand_ip);
+            for _ in 0..count {
+                let label = read_leb_u32(&chunk.code, &mut operand_ip);
+                let _ = write!(out, " {label}");
+            }
+            let default = read_leb_u32(&chunk.code, &mut operand_ip);
+            let _ = write!(out, " {default}");
+        }
         OperandFormat::V128Const | OperandFormat::Shuffle => {
             let _ = write!(out, " <{} bytes>", 16);
         }
-        OperandFormat::Closure | OperandFormat::BrTable | OperandFormat::TryTable => {
+        OperandFormat::Closure | OperandFormat::TryTable => {
             let _ = write!(out, " <variable-length>");
         }
     }

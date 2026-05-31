@@ -1,17 +1,11 @@
-use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
 use std::thread;
 use crossbeam_channel::{Sender, Receiver};
-use lsp_server::{Message, Notification};
 use lsp_types::{
-    InitializedParams, ClientCapabilities, 
-    Diagnostic, PublishDiagnosticsParams, Position, Range, DiagnosticSeverity,
-    CompletionResponse, CompletionItemKind, Hover, GotoDefinitionResponse,
+    Diagnostic, Position, Range, DiagnosticSeverity, CompletionItemKind,
 };
-// no direct Url/Uri import; use JSON strings for URIs to avoid type mismatches
+use vybe_compiler::lsp::{AnalysisResult, SymbolKind};
 
-/// A simplified completion item for the UI layer.
 #[derive(Debug, Clone)]
 pub struct SimpleCompletion {
     pub label: String,
@@ -21,24 +15,24 @@ pub struct SimpleCompletion {
 }
 
 pub enum LspEvent {
-    Diagnostics(String, Vec<Diagnostic>), // URI, Diagnostics
-    Completion(Vec<SimpleCompletion>),     // Completion items
+    Diagnostics(String, Vec<Diagnostic>),
+    Completion(Vec<SimpleCompletion>),
     #[allow(dead_code)]
-    Hover(String, String),               // URI, Hover text
+    Hover(String, String),
     #[allow(dead_code)]
-    Definition(String, Position),        // URI, Position
+    Definition(String, Position),
 }
 
 pub enum LspRequest {
-    Init(String, String, String), // content, language_id, uri
-    Change(String, String),        // content, uri
-    Completion(String, u32, u32),  // uri, line, col
+    Init(String, String, String),   // content, language_id, uri
+    Change(String, String),         // content, uri
+    Completion(String, u32, u32),   // uri, line, col
     #[allow(dead_code)]
-    Close(String),                 // uri
+    Close(String),
     #[allow(dead_code)]
-    Hover(String, u32, u32),       // uri, line, col
+    Hover(String, u32, u32),
     #[allow(dead_code)]
-    Definition(String, u32, u32),  // uri, line, col
+    Definition(String, u32, u32),
 }
 
 pub struct LspClient {
@@ -52,166 +46,50 @@ impl LspClient {
         let (evt_tx, evt_rx) = crossbeam_channel::unbounded();
 
         thread::spawn(move || {
-            let mut child: Option<std::process::Child> = None;
-            let mut child_in: Option<std::io::BufWriter<std::process::ChildStdin>> = None;
-            let mut versions: std::collections::HashMap<String, i32> = std::collections::HashMap::new();
-            let next_id = Arc::new(AtomicI32::new(2)); // 1 is reserved for init
-            let pending: Arc<Mutex<std::collections::HashMap<i32, String>>> = Arc::new(Mutex::new(std::collections::HashMap::new()));
+            // uri → (content, analysis result)
+            let mut cache: HashMap<String, (String, AnalysisResult)> = HashMap::new();
 
             loop {
                 crossbeam_channel::select! {
                     recv(req_rx) -> req => {
-                        if let Ok(req) = req {
-                            match req {
-                                LspRequest::Init(content, lang, uri) => {
-                                    if lang == "rust" && child.is_none() {
-                                        if let Ok(mut c) = Command::new("rust-analyzer")
-                                            .stdin(Stdio::piped())
-                                            .stdout(Stdio::piped())
-                                            .stderr(Stdio::inherit())
-                                            .spawn() 
-                                        {
-                                            let stdin = std::io::BufWriter::new(c.stdin.take().unwrap());
-                                            let mut stdout = std::io::BufReader::new(c.stdout.take().unwrap());
-                                            child_in = Some(stdin);
-                                            child = Some(c);
-
-                                            // Initialization sequence
-                                            if let Some(mut stdin) = child_in.as_mut() {
-                                                let params_val = serde_json::json!({
-                                                    "processId": std::process::id(),
-                                                    "capabilities": serde_json::to_value(ClientCapabilities::default()).unwrap(),
-                                                    "rootUri": format!("file://{}", std::env::current_dir().unwrap_or_default().to_string_lossy()),
-                                                });
-                                                let init_req = lsp_server::Request { id: 1.into(), method: "initialize".to_string(), params: params_val };
-                                                Message::Request(init_req).write(&mut stdin).ok();
-                                                
-                                                // Reader thread for this child
-                                                let etx = evt_tx.clone();
-                                                let pending_clone = pending.clone();
-                                                thread::spawn(move || {
-                                                    while let Ok(Some(msg)) = Message::read(&mut stdout) {
-                                                        match msg {
-                                                            Message::Notification(not) if not.method == "textDocument/publishDiagnostics" => {
-                                                                if let Ok(params) = serde_json::from_value::<PublishDiagnosticsParams>(not.params) {
-                                                                    etx.send(LspEvent::Diagnostics(params.uri.to_string(), params.diagnostics)).ok();
-                                                                }
-                                                            }
-                                                            Message::Response(res) if res.id == 1.into() => {
-                                                                // Init response — ignored
-                                                            }
-                                                            Message::Response(res) => {
-                                                                let id_num = res.id.to_string().parse::<i32>().unwrap_or(0);
-                                                                let method = pending_clone.lock().ok()
-                                                                    .and_then(|mut m| m.remove(&id_num));
-                                                                if let Some(result) = res.result {
-                                                                    match method.as_deref() {
-                                                                        Some("textDocument/completion") => {
-                                                                            if let Ok(cr) = serde_json::from_value::<CompletionResponse>(result) {
-                                                                                let items = match cr {
-                                                                                    CompletionResponse::Array(arr) => arr,
-                                                                                    CompletionResponse::List(list) => list.items,
-                                                                                };
-                                                                                let simple: Vec<SimpleCompletion> = items.into_iter().map(|ci| {
-                                                                                    SimpleCompletion {
-                                                                                        label: ci.label.clone(),
-                                                                                        detail: ci.detail.clone(),
-                                                                                        insert_text: ci.insert_text.unwrap_or(ci.label),
-                                                                                        kind: ci.kind,
-                                                                                    }
-                                                                                }).collect();
-                                                                                etx.send(LspEvent::Completion(simple)).ok();
-                                                                            }
-                                                                        }
-                                                                        Some("textDocument/hover") => {
-                                                                            if let Ok(hover) = serde_json::from_value::<Hover>(result) {
-                                                                                let text = match hover.contents {
-                                                                                    lsp_types::HoverContents::Scalar(mc) => match mc {
-                                                                                        lsp_types::MarkedString::String(s) => s,
-                                                                                        lsp_types::MarkedString::LanguageString(ls) => ls.value,
-                                                                                    },
-                                                                                    lsp_types::HoverContents::Array(arr) => arr.into_iter().map(|mc| match mc {
-                                                                                        lsp_types::MarkedString::String(s) => s,
-                                                                                        lsp_types::MarkedString::LanguageString(ls) => ls.value,
-                                                                                    }).collect::<Vec<_>>().join("\n"),
-                                                                                    lsp_types::HoverContents::Markup(mc) => mc.value,
-                                                                                };
-                                                                                if !text.is_empty() {
-                                                                                    etx.send(LspEvent::Hover(String::new(), text)).ok();
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                        Some("textDocument/definition") => {
-                                                                            if let Ok(def) = serde_json::from_value::<GotoDefinitionResponse>(result) {
-                                                                                let (uri, pos) = match def {
-                                                                                    GotoDefinitionResponse::Scalar(loc) => (loc.uri.to_string(), loc.range.start),
-                                                                                    GotoDefinitionResponse::Array(locs) => {
-                                                                                        if let Some(loc) = locs.first() { (loc.uri.to_string(), loc.range.start) }
-                                                                                        else { return; }
-                                                                                    }
-                                                                                    GotoDefinitionResponse::Link(links) => {
-                                                                                        if let Some(link) = links.first() { (link.target_uri.to_string(), link.target_selection_range.start) }
-                                                                                        else { return; }
-                                                                                    }
-                                                                                };
-                                                                                etx.send(LspEvent::Definition(uri, pos)).ok();
-                                                                            }
-                                                                        }
-                                                                        _ => {}
-                                                                    }
-                                                                }
-                                                            }
-                                                            _ => {}
-                                                        }
-                                                    }
-                                                });
-
-                                                // Send initialized
-                                                Message::Notification(Notification { 
-                                                    method: "initialized".to_string(), 
-                                                    params: serde_json::to_value(InitializedParams {}).unwrap() 
-                                                }).write(&mut stdin).ok();
-                                            }
-                                        }
-                                    }
-                                    
-                                    if let Some(mut stdin) = child_in.as_mut() {
-                                        let v = versions.entry(uri.clone()).or_insert(0);
-                                        *v += 1;
-                                        Message::Notification(Notification { 
-                                            method: "textDocument/didOpen".to_string(), 
-                                            params: serde_json::json!({ 
-                                                "textDocument": { "uri": uri, "languageId": lang, "version": *v, "text": content } 
-                                            }) 
-                                        }).write(&mut stdin).ok();
-                                    } else {
-                                        run_internal_analysis(&lang, &content, &uri, &evt_tx);
-                                    }
-                                }
-                                LspRequest::Change(content, uri) => {
-                                    if let Some(mut stdin) = child_in.as_mut() {
-                                        let v = versions.entry(uri.clone()).or_insert(0);
-                                        *v += 1;
-                                        Message::Notification(Notification { 
-                                            method: "textDocument/didChange".to_string(), 
-                                            params: serde_json::json!({ 
-                                                "textDocument": { "uri": uri, "version": *v }, 
-                                                "contentChanges": [{ "text": content }] 
-                                            }) 
-                                        }).write(&mut stdin).ok();
-                                    }
-                                }
-                                LspRequest::Completion(uri, line, col) => {
-                                    send_lsp_request(&mut child_in, &next_id, &pending, "textDocument/completion", &uri, line, col);
-                                }
-                                LspRequest::Hover(uri, line, col) => {
-                                    send_lsp_request(&mut child_in, &next_id, &pending, "textDocument/hover", &uri, line, col);
-                                }
-                                LspRequest::Definition(uri, line, col) => {
-                                    send_lsp_request(&mut child_in, &next_id, &pending, "textDocument/definition", &uri, line, col);
-                                }
-                                _ => {}
+                        let Ok(req) = req else { continue };
+                        match req {
+                            LspRequest::Init(content, _, uri) | LspRequest::Change(content, uri) => {
+                                let result = vybe_compiler::lsp::analyze(&uri, &content);
+                                emit_diagnostics(&result, &uri, &evt_tx);
+                                cache.insert(uri, (content, result));
                             }
+                            LspRequest::Completion(uri, line, col) => {
+                                if let Some((content, result)) = cache.get(&uri) {
+                                    let prefix = word_before(content, line, col);
+                                    evt_tx.send(LspEvent::Completion(build_completions(result, &prefix))).ok();
+                                }
+                            }
+                            LspRequest::Hover(uri, line, col) => {
+                                if let Some((content, result)) = cache.get(&uri) {
+                                    let word = word_before(content, line, col);
+                                    if let Some(sym) = find_symbol(&result.symbols, &word) {
+                                        let text = if sym.detail.is_empty() {
+                                            sym.name.clone()
+                                        } else {
+                                            format!("{} {}", sym.name, sym.detail)
+                                        };
+                                        evt_tx.send(LspEvent::Hover(uri, text)).ok();
+                                    }
+                                }
+                            }
+                            LspRequest::Definition(uri, line, col) => {
+                                if let Some((content, result)) = cache.get(&uri) {
+                                    let word = word_before(content, line, col);
+                                    if let Some(sym) = find_symbol(&result.symbols, &word) {
+                                        evt_tx.send(LspEvent::Definition(
+                                            uri.clone(),
+                                            Position::new(sym.line, 0),
+                                        )).ok();
+                                    }
+                                }
+                            }
+                            LspRequest::Close(_) => {}
                         }
                     }
                 }
@@ -224,51 +102,94 @@ impl LspClient {
     pub fn send(&self, req: LspRequest) { self.tx.send(req).ok(); }
 }
 
-fn run_internal_analysis(lang: &str, content: &str, uri: &str, tx: &Sender<LspEvent>) {
-    let result = vybe_compiler::lsp::analyze(uri, content);
-    let diagnostics = result.diagnostics.into_iter().map(|d| {
-        Diagnostic {
-            range: Range::new(
-                Position::new(d.line, d.col),
-                Position::new(d.line, d.end_col),
-            ),
-            severity: Some(match d.severity {
-                vybe_compiler::lsp::DiagSeverity::Error => DiagnosticSeverity::ERROR,
-                vybe_compiler::lsp::DiagSeverity::Warning => DiagnosticSeverity::WARNING,
-                vybe_compiler::lsp::DiagSeverity::Info => DiagnosticSeverity::INFORMATION,
-            }),
-            code: None,
-            code_description: None,
-            source: Some(format!("vybe-{}", lang)),
-            message: d.message,
-            related_information: None,
-            tags: None,
-            data: None,
-        }
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+fn emit_diagnostics(result: &AnalysisResult, uri: &str, tx: &Sender<LspEvent>) {
+    let diagnostics = result.diagnostics.iter().map(|d| Diagnostic {
+        range: Range::new(Position::new(d.line, d.col), Position::new(d.line, d.end_col)),
+        severity: Some(match d.severity {
+            vybe_compiler::lsp::DiagSeverity::Error   => DiagnosticSeverity::ERROR,
+            vybe_compiler::lsp::DiagSeverity::Warning => DiagnosticSeverity::WARNING,
+            vybe_compiler::lsp::DiagSeverity::Info    => DiagnosticSeverity::INFORMATION,
+        }),
+        source: Some("vybe".to_string()),
+        message: d.message.clone(),
+        ..Default::default()
     }).collect();
     tx.send(LspEvent::Diagnostics(uri.to_string(), diagnostics)).ok();
 }
 
-fn send_lsp_request(
-    child_in: &mut Option<std::io::BufWriter<std::process::ChildStdin>>,
-    next_id: &Arc<AtomicI32>,
-    pending: &Arc<Mutex<std::collections::HashMap<i32, String>>>,
-    method: &str,
-    uri: &str,
-    line: u32,
-    col: u32,
-) {
-    if let Some(stdin) = child_in.as_mut() {
-        let id = next_id.fetch_add(1, Ordering::Relaxed);
-        if let Ok(mut map) = pending.lock() { map.insert(id, method.to_string()); }
-        let req = lsp_server::Request {
-            id: id.into(),
-            method: method.to_string(),
-            params: serde_json::json!({
-                "textDocument": { "uri": uri },
-                "position": { "line": line, "character": col },
-            }),
-        };
-        Message::Request(req).write(stdin).ok();
+/// Word immediately before (line, col) — the completion prefix.
+fn word_before(content: &str, line: u32, col: u32) -> String {
+    let line_text = content.lines().nth(line as usize).unwrap_or("");
+    let col = (col as usize).min(line_text.len());
+    let start = line_text[..col]
+        .rfind(|c: char| !c.is_alphanumeric() && c != '_')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    line_text[start..col].to_string()
+}
+
+/// Recursively find a symbol by name (case-insensitive).
+fn find_symbol<'a>(syms: &'a [vybe_compiler::lsp::Symbol], name: &str) -> Option<&'a vybe_compiler::lsp::Symbol> {
+    if name.is_empty() { return None; }
+    let lower = name.to_lowercase();
+    for sym in syms {
+        if sym.name.to_lowercase() == lower { return Some(sym); }
+        if let Some(f) = find_symbol(&sym.children, name) { return Some(f); }
+    }
+    None
+}
+
+fn build_completions(result: &AnalysisResult, prefix: &str) -> Vec<SimpleCompletion> {
+    let lower = prefix.to_lowercase();
+    let mut items = Vec::new();
+    collect_from_symbols(&result.symbols, &lower, &mut items);
+    for &kw in result.keywords {
+        if kw.to_lowercase().starts_with(&lower) {
+            items.push(SimpleCompletion {
+                label: kw.to_string(),
+                detail: None,
+                insert_text: kw.to_string(),
+                kind: Some(CompletionItemKind::KEYWORD),
+            });
+        }
+    }
+    items.sort_by(|a, b| a.label.cmp(&b.label));
+    items.dedup_by(|a, b| a.label == b.label);
+    items.truncate(60);
+    items
+}
+
+fn collect_from_symbols(syms: &[vybe_compiler::lsp::Symbol], prefix: &str, out: &mut Vec<SimpleCompletion>) {
+    for sym in syms {
+        if sym.name.to_lowercase().starts_with(prefix) {
+            out.push(SimpleCompletion {
+                label: sym.name.clone(),
+                detail: if sym.detail.is_empty() { None } else { Some(sym.detail.clone()) },
+                insert_text: sym.name.clone(),
+                kind: Some(kind_to_lsp(sym.kind)),
+            });
+        }
+        collect_from_symbols(&sym.children, prefix, out);
+    }
+}
+
+fn kind_to_lsp(k: SymbolKind) -> CompletionItemKind {
+    match k {
+        SymbolKind::Function | SymbolKind::Procedure => CompletionItemKind::FUNCTION,
+        SymbolKind::Class    => CompletionItemKind::CLASS,
+        SymbolKind::Interface => CompletionItemKind::INTERFACE,
+        SymbolKind::Variable  => CompletionItemKind::VARIABLE,
+        SymbolKind::Constant  => CompletionItemKind::CONSTANT,
+        SymbolKind::Field     => CompletionItemKind::FIELD,
+        SymbolKind::Property  => CompletionItemKind::PROPERTY,
+        SymbolKind::Method | SymbolKind::Constructor => CompletionItemKind::METHOD,
+        SymbolKind::Module    => CompletionItemKind::MODULE,
+        SymbolKind::Enum      => CompletionItemKind::ENUM,
+        SymbolKind::EnumMember => CompletionItemKind::ENUM_MEMBER,
+        SymbolKind::Struct    => CompletionItemKind::STRUCT,
+        SymbolKind::Event     => CompletionItemKind::EVENT,
+        SymbolKind::Type      => CompletionItemKind::TYPE_PARAMETER,
     }
 }

@@ -70,7 +70,11 @@ impl App {
             self.output_lines_buffer.drain(..drop);
         }
         self.output_panel.set_output_lines(&self.output_lines_buffer);
-        self.output_panel.set_visible(true);
+        if !self.output_panel.visible() {
+            self.output_panel.set_visible(true);
+            self.relayout();
+        }
+        self.output_panel.scroll_to_bottom();
     }
 
     pub(super) fn flush_code_to_project(&mut self) {
@@ -132,8 +136,8 @@ impl App {
             super::BuildConfig::Release => "--release",
         };
         let vybec = std::env::current_exe().ok()
-            .and_then(|p| p.parent().map(|d| d.join("vybec")))
-            .unwrap_or_else(|| std::path::PathBuf::from("vybec"));
+            .and_then(|p| p.parent().map(|d| d.join("vybex")))
+            .unwrap_or_else(|| std::path::PathBuf::from("vybex"));
         self.output_push(format!("Building ({})...", if self.build_config == super::BuildConfig::Debug { "Debug" } else { "Release" }));
         match std::process::Command::new(&vybec)
             .arg(&path)
@@ -194,7 +198,7 @@ impl App {
                         }
                     }
                 }
-                Err(e) => println!("Failed to load form: {}", e),
+                Err(e) => self.output_push(format!("Failed to load form: {}", e)),
             }
         }
     }
@@ -295,7 +299,7 @@ impl App {
             let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
             let code = match vybe_compiler::projects::read_text_file(&path) {
                 Ok(c) => c,
-                Err(e) => { println!("Failed to read: {}", e); continue; }
+                Err(e) => { self.output_push(format!("Cannot read file: {}", e)); continue; }
             };
             if self.project.code_files.iter().all(|cf| cf.name != name) {
                 self.project.code_files.push(vybe_compiler::projects::project::CodeFile {
@@ -573,9 +577,7 @@ impl App {
         if let Some(tab) = self.tabs.get(self.active_tab) {
             if let TabContent::Code(w) = &tab.content {
                 let (line, col) = w.cursor_pos();
-                let uri = tab.path.as_deref()
-                    .map(|p| format!("file://{}", p))
-                    .unwrap_or_else(|| format!("file:///Users/youness/www/html/vybe/{}", tab.name));
+                let uri = App::tab_uri(tab);
                 self.lsp.send(LspRequest::Completion(uri, line as u32, col as u32));
             }
         }
@@ -811,6 +813,15 @@ impl App {
             }
         }
 
+        // Also walk the filesystem from the project directory
+        if hits.len() < CAP {
+            if let Some(proj_path) = &self.project_path {
+                if let Some(root) = std::path::Path::new(proj_path).parent() {
+                    search_dir(root, &needle, &mut hits, CAP);
+                }
+            }
+        }
+
         self.project_search_results = hits;
     }
 
@@ -847,5 +858,50 @@ impl App {
             is_modified: false,
         });
         self.active_tab = self.tabs.len() - 1;
+    }
+}
+
+// ── Filesystem search helpers ──────────────────────────────────────────────
+
+fn is_text_extension(ext: &str) -> bool {
+    matches!(ext,
+        "rs"|"vb"|"bas"|"frm"|"cls"|"cs"|"js"|"mjs"|"ts"|"tsx"|"py"|"php"|"rb"|"dart"|
+        "java"|"go"|"c"|"h"|"cpp"|"cc"|"hpp"|"html"|"htm"|"css"|"json"|"toml"|"yaml"|
+        "yml"|"md"|"txt"|"sql"|"sh"|"ps1"|"lua"|"pas"|"pp"|"cob"|"cbl"|"f90"|"f95"|"r"
+    )
+}
+
+pub(super) fn search_dir(
+    root: &std::path::Path,
+    needle: &str,
+    hits: &mut Vec<super::ProjectSearchHit>,
+    cap: usize,
+) {
+    let Ok(entries) = std::fs::read_dir(root) else { return };
+    for entry in entries.flatten() {
+        if hits.len() >= cap { return; }
+        let path = entry.path();
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        // Skip hidden entries and common build/cache dirs
+        if name.starts_with('.') { continue; }
+        if matches!(name.as_ref(), "target" | "node_modules" | "__pycache__" | "build" | "dist") { continue; }
+        if path.is_dir() {
+            search_dir(&path, needle, hits, cap);
+        } else if path.is_file() {
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if !is_text_extension(ext) { continue; }
+            let Ok(content) = std::fs::read_to_string(&path) else { continue };
+            let display = path.to_string_lossy().to_string();
+            for (li, line) in content.lines().enumerate() {
+                if hits.len() >= cap { return; }
+                if line.to_lowercase().contains(needle) {
+                    hits.push(super::ProjectSearchHit {
+                        file: display.clone(),
+                        line: li,
+                        snippet: line.trim().chars().take(120).collect(),
+                    });
+                }
+            }
+        }
     }
 }

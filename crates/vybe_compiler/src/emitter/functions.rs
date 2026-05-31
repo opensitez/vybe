@@ -21,21 +21,25 @@ use vybe_bytecode::opcode::Op;
 /// Emit the start of a default parameter check.
 /// If the parameter at `param_slot` is null (missing arg), the caller should compile
 /// the default expression, then call `emit_default_param_end`.
-/// Returns a jump offset to patch.
+/// Returns a structured block patch to close.
 /// Stack: unchanged
 pub fn emit_default_param_start(chunk: &mut Chunk, param_slot: u16, line: u32) -> usize {
     chunk.emit_op_u16(Op::LOCAL_GET, param_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    chunk.emit_jump(Op::BR_IF_FALSE, line)
+    let block = chunk.emit_block(line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(0, line);
+    block
 }
 
 /// Emit the end of a default parameter check.
 /// Caller must have compiled the default expression onto the stack.
 /// Stack before: [default_value]  Stack after: [] (stored in param_slot)
-pub fn emit_default_param_end(chunk: &mut Chunk, param_slot: u16, skip_jump: usize, line: u32) {
+pub fn emit_default_param_end(chunk: &mut Chunk, param_slot: u16, block: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, param_slot, line);
     chunk.emit_op(Op::DROP, line);
-    chunk.patch_jump(skip_jump);
+    chunk.emit_end(line);
+    chunk.patch_block(block);
 }
 
 // ── Function chunk scaffolding ──────────────────────────────────────────

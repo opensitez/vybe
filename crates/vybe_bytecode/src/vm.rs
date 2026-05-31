@@ -289,6 +289,9 @@ pub struct VM {
     pub active_continuations: Vec<ActiveContinuation>,
     /// Block label stack for structured control flow.
     pub label_stack: Vec<LabelEntry>,
+    /// Per-chunk block tables: chunk_index → (opcode_start → BlockTargets).
+    /// Lazily populated on first BLOCK/LOOP/IF/ELSE dispatch in each chunk.
+    pub(crate) block_tables: HashMap<usize, HashMap<usize, BlockTargets>>,
     /// Callback invoker for host functions (cached allocation).
     pub(crate) callback_invoker: Option<Box<dyn FnMut(&Value, &[Value]) -> Value>>,
     /// Last exception value thrown by a callback that had no handler.
@@ -334,12 +337,24 @@ pub(crate) struct FinalizerEntry {
 }
 
 /// Entry in the structured control flow label stack.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct LabelEntry {
     /// Instruction offset to jump to on `br` (end of block, or start of loop).
     pub target: usize,
-    /// True if this is a loop (continue jumps to start), false if block (break jumps to end).
+    /// True if this is a loop (continue jumps to start), false if block/if (break jumps to end).
     pub is_loop: bool,
+}
+
+/// Pre-scanned jump targets for one BLOCK / LOOP / IF / ELSE opcode.
+/// Keyed by the opcode's position (first prefix byte) in chunk.code.
+#[derive(Debug, Clone, Copy)]
+pub struct BlockTargets {
+    /// For IF: position of the matching ELSE opcode (None if no else branch).
+    /// For ELSE: None.
+    /// For BLOCK/LOOP: None.
+    pub else_ip: Option<usize>,
+    /// Position of the matching END opcode.
+    pub end_ip: usize,
 }
 
 impl VM {
@@ -394,6 +409,7 @@ impl VM {
             type_recorder: None,
             active_continuations: Vec::new(),
             label_stack: Vec::new(),
+            block_tables: HashMap::new(),
             callback_invoker: None,
             last_exception: None,
             strict_isolation: false,
@@ -967,35 +983,8 @@ impl VM {
                             continue;
                         }
                         ip += 2; // all opcodes are 2 bytes
-                        // Skip operands based on format
                         let fmt = op.operand_format();
-                        match fmt {
-                            crate::opcode::OperandFormat::Closure => {
-                                // Already handled above for REF_FUNC
-                                ip += 2 + 1; // u16 func_idx + u8 uv_count
-                                if ip - 1 < code.len() {
-                                    let uv_count = code[ip - 1] as usize;
-                                    ip += uv_count * 2;
-                                }
-                            }
-                            crate::opcode::OperandFormat::BrTable => {
-                                // u8 count + u8 default + count × u8 labels
-                                if ip < code.len() {
-                                    let count = code[ip] as usize;
-                                    ip += 2 + count; // count + default + labels
-                                }
-                            }
-                            crate::opcode::OperandFormat::TryTable => {
-                                // u8 handler_count + handlers × (u8 tag + u16 offset)
-                                if ip < code.len() {
-                                    let count = code[ip] as usize;
-                                    ip += 1 + count * 3;
-                                }
-                            }
-                            _ => {
-                                ip += fmt.fixed_size();
-                            }
-                        }
+                        ip += fmt.size_in(code, ip);
                     } else {
                         ip += 2; // skip unknown 2-byte opcode
                     }
@@ -1104,30 +1093,7 @@ impl VM {
                         }
                         ip += 2; // all opcodes are 2 bytes
                         let fmt = op.operand_format();
-                        match fmt {
-                            crate::opcode::OperandFormat::Closure => {
-                                ip += 2 + 1;
-                                if ip - 1 < code.len() {
-                                    let uv_count = code[ip - 1] as usize;
-                                    ip += uv_count * 2;
-                                }
-                            }
-                            crate::opcode::OperandFormat::BrTable => {
-                                if ip < code.len() {
-                                    let count = code[ip] as usize;
-                                    ip += 2 + count;
-                                }
-                            }
-                            crate::opcode::OperandFormat::TryTable => {
-                                if ip < code.len() {
-                                    let count = code[ip] as usize;
-                                    ip += 1 + count * 3;
-                                }
-                            }
-                            _ => {
-                                ip += fmt.fixed_size();
-                            }
-                        }
+                        ip += fmt.size_in(code, ip);
                     } else {
                         ip += 2; // skip unknown 2-byte opcode
                     }

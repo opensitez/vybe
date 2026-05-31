@@ -110,6 +110,15 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
     // Element section — populate funcref table with chunk functions
     write_section(&mut out, 9, &sections::encode_element_section(chunks, total_imports));
 
+    // branch_hint custom section — spec §branch-hinting requires this to
+    // appear BEFORE the code section (not as a trailing custom section).
+    if let Some(bh_payload) = compilation_hints::encode_branch_hint_payload(chunks, rt_imports.len()) {
+        let mut sec = Vec::new();
+        write_name(&mut sec, compilation_hints::BRANCH_HINT_SECTION_NAME);
+        sec.extend_from_slice(&bh_payload);
+        write_section(&mut out, SECTION_CUSTOM, &sec);
+    }
+
     // Code section
     write_section(&mut out, SECTION_CODE, &code::encode_code_section(chunks, &rt_imports, &type_ctx, &global_map));
 
@@ -130,12 +139,6 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
         let mut sec = Vec::new();
         write_name(&mut sec, compilation_hints::COMPILATION_ORDER_SECTION_NAME);
         sec.extend_from_slice(&co_payload);
-        write_section(&mut out, SECTION_CUSTOM, &sec);
-    }
-    if let Some(bh_payload) = compilation_hints::encode_branch_hint_payload(chunks, rt_imports.len()) {
-        let mut sec = Vec::new();
-        write_name(&mut sec, compilation_hints::BRANCH_HINT_SECTION_NAME);
-        sec.extend_from_slice(&bh_payload);
         write_section(&mut out, SECTION_CUSTOM, &sec);
     }
     if let Some(in_payload) = compilation_hints::encode_inlining_payload(chunks, rt_imports.len()) {

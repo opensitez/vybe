@@ -281,7 +281,8 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     lget(chunk, file_pattern_slot, line);
     push_str(chunk, "*", line);
     chunk.emit_op(Op::STR_CONTAINS, line);
-    let no_wildcard = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
 
     let parts_slot = alloc_local(chunk);
     let parts_len_slot = alloc_local(chunk);
@@ -293,6 +294,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let index_slot = alloc_local(chunk);
     let entry_slot = alloc_local(chunk);
     let full_path_slot = alloc_local(chunk);
+    let pass_slot = alloc_local(chunk);
 
     lget(chunk, file_pattern_slot, line);
     push_str(chunk, "*", line);
@@ -335,36 +337,53 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, index_slot, line);
 
-    let loop_top = chunk.code.len();
+    let (loop_patch, _) = chunk.emit_loop_s(line);
     lget(chunk, index_slot, line);
     lget(chunk, entries_len_slot, line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
-    let loop_done = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(1, line);
+
+    let skip_entry = chunk.emit_block(line);
 
     lget(chunk, entries_slot, line);
     lget(chunk, index_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
     lset(chunk, entry_slot, line);
 
+    chunk.emit_op(Op::TRUE, line);
+    lset(chunk, pass_slot, line);
     lget(chunk, prefix_slot, line);
     push_str(chunk, "", line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
-    let skip_prefix_check = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
     lget(chunk, entry_slot, line);
     lget(chunk, prefix_slot, line);
     chunk.emit_op(Op::STR_STARTS_WITH, line);
-    let next_after_prefix = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    chunk.patch_jump(skip_prefix_check);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    lset(chunk, pass_slot, line);
+    chunk.emit_end(line);
+    lget(chunk, pass_slot, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(0, line);
 
+    chunk.emit_op(Op::TRUE, line);
+    lset(chunk, pass_slot, line);
     lget(chunk, suffix_slot, line);
     push_str(chunk, "", line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
-    let skip_suffix_check = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
     lget(chunk, entry_slot, line);
     lget(chunk, suffix_slot, line);
     chunk.emit_op(Op::STR_ENDS_WITH, line);
-    let next_after_suffix = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    chunk.patch_jump(skip_suffix_check);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    lset(chunk, pass_slot, line);
+    chunk.emit_end(line);
+    lget(chunk, pass_slot, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(0, line);
 
     lget(chunk, dir_slot, line);
     push_str(chunk, "/", line);
@@ -377,7 +396,9 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let _ = chunk;
     call_import(chunks, current, "wasi:filesystem", "isFile", 1, line);
     let chunk = &mut chunks[current];
-    let next_after_file_check = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(0, line);
 
     lget(chunk, result_slot, line);
     lget(chunk, full_path_slot, line);
@@ -386,24 +407,24 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     chunk.emit_op(Op::DROP, line);
 
-    chunk.patch_jump(next_after_prefix);
-    chunk.patch_jump(next_after_suffix);
-    chunk.patch_jump(next_after_file_check);
+    chunk.emit_end(line);
+    chunk.patch_block(skip_entry);
     lget(chunk, index_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     crate::emitter::ops::emit_dyn_add(chunk, line);
     lset(chunk, index_slot, line);
-    chunk.emit_loop(loop_top, line);
-    chunk.patch_jump(loop_done);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.patch_loop(loop_patch);
 
-    let wildcard_done = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(no_wildcard);
+    chunk.emit_else(line);
 
     lget(chunk, pattern_slot, line);
     let _ = chunk;
     call_import(chunks, current, "wasi:filesystem", "exists", 1, line);
     let chunk = &mut chunks[current];
-    let exact_missing = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
 
     crate::emitter::collections::emit_array_new(chunks, current, 0, line);
     let chunk = &mut chunks[current];
@@ -414,15 +435,14 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     crate::emitter::collections::emit_push(chunks, current, line);
     let chunk = &mut chunks[current];
     chunk.emit_op(Op::DROP, line);
-    let exact_done = chunk.emit_jump(Op::BR, line);
 
-    chunk.patch_jump(exact_missing);
+    chunk.emit_else(line);
     crate::emitter::collections::emit_array_new(chunks, current, 0, line);
     let chunk = &mut chunks[current];
     lset(chunk, result_slot, line);
-    chunk.patch_jump(exact_done);
+    chunk.emit_end(line);
 
-    chunk.patch_jump(wildcard_done);
+    chunk.emit_end(line);
     lget(chunk, result_slot, line);
 }
 
@@ -489,7 +509,7 @@ pub fn emit_dir_read(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
     lget(chunk, index_slot, line);
     lget(chunk, len_slot, line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
-    let has_entry = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_if(line);
 
     lget(chunk, entries_slot, line);
     lget(chunk, index_slot, line);
@@ -504,11 +524,10 @@ pub fn emit_dir_read(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
     chunk.emit_op_u16(Op::STRUCT_SET, index_key, line);
     chunk.emit_op(Op::DROP, line);
     lget(chunk, entry_slot, line);
-    let done = chunk.emit_jump(Op::BR, line);
 
-    chunk.patch_jump(has_entry);
+    chunk.emit_else(line);
     chunk.emit_op(Op::FALSE, line);
-    chunk.patch_jump(done);
+    chunk.emit_end(line);
 }
 
 /// PHP `Directory->close()` — no-op (stream resource is dropped on

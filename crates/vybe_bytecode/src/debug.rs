@@ -1,5 +1,5 @@
 use crate::chunk::Chunk;
-use crate::opcode::{Op, OperandFormat};
+use crate::opcode::{Op, OperandFormat, read_leb_u32};
 
 pub fn disassemble(chunk: &Chunk) -> String {
     let mut out = String::new();
@@ -69,6 +69,11 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
             let off = chunk.read_i16(operand_start + 2);
             (format!("{} type={} offset={}", name, type_idx, off), operand_start + 4)
         }
+        OperandFormat::U32Leb => {
+            let mut next = operand_start;
+            let value = read_leb_u32(&chunk.code, &mut next);
+            (format!("{} {}", name, value), next)
+        }
         OperandFormat::Closure => {
             // ref_func: u16 func_index, u8 upvalue_count, then pairs
             let func_idx = chunk.read_u16(operand_start);
@@ -77,11 +82,14 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) {
             (format!("Closure func={} upvalues={}", func_idx, uv_count), operand_start + total)
         }
         OperandFormat::BrTable => {
-            // br_table: u8 count, u8 default, then count × u8 labels
-            let count = chunk.code.get(operand_start).copied().unwrap_or(0) as usize;
-            let default = chunk.code.get(operand_start + 1).copied().unwrap_or(0);
-            let total = 2 + count;
-            (format!("br_table count={} default={}", count, default), operand_start + total)
+            let mut next = operand_start;
+            let count = read_leb_u32(&chunk.code, &mut next) as usize;
+            let mut labels = Vec::with_capacity(count);
+            for _ in 0..count {
+                labels.push(read_leb_u32(&chunk.code, &mut next));
+            }
+            let default = read_leb_u32(&chunk.code, &mut next);
+            (format!("br_table labels={:?} default={}", labels, default), next)
         }
         OperandFormat::TryTable => {
             // try_table: u8 count, then count × (u8 tag + u16 offset)

@@ -12,13 +12,70 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use crate::error::VMError;
-use crate::opcode::Op;
+use crate::opcode::{Op, read_leb_u32};
 use crate::value::{Function, Object, ObjectKind, TypedArrayState, TypedElemKind, Upvalue, UpvalueLocation, Value};
 use crate::vm::{
     dyn_truthy,
-    VM, ExceptionHandler, FinalizerEntry, LabelEntry,
+    VM, ExceptionHandler, FinalizerEntry, LabelEntry, BlockTargets,
     ImportTarget, ActiveContinuation, ResumeMode,
 };
+
+// ── Block table ──────────────────────────────────────────────────────────────
+
+/// Scan `code` once and build a map from every BLOCK/LOOP/IF/ELSE opcode
+/// position (first byte) to its jump targets.
+///
+/// Format (WASM-compliant): every BLOCK/LOOP/IF carries exactly 1 blocktype
+/// byte. ELSE and END carry no operands.
+pub(crate) fn build_block_table(code: &[u8]) -> HashMap<usize, BlockTargets> {
+    let mut table: HashMap<usize, BlockTargets> = HashMap::new();
+    // Stack of opcode_starts for open BLOCK/LOOP/IF scopes.
+    let mut stack: Vec<usize> = Vec::new();
+    // Maps IF opcode_start → ELSE opcode_start (populated when ELSE is seen).
+    let mut else_of: HashMap<usize, usize> = HashMap::new();
+
+    let mut ip = 0usize;
+    while ip + 1 < code.len() {
+        let opcode_start = ip;
+        let op = match Op::decode(code[ip], code[ip + 1]) {
+            Some(op) => op,
+            None => { ip += 2; continue; }
+        };
+        ip += 2;
+
+        if op == Op::BLOCK || op == Op::LOOP || op == Op::IF {
+            ip += 1; // skip result_count byte
+            stack.push(opcode_start);
+        } else if op == Op::ELSE {
+            // Associate ELSE with the top-of-stack IF entry.
+            if let Some(&if_start) = stack.last() {
+                table.entry(if_start).or_insert(BlockTargets { else_ip: None, end_ip: 0 })
+                    .else_ip = Some(opcode_start);
+                else_of.insert(if_start, opcode_start);
+            }
+            // No stack push — ELSE does not add a nesting level.
+        } else if op == Op::END {
+            if let Some(entry_start) = stack.pop() {
+                // end_ip = ip PAST the END opcode (2-byte internal encoding).
+                // BR always jumps here, bypassing END. END only fires via
+                // sequential execution, ensuring the label is popped exactly once.
+                let end_ip = opcode_start + 2;
+                table.entry(entry_start)
+                    .or_insert(BlockTargets { else_ip: None, end_ip: 0 })
+                    .end_ip = end_ip;
+                // ELSE also needs the same end_ip so it can jump past END.
+                if let Some(&else_start) = else_of.get(&entry_start) {
+                    table.entry(else_start)
+                        .or_insert(BlockTargets { else_ip: None, end_ip: 0 })
+                        .end_ip = end_ip;
+                }
+            }
+        } else {
+            ip += op.operand_format().size_in(code, ip);
+        }
+    }
+    table
+}
 
 fn typed_array_live_length(ta: &TypedArrayState) -> usize {
     let buf = ta.buffer.lock().unwrap();
@@ -29,6 +86,11 @@ fn typed_array_live_length(ta: &TypedArrayState) -> usize {
     let available_bytes = buf.len() - ta.byte_offset;
     let available_elems = available_bytes / bpe;
     ta.length.min(available_elems)
+}
+
+#[inline]
+fn wasm_bool(value: bool) -> Value {
+    Value::I32(if value { 1 } else { 0 })
 }
 
 fn typed_array_read(ta: &TypedArrayState, idx: usize) -> Option<Value> {
@@ -144,6 +206,14 @@ fn typed_array_write(ta: &TypedArrayState, idx: usize, value: &Value) -> bool {
 }
 
 impl VM {
+    /// Ensure the block table for chunk `ci` is computed and cached.
+    pub(crate) fn ensure_block_table(&mut self, ci: usize) {
+        if !self.block_tables.contains_key(&ci) {
+            let table = build_block_table(&self.chunks[ci].code);
+            self.block_tables.insert(ci, table);
+        }
+    }
+
     pub(crate) fn execute_until(&mut self, min_depth: usize) -> Result<Value, VMError> {
         loop {
             let f = self.frame();
@@ -160,7 +230,11 @@ impl VM {
                 continue;
             }
 
-            // Uniform 2-byte opcode decode: [prefix, sub]
+            // Uniform 2-byte opcode decode: [prefix, sub].
+            // Standard WASM ops use prefix 0x00 with the WASM byte as sub.
+            // Extended proposals use 0xFC/0xFD/0xFE prefix.
+            // Vybe custom ops use 0xFF prefix.
+            let opcode_start = self.frame().ip;
             let prefix = self.read_byte();
             let sub = self.read_byte();
             let op = match Op::decode(prefix, sub) {
@@ -208,6 +282,7 @@ impl VM {
                 _ if op == Op::UNREACHABLE => {
                     return Err(VMError::new("trap: unreachable executed"));
                 }
+                _ if op == Op::NOP => { /* no-op */ }
 
                 _ if op == Op::CONST => {
                     let idx = self.read_u16();
@@ -242,6 +317,12 @@ impl VM {
                         let chunk_idx = self.frames.last().unwrap().chunk_index;
                         rec.record(chunk_idx, slot, &val);
                     }
+                    let base = self.frame().base;
+                    self.stack[base + slot] = val;
+                }
+                _ if op == Op::LOCAL_TEE => {
+                    let slot = self.read_u16() as usize;
+                    let val = self.peek(0).clone();
                     let base = self.frame().base;
                     self.stack[base + slot] = val;
                 }
@@ -530,6 +611,11 @@ impl VM {
                     self.push(val)?;
                 }
 
+                // -- F32 arithmetic (f32 precision, stored as F64) --
+                _ if op == Op::F32_ADD => { let b = self.pop().as_f64() as f32; let a = self.pop().as_f64() as f32; self.push(Value::F64((a + b) as f64))?; }
+                _ if op == Op::F32_SUB => { let b = self.pop().as_f64() as f32; let a = self.pop().as_f64() as f32; self.push(Value::F64((a - b) as f64))?; }
+                _ if op == Op::F32_MUL => { let b = self.pop().as_f64() as f32; let a = self.pop().as_f64() as f32; self.push(Value::F64((a * b) as f64))?; }
+                _ if op == Op::F32_DIV => { let b = self.pop().as_f64() as f32; let a = self.pop().as_f64() as f32; self.push(Value::F64((a / b) as f64))?; }
                 // -- Float arithmetic --
                 _ if op == Op::F64_ADD => {
                     let b = self.pop().as_f64();
@@ -577,7 +663,8 @@ impl VM {
                     let b = self.pop().as_i32();
                     let a = self.pop().as_i32();
                     if b == 0 { return Err(VMError::new("trap: integer divide by zero")); }
-                    self.push(Value::I32(a.wrapping_div(b)))?;
+                    if a == i32::MIN && b == -1 { return Err(VMError::new("trap: integer overflow")); }
+                    self.push(Value::I32(a / b))?;
                 }
                 _ if op == Op::I32_DIV_U => {
                     let b = self.pop().as_i32() as u32;
@@ -602,7 +689,7 @@ impl VM {
                 _ if op == Op::I64_ADD => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a.wrapping_add(b)))?; }
                 _ if op == Op::I64_SUB => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a.wrapping_sub(b)))?; }
                 _ if op == Op::I64_MUL => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::I64(a.wrapping_mul(b)))?; }
-                _ if op == Op::I64_DIV_S => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); if b == 0 { return Err(VMError::new("trap: integer divide by zero")); } self.push(Value::I64(a.wrapping_div(b)))?; }
+                _ if op == Op::I64_DIV_S => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); if b == 0 { return Err(VMError::new("trap: integer divide by zero")); } if a == i64::MIN && b == -1 { return Err(VMError::new("trap: integer overflow")); } self.push(Value::I64(a / b))?; }
                 _ if op == Op::I64_DIV_U => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; if b == 0 { return Err(VMError::new("trap: integer divide by zero")); } self.push(Value::I64((a / b) as i64))?; }
                 _ if op == Op::I64_REM_S => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); if b == 0 { return Err(VMError::new("trap: integer divide by zero")); } self.push(Value::I64(a.wrapping_rem(b)))?; }
                 _ if op == Op::I64_REM_U => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; if b == 0 { return Err(VMError::new("trap: integer divide by zero")); } self.push(Value::I64((a % b) as i64))?; }
@@ -623,10 +710,10 @@ impl VM {
                 _ if op == Op::F64_CEIL => { let a = self.pop().as_f64(); self.push(Value::F64(a.ceil()))?; }
                 _ if op == Op::F64_FLOOR => { let a = self.pop().as_f64(); self.push(Value::F64(a.floor()))?; }
                 _ if op == Op::F64_TRUNC => { let a = self.pop().as_f64(); self.push(Value::F64(a.trunc()))?; }
-                _ if op == Op::F64_NEAREST => { let a = self.pop().as_f64(); self.push(Value::F64(a.round()))?; }
+                _ if op == Op::F64_NEAREST => { let a = self.pop().as_f64(); self.push(Value::F64(a.round_ties_even()))?; }
                 _ if op == Op::F64_SQRT => { let a = self.pop().as_f64(); self.push(Value::F64(a.sqrt()))?; }
-                _ if op == Op::F64_MIN => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64(a.min(b)))?; }
-                _ if op == Op::F64_MAX => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64(a.max(b)))?; }
+                _ if op == Op::F64_MIN => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64(if a.is_nan()||b.is_nan(){f64::NAN}else{a.min(b)}))?; }
+                _ if op == Op::F64_MAX => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64(if a.is_nan()||b.is_nan(){f64::NAN}else{a.max(b)}))?; }
                 _ if op == Op::F64_COPYSIGN => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64(a.copysign(b)))?; }
 
                 // -- f32 (promoted to f64) --
@@ -635,10 +722,10 @@ impl VM {
                 _ if op == Op::F32_CEIL => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32).ceil() as f64))?; }
                 _ if op == Op::F32_FLOOR => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32).floor() as f64))?; }
                 _ if op == Op::F32_TRUNC => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32).trunc() as f64))?; }
-                _ if op == Op::F32_NEAREST => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32).round() as f64))?; }
+                _ if op == Op::F32_NEAREST => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32).round_ties_even() as f64))?; }
                 _ if op == Op::F32_SQRT => { let a = self.pop().as_f64(); self.push(Value::F64((a as f32).sqrt() as f64))?; }
-                _ if op == Op::F32_MIN => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64((a as f32).min(b as f32) as f64))?; }
-                _ if op == Op::F32_MAX => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64((a as f32).max(b as f32) as f64))?; }
+                _ if op == Op::F32_MIN => { let b = self.pop().as_f64() as f32; let a = self.pop().as_f64() as f32; self.push(Value::F64((if a.is_nan()||b.is_nan(){f32::NAN}else{a.min(b)}) as f64))?; }
+                _ if op == Op::F32_MAX => { let b = self.pop().as_f64() as f32; let a = self.pop().as_f64() as f32; self.push(Value::F64((if a.is_nan()||b.is_nan(){f32::NAN}else{a.max(b)}) as f64))?; }
                 _ if op == Op::F32_COPYSIGN => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::F64((a as f32).copysign(b as f32) as f64))?; }
 
                 // -- WASM select --
@@ -692,8 +779,8 @@ impl VM {
                 _ if op == Op::I32_POPCNT => { let a = self.pop().as_i32() as u32; self.push(Value::I32(a.count_ones() as i32))?; }
 
                 // -- eqz --
-                _ if op == Op::I32_EQZ => { let a = self.pop().as_i32(); self.push(Value::Bool(a == 0))?; }
-                _ if op == Op::I64_EQZ => { let a = self.pop().as_i64(); self.push(Value::Bool(a == 0))?; }
+                _ if op == Op::I32_EQZ => { let a = self.pop().as_i32(); self.push(wasm_bool(a == 0))?; }
+                _ if op == Op::I64_EQZ => { let a = self.pop().as_i64(); self.push(wasm_bool(a == 0))?; }
 
                 // -- String --
                 _ if op == Op::STR_CONCAT => {
@@ -727,38 +814,45 @@ impl VM {
                 // i32 comparisons (WASM MVP 0x46–0x4F)
                 _ if op == Op::I32_EQ => {
                     let b = self.pop(); let a = self.pop();
-                    self.push(Value::Bool(a.eq(&b)))?;
+                    self.push(wasm_bool(a.eq(&b)))?;
                 }
                 _ if op == Op::I32_NE => {
                     let b = self.pop(); let a = self.pop();
-                    self.push(Value::Bool(!a.eq(&b)))?;
+                    self.push(wasm_bool(!a.eq(&b)))?;
                 }
-                _ if op == Op::I32_LT_S => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::Bool(a < b))?; }
-                _ if op == Op::I32_LT_U => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(Value::Bool(a < b))?; }
-                _ if op == Op::I32_GT_S => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::Bool(a > b))?; }
-                _ if op == Op::I32_GT_U => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(Value::Bool(a > b))?; }
-                _ if op == Op::I32_LE_S => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::Bool(a <= b))?; }
-                _ if op == Op::I32_LE_U => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(Value::Bool(a <= b))?; }
-                _ if op == Op::I32_GE_S => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(Value::Bool(a >= b))?; }
-                _ if op == Op::I32_GE_U => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(Value::Bool(a >= b))?; }
+                _ if op == Op::I32_LT_S => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(wasm_bool(a < b))?; }
+                _ if op == Op::I32_LT_U => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(wasm_bool(a < b))?; }
+                _ if op == Op::I32_GT_S => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(wasm_bool(a > b))?; }
+                _ if op == Op::I32_GT_U => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(wasm_bool(a > b))?; }
+                _ if op == Op::I32_LE_S => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(wasm_bool(a <= b))?; }
+                _ if op == Op::I32_LE_U => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(wasm_bool(a <= b))?; }
+                _ if op == Op::I32_GE_S => { let b = self.pop().as_i32(); let a = self.pop().as_i32(); self.push(wasm_bool(a >= b))?; }
+                _ if op == Op::I32_GE_U => { let b = self.pop().as_i32() as u32; let a = self.pop().as_i32() as u32; self.push(wasm_bool(a >= b))?; }
                 // i64 comparisons (WASM MVP 0x51–0x5A)
-                _ if op == Op::I64_EQ => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::Bool(a == b))?; }
-                _ if op == Op::I64_NE => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::Bool(a != b))?; }
-                _ if op == Op::I64_LT_S => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::Bool(a < b))?; }
-                _ if op == Op::I64_LT_U => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(Value::Bool(a < b))?; }
-                _ if op == Op::I64_GT_S => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::Bool(a > b))?; }
-                _ if op == Op::I64_GT_U => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(Value::Bool(a > b))?; }
-                _ if op == Op::I64_LE_S => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::Bool(a <= b))?; }
-                _ if op == Op::I64_LE_U => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(Value::Bool(a <= b))?; }
-                _ if op == Op::I64_GE_S => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(Value::Bool(a >= b))?; }
-                _ if op == Op::I64_GE_U => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(Value::Bool(a >= b))?; }
+                _ if op == Op::I64_EQ => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(wasm_bool(a == b))?; }
+                _ if op == Op::I64_NE => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(wasm_bool(a != b))?; }
+                _ if op == Op::I64_LT_S => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(wasm_bool(a < b))?; }
+                _ if op == Op::I64_LT_U => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(wasm_bool(a < b))?; }
+                _ if op == Op::I64_GT_S => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(wasm_bool(a > b))?; }
+                _ if op == Op::I64_GT_U => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(wasm_bool(a > b))?; }
+                _ if op == Op::I64_LE_S => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(wasm_bool(a <= b))?; }
+                _ if op == Op::I64_LE_U => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(wasm_bool(a <= b))?; }
+                _ if op == Op::I64_GE_S => { let b = self.pop().as_i64(); let a = self.pop().as_i64(); self.push(wasm_bool(a >= b))?; }
+                _ if op == Op::I64_GE_U => { let b = self.pop().as_i64() as u64; let a = self.pop().as_i64() as u64; self.push(wasm_bool(a >= b))?; }
+                // f32 comparisons (WASM MVP 0x5B–0x60) — operate on f32 precision
+                _ if op == Op::F32_EQ => { let b = self.pop().as_f64() as f32; let a = self.pop().as_f64() as f32; self.push(wasm_bool(a == b))?; }
+                _ if op == Op::F32_NE => { let b = self.pop().as_f64() as f32; let a = self.pop().as_f64() as f32; self.push(wasm_bool(a != b))?; }
+                _ if op == Op::F32_LT => { let b = self.pop().as_f64() as f32; let a = self.pop().as_f64() as f32; self.push(wasm_bool(a < b))?; }
+                _ if op == Op::F32_GT => { let b = self.pop().as_f64() as f32; let a = self.pop().as_f64() as f32; self.push(wasm_bool(a > b))?; }
+                _ if op == Op::F32_LE => { let b = self.pop().as_f64() as f32; let a = self.pop().as_f64() as f32; self.push(wasm_bool(a <= b))?; }
+                _ if op == Op::F32_GE => { let b = self.pop().as_f64() as f32; let a = self.pop().as_f64() as f32; self.push(wasm_bool(a >= b))?; }
                 // f64 comparisons (WASM MVP 0x61–0x66)
-                _ if op == Op::F64_EQ => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a == b))?; }
-                _ if op == Op::F64_NE => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a != b))?; }
-                _ if op == Op::F64_LT => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a < b))?; }
-                _ if op == Op::F64_GT => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a > b))?; }
-                _ if op == Op::F64_LE => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a <= b))?; }
-                _ if op == Op::F64_GE => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(Value::Bool(a >= b))?; }
+                _ if op == Op::F64_EQ => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(wasm_bool(a == b))?; }
+                _ if op == Op::F64_NE => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(wasm_bool(a != b))?; }
+                _ if op == Op::F64_LT => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(wasm_bool(a < b))?; }
+                _ if op == Op::F64_GT => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(wasm_bool(a > b))?; }
+                _ if op == Op::F64_LE => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(wasm_bool(a <= b))?; }
+                _ if op == Op::F64_GE => { let b = self.pop().as_f64(); let a = self.pop().as_f64(); self.push(wasm_bool(a >= b))?; }
                 // str_lt, str_gt: removed (non-WASM, were unused)
 
                 // -- Logical --
@@ -766,9 +860,19 @@ impl VM {
 
                 // -- Control flow --
                 _ if op == Op::BR => {
-                    let offset = self.read_i16();
-                    let f = self.frame_mut();
-                    f.ip = (f.ip as i64 + offset as i64) as usize;
+                    let ci = self.frame().chunk_index;
+                    let mut ip = self.frame().ip;
+                    let depth = read_leb_u32(&self.chunks[ci].code, &mut ip) as usize;
+                    self.frame_mut().ip = ip;
+                    if let Some(entry) = self.label_stack.iter().rev().nth(depth).copied() {
+                        self.frames.last_mut().unwrap().ip = entry.target;
+                        let len = self.label_stack.len();
+                        if entry.is_loop {
+                            self.label_stack.truncate(len - depth);
+                        } else {
+                            self.label_stack.truncate(len - depth - 1);
+                        }
+                    }
                 }
                 _ if op == Op::BR_IF_FALSE => {
                     let offset = self.read_i16();
@@ -778,12 +882,28 @@ impl VM {
                         f.ip = (f.ip as i64 + offset as i64) as usize;
                     }
                 }
-                _ if op == Op::BR_IF_TRUE => {
-                    let offset = self.read_i16();
-                    let val = self.pop();
-                    if val.as_bool() == true {
-                        let f = self.frame_mut();
-                        f.ip = (f.ip as i64 + offset as i64) as usize;
+                _ if op == Op::BR_IF => {
+                    let ci = self.frame().chunk_index;
+                    let mut ip = self.frame().ip;
+                    let depth = read_leb_u32(&self.chunks[ci].code, &mut ip) as usize;
+                    self.frame_mut().ip = ip;
+                    let cond = match self.pop() {
+                        crate::value::Value::I32(n) => n,
+                        other => return Err(VMError::new(format!(
+                            "type mismatch: br_if expected i32 condition, got {}",
+                            other.tag().name()
+                        ))),
+                    };
+                    if cond != 0 {
+                        if let Some(entry) = self.label_stack.iter().rev().nth(depth).copied() {
+                            self.frames.last_mut().unwrap().ip = entry.target;
+                            let len = self.label_stack.len();
+                            if entry.is_loop {
+                                self.label_stack.truncate(len - depth);
+                            } else {
+                                self.label_stack.truncate(len - depth - 1);
+                            }
+                        }
                     }
                 }
                 _ if op == Op::BR_IF_NULL => {
@@ -1404,7 +1524,7 @@ impl VM {
                 }
                 // `br_on_cast l ht` / `br_on_cast_fail l ht` — structured
                 // branch keyed off a runtime type test. Operand is
-                // (u16 type-name-idx, u8 label-depth), matching BR_LABEL's
+                // (u16 type-name-idx, u8 label-depth), matching core `br`'s
                 // label-stack discipline so the VM can honour the branch
                 // without a parallel byte-offset table.
                 _ if op == Op::BR_ON_CAST => {
@@ -1467,7 +1587,10 @@ impl VM {
                     self.push(Value::I32(v & 0x7FFF_FFFF))?;
                 }
 
-                _ if op == Op::REF_IS_NULL => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::Null | Value::Undefined)))?; }
+                _ if op == Op::REF_IS_NULL => {
+                    let v = self.pop();
+                    self.push(Value::I32(if matches!(v, Value::Null | Value::Undefined) { 1 } else { 0 }))?;
+                }
                 _ if op == Op::REF_IS_STRING => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::String(_))))?; }
                 _ if op == Op::REF_IS_NUMBER => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::F64(_) | Value::I32(_) | Value::I64(_))))?; }
                 _ if op == Op::REF_IS_BOOL => { let v = self.pop(); self.push(Value::Bool(matches!(v, Value::Bool(_))))?; }
@@ -1483,9 +1606,51 @@ impl VM {
                     let v = self.pop();
                     self.push(Value::F64(v.as_f64()))?;
                 }
+                _ if op == Op::F64_CONVERT_I32_U => { let a = self.pop().as_i32() as u32; self.push(Value::F64(a as f64))?; }
+                _ if op == Op::F64_CONVERT_I64_S => { let a = self.pop().as_i64(); self.push(Value::F64(a as f64))?; }
+                _ if op == Op::F64_CONVERT_I64_U => { let a = self.pop().as_i64() as u64; self.push(Value::F64(a as f64))?; }
+                _ if op == Op::F32_CONVERT_I32_S => { let a = self.pop().as_i32(); self.push(Value::F64((a as f32) as f64))?; }
+                _ if op == Op::F32_CONVERT_I32_U => { let a = self.pop().as_i32() as u32; self.push(Value::F64((a as f32) as f64))?; }
+                _ if op == Op::F32_CONVERT_I64_S => { let a = self.pop().as_i64(); self.push(Value::F64((a as f32) as f64))?; }
+                _ if op == Op::F32_CONVERT_I64_U => { let a = self.pop().as_i64() as u64; self.push(Value::F64((a as f32) as f64))?; }
                 _ if op == Op::I32_FROM_F64 => {
                     let v = self.pop();
                     self.push(Value::I32(v.as_i32()))?;
+                }
+                _ if op == Op::I32_TRUNC_F64_U => {
+                    let v = self.pop().as_f64();
+                    if v.is_nan() || v < 0.0 || v >= 4294967296.0 {
+                        return Err(VMError::new("trap: integer overflow"));
+                    }
+                    self.push(Value::I32(v as u32 as i32))?;
+                }
+                _ if op == Op::I32_TRUNC_F32_S => {
+                    let v = self.pop().as_f64() as f32;
+                    if v.is_nan() || v >= 2147483648.0f32 || v < -2147483648.0f32 {
+                        return Err(VMError::new("trap: integer overflow"));
+                    }
+                    self.push(Value::I32(v as i32))?;
+                }
+                _ if op == Op::I32_TRUNC_F32_U => {
+                    let v = self.pop().as_f64() as f32;
+                    if v.is_nan() || v < 0.0f32 || v >= 4294967296.0f32 {
+                        return Err(VMError::new("trap: integer overflow"));
+                    }
+                    self.push(Value::I32(v as u32 as i32))?;
+                }
+                _ if op == Op::I64_TRUNC_F32_S => {
+                    let v = self.pop().as_f64() as f32;
+                    if v.is_nan() || v >= 9223372036854775808.0f32 || v < -9223372036854775808.0f32 {
+                        return Err(VMError::new("trap: integer overflow"));
+                    }
+                    self.push(Value::I64(v as i64))?;
+                }
+                _ if op == Op::I64_TRUNC_F32_U => {
+                    let v = self.pop().as_f64() as f32;
+                    if v.is_nan() || v < 0.0f32 || v >= 18446744073709551616.0f32 {
+                        return Err(VMError::new("trap: integer overflow"));
+                    }
+                    self.push(Value::I64(v as u64 as i64))?;
                 }
 
                 // nontrapping-float-to-int-conversions proposal (0xFC 0x00–0x07).
@@ -1720,8 +1885,8 @@ impl VM {
                     self.push(Value::I32(self.memory.load_u8(addr)? as i32))?;
                 }
                 _ if op == Op::I32_STORE8 => {
-                    let val = self.pop().as_f64() as u8;
-                    let addr = self.pop().as_f64() as usize;
+                    let val = self.pop().as_i32() as u8;
+                    let addr = self.pop().as_i32() as usize;
                     self.memory.store_u8(addr, val)?;
                 }
                 _ if op == Op::F32_LOAD => {
@@ -1838,63 +2003,91 @@ impl VM {
                 // -- Multi-value --
                 // pack, unpack: removed (non-WASM, were unused by compilers)
 
-                // -- Block/loop structured control --
+                // -- Block/loop/if structured control (WASM-compliant) --
                 _ if op == Op::BLOCK => {
-                    let end_offset = self.read_u16() as usize;
-                    let _result_count = self.read_byte();
-                    let ip = self.frame().ip;
-                    self.label_stack.push(LabelEntry { target: ip + end_offset, is_loop: false });
+                    let _blocktype = self.read_byte(); // single blocktype byte (0x40/0x6F/…)
+                    let ci = self.frame().chunk_index;
+                    self.ensure_block_table(ci);
+                    let end_ip = self.block_tables[&ci]
+                        .get(&opcode_start)
+                        .map(|t| t.end_ip)
+                        .unwrap_or(self.frame().ip);
+                    self.label_stack.push(LabelEntry { target: end_ip, is_loop: false });
                 }
                 _ if op == Op::LOOP => {
-                    let _body_size = self.read_u16();
-                    let _result_count = self.read_byte();
-                    let ip = self.frame().ip;
-                    self.label_stack.push(LabelEntry { target: ip, is_loop: true });
+                    let _blocktype = self.read_byte();
+                    // Loop target is the ip right after the blocktype byte —
+                    // that is where `br 0` restarts (the loop body start).
+                    let loop_body_start = self.frame().ip;
+                    self.label_stack.push(LabelEntry { target: loop_body_start, is_loop: true });
+                }
+                _ if op == Op::IF => {
+                    let _result_count = self.read_byte(); // void/single/multi hint; ignored by VM
+                    let ci = self.frame().chunk_index;
+                    self.ensure_block_table(ci);
+                    let targets = self.block_tables[&ci].get(&opcode_start).copied()
+                        .unwrap_or(BlockTargets { else_ip: None, end_ip: self.frame().ip });
+                    // WASM `if` consumes an i32 condition. Dynamic-language
+                    // truthiness must be lowered before this opcode.
+                    let cond = match self.pop() {
+                        crate::value::Value::I32(n) => n,
+                        other => return Err(VMError::new(format!(
+                            "type mismatch: if expected i32 condition, got {}",
+                            other.tag().name()
+                        ))),
+                    };
+                    if cond != 0 {
+                        // Condition true — push label and fall through to then-body.
+                        // END pops the label after sequential body execution.
+                        self.label_stack.push(LabelEntry { target: targets.end_ip, is_loop: false });
+                    } else if let Some(else_ip) = targets.else_ip {
+                        // Condition false, ELSE exists — push label and jump into else-body.
+                        // The else-body ends at END which pops the label.
+                        // (We jump past the ELSE opcode itself to reach the else-body start.)
+                        self.label_stack.push(LabelEntry { target: targets.end_ip, is_loop: false });
+                        self.frame_mut().ip = else_ip + 2; // +2 skips the ELSE opcode bytes
+                    } else {
+                        // Condition false, no ELSE — skip the block entirely.
+                        // No label push needed; jump past END directly.
+                        self.frame_mut().ip = targets.end_ip;
+                    }
+                }
+                _ if op == Op::ELSE => {
+                    // Then-body completed normally. ELSE behaves like `br 0` for the IF
+                    // block: pop the IF label and jump past the else-body (to past END).
+                    // The else-body is thus never executed on the then-path.
+                    self.label_stack.pop();
+                    let ci = self.frame().chunk_index;
+                    self.ensure_block_table(ci);
+                    let end_ip = self.block_tables[&ci]
+                        .get(&opcode_start)
+                        .map(|t| t.end_ip)
+                        .unwrap_or(self.frame().ip);
+                    self.frame_mut().ip = end_ip;
                 }
                 _ if op == Op::END => {
                     self.label_stack.pop();
                 }
-                _ if op == Op::BR_LABEL => {
-                    let depth = self.read_byte() as usize;
-                    if let Some(entry) = self.label_stack.iter().rev().nth(depth) {
-                        let target = entry.target;
-                        self.frames.last_mut().unwrap().ip = target;
+                _ if op == Op::BR_TABLE => {
+                    let ci = self.frame().chunk_index;
+                    let mut ip = self.frame().ip;
+                    let count = read_leb_u32(&self.chunks[ci].code, &mut ip) as usize;
+                    let mut labels = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        labels.push(read_leb_u32(&self.chunks[ci].code, &mut ip) as usize);
+                    }
+                    let default_depth = read_leb_u32(&self.chunks[ci].code, &mut ip) as usize;
+                    self.frame_mut().ip = ip;
+                    let idx = self.pop().as_i32() as usize;
+                    let depth = if idx < count { labels[idx] } else { default_depth };
+                    if let Some(entry) = self.label_stack.iter().rev().nth(depth).copied() {
+                        self.frames.last_mut().unwrap().ip = entry.target;
                         let len = self.label_stack.len();
                         if entry.is_loop {
-                            // Loop: pop labels above the loop (keep the loop + block below)
                             self.label_stack.truncate(len - depth);
                         } else {
-                            // Block: pop the block and everything above it
                             self.label_stack.truncate(len - depth - 1);
                         }
-                    }
-                }
-                _ if op == Op::BR_IF_LABEL => {
-                    let depth = self.read_byte() as usize;
-                    let cond = self.pop();
-                    if dyn_truthy(&cond) {
-                        if let Some(entry) = self.label_stack.iter().rev().nth(depth) {
-                            let target = entry.target;
-                            self.frames.last_mut().unwrap().ip = target;
-                            let len = self.label_stack.len();
-                            if entry.is_loop {
-                                self.label_stack.truncate(len - depth);
-                            } else {
-                                self.label_stack.truncate(len - depth - 1);
-                            }
-                        }
-                    }
-                }
-                _ if op == Op::BR_TABLE => {
-                    let count = self.read_byte() as usize;
-                    let default_depth = self.read_byte() as usize;
-                    let mut labels = Vec::with_capacity(count);
-                    for _ in 0..count { labels.push(self.read_byte() as usize); }
-                    let idx = self.pop().as_f64() as usize;
-                    let depth = if idx < count { labels[idx] } else { default_depth };
-                    if let Some(entry) = self.label_stack.iter().rev().nth(depth) {
-                        let target = entry.target;
-                        self.frames.last_mut().unwrap().ip = target;
                     }
                 }
 
@@ -3159,184 +3352,266 @@ impl VM {
                     self.push(Value::Bool(eq))?;
                 }
 
-                // -- SIMD (128-bit vectors) --
-                _ if op == Op::V128_LOAD => {
-                    let addr = self.pop().as_i32() as usize;
-                    let mut bytes = [0u8; 16];
-                    self.memory.read_bytes(addr, &mut bytes);
-                    self.push(Value::V128(bytes))?;
-                }
-                _ if op == Op::V128_STORE => {
-                    let val = self.pop();
-                    let addr = self.pop().as_i32() as usize;
-                    if let Value::V128(bytes) = val {
-                        self.memory.write_bytes(addr, &bytes);
-                    }
-                }
-                _ if op == Op::V128_CONST => {
-                    let mut bytes = [0u8; 16];
-                    for i in 0..16 { bytes[i] = self.read_byte(); }
-                    self.push(Value::V128(bytes))?;
-                }
-
-                // i32x4 ops
-                _ if op == Op::I32X4_SPLAT => {
-                    let v = self.pop().as_i32();
-                    let mut bytes = [0u8; 16];
-                    for i in 0..4 { bytes[i*4..i*4+4].copy_from_slice(&v.to_le_bytes()); }
-                    self.push(Value::V128(bytes))?;
-                }
-                _ if op == Op::I32X4_ADD => { self.simd_i32x4_binop(|a, b| a.wrapping_add(b))?; }
-                _ if op == Op::I32X4_SUB => { self.simd_i32x4_binop(|a, b| a.wrapping_sub(b))?; }
-                _ if op == Op::I32X4_MUL => { self.simd_i32x4_binop(|a, b| a.wrapping_mul(b))?; }
-                _ if op == Op::I32X4_EQ =>  { self.simd_i32x4_binop(|a, b| if a == b { -1 } else { 0 })?; }
-                _ if op == Op::I32X4_GT_S => { self.simd_i32x4_binop(|a, b| if a > b { -1 } else { 0 })?; }
-                _ if op == Op::I32X4_LT_S => { self.simd_i32x4_binop(|a, b| if a < b { -1 } else { 0 })?; }
-                _ if op == Op::I32X4_SHL => {
-                    let shift = self.pop().as_i32() as u32 & 31;
-                    if let Value::V128(a) = self.pop() {
-                        let mut out = [0u8; 16];
-                        for i in 0..4 {
-                            let v = i32::from_le_bytes([a[i*4], a[i*4+1], a[i*4+2], a[i*4+3]]);
-                            out[i*4..i*4+4].copy_from_slice(&(v << shift).to_le_bytes());
-                        }
-                        self.push(Value::V128(out))?;
-                    } else { self.push(Value::V128([0; 16]))?; }
-                }
-                _ if op == Op::I32X4_SHR_S => {
-                    let shift = self.pop().as_i32() as u32 & 31;
-                    if let Value::V128(a) = self.pop() {
-                        let mut out = [0u8; 16];
-                        for i in 0..4 {
-                            let v = i32::from_le_bytes([a[i*4], a[i*4+1], a[i*4+2], a[i*4+3]]);
-                            out[i*4..i*4+4].copy_from_slice(&(v >> shift).to_le_bytes());
-                        }
-                        self.push(Value::V128(out))?;
-                    } else { self.push(Value::V128([0; 16]))?; }
-                }
-                _ if op == Op::I32X4_SHR_U => {
-                    let shift = self.pop().as_i32() as u32 & 31;
-                    if let Value::V128(a) = self.pop() {
-                        let mut out = [0u8; 16];
-                        for i in 0..4 {
-                            let v = u32::from_le_bytes([a[i*4], a[i*4+1], a[i*4+2], a[i*4+3]]);
-                            out[i*4..i*4+4].copy_from_slice(&(v >> shift).to_le_bytes());
-                        }
-                        self.push(Value::V128(out))?;
-                    } else { self.push(Value::V128([0; 16]))?; }
-                }
-                _ if op == Op::I32X4_EXTRACT_LANE => {
-                    let lane = self.read_byte() as usize & 3;
-                    if let Value::V128(a) = self.pop() {
-                        let v = i32::from_le_bytes([a[lane*4], a[lane*4+1], a[lane*4+2], a[lane*4+3]]);
-                        self.push(Value::I32(v))?;
-                    } else { self.push(Value::I32(0))?; }
-                }
-                _ if op == Op::I32X4_REPLACE_LANE => {
-                    let lane = self.read_byte() as usize & 3;
-                    let val = self.pop().as_i32();
-                    if let Value::V128(mut a) = self.pop() {
-                        a[lane*4..lane*4+4].copy_from_slice(&val.to_le_bytes());
-                        self.push(Value::V128(a))?;
-                    } else { self.push(Value::V128([0; 16]))?; }
-                }
-
-                // f64x2 ops
-                _ if op == Op::F64X2_SPLAT => {
-                    let v = self.pop().as_f64();
-                    let mut bytes = [0u8; 16];
-                    bytes[0..8].copy_from_slice(&v.to_le_bytes());
-                    bytes[8..16].copy_from_slice(&v.to_le_bytes());
-                    self.push(Value::V128(bytes))?;
-                }
-                _ if op == Op::F64X2_ADD => { self.simd_f64x2_binop(|a, b| a + b)?; }
-                _ if op == Op::F64X2_SUB => { self.simd_f64x2_binop(|a, b| a - b)?; }
-                _ if op == Op::F64X2_MUL => { self.simd_f64x2_binop(|a, b| a * b)?; }
-                _ if op == Op::F64X2_DIV => { self.simd_f64x2_binop(|a, b| a / b)?; }
-                _ if op == Op::F64X2_MIN => { self.simd_f64x2_binop(|a, b| a.min(b))?; }
-                _ if op == Op::F64X2_MAX => { self.simd_f64x2_binop(|a, b| a.max(b))?; }
-                _ if op == Op::F64X2_EQ => { self.simd_f64x2_cmp(|a, b| a == b)?; }
-                _ if op == Op::F64X2_LT => { self.simd_f64x2_cmp(|a, b| a < b)?; }
-                _ if op == Op::F64X2_LE => { self.simd_f64x2_cmp(|a, b| a <= b)?; }
-                _ if op == Op::F64X2_SQRT => {
-                    if let Value::V128(a) = self.pop() {
-                        let mut out = [0u8; 16];
-                        for i in 0..2 {
-                            let v = f64::from_le_bytes(a[i*8..i*8+8].try_into().unwrap());
-                            out[i*8..i*8+8].copy_from_slice(&v.sqrt().to_le_bytes());
-                        }
-                        self.push(Value::V128(out))?;
-                    } else { self.push(Value::V128([0; 16]))?; }
-                }
-                _ if op == Op::F64X2_ABS => {
-                    if let Value::V128(a) = self.pop() {
-                        let mut out = [0u8; 16];
-                        for i in 0..2 {
-                            let v = f64::from_le_bytes(a[i*8..i*8+8].try_into().unwrap());
-                            out[i*8..i*8+8].copy_from_slice(&v.abs().to_le_bytes());
-                        }
-                        self.push(Value::V128(out))?;
-                    } else { self.push(Value::V128([0; 16]))?; }
-                }
-                _ if op == Op::F64X2_NEG => {
-                    if let Value::V128(a) = self.pop() {
-                        let mut out = [0u8; 16];
-                        for i in 0..2 {
-                            let v = f64::from_le_bytes(a[i*8..i*8+8].try_into().unwrap());
-                            out[i*8..i*8+8].copy_from_slice(&(-v).to_le_bytes());
-                        }
-                        self.push(Value::V128(out))?;
-                    } else { self.push(Value::V128([0; 16]))?; }
-                }
-                _ if op == Op::F64X2_EXTRACT_LANE => {
-                    let lane = self.read_byte() as usize & 1;
-                    if let Value::V128(a) = self.pop() {
-                        let v = f64::from_le_bytes(a[lane*8..lane*8+8].try_into().unwrap());
-                        self.push(Value::F64(v))?;
-                    } else { self.push(Value::F64(0.0))?; }
-                }
-                _ if op == Op::F64X2_REPLACE_LANE => {
-                    let lane = self.read_byte() as usize & 1;
-                    let val = self.pop().as_f64();
-                    if let Value::V128(mut a) = self.pop() {
-                        a[lane*8..lane*8+8].copy_from_slice(&val.to_le_bytes());
-                        self.push(Value::V128(a))?;
-                    } else { self.push(Value::V128([0; 16]))?; }
-                }
-
-                // f32x4, i8x16, i16x8 — same patterns, delegate to helpers
-                _ if op == Op::F32X4_SPLAT => { let v = self.pop().as_f64() as f32; let b = v.to_le_bytes(); let mut out = [0u8;16]; for i in 0..4 { out[i*4..i*4+4].copy_from_slice(&b); } self.push(Value::V128(out))?; }
-                _ if op == Op::F32X4_ADD => { self.simd_f32x4_binop(|a,b| a+b)?; }
-                _ if op == Op::F32X4_SUB => { self.simd_f32x4_binop(|a,b| a-b)?; }
-                _ if op == Op::F32X4_MUL => { self.simd_f32x4_binop(|a,b| a*b)?; }
-                _ if op == Op::F32X4_DIV => { self.simd_f32x4_binop(|a,b| a/b)?; }
-                _ if op == Op::F32X4_EXTRACT_LANE => { let lane = self.read_byte() as usize & 3; if let Value::V128(a) = self.pop() { let v = f32::from_le_bytes(a[lane*4..lane*4+4].try_into().unwrap()); self.push(Value::F64(v as f64))?; } else { self.push(Value::F64(0.0))?; } }
-                _ if op == Op::F32X4_REPLACE_LANE => { let lane = self.read_byte() as usize & 3; let val = self.pop().as_f64() as f32; if let Value::V128(mut a) = self.pop() { a[lane*4..lane*4+4].copy_from_slice(&val.to_le_bytes()); self.push(Value::V128(a))?; } else { self.push(Value::V128([0;16]))?; } }
+                // ── SIMD (128-bit vectors) ────────────────────────────────────
+                // Memory
+                _ if op == Op::V128_LOAD => { let addr = self.pop().as_i32() as usize; let mut b = [0u8;16]; self.memory.read_bytes(addr, &mut b); self.push(Value::V128(b))?; }
+                _ if op == Op::V128_LOAD8X8_S => { let addr = self.pop().as_i32() as usize; let mut out = [0u8;16]; for i in 0..8 { let b = self.memory.load_u8(addr + i).unwrap_or(0); let v = b as i8 as i16; out[i*2..i*2+2].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; }
+                _ if op == Op::V128_LOAD8X8_U => { let addr = self.pop().as_i32() as usize; let mut out = [0u8;16]; for i in 0..8 { let b = self.memory.load_u8(addr + i).unwrap_or(0); let v = b as u16; out[i*2..i*2+2].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; }
+                _ if op == Op::V128_LOAD16X4_S => { let addr = self.pop().as_i32() as usize; let mut out = [0u8;16]; for i in 0..4 { let lo = self.memory.load_u8(addr+i*2).unwrap_or(0); let hi = self.memory.load_u8(addr+i*2+1).unwrap_or(0); let v = u16::from_le_bytes([lo,hi]) as i16 as i32; out[i*4..i*4+4].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; }
+                _ if op == Op::V128_LOAD16X4_U => { let addr = self.pop().as_i32() as usize; let mut out = [0u8;16]; for i in 0..4 { let lo = self.memory.load_u8(addr+i*2).unwrap_or(0); let hi = self.memory.load_u8(addr+i*2+1).unwrap_or(0); let v = u16::from_le_bytes([lo,hi]) as u32; out[i*4..i*4+4].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; }
+                _ if op == Op::V128_LOAD32X2_S => { let addr = self.pop().as_i32() as usize; let mut out = [0u8;16]; for i in 0..2 { let v = self.memory.load_i32(addr+i*4).unwrap_or(0) as i64; out[i*8..i*8+8].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; }
+                _ if op == Op::V128_LOAD32X2_U => { let addr = self.pop().as_i32() as usize; let mut out = [0u8;16]; for i in 0..2 { let v = self.memory.load_i32(addr+i*4).unwrap_or(0) as u32 as u64; out[i*8..i*8+8].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; }
+                _ if op == Op::V128_LOAD8_SPLAT => { let addr = self.pop().as_i32() as usize; let b = self.memory.load_u8(addr).unwrap_or(0); self.push(Value::V128([b;16]))?; }
+                _ if op == Op::V128_LOAD16_SPLAT => { let addr = self.pop().as_i32() as usize; let lo = self.memory.load_u8(addr).unwrap_or(0); let hi = self.memory.load_u8(addr+1).unwrap_or(0); let mut out = [0u8;16]; for i in 0..8 { out[i*2]=lo; out[i*2+1]=hi; } self.push(Value::V128(out))?; }
+                _ if op == Op::V128_LOAD32_SPLAT => { let addr = self.pop().as_i32() as usize; let v = self.memory.load_i32(addr).unwrap_or(0); let mut out = [0u8;16]; for i in 0..4 { out[i*4..i*4+4].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; }
+                _ if op == Op::V128_LOAD64_SPLAT => { let addr = self.pop().as_i32() as usize; let v = self.memory.load_i64(addr).unwrap_or(0); let mut out = [0u8;16]; out[0..8].copy_from_slice(&v.to_le_bytes()); out[8..16].copy_from_slice(&v.to_le_bytes()); self.push(Value::V128(out))?; }
+                _ if op == Op::V128_STORE => { let val = self.pop(); let addr = self.pop().as_i32() as usize; if let Value::V128(b) = val { self.memory.write_bytes(addr, &b); } }
+                _ if op == Op::V128_CONST => { let mut b = [0u8;16]; for i in 0..16 { b[i] = self.read_byte(); } self.push(Value::V128(b))?; }
+                _ if op == Op::V128_LOAD8_LANE => { let lane = self.read_byte() as usize & 15; let val = self.pop(); let addr = self.pop().as_i32() as usize; if let Value::V128(mut v) = val { v[lane] = self.memory.load_u8(addr).unwrap_or(0); self.push(Value::V128(v))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::V128_LOAD16_LANE => { let lane = self.read_byte() as usize & 7; let val = self.pop(); let addr = self.pop().as_i32() as usize; if let Value::V128(mut v) = val { v[lane*2] = self.memory.load_u8(addr).unwrap_or(0); v[lane*2+1] = self.memory.load_u8(addr+1).unwrap_or(0); self.push(Value::V128(v))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::V128_LOAD32_LANE => { let lane = self.read_byte() as usize & 3; let val = self.pop(); let addr = self.pop().as_i32() as usize; if let Value::V128(mut v) = val { for j in 0..4 { v[lane*4+j] = self.memory.load_u8(addr+j).unwrap_or(0); } self.push(Value::V128(v))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::V128_LOAD64_LANE => { let lane = self.read_byte() as usize & 1; let val = self.pop(); let addr = self.pop().as_i32() as usize; if let Value::V128(mut v) = val { for j in 0..8 { v[lane*8+j] = self.memory.load_u8(addr+j).unwrap_or(0); } self.push(Value::V128(v))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::V128_STORE8_LANE => { let lane = self.read_byte() as usize & 15; let addr = self.pop().as_i32() as usize; if let Value::V128(v) = self.pop() { let _ = self.memory.store_u8(addr, v[lane]); } }
+                _ if op == Op::V128_STORE16_LANE => { let lane = self.read_byte() as usize & 7; let addr = self.pop().as_i32() as usize; if let Value::V128(v) = self.pop() { let _ = self.memory.store_u8(addr, v[lane*2]); let _ = self.memory.store_u8(addr+1, v[lane*2+1]); } }
+                _ if op == Op::V128_STORE32_LANE => { let lane = self.read_byte() as usize & 3; let addr = self.pop().as_i32() as usize; if let Value::V128(v) = self.pop() { for j in 0..4 { let _ = self.memory.store_u8(addr+j, v[lane*4+j]); } } }
+                _ if op == Op::V128_STORE64_LANE => { let lane = self.read_byte() as usize & 1; let addr = self.pop().as_i32() as usize; if let Value::V128(v) = self.pop() { for j in 0..8 { let _ = self.memory.store_u8(addr+j, v[lane*8+j]); } } }
+                _ if op == Op::V128_LOAD32_ZERO => { let addr = self.pop().as_i32() as usize; let v = self.memory.load_i32(addr).unwrap_or(0); let mut out = [0u8;16]; out[0..4].copy_from_slice(&v.to_le_bytes()); self.push(Value::V128(out))?; }
+                _ if op == Op::V128_LOAD64_ZERO => { let addr = self.pop().as_i32() as usize; let v = self.memory.load_i64(addr).unwrap_or(0); let mut out = [0u8;16]; out[0..8].copy_from_slice(&v.to_le_bytes()); self.push(Value::V128(out))?; }
+                // Shuffle / swizzle
+                _ if op == Op::I8X16_SHUFFLE => { let mut idx = [0u8;16]; for i in 0..16 { idx[i] = self.read_byte(); } let b = self.pop(); let a = self.pop(); if let (Value::V128(va), Value::V128(vb)) = (a,b) { let combined: Vec<u8> = va.iter().chain(vb.iter()).copied().collect(); let mut out = [0u8;16]; for i in 0..16 { out[i] = combined.get(idx[i] as usize).copied().unwrap_or(0); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I8X16_SWIZZLE => { let b = self.pop(); let a = self.pop(); if let (Value::V128(va), Value::V128(vb)) = (a,b) { let mut out = [0u8;16]; for i in 0..16 { let n = vb[i] as usize; out[i] = if n < 16 { va[n] } else { 0 }; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                // Splat
                 _ if op == Op::I8X16_SPLAT => { let v = self.pop().as_i32() as u8; self.push(Value::V128([v;16]))?; }
-                _ if op == Op::I8X16_ADD => { self.simd_i8x16_binop(|a,b| a.wrapping_add(b))?; }
-                _ if op == Op::I8X16_SUB => { self.simd_i8x16_binop(|a,b| a.wrapping_sub(b))?; }
-                _ if op == Op::I8X16_EQ =>  { self.simd_i8x16_binop(|a,b| if a==b {0xFF} else {0})?; }
-                _ if op == Op::I8X16_EXTRACT_LANE_S => { let lane = self.read_byte() as usize & 15; if let Value::V128(a) = self.pop() { self.push(Value::I32(a[lane] as i8 as i32))?; } else { self.push(Value::I32(0))?; } }
-                _ if op == Op::I8X16_EXTRACT_LANE_U => { let lane = self.read_byte() as usize & 15; if let Value::V128(a) = self.pop() { self.push(Value::I32(a[lane] as i32))?; } else { self.push(Value::I32(0))?; } }
-                _ if op == Op::I8X16_REPLACE_LANE => { let lane = self.read_byte() as usize & 15; let val = self.pop().as_i32() as u8; if let Value::V128(mut a) = self.pop() { a[lane] = val; self.push(Value::V128(a))?; } else { self.push(Value::V128([0;16]))?; } }
-                _ if op == Op::I8X16_SHUFFLE => { let mut indices = [0u8;16]; for i in 0..16 { indices[i] = self.read_byte(); } let b = self.pop(); let a = self.pop(); if let (Value::V128(va), Value::V128(vb)) = (a,b) { let combined: Vec<u8> = va.iter().chain(vb.iter()).copied().collect(); let mut out = [0u8;16]; for i in 0..16 { out[i] = combined.get(indices[i] as usize).copied().unwrap_or(0); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
-                _ if op == Op::I8X16_SWIZZLE => { let b = self.pop(); let a = self.pop(); if let (Value::V128(va), Value::V128(vb)) = (a,b) { let mut out = [0u8;16]; for i in 0..16 { let idx = vb[i] as usize; out[i] = if idx < 16 { va[idx] } else { 0 }; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
                 _ if op == Op::I16X8_SPLAT => { let v = self.pop().as_i32() as i16; let b = v.to_le_bytes(); let mut out = [0u8;16]; for i in 0..8 { out[i*2..i*2+2].copy_from_slice(&b); } self.push(Value::V128(out))?; }
-                _ if op == Op::I16X8_ADD => { self.simd_i16x8_binop(|a,b| a.wrapping_add(b))?; }
-                _ if op == Op::I16X8_SUB => { self.simd_i16x8_binop(|a,b| a.wrapping_sub(b))?; }
-                _ if op == Op::I16X8_MUL => { self.simd_i16x8_binop(|a,b| a.wrapping_mul(b))?; }
-                _ if op == Op::I16X8_EXTRACT_LANE_S => { let lane = self.read_byte() as usize & 7; if let Value::V128(a) = self.pop() { let v = i16::from_le_bytes([a[lane*2], a[lane*2+1]]); self.push(Value::I32(v as i32))?; } else { self.push(Value::I32(0))?; } }
-                _ if op == Op::I16X8_EXTRACT_LANE_U => { let lane = self.read_byte() as usize & 7; if let Value::V128(a) = self.pop() { let v = u16::from_le_bytes([a[lane*2], a[lane*2+1]]); self.push(Value::I32(v as i32))?; } else { self.push(Value::I32(0))?; } }
-                _ if op == Op::I16X8_REPLACE_LANE => { let lane = self.read_byte() as usize & 7; let val = self.pop().as_i32() as i16; if let Value::V128(mut a) = self.pop() { a[lane*2..lane*2+2].copy_from_slice(&val.to_le_bytes()); self.push(Value::V128(a))?; } else { self.push(Value::V128([0;16]))?; } }
-
+                _ if op == Op::I32X4_SPLAT => { let v = self.pop().as_i32(); let mut out = [0u8;16]; for i in 0..4 { out[i*4..i*4+4].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; }
+                _ if op == Op::I64X2_SPLAT => { let v = self.pop().as_i64(); let mut out = [0u8;16]; out[0..8].copy_from_slice(&v.to_le_bytes()); out[8..16].copy_from_slice(&v.to_le_bytes()); self.push(Value::V128(out))?; }
+                _ if op == Op::F32X4_SPLAT => { let v = self.pop().as_f64() as f32; let b = v.to_le_bytes(); let mut out = [0u8;16]; for i in 0..4 { out[i*4..i*4+4].copy_from_slice(&b); } self.push(Value::V128(out))?; }
+                _ if op == Op::F64X2_SPLAT => { let v = self.pop().as_f64(); let mut out = [0u8;16]; out[0..8].copy_from_slice(&v.to_le_bytes()); out[8..16].copy_from_slice(&v.to_le_bytes()); self.push(Value::V128(out))?; }
+                // Extract / replace lane
+                _ if op == Op::I8X16_EXTRACT_LANE_S => { let l = self.read_byte() as usize & 15; if let Value::V128(a) = self.pop() { self.push(Value::I32(a[l] as i8 as i32))?; } else { self.push(Value::I32(0))?; } }
+                _ if op == Op::I8X16_EXTRACT_LANE_U => { let l = self.read_byte() as usize & 15; if let Value::V128(a) = self.pop() { self.push(Value::I32(a[l] as i32))?; } else { self.push(Value::I32(0))?; } }
+                _ if op == Op::I8X16_REPLACE_LANE => { let l = self.read_byte() as usize & 15; let v = self.pop().as_i32() as u8; if let Value::V128(mut a) = self.pop() { a[l] = v; self.push(Value::V128(a))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I16X8_EXTRACT_LANE_S => { let l = self.read_byte() as usize & 7; if let Value::V128(a) = self.pop() { self.push(Value::I32(i16::from_le_bytes([a[l*2],a[l*2+1]]) as i32))?; } else { self.push(Value::I32(0))?; } }
+                _ if op == Op::I16X8_EXTRACT_LANE_U => { let l = self.read_byte() as usize & 7; if let Value::V128(a) = self.pop() { self.push(Value::I32(u16::from_le_bytes([a[l*2],a[l*2+1]]) as i32))?; } else { self.push(Value::I32(0))?; } }
+                _ if op == Op::I16X8_REPLACE_LANE => { let l = self.read_byte() as usize & 7; let v = self.pop().as_i32() as i16; if let Value::V128(mut a) = self.pop() { a[l*2..l*2+2].copy_from_slice(&v.to_le_bytes()); self.push(Value::V128(a))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I32X4_EXTRACT_LANE => { let l = self.read_byte() as usize & 3; if let Value::V128(a) = self.pop() { self.push(Value::I32(i32::from_le_bytes(a[l*4..l*4+4].try_into().unwrap())))?; } else { self.push(Value::I32(0))?; } }
+                _ if op == Op::I32X4_REPLACE_LANE => { let l = self.read_byte() as usize & 3; let v = self.pop().as_i32(); if let Value::V128(mut a) = self.pop() { a[l*4..l*4+4].copy_from_slice(&v.to_le_bytes()); self.push(Value::V128(a))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I64X2_EXTRACT_LANE => { let l = self.read_byte() as usize & 1; if let Value::V128(a) = self.pop() { self.push(Value::I64(i64::from_le_bytes(a[l*8..l*8+8].try_into().unwrap())))?; } else { self.push(Value::I64(0))?; } }
+                _ if op == Op::I64X2_REPLACE_LANE => { let l = self.read_byte() as usize & 1; let v = self.pop().as_i64(); if let Value::V128(mut a) = self.pop() { a[l*8..l*8+8].copy_from_slice(&v.to_le_bytes()); self.push(Value::V128(a))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::F32X4_EXTRACT_LANE => { let l = self.read_byte() as usize & 3; if let Value::V128(a) = self.pop() { self.push(Value::F64(f32::from_le_bytes(a[l*4..l*4+4].try_into().unwrap()) as f64))?; } else { self.push(Value::F64(0.0))?; } }
+                _ if op == Op::F32X4_REPLACE_LANE => { let l = self.read_byte() as usize & 3; let v = self.pop().as_f64() as f32; if let Value::V128(mut a) = self.pop() { a[l*4..l*4+4].copy_from_slice(&v.to_le_bytes()); self.push(Value::V128(a))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::F64X2_EXTRACT_LANE => { let l = self.read_byte() as usize & 1; if let Value::V128(a) = self.pop() { self.push(Value::F64(f64::from_le_bytes(a[l*8..l*8+8].try_into().unwrap())))?; } else { self.push(Value::F64(0.0))?; } }
+                _ if op == Op::F64X2_REPLACE_LANE => { let l = self.read_byte() as usize & 1; let v = self.pop().as_f64(); if let Value::V128(mut a) = self.pop() { a[l*8..l*8+8].copy_from_slice(&v.to_le_bytes()); self.push(Value::V128(a))?; } else { self.push(Value::V128([0;16]))?; } }
+                // i8x16 comparisons
+                _ if op == Op::I8X16_EQ  => { self.simd_i8x16_binop(|a,b| if a==b {0xFF} else {0})?; }
+                _ if op == Op::I8X16_NE  => { self.simd_i8x16_binop(|a,b| if a!=b {0xFF} else {0})?; }
+                _ if op == Op::I8X16_LT_S => { self.simd_i8x16_binop(|a,b| if (a as i8)<(b as i8) {0xFF} else {0})?; }
+                _ if op == Op::I8X16_LT_U => { self.simd_i8x16_binop(|a,b| if a<b {0xFF} else {0})?; }
+                _ if op == Op::I8X16_GT_S => { self.simd_i8x16_binop(|a,b| if (a as i8)>(b as i8) {0xFF} else {0})?; }
+                _ if op == Op::I8X16_GT_U => { self.simd_i8x16_binop(|a,b| if a>b {0xFF} else {0})?; }
+                _ if op == Op::I8X16_LE_S => { self.simd_i8x16_binop(|a,b| if (a as i8)<=(b as i8) {0xFF} else {0})?; }
+                _ if op == Op::I8X16_LE_U => { self.simd_i8x16_binop(|a,b| if a<=b {0xFF} else {0})?; }
+                _ if op == Op::I8X16_GE_S => { self.simd_i8x16_binop(|a,b| if (a as i8)>=(b as i8) {0xFF} else {0})?; }
+                _ if op == Op::I8X16_GE_U => { self.simd_i8x16_binop(|a,b| if a>=b {0xFF} else {0})?; }
+                // i16x8 comparisons
+                _ if op == Op::I16X8_EQ  => { self.simd_i16x8_binop(|a,b| if a==b {-1} else {0})?; }
+                _ if op == Op::I16X8_NE  => { self.simd_i16x8_binop(|a,b| if a!=b {-1} else {0})?; }
+                _ if op == Op::I16X8_LT_S => { self.simd_i16x8_binop(|a,b| if a<b {-1} else {0})?; }
+                _ if op == Op::I16X8_LT_U => { self.simd_i16x8_binop(|a,b| if (a as u16)<(b as u16) {-1} else {0})?; }
+                _ if op == Op::I16X8_GT_S => { self.simd_i16x8_binop(|a,b| if a>b {-1} else {0})?; }
+                _ if op == Op::I16X8_GT_U => { self.simd_i16x8_binop(|a,b| if (a as u16)>(b as u16) {-1} else {0})?; }
+                _ if op == Op::I16X8_LE_S => { self.simd_i16x8_binop(|a,b| if a<=b {-1} else {0})?; }
+                _ if op == Op::I16X8_LE_U => { self.simd_i16x8_binop(|a,b| if (a as u16)<=(b as u16) {-1} else {0})?; }
+                _ if op == Op::I16X8_GE_S => { self.simd_i16x8_binop(|a,b| if a>=b {-1} else {0})?; }
+                _ if op == Op::I16X8_GE_U => { self.simd_i16x8_binop(|a,b| if (a as u16)>=(b as u16) {-1} else {0})?; }
+                // i32x4 comparisons
+                _ if op == Op::I32X4_EQ  => { self.simd_i32x4_binop(|a,b| if a==b {-1} else {0})?; }
+                _ if op == Op::I32X4_NE  => { self.simd_i32x4_binop(|a,b| if a!=b {-1} else {0})?; }
+                _ if op == Op::I32X4_LT_S => { self.simd_i32x4_binop(|a,b| if a<b {-1} else {0})?; }
+                _ if op == Op::I32X4_LT_U => { self.simd_i32x4_binop(|a,b| if (a as u32)<(b as u32) {-1} else {0})?; }
+                _ if op == Op::I32X4_GT_S => { self.simd_i32x4_binop(|a,b| if a>b {-1} else {0})?; }
+                _ if op == Op::I32X4_GT_U => { self.simd_i32x4_binop(|a,b| if (a as u32)>(b as u32) {-1} else {0})?; }
+                _ if op == Op::I32X4_LE_S => { self.simd_i32x4_binop(|a,b| if a<=b {-1} else {0})?; }
+                _ if op == Op::I32X4_LE_U => { self.simd_i32x4_binop(|a,b| if (a as u32)<=(b as u32) {-1} else {0})?; }
+                _ if op == Op::I32X4_GE_S => { self.simd_i32x4_binop(|a,b| if a>=b {-1} else {0})?; }
+                _ if op == Op::I32X4_GE_U => { self.simd_i32x4_binop(|a,b| if (a as u32)>=(b as u32) {-1} else {0})?; }
+                // f32x4 comparisons
+                _ if op == Op::F32X4_EQ => { self.simd_f32x4_cmp(|a,b| a==b)?; }
+                _ if op == Op::F32X4_NE => { self.simd_f32x4_cmp(|a,b| a!=b)?; }
+                _ if op == Op::F32X4_LT => { self.simd_f32x4_cmp(|a,b| a<b)?; }
+                _ if op == Op::F32X4_GT => { self.simd_f32x4_cmp(|a,b| a>b)?; }
+                _ if op == Op::F32X4_LE => { self.simd_f32x4_cmp(|a,b| a<=b)?; }
+                _ if op == Op::F32X4_GE => { self.simd_f32x4_cmp(|a,b| a>=b)?; }
+                // f64x2 comparisons
+                _ if op == Op::F64X2_EQ => { self.simd_f64x2_cmp(|a,b| a==b)?; }
+                _ if op == Op::F64X2_NE => { self.simd_f64x2_cmp(|a,b| a!=b)?; }
+                _ if op == Op::F64X2_LT => { self.simd_f64x2_cmp(|a,b| a<b)?; }
+                _ if op == Op::F64X2_GT => { self.simd_f64x2_cmp(|a,b| a>b)?; }
+                _ if op == Op::F64X2_LE => { self.simd_f64x2_cmp(|a,b| a<=b)?; }
+                _ if op == Op::F64X2_GE => { self.simd_f64x2_cmp(|a,b| a>=b)?; }
                 // v128 bitwise
-                _ if op == Op::V128_AND => { let b = self.pop(); let a = self.pop(); if let (Value::V128(a), Value::V128(b)) = (a, b) { let mut out = [0u8;16]; for i in 0..16 { out[i] = a[i] & b[i]; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
-                _ if op == Op::V128_OR => { let b = self.pop(); let a = self.pop(); if let (Value::V128(a), Value::V128(b)) = (a, b) { let mut out = [0u8;16]; for i in 0..16 { out[i] = a[i] | b[i]; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
-                _ if op == Op::V128_XOR => { let b = self.pop(); let a = self.pop(); if let (Value::V128(a), Value::V128(b)) = (a, b) { let mut out = [0u8;16]; for i in 0..16 { out[i] = a[i] ^ b[i]; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
-                _ if op == Op::V128_NOT => { if let Value::V128(a) = self.pop() { let mut out = [0u8;16]; for i in 0..16 { out[i] = !a[i]; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
-                _ if op == Op::V128_ANDNOT => { let b = self.pop(); let a = self.pop(); if let (Value::V128(a), Value::V128(b)) = (a, b) { let mut out = [0u8;16]; for i in 0..16 { out[i] = a[i] & !b[i]; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
-                _ if op == Op::V128_ANY_TRUE => { if let Value::V128(a) = self.pop() { self.push(Value::I32(if a.iter().any(|&b| b != 0) { 1 } else { 0 }))?; } else { self.push(Value::I32(0))?; } }
-                _ if op == Op::V128_BITSELECT => { let mask = self.pop(); let v2 = self.pop(); let v1 = self.pop(); if let (Value::V128(a), Value::V128(b), Value::V128(m)) = (v1, v2, mask) { let mut out = [0u8;16]; for i in 0..16 { out[i] = (a[i] & m[i]) | (b[i] & !m[i]); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::V128_NOT => { if let Value::V128(a) = self.pop() { let mut out=[0u8;16]; for i in 0..16{out[i]=!a[i];} self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::V128_AND => { let b=self.pop(); let a=self.pop(); if let (Value::V128(a),Value::V128(b))=(a,b) { let mut out=[0u8;16]; for i in 0..16{out[i]=a[i]&b[i];} self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::V128_ANDNOT => { let b=self.pop(); let a=self.pop(); if let (Value::V128(a),Value::V128(b))=(a,b) { let mut out=[0u8;16]; for i in 0..16{out[i]=a[i]&!b[i];} self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::V128_OR  => { let b=self.pop(); let a=self.pop(); if let (Value::V128(a),Value::V128(b))=(a,b) { let mut out=[0u8;16]; for i in 0..16{out[i]=a[i]|b[i];} self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::V128_XOR => { let b=self.pop(); let a=self.pop(); if let (Value::V128(a),Value::V128(b))=(a,b) { let mut out=[0u8;16]; for i in 0..16{out[i]=a[i]^b[i];} self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::V128_BITSELECT => { let m=self.pop(); let v2=self.pop(); let v1=self.pop(); if let (Value::V128(a),Value::V128(b),Value::V128(m))=(v1,v2,m) { let mut out=[0u8;16]; for i in 0..16{out[i]=(a[i]&m[i])|(b[i]&!m[i]);} self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::V128_ANY_TRUE => { if let Value::V128(a) = self.pop() { self.push(Value::I32(if a.iter().any(|&b|b!=0){1}else{0}))?; } else { self.push(Value::I32(0))?; } }
+                // Promote / demote
+                _ if op == Op::F32X4_DEMOTE_F64X2_ZERO => { if let Value::V128(a) = self.pop() { let mut out=[0u8;16]; for i in 0..2 { let f=f64::from_le_bytes(a[i*8..i*8+8].try_into().unwrap()) as f32; out[i*4..i*4+4].copy_from_slice(&f.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::F64X2_PROMOTE_LOW_F32X4 => { if let Value::V128(a) = self.pop() { let mut out=[0u8;16]; for i in 0..2 { let f=f32::from_le_bytes(a[i*4..i*4+4].try_into().unwrap()) as f64; out[i*8..i*8+8].copy_from_slice(&f.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                // i8x16 unary
+                _ if op == Op::I8X16_ABS => { self.simd_i8x16_unop(|a| (a as i8).unsigned_abs())?; }
+                _ if op == Op::I8X16_NEG => { self.simd_i8x16_unop(|a| (a as i8).wrapping_neg() as u8)?; }
+                _ if op == Op::I8X16_POPCNT => { self.simd_i8x16_unop(|a| a.count_ones() as u8)?; }
+                _ if op == Op::I8X16_ALL_TRUE => { self.simd_i8x16_testop(|a| a != 0)?; }
+                _ if op == Op::I8X16_BITMASK => { if let Value::V128(a) = self.pop() { let mut mask = 0i32; for i in 0..16 { if (a[i] as i8) < 0 { mask |= 1 << i; } } self.push(Value::I32(mask))?; } else { self.push(Value::I32(0))?; } }
+                _ if op == Op::I8X16_NARROW_I16X8_S => { let b=self.pop(); let a=self.pop(); if let (Value::V128(va),Value::V128(vb))=(a,b) { let mut out=[0u8;16]; for i in 0..8 { let v=i16::from_le_bytes([va[i*2],va[i*2+1]]).clamp(-128,127) as i8 as u8; out[i]=v; let v2=i16::from_le_bytes([vb[i*2],vb[i*2+1]]).clamp(-128,127) as i8 as u8; out[8+i]=v2; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I8X16_NARROW_I16X8_U => { let b=self.pop(); let a=self.pop(); if let (Value::V128(va),Value::V128(vb))=(a,b) { let mut out=[0u8;16]; for i in 0..8 { let v=i16::from_le_bytes([va[i*2],va[i*2+1]]).clamp(0,255) as u8; out[i]=v; let v2=i16::from_le_bytes([vb[i*2],vb[i*2+1]]).clamp(0,255) as u8; out[8+i]=v2; } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                // f32x4 unary
+                _ if op == Op::F32X4_CEIL    => { self.simd_f32x4_unop(|a| a.ceil())?; }
+                _ if op == Op::F32X4_FLOOR   => { self.simd_f32x4_unop(|a| a.floor())?; }
+                _ if op == Op::F32X4_TRUNC   => { self.simd_f32x4_unop(|a| a.trunc())?; }
+                _ if op == Op::F32X4_NEAREST => { self.simd_f32x4_unop(|a| a.round_ties_even())?; }
+                // i8x16 shifts
+                _ if op == Op::I8X16_SHL => { let sh = self.pop().as_i32() as u32 & 7; self.simd_i8x16_unop(|a| a.wrapping_shl(sh))?; }
+                _ if op == Op::I8X16_SHR_S => { let sh = self.pop().as_i32() as u32 & 7; self.simd_i8x16_unop(|a| ((a as i8).wrapping_shr(sh)) as u8)?; }
+                _ if op == Op::I8X16_SHR_U => { let sh = self.pop().as_i32() as u32 & 7; self.simd_i8x16_unop(|a| a.wrapping_shr(sh))?; }
+                // i8x16 arithmetic
+                _ if op == Op::I8X16_ADD => { self.simd_i8x16_binop(|a,b| a.wrapping_add(b))?; }
+                _ if op == Op::I8X16_ADD_SAT_S => { self.simd_i8x16_binop(|a,b| ((a as i8).saturating_add(b as i8)) as u8)?; }
+                _ if op == Op::I8X16_ADD_SAT_U => { self.simd_i8x16_binop(|a,b| a.saturating_add(b))?; }
+                _ if op == Op::I8X16_SUB => { self.simd_i8x16_binop(|a,b| a.wrapping_sub(b))?; }
+                _ if op == Op::I8X16_SUB_SAT_S => { self.simd_i8x16_binop(|a,b| ((a as i8).saturating_sub(b as i8)) as u8)?; }
+                _ if op == Op::I8X16_SUB_SAT_U => { self.simd_i8x16_binop(|a,b| a.saturating_sub(b))?; }
+                _ if op == Op::I8X16_MIN_S => { self.simd_i8x16_binop(|a,b| if (a as i8)<(b as i8){a}else{b})?; }
+                _ if op == Op::I8X16_MIN_U => { self.simd_i8x16_binop(|a,b| a.min(b))?; }
+                _ if op == Op::I8X16_MAX_S => { self.simd_i8x16_binop(|a,b| if (a as i8)>(b as i8){a}else{b})?; }
+                _ if op == Op::I8X16_MAX_U => { self.simd_i8x16_binop(|a,b| a.max(b))?; }
+                _ if op == Op::I8X16_AVGR_U => { self.simd_i8x16_binop(|a,b| ((a as u16 + b as u16 + 1) / 2) as u8)?; }
+                // f64x2 unary
+                _ if op == Op::F64X2_CEIL    => { self.simd_f64x2_unop(|a| a.ceil())?; }
+                _ if op == Op::F64X2_FLOOR   => { self.simd_f64x2_unop(|a| a.floor())?; }
+                _ if op == Op::F64X2_TRUNC   => { self.simd_f64x2_unop(|a| a.trunc())?; }
+                _ if op == Op::F64X2_NEAREST => { self.simd_f64x2_unop(|a| a.round_ties_even())?; }
+                // extadd pairwise
+                _ if op == Op::I16X8_EXTADD_PAIRWISE_I8X16_S => { if let Value::V128(a) = self.pop() { let mut out=[0u8;16]; for i in 0..8 { let v=(a[i*2] as i8 as i16).wrapping_add(a[i*2+1] as i8 as i16); out[i*2..i*2+2].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I16X8_EXTADD_PAIRWISE_I8X16_U => { if let Value::V128(a) = self.pop() { let mut out=[0u8;16]; for i in 0..8 { let v=(a[i*2] as i16).wrapping_add(a[i*2+1] as i16); out[i*2..i*2+2].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I32X4_EXTADD_PAIRWISE_I16X8_S => { if let Value::V128(a) = self.pop() { let mut out=[0u8;16]; for i in 0..4 { let la=i16::from_le_bytes([a[i*4],a[i*4+1]]) as i32; let lb=i16::from_le_bytes([a[i*4+2],a[i*4+3]]) as i32; out[i*4..i*4+4].copy_from_slice(&la.wrapping_add(lb).to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I32X4_EXTADD_PAIRWISE_I16X8_U => { if let Value::V128(a) = self.pop() { let mut out=[0u8;16]; for i in 0..4 { let la=u16::from_le_bytes([a[i*4],a[i*4+1]]) as i32; let lb=u16::from_le_bytes([a[i*4+2],a[i*4+3]]) as i32; out[i*4..i*4+4].copy_from_slice(&la.wrapping_add(lb).to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                // i16x8 unary
+                _ if op == Op::I16X8_ABS => { self.simd_i16x8_unop(|a| a.unsigned_abs() as i16)?; }
+                _ if op == Op::I16X8_NEG => { self.simd_i16x8_unop(|a| a.wrapping_neg())?; }
+                _ if op == Op::I16X8_Q15MULR_SAT_S => { self.simd_i16x8_binop(|a,b| { let r = (a as i32 * b as i32 + 0x4000) >> 15; r.clamp(i16::MIN as i32, i16::MAX as i32) as i16 })?; }
+                _ if op == Op::I16X8_ALL_TRUE => { self.simd_i16x8_testop(|a| a != 0)?; }
+                _ if op == Op::I16X8_BITMASK => { if let Value::V128(a) = self.pop() { let mut mask=0i32; for i in 0..8 { if i16::from_le_bytes([a[i*2],a[i*2+1]])<0{mask|=1<<i;} } self.push(Value::I32(mask))?; } else { self.push(Value::I32(0))?; } }
+                _ if op == Op::I16X8_NARROW_I32X4_S => { let b=self.pop(); let a=self.pop(); if let (Value::V128(va),Value::V128(vb))=(a,b) { let mut out=[0u8;16]; for i in 0..4 { let v=i32::from_le_bytes(va[i*4..i*4+4].try_into().unwrap()).clamp(-32768,32767) as i16; out[i*2..i*2+2].copy_from_slice(&v.to_le_bytes()); let v2=i32::from_le_bytes(vb[i*4..i*4+4].try_into().unwrap()).clamp(-32768,32767) as i16; out[(4+i)*2..(4+i)*2+2].copy_from_slice(&v2.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I16X8_NARROW_I32X4_U => { let b=self.pop(); let a=self.pop(); if let (Value::V128(va),Value::V128(vb))=(a,b) { let mut out=[0u8;16]; for i in 0..4 { let v=i32::from_le_bytes(va[i*4..i*4+4].try_into().unwrap()).clamp(0,65535) as u16; out[i*2..i*2+2].copy_from_slice(&v.to_le_bytes()); let v2=i32::from_le_bytes(vb[i*4..i*4+4].try_into().unwrap()).clamp(0,65535) as u16; out[(4+i)*2..(4+i)*2+2].copy_from_slice(&v2.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I16X8_EXTEND_LOW_I8X16_S  => { if let Value::V128(a)=self.pop() { let mut out=[0u8;16]; for i in 0..8 { let v=a[i] as i8 as i16; out[i*2..i*2+2].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I16X8_EXTEND_HIGH_I8X16_S => { if let Value::V128(a)=self.pop() { let mut out=[0u8;16]; for i in 0..8 { let v=a[8+i] as i8 as i16; out[i*2..i*2+2].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I16X8_EXTEND_LOW_I8X16_U  => { if let Value::V128(a)=self.pop() { let mut out=[0u8;16]; for i in 0..8 { let v=a[i] as i16; out[i*2..i*2+2].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I16X8_EXTEND_HIGH_I8X16_U => { if let Value::V128(a)=self.pop() { let mut out=[0u8;16]; for i in 0..8 { let v=a[8+i] as i16; out[i*2..i*2+2].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I16X8_SHL => { let sh=self.pop().as_i32() as u32&15; self.simd_i16x8_unop(|a| a.wrapping_shl(sh))?; }
+                _ if op == Op::I16X8_SHR_S => { let sh=self.pop().as_i32() as u32&15; self.simd_i16x8_unop(|a| a.wrapping_shr(sh))?; }
+                _ if op == Op::I16X8_SHR_U => { let sh=self.pop().as_i32() as u32&15; self.simd_i16x8_unop(|a| (a as u16).wrapping_shr(sh) as i16)?; }
+                _ if op == Op::I16X8_ADD => { self.simd_i16x8_binop(|a,b| a.wrapping_add(b))?; }
+                _ if op == Op::I16X8_ADD_SAT_S => { self.simd_i16x8_binop(|a,b| a.saturating_add(b))?; }
+                _ if op == Op::I16X8_ADD_SAT_U => { self.simd_i16x8_binop(|a,b| ((a as u16).saturating_add(b as u16)) as i16)?; }
+                _ if op == Op::I16X8_SUB => { self.simd_i16x8_binop(|a,b| a.wrapping_sub(b))?; }
+                _ if op == Op::I16X8_SUB_SAT_S => { self.simd_i16x8_binop(|a,b| a.saturating_sub(b))?; }
+                _ if op == Op::I16X8_SUB_SAT_U => { self.simd_i16x8_binop(|a,b| ((a as u16).saturating_sub(b as u16)) as i16)?; }
+                _ if op == Op::I16X8_MUL => { self.simd_i16x8_binop(|a,b| a.wrapping_mul(b))?; }
+                _ if op == Op::I16X8_MIN_S => { self.simd_i16x8_binop(|a,b| a.min(b))?; }
+                _ if op == Op::I16X8_MIN_U => { self.simd_i16x8_binop(|a,b| if (a as u16)<(b as u16){a}else{b})?; }
+                _ if op == Op::I16X8_MAX_S => { self.simd_i16x8_binop(|a,b| a.max(b))?; }
+                _ if op == Op::I16X8_MAX_U => { self.simd_i16x8_binop(|a,b| if (a as u16)>(b as u16){a}else{b})?; }
+                _ if op == Op::I16X8_AVGR_U => { self.simd_i16x8_binop(|a,b| (((a as u16 as u32)+(b as u16 as u32)+1)/2) as i16)?; }
+                _ if op == Op::I16X8_EXTMUL_LOW_I8X16_S  => { let b=self.pop(); let a=self.pop(); if let (Value::V128(va),Value::V128(vb))=(a,b) { let mut out=[0u8;16]; for i in 0..8 { let v=(va[i] as i8 as i16).wrapping_mul(vb[i] as i8 as i16); out[i*2..i*2+2].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I16X8_EXTMUL_HIGH_I8X16_S => { let b=self.pop(); let a=self.pop(); if let (Value::V128(va),Value::V128(vb))=(a,b) { let mut out=[0u8;16]; for i in 0..8 { let v=(va[8+i] as i8 as i16).wrapping_mul(vb[8+i] as i8 as i16); out[i*2..i*2+2].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I16X8_EXTMUL_LOW_I8X16_U  => { let b=self.pop(); let a=self.pop(); if let (Value::V128(va),Value::V128(vb))=(a,b) { let mut out=[0u8;16]; for i in 0..8 { let v=(va[i] as i16).wrapping_mul(vb[i] as i16); out[i*2..i*2+2].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I16X8_EXTMUL_HIGH_I8X16_U => { let b=self.pop(); let a=self.pop(); if let (Value::V128(va),Value::V128(vb))=(a,b) { let mut out=[0u8;16]; for i in 0..8 { let v=(va[8+i] as i16).wrapping_mul(vb[8+i] as i16); out[i*2..i*2+2].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                // i32x4 unary
+                _ if op == Op::I32X4_ABS => { self.simd_i32x4_unop(|a| a.unsigned_abs() as i32)?; }
+                _ if op == Op::I32X4_NEG => { self.simd_i32x4_unop(|a| a.wrapping_neg())?; }
+                _ if op == Op::I32X4_ALL_TRUE => { self.simd_i32x4_testop(|a| a != 0)?; }
+                _ if op == Op::I32X4_BITMASK => { if let Value::V128(a)=self.pop() { let mut mask=0i32; for i in 0..4 { if i32::from_le_bytes(a[i*4..i*4+4].try_into().unwrap())<0{mask|=1<<i;} } self.push(Value::I32(mask))?; } else { self.push(Value::I32(0))?; } }
+                _ if op == Op::I32X4_EXTEND_LOW_I16X8_S  => { if let Value::V128(a)=self.pop() { let mut out=[0u8;16]; for i in 0..4 { let v=i16::from_le_bytes([a[i*2],a[i*2+1]]) as i32; out[i*4..i*4+4].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I32X4_EXTEND_HIGH_I16X8_S => { if let Value::V128(a)=self.pop() { let mut out=[0u8;16]; for i in 0..4 { let v=i16::from_le_bytes([a[(4+i)*2],a[(4+i)*2+1]]) as i32; out[i*4..i*4+4].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I32X4_EXTEND_LOW_I16X8_U  => { if let Value::V128(a)=self.pop() { let mut out=[0u8;16]; for i in 0..4 { let v=u16::from_le_bytes([a[i*2],a[i*2+1]]) as i32; out[i*4..i*4+4].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I32X4_EXTEND_HIGH_I16X8_U => { if let Value::V128(a)=self.pop() { let mut out=[0u8;16]; for i in 0..4 { let v=u16::from_le_bytes([a[(4+i)*2],a[(4+i)*2+1]]) as i32; out[i*4..i*4+4].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I32X4_SHL => { let sh=self.pop().as_i32() as u32&31; self.simd_i32x4_unop(|a| a.wrapping_shl(sh))?; }
+                _ if op == Op::I32X4_SHR_S => { let sh=self.pop().as_i32() as u32&31; self.simd_i32x4_unop(|a| a.wrapping_shr(sh))?; }
+                _ if op == Op::I32X4_SHR_U => { let sh=self.pop().as_i32() as u32&31; self.simd_i32x4_unop(|a| (a as u32).wrapping_shr(sh) as i32)?; }
+                _ if op == Op::I32X4_ADD => { self.simd_i32x4_binop(|a,b| a.wrapping_add(b))?; }
+                _ if op == Op::I32X4_SUB => { self.simd_i32x4_binop(|a,b| a.wrapping_sub(b))?; }
+                _ if op == Op::I32X4_MUL => { self.simd_i32x4_binop(|a,b| a.wrapping_mul(b))?; }
+                _ if op == Op::I32X4_MIN_S => { self.simd_i32x4_binop(|a,b| a.min(b))?; }
+                _ if op == Op::I32X4_MIN_U => { self.simd_i32x4_binop(|a,b| if (a as u32)<(b as u32){a}else{b})?; }
+                _ if op == Op::I32X4_MAX_S => { self.simd_i32x4_binop(|a,b| a.max(b))?; }
+                _ if op == Op::I32X4_MAX_U => { self.simd_i32x4_binop(|a,b| if (a as u32)>(b as u32){a}else{b})?; }
+                _ if op == Op::I32X4_DOT_I16X8_S => { let b=self.pop(); let a=self.pop(); if let (Value::V128(va),Value::V128(vb))=(a,b) { let mut out=[0u8;16]; for i in 0..4 { let a0=i16::from_le_bytes([va[i*4],va[i*4+1]]) as i32; let b0=i16::from_le_bytes([vb[i*4],vb[i*4+1]]) as i32; let a1=i16::from_le_bytes([va[i*4+2],va[i*4+3]]) as i32; let b1=i16::from_le_bytes([vb[i*4+2],vb[i*4+3]]) as i32; out[i*4..i*4+4].copy_from_slice(&(a0*b0+a1*b1).to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I32X4_EXTMUL_LOW_I16X8_S  => { let b=self.pop(); let a=self.pop(); if let (Value::V128(va),Value::V128(vb))=(a,b) { let mut out=[0u8;16]; for i in 0..4 { let v=(i16::from_le_bytes([va[i*2],va[i*2+1]]) as i32).wrapping_mul(i16::from_le_bytes([vb[i*2],vb[i*2+1]]) as i32); out[i*4..i*4+4].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I32X4_EXTMUL_HIGH_I16X8_S => { let b=self.pop(); let a=self.pop(); if let (Value::V128(va),Value::V128(vb))=(a,b) { let mut out=[0u8;16]; for i in 0..4 { let v=(i16::from_le_bytes([va[(4+i)*2],va[(4+i)*2+1]]) as i32).wrapping_mul(i16::from_le_bytes([vb[(4+i)*2],vb[(4+i)*2+1]]) as i32); out[i*4..i*4+4].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I32X4_EXTMUL_LOW_I16X8_U  => { let b=self.pop(); let a=self.pop(); if let (Value::V128(va),Value::V128(vb))=(a,b) { let mut out=[0u8;16]; for i in 0..4 { let v=(u16::from_le_bytes([va[i*2],va[i*2+1]]) as i32).wrapping_mul(u16::from_le_bytes([vb[i*2],vb[i*2+1]]) as i32); out[i*4..i*4+4].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I32X4_EXTMUL_HIGH_I16X8_U => { let b=self.pop(); let a=self.pop(); if let (Value::V128(va),Value::V128(vb))=(a,b) { let mut out=[0u8;16]; for i in 0..4 { let v=(u16::from_le_bytes([va[(4+i)*2],va[(4+i)*2+1]]) as i32).wrapping_mul(u16::from_le_bytes([vb[(4+i)*2],vb[(4+i)*2+1]]) as i32); out[i*4..i*4+4].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                // i64x2
+                _ if op == Op::I64X2_ABS => { self.simd_i64x2_unop(|a| a.unsigned_abs() as i64)?; }
+                _ if op == Op::I64X2_NEG => { self.simd_i64x2_unop(|a| a.wrapping_neg())?; }
+                _ if op == Op::I64X2_ALL_TRUE => { self.simd_i64x2_testop(|a| a != 0)?; }
+                _ if op == Op::I64X2_BITMASK => { if let Value::V128(a)=self.pop() { let mut mask=0i32; for i in 0..2 { if i64::from_le_bytes(a[i*8..i*8+8].try_into().unwrap())<0{mask|=1<<i;} } self.push(Value::I32(mask))?; } else { self.push(Value::I32(0))?; } }
+                _ if op == Op::I64X2_EXTEND_LOW_I32X4_S  => { if let Value::V128(a)=self.pop() { let mut out=[0u8;16]; for i in 0..2 { let v=i32::from_le_bytes(a[i*4..i*4+4].try_into().unwrap()) as i64; out[i*8..i*8+8].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I64X2_EXTEND_HIGH_I32X4_S => { if let Value::V128(a)=self.pop() { let mut out=[0u8;16]; for i in 0..2 { let v=i32::from_le_bytes(a[(2+i)*4..(2+i)*4+4].try_into().unwrap()) as i64; out[i*8..i*8+8].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I64X2_EXTEND_LOW_I32X4_U  => { if let Value::V128(a)=self.pop() { let mut out=[0u8;16]; for i in 0..2 { let v=u32::from_le_bytes(a[i*4..i*4+4].try_into().unwrap()) as i64; out[i*8..i*8+8].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I64X2_EXTEND_HIGH_I32X4_U => { if let Value::V128(a)=self.pop() { let mut out=[0u8;16]; for i in 0..2 { let v=u32::from_le_bytes(a[(2+i)*4..(2+i)*4+4].try_into().unwrap()) as i64; out[i*8..i*8+8].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I64X2_SHL => { let sh=self.pop().as_i32() as u32&63; self.simd_i64x2_unop(|a| a.wrapping_shl(sh))?; }
+                _ if op == Op::I64X2_SHR_S => { let sh=self.pop().as_i32() as u32&63; self.simd_i64x2_unop(|a| a.wrapping_shr(sh))?; }
+                _ if op == Op::I64X2_SHR_U => { let sh=self.pop().as_i32() as u32&63; self.simd_i64x2_unop(|a| (a as u64).wrapping_shr(sh) as i64)?; }
+                _ if op == Op::I64X2_ADD => { self.simd_i64x2_binop(|a,b| a.wrapping_add(b))?; }
+                _ if op == Op::I64X2_SUB => { self.simd_i64x2_binop(|a,b| a.wrapping_sub(b))?; }
+                _ if op == Op::I64X2_MUL => { self.simd_i64x2_binop(|a,b| a.wrapping_mul(b))?; }
+                _ if op == Op::I64X2_EQ  => { self.simd_i64x2_cmp(|a,b| a==b)?; }
+                _ if op == Op::I64X2_NE  => { self.simd_i64x2_cmp(|a,b| a!=b)?; }
+                _ if op == Op::I64X2_LT_S => { self.simd_i64x2_cmp(|a,b| a<b)?; }
+                _ if op == Op::I64X2_GT_S => { self.simd_i64x2_cmp(|a,b| a>b)?; }
+                _ if op == Op::I64X2_LE_S => { self.simd_i64x2_cmp(|a,b| a<=b)?; }
+                _ if op == Op::I64X2_GE_S => { self.simd_i64x2_cmp(|a,b| a>=b)?; }
+                _ if op == Op::I64X2_EXTMUL_LOW_I32X4_S  => { let b=self.pop(); let a=self.pop(); if let (Value::V128(va),Value::V128(vb))=(a,b) { let mut out=[0u8;16]; for i in 0..2 { let v=(i32::from_le_bytes(va[i*4..i*4+4].try_into().unwrap()) as i64).wrapping_mul(i32::from_le_bytes(vb[i*4..i*4+4].try_into().unwrap()) as i64); out[i*8..i*8+8].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I64X2_EXTMUL_HIGH_I32X4_S => { let b=self.pop(); let a=self.pop(); if let (Value::V128(va),Value::V128(vb))=(a,b) { let mut out=[0u8;16]; for i in 0..2 { let v=(i32::from_le_bytes(va[(2+i)*4..(2+i)*4+4].try_into().unwrap()) as i64).wrapping_mul(i32::from_le_bytes(vb[(2+i)*4..(2+i)*4+4].try_into().unwrap()) as i64); out[i*8..i*8+8].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I64X2_EXTMUL_LOW_I32X4_U  => { let b=self.pop(); let a=self.pop(); if let (Value::V128(va),Value::V128(vb))=(a,b) { let mut out=[0u8;16]; for i in 0..2 { let v=(u32::from_le_bytes(va[i*4..i*4+4].try_into().unwrap()) as i64).wrapping_mul(u32::from_le_bytes(vb[i*4..i*4+4].try_into().unwrap()) as i64); out[i*8..i*8+8].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I64X2_EXTMUL_HIGH_I32X4_U => { let b=self.pop(); let a=self.pop(); if let (Value::V128(va),Value::V128(vb))=(a,b) { let mut out=[0u8;16]; for i in 0..2 { let v=(u32::from_le_bytes(va[(2+i)*4..(2+i)*4+4].try_into().unwrap()) as i64).wrapping_mul(u32::from_le_bytes(vb[(2+i)*4..(2+i)*4+4].try_into().unwrap()) as i64); out[i*8..i*8+8].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                // f32x4
+                _ if op == Op::F32X4_ABS  => { self.simd_f32x4_unop(|a| a.abs())?; }
+                _ if op == Op::F32X4_NEG  => { self.simd_f32x4_unop(|a| -a)?; }
+                _ if op == Op::F32X4_SQRT => { self.simd_f32x4_unop(|a| a.sqrt())?; }
+                _ if op == Op::F32X4_ADD  => { self.simd_f32x4_binop(|a,b| a+b)?; }
+                _ if op == Op::F32X4_SUB  => { self.simd_f32x4_binop(|a,b| a-b)?; }
+                _ if op == Op::F32X4_MUL  => { self.simd_f32x4_binop(|a,b| a*b)?; }
+                _ if op == Op::F32X4_DIV  => { self.simd_f32x4_binop(|a,b| a/b)?; }
+                _ if op == Op::F32X4_MIN  => { self.simd_f32x4_binop(|a,b| if a.is_nan()||b.is_nan(){f32::NAN}else{a.min(b)})?; }
+                _ if op == Op::F32X4_MAX  => { self.simd_f32x4_binop(|a,b| if a.is_nan()||b.is_nan(){f32::NAN}else{a.max(b)})?; }
+                _ if op == Op::F32X4_PMIN => { self.simd_f32x4_binop(|a,b| if b<a{b}else{a})?; }
+                _ if op == Op::F32X4_PMAX => { self.simd_f32x4_binop(|a,b| if a<b{b}else{a})?; }
+                // f64x2
+                _ if op == Op::F64X2_ABS  => { self.simd_f64x2_unop(|a| a.abs())?; }
+                _ if op == Op::F64X2_NEG  => { self.simd_f64x2_unop(|a| -a)?; }
+                _ if op == Op::F64X2_SQRT => { self.simd_f64x2_unop(|a| a.sqrt())?; }
+                _ if op == Op::F64X2_ADD  => { self.simd_f64x2_binop(|a,b| a+b)?; }
+                _ if op == Op::F64X2_SUB  => { self.simd_f64x2_binop(|a,b| a-b)?; }
+                _ if op == Op::F64X2_MUL  => { self.simd_f64x2_binop(|a,b| a*b)?; }
+                _ if op == Op::F64X2_DIV  => { self.simd_f64x2_binop(|a,b| a/b)?; }
+                _ if op == Op::F64X2_MIN  => { self.simd_f64x2_binop(|a,b| if a.is_nan()||b.is_nan(){f64::NAN}else{a.min(b)})?; }
+                _ if op == Op::F64X2_MAX  => { self.simd_f64x2_binop(|a,b| if a.is_nan()||b.is_nan(){f64::NAN}else{a.max(b)})?; }
+                _ if op == Op::F64X2_PMIN => { self.simd_f64x2_binop(|a,b| if b<a{b}else{a})?; }
+                _ if op == Op::F64X2_PMAX => { self.simd_f64x2_binop(|a,b| if a<b{b}else{a})?; }
+                // Conversions
+                _ if op == Op::I32X4_TRUNC_SAT_F32X4_S => { if let Value::V128(a)=self.pop() { let mut out=[0u8;16]; for i in 0..4 { let f=f32::from_le_bytes(a[i*4..i*4+4].try_into().unwrap()); let v=if f.is_nan(){0}else{f.clamp(i32::MIN as f32, i32::MAX as f32) as i32}; out[i*4..i*4+4].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I32X4_TRUNC_SAT_F32X4_U => { if let Value::V128(a)=self.pop() { let mut out=[0u8;16]; for i in 0..4 { let f=f32::from_le_bytes(a[i*4..i*4+4].try_into().unwrap()); let v:u32=if f.is_nan()||f<0.0{0}else{f.clamp(0.0,u32::MAX as f32) as u32}; out[i*4..i*4+4].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::F32X4_CONVERT_I32X4_S => { if let Value::V128(a)=self.pop() { let mut out=[0u8;16]; for i in 0..4 { let v=i32::from_le_bytes(a[i*4..i*4+4].try_into().unwrap()) as f32; out[i*4..i*4+4].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::F32X4_CONVERT_I32X4_U => { if let Value::V128(a)=self.pop() { let mut out=[0u8;16]; for i in 0..4 { let v=u32::from_le_bytes(a[i*4..i*4+4].try_into().unwrap()) as f32; out[i*4..i*4+4].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I32X4_TRUNC_SAT_F64X2_S_ZERO => { if let Value::V128(a)=self.pop() { let mut out=[0u8;16]; for i in 0..2 { let f=f64::from_le_bytes(a[i*8..i*8+8].try_into().unwrap()); let v=if f.is_nan(){0}else{f.clamp(i32::MIN as f64,i32::MAX as f64) as i32}; out[i*4..i*4+4].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::I32X4_TRUNC_SAT_F64X2_U_ZERO => { if let Value::V128(a)=self.pop() { let mut out=[0u8;16]; for i in 0..2 { let f=f64::from_le_bytes(a[i*8..i*8+8].try_into().unwrap()); let v:u32=if f.is_nan()||f<0.0{0}else{f.clamp(0.0,u32::MAX as f64) as u32}; out[i*4..i*4+4].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::F64X2_CONVERT_LOW_I32X4_S => { if let Value::V128(a)=self.pop() { let mut out=[0u8;16]; for i in 0..2 { let v=i32::from_le_bytes(a[i*4..i*4+4].try_into().unwrap()) as f64; out[i*8..i*8+8].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
+                _ if op == Op::F64X2_CONVERT_LOW_I32X4_U => { if let Value::V128(a)=self.pop() { let mut out=[0u8;16]; for i in 0..2 { let v=u32::from_le_bytes(a[i*4..i*4+4].try_into().unwrap()) as f64; out[i*8..i*8+8].copy_from_slice(&v.to_le_bytes()); } self.push(Value::V128(out))?; } else { self.push(Value::V128([0;16]))?; } }
 
                 // -- Atomics (single-threaded: same as non-atomic for now) --
                 _ if op == Op::ATOMIC_FENCE => {} // no-op in single-threaded

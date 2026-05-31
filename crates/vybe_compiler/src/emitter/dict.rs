@@ -153,7 +153,8 @@ pub fn emit_method_has(chunks: &mut [Chunk], current: usize, line: u32) {
     let dict_slot = chunks[current].local_count;
     let key_slot = dict_slot + 1;
     let has_slot = key_slot + 1;
-    chunks[current].local_count += 3;
+    let keys_slot = has_slot + 1;
+    chunks[current].local_count += 4;
     let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
@@ -163,36 +164,41 @@ pub fn emit_method_has(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
     chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
-    chunks[current].emit_op(Op::DUP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys_slot, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
-    let no_keys = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
+    chunks[current].emit_if(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    crate::emitter::collections::emit_get(chunks, current, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
+
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     crate::emitter::collections::emit_contains(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, has_slot, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, has_slot, line);
-    let key_found = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
+    chunks[current].emit_if(line);
 
-    chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
-    crate::emitter::collections::emit_get(chunks, current, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
-    crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
-    let end = chunks[current].emit_jump(Op::BR, line);
-
-    chunks[current].patch_jump(no_keys);
-    chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
-    crate::emitter::collections::emit_get(chunks, current, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
-    crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
-    let no_keys_end = chunks[current].emit_jump(Op::BR, line);
-
-    chunks[current].patch_jump(key_found);
     chunks[current].emit_op(Op::TRUE, line);
-    chunks[current].patch_jump(end);
-    chunks[current].patch_jump(no_keys_end);
+
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    crate::emitter::collections::emit_get(chunks, current, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    crate::emitter::ops::emit_dyn_not(&mut chunks[current], line);
+
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
 }
 
 /// map.delete(key) / del dict[key] — remove a key.
@@ -219,7 +225,7 @@ pub fn emit_method_delete(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
     crate::emitter::ops::emit_dyn_ge(&mut chunks[current], line);
-    let missing = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
+    chunks[current].emit_if(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, dict_slot, line);
     chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
@@ -233,11 +239,12 @@ pub fn emit_method_delete(chunks: &mut [Chunk], current: usize, line: u32) {
     crate::emitter::collections::emit_set(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op(Op::TRUE, line);
-    let end = chunks[current].emit_jump(Op::BR, line);
 
-    chunks[current].patch_jump(missing);
+    chunks[current].emit_else(line);
+
     chunks[current].emit_op(Op::FALSE, line);
-    chunks[current].patch_jump(end);
+
+    chunks[current].emit_end(line);
 }
 
 /// map.clear() — remove all entries.
@@ -308,8 +315,8 @@ pub fn emit_keys(chunks: &mut [Chunk], current: usize, line: u32) {
     // If __keys doesn't exist (legacy dict without tracking), fall back to host
     chunks[current].emit_op(Op::DUP, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
-    let not_null = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
-    // Null — fall back to host dictKeys for legacy dicts
+    chunks[current].emit_if(line);
+    // Null — return an empty array for legacy dicts without key tracking.
     chunks[current].emit_op(Op::DROP, line); // drop null
     // We need the dict back — but it was consumed by struct_get.
     // Can't recover without a local. Use host call as fallback.
@@ -317,7 +324,8 @@ pub fn emit_keys(chunks: &mut [Chunk], current: usize, line: u32) {
     // Let's restructure: caller should dup before calling emit_keys if they need dict after.
     // For the fallback, emit empty array.
     crate::emitter::collections::emit_array_new(chunks, current, 0, line);
-    chunks[current].patch_jump(not_null);
+    chunks[current].emit_else(line);
+    chunks[current].emit_end(line);
 }
 
 /// Emit bytecode to get all values as an array.

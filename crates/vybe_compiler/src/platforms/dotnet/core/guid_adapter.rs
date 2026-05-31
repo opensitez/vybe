@@ -168,7 +168,6 @@ pub fn emit_guid_try_parse(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
     let test_idx = chunks[0].add_import("ecma:regexp", "test");
 
     let text_slot;
-    let invalid;
     {
         let chunk = &mut chunks[current];
         for _ in 1..argc {
@@ -185,18 +184,16 @@ pub fn emit_guid_try_parse(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
         chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
         chunk.emit_op_u16(Op::CALL_IMPORT, test_idx, line);
         chunk.emit(2, line);
-        invalid = chunk.emit_jump(Op::BR_IF_FALSE, line);
+        chunk.emit_if(line);
 
-        chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
-        chunk.emit_op_u16(Op::CALL_IMPORT, lower_idx, line);
-        chunk.emit(1, line);
-        chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
-        chunk.emit_op(Op::DROP, line);
+          chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+          chunk.emit_op_u16(Op::CALL_IMPORT, lower_idx, line);
+          chunk.emit(1, line);
+          chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
+          chunk.emit_op(Op::DROP, line);
     }
     emit_wrap_guid_from_slot(chunks, current, text_slot, line);
-    let done = chunks[current].emit_jump(Op::BR, line);
-
-    chunks[current].patch_jump(invalid);
-    chunks[current].emit_op(Op::NULL, line);
-    chunks[current].patch_jump(done);
+    chunks[current].emit_else(line);
+      chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_end(line);
 }

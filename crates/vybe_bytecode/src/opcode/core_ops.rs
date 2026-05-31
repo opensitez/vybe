@@ -10,13 +10,17 @@ use super::opcode_category;
 impl Op {
     // Control
     pub const UNREACHABLE: Op       = Op::new(0x00, 0x00);
+    pub const NOP: Op               = Op::new(0x00, 0x01);
     pub const BLOCK: Op             = Op::new(0x00, 0x02);
     pub const LOOP: Op              = Op::new(0x00, 0x03);
+    pub const IF: Op                = Op::new(0x00, 0x04);
+    pub const ELSE: Op              = Op::new(0x00, 0x05);
     pub const THROW: Op             = Op::new(0x00, 0x08);
     pub const THROW_REF: Op         = Op::new(0x00, 0x0A);
     pub const END: Op               = Op::new(0x00, 0x0B);
     pub const BR: Op                = Op::new(0x00, 0x0C);
-    pub const BR_IF_TRUE: Op        = Op::new(0x00, 0x0D);
+    pub const BR_IF: Op             = Op::new(0x00, 0x0D);
+    pub const BR_IF_TRUE: Op        = Op::BR_IF;
     pub const BR_TABLE: Op          = Op::new(0x00, 0x0E);
     pub const RETURN: Op            = Op::new(0x00, 0x0F);
     pub const CALL: Op              = Op::new(0x00, 0x10);
@@ -32,6 +36,7 @@ impl Op {
     // Variables
     pub const LOCAL_GET: Op         = Op::new(0x00, 0x20);
     pub const LOCAL_SET: Op         = Op::new(0x00, 0x21);
+    pub const LOCAL_TEE: Op         = Op::new(0x00, 0x22);
     pub const GLOBAL_GET: Op        = Op::new(0x00, 0x23);
     pub const GLOBAL_SET: Op        = Op::new(0x00, 0x24);
     // Reference-types table access (core prefix).
@@ -81,6 +86,13 @@ impl Op {
     pub const EQ: Op                = Op::new(0x00, 0x46);
     /// Alias for I32_NE — kept for compatibility with existing emit sites.
     pub const NE: Op                = Op::new(0x00, 0x47);
+    // f32 comparisons (WASM MVP 0x5B–0x60)
+    pub const F32_EQ: Op            = Op::new(0x00, 0x5B);
+    pub const F32_NE: Op            = Op::new(0x00, 0x5C);
+    pub const F32_LT: Op            = Op::new(0x00, 0x5D);
+    pub const F32_GT: Op            = Op::new(0x00, 0x5E);
+    pub const F32_LE: Op            = Op::new(0x00, 0x5F);
+    pub const F32_GE: Op            = Op::new(0x00, 0x60);
     // i64 comparisons (WASM MVP 0x50–0x5A)
     pub const I64_EQZ: Op           = Op::new(0x00, 0x50);
     pub const I64_EQ: Op            = Op::new(0x00, 0x51);
@@ -146,6 +158,10 @@ impl Op {
     pub const F32_TRUNC: Op         = Op::new(0x00, 0x8F);
     pub const F32_NEAREST: Op       = Op::new(0x00, 0x90);
     pub const F32_SQRT: Op          = Op::new(0x00, 0x91);
+    pub const F32_ADD: Op           = Op::new(0x00, 0x92);
+    pub const F32_SUB: Op           = Op::new(0x00, 0x93);
+    pub const F32_MUL: Op           = Op::new(0x00, 0x94);
+    pub const F32_DIV: Op           = Op::new(0x00, 0x95);
     pub const F32_MIN: Op           = Op::new(0x00, 0x96);
     pub const F32_MAX: Op           = Op::new(0x00, 0x97);
     pub const F32_COPYSIGN: Op      = Op::new(0x00, 0x98);
@@ -166,13 +182,25 @@ impl Op {
     pub const F64_COPYSIGN: Op      = Op::new(0x00, 0xA6);
     // Conversions
     pub const I32_WRAP_I64: Op      = Op::new(0x00, 0xA7);
+    pub const I32_TRUNC_F32_S: Op   = Op::new(0x00, 0xA8);
+    pub const I32_TRUNC_F32_U: Op   = Op::new(0x00, 0xA9);
     pub const I32_FROM_F64: Op      = Op::new(0x00, 0xAA);
+    pub const I32_TRUNC_F64_U: Op   = Op::new(0x00, 0xAB);
     pub const I64_EXTEND_I32_S: Op  = Op::new(0x00, 0xAC);
     pub const I64_EXTEND_I32_U: Op  = Op::new(0x00, 0xAD);
+    pub const I64_TRUNC_F32_S: Op   = Op::new(0x00, 0xAE);
+    pub const I64_TRUNC_F32_U: Op   = Op::new(0x00, 0xAF);
     pub const I64_TRUNC_F64_S: Op   = Op::new(0x00, 0xB0);
     pub const I64_TRUNC_F64_U: Op   = Op::new(0x00, 0xB1);
+    pub const F32_CONVERT_I32_S: Op = Op::new(0x00, 0xB2);
+    pub const F32_CONVERT_I32_U: Op = Op::new(0x00, 0xB3);
+    pub const F32_CONVERT_I64_S: Op = Op::new(0x00, 0xB4);
+    pub const F32_CONVERT_I64_U: Op = Op::new(0x00, 0xB5);
     pub const F32_DEMOTE_F64: Op    = Op::new(0x00, 0xB6);
     pub const F64_FROM_I32: Op      = Op::new(0x00, 0xB7);
+    pub const F64_CONVERT_I32_U: Op = Op::new(0x00, 0xB8);
+    pub const F64_CONVERT_I64_S: Op = Op::new(0x00, 0xB9);
+    pub const F64_CONVERT_I64_U: Op = Op::new(0x00, 0xBA);
     pub const F64_PROMOTE_F32: Op   = Op::new(0x00, 0xBB);
     pub const I32_REINTERPRET_F32: Op = Op::new(0x00, 0xBC);
     pub const I64_REINTERPRET_F64: Op = Op::new(0x00, 0xBD);
@@ -200,17 +228,16 @@ impl Op {
 opcode_category! {
     // Control
     [0x00] unreachable => None, "unreachable";
-    // block / loop carry (u16 end_offset, u8 result_count). The VM
-    // only needs end_offset for label_stack bookkeeping; the count
-    // tells the WASM emitter whether to write `void` (0), single
-    // externref (1), or a shared function-type blocktype (>=2).
-    [0x02] block => U16_U8, "block";
-    [0x03] r#loop => U16_U8, "loop";
+    [0x01] nop => None, "nop";
+    [0x02] block => U8, "block";
+    [0x03] r#loop => U8, "loop";
+    [0x04] if_blk => U8, "if";
+    [0x05] else_blk => None, "else";
     [0x08] throw => None, "throw";
     [0x0A] throw_ref => None, "throw_ref";
     [0x0B] end => None, "end";
-    [0x0C] br => I16, "br";
-    [0x0D] br_if_true => I16, "br_if";
+    [0x0C] br => U32Leb, "br";
+    [0x0D] br_if => U32Leb, "br_if";
     [0x0E] br_table => BrTable, "br_table";
     [0x0F] r#return => None, "return";
     [0x10] call => U8, "call";
@@ -229,6 +256,7 @@ opcode_category! {
     // Variables
     [0x20] local_get => U16, "local.get";
     [0x21] local_set => U16, "local.set";
+    [0x22] local_tee => U16, "local.tee";
     [0x23] global_get => U16, "global.get";
     [0x24] global_set => U16, "global.set";
     // Reference-types table access (core prefix). Operand is a u8 table
@@ -287,6 +315,13 @@ opcode_category! {
     [0x58] i64_le_u => None, "i64.le_u";
     [0x59] i64_ge_s => None, "i64.ge_s";
     [0x5A] i64_ge_u => None, "i64.ge_u";
+    // f32 comparisons (WASM MVP 0x5B–0x60)
+    [0x5B] f32_eq => None, "f32.eq";
+    [0x5C] f32_ne => None, "f32.ne";
+    [0x5D] f32_lt => None, "f32.lt";
+    [0x5E] f32_gt => None, "f32.gt";
+    [0x5F] f32_le => None, "f32.le";
+    [0x60] f32_ge => None, "f32.ge";
     // f64 comparisons
     [0x61] f64_eq => None, "f64.eq";
     [0x62] f64_ne => None, "f64.ne";
@@ -340,6 +375,10 @@ opcode_category! {
     [0x8F] f32_trunc => None, "f32.trunc";
     [0x90] f32_nearest => None, "f32.nearest";
     [0x91] f32_sqrt => None, "f32.sqrt";
+    [0x92] f32_add => None, "f32.add";
+    [0x93] f32_sub => None, "f32.sub";
+    [0x94] f32_mul => None, "f32.mul";
+    [0x95] f32_div => None, "f32.div";
     [0x96] f32_min => None, "f32.min";
     [0x97] f32_max => None, "f32.max";
     [0x98] f32_copysign => None, "f32.copysign";
@@ -360,13 +399,25 @@ opcode_category! {
     [0xA6] f64_copysign => None, "f64.copysign";
     // Conversions
     [0xA7] i32_wrap_i64 => None, "i32.wrap_i64";
+    [0xA8] i32_trunc_f32_s => None, "i32.trunc_f32_s";
+    [0xA9] i32_trunc_f32_u => None, "i32.trunc_f32_u";
     [0xAA] i32_from_f64 => None, "i32.trunc_f64_s";
+    [0xAB] i32_trunc_f64_u => None, "i32.trunc_f64_u";
     [0xAC] i64_extend_i32_s => None, "i64.extend_i32_s";
     [0xAD] i64_extend_i32_u => None, "i64.extend_i32_u";
+    [0xAE] i64_trunc_f32_s => None, "i64.trunc_f32_s";
+    [0xAF] i64_trunc_f32_u => None, "i64.trunc_f32_u";
     [0xB0] i64_trunc_f64_s => None, "i64.trunc_f64_s";
     [0xB1] i64_trunc_f64_u => None, "i64.trunc_f64_u";
+    [0xB2] f32_convert_i32_s => None, "f32.convert_i32_s";
+    [0xB3] f32_convert_i32_u => None, "f32.convert_i32_u";
+    [0xB4] f32_convert_i64_s => None, "f32.convert_i64_s";
+    [0xB5] f32_convert_i64_u => None, "f32.convert_i64_u";
     [0xB6] f32_demote_f64 => None, "f32.demote_f64";
     [0xB7] f64_from_i32 => None, "f64.convert_i32_s";
+    [0xB8] f64_convert_i32_u => None, "f64.convert_i32_u";
+    [0xB9] f64_convert_i64_s => None, "f64.convert_i64_s";
+    [0xBA] f64_convert_i64_u => None, "f64.convert_i64_u";
     [0xBB] f64_promote_f32 => None, "f64.promote_f32";
     [0xBC] i32_reinterpret_f32 => None, "i32.reinterpret_f32";
     [0xBD] i64_reinterpret_f64 => None, "i64.reinterpret_f64";

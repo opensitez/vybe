@@ -33,8 +33,8 @@ pub struct LoopState {
     pub block_patch: usize,
     pub loop_patch: usize,
     /// If set, there's an inner body block for continue-to-increment pattern.
-    /// continue = BR_LABEL 0 (body block), break = BR_LABEL 2 (outer block)
-    /// If None, continue = BR_LABEL 0 (loop), break = BR_LABEL 1 (outer block)
+    /// continue = `br 0` (body block), break = `br 2` (outer block)
+    /// If None, continue = `br 0` (loop), break = `br 1` (outer block)
     pub body_block_patch: Option<usize>,
 }
 

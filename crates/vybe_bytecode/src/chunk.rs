@@ -208,6 +208,16 @@ impl Chunk {
         self.emit(operand, line);
     }
 
+    pub fn emit_leb_u32(&mut self, mut value: u32, line: u32) {
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value != 0 { byte |= 0x80; }
+            self.emit(byte, line);
+            if value == 0 { break; }
+        }
+    }
+
     pub fn add_constant(&mut self, value: Value) -> u16 {
         self.constants.push(value);
         (self.constants.len() - 1) as u16
@@ -243,72 +253,99 @@ impl Chunk {
         self.emit((jump & 0xff) as u8, line);
     }
 
-    // ── Structured control flow (WASM-compatible) ──────────────────────
+    // ── Structured control flow (WASM-compliant) ───────────────────────
+    //
+    // BLOCK, LOOP, IF all carry a single blocktype byte (WASM §5.4.1):
+    //   0x40 = void (no result), 0x6F = externref, 0x7F = i32, etc.
+    //
+    // The VM pre-scans each function body to build a block table mapping
+    // every BLOCK/LOOP/IF/ELSE opcode position to its ELSE/END target ip.
+    // No size headers or patching needed — nesting is the structure.
 
-    /// Emit BLOCK with placeholder end_offset and a `result_count` byte
-    /// (0 = void, 1 = single externref, >=2 = multi-value using a shared
-    /// function-type blocktype in the WASM binary). Returns patch
-    /// position of the u16 end_offset. Caller patches it after the body.
+    /// Emit a void BLOCK (no value produced). The VM uses the pre-scanned
+    /// block table to find the matching END; `patch_block` is a no-op.
     pub fn emit_block(&mut self, line: u32) -> usize {
         self.emit_block_typed(line, 0)
     }
 
-    /// Explicit-result-count variant of `emit_block`.
+    /// Emit BLOCK with explicit result count.
+    /// 0 = void, 1 = single externref, 2+ = multi-value (WASM encoder registers type).
     pub fn emit_block_typed(&mut self, line: u32, result_count: u8) -> usize {
         self.emit_op(Op::BLOCK, line);
-        self.emit(0x00, line);
-        self.emit(0x00, line);
-        let patch = self.code.len() - 2;
-        self.emit(result_count, line);
-        patch
+        self.emit(result_count, line); // raw count; WASM encoder translates to blocktype
+        self.code.len() - 1  // dummy patch pos — patch_block is a no-op
     }
 
-    /// Emit LOOP with placeholder body_size and a zero result_count.
-    /// Returns (patch_pos, loop_start). `loop_start` is the ip AFTER the
-    /// LOOP header (where depth=0 branches restart).
+    /// Emit a void LOOP. Returns (dummy_patch, loop_body_start).
+    /// `loop_body_start` is the ip right after the result_count byte —
+    /// `br 0` inside the loop restarts there.
     pub fn emit_loop_s(&mut self, line: u32) -> (usize, usize) {
         self.emit_loop_typed(line, 0)
     }
 
-    /// Explicit-result-count variant of `emit_loop_s`.
+    /// Emit LOOP with explicit result count.
     pub fn emit_loop_typed(&mut self, line: u32, result_count: u8) -> (usize, usize) {
         self.emit_op(Op::LOOP, line);
-        self.emit(0x00, line);
-        self.emit(0x00, line);
-        let patch = self.code.len() - 2;
         self.emit(result_count, line);
-        let start = self.code.len();
-        (patch, start)
+        let dummy_patch = self.code.len() - 1;
+        let loop_body_start = self.code.len();
+        (dummy_patch, loop_body_start)
     }
 
-    /// Emit END to close a BLOCK or LOOP.
+    /// Close a BLOCK, LOOP, IF, or IF/ELSE.
     pub fn emit_end(&mut self, line: u32) {
         self.emit_op(Op::END, line);
     }
 
-    /// Patch a BLOCK/LOOP's `end_offset`: distance from the first instruction
-    /// of the body (i.e. just past the u8 `result_count`) to `code.len()`.
-    /// `patch_pos` points at the u16 offset's first byte, so the body
-    /// starts at `patch_pos + 3` (u16 = 2 bytes, result_count = 1 byte).
-    pub fn patch_block(&mut self, patch_pos: usize) {
-        let end_offset = self.code.len() - (patch_pos + 3);
-        self.code[patch_pos] = (end_offset >> 8) as u8;
-        self.code[patch_pos + 1] = (end_offset & 0xff) as u8;
+    /// No-op — block table replaces size-header patching.
+    #[inline(always)]
+    pub fn patch_block(&mut self, _patch_pos: usize) {}
+
+    /// No-op — block table replaces size-header patching.
+    #[inline(always)]
+    pub fn patch_loop(&mut self, _patch_pos: usize) {}
+
+    /// Emit IF that produces no value (void).
+    /// Caller must have an i32 on the stack (non-zero = enter then-body).
+    /// Use `emitter::ops::emit_dyn_to_bool` first to coerce a Value → i32.
+    pub fn emit_if(&mut self, line: u32) -> usize {
+        self.emit_op(Op::IF, line);
+        self.emit(0u8, line); // result_count=0 → void
+        self.code.len() - 1
     }
 
-    /// Patch a LOOP's body_size (same encoding as block).
-    pub fn patch_loop(&mut self, patch_pos: usize) {
-        self.patch_block(patch_pos);
+    /// Emit IF that leaves one externref on the stack (then/else both push one Value).
+    pub fn emit_if_value(&mut self, line: u32) -> usize {
+        self.emit_op(Op::IF, line);
+        self.emit(1u8, line); // result_count=1 → externref
+        self.code.len() - 1
     }
 
-    /// Emit BR_LABEL depth (unconditional branch to label at depth).
-    pub fn emit_br(&mut self, depth: u8, line: u32) {
-        self.emit_op_u8(Op::BR_LABEL, depth, line);
+    /// Emit ELSE. Must be matched with emit_if + emit_end.
+    pub fn emit_else(&mut self, line: u32) {
+        self.emit_op(Op::ELSE, line);
     }
 
-    /// Emit BR_IF_LABEL depth (branch if TOS is truthy).
-    pub fn emit_br_if(&mut self, depth: u8, line: u32) {
-        self.emit_op_u8(Op::BR_IF_LABEL, depth, line);
+    /// Emit WASM `br` with a structured label depth.
+    pub fn emit_br(&mut self, depth: u32, line: u32) {
+        self.emit_op(Op::BR, line);
+        self.emit_leb_u32(depth, line);
+    }
+
+    /// Emit WASM `br_if` with a structured label depth. Expects i32 on stack.
+    pub fn emit_br_if(&mut self, depth: u32, line: u32) {
+        self.emit_op(Op::BR_IF, line);
+        self.emit_leb_u32(depth, line);
+    }
+
+    /// Emit WASM `br_table` with structured label depths.
+    pub fn emit_br_table(&mut self, depths: &[u32], default_depth: u32, line: u32) {
+        self.emit_op(Op::BR_TABLE, line);
+        self.emit_leb_u32(depths.len() as u32, line);
+        for &depth in depths {
+            self.emit_leb_u32(depth, line);
+        }
+        self.emit_leb_u32(default_depth, line);
     }
 
     pub fn read_u16(&self, offset: usize) -> u16 {

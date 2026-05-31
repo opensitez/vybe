@@ -60,18 +60,20 @@ fn emit_numeric_fallback(
 }
 
 fn emit_pad_to_width_from_slots(chunk: &mut Chunk, out_slot: u16, width_slot: u16, line: u32) {
-    let loop_top = chunk.current_offset();
+    let (loop_patch, _) = chunk.emit_loop_s(line);
     lget(chunk, out_slot, line);
     chunk.emit_op(Op::STR_LENGTH, line);
     lget(chunk, width_slot, line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
-    let done = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(1, line);
     push_str(chunk, "0", line);
     lget(chunk, out_slot, line);
     chunk.emit_op(Op::STR_CONCAT, line);
     lset(chunk, out_slot, line);
-    chunk.emit_loop(loop_top, line);
-    chunk.patch_jump(done);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.patch_loop(loop_patch);
 }
 
 /// `__php_inc(v)` — PHP `$v++` arithmetic.
@@ -106,7 +108,7 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
     let str_const = chunk.add_constant(Value::String(Arc::from("string")));
     chunk.emit_op_u16(Op::CONST, str_const, line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
-    let not_string = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_if(line);
 
     // String case:
     // - if the string ends with a digit run and has a non-digit prefix,
@@ -129,108 +131,109 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
     chunk.emit_op(Op::STR_LENGTH, line);
     lset(chunk, len_slot, line);
 
-    // Recognise the common PHP shape of a non-digit prefix followed by
-    // a one- or two-digit suffix. This covers the date-like strings
-    // that currently hang inside loops (`2026-03-25`, `foo9`, `foo09`)
-    // without relying on an inline scan loop.
-    lget(chunk, len_slot, line);
-    push_const(chunk, Value::F64(2.0), line);
-    crate::emitter::ops::emit_dyn_lt(chunk, line);
-    let use_numeric_short = chunk.emit_jump(Op::BR_IF_TRUE, line);
-
-    lget(chunk, len_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_SUB, line);
-    lset(chunk, i_slot, line);
-
-    lget(chunk, s_slot, line);
-    lget(chunk, i_slot, line);
-    chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
-    lset(chunk, code_slot, line);
-
-    lget(chunk, code_slot, line);
-    push_const(chunk, Value::F64(47.0), line);
-    crate::emitter::ops::emit_dyn_gt(chunk, line);
-    let use_numeric_last_lo = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, code_slot, line);
-    push_const(chunk, Value::F64(58.0), line);
-    crate::emitter::ops::emit_dyn_lt(chunk, line);
-    let use_numeric_last_hi = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, len_slot, line);
-    push_const(chunk, Value::F64(2.0), line);
-    chunk.emit_op(Op::F64_SUB, line);
-    lset(chunk, i_slot, line);
-
-    lget(chunk, s_slot, line);
-    lget(chunk, i_slot, line);
-    chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
-    lset(chunk, code_slot, line);
-
-    lget(chunk, code_slot, line);
-    push_const(chunk, Value::F64(47.0), line);
-    crate::emitter::ops::emit_dyn_gt(chunk, line);
-    let one_digit_suffix = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, code_slot, line);
-    push_const(chunk, Value::F64(58.0), line);
-    crate::emitter::ops::emit_dyn_lt(chunk, line);
-    let one_digit_suffix_hi = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, len_slot, line);
-    push_const(chunk, Value::F64(3.0), line);
-    crate::emitter::ops::emit_dyn_lt(chunk, line);
-    let use_numeric_all_digits = chunk.emit_jump(Op::BR_IF_TRUE, line);
-
-    lget(chunk, len_slot, line);
-    push_const(chunk, Value::F64(3.0), line);
-    chunk.emit_op(Op::F64_SUB, line);
-    lset(chunk, i_slot, line);
-
-    lget(chunk, s_slot, line);
-    lget(chunk, i_slot, line);
-    chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
-    lset(chunk, code_slot, line);
-
-    lget(chunk, code_slot, line);
-    push_const(chunk, Value::F64(47.0), line);
-    crate::emitter::ops::emit_dyn_gt(chunk, line);
-    let two_digit_suffix = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, code_slot, line);
-    push_const(chunk, Value::F64(58.0), line);
-    crate::emitter::ops::emit_dyn_lt(chunk, line);
-    let two_digit_suffix_hi = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    let use_numeric_long_suffix = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(one_digit_suffix);
-    chunk.patch_jump(one_digit_suffix_hi);
-    lget(chunk, len_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_SUB, line);
+    push_const(chunk, Value::F64(-1.0), line);
     lset(chunk, suffix_start_slot, line);
-    let suffix_ready = chunk.emit_jump(Op::BR, line);
 
-    chunk.patch_jump(two_digit_suffix);
-    chunk.patch_jump(two_digit_suffix_hi);
+    // Recognise a non-digit prefix followed by a one- or two-digit suffix.
     lget(chunk, len_slot, line);
     push_const(chunk, Value::F64(2.0), line);
-    chunk.emit_op(Op::F64_SUB, line);
-    lset(chunk, suffix_start_slot, line);
-    let two_digit_ready = chunk.emit_jump(Op::BR, line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+        lget(chunk, len_slot, line);
+        push_const(chunk, Value::F64(1.0), line);
+        chunk.emit_op(Op::F64_SUB, line);
+        lset(chunk, i_slot, line);
 
-    chunk.patch_jump(use_numeric_short);
-    chunk.patch_jump(use_numeric_last_lo);
-    chunk.patch_jump(use_numeric_last_hi);
-    chunk.patch_jump(use_numeric_all_digits);
-    chunk.patch_jump(use_numeric_long_suffix);
+        lget(chunk, s_slot, line);
+        lget(chunk, i_slot, line);
+        chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
+        lset(chunk, code_slot, line);
+
+        lget(chunk, code_slot, line);
+        push_const(chunk, Value::F64(47.0), line);
+        crate::emitter::ops::emit_dyn_gt(chunk, line);
+        chunk.emit_if(line);
+            lget(chunk, code_slot, line);
+            push_const(chunk, Value::F64(58.0), line);
+            crate::emitter::ops::emit_dyn_lt(chunk, line);
+            chunk.emit_if(line);
+                lget(chunk, len_slot, line);
+                push_const(chunk, Value::F64(2.0), line);
+                chunk.emit_op(Op::F64_SUB, line);
+                lset(chunk, i_slot, line);
+
+                lget(chunk, s_slot, line);
+                lget(chunk, i_slot, line);
+                chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
+                lset(chunk, code_slot, line);
+
+                lget(chunk, code_slot, line);
+                push_const(chunk, Value::F64(47.0), line);
+                crate::emitter::ops::emit_dyn_gt(chunk, line);
+                chunk.emit_if(line);
+                    lget(chunk, code_slot, line);
+                    push_const(chunk, Value::F64(58.0), line);
+                    crate::emitter::ops::emit_dyn_lt(chunk, line);
+                    chunk.emit_if(line);
+                        lget(chunk, len_slot, line);
+                        push_const(chunk, Value::F64(3.0), line);
+                        crate::emitter::ops::emit_dyn_lt(chunk, line);
+                        chunk.emit_op(Op::I32_EQZ, line);
+                        chunk.emit_if(line);
+                            lget(chunk, len_slot, line);
+                            push_const(chunk, Value::F64(3.0), line);
+                            chunk.emit_op(Op::F64_SUB, line);
+                            lset(chunk, i_slot, line);
+
+                            lget(chunk, s_slot, line);
+                            lget(chunk, i_slot, line);
+                            chunk.emit_op(Op::STR_CHAR_CODE_AT, line);
+                            lset(chunk, code_slot, line);
+
+                            lget(chunk, code_slot, line);
+                            push_const(chunk, Value::F64(47.0), line);
+                            crate::emitter::ops::emit_dyn_gt(chunk, line);
+                            chunk.emit_if(line);
+                                lget(chunk, code_slot, line);
+                                push_const(chunk, Value::F64(58.0), line);
+                                crate::emitter::ops::emit_dyn_lt(chunk, line);
+                                chunk.emit_op(Op::I32_EQZ, line);
+                                chunk.emit_if(line);
+                                    lget(chunk, len_slot, line);
+                                    push_const(chunk, Value::F64(2.0), line);
+                                    chunk.emit_op(Op::F64_SUB, line);
+                                    lset(chunk, suffix_start_slot, line);
+                                chunk.emit_end(line);
+                            chunk.emit_else(line);
+                                lget(chunk, len_slot, line);
+                                push_const(chunk, Value::F64(2.0), line);
+                                chunk.emit_op(Op::F64_SUB, line);
+                                lset(chunk, suffix_start_slot, line);
+                            chunk.emit_end(line);
+                        chunk.emit_end(line);
+                    chunk.emit_else(line);
+                        lget(chunk, len_slot, line);
+                        push_const(chunk, Value::F64(1.0), line);
+                        chunk.emit_op(Op::F64_SUB, line);
+                        lset(chunk, suffix_start_slot, line);
+                    chunk.emit_end(line);
+                chunk.emit_else(line);
+                    lget(chunk, len_slot, line);
+                    push_const(chunk, Value::F64(1.0), line);
+                    chunk.emit_op(Op::F64_SUB, line);
+                    lset(chunk, suffix_start_slot, line);
+                chunk.emit_end(line);
+            chunk.emit_end(line);
+        chunk.emit_end(line);
+    chunk.emit_end(line);
+
+    lget(chunk, suffix_start_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    crate::emitter::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_if(line);
     emit_numeric_fallback(chunk, s_slot, parse_float, plus, line);
-    let string_done_numeric = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(suffix_ready);
-    chunk.patch_jump(two_digit_ready);
+    chunk.emit_else(line);
 
     lget(chunk, len_slot, line);
     lget(chunk, suffix_start_slot, line);
@@ -264,15 +267,12 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
     lget(chunk, prefix_slot, line);
     lget(chunk, out_slot, line);
     chunk.emit_op(Op::STR_CONCAT, line);
-    let string_done_suffix = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(not_string);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
 
     // Numeric case: v ± 1
     chunk.emit_op_u16(Op::LOCAL_GET, v_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     if plus { crate::emitter::ops::emit_dyn_add(chunk, line) } else { chunk.emit_op(Op::F64_SUB, line) };
-
-    chunk.patch_jump(string_done_numeric);
-    chunk.patch_jump(string_done_suffix);
+    chunk.emit_end(line);
 }

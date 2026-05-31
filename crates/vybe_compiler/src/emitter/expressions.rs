@@ -1,9 +1,8 @@
 //! Expression compilation helpers — shared bytecode patterns for common expressions.
 //!
 //! Ternary conditionals, short-circuit logic, and null coalescing are identical
-//! across all languages. Each helper emits the jump structure and returns
-//! patch points so the caller can compile the language-specific sub-expressions
-//! in between.
+//! across all languages. Helpers emit structured WASM control constructs so
+//! callers can compile language-specific sub-expressions in between.
 
 use std::sync::Arc;
 use vybe_bytecode::{Chunk, Value};
@@ -72,25 +71,25 @@ pub fn emit_bool_not(chunk: &mut Chunk, line: u32) {
 //   compile_else_expr(chunk);
 //   emit_ternary_end(chunk, end_jump);
 
-/// After condition is on stack: convert to bool, jump to else if false.
+/// After condition is on stack: convert to bool and enter the then arm.
 /// Stack before: [condition]  Stack after: []
 pub fn emit_ternary_start(chunk: &mut Chunk, line: u32) -> usize {
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_jump(Op::BR_IF_FALSE, line)
+    chunk.emit_if(line);
+    0
 }
 
-/// After "then" expression: jump over else, patch the false target.
+/// After "then" expression: start the else arm.
 /// Stack: [then_value]
-pub fn emit_ternary_middle(chunk: &mut Chunk, false_jump: usize, line: u32) -> usize {
-    let end_jump = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(false_jump);
-    end_jump
+pub fn emit_ternary_middle(chunk: &mut Chunk, _false_jump: usize, line: u32) -> usize {
+    chunk.emit_else(line);
+    0
 }
 
-/// After "else" expression: patch the end target.
+/// After "else" expression: close the structured if.
 /// Stack: [result_value]
-pub fn emit_ternary_end(chunk: &mut Chunk, end_jump: usize) {
-    chunk.patch_jump(end_jump);
+pub fn emit_ternary_end(chunk: &mut Chunk, _end_jump: usize) {
+    chunk.emit_end(0);
 }
 
 // ── Short-circuit logical AND ───────────────────────────────────────────
@@ -104,11 +103,13 @@ pub fn emit_ternary_end(chunk: &mut Chunk, end_jump: usize) {
 /// After left operand: if falsy, short-circuit (keep left as result).
 /// Stack before: [left]  Stack after: [] (right will be compiled next)
 pub fn emit_and_start(chunk: &mut Chunk, line: u32) -> usize {
+    let block = chunk.emit_block(line);
     chunk.emit_op(Op::DUP, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
-    let jump = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(0, line);
     chunk.emit_op(Op::DROP, line); // discard left, right becomes result
-    jump
+    block
 }
 
 // ── Short-circuit logical OR ────────────────────────────────────────────
@@ -122,17 +123,19 @@ pub fn emit_and_start(chunk: &mut Chunk, line: u32) -> usize {
 /// After left operand: if truthy, short-circuit (keep left as result).
 /// Stack before: [left]  Stack after: [] (right will be compiled next)
 pub fn emit_or_start(chunk: &mut Chunk, line: u32) -> usize {
+    let block = chunk.emit_block(line);
     chunk.emit_op(Op::DUP, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
-    let jump = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    chunk.emit_br_if(0, line);
     chunk.emit_op(Op::DROP, line); // discard left, right becomes result
-    jump
+    block
 }
 
 /// End a short-circuit AND or OR.
 /// Stack: [result_value]
-pub fn emit_short_circuit_end(chunk: &mut Chunk, jump: usize) {
-    chunk.patch_jump(jump);
+pub fn emit_short_circuit_end(chunk: &mut Chunk, block: usize) {
+    chunk.emit_end(0);
+    chunk.patch_block(block);
 }
 
 // ── Null coalescing ─────────────────────────────────────────────────────
@@ -146,22 +149,22 @@ pub fn emit_short_circuit_end(chunk: &mut Chunk, jump: usize) {
 /// After left operand: if null, drop it and fall through to right expression.
 /// If non-null, skip over right expression.
 /// Stack before: [left]  Stack after: [] (right will be compiled next)
-/// Returns (null_jump, end_jump).
+/// Returns (block_patch, 0).
 pub fn emit_null_coalesce_start(chunk: &mut Chunk, line: u32) -> (usize, usize) {
     chunk.emit_op(Op::DUP, line);
-    let null_jump = chunk.emit_jump(Op::BR_IF_NULL, line);
-    // Not null — keep left, jump to end
-    let end_jump = chunk.emit_jump(Op::BR, line);
-    // Null path: drop the null, caller compiles right expression
-    chunk.patch_jump(null_jump);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    let block = chunk.emit_block(line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(0, line);
     chunk.emit_op(Op::DROP, line);
-    (null_jump, end_jump)
+    (block, 0)
 }
 
-/// After right expression: patch the non-null skip jump.
+/// After right expression: close the non-null skip block.
 /// Stack: [result_value]
-pub fn emit_null_coalesce_end(chunk: &mut Chunk, end_jump: usize) {
-    chunk.patch_jump(end_jump);
+pub fn emit_null_coalesce_end(chunk: &mut Chunk, block: usize) {
+    chunk.emit_end(0);
+    chunk.patch_block(block);
 }
 
 // ── Null-safe member access (?.) ────────────────────────────────────────
@@ -176,18 +179,16 @@ pub fn emit_null_coalesce_end(chunk: &mut Chunk, end_jump: usize) {
 /// Stack before: [object]  Stack after: [object] (if non-null) or control jumps to end
 pub fn emit_null_safe_start(chunk: &mut Chunk, line: u32) -> (usize, usize) {
     chunk.emit_op(Op::DUP, line);
-    let skip = chunk.emit_jump(Op::BR_IF_NULL, line);
-    // Non-null: fall through to member access
-    // Return skip (null path) — caller compiles access, then calls end
-    (skip, 0) // end_jump set by caller
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    let block = chunk.emit_block(line);
+    chunk.emit_br_if(0, line);
+    (block, 0)
 }
 
-/// After member access: patch the null-skip and null-end jumps.
-pub fn emit_null_safe_end(chunk: &mut Chunk, skip: usize, line: u32) {
-    let end = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(skip);
-    // null is still on stack from the dup
-    chunk.patch_jump(end);
+/// After member access: close the null-skip block.
+pub fn emit_null_safe_end(chunk: &mut Chunk, block: usize, _line: u32) {
+    chunk.emit_end(0);
+    chunk.patch_block(block);
 }
 
 // ── Generic dynamic dispatch ────────────────────────────────────────────
@@ -213,31 +214,6 @@ pub fn emit_null_safe_end(chunk: &mut Chunk, skip: usize, line: u32) {
 ///   emit_dynamic_dispatch_fallback(chunk, null_jump, done, line);
 ///
 /// Or use the simpler one-shot helpers below.
-pub fn emit_try_method(chunk: &mut Chunk, obj_slot: u16, method_name: &str, line: u32) -> (usize, bool) {
-    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    let key = chunk.add_constant(Value::String(Arc::from(method_name)));
-    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
-    chunk.emit_op(Op::DUP, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);
-    let is_null = chunk.emit_jump(Op::BR_IF_TRUE, line);
-    (is_null, true)
-}
-
-/// After emit_try_method found a method: clean up the null path.
-/// Call this after emitting the call_ref in the found path.
-pub fn emit_try_method_fallback_start(chunk: &mut Chunk, is_null: usize, line: u32) -> usize {
-    let done = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(is_null);
-    chunk.emit_op(Op::DROP, line); // drop null from dup
-    chunk.emit_op(Op::DROP, line); // drop null from struct_get
-    done
-}
-
-/// End the try-method dispatch.
-pub fn emit_try_method_end(chunk: &mut Chunk, done: usize) {
-    chunk.patch_jump(done);
-}
-
 // ── Rich arithmetic (user-defined __add__/__sub__/etc) ──────────────────
 //
 // Same pattern as rich_compare but for binary arithmetic operators.
@@ -256,21 +232,28 @@ pub fn emit_rich_arithmetic(chunk: &mut Chunk, left_slot: u16, right_slot: u16, 
 /// Object must be in `obj_slot`.
 /// Stack before: []  Stack after: [string_value]
 pub fn emit_rich_to_string(chunk: &mut Chunk, obj_slot: u16, line: u32) {
-    // Try struct_get "__str__" on object
-    let (is_null, _) = emit_try_method(chunk, obj_slot, "__str__", line);
+    let method_slot = chunk.local_count;
+    chunk.local_count = chunk.local_count.max(method_slot + 1);
 
-    // Found: call __str__(self) → returns string
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
-    let done = emit_try_method_fallback_start(chunk, is_null, line);
+    let key = chunk.add_constant(Value::String(Arc::from("__str__")));
+    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
+    chunk.emit_op(Op::DROP, line);
 
-    // Fallback: use host toString
-    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    let to_str = chunk.add_import("ecma:string", "String");
-    chunk.emit_op_u16(Op::CALL_IMPORT, to_str, line);
-    chunk.emit(1, line);
-
-    emit_try_method_end(chunk, done);
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+      chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+      chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+      chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_else(line);
+      chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+      let to_str = chunk.add_import("ecma:string", "String");
+      chunk.emit_op_u16(Op::CALL_IMPORT, to_str, line);
+      chunk.emit(1, line);
+    chunk.emit_end(line);
 }
 
 // ── Rich bool (user-defined __bool__ / valueOf) ─────────────────────────
@@ -279,18 +262,26 @@ pub fn emit_rich_to_string(chunk: &mut Chunk, obj_slot: u16, line: u32) {
 /// Object must be in `obj_slot`.
 /// Stack before: []  Stack after: [bool_value]
 pub fn emit_rich_bool(chunk: &mut Chunk, obj_slot: u16, line: u32) {
-    let (is_null, _) = emit_try_method(chunk, obj_slot, "__bool__", line);
+    let method_slot = chunk.local_count;
+    chunk.local_count = chunk.local_count.max(method_slot + 1);
 
-    // Found: call __bool__(self) → returns bool
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
-    let done = emit_try_method_fallback_start(chunk, is_null, line);
+    let key = chunk.add_constant(Value::String(Arc::from("__bool__")));
+    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
+    chunk.emit_op(Op::DROP, line);
 
-    // Fallback: use dyn_to_bool
-    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
-
-    emit_try_method_end(chunk, done);
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+      chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+      chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+      chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_else(line);
+      chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+      crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_end(line);
 }
 
 // ── Rich comparison (user-defined __lt__/__gt__/etc) ────────────────────
@@ -340,55 +331,57 @@ pub fn emit_rich_compare(chunk: &mut Chunk, _dunder: &str, fallback_fn: fn(&mut 
 ///
 /// Emits: check left.__lt__ → if found, call it(right) → else dyn_lt(left, right)
 pub fn emit_rich_compare_locals(chunk: &mut Chunk, left_slot: u16, right_slot: u16, dunder: &str, fallback_fn: fn(&mut Chunk, u32), line: u32) {
+    let method_slot = chunk.local_count;
+    chunk.local_count = chunk.local_count.max(method_slot + 1);
+
     // Try struct_get dunder on left
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     let key = chunk.add_constant(Value::String(Arc::from(dunder)));
     chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
+    chunk.emit_op(Op::DROP, line);
 
-    // Check if method exists (non-null)
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    let is_null = chunk.emit_jump(Op::BR_IF_TRUE, line);
-
-    // Found method: call it with self=left, arg=right → result
-    chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 2, line);
-    let done = chunk.emit_jump(Op::BR, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+      // Found method: call it with self=left, arg=right → result
+      chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+      chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+      chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
+      chunk.emit_op_u8(Op::CALL_REF, 2, line);
+    chunk.emit_else(line);
 
     // Not found: try compare-style methods like C# CompareTo / Ruby <=>.
-    chunk.patch_jump(is_null);
-    chunk.emit_op(Op::DROP, line); // drop null from dup
-    chunk.emit_op(Op::DROP, line); // drop null from struct_get
+      let done = chunk.emit_block(line);
+      for method_name in ["compare", "CompareTo", "compareTo", "__cmp__", "<=>"] {
+          let method_key = chunk.add_constant(Value::String(Arc::from(method_name)));
+          chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+          chunk.emit_op_u16(Op::STRUCT_GET, method_key, line);
+          chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
+          chunk.emit_op(Op::DROP, line);
 
-    let mut compare_done: Vec<usize> = Vec::new();
-    for method_name in ["compare", "CompareTo", "compareTo", "__cmp__", "<=>"] {
-        let method_key = chunk.add_constant(Value::String(Arc::from(method_name)));
-        chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
-        chunk.emit_op_u16(Op::STRUCT_GET, method_key, line);
-        chunk.emit_op(Op::DUP, line);
-        chunk.emit_op(Op::REF_IS_NULL, line);
-        let compare_missing = chunk.emit_jump(Op::BR_IF_TRUE, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-        chunk.emit_op_u8(Op::CALL_REF, 2, line);
-        chunk.emit_op(Op::I32_CONST_0, line);
-        fallback_fn(chunk, line);
-        compare_done.push(chunk.emit_jump(Op::BR, line));
-        chunk.patch_jump(compare_missing);
-        chunk.emit_op(Op::DROP, line);
-        chunk.emit_op(Op::DROP, line);
-    }
+          chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+          chunk.emit_op(Op::REF_IS_NULL, line);
+          chunk.emit_op(Op::I32_EQZ, line);
+          chunk.emit_if(line);
+            chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+            chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
+            chunk.emit_op_u8(Op::CALL_REF, 2, line);
+            chunk.emit_op(Op::I32_CONST_0, line);
+            fallback_fn(chunk, line);
+            chunk.emit_br(1, line);
+          chunk.emit_end(line);
+      }
 
-    chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    fallback_fn(chunk, line);
+      chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+      chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
+      fallback_fn(chunk, line);
 
-    for jump in compare_done {
-        chunk.patch_jump(jump);
-    }
-
-    chunk.patch_jump(done);
+      chunk.emit_end(line);
+      chunk.patch_block(done);
+    chunk.emit_end(line);
 }
 
 // ── Smart length (user-defined __len__ / __get_length) ──────────────────
@@ -400,26 +393,25 @@ pub fn emit_rich_compare_locals(chunk: &mut Chunk, left_slot: u16, right_slot: u
 /// Object must be in `obj_slot`.
 /// Stack before: []  Stack after: [length_value]
 pub fn emit_smart_length(chunk: &mut Chunk, obj_slot: u16, line: u32) {
+    let method_slot = chunk.local_count;
+    chunk.local_count = chunk.local_count.max(method_slot + 1);
+
     // Try struct_get "__get_length" on object
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     let key = chunk.add_constant(Value::String(Arc::from("__get_length")));
     chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
+    chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_op(Op::DUP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    let is_null = chunk.emit_jump(Op::BR_IF_TRUE, line);
-
-    // Found getter: call it with self=obj
-    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
-    let done = chunk.emit_jump(Op::BR, line);
-
-    // Not found: use array_length
-    chunk.patch_jump(is_null);
-    chunk.emit_op(Op::DROP, line); // drop null from dup
-    chunk.emit_op(Op::DROP, line); // drop null from struct_get
-    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op(Op::ARRAY_LENGTH, line);
-
-    chunk.patch_jump(done);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+      chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+      chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+      chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_else(line);
+      chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+      chunk.emit_op(Op::ARRAY_LENGTH, line);
+    chunk.emit_end(line);
 }

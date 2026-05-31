@@ -52,7 +52,7 @@ fn ensure_global_map(chunks: &mut [Chunk], current: usize, name: &str, line: u32
         chunk.emit_op(Op::REF_IS_NULL, line);
     }
 
-    let has_map = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
+    chunks[current].emit_if(line);
     {
         let chunk = &mut chunks[current];
         chunk.emit_op(Op::DROP, line);
@@ -63,7 +63,8 @@ fn ensure_global_map(chunks: &mut [Chunk], current: usize, name: &str, line: u32
         chunk.emit_op(Op::DUP, line);
         gset(chunk, name, line);
     }
-    chunks[current].patch_jump(has_map);
+    chunks[current].emit_else(line);
+    chunks[current].emit_end(line);
 
     {
         let chunk = &mut chunks[current];
@@ -91,20 +92,19 @@ pub fn emit_vb_dir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         lget(chunk, path_slot, line);
         chunk.emit_op_u16(Op::CALL_IMPORT, exists, line);
         chunk.emit(1, line);
+        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
     }
 
-    let missing = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
+    chunks[current].emit_if(line);
     {
         let chunk = &mut chunks[current];
         lget(chunk, path_slot, line);
         chunk.emit_op_u16(Op::CALL_IMPORT, file_name, line);
         chunk.emit(1, line);
     }
-    let done = chunks[current].emit_jump(Op::BR, line);
-
-    chunks[current].patch_jump(missing);
+    chunks[current].emit_else(line);
     push_const(&mut chunks[current], Value::String(Arc::from("")), line);
-    chunks[current].patch_jump(done);
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_vb_filedatetime(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -126,22 +126,21 @@ pub fn emit_vb_filedatetime(chunks: &mut [Chunk], current: usize, _argc: u8, lin
         chunk.emit_op(Op::REF_IS_NULL, line);
     }
 
-    let has_stat = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
+    chunks[current].emit_if(line);
     {
         let chunk = &mut chunks[current];
         chunk.emit_op(Op::DROP, line);
     }
     push_const(&mut chunks[current], Value::String(Arc::from("")), line);
-    let done = chunks[current].emit_jump(Op::BR, line);
 
-    chunks[current].patch_jump(has_stat);
+    chunks[current].emit_else(line);
     {
         let chunk = &mut chunks[current];
         chunk.emit_op_u16(Op::STRUCT_GET, modified_key, line);
         chunk.emit_op_u16(Op::CALL_IMPORT, to_iso, line);
         chunk.emit(1, line);
     }
-    chunks[current].patch_jump(done);
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_vb_lof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -163,15 +162,14 @@ pub fn emit_vb_lof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
         chunk.emit_op(Op::REF_IS_NULL, line);
     }
 
-    let has_path = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
+    chunks[current].emit_if(line);
     {
         let chunk = &mut chunks[current];
         chunk.emit_op(Op::DROP, line);
     }
     push_const(&mut chunks[current], Value::I32(0), line);
-    let done = chunks[current].emit_jump(Op::BR, line);
 
-    chunks[current].patch_jump(has_path);
+    chunks[current].emit_else(line);
     {
         let chunk = &mut chunks[current];
         chunk.emit_op_u16(Op::CALL_IMPORT, stat, line);
@@ -180,18 +178,17 @@ pub fn emit_vb_lof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
         chunk.emit_op(Op::REF_IS_NULL, line);
     }
 
-    let has_stat = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
+    chunks[current].emit_if(line);
     {
         let chunk = &mut chunks[current];
         chunk.emit_op(Op::DROP, line);
     }
     push_const(&mut chunks[current], Value::I32(0), line);
-    let stat_done = chunks[current].emit_jump(Op::BR, line);
 
-    chunks[current].patch_jump(has_stat);
+    chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::STRUCT_GET, size_key, line);
-    chunks[current].patch_jump(stat_done);
-    chunks[current].patch_jump(done);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_vb_eof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -232,13 +229,47 @@ pub fn emit_vb_eof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
         chunk.emit_op(Op::REF_IS_NULL, line);
     }
 
-    let fallback = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
+    chunks[current].emit_if(line);
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, eof_map_slot, line);
+        lget(chunk, handle_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        chunk.emit_op(Op::DUP, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+    }
+    chunks[current].emit_if(line);
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_op(Op::DROP, line);
+    }
+    push_const(&mut chunks[current], Value::Bool(false), line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
     {
         let chunk = &mut chunks[current];
         lget(chunk, rows_slot, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
     }
-    let fallback_rows = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
+    chunks[current].emit_if(line);
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, eof_map_slot, line);
+        lget(chunk, handle_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        chunk.emit_op(Op::DUP, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+    }
+    chunks[current].emit_if(line);
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_op(Op::DROP, line);
+    }
+    push_const(&mut chunks[current], Value::Bool(false), line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
     {
         let chunk = &mut chunks[current];
         lget(chunk, rows_slot, line);
@@ -251,31 +282,8 @@ pub fn emit_vb_eof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
         lget(chunk, len_slot, line);
         crate::emitter::ops::emit_dyn_ge(chunk, line);
     }
-    let done = chunks[current].emit_jump(Op::BR, line);
-
-    chunks[current].patch_jump(fallback);
-    chunks[current].patch_jump(fallback_rows);
-
-    {
-        let chunk = &mut chunks[current];
-        lget(chunk, eof_map_slot, line);
-        lget(chunk, handle_slot, line);
-        chunk.emit_op(Op::ARRAY_GET, line);
-        chunk.emit_op(Op::DUP, line);
-        chunk.emit_op(Op::REF_IS_NULL, line);
-    }
-
-    let has_value = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
-    {
-        let chunk = &mut chunks[current];
-        chunk.emit_op(Op::DROP, line);
-    }
-    push_const(&mut chunks[current], Value::Bool(false), line);
-    let fallback_done = chunks[current].emit_jump(Op::BR, line);
-
-    chunks[current].patch_jump(has_value);
-    chunks[current].patch_jump(done);
-    chunks[current].patch_jump(fallback_done);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_vb_shell_pid(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -304,11 +312,12 @@ pub fn emit_vb_shell_pid(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         chunk.emit_op(Op::REF_IS_NULL, line);
     }
 
-    let has_pid = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
+    chunks[current].emit_if(line);
     {
         let chunk = &mut chunks[current];
         chunk.emit_op(Op::DROP, line);
         push_const(chunk, Value::I32(0), line);
     }
-    chunks[current].patch_jump(has_pid);
+    chunks[current].emit_else(line);
+    chunks[current].emit_end(line);
 }

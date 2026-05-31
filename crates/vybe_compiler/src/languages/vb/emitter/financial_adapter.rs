@@ -230,11 +230,11 @@ fn init_slots_6_required4(chunk: &mut Chunk, argc: u8, default5: f64, default6: 
 }
 
 fn emit_pmt_formula(chunks: &mut [Chunk], current: usize, rate: u16, nper: u16, pv: u16, fv: u16, typ: u16, line: u32) {
-    let zero_rate_fallthrough = {
+    {
         let chunk = &mut chunks[current];
         emit_local_abs_lt(chunk, rate, RATE_EPSILON, line);
-        chunk.emit_jump(Op::BR_IF_FALSE, line)
-    };
+        chunk.emit_if(line);
+    }
     {
         let chunk = &mut chunks[current];
         lget(chunk, pv, line);
@@ -243,9 +243,8 @@ fn emit_pmt_formula(chunks: &mut [Chunk], current: usize, rate: u16, nper: u16, 
         chunk.emit_op(Op::F64_NEG, line);
         lget(chunk, nper, line);
         chunk.emit_op(Op::F64_DIV, line);
+        chunk.emit_else(line);
     }
-    let done = chunks[current].emit_jump(Op::BR, line);
-    chunks[current].patch_jump(zero_rate_fallthrough);
 
     let pow_slot = {
         let chunk = &mut chunks[current];
@@ -273,16 +272,16 @@ fn emit_pmt_formula(chunks: &mut [Chunk], current: usize, rate: u16, nper: u16, 
         chunk.emit_op(Op::F64_SUB, line);
         chunk.emit_op(Op::F64_MUL, line);
         chunk.emit_op(Op::F64_DIV, line);
+        chunk.emit_end(line);
     }
-    chunks[current].patch_jump(done);
 }
 
 fn emit_rate_equation_value(chunks: &mut [Chunk], current: usize, rate: u16, nper: u16, pmt: u16, pv: u16, fv: u16, typ: u16, line: u32) {
-    let zero_rate_fallthrough = {
+    {
         let chunk = &mut chunks[current];
         emit_local_abs_lt(chunk, rate, RATE_EPSILON, line);
-        chunk.emit_jump(Op::BR_IF_FALSE, line)
-    };
+        chunk.emit_if(line);
+    }
     {
         let chunk = &mut chunks[current];
         lget(chunk, fv, line);
@@ -292,9 +291,8 @@ fn emit_rate_equation_value(chunks: &mut [Chunk], current: usize, rate: u16, npe
         lget(chunk, nper, line);
         chunk.emit_op(Op::F64_MUL, line);
         chunk.emit_op(Op::F64_ADD, line);
+        chunk.emit_else(line);
     }
-    let done = chunks[current].emit_jump(Op::BR, line);
-    chunks[current].patch_jump(zero_rate_fallthrough);
 
     let pow_slot = {
         let chunk = &mut chunks[current];
@@ -323,19 +321,18 @@ fn emit_rate_equation_value(chunks: &mut [Chunk], current: usize, rate: u16, npe
         lget(chunk, rate, line);
         chunk.emit_op(Op::F64_DIV, line);
         chunk.emit_op(Op::F64_ADD, line);
+        chunk.emit_end(line);
     }
-    chunks[current].patch_jump(done);
 }
 
 fn emit_ipmt_formula(chunks: &mut [Chunk], current: usize, rate: u16, per: u16, pv: u16, typ: u16, payment_slot: u16, line: u32) {
-    let zero_rate_fallthrough = {
+    {
         let chunk = &mut chunks[current];
         emit_local_abs_lt(chunk, rate, RATE_EPSILON, line);
-        chunk.emit_jump(Op::BR_IF_FALSE, line)
-    };
-    push_f64(&mut chunks[current], 0.0, line);
-    let done = chunks[current].emit_jump(Op::BR, line);
-    chunks[current].patch_jump(zero_rate_fallthrough);
+        chunk.emit_if(line);
+        push_f64(chunk, 0.0, line);
+        chunk.emit_else(line);
+    }
 
     let exp_slot = {
         let chunk = &mut chunks[current];
@@ -351,8 +348,8 @@ fn emit_ipmt_formula(chunks: &mut [Chunk], current: usize, rate: u16, per: u16, 
         lget(chunk, typ, line);
         push_f64(chunk, 0.0, line);
         crate::emitter::ops::emit_dyn_eq(chunk, line);
+        chunk.emit_if(line);
     }
-    let due_branch = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
 
     {
         let chunk = &mut chunks[current];
@@ -379,20 +376,18 @@ fn emit_ipmt_formula(chunks: &mut [Chunk], current: usize, rate: u16, per: u16, 
         chunk.emit_op(Op::F64_NEG, line);
         lget(chunk, rate, line);
         chunk.emit_op(Op::F64_MUL, line);
+        chunk.emit_else(line);
     }
-    let ordinary_done = chunks[current].emit_jump(Op::BR, line);
 
-    chunks[current].patch_jump(due_branch);
     {
         let chunk = &mut chunks[current];
         lget(chunk, per, line);
         push_f64(chunk, 1.0, line);
         crate::emitter::ops::emit_dyn_eq(chunk, line);
+        chunk.emit_if(line);
+        push_f64(chunk, 0.0, line);
+        chunk.emit_else(line);
     }
-    let not_first_due = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
-    push_f64(&mut chunks[current], 0.0, line);
-    let due_done = chunks[current].emit_jump(Op::BR, line);
-    chunks[current].patch_jump(not_first_due);
 
     {
         let chunk = &mut chunks[current];
@@ -421,11 +416,9 @@ fn emit_ipmt_formula(chunks: &mut [Chunk], current: usize, rate: u16, per: u16, 
         chunk.emit_op(Op::F64_NEG, line);
         lget(chunk, rate, line);
         chunk.emit_op(Op::F64_MUL, line);
+        chunk.emit_end(line);
+        chunk.emit_end(line);
     }
-
-    chunks[current].patch_jump(ordinary_done);
-    chunks[current].patch_jump(due_done);
-    chunks[current].patch_jump(done);
 }
 
 pub fn emit_vb_pmt(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -441,11 +434,11 @@ pub fn emit_vb_fv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         let chunk = &mut chunks[current];
         init_slots_5(chunk, argc, 0.0, 0.0, line)
     };
-    let zero_rate_fallthrough = {
+    {
         let chunk = &mut chunks[current];
         emit_local_abs_lt(chunk, rate, RATE_EPSILON, line);
-        chunk.emit_jump(Op::BR_IF_FALSE, line)
-    };
+        chunk.emit_if(line);
+    }
     {
         let chunk = &mut chunks[current];
         lget(chunk, pv, line);
@@ -454,9 +447,8 @@ pub fn emit_vb_fv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunk.emit_op(Op::F64_MUL, line);
         chunk.emit_op(Op::F64_ADD, line);
         chunk.emit_op(Op::F64_NEG, line);
+        chunk.emit_else(line);
     }
-    let done = chunks[current].emit_jump(Op::BR, line);
-    chunks[current].patch_jump(zero_rate_fallthrough);
 
     let pow_slot = {
         let chunk = &mut chunks[current];
@@ -484,8 +476,8 @@ pub fn emit_vb_fv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunk.emit_op(Op::F64_DIV, line);
         chunk.emit_op(Op::F64_ADD, line);
         chunk.emit_op(Op::F64_NEG, line);
+        chunk.emit_end(line);
     }
-    chunks[current].patch_jump(done);
 }
 
 pub fn emit_vb_pv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -493,11 +485,11 @@ pub fn emit_vb_pv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         let chunk = &mut chunks[current];
         init_slots_5(chunk, argc, 0.0, 0.0, line)
     };
-    let zero_rate_fallthrough = {
+    {
         let chunk = &mut chunks[current];
         emit_local_abs_lt(chunk, rate, RATE_EPSILON, line);
-        chunk.emit_jump(Op::BR_IF_FALSE, line)
-    };
+        chunk.emit_if(line);
+    }
     {
         let chunk = &mut chunks[current];
         lget(chunk, fv, line);
@@ -506,9 +498,8 @@ pub fn emit_vb_pv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunk.emit_op(Op::F64_MUL, line);
         chunk.emit_op(Op::F64_ADD, line);
         chunk.emit_op(Op::F64_NEG, line);
+        chunk.emit_else(line);
     }
-    let done = chunks[current].emit_jump(Op::BR, line);
-    chunks[current].patch_jump(zero_rate_fallthrough);
 
     let pow_slot = {
         let chunk = &mut chunks[current];
@@ -536,8 +527,8 @@ pub fn emit_vb_pv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunk.emit_op(Op::F64_NEG, line);
         lget(chunk, pow_slot, line);
         chunk.emit_op(Op::F64_DIV, line);
+        chunk.emit_end(line);
     }
-    chunks[current].patch_jump(done);
 }
 
 pub fn emit_vb_nper(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -545,11 +536,11 @@ pub fn emit_vb_nper(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         let chunk = &mut chunks[current];
         init_slots_5(chunk, argc, 0.0, 0.0, line)
     };
-    let zero_rate_fallthrough = {
+    {
         let chunk = &mut chunks[current];
         emit_local_abs_lt(chunk, rate, RATE_EPSILON, line);
-        chunk.emit_jump(Op::BR_IF_FALSE, line)
-    };
+        chunk.emit_if(line);
+    }
     {
         let chunk = &mut chunks[current];
         lget(chunk, fv, line);
@@ -558,9 +549,8 @@ pub fn emit_vb_nper(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunk.emit_op(Op::F64_NEG, line);
         lget(chunk, pmt, line);
         chunk.emit_op(Op::F64_DIV, line);
+        chunk.emit_else(line);
     }
-    let done = chunks[current].emit_jump(Op::BR, line);
-    chunks[current].patch_jump(zero_rate_fallthrough);
 
     let factor_slot = {
         let chunk = &mut chunks[current];
@@ -600,8 +590,11 @@ pub fn emit_vb_nper(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunk.emit_op(Op::F64_ADD, line);
     }
     emit_log(chunks, current, line);
-    chunks[current].emit_op(Op::F64_DIV, line);
-    chunks[current].patch_jump(done);
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_op(Op::F64_DIV, line);
+        chunk.emit_end(line);
+    }
 }
 
 pub fn emit_vb_rate(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -643,14 +636,15 @@ pub fn emit_vb_rate(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         lset(chunk, iter_slot, line);
     }
 
-    let loop_top = chunks[current].current_offset();
+    let (loop_patch, _) = chunks[current].emit_loop_s(line);
     {
         let chunk = &mut chunks[current];
         lget(chunk, iter_slot, line);
         push_f64(chunk, MAX_RATE_ITERATIONS, line);
         crate::emitter::ops::emit_dyn_lt(chunk, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_br_if(1, line);
     }
-    let exit = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
 
     emit_rate_equation_value(chunks, current, rate_slot, nper, pmt, pv, fv, typ, line);
     {
@@ -660,8 +654,8 @@ pub fn emit_vb_rate(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunk.emit_op(Op::F64_ABS, line);
         push_f64(chunk, SOLVER_EPSILON, line);
         crate::emitter::ops::emit_dyn_lt(chunk, line);
+        chunk.emit_br_if(1, line);
     }
-    let converged = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
 
     {
         let chunk = &mut chunks[current];
@@ -684,8 +678,8 @@ pub fn emit_vb_rate(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunk.emit_op(Op::F64_ABS, line);
         push_f64(chunk, RATE_EPSILON, line);
         crate::emitter::ops::emit_dyn_lt(chunk, line);
+        chunk.emit_br_if(1, line);
     }
-    let zero_derivative = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
 
     {
         let chunk = &mut chunks[current];
@@ -699,12 +693,10 @@ pub fn emit_vb_rate(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         push_f64(chunk, 1.0, line);
         chunk.emit_op(Op::F64_ADD, line);
         lset(chunk, iter_slot, line);
-        chunk.emit_loop(loop_top, line);
+        chunk.emit_br(0, line);
+        chunk.emit_end(line);
+        chunk.patch_loop(loop_patch);
     }
-
-    chunks[current].patch_jump(exit);
-    chunks[current].patch_jump(converged);
-    chunks[current].patch_jump(zero_derivative);
     lget(&mut chunks[current], rate_slot, line);
 }
 

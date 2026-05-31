@@ -54,15 +54,15 @@ pub fn emit_dart_list_first(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     chunk.emit_op(Op::DUP, line);
     chunk.emit_op(Op::REF_IS_ARRAY, line);
-    let to_arr = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    chunks[current].emit_op(Op::I32_CONST_0, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_else(line);
     // Not an array — read the `first` field via STRUCT_GET.
     let key = chunks[current].add_constant(Value::String(Arc::from("first")));
     chunks[current].emit_op_u16(Op::STRUCT_GET, key, line);
-    let end = chunks[current].emit_jump(Op::BR, line);
-    chunks[current].patch_jump(to_arr);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
-    collections::emit_get(chunks, current, line);
-    chunks[current].patch_jump(end);
+    chunks[current].emit_end(line);
 }
 
 /// Dart `list.last` — `list[length - 1]`. Polymorphic; non-list
@@ -73,17 +73,17 @@ pub fn emit_dart_list_last(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     chunk.emit_op(Op::DUP, line);
     chunk.emit_op(Op::REF_IS_ARRAY, line);
-    let to_arr = chunk.emit_jump(Op::BR_IF_TRUE, line);
-    let key = chunks[current].add_constant(Value::String(Arc::from("last")));
-    chunks[current].emit_op_u16(Op::STRUCT_GET, key, line);
-    let end = chunks[current].emit_jump(Op::BR, line);
-    chunks[current].patch_jump(to_arr);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
     chunks[current].emit_op(Op::DUP, line);
     collections::emit_len(chunks, current, line);
     chunks[current].emit_op(Op::I32_CONST_1, line);
     chunks[current].emit_op(Op::I32_SUB, line);
     collections::emit_get(chunks, current, line);
-    chunks[current].patch_jump(end);
+    chunks[current].emit_else(line);
+    let key = chunks[current].add_constant(Value::String(Arc::from("last")));
+    chunks[current].emit_op_u16(Op::STRUCT_GET, key, line);
+    chunks[current].emit_end(line);
 }
 
 /// Dart polymorphic `.length` — string | list | map. Stack: [coll] → [i32].
@@ -93,25 +93,24 @@ pub fn emit_dart_list_last(chunks: &mut [Chunk], current: usize, line: u32) {
 /// the property count (Dart `Map.length` semantics).
 pub fn emit_dart_length(chunks: &mut [Chunk], current: usize, line: u32) {
     use vybe_bytecode::Op as VOp;
-    let chunk = &mut chunks[current];
-    chunk.emit_op(Op::DUP, line);
-    chunk.emit_op(Op::REF_IS_STRING, line);
-    let to_str = chunk.emit_jump(Op::BR_IF_TRUE, line);
-    chunk.emit_op(Op::DUP, line);
-    chunk.emit_op(Op::REF_IS_ARRAY, line);
-    let to_arr = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    chunks[current].emit_op(Op::DUP, line);
+    chunks[current].emit_op(Op::REF_IS_STRING, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op(Op::DUP, line);
+    chunks[current].emit_op(Op::REF_IS_ARRAY, line);
+    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_else(line);
     // Object/Map fall-through — count own enumerable properties via
     // `ecma:object.length`. Imports must register on chunks[0] (the
     // module-level imports chunk).
     let idx = chunks[0].add_import("ecma:object", "length");
     chunks[current].emit_op_u16(VOp::CALL_IMPORT, idx, line);
     chunks[current].emit(1, line);
-    let end_all = chunks[current].emit_jump(Op::BR, line);
-    chunks[current].patch_jump(to_arr);
-    collections::emit_len(chunks, current, line);
-    let end_arr = chunks[current].emit_jump(Op::BR, line);
-    chunks[current].patch_jump(to_str);
-    strings::emit_length(&mut chunks[current], line);
-    chunks[current].patch_jump(end_arr);
-    chunks[current].patch_jump(end_all);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
 }

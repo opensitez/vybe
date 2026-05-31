@@ -26,7 +26,9 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     let i_slot = s_slot + 1;
     let len_slot = s_slot + 2;
     let code_slot = s_slot + 3;
-    chunk.local_count = s_slot + 4;
+    let matched_slot = s_slot + 4;
+    let result_slot = s_slot + 5;
+    chunk.local_count = s_slot + 6;
 
     // s = "" + s  (string coerce)
     let v_slot = chunk.local_count;
@@ -46,15 +48,19 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
     chunk.emit_op(Op::DROP, line);
 
-    // if len === 0: push false and BR to end.
+    let outer = chunk.emit_block(line);
+
+    // if len === 0: result = false; break.
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
     let zero = chunk.add_constant(Value::F64(0.0));
     chunk.emit_op_u16(Op::CONST, zero, line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
-    let nonempty = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_if(line);
     chunk.emit_op(Op::FALSE, line);
-    let done_empty = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(nonempty);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_br(1, line);
+    chunk.emit_end(line);
 
     // i = 0
     let zero2 = chunk.add_constant(Value::F64(0.0));
@@ -62,12 +68,17 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
     chunk.emit_op(Op::DROP, line);
 
+    chunk.emit_op(Op::TRUE, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunk.emit_op(Op::DROP, line);
+
     // while i < len: per-char range check
-    let loop_top = chunk.current_offset();
+    let (loop_patch, _) = chunk.emit_loop_s(line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
-    let exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(1, line);
 
     // code = s.codePointAt(i)
     chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
@@ -76,9 +87,11 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     chunk.emit_op_u16(Op::LOCAL_SET, code_slot, line);
     chunk.emit_op(Op::DROP, line);
 
-    // For each range: if lo<=code<=hi, jump to "matched". After all
-    // ranges fail, push false and BR to end.
-    let mut accept_jumps: Vec<usize> = Vec::new();
+    chunk.emit_op(Op::FALSE, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, matched_slot, line);
+    chunk.emit_op(Op::DROP, line);
+
+    // For each range: if lo<=code<=hi, remember that this char matched.
     for rng in ranges {
         // code >= lo  ≡  !(code < lo)
         chunk.emit_op_u16(Op::LOCAL_GET, code_slot, line);
@@ -86,22 +99,29 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
         chunk.emit_op_u16(Op::CONST, lo_const, line);
         crate::emitter::ops::emit_dyn_lt(chunk, line);
         crate::emitter::ops::emit_dyn_not(chunk, line);
-        let skip_lo = chunk.emit_jump(Op::BR_IF_FALSE, line);
+        chunk.emit_if(line);
         // code <= hi  ≡  !(code > hi)
         chunk.emit_op_u16(Op::LOCAL_GET, code_slot, line);
         let hi_const = chunk.add_constant(Value::F64(rng.hi as f64));
         chunk.emit_op_u16(Op::CONST, hi_const, line);
         crate::emitter::ops::emit_dyn_gt(chunk, line);
         crate::emitter::ops::emit_dyn_not(chunk, line);
-        let skip_hi = chunk.emit_jump(Op::BR_IF_FALSE, line);
-        accept_jumps.push(chunk.emit_jump(Op::BR, line));
-        chunk.patch_jump(skip_hi);
-        chunk.patch_jump(skip_lo);
+        chunk.emit_if(line);
+        chunk.emit_op(Op::TRUE, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, matched_slot, line);
+        chunk.emit_op(Op::DROP, line);
+        chunk.emit_end(line);
+        chunk.emit_end(line);
     }
-    // No range matched → false.
+    // No range matched → result = false; exit loop.
+    chunk.emit_op_u16(Op::LOCAL_GET, matched_slot, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
     chunk.emit_op(Op::FALSE, line);
-    let done_failed = chunk.emit_jump(Op::BR, line);
-    for j in accept_jumps { chunk.patch_jump(j); }
+    chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_br(1, line);
+    chunk.emit_end(line);
 
     // i++
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
@@ -111,15 +131,13 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
     chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_loop(loop_top, line);
-    chunk.patch_jump(exit);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.patch_loop(loop_patch);
 
-    // Loop ran to completion → all chars matched → true.
-    chunk.emit_op(Op::TRUE, line);
-
-    // Land here from empty-string and from "no range matched" paths.
-    chunk.patch_jump(done_empty);
-    chunk.patch_jump(done_failed);
+    chunk.emit_end(line);
+    chunk.patch_block(outer);
+    chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
 pub fn emit_ctype_alpha(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {

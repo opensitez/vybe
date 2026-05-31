@@ -331,3 +331,205 @@ fn call_indirect_vm_function() {
     let result = vm.run(vec![main, f]).unwrap();
     assert_eq!(result.as_f64(), 99.0);
 }
+
+// ── Missing load/store variants (§5.3 memory instructions) ──────────────
+
+fn mem_vm() -> VM {
+    let mut vm = VM::new();
+    vm.memory.resize(1024, 0);
+    vm
+}
+
+fn run_mem(vm: &mut VM, emit: impl FnOnce(&mut Chunk)) -> Value {
+    let mut c = Chunk::new("<script>");
+    c.local_count = 1;
+    emit(&mut c);
+    c.emit_op(Op::HALT, 0);
+    vm.run(vec![c]).unwrap()
+}
+
+// ── f32.store / f32.load ─────────────────────────────────────────────────
+
+#[test]
+fn f32_store_and_load() {
+    let mut vm = mem_vm();
+    let r = run_mem(&mut vm, |c| {
+        let addr = c.add_constant(Value::I32(0));
+        let val  = c.add_constant(Value::F64(3.14f32 as f64));
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op_u16(Op::CONST, val,  0);
+        c.emit_op(Op::F32_STORE, 0);
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op(Op::F32_LOAD, 0);
+    });
+    assert!((r.as_f64() as f32 - 3.14f32).abs() < 1e-5);
+}
+
+// ── i32 narrow loads ─────────────────────────────────────────────────────
+
+#[test]
+fn i32_store8_and_load8_s() {
+    let mut vm = mem_vm();
+    let r = run_mem(&mut vm, |c| {
+        let addr = c.add_constant(Value::I32(0));
+        let val  = c.add_constant(Value::I32(-1i32)); // 0xFF as byte
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op_u16(Op::CONST, val,  0);
+        c.emit_op(Op::I32_STORE8, 0);
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op(Op::I32_LOAD8_S, 0); // sign-extend → -1
+    });
+    assert_eq!(r.as_i32(), -1);
+}
+
+#[test]
+fn i32_load8_u() {
+    let mut vm = mem_vm();
+    let r = run_mem(&mut vm, |c| {
+        let addr = c.add_constant(Value::I32(0));
+        let val  = c.add_constant(Value::I32(0xFF));
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op_u16(Op::CONST, val,  0);
+        c.emit_op(Op::I32_STORE8, 0);
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op(Op::I32_LOAD8_U, 0); // zero-extend → 255
+    });
+    assert_eq!(r.as_i32(), 255);
+}
+
+#[test]
+fn i32_store16_and_load16_s() {
+    let mut vm = mem_vm();
+    let r = run_mem(&mut vm, |c| {
+        let addr = c.add_constant(Value::I32(0));
+        let val  = c.add_constant(Value::I32(-1000));
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op_u16(Op::CONST, val,  0);
+        c.emit_op(Op::I32_STORE16, 0);
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op(Op::I32_LOAD16_S, 0);
+    });
+    assert_eq!(r.as_i32(), -1000);
+}
+
+#[test]
+fn i32_load16_u() {
+    let mut vm = mem_vm();
+    let r = run_mem(&mut vm, |c| {
+        let addr = c.add_constant(Value::I32(0));
+        let val  = c.add_constant(Value::I32(0xFFFF));
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op_u16(Op::CONST, val,  0);
+        c.emit_op(Op::I32_STORE16, 0);
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op(Op::I32_LOAD16_U, 0);
+    });
+    assert_eq!(r.as_i32(), 65535);
+}
+
+// ── i64.load / i64.store ─────────────────────────────────────────────────
+
+#[test]
+fn i64_store_and_load() {
+    let mut vm = mem_vm();
+    let r = run_mem(&mut vm, |c| {
+        let addr = c.add_constant(Value::I32(0));
+        let val  = c.add_constant(Value::I64(i64::MAX));
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op_u16(Op::CONST, val,  0);
+        c.emit_op(Op::I64_STORE, 0);
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op(Op::I64_LOAD, 0);
+    });
+    assert_eq!(r.as_i64(), i64::MAX);
+}
+
+#[test]
+fn i64_store8_and_load8_s() {
+    let mut vm = mem_vm();
+    let r = run_mem(&mut vm, |c| {
+        let addr = c.add_constant(Value::I32(0));
+        let val  = c.add_constant(Value::I64(-1));
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op_u16(Op::CONST, val,  0);
+        c.emit_op(Op::I64_STORE8, 0);
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op(Op::I64_LOAD8_S, 0);
+    });
+    assert_eq!(r.as_i64(), -1);
+}
+
+#[test]
+fn i64_load8_u() {
+    let mut vm = mem_vm();
+    let r = run_mem(&mut vm, |c| {
+        let addr = c.add_constant(Value::I32(0));
+        let val  = c.add_constant(Value::I64(200));
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op_u16(Op::CONST, val,  0);
+        c.emit_op(Op::I64_STORE8, 0);
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op(Op::I64_LOAD8_U, 0);
+    });
+    assert_eq!(r.as_i64(), 200);
+}
+
+#[test]
+fn i64_store16_and_load16_s() {
+    let mut vm = mem_vm();
+    let r = run_mem(&mut vm, |c| {
+        let addr = c.add_constant(Value::I32(0));
+        let val  = c.add_constant(Value::I64(-5000));
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op_u16(Op::CONST, val,  0);
+        c.emit_op(Op::I64_STORE16, 0);
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op(Op::I64_LOAD16_S, 0);
+    });
+    assert_eq!(r.as_i64(), -5000);
+}
+
+#[test]
+fn i64_load16_u() {
+    let mut vm = mem_vm();
+    let r = run_mem(&mut vm, |c| {
+        let addr = c.add_constant(Value::I32(0));
+        let val  = c.add_constant(Value::I64(40000));
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op_u16(Op::CONST, val,  0);
+        c.emit_op(Op::I64_STORE16, 0);
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op(Op::I64_LOAD16_U, 0);
+    });
+    assert_eq!(r.as_i64(), 40000);
+}
+
+#[test]
+fn i64_store32_and_load32_s() {
+    let mut vm = mem_vm();
+    let r = run_mem(&mut vm, |c| {
+        let addr = c.add_constant(Value::I32(0));
+        let val  = c.add_constant(Value::I64(-70000));
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op_u16(Op::CONST, val,  0);
+        c.emit_op(Op::I64_STORE32, 0);
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op(Op::I64_LOAD32_S, 0);
+    });
+    assert_eq!(r.as_i64(), -70000);
+}
+
+#[test]
+fn i64_load32_u() {
+    let mut vm = mem_vm();
+    let r = run_mem(&mut vm, |c| {
+        let addr = c.add_constant(Value::I32(0));
+        let val  = c.add_constant(Value::I64(3_000_000_000i64));
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op_u16(Op::CONST, val,  0);
+        c.emit_op(Op::I64_STORE32, 0);
+        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_op(Op::I64_LOAD32_U, 0);
+    });
+    assert_eq!(r.as_i64(), 3_000_000_000i64);
+}

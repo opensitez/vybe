@@ -95,7 +95,7 @@ opcode_category! {
     [0x16] ref_cast           => U16,    "ref.cast";
     [0x17] ref_cast_null      => U16,    "ref.cast_null";
     // br_on_cast / br_on_cast_fail use a structured label depth (u8)
-    // matching BR_LABEL's encoding — the VM resolves depth via its
+    // matching core `br`'s encoding — the VM resolves depth via its
     // label_stack, and the WASM emitter writes it as a labelidx.
     [0x18] br_on_cast         => U16_U8, "br_on_cast";
     [0x19] br_on_cast_fail    => U16_U8, "br_on_cast_fail";

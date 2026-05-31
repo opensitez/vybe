@@ -242,7 +242,8 @@ fn i32_eqz() {
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
-    match result { Value::Bool(true) => {} _ => panic!("Expected Bool(true), got {:?}", result) }
+    // i32.eqz returns i32(1) per WASM spec §3.3.4.1 (not bool)
+    assert_eq!(result.as_i32(), 1);
 }
 
 // ============================================================

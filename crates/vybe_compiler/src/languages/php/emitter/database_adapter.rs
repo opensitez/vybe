@@ -85,35 +85,28 @@ fn emit_mysqli_queryish_check(chunk: &mut Chunk, sql_slot: u16, prefix: &str, li
 fn emit_mysqli_result_fields(chunks: &mut [Chunk], current: usize, rows_slot: u16, line: u32) -> u16 {
     let fields_slot = alloc_local(&mut chunks[current]);
 
-    let no_rows = {
+    {
         let chunk = &mut chunks[current];
         lget(chunk, rows_slot, line);
         crate::emitter::ops::emit_dyn_ne(chunk, line);
-        chunk.emit_jump(Op::BR_IF_FALSE, line)
-    };
+        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
 
-    {
-        let chunk = &mut chunks[current];
         lget(chunk, rows_slot, line);
         push_const(chunk, Value::F64(0.0), line);
         chunk.emit_op(Op::ARRAY_GET, line);
     }
     call_import(chunks, current, "ecma:object", "keys", 1, line);
-    let done = {
-        let chunk = &mut chunks[current];
-        lset(chunk, fields_slot, line);
-        chunk.emit_jump(Op::BR, line)
-    };
-
     {
         let chunk = &mut chunks[current];
-        chunk.patch_jump(no_rows);
+        lset(chunk, fields_slot, line);
+        chunk.emit_else(line);
     }
     collections::emit_array_new(chunks, current, 0, line);
     {
         let chunk = &mut chunks[current];
         lset(chunk, fields_slot, line);
-        chunk.patch_jump(done);
+        chunk.emit_end(line);
     }
 
     fields_slot
@@ -213,11 +206,10 @@ fn emit_mysqli_result_object(chunks: &mut [Chunk], current: usize, rows_slot: u1
     result_slot
 }
 
-fn string_slot_nonempty(chunk: &mut Chunk, slot: u16, line: u32) -> usize {
+fn emit_string_slot_nonempty(chunk: &mut Chunk, slot: u16, line: u32) {
     lget(chunk, slot, line);
     push_str(chunk, "", line);
     crate::emitter::ops::emit_dyn_ne(chunk, line);
-    chunk.emit_jump(Op::BR_IF_FALSE, line)
 }
 
 fn concat_slot_with_literal(chunk: &mut Chunk, slot: u16, suffix: &str, line: u32) {
@@ -244,17 +236,19 @@ fn replace_in_slot(chunk: &mut Chunk, slot: u16, from: &str, to: &str, line: u32
 
 fn append_credentials(chunk: &mut Chunk, normalized_slot: u16, username_slot: Option<u16>, password_slot: Option<u16>, line: u32) {
     if let Some(slot) = username_slot {
-        let skip = string_slot_nonempty(chunk, slot, line);
+        emit_string_slot_nonempty(chunk, slot, line);
+        chunk.emit_if(line);
         concat_slot_with_literal(chunk, normalized_slot, ";user=", line);
         concat_slot_with_slot(chunk, normalized_slot, slot, line);
-        chunk.patch_jump(skip);
+        chunk.emit_end(line);
     }
 
     if let Some(slot) = password_slot {
-        let skip = string_slot_nonempty(chunk, slot, line);
+        emit_string_slot_nonempty(chunk, slot, line);
+        chunk.emit_if(line);
         concat_slot_with_literal(chunk, normalized_slot, ";password=", line);
         concat_slot_with_slot(chunk, normalized_slot, slot, line);
-        chunk.patch_jump(skip);
+        chunk.emit_end(line);
     }
 }
 
@@ -274,60 +268,67 @@ fn normalize_pdo_dsn(
     lget(chunk, dsn_slot, line);
     push_str(chunk, "mysql:", line);
     chunk.emit_op(Op::STR_STARTS_WITH, line);
-    let not_mysql = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
 
     replace_in_slot(chunk, normalized_slot, "mysql:", "", line);
     replace_in_slot(chunk, normalized_slot, "dbname=", "db=", line);
     append_credentials(chunk, normalized_slot, username_slot, password_slot, line);
-    let done = chunk.emit_jump(Op::BR, line);
 
-    chunk.patch_jump(not_mysql);
+    chunk.emit_else(line);
     lget(chunk, dsn_slot, line);
     push_str(chunk, "pgsql:", line);
     chunk.emit_op(Op::STR_STARTS_WITH, line);
-    let not_pgsql = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
 
     replace_in_slot(chunk, normalized_slot, "pgsql:", "", line);
     replace_in_slot(chunk, normalized_slot, "dbname=", "db=", line);
     lget(chunk, normalized_slot, line);
     push_str(chunk, "port=", line);
     chunk.emit_op(Op::STR_CONTAINS, line);
-    let has_port = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
     concat_slot_with_literal(chunk, normalized_slot, ";port=5432", line);
-    chunk.patch_jump(has_port);
+    chunk.emit_end(line);
     append_credentials(chunk, normalized_slot, username_slot, password_slot, line);
-    let done_pgsql = chunk.emit_jump(Op::BR, line);
 
-    chunk.patch_jump(not_pgsql);
+    chunk.emit_else(line);
     lget(chunk, dsn_slot, line);
     push_str(chunk, "postgres:", line);
     chunk.emit_op(Op::STR_STARTS_WITH, line);
-    let not_postgres = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
 
     replace_in_slot(chunk, normalized_slot, "postgres:", "", line);
     replace_in_slot(chunk, normalized_slot, "dbname=", "db=", line);
     lget(chunk, normalized_slot, line);
     push_str(chunk, "port=", line);
     chunk.emit_op(Op::STR_CONTAINS, line);
-    let has_postgres_port = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
     concat_slot_with_literal(chunk, normalized_slot, ";port=5432", line);
-    chunk.patch_jump(has_postgres_port);
+    chunk.emit_end(line);
     append_credentials(chunk, normalized_slot, username_slot, password_slot, line);
 
-    chunk.patch_jump(done);
-    chunk.patch_jump(done_pgsql);
-    chunk.patch_jump(not_postgres);
+    chunk.emit_else(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
     normalized_slot
 }
 
 fn stamp_pdo_type(chunk: &mut Chunk, conn_slot: u16, line: u32) {
     lget(chunk, conn_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    let skip = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    chunk.emit_if(line);
+    chunk.emit_else(line);
     lget(chunk, conn_slot, line);
     push_str(chunk, "PDO", line);
     struct_set_key(chunk, "__type", line);
-    chunk.patch_jump(skip);
+    chunk.emit_end(line);
 }
 
 fn emit_first_column_value(chunks: &mut [Chunk], current: usize, row_slot: u16, line: u32) {
@@ -358,23 +359,28 @@ fn emit_sql_literal_from_slot(chunks: &mut [Chunk], current: usize, value_slot: 
 
         lget(chunk, value_slot, line);
         chunk.emit_op(Op::REF_IS_OBJECT, line);
-        let not_object = chunk.emit_jump(Op::BR_IF_FALSE, line);
+        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
 
         lget(chunk, value_slot, line);
         struct_get_key(chunk, "__value", line);
-        let inner_slot = alloc_local(&mut chunks[current]);
+    }
+    let inner_slot = alloc_local(&mut chunks[current]);
+    {
         let chunk = &mut chunks[current];
         lset(chunk, inner_slot, line);
 
         lget(chunk, inner_slot, line);
         chunk.emit_op(Op::REF_IS_UNDEFINED, line);
-        let no_inner = chunk.emit_jump(Op::BR_IF_TRUE, line);
+        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_if(line);
 
         lget(chunk, inner_slot, line);
         lset(chunk, resolved_slot, line);
 
-        chunk.patch_jump(no_inner);
-        chunk.patch_jump(not_object);
+        chunk.emit_end(line);
+        chunk.emit_end(line);
     }
 
     let out_slot = alloc_local(&mut chunks[current]);
@@ -388,52 +394,81 @@ fn emit_sql_literal_from_slot(chunks: &mut [Chunk], current: usize, value_slot: 
         lset(chunk, type_slot, line);
     }
 
-    let value_is_null = {
+    {
         let chunk = &mut chunks[current];
         lget(chunk, resolved_slot, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
-        chunk.emit_jump(Op::BR_IF_TRUE, line)
-    };
-
-    let value_is_undefined = {
-        let chunk = &mut chunks[current];
+        chunk.emit_if(line);
+        push_str(chunk, "null", line);
+        lset(chunk, out_slot, line);
+        chunk.emit_else(line);
         lget(chunk, resolved_slot, line);
         chunk.emit_op(Op::REF_IS_UNDEFINED, line);
-        chunk.emit_jump(Op::BR_IF_TRUE, line)
-    };
-
-    let value_is_number = {
-        let chunk = &mut chunks[current];
+        chunk.emit_if(line);
+        push_str(chunk, "null", line);
+        lset(chunk, out_slot, line);
+        chunk.emit_else(line);
         lget(chunk, type_slot, line);
         push_str(chunk, "number", line);
         crate::emitter::ops::emit_dyn_eq(chunk, line);
-        let is_number = chunk.emit_jump(Op::BR_IF_TRUE, line);
-
+        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
+        lget(chunk, resolved_slot, line);
+    }
+    call_import(chunks, current, "ecma:number", "Number", 1, line);
+    {
+        let chunk = &mut chunks[current];
+        push_const(chunk, Value::F64(10.0), line);
+    }
+    call_import(chunks, current, "ecma:number", "toString", 2, line);
+    {
+        let chunk = &mut chunks[current];
+        lset(chunk, out_slot, line);
+        chunk.emit_else(line);
         lget(chunk, type_slot, line);
         push_str(chunk, "i32", line);
         crate::emitter::ops::emit_dyn_eq(chunk, line);
-        let is_i32 = chunk.emit_jump(Op::BR_IF_TRUE, line);
-
+        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
+        lget(chunk, resolved_slot, line);
+    }
+    call_import(chunks, current, "ecma:number", "Number", 1, line);
+    {
+        let chunk = &mut chunks[current];
+        push_const(chunk, Value::F64(10.0), line);
+    }
+    call_import(chunks, current, "ecma:number", "toString", 2, line);
+    {
+        let chunk = &mut chunks[current];
+        lset(chunk, out_slot, line);
+        chunk.emit_else(line);
         lget(chunk, type_slot, line);
         push_str(chunk, "i64", line);
         crate::emitter::ops::emit_dyn_eq(chunk, line);
-        let is_i64 = chunk.emit_jump(Op::BR_IF_TRUE, line);
-
-        chunk.patch_jump(is_number);
-        chunk.patch_jump(is_i32);
-        is_i64
-    };
-
-    let value_is_bool = {
+        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
+        lget(chunk, resolved_slot, line);
+    }
+    call_import(chunks, current, "ecma:number", "Number", 1, line);
+    {
         let chunk = &mut chunks[current];
+        push_const(chunk, Value::F64(10.0), line);
+    }
+    call_import(chunks, current, "ecma:number", "toString", 2, line);
+    {
+        let chunk = &mut chunks[current];
+        lset(chunk, out_slot, line);
+        chunk.emit_else(line);
         lget(chunk, type_slot, line);
         push_str(chunk, "boolean", line);
         crate::emitter::ops::emit_dyn_eq(chunk, line);
-        chunk.emit_jump(Op::BR_IF_TRUE, line)
-    };
+        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
+        lget(chunk, resolved_slot, line);
+        convert::emit_to_string(chunk, line);
+        lset(chunk, out_slot, line);
+        chunk.emit_else(line);
 
-    {
-        let chunk = &mut chunks[current];
         lget(chunk, resolved_slot, line);
     }
     string_adapter::emit_echo_stringify(chunks, current, 1, line);
@@ -453,64 +488,13 @@ fn emit_sql_literal_from_slot(chunks: &mut [Chunk], current: usize, value_slot: 
         push_str(chunk, "'", line);
         chunk.emit_op(Op::STR_CONCAT, line);
         lset(chunk, out_slot, line);
-    }
-    let done = {
-        let chunk = &mut chunks[current];
-        chunk.emit_jump(Op::BR, line)
-    };
 
-    {
-        let chunk = &mut chunks[current];
-        chunk.patch_jump(value_is_null);
-        push_str(chunk, "null", line);
-        lset(chunk, out_slot, line);
-    }
-    let null_done = {
-        let chunk = &mut chunks[current];
-        chunk.emit_jump(Op::BR, line)
-    };
-
-    {
-        let chunk = &mut chunks[current];
-        chunk.patch_jump(value_is_undefined);
-        push_str(chunk, "null", line);
-        lset(chunk, out_slot, line);
-    }
-    let undefined_done = {
-        let chunk = &mut chunks[current];
-        chunk.emit_jump(Op::BR, line)
-    };
-
-    {
-        let chunk = &mut chunks[current];
-        chunk.patch_jump(value_is_number);
-        lget(chunk, resolved_slot, line);
-    }
-    call_import(chunks, current, "ecma:number", "Number", 1, line);
-    {
-        let chunk = &mut chunks[current];
-        push_const(chunk, Value::F64(10.0), line);
-    }
-    call_import(chunks, current, "ecma:number", "toString", 2, line);
-    {
-        let chunk = &mut chunks[current];
-        lset(chunk, out_slot, line);
-    }
-    let number_done = {
-        let chunk = &mut chunks[current];
-        chunk.emit_jump(Op::BR, line)
-    };
-
-    {
-        let chunk = &mut chunks[current];
-        chunk.patch_jump(value_is_bool);
-        lget(chunk, resolved_slot, line);
-        convert::emit_to_string(chunk, line);
-        lset(chunk, out_slot, line);
-        chunk.patch_jump(done);
-        chunk.patch_jump(null_done);
-        chunk.patch_jump(undefined_done);
-        chunk.patch_jump(number_done);
+        chunk.emit_end(line);
+        chunk.emit_end(line);
+        chunk.emit_end(line);
+        chunk.emit_end(line);
+        chunk.emit_end(line);
+        chunk.emit_end(line);
     }
 
     out_slot

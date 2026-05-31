@@ -163,8 +163,9 @@ pub fn emit_stdlib_preamble(script: &mut Chunk, stdlib_base: usize) {
         // Check if global is already set: global_get + ref_is_null
         script.emit_op_u16(Op::GLOBAL_GET, name_c, 0);
         script.emit_op(Op::REF_IS_NULL, 0);
-        // br_if_false skip — if NOT null, skip the install
-        let skip = script.emit_jump(Op::BR_IF_FALSE, 0);
+        let install_block = script.emit_block(0);
+        script.emit_op(Op::I32_EQZ, 0);
+        script.emit_br_if(0, 0);
 
         // Install: ref_func + global_set + drop
         script.emit_op_u16(Op::REF_FUNC, ci as u16, 0);
@@ -172,7 +173,8 @@ pub fn emit_stdlib_preamble(script: &mut Chunk, stdlib_base: usize) {
         script.emit_op_u16(Op::GLOBAL_SET, name_c, 0);
         script.emit_op(Op::DROP, 0);
 
-        script.patch_jump(skip);
+        script.emit_end(0);
+        script.patch_block(install_block);
     }
 }
 

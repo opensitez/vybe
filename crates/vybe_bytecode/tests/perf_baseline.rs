@@ -49,9 +49,9 @@ fn run_and_time(label: &str, emit: impl FnOnce(&mut Chunk)) -> f64 {
 /// a different slot to avoid clobbering.
 const LOOP_COUNTER_SLOT: u16 = 7;
 
-/// Emit a flat counter-driven loop that runs `body` `ITERATIONS`
-/// times. The body owns slots 0..=6; the loop owns slot 7.
-fn emit_loop(chunk: &mut Chunk, mut body: impl FnMut(&mut Chunk)) {
+/// Emit a structured WASM counter-driven loop that runs `body`
+/// `ITERATIONS` times. The body owns slots 0..=6; the loop owns slot 7.
+fn emit_structured_counter_loop(chunk: &mut Chunk, mut body: impl FnMut(&mut Chunk)) {
     chunk.local_count = chunk.local_count.max(LOOP_COUNTER_SLOT + 1);
 
     let iter_const = chunk.add_constant(Value::I32(ITERATIONS as i32));
@@ -59,19 +59,19 @@ fn emit_loop(chunk: &mut Chunk, mut body: impl FnMut(&mut Chunk)) {
     chunk.emit_op_u16(Op::LOCAL_SET, LOOP_COUNTER_SLOT, 0);
     chunk.emit_op(Op::DROP, 0);
 
-    let loop_start = chunk.current_offset();
+    let outer = chunk.emit_block(0);
+    let (lp, _loop_start) = chunk.emit_loop_s(0);
     body(chunk);
     chunk.emit_op_u16(Op::LOCAL_GET, LOOP_COUNTER_SLOT, 0);
     let one = chunk.add_constant(Value::I32(1));
     chunk.emit_op_u16(Op::CONST, one, 0);
     chunk.emit_op(Op::I32_SUB, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, LOOP_COUNTER_SLOT, 0);
-
-    let br_pos = chunk.current_offset();
-    chunk.emit_op(Op::BR_IF_TRUE, 0);
-    let offset_i16 = (loop_start as i32 - (br_pos as i32 + 4)) as i16;
-    chunk.emit((offset_i16 >> 8) as u8, 0);
-    chunk.emit((offset_i16 & 0xFF) as u8, 0);
+    chunk.emit_br_if(0, 0);
+    chunk.emit_end(0);
+    chunk.patch_loop(lp);
+    chunk.emit_end(0);
+    chunk.patch_block(outer);
 }
 
 /// Baseline table — writes a markdown snapshot to stdout with
@@ -97,7 +97,7 @@ fn capture_pre_migration_baseline() {
         // One-time import setup (chunks[0]).
         let push_idx = chunk.add_import("vybe:js-array", "push");
 
-        emit_loop(chunk, |c| {
+        emit_structured_counter_loop(chunk, |c| {
             c.emit_op_u16(Op::LOCAL_GET, arr_slot, 0);
             let v = c.add_constant(Value::I32(42));
             c.emit_op_u16(Op::CONST, v, 0);
@@ -118,7 +118,7 @@ fn capture_pre_migration_baseline() {
         chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, 0);
         chunk.emit_op(Op::DROP, 0);
 
-        emit_loop(chunk, |c| {
+        emit_structured_counter_loop(chunk, |c| {
             c.emit_op_u16(Op::LOCAL_GET, arr_slot, 0);
             let zero = c.add_constant(Value::I32(0));
             c.emit_op_u16(Op::CONST, zero, 0);
@@ -146,7 +146,7 @@ fn capture_pre_migration_baseline() {
         chunk.emit_op_u16(Op::STRUCT_SET, field_name, 0);
         chunk.emit_op(Op::DROP, 0);
 
-        emit_loop(chunk, |c| {
+        emit_structured_counter_loop(chunk, |c| {
             c.emit_op_u16(Op::LOCAL_GET, obj_slot, 0);
             let fk = c.add_constant(Value::String("x".into()));
             c.emit_op_u16(Op::STRUCT_GET, fk, 0);

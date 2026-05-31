@@ -119,3 +119,49 @@ fn memory_copy_cross_between_memories() {
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 99, "data should have been copied to memory 1");
 }
+
+#[test]
+fn memory_size_reports_correct_size() {
+    let mut vm = VM::new();
+    vm.memory.resize(2 * 65536, 0); // 2 pages
+    let mut chunk = Chunk::new("<script>");
+    chunk.emit_op(Op::MEMORY_SIZE, 0);
+    chunk.emit_op(Op::HALT, 0);
+    let r = vm.run(vec![chunk]).unwrap();
+    assert_eq!(r.as_i32(), 2, "memory.size should return page count");
+}
+
+#[test]
+fn memory_grow_increases_size_and_returns_old() {
+    let mut vm = VM::new();
+    vm.memory.resize(65536, 0); // 1 page
+    let mut chunk = Chunk::new("<script>");
+    let delta = chunk.add_constant(Value::I32(2));
+    chunk.emit_op_u16(Op::CONST, delta, 0);
+    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_op(Op::HALT, 0);
+    let r = vm.run(vec![chunk]).unwrap();
+    assert_eq!(r.as_i32(), 1, "memory.grow returns old size in pages");
+    assert_eq!(vm.memory.len(), 3 * 65536, "memory grew by 2 pages");
+}
+
+#[test]
+fn memory_fill_in_memory_zero() {
+    // memory.fill on memory 0: fill 4 bytes with 0xAB starting at addr 8
+    let mut vm = VM::new();
+    vm.memory.resize(65536, 0);
+    let mut chunk = Chunk::new("<script>");
+    let start = chunk.add_constant(Value::I32(8));
+    let byte  = chunk.add_constant(Value::I32(0xAB));
+    let count = chunk.add_constant(Value::I32(4));
+    chunk.emit_op_u16(Op::CONST, start, 0);
+    chunk.emit_op_u16(Op::CONST, byte, 0);
+    chunk.emit_op_u16(Op::CONST, count, 0);
+    chunk.emit_op(Op::MEMORY_FILL, 0);
+    // Load back byte at addr 8
+    chunk.emit_op_u16(Op::CONST, start, 0);
+    chunk.emit_op(Op::I32_LOAD8_U, 0);
+    chunk.emit_op(Op::HALT, 0);
+    let r = vm.run(vec![chunk]).unwrap();
+    assert_eq!(r.as_i32(), 0xAB);
+}

@@ -34,17 +34,15 @@ pub fn emit_hashset_add(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, present_slot, line);
-    let add_path = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
-    chunks[current].emit_op(Op::FALSE, line);
-    let end = chunks[current].emit_jump(Op::BR, line);
-
-    chunks[current].patch_jump(add_path);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
-    call_import(chunks, current, "ecma:set", "add", 2, line);
-    chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::TRUE, line);
-    chunks[current].patch_jump(end);
+    chunks[current].emit_if(line);
+      chunks[current].emit_op(Op::FALSE, line);
+    chunks[current].emit_else(line);
+      chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+      chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+      call_import(chunks, current, "ecma:set", "add", 2, line);
+      chunks[current].emit_op(Op::DROP, line);
+      chunks[current].emit_op(Op::TRUE, line);
+    chunks[current].emit_end(line);
 }
 
 fn emit_hashset_mutation(chunks: &mut [Chunk], current: usize, func: &str, line: u32) {
@@ -212,14 +210,12 @@ pub fn emit_hashset_intersect_with(chunks: &mut [Chunk], current: usize, line: u
     chunks[current].emit_op_u16(Op::LOCAL_GET, source_arr_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     collections::emit_contains(chunks, current, line);
-    let skip_add = chunks[current].emit_jump(Op::BR_IF_FALSE, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    call_import(chunks, current, "ecma:set", "add", 2, line);
-    chunks[current].emit_op(Op::DROP, line);
-
-    chunks[current].patch_jump(skip_add);
+    chunks[current].emit_if(line);
+      chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+      chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+      call_import(chunks, current, "ecma:set", "add", 2, line);
+      chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunks[current].emit_op(Op::I32_CONST_1, line);
     chunks[current].emit_op(Op::I32_ADD, line);
@@ -385,23 +381,20 @@ pub fn emit_linked_list_find(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
     chunks[current].emit_op(Op::I32_CONST_0, line);
     crate::emitter::ops::emit_dyn_lt(&mut chunks[current], line);
-    let missing = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
+    chunks[current].emit_if(line);
+      chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_else(line);
+      chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+      chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
+      collections::emit_get(chunks, current, line);
+      chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+      chunks[current].emit_op(Op::DROP, line);
 
-    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
-    collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
-    chunks[current].emit_op(Op::DROP, line);
-
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
-    chunks[current].emit_op(Op::DUP, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    let value_key = chunks[current].add_constant(Value::String(Arc::from("value")));
-    chunks[current].emit_op_u16(Op::STRUCT_SET, value_key, line);
-    chunks[current].emit_op(Op::DROP, line);
-    let end = chunks[current].emit_jump(Op::BR, line);
-
-    chunks[current].patch_jump(missing);
-    chunks[current].emit_op(Op::NULL, line);
-    chunks[current].patch_jump(end);
+      chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+      chunks[current].emit_op(Op::DUP, line);
+      chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+      let value_key = chunks[current].add_constant(Value::String(Arc::from("value")));
+      chunks[current].emit_op_u16(Op::STRUCT_SET, value_key, line);
+      chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
 }

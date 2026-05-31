@@ -212,7 +212,8 @@ fn struct_get_missing_returns_null() {
     chunk.emit_op_u16(Op::STRUCT_GET, prop, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = vm.run(vec![chunk]).unwrap();
-    assert!(matches!(result, Value::Null));
+    // Missing struct field returns Undefined (JS property-lookup semantics)
+    assert!(matches!(result, Value::Undefined));
 }
 
 // ============================================================

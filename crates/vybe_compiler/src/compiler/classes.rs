@@ -446,10 +446,12 @@ impl Compiler {
                 } else {
                     self.emit(Op::REF_IS_NULL);
                 }
-                let has_val = self.emit_jump(Op::BR_IF_FALSE);
+                let branch_line = self.line;
+                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), branch_line);
+                self.chunks[self.current].emit_if(branch_line);
                 self.compile_expr(default)?;
                 self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
-                self.patch_jump(has_val);
+                self.chunks[self.current].emit_end(branch_line);
             }
             self.maybe_initialize_fortran_out_param(p);
         }
@@ -1024,10 +1026,12 @@ impl Compiler {
                     } else {
                         cc.emit(Op::REF_IS_NULL);
                     }
-                    let has_val = cc.emit_jump(Op::BR_IF_FALSE);
+                    let branch_line = cc.line;
+                    crate::emitter::ops::emit_dyn_to_bool(cc.chunk(), branch_line);
+                    cc.chunks[cc.current].emit_if(branch_line);
                     cc.compile_expr(default)?;
                     cc.emit_u16(Op::LOCAL_SET, slot); cc.emit(Op::DROP);
-                    cc.patch_jump(has_val);
+                    cc.chunks[cc.current].emit_end(branch_line);
                 }
             }
 
@@ -1343,10 +1347,12 @@ impl Compiler {
                     let slot = self.scope().resolve(p).unwrap();
                     self.emit_u16(Op::LOCAL_GET, slot);
                     self.emit(Op::REF_IS_NULL);
-                    let has_val = self.emit_jump(Op::BR_IF_FALSE);
+                    let branch_line = self.line;
+                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), branch_line);
+                    self.chunks[self.current].emit_if(branch_line);
                     self.compile_expr(default)?;
                     self.emit_u16(Op::LOCAL_SET, slot); self.emit(Op::DROP);
-                    self.patch_jump(has_val);
+                    self.chunks[self.current].emit_end(branch_line);
                 }
             }
             if synthesized_forward_args {
@@ -1477,11 +1483,20 @@ impl Compiler {
                                 let parent_ctor_slot = self.define_local(&format!("__{}_parent_ctor", helper_name));
                                 self.emit_u16(Op::LOCAL_SET, parent_ctor_slot);
                                 self.emit(Op::DROP);
-                                let mut done_jumps = Vec::new();
+                                let parent_called_slot = self.define_local(&format!("__{}_parent_called", helper_name));
+                                self.emit(Op::I32_CONST_0);
+                                self.emit_u16(Op::LOCAL_SET, parent_called_slot);
+                                self.emit(Op::DROP);
                                 for count in (1..=IMPLICIT_CTOR_FORWARD_ARGS).rev() {
+                                    self.emit_u16(Op::LOCAL_GET, parent_called_slot);
+                                    self.emit(Op::I32_EQZ);
+                                    self.chunks[self.current].emit_if(line);
                                     self.emit_u16(Op::LOCAL_GET, (count - 1) as u16);
                                     self.emit(Op::REF_IS_NULL);
-                                    let next = self.emit_jump(Op::BR_IF_TRUE);
+                                    let branch_line = self.line;
+                                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), branch_line);
+                                    self.emit(Op::I32_EQZ);
+                                    self.chunks[self.current].emit_if(line);
                                     self.emit_u16(Op::LOCAL_GET, parent_ctor_slot);
                                     for arg_index in 0..count {
                                         self.emit_u16(Op::LOCAL_GET, arg_index as u16);
@@ -1489,16 +1504,20 @@ impl Compiler {
                                     self.emit_u8(Op::CALL_REF, count);
                                     self.emit_u16(Op::LOCAL_SET, this_slot);
                                     self.emit(Op::DROP);
-                                    done_jumps.push(self.emit_jump(Op::BR));
-                                    self.patch_jump(next);
+                                    self.emit(Op::I32_CONST_1);
+                                    self.emit_u16(Op::LOCAL_SET, parent_called_slot);
+                                    self.emit(Op::DROP);
+                                    self.chunks[self.current].emit_end(line);
+                                    self.chunks[self.current].emit_end(line);
                                 }
+                                self.emit_u16(Op::LOCAL_GET, parent_called_slot);
+                                self.emit(Op::I32_EQZ);
+                                self.chunks[self.current].emit_if(line);
                                 self.emit_u16(Op::LOCAL_GET, parent_ctor_slot);
                                 self.emit_u8(Op::CALL_REF, 0);
                                 self.emit_u16(Op::LOCAL_SET, this_slot);
                                 self.emit(Op::DROP);
-                                for jump in done_jumps {
-                                    self.patch_jump(jump);
-                                }
+                                self.chunks[self.current].emit_end(line);
                             } else {
                                 for i in 0..user_arity {
                                     self.emit_u16(Op::LOCAL_GET, i as u16);
@@ -1531,12 +1550,15 @@ impl Compiler {
                             self.emit(Op::DROP);
                             self.emit_u16(Op::LOCAL_GET, proto_local);
                             self.emit(Op::REF_IS_NULL);
-                            let skip = self.emit_jump(Op::BR_IF_TRUE);
+                            let branch_line = self.line;
+                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), branch_line);
+                            self.emit(Op::I32_EQZ);
+                            self.chunks[self.current].emit_if(line);
                             self.emit_u16(Op::LOCAL_GET, this_slot);
                             self.emit_u16(Op::LOCAL_GET, proto_local);
                             self.emit_u16(Op::STRUCT_SET, proto_link_key);
                             self.emit(Op::DROP);
-                            self.patch_jump(skip);
+                            self.chunks[self.current].emit_end(line);
                         }
 
                         for (fname, type_hint, init, array_bounds) in &field_inits {
@@ -1728,12 +1750,15 @@ impl Compiler {
                         self.emit(Op::DROP);
                         self.emit_u16(Op::LOCAL_GET, proto_local);
                         self.emit(Op::REF_IS_NULL);
-                        let skip = self.emit_jump(Op::BR_IF_TRUE);
+                        let branch_line = self.line;
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), branch_line);
+                        self.emit(Op::I32_EQZ);
+                        self.chunks[self.current].emit_if(line);
                         self.emit_u16(Op::LOCAL_GET, this_slot);
                         self.emit_u16(Op::LOCAL_GET, proto_local);
                         self.emit_u16(Op::STRUCT_SET, proto_link_key);
                         self.emit(Op::DROP);
-                        self.patch_jump(skip);
+                        self.chunks[self.current].emit_end(line);
                     }
                     let ctor_stmts: &[Statement] = ctor_body
                         .as_ref().map(|(b, _, _)| b.as_slice()).unwrap_or(&[]);
@@ -1786,7 +1811,10 @@ impl Compiler {
         for count in (1..=ctor_arity as usize).rev() {
             self.emit_u16(Op::LOCAL_GET, (count - 1) as u16);
             self.emit(Op::REF_IS_NULL);
-            let next = self.emit_jump(Op::BR_IF_TRUE);
+            let branch_line = self.line;
+            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), branch_line);
+            self.emit(Op::I32_EQZ);
+            self.chunks[self.current].emit_if(line);
             if let Some((_, _, helper_idx, helper_upvalues)) = helper_for_count(count) {
                 emit_helper_ref(self, *helper_idx, helper_upvalues, line);
                 for arg_index in 0..count {
@@ -1795,7 +1823,7 @@ impl Compiler {
                 self.emit_u8(Op::CALL_REF, count as u8);
                 self.emit_return_through_finally(1)?;
             }
-            self.patch_jump(next);
+            self.chunks[self.current].emit_end(line);
         }
         if let Some((_, _, helper_idx, helper_upvalues)) = helper_for_count(0) {
             emit_helper_ref(self, *helper_idx, helper_upvalues, line);
@@ -1834,13 +1862,16 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, parent_proto_local); self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, parent_proto_local);
                 self.emit(Op::REF_IS_NULL);
-                let skip_parent_proto = self.emit_jump(Op::BR_IF_TRUE);
+                let branch_line = self.line;
+                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), branch_line);
+                self.emit(Op::I32_EQZ);
+                self.chunks[self.current].emit_if(line);
                 self.emit_u16(Op::LOCAL_GET, proto_local);
                 self.emit_u16(Op::LOCAL_GET, parent_proto_local);
                 let proto_link_key = self.str_const("__proto__");
                 self.emit_u16(Op::STRUCT_SET, proto_link_key);
                 self.emit(Op::DROP);
-                self.patch_jump(skip_parent_proto);
+                self.chunks[self.current].emit_end(line);
             }
 
             self.emit_u16(Op::LOCAL_GET, proto_local);

@@ -136,10 +136,13 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunk.emit_op_u16(Op::STRUCT_GET, filename_key, line);
     chunk.emit_op(Op::DUP, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    let skip_fallback = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    let filename_fallback = chunk.emit_block(line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(0, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, arg_slot, line);
-    chunk.patch_jump(skip_fallback);
+    chunk.emit_end(line);
+    chunk.patch_block(filename_fallback);
     // Stack: [filename_str]
 
     // Resolve arguments: arg.arguments if Object; else "".
@@ -148,10 +151,13 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunk.emit_op_u16(Op::STRUCT_GET, args_key, line);
     chunk.emit_op(Op::DUP, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    let skip_args_fallback = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    let args_fallback = chunk.emit_block(line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(0, line);
     chunk.emit_op(Op::DROP, line);
     push_const(chunk, Value::String(Arc::from("")), line);
-    chunk.patch_jump(skip_args_fallback);
+    chunk.emit_end(line);
+    chunk.patch_block(args_fallback);
     chunk.emit_op_u16(Op::LOCAL_SET, args_slot, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -163,15 +169,14 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunk.emit_op(Op::STR_LENGTH, line);
     push_const(chunk, Value::I32(0), line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
-    let split_args = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    chunk.emit_op(Op::DROP, line);
-    crate::emitter::collections::emit_array_new(chunks, current, 0, line);
-    let after_args = chunks[current].emit_jump(Op::BR, line);
+    chunks[current].emit_if(line);
+      chunks[current].emit_op(Op::DROP, line);
+      crate::emitter::collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_else(line);
     let chunk = &mut chunks[current];
-    chunk.patch_jump(split_args);
-    push_const(chunk, Value::String(Arc::from(" ")), line);
-    chunk.emit_op(Op::STR_SPLIT, line);
-    chunk.patch_jump(after_args);
+      push_const(chunk, Value::String(Arc::from(" ")), line);
+      chunk.emit_op(Op::STR_SPLIT, line);
+    chunk.emit_end(line);
     // Stack: [filename_str, argv_array]
 
     // Call spawnSync(filename, []) → raw host result on stack
@@ -210,10 +215,13 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunk.emit_op_u16(Op::STRUCT_GET, status_key, line);
     chunk.emit_op(Op::DUP, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    let skip_status = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    let status_fallback = chunk.emit_block(line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(0, line);
     chunk.emit_op(Op::DROP, line);
     push_const(chunk, Value::I32(0), line);
-    chunk.patch_jump(skip_status);
+    chunk.emit_end(line);
+    chunk.patch_block(status_fallback);
     chunk.emit_op_u16(Op::STRUCT_SET, ec_key, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, process_slot, line);

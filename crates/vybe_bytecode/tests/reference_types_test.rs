@@ -207,3 +207,76 @@ fn table_grow_extends_selected_table() {
     assert_eq!(result.as_i32(), 2, "table.grow returns old size");
     assert_eq!(vm.extra_tables[0].len(), 5, "table grew by delta");
 }
+
+// ── ref.eq / ref.is_null / ref.as_non_null ───────────────────────────────
+
+#[test]
+fn ref_is_null_true_for_null() {
+    let mut c = Chunk::new("<script>");
+    c.emit_op(Op::NULL, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_op(Op::RETURN, 0);
+    let r = VM::new().run(vec![c]).unwrap();
+    assert_eq!(r.as_i32(), 1);
+}
+
+#[test]
+fn ref_is_null_false_for_non_null() {
+    let mut c = Chunk::new("<script>");
+    let k = c.add_constant(Value::I32(42));
+    c.emit_op_u16(Op::CONST, k, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    c.emit_op(Op::RETURN, 0);
+    let r = VM::new().run(vec![c]).unwrap();
+    assert_eq!(r.as_i32(), 0);
+}
+
+#[test]
+fn ref_eq_same_value_is_true() {
+    use std::sync::Arc;
+    let mut c = Chunk::new("<script>");
+    c.emit_op(Op::NULL, 0);
+    c.emit_op(Op::NULL, 0);
+    c.emit_op(Op::REF_EQ, 0);
+    c.emit_op(Op::RETURN, 0);
+    let r = VM::new().run(vec![c]).unwrap();
+    assert_eq!(r.as_i32(), 1);
+}
+
+#[test]
+fn ref_eq_different_values_is_false() {
+    use std::sync::Arc;
+    let mut c = Chunk::new("<script>");
+    let k1 = c.add_constant(Value::I32(1));
+    let k2 = c.add_constant(Value::I32(2));
+    c.emit_op_u16(Op::CONST, k1, 0);
+    c.emit_op_u16(Op::CONST, k2, 0);
+    c.emit_op(Op::REF_EQ, 0);
+    c.emit_op(Op::RETURN, 0);
+    let r = VM::new().run(vec![c]).unwrap();
+    assert_eq!(r.as_i32(), 0);
+}
+
+#[test]
+fn ref_as_non_null_passes_non_null() {
+    let mut c = Chunk::new("<script>");
+    let k = c.add_constant(Value::I32(99));
+    c.emit_op_u16(Op::CONST, k, 0);
+    c.emit_op(Op::REF_AS_NON_NULL, 0);
+    c.emit_op(Op::RETURN, 0);
+    let r = VM::new().run(vec![c]).unwrap();
+    assert_eq!(r.as_i32(), 99);
+}
+
+#[test]
+fn ref_as_non_null_traps_on_null() {
+    let mut c = Chunk::new("<script>");
+    c.emit_op(Op::NULL, 0);
+    c.emit_op(Op::REF_AS_NON_NULL, 0);
+    c.emit_op(Op::RETURN, 0);
+    let err = VM::new().run(vec![c]).unwrap_err().to_string();
+    assert!(err.contains("null") || err.contains("trap"), "expected trap, got: {err}");
+}
+
+// Note: br_on_null and br_on_non_null use byte-offset encoding (not label depth)
+// and are already thoroughly tested in gc_test.rs.

@@ -1,21 +1,12 @@
 //! Dynamic-dispatch opcode emitters — spec-compliant replacements for DYN_*.
 //!
-//! Each function emits the WASM-standard type-dispatch sequence for one of
-//! the 10 `DYN_*` VM-internal opcodes, using only:
-//!   - Standard WASM opcodes
+//! Each function emits the WASM-standard type-dispatch sequence using only:
+//!   - Standard WASM opcodes (Op::IF / Op::ELSE / Op::END for control flow)
 //!   - `wasm:js-*` host imports (js-string-builtins + js-primitive-builtins proposals)
 //!
-//! All functions take `(chunk: &mut Chunk, line: u32)`.
-//! Imports are added to the same chunk (deduplicated by `add_import`).
-//! Local slots are allocated by bumping `chunk.local_count`.
-//!
-//! ## Branch convention
-//!
-//! Host functions that return a type-test result push `Value::I32(0 or 1)`.
-//! The VM's `BR_IF_FALSE`/`BR_IF_TRUE` check `val.as_bool()`, which only
-//! returns true for `Value::Bool(true)`. So after any I32-returning host call,
-//! we use `I32_EQZ` + `BR_IF_TRUE` to branch when the result was 0 (false),
-//! and simply `BR_IF_TRUE` after `I32_EQZ` to branch when the result was 1.
+//! Control flow uses actual WASM structured control flow:
+//!   `Op::IF` (0x04) / `Op::ELSE` (0x05) / `Op::END` (0x0B)
+//! No flat-offset BR_IF_FALSE / BR_IF_TRUE / BR_IF_NULL custom opcodes.
 
 use vybe_bytecode::{Chunk, Value};
 use vybe_bytecode::opcode::Op;
@@ -39,8 +30,8 @@ fn alloc_locals(chunk: &mut Chunk, n: u16) -> u16 {
 }
 
 fn save(chunk: &mut Chunk, slot: u16, line: u32) {
-    chunk.emit_op_u16(Op::LOCAL_SET, slot, line); // peeks, value stays on stack
-    chunk.emit_op(Op::DROP, line);                // remove residue
+    chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+    chunk.emit_op(Op::DROP, line);
 }
 
 fn load(chunk: &mut Chunk, slot: u16, line: u32) {
@@ -62,27 +53,11 @@ fn f64_const(chunk: &mut Chunk, v: f64, line: u32) {
     chunk.emit_op_u16(Op::CONST, k, line);
 }
 
-/// Call `test_fn` with the value at `slot`, then branch to `skip_label`
-/// if the test returned 0 (not this type).
-/// Stack before: []  Stack after: []  (test result consumed by branch)
-fn test_and_skip_if_not(chunk: &mut Chunk, slot: u16, test_fn: u16, line: u32) -> usize {
-    load(chunk, slot, line);
-    call1(chunk, test_fn, line);          // pushes I32(0 or 1)
-    chunk.emit_op(Op::I32_EQZ, line);     // Bool(true) if 0, Bool(false) if 1
-    chunk.emit_jump(Op::BR_IF_TRUE, line) // branch when not this type
-}
-
-/// AND two I32 type-test results, then branch to `skip_label` if AND=0.
-fn and_skip_if_not(chunk: &mut Chunk, line: u32) -> usize {
-    chunk.emit_op(Op::I32_AND, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_jump(Op::BR_IF_TRUE, line)
-}
-
 // ── emit_dyn_to_bool ───────────────────────────────────────────────────
 
 /// Truthy coercion — ECMA-262 §7.1.2 ToBoolean.
 /// Stack: [v] → [i32: 0 or 1]
+/// Uses WASM structured control flow: Op::IF / Op::ELSE / Op::END.
 pub fn emit_dyn_to_bool(chunk: &mut Chunk, line: u32) {
     let slots = alloc_locals(chunk, 2);
     let v = slots;
@@ -98,64 +73,66 @@ pub fn emit_dyn_to_bool(chunk: &mut Chunk, line: u32) {
 
     save(chunk, v, line);
 
-    // null or undefined → false  (REF_IS_NULL returns Bool directly)
+    // null / undefined → false
     load(chunk, v, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);       // Bool(true) = null/undef
-    let null_false = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);   // i32: 1 if null
+    chunk.emit_if(line);
+      i32_const(chunk, 0, line);
+    chunk.emit_else(line);
 
-    // boolean: test returns I32 → cast returns I32 (0 or 1)
-    let not_bool = test_and_skip_if_not(chunk, v, test_bool, line);
-    load(chunk, v, line);
-    call1(chunk, cast_bool, line);              // pushes I32(0 or 1)
-    let done_bool = chunk.emit_jump(Op::BR, line);
+      // boolean?
+      load(chunk, v, line);
+      call1(chunk, test_bool, line);        // i32: 1 if bool
+      chunk.emit_if(line);
+        load(chunk, v, line);
+        call1(chunk, cast_bool, line);      // i32 (0 or 1)
+      chunk.emit_else(line);
 
-    // number → f64 != 0.0 && !NaN
-    chunk.patch_jump(not_bool);
-    let not_num = test_and_skip_if_not(chunk, v, test_num, line);
-    load(chunk, v, line);
-    call1(chunk, to_f64, line);
-    save(chunk, f, line);
-    load(chunk, f, line);
-    load(chunk, f, line);
-    chunk.emit_op(Op::F64_NE, line);            // Bool(true) if NaN
-    let nan_is_false = chunk.emit_jump(Op::BR_IF_TRUE, line);
-    load(chunk, f, line);
-    f64_const(chunk, 0.0, line);
-    chunk.emit_op(Op::F64_NE, line);            // Bool: f != 0.0
-    let done_num = chunk.emit_jump(Op::BR, line);
+        // number?
+        load(chunk, v, line);
+        call1(chunk, test_num, line);       // i32: 1 if number
+        chunk.emit_if(line);
+          load(chunk, v, line);
+          call1(chunk, to_f64, line);       // f64
+          save(chunk, f, line);
+          load(chunk, f, line);
+          load(chunk, f, line);
+          chunk.emit_op(Op::F64_NE, line);  // i32: 1 if NaN (NaN != NaN)
+          chunk.emit_if(line);              // NaN → false
+            i32_const(chunk, 0, line);
+          chunk.emit_else(line);
+            load(chunk, f, line);
+            f64_const(chunk, 0.0, line);
+            chunk.emit_op(Op::F64_NE, line); // i32: 1 if nonzero
+          chunk.emit_end(line);
 
-    // string → length > 0
-    chunk.patch_jump(not_num);
-    let not_str = test_and_skip_if_not(chunk, v, test_str, line);
-    load(chunk, v, line);
-    call1(chunk, str_length, line);             // I32
-    i32_const(chunk, 0, line);
-    chunk.emit_op(Op::I32_NE, line);            // Bool
-    let done_str = chunk.emit_jump(Op::BR, line);
+        chunk.emit_else(line);
 
-    // bigint → i64 != 0
-    chunk.patch_jump(not_str);
-    let not_bigint = test_and_skip_if_not(chunk, v, test_bigint, line);
-    load(chunk, v, line);
-    i64_const(chunk, 0, line);
-    chunk.emit_op(Op::I64_NE, line);            // Bool
-    let done_bigint = chunk.emit_jump(Op::BR, line);
+          // string?
+          load(chunk, v, line);
+          call1(chunk, test_str, line);     // i32: 1 if string
+          chunk.emit_if(line);
+            load(chunk, v, line);
+            call1(chunk, str_length, line); // i32 length
+            i32_const(chunk, 0, line);
+            chunk.emit_op(Op::I32_NE, line);// i32: 1 if nonempty
+          chunk.emit_else(line);
 
-    // anything else (object/symbol) → true
-    chunk.patch_jump(not_bigint);
-    i32_const(chunk, 1, line);
-    let done_obj = chunk.emit_jump(Op::BR, line);
+            // bigint?
+            load(chunk, v, line);
+            call1(chunk, test_bigint, line);// i32: 1 if bigint
+            chunk.emit_if(line);
+              load(chunk, v, line);
+              i64_const(chunk, 0, line);
+              chunk.emit_op(Op::I64_NE, line); // i32: 1 if nonzero
+            chunk.emit_else(line);
+              i32_const(chunk, 1, line);    // object / symbol → truthy
+            chunk.emit_end(line);
 
-    // false paths
-    chunk.patch_jump(null_false);
-    chunk.patch_jump(nan_is_false);
-    i32_const(chunk, 0, line);
-
-    chunk.patch_jump(done_bool);
-    chunk.patch_jump(done_num);
-    chunk.patch_jump(done_str);
-    chunk.patch_jump(done_bigint);
-    chunk.patch_jump(done_obj);
+          chunk.emit_end(line); // end string
+        chunk.emit_end(line);   // end number
+      chunk.emit_end(line);     // end boolean
+    chunk.emit_end(line);       // end null
 }
 
 // ── emit_dyn_not ──────────────────────────────────────────────────────
@@ -183,77 +160,69 @@ pub fn emit_dyn_eq(chunk: &mut Chunk, line: u32) {
     save(chunk, b_slot, line);
     save(chunk, a_slot, line);
 
-    // null/undefined: if a is nullish AND b is nullish → true; a nullish + b not → false
+    // a is null/undefined?
     load(chunk, a_slot, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);               // Bool
-    let a_not_nullish = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    load(chunk, b_slot, line);
-    chunk.emit_op(Op::REF_IS_NULL, line);               // Bool
-    let both_nullish = chunk.emit_jump(Op::BR_IF_TRUE, line);
-    let nullish_ne = chunk.emit_jump(Op::BR, line);     // a null, b not → false
+    chunk.emit_op(Op::REF_IS_NULL, line);   // i32
+    chunk.emit_if(line);
+      // a is null → true iff b is also null
+      load(chunk, b_slot, line);
+      chunk.emit_op(Op::REF_IS_NULL, line); // i32
+      chunk.emit_if(line);
+        i32_const(chunk, 1, line);          // both null → equal
+      chunk.emit_else(line);
+        i32_const(chunk, 0, line);          // a null, b not → not equal
+      chunk.emit_end(line);
 
-    // both number?
-    chunk.patch_jump(a_not_nullish);
-    load(chunk, a_slot, line); call1(chunk, test_num, line);
-    load(chunk, b_slot, line); call1(chunk, test_num, line);
-    let not_num = and_skip_if_not(chunk, line);
-    load(chunk, a_slot, line); call1(chunk, to_f64, line);
-    load(chunk, b_slot, line); call1(chunk, to_f64, line);
-    chunk.emit_op(Op::F64_EQ, line);
-    let done_num = chunk.emit_jump(Op::BR, line);
+    chunk.emit_else(line);
 
-    // both string?
-    chunk.patch_jump(not_num);
-    load(chunk, a_slot, line); call1(chunk, test_str, line);
-    load(chunk, b_slot, line); call1(chunk, test_str, line);
-    let not_str = and_skip_if_not(chunk, line);
-    load(chunk, a_slot, line);
-    load(chunk, b_slot, line);
-    call2(chunk, str_eq, line);
-    let done_str = chunk.emit_jump(Op::BR, line);
+      // both number?
+      load(chunk, a_slot, line); call1(chunk, test_num, line);
+      load(chunk, b_slot, line); call1(chunk, test_num, line);
+      chunk.emit_op(Op::I32_AND, line);     // i32: 1 if both numbers
+      chunk.emit_if(line);
+        load(chunk, a_slot, line); call1(chunk, to_f64, line);
+        load(chunk, b_slot, line); call1(chunk, to_f64, line);
+        chunk.emit_op(Op::F64_EQ, line);
+      chunk.emit_else(line);
 
-    // both boolean?
-    chunk.patch_jump(not_str);
-    load(chunk, a_slot, line); call1(chunk, test_bool, line);
-    load(chunk, b_slot, line); call1(chunk, test_bool, line);
-    let not_bool = and_skip_if_not(chunk, line);
-    load(chunk, a_slot, line); call1(chunk, cast_bool, line);
-    load(chunk, b_slot, line); call1(chunk, cast_bool, line);
-    chunk.emit_op(Op::I32_EQ, line);
-    let done_bool = chunk.emit_jump(Op::BR, line);
+        // both string?
+        load(chunk, a_slot, line); call1(chunk, test_str, line);
+        load(chunk, b_slot, line); call1(chunk, test_str, line);
+        chunk.emit_op(Op::I32_AND, line);   // i32: 1 if both strings
+        chunk.emit_if(line);
+          load(chunk, a_slot, line);
+          load(chunk, b_slot, line);
+          call2(chunk, str_eq, line);
+        chunk.emit_else(line);
 
-    // both bigint?
-    chunk.patch_jump(not_bool);
-    load(chunk, a_slot, line); call1(chunk, test_bigint, line);
-    load(chunk, b_slot, line); call1(chunk, test_bigint, line);
-    let not_bigint = and_skip_if_not(chunk, line);
-    load(chunk, a_slot, line);
-    load(chunk, b_slot, line);
-    chunk.emit_op(Op::I64_EQ, line);
-    let done_bigint = chunk.emit_jump(Op::BR, line);
+          // both boolean?
+          load(chunk, a_slot, line); call1(chunk, test_bool, line);
+          load(chunk, b_slot, line); call1(chunk, test_bool, line);
+          chunk.emit_op(Op::I32_AND, line);
+          chunk.emit_if(line);
+            load(chunk, a_slot, line); call1(chunk, cast_bool, line);
+            load(chunk, b_slot, line); call1(chunk, cast_bool, line);
+            chunk.emit_op(Op::I32_EQ, line);
+          chunk.emit_else(line);
 
-    // object / cross-type → ref.eq
-    chunk.patch_jump(not_bigint);
-    load(chunk, a_slot, line);
-    load(chunk, b_slot, line);
-    chunk.emit_op(Op::REF_EQ, line);
-    let done_ref = chunk.emit_jump(Op::BR, line);
-
-    // true
-    chunk.patch_jump(both_nullish);
-    i32_const(chunk, 1, line);
-    let done_true = chunk.emit_jump(Op::BR, line);
-
-    // false (nullish + non-nullish)
-    chunk.patch_jump(nullish_ne);
-    i32_const(chunk, 0, line);
-
-    chunk.patch_jump(done_num);
-    chunk.patch_jump(done_str);
-    chunk.patch_jump(done_bool);
-    chunk.patch_jump(done_bigint);
-    chunk.patch_jump(done_ref);
-    chunk.patch_jump(done_true);
+            // both bigint?
+            load(chunk, a_slot, line); call1(chunk, test_bigint, line);
+            load(chunk, b_slot, line); call1(chunk, test_bigint, line);
+            chunk.emit_op(Op::I32_AND, line);
+            chunk.emit_if(line);
+              load(chunk, a_slot, line);
+              load(chunk, b_slot, line);
+              chunk.emit_op(Op::I64_EQ, line);
+            chunk.emit_else(line);
+              // object / cross-type → reference equality
+              load(chunk, a_slot, line);
+              load(chunk, b_slot, line);
+              chunk.emit_op(Op::REF_EQ, line);
+            chunk.emit_end(line); // bigint
+          chunk.emit_end(line);   // boolean
+        chunk.emit_end(line);     // string
+      chunk.emit_end(line);       // number
+    chunk.emit_end(line);         // null
 }
 
 pub fn emit_dyn_ne(chunk: &mut Chunk, line: u32) {
@@ -297,43 +266,41 @@ fn emit_dyn_cmp(chunk: &mut Chunk, line: u32, op: CmpOp) {
     // both number?
     load(chunk, a_slot, line); call1(chunk, test_num, line);
     load(chunk, b_slot, line); call1(chunk, test_num, line);
-    let not_num = and_skip_if_not(chunk, line);
-    load(chunk, a_slot, line); call1(chunk, to_f64, line);
-    load(chunk, b_slot, line); call1(chunk, to_f64, line);
-    chunk.emit_op(f64_cmp_op(&op), line);
-    let done_num = chunk.emit_jump(Op::BR, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if(line);
+      load(chunk, a_slot, line); call1(chunk, to_f64, line);
+      load(chunk, b_slot, line); call1(chunk, to_f64, line);
+      chunk.emit_op(f64_cmp_op(&op), line);
+    chunk.emit_else(line);
 
-    // both string? → compare returns I32 (-1/0/1)
-    chunk.patch_jump(not_num);
-    load(chunk, a_slot, line); call1(chunk, test_str, line);
-    load(chunk, b_slot, line); call1(chunk, test_str, line);
-    let not_str = and_skip_if_not(chunk, line);
-    load(chunk, a_slot, line);
-    load(chunk, b_slot, line);
-    call2(chunk, str_compare, line);        // I32 (-1/0/1)
-    i32_const(chunk, 0, line);
-    chunk.emit_op(i32_cmp_op(&op), line);   // Bool
-    let done_str = chunk.emit_jump(Op::BR, line);
+      // both string?
+      load(chunk, a_slot, line); call1(chunk, test_str, line);
+      load(chunk, b_slot, line); call1(chunk, test_str, line);
+      chunk.emit_op(Op::I32_AND, line);
+      chunk.emit_if(line);
+        load(chunk, a_slot, line);
+        load(chunk, b_slot, line);
+        call2(chunk, str_compare, line);    // i32 (-1/0/1)
+        i32_const(chunk, 0, line);
+        chunk.emit_op(i32_cmp_op(&op), line);
+      chunk.emit_else(line);
 
-    // both bigint?
-    chunk.patch_jump(not_str);
-    load(chunk, a_slot, line); call1(chunk, test_bigint, line);
-    load(chunk, b_slot, line); call1(chunk, test_bigint, line);
-    let not_bigint = and_skip_if_not(chunk, line);
-    load(chunk, a_slot, line);
-    load(chunk, b_slot, line);
-    chunk.emit_op(i64_cmp_op(&op), line);   // Bool
-    let done_bigint = chunk.emit_jump(Op::BR, line);
-
-    // fallback: coerce both to f64
-    chunk.patch_jump(not_bigint);
-    load(chunk, a_slot, line); call1(chunk, to_f64, line);
-    load(chunk, b_slot, line); call1(chunk, to_f64, line);
-    chunk.emit_op(f64_cmp_op(&op), line);
-
-    chunk.patch_jump(done_num);
-    chunk.patch_jump(done_str);
-    chunk.patch_jump(done_bigint);
+        // both bigint?
+        load(chunk, a_slot, line); call1(chunk, test_bigint, line);
+        load(chunk, b_slot, line); call1(chunk, test_bigint, line);
+        chunk.emit_op(Op::I32_AND, line);
+        chunk.emit_if(line);
+          load(chunk, a_slot, line);
+          load(chunk, b_slot, line);
+          chunk.emit_op(i64_cmp_op(&op), line);
+        chunk.emit_else(line);
+          // fallback: coerce both to f64
+          load(chunk, a_slot, line); call1(chunk, to_f64, line);
+          load(chunk, b_slot, line); call1(chunk, to_f64, line);
+          chunk.emit_op(f64_cmp_op(&op), line);
+        chunk.emit_end(line); // bigint
+      chunk.emit_end(line);   // string
+    chunk.emit_end(line);     // number
 }
 
 pub fn emit_dyn_lt(chunk: &mut Chunk, line: u32) { emit_dyn_cmp(chunk, line, CmpOp::Lt); }
@@ -360,55 +327,52 @@ pub fn emit_dyn_add(chunk: &mut Chunk, line: u32) {
     save(chunk, b_slot, line);
     save(chunk, a_slot, line);
 
-    // either is a string → coerce both to string, then concat
+    // either is a string → string concatenation
     load(chunk, a_slot, line); call1(chunk, test_str, line);
     load(chunk, b_slot, line); call1(chunk, test_str, line);
-    chunk.emit_op(Op::I32_OR, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    let not_str = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    chunk.emit_op(Op::I32_OR, line);        // i32: 1 if either is string
+    chunk.emit_if(line);
+      // coerce a to string
+      load(chunk, a_slot, line);
+      call1(chunk, test_str, line);         // i32: 1 if a is already string
+      chunk.emit_if(line);
+        load(chunk, a_slot, line);
+        call1(chunk, str_cast, line);
+      chunk.emit_else(line);
+        load(chunk, a_slot, line);
+        call1(chunk, to_f64, line);
+        call1(chunk, str_from_f64, line);
+      chunk.emit_end(line);
+      // coerce b to string
+      load(chunk, b_slot, line);
+      call1(chunk, test_str, line);
+      chunk.emit_if(line);
+        load(chunk, b_slot, line);
+        call1(chunk, str_cast, line);
+      chunk.emit_else(line);
+        load(chunk, b_slot, line);
+        call1(chunk, to_f64, line);
+        call1(chunk, str_from_f64, line);
+      chunk.emit_end(line);
+      call2(chunk, str_concat, line);
 
-    // coerce a to string
-    load(chunk, a_slot, line); call1(chunk, test_str, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    let a_already_str = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    load(chunk, a_slot, line); call1(chunk, to_f64, line); call1(chunk, str_from_f64, line);
-    let a_coerced = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(a_already_str);
-    load(chunk, a_slot, line); call1(chunk, str_cast, line);
-    chunk.patch_jump(a_coerced);
-
-    // coerce b to string
-    load(chunk, b_slot, line); call1(chunk, test_str, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    let b_already_str = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    load(chunk, b_slot, line); call1(chunk, to_f64, line); call1(chunk, str_from_f64, line);
-    let b_coerced = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(b_already_str);
-    load(chunk, b_slot, line); call1(chunk, str_cast, line);
-    chunk.patch_jump(b_coerced);
-
-    call2(chunk, str_concat, line);
-    let done_str = chunk.emit_jump(Op::BR, line);
-
-    // both bigint → i64.add
-    chunk.patch_jump(not_str);
-    load(chunk, a_slot, line); call1(chunk, test_bigint, line);
-    load(chunk, b_slot, line); call1(chunk, test_bigint, line);
-    let not_bigint = and_skip_if_not(chunk, line);
-    load(chunk, a_slot, line);
-    load(chunk, b_slot, line);
-    chunk.emit_op(Op::I64_ADD, line);
-    let done_bigint = chunk.emit_jump(Op::BR, line);
-
-    // number + number → f64.add
-    chunk.patch_jump(not_bigint);
-    load(chunk, a_slot, line); call1(chunk, to_f64, line);
-    load(chunk, b_slot, line); call1(chunk, to_f64, line);
-    chunk.emit_op(Op::F64_ADD, line);
-    call1(chunk, from_f64, line);
-
-    chunk.patch_jump(done_str);
-    chunk.patch_jump(done_bigint);
+    chunk.emit_else(line);
+      // both bigint → i64.add
+      load(chunk, a_slot, line); call1(chunk, test_bigint, line);
+      load(chunk, b_slot, line); call1(chunk, test_bigint, line);
+      chunk.emit_op(Op::I32_AND, line);
+      chunk.emit_if(line);
+        load(chunk, a_slot, line);
+        load(chunk, b_slot, line);
+        chunk.emit_op(Op::I64_ADD, line);
+      chunk.emit_else(line);
+        // number + number (or coerce) → f64.add
+        load(chunk, a_slot, line); call1(chunk, to_f64, line);
+        load(chunk, b_slot, line); call1(chunk, to_f64, line);
+        chunk.emit_op(Op::F64_ADD, line);
+        call1(chunk, from_f64, line);
+      chunk.emit_end(line); // bigint
+    chunk.emit_end(line);   // string
 }
 
 // ── emit_dyn_neg ──────────────────────────────────────────────────────
@@ -422,19 +386,18 @@ pub fn emit_dyn_neg(chunk: &mut Chunk, line: u32) {
 
     save(chunk, v, line);
 
-    // bigint → i64 negation (0 - v)
-    let not_bigint = test_and_skip_if_not(chunk, v, test_bigint, line);
-    i64_const(chunk, 0, line);
+    // bigint → i64 negation
     load(chunk, v, line);
-    chunk.emit_op(Op::I64_SUB, line);
-    let done_bigint = chunk.emit_jump(Op::BR, line);
-
-    // number → f64 negation
-    chunk.patch_jump(not_bigint);
-    load(chunk, v, line);
-    call1(chunk, to_f64, line);
-    chunk.emit_op(Op::F64_NEG, line);
-    call1(chunk, from_f64, line);
-
-    chunk.patch_jump(done_bigint);
+    call1(chunk, test_bigint, line);        // i32: 1 if bigint
+    chunk.emit_if(line);
+      i64_const(chunk, 0, line);
+      load(chunk, v, line);
+      chunk.emit_op(Op::I64_SUB, line);
+    chunk.emit_else(line);
+      // number → f64 negation
+      load(chunk, v, line);
+      call1(chunk, to_f64, line);
+      chunk.emit_op(Op::F64_NEG, line);
+      call1(chunk, from_f64, line);
+    chunk.emit_end(line);
 }

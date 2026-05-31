@@ -167,17 +167,17 @@ impl Compiler {
 
         self.emit_u16(Op::LOCAL_GET, delegate_slot);
         self.emit(Op::REF_IS_NULL);
-        let has_delegate = self.emit_jump(Op::BR_IF_FALSE);
-        let done = self.emit_jump(Op::BR);
-
-        self.patch_jump(has_delegate);
+        let line = self.line;
+        let skip_null = self.chunk().emit_block(line);
+        self.chunk().emit_br_if(0, line);
         self.emit_u16(Op::LOCAL_GET, delegate_slot);
         for arg in args {
             self.compile_expr(arg)?;
         }
         self.emit_u8(Op::CALL_REF, args.len() as u8);
         self.emit(Op::DROP);
-        self.patch_jump(done);
+        self.chunk().emit_end(line);
+        self.chunk().patch_block(skip_null);
         Ok(())
     }
 

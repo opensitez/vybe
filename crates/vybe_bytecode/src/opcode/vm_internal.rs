@@ -15,8 +15,6 @@ impl Op {
     // Branch variants
     pub const BR_IF_FALSE: Op       = Op::new(0xFF, 0x05);
     pub const BR_IF_NULL: Op        = Op::new(0xFF, 0x06);
-    pub const BR_LABEL: Op          = Op::new(0xFF, 0x07);
-    pub const BR_IF_LABEL: Op       = Op::new(0xFF, 0x08);
     // Immediate values
     pub const TRUE: Op              = Op::new(0xFF, 0x09);
     pub const FALSE: Op             = Op::new(0xFF, 0x0A);
@@ -188,8 +186,6 @@ opcode_category! {
     // Branch variants
     [0x05] br_if_false => I16, "br_if_false";
     [0x06] br_if_null => I16, "br_if_null";
-    [0x07] br_label => U8, "br_label";
-    [0x08] br_if_label => U8, "br_if_label";
     [0x82] null_func => None, "ref.null_func";
     [0x83] null_any => None, "ref.null_any";
     [0x84] null_none => None, "ref.null_none";

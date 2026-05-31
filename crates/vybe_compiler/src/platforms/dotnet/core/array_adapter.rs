@@ -69,24 +69,19 @@ pub fn emit_array_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, target_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     chunk.emit_op(Op::REF_IS_BOOL, line);
-    let bool_default = chunk.emit_jump(Op::BR_IF_TRUE, line);
-
-    chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunk.emit_op(Op::REF_IS_NUMBER, line);
-    let number_default = chunk.emit_jump(Op::BR_IF_TRUE, line);
-
-    chunk.emit_op(Op::NULL, line);
-    let done_default = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(bool_default);
-    chunk.emit_op(Op::FALSE, line);
-    let done_bool = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(number_default);
-    chunk.emit_op(Op::I32_CONST_0, line);
-
-    chunk.patch_jump(done_bool);
-    chunk.patch_jump(done_default);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+      chunk.emit_op(Op::FALSE, line);
+    chunk.emit_else(line);
+      chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+      chunk.emit_op(Op::REF_IS_NUMBER, line);
+      crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+      chunk.emit_if(line);
+        chunk.emit_op(Op::I32_CONST_0, line);
+      chunk.emit_else(line);
+        chunk.emit_op(Op::NULL, line);
+      chunk.emit_end(line);
+    chunk.emit_end(line);
     chunk.emit_op(Op::ARRAY_SET, line);
     chunk.emit_op(Op::DROP, line); // ARRAY_SET pushes the value; drop it
 

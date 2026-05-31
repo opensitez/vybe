@@ -291,6 +291,91 @@ impl App {
                     }
                     "Find" => { w.is_search_open = true; if let Some(t) = w.copy_selection_text() { if !t.is_empty() { w.search_query = t; } } else { w.search_query.clear(); } }
                     "Replace" => { w.is_search_open = true; w.is_replace_open = !w.is_replace_open; }
+                    "ToggleOutput" => {
+                        let v = self.output_panel.visible();
+                        self.output_panel.set_visible(!v);
+                    }
+                    "ToggleComment" => {
+                        let prefix_opt = w.lang_def.comments.as_ref()
+                            .and_then(|c| c.line_comment.clone());
+                        if let Some(prefix) = prefix_opt {
+                            let (start_line, end_line) = match w.selection_bounds() {
+                                Some((s, e)) => (s.0.min(e.0), s.0.max(e.0)),
+                                None => { let l = w.cursor_pos().0; (l, l) }
+                            };
+                            // Snapshot text before any mutation
+                            let snap: Vec<(usize, bool, String)> = (start_line..=end_line)
+                                .map(|li| {
+                                    let text = w.line_text(li);
+                                    let leading = text.len() - text.trim_start().len();
+                                    let already = text.trim_start().starts_with(prefix.as_str());
+                                    (leading, already, text)
+                                })
+                                .collect();
+                            let all_commented = snap.iter().all(|(_, a, _)| *a);
+                            w.my_editor.save_snapshot(w.cursor_pos().0, w.cursor_pos().1);
+                            // Bottom-to-top so byte offsets of earlier lines stay valid
+                            for (i, li) in (start_line..=end_line).rev().enumerate() {
+                                let ri = snap.len() - 1 - i;
+                                let (leading, _, text) = &snap[ri];
+                                if all_commented {
+                                    let after_ws = &text[*leading..];
+                                    let has_space = after_ws.len() > prefix.len()
+                                        && after_ws[prefix.len()..].starts_with(' ');
+                                    let remove_len = prefix.len() + if has_space { 1 } else { 0 };
+                                    let del_start = w.compute_byte_offset(li, *leading);
+                                    w.my_editor.delete_range(del_start, del_start + remove_len, &w.lang_def);
+                                } else {
+                                    let ins_pos = w.compute_byte_offset(li, *leading);
+                                    w.my_editor.insert_str(ins_pos, &format!("{} ", prefix), &w.lang_def);
+                                }
+                            }
+                            let new_text = w.my_editor.rope().to_string();
+                            w.set_buffer_text(&mut self.font_system, &new_text);
+                            tab.is_modified = true;
+                        } else {
+                            acted = false;
+                        }
+                    }
+                    "Indent" => {
+                        let (start_line, end_line) = match w.selection_bounds() {
+                            Some((s, e)) => (s.0.min(e.0), s.0.max(e.0)),
+                            None => { let l = w.cursor_pos().0; (l, l) }
+                        };
+                        w.my_editor.save_snapshot(w.cursor_pos().0, w.cursor_pos().1);
+                        for li in (start_line..=end_line).rev() {
+                            let ins_pos = w.compute_byte_offset(li, 0);
+                            w.my_editor.insert_str(ins_pos, "    ", &w.lang_def);
+                        }
+                        let new_text = w.my_editor.rope().to_string();
+                        w.set_buffer_text(&mut self.font_system, &new_text);
+                        tab.is_modified = true;
+                    }
+                    "Unindent" => {
+                        let (start_line, end_line) = match w.selection_bounds() {
+                            Some((s, e)) => (s.0.min(e.0), s.0.max(e.0)),
+                            None => { let l = w.cursor_pos().0; (l, l) }
+                        };
+                        let remove_counts: Vec<usize> = (start_line..=end_line)
+                            .map(|li| {
+                                let text = w.line_text(li);
+                                if text.starts_with('\t') { 1 }
+                                else { text.chars().take(4).take_while(|&c| c == ' ').count() }
+                            })
+                            .collect();
+                        w.my_editor.save_snapshot(w.cursor_pos().0, w.cursor_pos().1);
+                        for (i, li) in (start_line..=end_line).rev().enumerate() {
+                            let ri = remove_counts.len() - 1 - i;
+                            let n = remove_counts[ri];
+                            if n > 0 {
+                                let del_start = w.compute_byte_offset(li, 0);
+                                w.my_editor.delete_range(del_start, del_start + n, &w.lang_def);
+                            }
+                        }
+                        let new_text = w.my_editor.rope().to_string();
+                        w.set_buffer_text(&mut self.font_system, &new_text);
+                        tab.is_modified = true;
+                    }
                     _ => { acted = false; }
                 }
                 if acted { w.needs_reshape = true; w.sync();  return; }
@@ -320,7 +405,6 @@ impl App {
                 self.project_search_selected = 0;
             }
             Key::Character(c) if cmd && (c == "g" || c == "G") => { self.goto_line_open = !self.goto_line_open; self.goto_line_query.clear(); }
-            Key::Character(c) if cmd && (c == "`") => { let v = self.output_panel.visible(); self.output_panel.set_visible(!v); }
             Key::Character(c) if cmd && shift && (c == "b" || c == "B") => {
                 self.build_config = match self.build_config { super::BuildConfig::Debug => super::BuildConfig::Release, super::BuildConfig::Release => super::BuildConfig::Debug };
             }
@@ -364,6 +448,7 @@ impl App {
                         let max_line = w.line_count().saturating_sub(1);
                         let safe_line = target.min(max_line);
                         w.set_cursor_pos(safe_line, 0);
+                        w.scroll_y = (safe_line as f32 * w.font_size * 1.4 - w.font_size * 10.0).max(0.0);
                         w.needs_reshape = true;
                     }
                     self.goto_line_open = false;
@@ -411,7 +496,9 @@ impl App {
                  w.my_editor.save_snapshot(w.cursor_pos().0, w.cursor_pos().1);
                  if !w.has_selection() {
                      let li = w.cursor_pos().0;
+                     let col = w.cursor_pos().1;
                      w.my_editor.duplicate_line(li);
+                     w.set_cursor_pos(li + 1, col);
                  } else if let Some(_t) = w.copy_selection_text() {
                      w.find_next(&mut self.font_system);
                  }

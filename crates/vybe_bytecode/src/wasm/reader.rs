@@ -57,15 +57,16 @@ pub fn read_wasm(data: &[u8]) -> Result<Vec<Chunk>, String> {
 
 /// Decode a standard WASM module (e.g. from Rust/C compiler)
 fn decode_standard_wasm(
-    type_sec: &[u8], import_sec: &[u8], _func_sec: &[u8],
+    type_sec: &[u8], import_sec: &[u8], func_sec: &[u8],
     export_sec: &[u8], code_sec: &[u8],
 ) -> Result<Vec<Chunk>, String> {
     // Parse type section to get function signatures
     let types = parse_type_section(type_sec);
+    let func_type_indices = parse_function_section(func_sec);
 
     // Parse imports
     let imports = parse_import_section(import_sec);
-    let import_func_count = imports.len();
+    let import_func_count = imports.iter().filter(|(_, _, kind)| *kind == 0).count();
 
     // Parse exports to find function names
     let exports = parse_export_section(export_sec);
@@ -106,7 +107,8 @@ fn decode_standard_wasm(
             .unwrap_or_else(|| format!("func_{}", i));
 
         // Get arity + result arity from the function's type signature.
-        let (arity, result_arity) = types.get(func_idx)
+        let type_idx = func_type_indices.get(i).copied().unwrap_or(func_idx as u32) as usize;
+        let (arity, result_arity) = types.get(type_idx)
             .map(|(params, results)| (params.len() as u8, (results.len() as u8).max(1)))
             .unwrap_or((0, 1));
 
@@ -133,25 +135,13 @@ fn decode_standard_wasm(
 
 /// Translate WASM opcodes to our internal Chunk format.
 /// Builds a proper constant pool and adjusts local indices.
-/// Control flow label for WASM block/loop/if translation
-struct WasmLabel {
-    /// For blocks: offset of the br placeholder to patch to end
-    /// For loops: start offset (br target)
-    start_offset: usize,
-    is_loop: bool,
-    /// Pending forward jumps to patch when we hit 'end'
-    break_patches: Vec<usize>,
-    /// For if/else: the br_if_false patch location
-    if_patch: Option<usize>,
-}
-
 fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count: u32, _import_count: usize) -> Chunk {
     let mut chunk = Chunk::new(name);
     chunk.arity = arity;
     chunk.local_count = arity as u16 + wasm_local_count as u16;
 
     let mut pos = 0;
-    let mut label_stack: Vec<WasmLabel> = Vec::new();
+    let mut label_stack: Vec<()> = Vec::new();
 
     while pos < wasm.len() {
         let byte = wasm[pos]; pos += 1;
@@ -162,113 +152,66 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
 
             // block blocktype — forward jump target
             0x02 => {
-                skip_leb128(wasm, &mut pos); // blocktype
-                label_stack.push(WasmLabel {
-                    start_offset: chunk.current_offset(),
-                    is_loop: false,
-                    break_patches: Vec::new(),
-                    if_patch: None,
-                });
+                let result_count = read_block_result_count(wasm, &mut pos);
+                chunk.emit_block_typed(0, result_count);
+                label_stack.push(());
             }
 
             // loop blocktype — backward jump target
             0x03 => {
-                skip_leb128(wasm, &mut pos);
-                label_stack.push(WasmLabel {
-                    start_offset: chunk.current_offset(),
-                    is_loop: true,
-                    break_patches: Vec::new(),
-                    if_patch: None,
-                });
+                let result_count = read_block_result_count(wasm, &mut pos);
+                chunk.emit_loop_typed(0, result_count);
+                label_stack.push(());
             }
 
             // if blocktype — conditional block
             0x04 => {
-                skip_leb128(wasm, &mut pos);
-                chunk.emit_op(Op::I32_EQZ, 0);   // i32 condition: 0→Bool(true), non-zero→Bool(false)
-                let patch = chunk.emit_jump(Op::BR_IF_TRUE, 0); // branch if condition was 0 (false)
-                label_stack.push(WasmLabel {
-                    start_offset: chunk.current_offset(),
-                    is_loop: false,
-                    break_patches: Vec::new(),
-                    if_patch: Some(patch),
-                });
+                let result_count = read_block_result_count(wasm, &mut pos);
+                if result_count == 0 {
+                    chunk.emit_if(0);
+                } else {
+                    chunk.emit_if_value(0);
+                }
+                label_stack.push(());
             }
 
             // else
             0x05 => {
-                if let Some(label) = label_stack.last_mut() {
-                    // Jump over else block from end of if-true
-                    let skip = chunk.emit_jump(Op::BR, 0);
-                    label.break_patches.push(skip);
-                    // Patch the if_patch to here (start of else)
-                    if let Some(patch) = label.if_patch.take() {
-                        chunk.patch_jump(patch);
-                    }
-                }
+                chunk.emit_else(0);
             }
 
             // end
             0x0B => {
-                if let Some(label) = label_stack.pop() {
-                    let _end_offset = chunk.current_offset();
-                    // Patch if_patch if not already patched (no else branch)
-                    if let Some(patch) = label.if_patch {
-                        chunk.patch_jump(patch);
-                    }
-                    // Patch all forward break jumps to here
-                    for patch in &label.break_patches {
-                        chunk.patch_jump(*patch);
-                    }
-                }
+                let _ = label_stack.pop();
+                chunk.emit_end(0);
             }
 
             // br N — branch to Nth enclosing label
             0x0C => {
                 let (depth, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
-                let depth = depth as usize;
-                if let Some(label) = label_stack.iter().rev().nth(depth) {
-                    if label.is_loop {
-                        // Loop: jump back to start
-                        chunk.emit_loop(label.start_offset, 0);
-                    } else {
-                        // Block: jump forward to end (patch later)
-                        let patch = chunk.emit_jump(Op::BR, 0);
-                        // Store patch in the target label
-                        let idx = label_stack.len() - 1 - depth;
-                        label_stack[idx].break_patches.push(patch);
-                    }
-                }
+                chunk.emit_br(depth, 0);
             }
 
             // br_if N — conditional branch
             0x0D => {
                 let (depth, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
-                let depth = depth as usize;
-                chunk.emit_op(Op::I32_EQZ, 0);  // convert i32 condition to Bool
-                chunk.emit_op(Op::I32_EQZ, 0);  // flip back: 0→false, non-zero→true (as Bool)
-                if let Some(label) = label_stack.iter().rev().nth(depth) {
-                    if label.is_loop {
-                        // Loop: conditional jump back
-                        let exit = chunk.emit_jump(Op::BR_IF_FALSE, 0);
-                        chunk.emit_loop(label.start_offset, 0);
-                        chunk.patch_jump(exit);
-                    } else {
-                        // Block: conditional jump forward
-                        let patch = chunk.emit_jump(Op::BR_IF_TRUE, 0);
-                        let idx = label_stack.len() - 1 - depth;
-                        label_stack[idx].break_patches.push(patch);
-                    }
-                }
+                chunk.emit_br_if(depth, 0);
             }
             0x0E => {
                 // br_table — branch table
                 let (count, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
-                for _ in 0..=count { skip_leb128(wasm, &mut pos); } // skip all labels + default
-                chunk.emit_op(Op::DROP, 0); // simplified
+                let mut depths = Vec::with_capacity(count as usize);
+                for _ in 0..count {
+                    let (depth, _) = read_leb128_u32(&wasm[pos..]);
+                    skip_leb128(wasm, &mut pos);
+                    depths.push(depth);
+                }
+                let (default_depth, _) = read_leb128_u32(&wasm[pos..]);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_br_table(&depths, default_depth, 0);
             }
             0x0F => chunk.emit_op(Op::RETURN, 0),
             0x1A => chunk.emit_op(Op::DROP, 0),
@@ -300,11 +243,11 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
                 chunk.emit_op_u16(Op::LOCAL_SET, idx as u16, 0);
             }
 
-            // i32.const → add to constant pool as F64
+            // i32.const
             0x41 => {
                 let (val, read) = read_leb128_i32(&wasm[pos..]);
                 pos += read;
-                let ci = chunk.add_constant(Value::F64(val as f64));
+                let ci = chunk.add_constant(Value::I32(val));
                 chunk.emit_op_u16(Op::CONST, ci, 0);
             }
 
@@ -312,7 +255,7 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
             0x42 => {
                 let (val, read) = read_leb128_i64(&wasm[pos..]);
                 pos += read;
-                let ci = chunk.add_constant(Value::F64(val as f64));
+                let ci = chunk.add_constant(Value::I64(val));
                 chunk.emit_op_u16(Op::CONST, ci, 0);
             }
 
@@ -482,30 +425,32 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
             0x9E => chunk.emit_op(Op::F64_NEAREST, 0),
             0x9F => chunk.emit_op(Op::F64_SQRT, 0),
 
-            // ALL conversions
-            0xA7 => chunk.emit_op(Op::I32_WRAP_I64, 0),
-            0xA8 => chunk.emit_op(Op::I32_FROM_F64, 0), // i32.trunc_f32_s
-            0xA9 => chunk.emit_op(Op::I32_FROM_F64, 0), // i32.trunc_f32_u
-            0xAA => chunk.emit_op(Op::I32_FROM_F64, 0), // i32.trunc_f64_s
-            0xAB => chunk.emit_op(Op::I32_FROM_F64, 0), // i32.trunc_f64_u
-            0xAC => chunk.emit_op(Op::I64_EXTEND_I32_S, 0),
-            0xAD => chunk.emit_op(Op::I64_EXTEND_I32_U, 0),
-            0xAE => chunk.emit_op(Op::I64_TRUNC_F64_S, 0), // i64.trunc_f32_s (f32=f64 in VM)
-            0xAF => chunk.emit_op(Op::I64_TRUNC_F64_U, 0), // i64.trunc_f32_u
-            0xB0 => chunk.emit_op(Op::I64_TRUNC_F64_S, 0),
-            0xB1 => chunk.emit_op(Op::I64_TRUNC_F64_U, 0),
-            0xB2 => chunk.emit_op(Op::F64_FROM_I32, 0), // f32.convert_i32_s
-            0xB3 => chunk.emit_op(Op::F64_FROM_I32, 0), // f32.convert_i32_u
-            0xB4 => chunk.emit_op(Op::F64_FROM_I32, 0), // f32.convert_i64_s (i64→f64)
-            0xB5 => chunk.emit_op(Op::F64_FROM_I32, 0), // f32.convert_i64_u
-            0xB6 => chunk.emit_op(Op::F32_DEMOTE_F64, 0),
-            0xB7 => chunk.emit_op(Op::F64_FROM_I32, 0), // f64.convert_i32_s
-            0xB8 => chunk.emit_op(Op::F64_FROM_I32, 0), // f64.convert_i32_u
-            0xB9 => chunk.emit_op(Op::F64_PROMOTE_F32, 0),
-            0xBA => chunk.emit_op(Op::F32_REINTERPRET_I32, 0),
-            0xBB => chunk.emit_op(Op::F64_REINTERPRET_I64, 0),
-            0xBC => chunk.emit_op(Op::I32_REINTERPRET_F32, 0),
-            0xBD => chunk.emit_op(Op::I64_REINTERPRET_F64, 0),
+            // Conversions (WASM spec §5.3-binary.instructions 0xA7–0xBF)
+            0xA7 => chunk.emit_op(Op::I32_WRAP_I64, 0),         // i32.wrap_i64
+            0xA8 => chunk.emit_op(Op::I32_TRUNC_F32_S, 0),      // i32.trunc_f32_s
+            0xA9 => chunk.emit_op(Op::I32_TRUNC_F32_U, 0),      // i32.trunc_f32_u
+            0xAA => chunk.emit_op(Op::I32_FROM_F64, 0),         // i32.trunc_f64_s
+            0xAB => chunk.emit_op(Op::I32_TRUNC_F64_U, 0),      // i32.trunc_f64_u
+            0xAC => chunk.emit_op(Op::I64_EXTEND_I32_S, 0),     // i64.extend_i32_s
+            0xAD => chunk.emit_op(Op::I64_EXTEND_I32_U, 0),     // i64.extend_i32_u
+            0xAE => chunk.emit_op(Op::I64_TRUNC_F32_S, 0),      // i64.trunc_f32_s
+            0xAF => chunk.emit_op(Op::I64_TRUNC_F32_U, 0),      // i64.trunc_f32_u
+            0xB0 => chunk.emit_op(Op::I64_TRUNC_F64_S, 0),      // i64.trunc_f64_s
+            0xB1 => chunk.emit_op(Op::I64_TRUNC_F64_U, 0),      // i64.trunc_f64_u
+            0xB2 => chunk.emit_op(Op::F32_CONVERT_I32_S, 0),    // f32.convert_i32_s
+            0xB3 => chunk.emit_op(Op::F32_CONVERT_I32_U, 0),    // f32.convert_i32_u
+            0xB4 => chunk.emit_op(Op::F32_CONVERT_I64_S, 0),    // f32.convert_i64_s
+            0xB5 => chunk.emit_op(Op::F32_CONVERT_I64_U, 0),    // f32.convert_i64_u
+            0xB6 => chunk.emit_op(Op::F32_DEMOTE_F64, 0),       // f32.demote_f64
+            0xB7 => chunk.emit_op(Op::F64_FROM_I32, 0),         // f64.convert_i32_s
+            0xB8 => chunk.emit_op(Op::F64_CONVERT_I32_U, 0),    // f64.convert_i32_u
+            0xB9 => chunk.emit_op(Op::F64_CONVERT_I64_S, 0),    // f64.convert_i64_s
+            0xBA => chunk.emit_op(Op::F64_CONVERT_I64_U, 0),    // f64.convert_i64_u
+            0xBB => chunk.emit_op(Op::F64_PROMOTE_F32, 0),      // f64.promote_f32
+            0xBC => chunk.emit_op(Op::I32_REINTERPRET_F32, 0),  // i32.reinterpret_f32
+            0xBD => chunk.emit_op(Op::I64_REINTERPRET_F64, 0),  // i64.reinterpret_f64
+            0xBE => chunk.emit_op(Op::F32_REINTERPRET_I32, 0),  // f32.reinterpret_i32
+            0xBF => chunk.emit_op(Op::F64_REINTERPRET_I64, 0),  // f64.reinterpret_i64
 
             // Sign extension
             0xC0 => chunk.emit_op(Op::I32_EXTEND8_S, 0),
@@ -551,12 +496,158 @@ fn translate_wasm_to_chunk(wasm: &[u8], name: &str, arity: u8, wasm_local_count:
                 }
             }
 
+            // GC proposal prefix.
+            0xFB => {
+                let (sub, read) = read_leb128_u32(&wasm[pos..]);
+                pos += read;
+                emit_gc_prefixed(&mut chunk, sub, wasm, &mut pos);
+            }
+
+            // SIMD and relaxed-SIMD proposal prefix.
+            0xFD => {
+                let (sub, read) = read_leb128_u32(&wasm[pos..]);
+                pos += read;
+                emit_simd_prefixed(&mut chunk, sub, wasm, &mut pos);
+            }
+
+            // Threads/atomics proposal prefix.
+            0xFE => {
+                let (sub, read) = read_leb128_u32(&wasm[pos..]);
+                pos += read;
+                emit_threads_prefixed(&mut chunk, sub, wasm, &mut pos);
+            }
+
             // Unknown — skip
             _ => {}
         }
     }
 
     chunk
+}
+
+fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
+    let Some(op) = u8::try_from(sub).ok().and_then(|s| Op::decode(0xFB, s)) else {
+        return;
+    };
+    match op {
+        _ if op == Op::STRUCT_NEW
+            || op == Op::STRUCT_NEW_DEFAULT
+            || op == Op::STRUCT_GET
+            || op == Op::STRUCT_GET_S
+            || op == Op::STRUCT_GET_U
+            || op == Op::STRUCT_SET
+            || op == Op::ARRAY_NEW
+            || op == Op::ARRAY_NEW_DEFAULT
+            || op == Op::ARRAY_GET
+            || op == Op::ARRAY_GET_S
+            || op == Op::ARRAY_GET_U
+            || op == Op::ARRAY_SET
+            || op == Op::ARRAY_LENGTH
+            || op == Op::ARRAY_FILL => {
+            let (idx, read) = read_leb128_u32(&wasm[*pos..]);
+            *pos += read;
+            match op.operand_format() {
+                crate::opcode::OperandFormat::U16 => chunk.emit_op_u16(op, idx as u16, 0),
+                _ => chunk.emit_op(op, 0),
+            }
+        }
+        _ if op == Op::ARRAY_NEW_FIXED
+            || op == Op::ARRAY_NEW_DATA
+            || op == Op::ARRAY_NEW_ELEM
+            || op == Op::ARRAY_INIT_DATA
+            || op == Op::ARRAY_INIT_ELEM => {
+            let (_type_idx, read) = read_leb128_u32(&wasm[*pos..]);
+            *pos += read;
+            let (extra, read) = read_leb128_u32(&wasm[*pos..]);
+            *pos += read;
+            chunk.emit_op_u16(op, extra as u16, 0);
+        }
+        _ if op == Op::ARRAY_COPY => {
+            skip_leb128(wasm, pos);
+            skip_leb128(wasm, pos);
+            chunk.emit_op(op, 0);
+        }
+        _ if op == Op::REF_TEST
+            || op == Op::REF_TEST_NULL
+            || op == Op::REF_CAST
+            || op == Op::REF_CAST_NULL => {
+            skip_heaptype(wasm, pos);
+            let idx = chunk.add_constant(Value::String(Arc::from("__wasm_heaptype")));
+            chunk.emit_op_u16(op, idx, 0);
+        }
+        _ if op == Op::BR_ON_CAST || op == Op::BR_ON_CAST_FAIL => {
+            skip_leb128(wasm, pos); // flags
+            let (depth, read) = read_leb128_u32(&wasm[*pos..]);
+            *pos += read;
+            skip_heaptype(wasm, pos);
+            skip_heaptype(wasm, pos);
+            let idx = chunk.add_constant(Value::String(Arc::from("__wasm_heaptype")));
+            chunk.emit_op_u16(op, idx, 0);
+            chunk.emit(depth as u8, 0);
+        }
+        _ => chunk.emit_op(op, 0),
+    }
+}
+
+fn emit_simd_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
+    if (0x100..=0x113).contains(&sub) {
+        let relaxed_sub = (sub - 0x100) as u8;
+        if let Some(op) = Op::decode(0xDD, relaxed_sub) {
+            chunk.emit_op(op, 0);
+        }
+        return;
+    }
+
+    let Some(op) = u8::try_from(sub).ok().and_then(|s| Op::decode(0xFD, s)) else {
+        return;
+    };
+    match op {
+        _ if op == Op::V128_LOAD || op == Op::V128_STORE => {
+            skip_memarg(wasm, pos);
+            chunk.emit_op(op, 0);
+        }
+        _ if op == Op::V128_CONST => {
+            chunk.emit_op(op, 0);
+            for _ in 0..16 {
+                let b = wasm.get(*pos).copied().unwrap_or(0);
+                *pos += 1;
+                chunk.emit(b, 0);
+            }
+        }
+        _ if op == Op::I8X16_SHUFFLE => {
+            chunk.emit_op(op, 0);
+            for _ in 0..16 {
+                let b = wasm.get(*pos).copied().unwrap_or(0);
+                *pos += 1;
+                chunk.emit(b, 0);
+            }
+        }
+        _ if op.operand_format() == crate::opcode::OperandFormat::U8 => {
+            let lane = wasm.get(*pos).copied().unwrap_or(0);
+            *pos += 1;
+            chunk.emit_op_u8(op, lane, 0);
+        }
+        _ => chunk.emit_op(op, 0),
+    }
+}
+
+fn emit_threads_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
+    let Some(op) = u8::try_from(sub).ok().and_then(|s| Op::decode(0xFE, s)) else {
+        return;
+    };
+    match op {
+        _ if op == Op::ATOMIC_FENCE => {
+            *pos = (*pos).saturating_add(1).min(wasm.len());
+            chunk.emit_op(op, 0);
+        }
+        _ if op == Op::THREAD_SPAWN || op == Op::THREAD_JOIN => {
+            chunk.emit_op(op, 0);
+        }
+        _ => {
+            skip_memarg(wasm, pos);
+            chunk.emit_op(op, 0);
+        }
+    }
 }
 
 fn read_leb128_i64(data: &[u8]) -> (i64, usize) {
@@ -598,6 +689,20 @@ fn parse_type_section(data: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
         types.push((params, results));
     }
     types
+}
+
+fn parse_function_section(data: &[u8]) -> Vec<u32> {
+    if data.is_empty() { return vec![]; }
+    let mut pos = 0;
+    let (count, read) = read_leb128_u32(&data[pos..]);
+    pos += read;
+    let mut funcs = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let (type_idx, read) = read_leb128_u32(&data[pos..]);
+        pos += read;
+        funcs.push(type_idx);
+    }
+    funcs
 }
 
 fn parse_import_section(data: &[u8]) -> Vec<(String, String, u8)> {
@@ -644,6 +749,21 @@ fn skip_leb128(data: &[u8], pos: &mut usize) {
         let byte = data[*pos]; *pos += 1;
         if byte & 0x80 == 0 { break; }
     }
+}
+
+fn skip_memarg(data: &[u8], pos: &mut usize) {
+    skip_leb128(data, pos); // align
+    skip_leb128(data, pos); // offset
+}
+
+fn skip_heaptype(data: &[u8], pos: &mut usize) {
+    skip_leb128(data, pos);
+}
+
+fn read_block_result_count(data: &[u8], pos: &mut usize) -> u8 {
+    let first = data.get(*pos).copied().unwrap_or(0x40);
+    skip_leb128(data, pos);
+    if first == 0x40 { 0 } else { 1 }
 }
 
 fn read_leb128_i32(data: &[u8]) -> (i32, usize) {

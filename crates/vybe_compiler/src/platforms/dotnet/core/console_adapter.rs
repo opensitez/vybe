@@ -57,12 +57,11 @@ pub fn emit_console_writeline(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_br_if(0, line);
     chunk.emit_op_u16(Op::LOCAL_GET, v_local, line);
     crate::emitter::ops::emit_dyn_to_bool(chunk, line);
-    let false_path = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    chunk.emit_op_u16(Op::CONST, true_str, line);
-    let after_true = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(false_path);
-    chunk.emit_op_u16(Op::CONST, false_str, line);
-    chunk.patch_jump(after_true);
+    chunk.emit_if(line);
+      chunk.emit_op_u16(Op::CONST, true_str, line);
+    chunk.emit_else(line);
+      chunk.emit_op_u16(Op::CONST, false_str, line);
+    chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_br(1, line); // exit

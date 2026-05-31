@@ -47,7 +47,8 @@ fn assert_i32(val: &Value, expected: i32) {
 fn assert_bool(val: &Value, expected: bool) {
     match val {
         Value::Bool(v) => assert_eq!(*v, expected),
-        _ => panic!("Expected Bool({}), got {:?}", expected, val),
+        Value::I32(v) => assert_eq!(*v != 0, expected, "Expected WASM bool i32({}), got I32({})", expected as i32, v),
+        _ => panic!("Expected Bool/i32({}), got {:?}", expected, val),
     }
 }
 
@@ -229,7 +230,10 @@ fn recursive_call_factorial() {
     fact.emit_op_u16(Op::LOCAL_GET, 0, 0); // n
     fact.emit_op_u16(Op::CONST, c1, 0);  // 1
     fact.emit_op(Op::I32_LE_S, 0);          // n <= 1 ?
-    let jump_to_base = fact.emit_jump(Op::BR_IF_TRUE, 0);
+    fact.emit_if(0);
+    fact.emit_op_u16(Op::CONST, c1, 0);
+    fact.emit_op(Op::RETURN, 0);
+    fact.emit_end(0);
 
     // recursive case: n * fact(n-1)
     fact.emit_op_u16(Op::LOCAL_GET, 0, 0); // n
@@ -240,11 +244,6 @@ fn recursive_call_factorial() {
     fact.emit_op(Op::I32_SUB, 0);          // n-1
     fact.emit_op_u8(Op::CALL, 1, 0);       // fact(n-1)
     fact.emit_op(Op::I32_MUL, 0);          // n * fact(n-1)
-    fact.emit_op(Op::RETURN, 0);
-
-    // base case: return 1
-    fact.patch_jump(jump_to_base);
-    fact.emit_op_u16(Op::CONST, c1, 0);
     fact.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, fact]);
@@ -834,12 +833,12 @@ fn dyn_to_bool_empty_string() {
 
 #[test]
 fn dyn_to_bool_null() {
-    // null is falsy: REF_IS_NULL(null) = true, then invert = false
+    // null is falsy: REF_IS_NULL(null) = i32(1), then invert = i32(0)
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
     chunk.emit_op(Op::NULL, 0);
-    chunk.emit_op(Op::REF_IS_NULL, 0); // is null? → Bool(true)
-    chunk.emit_op(Op::I32_EQZ, 0);    // not null? → Bool(false)
+    chunk.emit_op(Op::REF_IS_NULL, 0);
+    chunk.emit_op(Op::I32_EQZ, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), false);
 }
@@ -865,7 +864,7 @@ fn dyn_to_bool_truthy_number() {
     chunk.emit_op(Op::I32_EQZ, 0); // is zero? → Bool(false)
     chunk.emit_op(Op::I32_EQZ, 0); // not zero? → Bool(true)
     chunk.emit_op(Op::HALT, 0);
-    assert_bool(&run_chunks(vec![chunk]), true);
+    assert_eq!(run_chunks(vec![chunk]), Value::I32(1));
 }
 
 #[test]
@@ -1143,10 +1142,10 @@ fn array_get_out_of_bounds() {
     chunk.emit_op(Op::ARRAY_GET, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
-    // Out of bounds should return Null
+    // Out-of-bounds dynamic array access follows JS-like missing-value semantics.
     match result {
-        Value::Null => {}
-        _ => panic!("Expected Null for out-of-bounds, got {:?}", result),
+        Value::Undefined => {}
+        _ => panic!("Expected Undefined for out-of-bounds, got {:?}", result),
     }
 }
 
@@ -1255,8 +1254,8 @@ fn struct_get_missing_prop() {
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
     match result {
-        Value::Null => {}
-        _ => panic!("Expected Null for missing prop, got {:?}", result),
+        Value::Undefined => {}
+        _ => panic!("Expected Undefined for missing prop, got {:?}", result),
     }
 }
 
@@ -1388,27 +1387,30 @@ fn br_unconditional() {
     chunk.local_count = 1;
     let c1 = chunk.add_constant(Value::I32(1));
     let c2 = chunk.add_constant(Value::I32(2));
+    let block = chunk.emit_block(0);
     chunk.emit_op_u16(Op::CONST, c1, 0);
-    // Jump over the next const
-    let jump = chunk.emit_jump(Op::BR, 0);
+    chunk.emit_br(0, 0);
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_op_u16(Op::CONST, c2, 0); // should be skipped
-    chunk.patch_jump(jump);
+    chunk.emit_end(0);
+    chunk.patch_block(block);
     chunk.emit_op(Op::HALT, 0);
     assert_i32(&run_chunks(vec![chunk]), 1);
 }
 
 #[test]
-fn br_if_true_taken() {
+fn br_if_taken() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
     let c10 = chunk.add_constant(Value::I32(10));
     let c20 = chunk.add_constant(Value::I32(20));
-    chunk.emit_op(Op::TRUE, 0);
-    let jump = chunk.emit_jump(Op::BR_IF_TRUE, 0);
+    let block = chunk.emit_block(0);
+    chunk.emit_op(Op::I32_CONST_1, 0);
+    chunk.emit_br_if(0, 0);
     chunk.emit_op_u16(Op::CONST, c20, 0);
     chunk.emit_op(Op::HALT, 0);
-    chunk.patch_jump(jump);
+    chunk.emit_end(0);
+    chunk.patch_block(block);
     chunk.emit_op_u16(Op::CONST, c10, 0);
     chunk.emit_op(Op::HALT, 0);
 
@@ -1416,16 +1418,19 @@ fn br_if_true_taken() {
 }
 
 #[test]
-fn br_if_false_taken() {
+fn br_if_with_eqz_replaces_false_branch() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
     let c10 = chunk.add_constant(Value::I32(10));
     let c20 = chunk.add_constant(Value::I32(20));
-    chunk.emit_op(Op::FALSE, 0);
-    let jump = chunk.emit_jump(Op::BR_IF_FALSE, 0);
+    let block = chunk.emit_block(0);
+    chunk.emit_op(Op::I32_CONST_0, 0);
+    chunk.emit_op(Op::I32_EQZ, 0);
+    chunk.emit_br_if(0, 0);
     chunk.emit_op_u16(Op::CONST, c20, 0);
     chunk.emit_op(Op::HALT, 0);
-    chunk.patch_jump(jump);
+    chunk.emit_end(0);
+    chunk.patch_block(block);
     chunk.emit_op_u16(Op::CONST, c10, 0);
     chunk.emit_op(Op::HALT, 0);
 
@@ -1447,13 +1452,14 @@ fn loop_sum_1_to_5() {
     chunk.emit_op_u16(Op::LOCAL_SET, 2, 0);
     chunk.emit_op(Op::DROP, 0);
 
-    let loop_start = chunk.current_offset();
+    let outer = chunk.emit_block(0);
+    let (lp, _loop_start) = chunk.emit_loop_s(0);
     // if i > 5, break
     chunk.emit_op_u16(Op::LOCAL_GET, 2, 0);
     let c5 = chunk.add_constant(Value::I32(5));
     chunk.emit_op_u16(Op::CONST, c5, 0);
     chunk.emit_op(Op::I32_GT_S, 0);
-    let exit_jump = chunk.emit_jump(Op::BR_IF_TRUE, 0);
+    chunk.emit_br_if(1, 0);
 
     // sum += i
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
@@ -1469,9 +1475,11 @@ fn loop_sum_1_to_5() {
     chunk.emit_op_u16(Op::LOCAL_SET, 2, 0);
     chunk.emit_op(Op::DROP, 0);
 
-    chunk.emit_loop(loop_start, 0);
-
-    chunk.patch_jump(exit_jump);
+    chunk.emit_br(0, 0);
+    chunk.emit_end(0);
+    chunk.patch_loop(lp);
+    chunk.emit_end(0);
+    chunk.patch_block(outer);
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
     chunk.emit_op(Op::HALT, 0);
 
@@ -1509,7 +1517,7 @@ fn ref_is_null_on_null() {
     chunk.emit_op(Op::NULL, 0);
     chunk.emit_op(Op::REF_IS_NULL, 0);
     chunk.emit_op(Op::HALT, 0);
-    assert_bool(&run_chunks(vec![chunk]), true);
+    assert_eq!(run_chunks(vec![chunk]), Value::I32(1));
 }
 
 #[test]

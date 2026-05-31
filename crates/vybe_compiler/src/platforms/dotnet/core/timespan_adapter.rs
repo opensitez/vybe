@@ -237,21 +237,18 @@ fn emit_compare_numeric_slots(chunk: &mut Chunk, left_slot: u16, right_slot: u16
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
-    let not_lt = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    push_const(chunk, Value::I32(-1), line);
-    let done = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(not_lt);
-
-    chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    crate::emitter::ops::emit_dyn_gt(chunk, line);
-    let not_gt = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    push_const(chunk, Value::I32(1), line);
-    let done_gt = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(not_gt);
-    push_const(chunk, Value::I32(0), line);
-    chunk.patch_jump(done);
-    chunk.patch_jump(done_gt);
+    chunk.emit_if(line);
+      push_const(chunk, Value::I32(-1), line);
+    chunk.emit_else(line);
+      chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+      chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
+      crate::emitter::ops::emit_dyn_gt(chunk, line);
+      chunk.emit_if(line);
+        push_const(chunk, Value::I32(1), line);
+      chunk.emit_else(line);
+        push_const(chunk, Value::I32(0), line);
+      chunk.emit_end(line);
+    chunk.emit_end(line);
 }
 
 pub fn emit_timespan_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

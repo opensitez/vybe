@@ -28,7 +28,8 @@ impl Compiler {
 
         self.emit_u16(Op::LOCAL_GET, has_more_slot);
         { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
-        let exhausted = self.emit_jump(Op::BR_IF_FALSE);
+        let line = self.line;
+        self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, cont_slot);
         self.emit_const(Value::Bool(false));
@@ -38,9 +39,8 @@ impl Compiler {
         self.emit_generator_yield_value(value_slot);
         self.emit_u16(Op::STRUCT_SET, current_key);
         self.emit(Op::DROP);
-        let loop_ready = self.emit_jump(Op::BR);
+        self.chunk().emit_else(line);
 
-        self.patch_jump(exhausted);
         self.emit_u16(Op::LOCAL_GET, cont_slot);
         self.emit_const(Value::Bool(true));
         self.emit_u16(Op::STRUCT_SET, done_key);
@@ -53,9 +53,9 @@ impl Compiler {
         self.emit_const(Value::Bool(false));
         self.emit_u16(Op::STRUCT_SET, current_key);
         self.emit(Op::DROP);
-        self.emit_u8(Op::BR_LABEL, 1);
+        self.chunk().emit_br(2, line);
 
-        self.patch_jump(loop_ready);
+        self.chunk().emit_end(line);
     }
 
     pub(super) fn emit_php_generator_key_binding(&mut self, key_slot: u16, value_slot: u16, key_index_slot: Option<u16>) {
@@ -89,11 +89,14 @@ impl Compiler {
         let current_key = self.str_const("__php_gen_current");
         let done_key = self.str_const("__php_gen_done");
         let return_key = self.str_const("__php_gen_return");
+        let result_slot = self.define_local("__php_gen_method_result");
 
         self.emit_u16(Op::LOCAL_GET, obj_tmp);
         let is_gen_idx = self.import("ecma:value", "isGenerator");
         self.emit_host_call(is_gen_idx, 1);
-        let not_gen = self.emit_jump(Op::BR_IF_FALSE);
+        let line = self.line;
+        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.chunk().emit_if(line);
 
         match field_name {
             "getReturn" => {
@@ -460,8 +463,10 @@ impl Compiler {
             _ => unreachable!(),
         }
 
-        let end = self.emit_jump(Op::BR);
-        self.patch_jump(not_gen);
-        Ok(Some(end))
+        let line = self.line;
+        self.emit_u16(Op::LOCAL_SET, result_slot);
+        self.emit(Op::DROP);
+        self.chunk().emit_else(line);
+        Ok(Some(result_slot as usize))
     }
 }

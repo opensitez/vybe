@@ -211,32 +211,6 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
     chunk.emit_op(Op::DROP, line);                                         // [obj]
 }
 
-/// Emit type-dispatch for a single catch arm. The exception object is
-/// expected on TOS (and remains on TOS for the next arm to test).
-/// Returns the patch offset of the "skip-this-arm" jump that the caller
-/// must patch after the arm body has been emitted.
-///
-/// `expected_canon` is the canonical exception type name (already passed
-/// through `canonical_exception_name`). The literal string `"Exception"`
-/// matches anything (catch-all).
-///
-/// Stack before: [exc]  Stack after: [exc] (preserved for next arm)
-pub fn emit_catch_dispatch(chunk: &mut Chunk, expected_canon: &str, line: u32) -> usize {
-    if expected_canon == "Exception" || expected_canon.is_empty() {
-        // Catch-all — no dispatch, no skip jump.
-        // Caller can patch a no-op offset, so return current_offset.
-        return usize::MAX;
-    }
-    // dup exc, struct_get __exception_type, push expected, dyn_eq, br_if_false skip
-    chunk.emit_op(Op::DUP, line);
-    let k = chunk.add_constant(Value::String(Arc::from("__exception_type")));
-    chunk.emit_op_u16(Op::STRUCT_GET, k, line);
-    let v = chunk.add_constant(Value::String(Arc::from(expected_canon)));
-    chunk.emit_op_u16(Op::CONST, v, line);
-    crate::emitter::ops::emit_dyn_eq(chunk, line);
-    chunk.emit_jump(Op::BR_IF_FALSE, line)
-}
-
 /// Emit the disposal half of a resource-management block (C# `using`,
 /// Python `with`, Java try-with-resources, JS `using x = …`). Reads
 /// the resource from `slot` and calls its lifecycle method (`Dispose`,

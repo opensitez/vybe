@@ -85,8 +85,9 @@ pub fn emit_atomic_notify(chunk: &mut Chunk, line: u32) {
 /// `addr_slot`: local slot containing the memory address of the lock word.
 /// Stack: unchanged
 pub fn emit_lock_acquire(chunk: &mut Chunk, addr_slot: u16, line: u32) {
-    // Spin loop: while atomic_xchg(addr, 1) != 0 { wait }
-    let loop_start = chunk.current_offset();
+    // Spin loop: block { loop { if atomic_xchg(addr, 1) == 0 { br 1 } wait; br 0 } }
+    let outer = chunk.emit_block(line);
+    let (loop_patch, _) = chunk.emit_loop_s(line);
     chunk.emit_op_u16(Op::LOCAL_GET, addr_slot, line);
     let one = chunk.add_constant(Value::I32(1));
     chunk.emit_op_u16(Op::CONST, one, line);
@@ -94,7 +95,7 @@ pub fn emit_lock_acquire(chunk: &mut Chunk, addr_slot: u16, line: u32) {
     // If old value was 0, we acquired the lock
     chunk.emit_op(Op::I32_CONST_0, line);
     crate::emitter::ops::emit_dyn_eq(chunk, line);
-    let acquired = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    chunk.emit_br_if(1, line);
     // Not acquired — wait and retry
     chunk.emit_op_u16(Op::LOCAL_GET, addr_slot, line);
     let one2 = chunk.add_constant(Value::I32(1));
@@ -103,8 +104,11 @@ pub fn emit_lock_acquire(chunk: &mut Chunk, addr_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::CONST, neg1, line);
     chunk.emit_op(Op::MEMORY_ATOMIC_WAIT32, line);
     chunk.emit_op(Op::DROP, line); // drop wait result
-    chunk.emit_loop(loop_start, line);
-    chunk.patch_jump(acquired);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.patch_loop(loop_patch);
+    chunk.emit_end(line);
+    chunk.patch_block(outer);
 }
 
 /// Emit lock release on a mutex at memory address.

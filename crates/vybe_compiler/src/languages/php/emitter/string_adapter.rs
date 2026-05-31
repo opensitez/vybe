@@ -51,139 +51,38 @@ pub fn emit_echo_stringify(chunks: &mut [Chunk], current: usize, _argc: u8, line
     let chunk = &mut chunks[current];
     let v_slot = alloc_local(chunk);
     let ty_slot = alloc_local(chunk);
-    let s_slot = alloc_local(chunk);
-    let len_slot = alloc_local(chunk);
-    let tostring_slot = alloc_local(chunk);
 
     lset(chunk, v_slot, line);
 
     lget(chunk, v_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    let not_null = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    push_str(chunk, "", line);
-    let done_null = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(not_null);
+    chunk.emit_if_value(line);
+        push_str(chunk, "", line);
+    chunk.emit_else(line);
 
-    lget(chunk, v_slot, line);
-    chunk.emit_op(Op::REF_TYPEOF, line);
-    lset(chunk, ty_slot, line);
+        lget(chunk, v_slot, line);
+        chunk.emit_op(Op::REF_TYPEOF, line);
+        lset(chunk, ty_slot, line);
 
-    lget(chunk, ty_slot, line);
-    push_str(chunk, "boolean", line);
-    crate::emitter::ops::emit_dyn_eq(chunk, line);
-    let not_bool = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    lget(chunk, v_slot, line);
-    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
-    let bool_false = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    push_str(chunk, "1", line);
-    let done_bool = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(bool_false);
-    push_str(chunk, "", line);
-    chunk.patch_jump(done_bool);
-    let after_bool = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(not_bool);
+        lget(chunk, ty_slot, line);
+        push_str(chunk, "boolean", line);
+        crate::emitter::ops::emit_dyn_eq(chunk, line);
+        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if_value(line);
+            lget(chunk, v_slot, line);
+            crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+            chunk.emit_if_value(line);
+                push_str(chunk, "1", line);
+            chunk.emit_else(line);
+                push_str(chunk, "", line);
+            chunk.emit_end(line);
+        chunk.emit_else(line);
+            push_str(chunk, "", line);
+            lget(chunk, v_slot, line);
+            crate::emitter::ops::emit_dyn_add(chunk, line);
+        chunk.emit_end(line);
 
-    lget(chunk, ty_slot, line);
-    push_str(chunk, "string", line);
-    crate::emitter::ops::emit_dyn_eq(chunk, line);
-    let not_string = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    lget(chunk, v_slot, line);
-    let after_string = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(not_string);
-
-    lget(chunk, ty_slot, line);
-    push_str(chunk, "number", line);
-    crate::emitter::ops::emit_dyn_eq(chunk, line);
-    let not_f64 = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    lget(chunk, v_slot, line);
-    push_const(chunk, Value::F64(14.0), line);
-    call_import(chunks, current, "ecma:number", "toFixed", 2, line);
-    let chunk = &mut chunks[current];
-    lset(chunk, s_slot, line);
-
-    let trim_zero_top = chunk.current_offset();
-    lget(chunk, s_slot, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
-    lset(chunk, len_slot, line);
-    lget(chunk, len_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    crate::emitter::ops::emit_dyn_gt(chunk, line);
-    let zero_len = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    lget(chunk, s_slot, line);
-    lget(chunk, len_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_SUB, line);
-    chunk.emit_op(Op::STR_CHAR_AT, line);
-    push_str(chunk, "0", line);
-    crate::emitter::ops::emit_dyn_eq(chunk, line);
-    let done_zero_trim = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    lget(chunk, s_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    lget(chunk, len_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_SUB, line);
-    chunk.emit_op(Op::STR_SUBSTRING, line);
-    lset(chunk, s_slot, line);
-    chunk.emit_loop(trim_zero_top, line);
-    chunk.patch_jump(zero_len);
-    chunk.patch_jump(done_zero_trim);
-
-    lget(chunk, s_slot, line);
-    chunk.emit_op(Op::STR_LENGTH, line);
-    lset(chunk, len_slot, line);
-    lget(chunk, len_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    crate::emitter::ops::emit_dyn_gt(chunk, line);
-    let no_dot_check = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    lget(chunk, s_slot, line);
-    lget(chunk, len_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_SUB, line);
-    chunk.emit_op(Op::STR_CHAR_AT, line);
-    push_str(chunk, ".", line);
-    crate::emitter::ops::emit_dyn_eq(chunk, line);
-    let no_dot_trim = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    lget(chunk, s_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    lget(chunk, len_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_SUB, line);
-    chunk.emit_op(Op::STR_SUBSTRING, line);
-    lset(chunk, s_slot, line);
-    chunk.patch_jump(no_dot_trim);
-    chunk.patch_jump(no_dot_check);
-    lget(chunk, s_slot, line);
-    let after_f64 = chunk.emit_jump(Op::BR, line);
-    chunk.patch_jump(not_f64);
-
-    lget(chunk, v_slot, line);
-    let to_string_key = chunk.add_constant(Value::String(Arc::from("__toString")));
-    chunk.emit_op_u16(Op::STRUCT_GET, to_string_key, line);
-    lset(chunk, tostring_slot, line);
-
-    lget(chunk, tostring_slot, line);
-    chunk.emit_op(Op::REF_TYPEOF, line);
-    push_str(chunk, "function", line);
-    crate::emitter::ops::emit_dyn_eq(chunk, line);
-    let no_tostring = chunk.emit_jump(Op::BR_IF_FALSE, line);
-
-    lget(chunk, tostring_slot, line);
-    lget(chunk, v_slot, line);
-    chunk.emit_op(Op::CALL_REF, line);
-    chunk.emit(1u8, line);
-    let after_tostring = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(no_tostring);
-
-    push_str(chunk, "", line);
-    lget(chunk, v_slot, line);
-    crate::emitter::ops::emit_dyn_add(chunk, line);
-
-    chunk.patch_jump(done_null);
-    chunk.patch_jump(after_bool);
-    chunk.patch_jump(after_string);
-    chunk.patch_jump(after_f64);
-    chunk.patch_jump(after_tostring);
+    chunk.emit_end(line);
 }
 
 // ── ucwords ────────────────────────────────────────────────────────

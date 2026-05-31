@@ -132,10 +132,11 @@ pub fn build_type_context(chunks: &[Chunk], import_count: usize, rt_imports: &[(
         let mut bip = 0;
         while bip + 1 < code.len() {
             if let Some(op) = crate::opcode::Op::decode(code[bip], code[bip + 1]) {
-                if op == crate::opcode::Op::BLOCK || op == crate::opcode::Op::LOOP {
-                    // Operand layout: prefix (1) + sub (1) + u16 offset (2) + u8 count (1) = 6
-                    if bip + 5 < code.len() {
-                        let count = code[bip + 4];
+                if op == crate::opcode::Op::BLOCK || op == crate::opcode::Op::LOOP
+                    || op == crate::opcode::Op::IF {
+                    // New layout: prefix (1) + sub (1) + result_count (1) = 3 bytes total.
+                    if bip + 2 < code.len() {
+                        let count = code[bip + 2];
                         if count >= 2 { block_result_counts.insert(count); }
                     }
                 }

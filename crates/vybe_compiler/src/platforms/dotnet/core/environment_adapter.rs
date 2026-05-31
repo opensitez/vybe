@@ -26,7 +26,9 @@ fn load_or_create_env_overrides(chunks: &mut [Chunk], current: usize, line: u32)
     chunk.emit_op_u16(Op::GLOBAL_GET, global, line);
     chunk.emit_op(Op::DUP, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    let has_object = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    let create_block = chunk.emit_block(line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(0, line);
     chunk.emit_op(Op::DROP, line);
 
     let object_new = chunks[0].add_import("ecma:object", "new");
@@ -36,7 +38,8 @@ fn load_or_create_env_overrides(chunks: &mut [Chunk], current: usize, line: u32)
     chunk.emit_op(Op::DUP, line);
     chunk.emit_op_u16(Op::GLOBAL_SET, global, line);
     chunk.emit_op(Op::DROP, line);
-    chunk.patch_jump(has_object);
+    chunk.emit_end(line);
+    chunk.patch_block(create_block);
 
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, object_slot, line);
@@ -91,7 +94,9 @@ pub fn emit_environment_get(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, object_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    let no_override_object = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    let done = chunk.emit_block(line);
+    let fallback_block = chunk.emit_block(line);
+    chunk.emit_br_if(0, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, object_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
@@ -102,19 +107,19 @@ pub fn emit_environment_get(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    let fallback = chunk.emit_jump(Op::BR_IF_TRUE, line);
+    chunk.emit_br_if(0, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    let done = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(no_override_object);
-    chunk.patch_jump(fallback);
+    chunk.emit_br(1, line);
 
     let get_env = chunks[0].add_import("wasi:cli", "getEnv");
     let chunk = &mut chunks[current];
+    chunk.emit_end(line);
+    chunk.patch_block(fallback_block);
     chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, get_env, line);
     chunk.emit(1, line);
-    chunk.patch_jump(done);
+    chunk.emit_end(line);
+    chunk.patch_block(done);
 }
 
 pub fn emit_environment_set(chunks: &mut [Chunk], current: usize, line: u32) {

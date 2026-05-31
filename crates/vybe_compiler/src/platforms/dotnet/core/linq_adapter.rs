@@ -116,18 +116,13 @@ pub fn emit_linq_first_or_default(chunks: &mut [Chunk], current: usize, line: u3
     chunks[current].emit_op(Op::I32_CONST_0, line);
     crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
 
-    // Branch: if empty push default(0), else push arr[0].
-    crate::emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    let empty = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
-    // non-empty path
-    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
-    collections::emit_get(chunks, current, line);
-    let done = chunks[current].emit_jump(Op::BR, line);
-    // empty path
-    chunks[current].patch_jump(empty);
-    chunks[current].emit_op(Op::I32_CONST_0, line);
-    chunks[current].patch_jump(done);
+    chunks[current].emit_if(line);
+      chunks[current].emit_op(Op::I32_CONST_0, line);
+    chunks[current].emit_else(line);
+      chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+      chunks[current].emit_op(Op::I32_CONST_0, line);
+      collections::emit_get(chunks, current, line);
+    chunks[current].emit_end(line);
 }
 
 /// `arr.Distinct()` — array with duplicates removed.
@@ -217,13 +212,16 @@ pub fn emit_linq_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32)
     collections::emit_len(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
     crate::emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    let lengths_match = chunks[current].emit_jump(Op::BR_IF_TRUE, line);
+    let done = chunks[current].emit_block(line);
+    let lengths_match = chunks[current].emit_block(line);
+    chunks[current].emit_br_if(0, line);
     chunks[current].emit_op(Op::FALSE, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_op(Op::DROP, line);
-    let done = chunks[current].emit_jump(Op::BR, line);
+    chunks[current].emit_br(1, line);
 
-    chunks[current].patch_jump(lengths_match);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(lengths_match);
     chunks[current].emit_op(Op::I32_CONST_0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -270,7 +268,8 @@ pub fn emit_linq_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32)
     chunks[current].emit_end(line);
     chunks[current].patch_block(outer_block);
 
-    chunks[current].patch_jump(done);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(done);
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
@@ -309,7 +308,7 @@ pub fn emit_linq_count_pred(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // pred(elem) → if-true increment count.  Use a structured WASM
     // block (same pattern as `emit_filter`) — byte-offset
-    // `emit_jump(BR_IF_FALSE)` does not interleave correctly with the
+    // Structured skip blocks keep the predicate guard interleaved with the
     // outer `for_in` body block, so we open an inner block and `br_if`
     // out of it on the false branch.
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
@@ -703,4 +702,3 @@ pub fn emit_linq_zip(chunks: &mut [Chunk], current: usize, line: u32) {
     loops::emit_for_in_end(chunks, current, idx_slot, state, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
 }
-

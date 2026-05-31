@@ -24,10 +24,30 @@
 //! ### `metadata.code.branch_hint`  ✅ emitted
 //!
 //! Per-function map of byte-offset → 1-byte hint payload (`0x01` =
-//! likely, `0x00` = unlikely). We scan each chunk's bytecode, track
-//! loop nesting depth, and mark conditional branches (`BR_IF_*` /
-//! `BR_IF_LABEL`) inside loops as likely-taken (back-edges usually
-//! loop). See `scan_branch_hints`.
+//! likely, `0x00` = unlikely).
+//!
+//! Hint byte semantics (spec §branch-hinting):
+//! - `0x01` — condition is **likely true** (branch taken)
+//! - `0x00` — condition is **likely false** (branch not taken)
+//!
+//! Heuristics applied:
+//! - Conditional branches (`br_if`) inside a `LOOP` are
+//!   marked **likely** (back-edges almost always retry).
+//! - Conditional branches inside an exception handler (`TRY_START` …
+//!   `TRY_END`) are marked **unlikely** (slow/cold path).
+//!
+//! Offsets are relative to the beginning of the function locals declaration
+//! (i.e. after the `body_size` field in the WASM binary). We add
+//! `code::locals_prefix_size(chunk)` to every raw `chunk.code` offset so
+//! that the hint points at the instruction in the serialised binary body.
+//!
+//! Note: because Vybe uses a 2-byte internal opcode format that expands to
+//! variable-length WASM binary sequences during encoding, these offsets are
+//! exact only when no instruction expansion occurs (i.e. for instructions
+//! that translate 1-to-1 to a single WASM byte + operands). For functions
+//! that contain op expansions the offset is a best-effort approximation and
+//! will be gracefully ignored by spec-conformant engines that fail to find
+//! a hintable instruction at the given position.
 //!
 //! ### `metadata.code.inlining`  ✅ emitted
 //!
@@ -36,7 +56,13 @@
 //! `is_leaf_function`.
 
 use super::encoding::*;
+use super::code;
 use crate::{Chunk, Op};
+
+/// The canonical section names — exported so the writer can use them.
+pub const COMPILATION_ORDER_SECTION_NAME: &str = "metadata.code.compilation_order";
+pub const BRANCH_HINT_SECTION_NAME:       &str = "metadata.code.branch_hint";
+pub const INLINING_SECTION_NAME:          &str = "metadata.code.inlining";
 
 /// Produce the payload of the `metadata.code.compilation_order` custom
 /// section. Returns `None` when there are no hints to emit (allowing the
@@ -79,15 +105,11 @@ pub fn encode_compilation_order_payload(
     Some(out)
 }
 
-/// The canonical section name — exported so the writer can use it.
-pub const COMPILATION_ORDER_SECTION_NAME: &str = "metadata.code.compilation_order";
-pub const BRANCH_HINT_SECTION_NAME:       &str = "metadata.code.branch_hint";
-pub const INLINING_SECTION_NAME:          &str = "metadata.code.inlining";
-
-/// Encode `metadata.code.branch_hint`. We mark every `BR` / `BR_IF_*` /
-/// `BR_LABEL` appearing **inside a LOOP** as `likely taken` (back-edges
-/// almost always retry) and every branch appearing inside an exception
-/// handler (after TRY_TABLE) as `unlikely` (slow path).
+/// Encode `metadata.code.branch_hint`.
+///
+/// The section must appear **before the code section** in the binary
+/// (spec requirement). The caller (`wasm/mod.rs`) is responsible for
+/// emitting this section at the correct position.
 pub fn encode_branch_hint_payload(
     chunks: &[Chunk],
     rt_imports_len: usize,
@@ -97,7 +119,11 @@ pub fn encode_branch_hint_payload(
 
     let mut per_func: Vec<(u32, Vec<(u32, u8)>)> = Vec::new();
     for (ci, chunk) in chunks.iter().enumerate() {
-        let hints = scan_branch_hints(chunk);
+        // Offsets within chunk.code need to be shifted by the size of the
+        // locals declaration prefix so they point at the right byte in the
+        // serialised WASM function body.
+        let locals_off = code::locals_prefix_size(chunk);
+        let hints = scan_branch_hints(chunk, locals_off);
         if !hints.is_empty() {
             per_func.push(((func_base + ci) as u32, hints));
         }
@@ -147,14 +173,22 @@ pub fn encode_inlining_payload(
     Some(out)
 }
 
-/// Walk the chunk's bytecode. Track loop / try-handler depth and emit a
-/// branch hint for every conditional-jump whose target is a loop back
-/// edge (likely-taken) or an exception handler (unlikely).
-fn scan_branch_hints(chunk: &Chunk) -> Vec<(u32, u8)> {
+/// Walk the chunk's bytecode. Track loop / try-handler depth and emit:
+/// - `0x01` (likely) for conditional branches inside a `LOOP` (back-edge)
+/// - `0x00` (unlikely) for conditional branches inside an exception handler
+///
+/// `locals_off` is added to every raw `chunk.code` offset so the resulting
+/// offset is relative to the start of the function locals declaration in
+/// the WASM binary body (as required by the spec).
+///
+/// Hints are emitted in increasing offset order (guaranteed by the linear
+/// forward scan). No byte offset appears more than once.
+fn scan_branch_hints(chunk: &Chunk, locals_off: u32) -> Vec<(u32, u8)> {
     let code = &chunk.code;
     let mut hints = Vec::new();
     let mut ip = 0usize;
-    let mut in_loop = 0i32;
+    let mut in_loop: i32 = 0;
+    let mut in_handler: i32 = 0;
     while ip + 1 < code.len() {
         let op_start = ip;
         let prefix = code[ip];
@@ -165,20 +199,26 @@ fn scan_branch_hints(chunk: &Chunk) -> Vec<(u32, u8)> {
         };
         ip += 2;
 
-        if op == Op::LOOP { in_loop += 1; }
-        if op == Op::END && in_loop > 0 { in_loop -= 1; }
+        if op == Op::LOOP       { in_loop    += 1; }
+        if op == Op::TRY_START  { in_handler += 1; }
+        if op == Op::END && in_loop > 0    { in_loop    -= 1; }
+        if op == Op::TRY_END   && in_handler > 0 { in_handler -= 1; }
 
-        // Classify conditional branches.
-        let is_cond_branch = op == Op::BR_IF_TRUE
-            || op == Op::BR_IF_FALSE
-            || op == Op::BR_IF_NULL
-            || op == Op::BR_IF_LABEL;
-        if is_cond_branch && in_loop > 0 {
-            // Back-edge — likely taken.
-            hints.push((op_start as u32, 1));
+        let is_cond_branch = op == Op::BR_IF;
+
+        if is_cond_branch {
+            let hint_byte = if in_loop > 0 {
+                0x01 // likely — back-edge almost always taken
+            } else if in_handler > 0 {
+                0x00 // unlikely — exception handler is a cold path
+            } else {
+                ip += op.operand_format().size_in(code, ip);
+                continue; // no hint for branches outside loops/handlers
+            };
+            hints.push((op_start as u32 + locals_off, hint_byte));
         }
 
-        ip += op.operand_format().fixed_size();
+        ip += op.operand_format().size_in(code, ip);
     }
     hints
 }
@@ -205,7 +245,7 @@ fn is_leaf_function(chunk: &Chunk) -> bool {
             || op == Op::RETURN_CALL_INDIRECT {
             return false;
         }
-        ip += op.operand_format().fixed_size();
+        ip += op.operand_format().size_in(code, ip);
     }
     // Don't mark the entry script as inline-eligible — it isn't called.
     !chunk.name.is_empty() && chunk.name != "<script>"

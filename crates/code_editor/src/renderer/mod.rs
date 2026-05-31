@@ -166,6 +166,9 @@ pub(crate) struct App {
     pub(crate) swash_cache: SwashCache,
     pub(crate) win_width: f32,
     pub(crate) win_height: f32,
+    /// Actual OS display scale factor (from winit). Used to create dropdowns
+    /// so render_list multiplies by the right factor.
+    pub(crate) display_scale: f32,
     pub(crate) cursor: winit::window::CursorIcon,
     pub(crate) tabs: Vec<Tab>,
     pub(crate) active_tab: usize,
@@ -274,7 +277,7 @@ impl App {
         let _root_uri = format!("file://{}", root_dir.to_string_lossy());
         Self { 
             font_system: FontSystem::new(), swash_cache: SwashCache::new(),
-            win_width: 0.0, win_height: 0.0, cursor: winit::window::CursorIcon::Default,
+            win_width: 0.0, win_height: 0.0, display_scale: SCALE, cursor: winit::window::CursorIcon::Default,
             tabs: Vec::new(), active_tab: 0, 
             tree_view: TreeView::new(".", 2.0), all_languages: langs, current_lang: "rust".to_string(), lang_dropdown: None, theme_dropdown: None, clipboard: Clipboard::new().ok(), 
             cmd_held: false, shift_held: false, alt_held: false, last_click_time: Instant::now(), click_count: 0, mouse_pos: (0.0, 0.0), 
@@ -319,6 +322,7 @@ impl App {
                         Keybinding { key: "/".into(), cmd: true, shift: false, alt: false, action: "ToggleComment".into() },
                         Keybinding { key: "Tab".into(), cmd: false, shift: false, alt: false, action: "Indent".into() },
                         Keybinding { key: "Tab".into(), cmd: false, shift: true, alt: false, action: "Unindent".into() },
+                        Keybinding { key: "`".into(), cmd: true, shift: false, alt: false, action: "ToggleOutput".into() },
                         Keybinding { key: "ArrowUp".into(), cmd: true, shift: false, alt: false, action: "MoveBufferStart".into() },
                         Keybinding { key: "ArrowDown".into(), cmd: true, shift: false, alt: false, action: "MoveBufferEnd".into() },
                         Keybinding { key: "ArrowLeft".into(), cmd: true, shift: false, alt: false, action: "MoveLineStart".into() },
@@ -448,6 +452,9 @@ impl App {
                 WidgetEvent::TabChanged(idx) => {
                     if idx < self.tabs.len() {
                         self.active_tab = idx;
+                        let ext = self.tabs[idx].name.rsplitn(2, '.').next()
+                            .unwrap_or("").to_lowercase();
+                        self.current_lang = App::lang_from_ext(&ext).to_string();
                     }
                 }
                 WidgetEvent::TabCloseRequested(idx) => {
@@ -456,6 +463,7 @@ impl App {
                         if self.active_tab >= self.tabs.len() && self.active_tab > 0 {
                             self.active_tab -= 1;
                         }
+                        self.sync_tab_headers();
                     }
                 }
                 _ => {}
@@ -468,7 +476,7 @@ impl App {
                     match id.as_str() {
                         "lang" => {
                             let active_idx = self.all_languages.iter().position(|l| l == &self.current_lang).unwrap_or(0);
-                            self.lang_dropdown = Some(Dropdown::new(self.all_languages.clone(), active_idx, SCALE, None));
+                            self.lang_dropdown = Some(Dropdown::new(self.all_languages.clone(), active_idx, self.display_scale, None));
                         }
                         "theme" => {
                             let theme_names = vec![
@@ -477,7 +485,7 @@ impl App {
                                 "Midnight".into(), "Aura".into(), "Veridian".into(), "Rose".into(),
                                 "Cyber".into(), "Titanium".into(), "Indigo Night".into()
                             ];
-                            let mut d = Dropdown::new(theme_names, self.current_theme_idx, SCALE, None);
+                            let mut d = Dropdown::new(theme_names, self.current_theme_idx, self.display_scale, None);
                             d.num_cols = 2; d.col_w = 160.0;
                             self.theme_dropdown = Some(d);
                         }
@@ -583,34 +591,84 @@ impl App {
     fn draw_ui_text(pix: &mut Pixmap, fs: &mut FontSystem, sc: &mut SwashCache, text: &str, x: f32, y: f32, col: TextColor) {
         crate::ide_text::draw_mono(pix, fs, sc, text, x / SCALE, y / SCALE, 14.0, col, SCALE);
     }
+
+    /// Map a file extension to a language name understood by `load_language`.
+    pub(crate) fn lang_from_ext(ext: &str) -> &'static str {
+        match ext {
+            "rs" => "rust",
+            "js" | "mjs" | "cjs" => "javascript",
+            "ts" | "tsx" => "typescript",
+            "vb" | "bas" | "frm" => "vb",
+            "cs" => "csharp",
+            "py" => "python",
+            "php" => "php",
+            "rb" => "ruby",
+            "dart" => "dart",
+            "java" => "java",
+            "go" => "go",
+            "c" | "h" => "c",
+            "cpp" | "cc" | "cxx" | "hpp" => "cpp",
+            "html" | "htm" => "html",
+            "css" => "css",
+            "json" => "json",
+            "yaml" | "yml" => "yaml",
+            "md" => "markdown",
+            "sql" => "sql",
+            "sh" | "bash" => "shell",
+            "ps1" => "powershell",
+            "lua" => "lua",
+            "r" => "r",
+            "f90" | "f95" | "f03" | "f08" | "for" | "f" => "fortran",
+            "cob" | "cbl" => "cobol",
+            _ => "plaintext",
+        }
+    }
+
+    /// Build a file URI for a tab: uses `tab.path` when set, otherwise
+    /// derives one from the current working directory.
+    pub(crate) fn tab_uri(tab: &Tab) -> String {
+        tab.path.as_deref()
+            .map(|p| format!("file://{}", p))
+            .unwrap_or_else(|| {
+                let cwd = std::env::current_dir()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                format!("file://{}/{}", cwd, tab.name)
+            })
+    }
 }
 
 // ── Application (toolkit) ──────────────────────────────────────────────
 
 impl vybe_widgets::Application for App {
-    fn on_init(&mut self, width: f32, height: f32, _scale: f32) {
+    fn title(&self) -> String {
+        let tab_part = self.tabs.get(self.active_tab).map(|t| {
+            let dot = if t.is_modified { " •" } else { "" };
+            format!("{}{} — ", t.name, dot)
+        }).unwrap_or_default();
+        let project = &self.project.name;
+        format!("{}{}  —  Vybe IDE", tab_part, project)
+    }
+
+    fn on_init(&mut self, width: f32, height: f32, scale: f32) {
         self.win_width = width;
         self.win_height = height;
+        self.display_scale = scale;
 
-        let lang = load_language("rust").expect("load rust");
-        let my_editor = MyEditor::from_text("// Welcome to Vybe IDE\nfn main() {\n    println!(\"Multi-file support active!\");\n}", &lang);
-        let uri = "file:///Users/youness/www/html/vybe/welcome.rs".to_string();
-        let widget = {
-            let text = my_editor.rope.to_string();
-            self.lsp.send(LspRequest::Init(text, "rust".to_string(), uri));
-            CodeEditorWidget::new(my_editor.inner, &mut self.font_system)
-        };
-        self.tabs.push(Tab { name: "welcome.rs".to_string(), path: None, content: TabContent::Code(widget), is_sticky: true, buffer: None, is_modified: false });
-
-        // Always add the Form Designer tab
-        {
-            let mut designer_state = crate::form_designer_tab::FormDesignerState::new();
-            if let Some(fm) = self.project.forms.first() {
-                designer_state.form = fm.form.clone();
-            }
-            self.tabs.push(Tab { name: "Form Designer".to_string(), path: None, content: TabContent::Form(designer_state), is_sticky: true, buffer: None, is_modified: false });
+        // Open with the Form Designer tab only — no scratch file
+        let mut designer_state = crate::form_designer_tab::FormDesignerState::new();
+        if let Some(fm) = self.project.forms.first() {
+            designer_state.form = fm.form.clone();
         }
-        self.active_tab = self.tabs.len().saturating_sub(1);
+        self.tabs.push(Tab {
+            name: "Form Designer".to_string(),
+            path: None,
+            content: TabContent::Form(designer_state),
+            is_sticky: true,
+            buffer: None,
+            is_modified: false,
+        });
+        self.active_tab = 0;
         self.sync_tab_headers();
         self.relayout();
     }
@@ -619,6 +677,7 @@ impl vybe_widgets::Application for App {
         self.win_width = width;
         self.win_height = height;
         self.relayout();
+        self.sync_tab_headers();
     }
 
     fn render(&mut self, pix: &mut Pixmap, _scale: f32) {
@@ -702,6 +761,14 @@ impl vybe_widgets::Application for App {
     fn on_focus_lost(&mut self) {
         self.is_dragging = false;
         self.is_dragging_splitter = false;
+        self.is_quick_open = false;
+        self.is_command_palette = false;
+        self.is_project_search = false;
+        self.goto_line_open = false;
+        self.tab_context_menu = None;
+        self.pe_context_menu = None;
+        self.lang_dropdown = None;
+        self.theme_dropdown = None;
     }
 }
 

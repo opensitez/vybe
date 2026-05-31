@@ -115,31 +115,32 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     lget(chunk, right_len_slot, line);
     emit_numeric_zero(chunk, line);
     crate::emitter::ops::emit_dyn_gt(chunk, line);
-    let right_empty = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_if(line);
+        emit_numeric_zero(chunk, line);
+        lset(chunk, k_slot, line);
+        emit_array_get_into_slot(chunk, right_slot, k_slot, right_first_slot, line);
+        lget(chunk, right_first_slot, line);
+        chunk.emit_op(Op::REF_IS_ARRAY, line);
+        lset(chunk, right_is_matrix_slot, line);
 
-    emit_numeric_zero(chunk, line);
-    lset(chunk, k_slot, line);
-    emit_array_get_into_slot(chunk, right_slot, k_slot, right_first_slot, line);
-    lget(chunk, right_first_slot, line);
-    chunk.emit_op(Op::REF_IS_ARRAY, line);
-    lset(chunk, right_is_matrix_slot, line);
-
-    lget(chunk, right_is_matrix_slot, line);
-    let right_vector = chunk.emit_jump(Op::BR_IF_FALSE, line);
-    lget(chunk, right_first_slot, line);
-    chunk.emit_op(Op::ARRAY_LENGTH, line);
-    lset(chunk, col_count_slot, line);
-    chunk.patch_jump(right_vector);
-    chunk.patch_jump(right_empty);
+        lget(chunk, right_is_matrix_slot, line);
+        crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
+            lget(chunk, right_first_slot, line);
+            chunk.emit_op(Op::ARRAY_LENGTH, line);
+            lset(chunk, col_count_slot, line);
+        chunk.emit_end(line);
+    chunk.emit_end(line);
 
     emit_numeric_zero(chunk, line);
     lset(chunk, i_slot, line);
 
-    let outer_loop = chunk.current_offset();
+    let (outer_loop, _) = chunk.emit_loop_s(line);
     lget(chunk, i_slot, line);
     lget(chunk, left_len_slot, line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
-    let outer_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(1, line);
 
     emit_array_get_into_slot(chunk, left_slot, i_slot, row_slot, line);
     lget(chunk, row_slot, line);
@@ -147,7 +148,8 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     lset(chunk, row_len_slot, line);
 
     lget(chunk, right_is_matrix_slot, line);
-    let vector_branch = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    crate::emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
 
     lget(chunk, col_count_slot, line);
     let _ = chunk;
@@ -157,22 +159,24 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     emit_numeric_zero(chunk, line);
     lset(chunk, j_slot, line);
 
-    let col_loop = chunk.current_offset();
+    let (col_loop, _) = chunk.emit_loop_s(line);
     lget(chunk, j_slot, line);
     lget(chunk, col_count_slot, line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
-    let col_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(1, line);
 
     emit_numeric_zero(chunk, line);
     lset(chunk, acc_slot, line);
     emit_numeric_zero(chunk, line);
     lset(chunk, k_slot, line);
 
-    let dot_loop = chunk.current_offset();
+    let (dot_loop, _) = chunk.emit_loop_s(line);
     lget(chunk, k_slot, line);
     lget(chunk, row_len_slot, line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
-    let dot_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(1, line);
 
     emit_array_get_into_slot(chunk, row_slot, k_slot, left_value_slot, line);
     emit_array_get_into_slot(chunk, right_slot, k_slot, right_row_slot, line);
@@ -188,8 +192,9 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     lset(chunk, acc_slot, line);
 
     emit_increment_slot(chunk, k_slot, line);
-    chunk.emit_loop(dot_loop, line);
-    chunk.patch_jump(dot_exit);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.patch_loop(dot_loop);
 
     lget(chunk, row_result_slot, line);
     lget(chunk, j_slot, line);
@@ -198,28 +203,28 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     chunk.emit_op(Op::DROP, line);
 
     emit_increment_slot(chunk, j_slot, line);
-    chunk.emit_loop(col_loop, line);
-    chunk.patch_jump(col_exit);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.patch_loop(col_loop);
 
     lget(chunk, result_slot, line);
     lget(chunk, i_slot, line);
     lget(chunk, row_result_slot, line);
     chunk.emit_op(Op::ARRAY_SET, line);
     chunk.emit_op(Op::DROP, line);
-    let row_done = chunk.emit_jump(Op::BR, line);
-
-    chunk.patch_jump(vector_branch);
+    chunk.emit_else(line);
 
     emit_numeric_zero(chunk, line);
     lset(chunk, acc_slot, line);
     emit_numeric_zero(chunk, line);
     lset(chunk, k_slot, line);
 
-    let vec_dot_loop = chunk.current_offset();
+    let (vec_dot_loop, _) = chunk.emit_loop_s(line);
     lget(chunk, k_slot, line);
     lget(chunk, row_len_slot, line);
     crate::emitter::ops::emit_dyn_lt(chunk, line);
-    let vec_dot_exit = chunk.emit_jump(Op::BR_IF_FALSE, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(1, line);
 
     emit_array_get_into_slot(chunk, row_slot, k_slot, left_value_slot, line);
     emit_array_get_into_slot(chunk, right_slot, k_slot, right_value_slot, line);
@@ -234,8 +239,9 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     lset(chunk, acc_slot, line);
 
     emit_increment_slot(chunk, k_slot, line);
-    chunk.emit_loop(vec_dot_loop, line);
-    chunk.patch_jump(vec_dot_exit);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.patch_loop(vec_dot_loop);
 
     lget(chunk, result_slot, line);
     lget(chunk, i_slot, line);
@@ -243,10 +249,11 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     chunk.emit_op(Op::ARRAY_SET, line);
     chunk.emit_op(Op::DROP, line);
 
-    chunk.patch_jump(row_done);
+    chunk.emit_end(line);
     emit_increment_slot(chunk, i_slot, line);
-    chunk.emit_loop(outer_loop, line);
-    chunk.patch_jump(outer_exit);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line);
+    chunk.patch_loop(outer_loop);
 
     lget(chunk, result_slot, line);
 }

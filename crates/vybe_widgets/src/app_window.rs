@@ -55,6 +55,10 @@ pub trait Application {
 
     /// Called when the window loses focus or cursor leaves.
     fn on_focus_lost(&mut self) {}
+
+    /// Return a window title to display. Called after each render; the window
+    /// title is updated only when the returned string changes.
+    fn title(&self) -> String { String::new() }
 }
 
 // ── Internal Runner ────────────────────────────────────────────────────
@@ -288,6 +292,14 @@ impl<A: Application> ApplicationHandler for AppWindowInner<A> {
                     (self.pixmap.as_mut(), self.surface.as_mut())
                 {
                     self.app.render(pix, scale);
+                    // Update window title when the app requests a change
+                    let new_title = self.app.title();
+                    if !new_title.is_empty() && new_title != self.title {
+                        self.title = new_title.clone();
+                        if let Some(w) = &self.window {
+                            w.set_title(&new_title);
+                        }
+                    }
                     let mut buffer = surf.buffer_mut().unwrap();
                     for (i, p) in pix.pixels().iter().enumerate() {
                         buffer[i] =

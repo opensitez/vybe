@@ -132,27 +132,34 @@ fn rejects_unknown_import_names() {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Contract 3: module names match the JS-builtin namespace convention
+// Contract 3: module names use the ecma: namespace.
+//
+// These are NOT in any WASM CG proposal — they are Vybe's ECMA-262
+// runtime exposed as WASM host imports. The `ecma:` prefix signals
+// "ECMA-262 spec surface, Vybe-provided". Real WASM-CG proposals use
+// `wasm:js-string` / `wasm:js-{number,boolean,...}` — those are separate.
 // ──────────────────────────────────────────────────────────────────────
 
 #[test]
-fn module_names_follow_wasm_js_convention() {
-    assert_eq!(js_array_builtins::MODULE, "vybe:js-array");
-    assert_eq!(js_object_builtins::MODULE, "vybe:js-object");
-    assert_eq!(js_map_builtins::MODULE, "vybe:js-map");
-    assert_eq!(js_set_builtins::MODULE, "vybe:js-set");
-    assert_eq!(js_weakmap_builtins::WEAKMAP_MODULE, "vybe:js-weakmap");
-    assert_eq!(js_weakmap_builtins::WEAKSET_MODULE, "vybe:js-weakset");
-    assert_eq!(js_arraybuffer_builtins::ARRAYBUFFER_MODULE, "vybe:js-arraybuffer");
-    assert_eq!(js_arraybuffer_builtins::SHAREDARRAYBUFFER_MODULE,
-        "vybe:js-sharedarraybuffer");
-    assert_eq!(js_arraybuffer_builtins::DATAVIEW_MODULE, "vybe:js-dataview");
+fn module_names_follow_ecma_convention() {
+    assert_eq!(js_array_builtins::MODULE, "ecma:array");
+    assert_eq!(js_object_builtins::MODULE, "ecma:object");
+    assert_eq!(js_map_builtins::MODULE, "ecma:map");
+    assert_eq!(js_set_builtins::MODULE, "ecma:set");
+    assert_eq!(js_weakmap_builtins::WEAKMAP_MODULE, "ecma:weakmap");
+    assert_eq!(js_weakmap_builtins::WEAKSET_MODULE, "ecma:weakset");
+    assert_eq!(js_arraybuffer_builtins::ARRAYBUFFER_MODULE, "ecma:arraybuffer");
+    assert_eq!(js_arraybuffer_builtins::SHAREDARRAYBUFFER_MODULE, "ecma:sharedarraybuffer");
+    assert_eq!(js_arraybuffer_builtins::DATAVIEW_MODULE, "ecma:dataview");
 
-    // Each typed-array variant follows `wasm:js-<type>array` naming.
+    // Typed-array variants use ecma:* except BigInt64Array which uses
+    // wasm:js-bigint64array (BigInt is covered by the wasm:js-bigint Stage-1 proposal).
     for variant in js_typedarray_builtins::VARIANTS {
-        assert!(variant.module().starts_with("wasm:js-"),
-            "typed array module must start with wasm:js- prefix: {}",
-            variant.module());
+        let m = variant.module();
+        assert!(
+            m.starts_with("ecma:") || m.starts_with("wasm:js-"),
+            "typed array module must start with ecma: or wasm:js- prefix, got: {}", m
+        );
     }
 }
 

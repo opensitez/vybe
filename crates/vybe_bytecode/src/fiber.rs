@@ -16,7 +16,7 @@ pub struct Fiber {
     pub open_upvalues: Vec<Arc<Mutex<Upvalue>>>,
     /// Saved structured-control-flow label entries. Generators that
     /// yield inside a `while` / `for` / `block` must preserve the
-    /// surrounding block/loop labels so `br_label` / `br_if_label`
+    /// surrounding block/loop labels so `br` / `br_if`
     /// target the right depth after resumption.
     pub label_stack: Vec<crate::vm::LabelEntry>,
     /// Saved active-continuation stack. A fiber captured inside a

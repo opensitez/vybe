@@ -303,7 +303,7 @@ fn collect_label_names(chunk: &Chunk) -> Vec<String> {
                    else                      { "try"   };
             names.push(format!("label{}_{}", names.len(), tag));
         }
-        ip += op.operand_format().fixed_size();
+        ip += op.operand_format().size_in(code, ip);
     }
     names
 }

@@ -15,7 +15,7 @@
 //!   - slot 0 = first arg (NOT a reserved callee slot)
 //!   - Function type has exactly `arity` params
 //!   - Block/loop/end label stack matches WASM spec
-//!   - br_label depth targets the Nth enclosing construct
+//!   - br depth targets the Nth enclosing construct
 
 use vybe_bytecode::{Chunk, Op, VM};
 use vybe_bytecode::value::Value;
@@ -257,7 +257,7 @@ fn function_with_local_beyond_args() {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// 4. CONTROL FLOW — structured (block / loop / br_label / br_if_label)
+// 4. CONTROL FLOW — structured (block / loop / br / br_if)
 // ──────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -274,7 +274,7 @@ fn block_end_no_branch() {
 }
 
 #[test]
-fn br_label_0_exits_block() {
+fn br_0_exits_block() {
     // block { push 5 ; br 0 ; push 99 } ; end → 5 on stack (99 skipped)
     let result = run_script(|c| {
         let bp = c.emit_block(0);
@@ -290,13 +290,14 @@ fn br_label_0_exits_block() {
 }
 
 #[test]
-fn br_if_label_conditional_branch() {
+fn br_if_conditional_branch() {
     // block {
-    //   push true ; br_if 0 ; push 99
+    //   i32.const 1 ; br_if 0 ; push 99
     // } ; end → nothing on stack from 99
     let result = run_script(|c| {
         let bp = c.emit_block(0);
-        c.emit_op(Op::TRUE, 0);
+        let one = c.add_constant(Value::I32(1));
+        c.emit_op_u16(Op::CONST, one, 0);
         c.emit_br_if(0, 0);                 // branch because true
         let i99 = c.add_constant(Value::F64(99.0));
         c.emit_op_u16(Op::CONST, i99, 0);   // skipped
@@ -310,11 +311,12 @@ fn br_if_label_conditional_branch() {
 }
 
 #[test]
-fn br_if_label_false_does_not_branch() {
-    // block { push false ; br_if 0 ; push 7 ; br 0 ; } ; end → 7 on stack
+fn br_if_zero_does_not_branch() {
+    // block { i32.const 0 ; br_if 0 ; push 7 ; br 0 ; } ; end → 7 on stack
     let result = run_script(|c| {
         let bp = c.emit_block(0);
-        c.emit_op(Op::FALSE, 0);
+        let zero = c.add_constant(Value::I32(0));
+        c.emit_op_u16(Op::CONST, zero, 0);
         c.emit_br_if(0, 0);                 // does NOT branch
         let i7 = c.add_constant(Value::F64(7.0));
         c.emit_op_u16(Op::CONST, i7, 0);
@@ -328,7 +330,7 @@ fn br_if_label_false_does_not_branch() {
 #[test]
 fn simple_while_loop() {
     // i = 0; while (i < 3) { i++; }; return i;
-    // block { loop { i<3 ? (i++; br_label 0) : br_label 1 } } → 3
+    // block { loop { i<3 ? (i++; br 0) : br 1 } } → 3
     let result = run_script(|c| {
         c.local_count = 1;
         c.emit_op(Op::I32_CONST_0, 0);
@@ -730,7 +732,7 @@ fn f64_lt_true() {
         c.emit_op_u16(Op::CONST, b, 0);
         c.emit_op(Op::F64_LT, 0);
     });
-    assert!(r.as_bool());
+    assert_eq!(r.as_i32(), 1);
 }
 
 #[test]
@@ -742,26 +744,28 @@ fn f64_eq_true() {
         c.emit_op_u16(Op::CONST, b, 0);
         c.emit_op(Op::F64_EQ, 0);
     });
-    assert!(r.as_bool());
+    assert_eq!(r.as_i32(), 1);
 }
 
 #[test]
 fn i32_eqz_true_negates_truthy() {
     // I32_EQZ is the WASM-compliant way to invert a boolean i32
     let r = run_script(|c| {
-        c.emit_op(Op::TRUE, 0);
-        c.emit_op(Op::I32_EQZ, 0); // Bool(true).as_i32()=1, I32_EQZ(1)=false
+        let one = c.add_constant(Value::I32(1));
+        c.emit_op_u16(Op::CONST, one, 0);
+        c.emit_op(Op::I32_EQZ, 0);
     });
-    assert!(!r.as_bool());
+    assert_eq!(r.as_i32(), 0);
 }
 
 #[test]
 fn i32_eqz_false_negates_falsy() {
     let r = run_script(|c| {
-        c.emit_op(Op::FALSE, 0);
-        c.emit_op(Op::I32_EQZ, 0); // Bool(false).as_i32()=0, I32_EQZ(0)=true
+        let zero = c.add_constant(Value::I32(0));
+        c.emit_op_u16(Op::CONST, zero, 0);
+        c.emit_op(Op::I32_EQZ, 0);
     });
-    assert!(r.as_bool());
+    assert_eq!(r.as_i32(), 1);
 }
 
 #[test]
@@ -961,8 +965,8 @@ fn recursive_function_fibonacci() {
     let two = fib.add_constant(Value::F64(2.0));
     fib.emit_op_u16(Op::CONST, two, 0);
     fib.emit_op(Op::F64_LT, 0);
-    // if truthy, return n
-    // Use structured CF: block { br_if_label 0 if not <2; return }
+    // if non-zero, return n
+    // Use structured CF: block { br_if 0 if not <2; return }
     let bp = fib.emit_block(0);
     fib.emit_op(Op::I32_EQZ, 0);
     fib.emit_br_if(0, 0); // skip if not less than 2
@@ -1007,9 +1011,11 @@ fn recursive_function_fibonacci() {
 // ──────────────────────────────────────────────────────────────────────
 
 #[test]
-fn br_if_label_null_is_falsy() {
-    // block { push null ; br_if 0 ; push 7 } → 7 (null is falsy, doesn't branch)
-    let r = run_script(|c| {
+fn br_if_rejects_null_condition() {
+    // WASM br_if consumes an i32 condition. Null truthiness belongs in front-end lowering.
+    let mut chunk = Chunk::new("<script>");
+    {
+        let c = &mut chunk;
         let bp = c.emit_block(0);
         c.emit_op(Op::NULL, 0);
         c.emit_br_if(0, 0);
@@ -1018,8 +1024,11 @@ fn br_if_label_null_is_falsy() {
         c.emit_br(0, 0);
         c.emit_end(0);
         c.patch_block(bp);
-    });
-    assert_eq!(r.as_f64(), 7.0);
+        c.emit_op(Op::RETURN, 0);
+    }
+    let mut vm = VM::new();
+    let err = vm.run(vec![chunk]).expect_err("br_if should reject null conditions");
+    assert!(err.message.contains("br_if expected i32 condition"));
 }
 
 #[test]
@@ -1210,7 +1219,8 @@ fn vm_internal_opcodes_have_prefix_0xFF() {
     // `vybe:js-array.*` imports instead.)
     assert_eq!(Op::CONST.prefix(), 0xFF);
     assert_eq!(Op::CALL_IMPORT.prefix(), 0xFF);
-    assert_eq!(Op::BR_LABEL.prefix(), 0xFF);
+    assert_eq!(Op::BR.prefix(), 0x00);
+    assert_eq!(Op::BR.sub(), 0x0C);
     assert_eq!(Op::STR_CONCAT.prefix(), 0xFF);
 }
 
@@ -1379,7 +1389,7 @@ fn i64_eqz_zero_returns_true() {
         c.emit_op_u16(Op::CONST, a, 0);
         c.emit_op(Op::I64_EQZ, 0);
     });
-    assert_eq!(result.as_bool(), true);
+    assert_eq!(result.as_i32(), 1);
 }
 
 #[test]
@@ -1389,7 +1399,7 @@ fn i64_eqz_nonzero_returns_false() {
         c.emit_op_u16(Op::CONST, a, 0);
         c.emit_op(Op::I64_EQZ, 0);
     });
-    assert_eq!(result.as_bool(), false);
+    assert_eq!(result.as_i32(), 0);
 }
 
 #[test]
@@ -1403,24 +1413,21 @@ fn i64_extend_i32_s_preserves_sign() {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// 19. MORE CONTROL FLOW (br_if_true offset-based, br_label chains)
+// 19. MORE CONTROL FLOW (structured if/br chains)
 // ──────────────────────────────────────────────────────────────────────
 
 #[test]
-fn br_if_true_taken_when_true() {
-    // if (true) jump over the F64 5.0 const to put 99.0 on stack
+fn structured_if_takes_then_when_i32_nonzero() {
     let mut chunk = Chunk::new("<script>");
     let v5 = chunk.add_constant(Value::F64(5.0));
     let v99 = chunk.add_constant(Value::F64(99.0));
 
-    chunk.emit_op(Op::TRUE, 0);
-    // BR_IF_TRUE with offset to skip pushing 5.0
-    chunk.emit_op(Op::BR_IF_TRUE, 0);
-    // offset: skip over 2 bytes for offset + CONST(5.0)=4 bytes = 4 bytes forward
-    // actually the offset is relative to after the offset bytes themselves
-    chunk.emit(0x00, 0); chunk.emit(0x04, 0); // +4
-    chunk.emit_op_u16(Op::CONST, v5, 0);
+    chunk.emit_op(Op::I32_CONST_1, 0);
+    chunk.emit_if_value(0);
     chunk.emit_op_u16(Op::CONST, v99, 0);
+    chunk.emit_else(0);
+    chunk.emit_op_u16(Op::CONST, v5, 0);
+    chunk.emit_end(0);
     chunk.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
@@ -1429,17 +1436,18 @@ fn br_if_true_taken_when_true() {
 }
 
 #[test]
-fn br_if_true_not_taken_when_false() {
-    // if (false) ... else push 5, then push 99 and add: 104
+fn structured_if_takes_else_when_i32_zero() {
     let mut chunk = Chunk::new("<script>");
     let v5 = chunk.add_constant(Value::F64(5.0));
     let v99 = chunk.add_constant(Value::F64(99.0));
 
-    chunk.emit_op(Op::FALSE, 0);
-    chunk.emit_op(Op::BR_IF_TRUE, 0);
-    chunk.emit(0x00, 0); chunk.emit(0x04, 0);
-    chunk.emit_op_u16(Op::CONST, v5, 0);     // executes (4 bytes)
-    chunk.emit_op_u16(Op::CONST, v99, 0);    // executes
+    chunk.emit_op(Op::I32_CONST_0, 0);
+    chunk.emit_if_value(0);
+    chunk.emit_op_u16(Op::CONST, v99, 0);
+    chunk.emit_else(0);
+    chunk.emit_op_u16(Op::CONST, v5, 0);
+    chunk.emit_end(0);
+    chunk.emit_op_u16(Op::CONST, v99, 0);
     chunk.emit_op(Op::F64_ADD, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -1449,7 +1457,7 @@ fn br_if_true_not_taken_when_false() {
 }
 
 #[test]
-fn br_label_to_outer_block_skips_inner_work() {
+fn br_to_outer_block_skips_inner_work() {
     // Structured:
     //   block { block { br 1 } push 5 } push 42
     // br 1 jumps out of both blocks, then we push 42.
@@ -1459,7 +1467,7 @@ fn br_label_to_outer_block_skips_inner_work() {
 
     let outer = chunk.emit_block(0);
     let inner = chunk.emit_block(0);
-    chunk.emit_op_u8(Op::BR_LABEL, 1, 0); // break out of outer
+    chunk.emit_br(1, 0); // break out of outer
     chunk.emit_op(Op::END, 0); // end inner
     chunk.patch_block(inner);
     chunk.emit_op_u16(Op::CONST, v5, 0); // should be skipped
@@ -2630,7 +2638,7 @@ fn compilation_hints_branch_and_inlining_sections_present_for_loopy_code() {
     fun.emit_op_u16(Op::CONST, zero, 0);
     fun.emit_loop_s(0);
     fun.emit_op(Op::DUP, 0);
-    fun.emit_op_u8(Op::BR_IF_LABEL, 0, 0);  // back-edge inside loop
+    fun.emit_br_if(0, 0);  // back-edge inside loop
     fun.emit_op(Op::END, 0);
     fun.emit_op(Op::RETURN, 0);
 
