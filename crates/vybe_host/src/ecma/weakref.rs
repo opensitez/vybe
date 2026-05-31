@@ -40,7 +40,7 @@ use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::VM;
 
 const MODULE_WEAKREF: &str = "ecma:weakref";
-const MODULE_REGISTRY: &str = "ecma:finalization-registry";
+const MODULE_REGISTRY: &str = "ecma:finalizationregistry";
 
 const WEAKREF_TAG: &str = "__vybe_js_weakref";
 const WEAKREF_TARGET_PROP: &str = "__vybe_wr_target";

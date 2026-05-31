@@ -220,3 +220,26 @@ fn is_error_false_for_primitives() {
     assert_eq!(invoke("isError", vec![Value::I32(42)]), Value::Bool(false));
     assert_eq!(invoke("isError", vec![Value::Null]), Value::Bool(false));
 }
+
+// ── Error.prototype.toString (§20.5.3.4) ─────────────────────────────────────
+
+#[test]
+fn to_string_formats_name_colon_message() {
+    use std::sync::Mutex; use vybe_bytecode::value::Object;
+    let e = invoke("TypeError", vec![Value::Object(Arc::new(Mutex::new(Object::new()))), s("bad value")]);
+    assert_eq!(invoke("toString", vec![e]), Value::String(Arc::from("TypeError: bad value")));
+}
+
+#[test]
+fn to_string_omits_message_when_empty() {
+    use std::sync::Mutex; use vybe_bytecode::value::Object;
+    let e = invoke("RangeError", vec![Value::Object(Arc::new(Mutex::new(Object::new()))), s("")]);
+    assert_eq!(invoke("toString", vec![e]), Value::String(Arc::from("RangeError")));
+}
+
+#[test]
+fn to_string_of_plain_error_uses_error_name() {
+    use std::sync::Mutex; use vybe_bytecode::value::Object;
+    let e = invoke("Error", vec![Value::Object(Arc::new(Mutex::new(Object::new()))), s("oops")]);
+    assert_eq!(invoke("toString", vec![e]), Value::String(Arc::from("Error: oops")));
+}

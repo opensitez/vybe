@@ -283,7 +283,8 @@ fn blocked_host_call_returns_undefined() {
 
     let result = vm.run(vec![chunk]).unwrap();
     // ref_is_null on Undefined should be true
-    assert!(matches!(result, Value::Bool(true)), "Blocked function should be undefined/null");
+    // REF_IS_NULL returns I32(1) per WASM spec (i32.const 1), not Bool
+    assert!(matches!(result, Value::I32(1)), "Blocked function should be undefined/null");
 }
 
 // ============================================================

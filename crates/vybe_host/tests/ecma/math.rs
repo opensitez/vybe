@@ -505,3 +505,18 @@ fn atanh_one_is_positive_infinity() {
         panic!("expected F64");
     }
 }
+// ── Missing spec methods ───────────────────────────────────────────────────────
+
+#[test]
+fn acosh_of_one_is_zero() {
+    // §21.3.2.3: Math.acosh(1) = 0
+    assert_eq!(invoke("acosh", vec![Value::F64(1.0)]).as_f64(), 0.0);
+}
+
+#[test]
+fn acosh_of_cosh_is_identity() {
+    // acosh(cosh(2)) ≈ 2
+    let c = invoke("cosh", vec![Value::F64(2.0)]);
+    let r = invoke("acosh", vec![c]).as_f64();
+    assert!((r - 2.0).abs() < 1e-10);
+}

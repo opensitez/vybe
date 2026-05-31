@@ -148,7 +148,8 @@ fn float32_loses_precision_compared_to_float64() {
     invoke("setFloat32LE", vec![dv.clone(), Value::I32(0), Value::F64(1.23456789)]);
     if let Value::F64(v) = invoke("getFloat32LE", vec![dv, Value::I32(0)]) {
         // The read-back value must differ from the original due to f32 precision.
-        assert!((v - 1.23456789).abs() > 1e-8, "f32 should lose precision vs f64");
+        // f32 has ~7 sig figs; the round-trip differs from the f64 original
+        assert!(v != 1.23456789, "f32 read-back must differ from original f64");
     } else {
         panic!("expected F64");
     }

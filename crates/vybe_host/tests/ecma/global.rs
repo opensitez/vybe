@@ -141,3 +141,51 @@ fn undefined_global_property_is_undefined() {
     // ECMA-262 §19.1.5: undefined is the undefined value.
     assert_eq!(invoke("undefined", vec![]), Value::Undefined);
 }
+
+// ── URI codec functions (§18.2.6) ─────────────────────────────────────────────
+
+#[test]
+fn encode_uri_leaves_unreserved_chars_unchanged() {
+    // ECMA-262 §18.2.6.4: letters, digits, and -_.!~*'() are not encoded.
+    assert_eq!(invoke("encodeURI", vec![s("hello world")]),
+        Value::String("hello%20world".into()));
+}
+
+#[test]
+fn encode_uri_preserves_reserved_chars() {
+    // §18.2.6.4: encodeURI preserves URI-reserved chars including '#'
+    assert_eq!(invoke("encodeURI", vec![s("a#b")]),
+        Value::String("a#b".into()));
+}
+
+#[test]
+fn encode_uri_component_encodes_reserved_chars() {
+    // encodeURIComponent encodes '/' and '?' which encodeURI preserves.
+    let r = invoke("encodeURIComponent", vec![s("a/b?c=1")]);
+    let s_result = format!("{}", r);
+    assert!(s_result.contains("a%2Fb") || s_result.contains("a%2fb"),
+        "/ must be percent-encoded: {}", s_result);
+}
+
+#[test]
+fn decode_uri_reverses_encode_uri() {
+    let encoded = invoke("encodeURI", vec![s("hello world")]);
+    let decoded = invoke("decodeURI", vec![encoded]);
+    assert_eq!(decoded, Value::String("hello world".into()));
+}
+
+#[test]
+fn decode_uri_component_reverses_encode_uri_component() {
+    let encoded = invoke("encodeURIComponent", vec![s("a/b")]);
+    let decoded = invoke("decodeURIComponent", vec![encoded]);
+    assert_eq!(decoded, Value::String("a/b".into()));
+}
+
+#[test]
+fn encode_uri_round_trips_unicode() {
+    // §18.2.6.4: non-ASCII is UTF-8 percent-encoded.
+    let original = s("こんにちは");
+    let encoded = invoke("encodeURI", vec![original.clone()]);
+    let decoded = invoke("decodeURI", vec![encoded]);
+    assert_eq!(decoded, original);
+}

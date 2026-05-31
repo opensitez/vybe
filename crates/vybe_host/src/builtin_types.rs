@@ -608,14 +608,14 @@ pub fn register_all(vm: &mut VM) {
 
     // --- FinalizationRegistry (ECMA-262 §26.2) ---
     //
-    // Bound to `ecma:finalization-registry.*`. Strong-ref backing means
+    // Bound to `ecma:finalizationregistry.*`. Strong-ref backing means
     // the cleanup callback never fires — API surface only.
     {
         let mut t = TypeDef::new("FinalizationRegistry");
         for (method, fname) in &[
             ("register", "register"), ("unregister", "unregister"),
         ] {
-            if let Some(idx) = h(vm, "ecma:finalization-registry", fname) {
+            if let Some(idx) = h(vm, "ecma:finalizationregistry", fname) {
                 t.methods.insert(method.to_string(), Method::HostFn(idx));
             }
         }

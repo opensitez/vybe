@@ -4,6 +4,15 @@ use vybe_bytecode::Value;
 use vybe_bytecode::opcode::Op;
 
 impl Compiler {
+    fn emit_legacy_flat_jump(&mut self, op: Op) -> usize {
+        let line = self.line;
+        self.chunks[self.current].emit_jump(op, line)
+    }
+
+    fn patch_legacy_flat_jump(&mut self, offset: usize) {
+        self.chunks[self.current].patch_jump(offset);
+    }
+
     pub(super) fn maybe_define_php_generator_key_index_slot(&mut self, key: Option<&str>) -> Option<u16> {
         if self.is_php_profile() && key.is_some() {
             let slot = self.define_local("__php_gen_loop_index");
@@ -107,15 +116,15 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_u16(Op::STRUCT_GET, started_key);
                 { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
-                let need_start = self.emit_jump(Op::BR_IF_FALSE);
+                let need_start = self.emit_legacy_flat_jump(Op::BR_IF_FALSE);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_u16(Op::STRUCT_GET, done_key);
                 { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
                 { let line = self.line; crate::emitter::ops::emit_dyn_not(self.chunk(), line); };
-                let handled = self.emit_jump(Op::BR);
+                let handled = self.emit_legacy_flat_jump(Op::BR);
 
-                self.patch_jump(need_start);
+                self.patch_legacy_flat_jump(need_start);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit(Op::GEN_NEXT);
                 let has_more_slot = self.define_local("__php_gen_has_more");
@@ -130,7 +139,7 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, has_more_slot);
                 { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
-                let no_more = self.emit_jump(Op::BR_IF_FALSE);
+                let no_more = self.emit_legacy_flat_jump(Op::BR_IF_FALSE);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_const(Value::Bool(false));
@@ -141,9 +150,9 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_SET, current_key);
                 self.emit(Op::DROP);
                 self.emit_const(Value::Bool(true));
-                let start_done = self.emit_jump(Op::BR);
+                let start_done = self.emit_legacy_flat_jump(Op::BR);
 
-                self.patch_jump(no_more);
+                self.patch_legacy_flat_jump(no_more);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_const(Value::Bool(true));
                 self.emit_u16(Op::STRUCT_SET, done_key);
@@ -158,28 +167,28 @@ impl Compiler {
                 self.emit(Op::DROP);
                 self.emit_const(Value::Bool(false));
 
-                self.patch_jump(handled);
-                self.patch_jump(start_done);
+                self.patch_legacy_flat_jump(handled);
+                self.patch_legacy_flat_jump(start_done);
             }
             "current" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_u16(Op::STRUCT_GET, started_key);
                 { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
-                let need_start = self.emit_jump(Op::BR_IF_FALSE);
+                let need_start = self.emit_legacy_flat_jump(Op::BR_IF_FALSE);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_u16(Op::STRUCT_GET, done_key);
                 { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
-                let not_done = self.emit_jump(Op::BR_IF_FALSE);
+                let not_done = self.emit_legacy_flat_jump(Op::BR_IF_FALSE);
                 self.emit_const(Value::Bool(false));
-                let current_done = self.emit_jump(Op::BR);
+                let current_done = self.emit_legacy_flat_jump(Op::BR);
 
-                self.patch_jump(not_done);
+                self.patch_legacy_flat_jump(not_done);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_u16(Op::STRUCT_GET, current_key);
-                let handled = self.emit_jump(Op::BR);
+                let handled = self.emit_legacy_flat_jump(Op::BR);
 
-                self.patch_jump(need_start);
+                self.patch_legacy_flat_jump(need_start);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit(Op::GEN_NEXT);
                 let has_more_slot = self.define_local("__php_gen_has_more");
@@ -194,7 +203,7 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, has_more_slot);
                 { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
-                let no_more = self.emit_jump(Op::BR_IF_FALSE);
+                let no_more = self.emit_legacy_flat_jump(Op::BR_IF_FALSE);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_const(Value::Bool(false));
@@ -205,9 +214,9 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_SET, current_key);
                 self.emit(Op::DROP);
                 self.emit_generator_yield_value(value_slot);
-                let start_done = self.emit_jump(Op::BR);
+                let start_done = self.emit_legacy_flat_jump(Op::BR);
 
-                self.patch_jump(no_more);
+                self.patch_legacy_flat_jump(no_more);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_const(Value::Bool(true));
                 self.emit_u16(Op::STRUCT_SET, done_key);
@@ -222,24 +231,24 @@ impl Compiler {
                 self.emit(Op::DROP);
                 self.emit_const(Value::Bool(false));
 
-                self.patch_jump(current_done);
-                self.patch_jump(handled);
-                self.patch_jump(start_done);
+                self.patch_legacy_flat_jump(current_done);
+                self.patch_legacy_flat_jump(handled);
+                self.patch_legacy_flat_jump(start_done);
             }
             "send" | "next" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_u16(Op::STRUCT_GET, started_key);
                 { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
-                let need_start = self.emit_jump(Op::BR_IF_FALSE);
+                let need_start = self.emit_legacy_flat_jump(Op::BR_IF_FALSE);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_u16(Op::STRUCT_GET, done_key);
                 { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
-                let can_resume = self.emit_jump(Op::BR_IF_FALSE);
+                let can_resume = self.emit_legacy_flat_jump(Op::BR_IF_FALSE);
                 self.emit_const(Value::Bool(false));
-                let done_already = self.emit_jump(Op::BR);
+                let done_already = self.emit_legacy_flat_jump(Op::BR);
 
-                self.patch_jump(can_resume);
+                self.patch_legacy_flat_jump(can_resume);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 if field_name == "send" {
                     self.compile_expr(&arg_exprs[0])?;
@@ -253,7 +262,7 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 let is_done_idx = self.import("ecma:value", "isGeneratorDone");
                 self.emit_host_call(is_done_idx, 1);
-                let yielded = self.emit_jump(Op::BR_IF_FALSE);
+                let yielded = self.emit_legacy_flat_jump(Op::BR_IF_FALSE);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_const(Value::Bool(true));
@@ -268,9 +277,9 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_SET, current_key);
                 self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, value_slot);
-                let handled = self.emit_jump(Op::BR);
+                let handled = self.emit_legacy_flat_jump(Op::BR);
 
-                self.patch_jump(yielded);
+                self.patch_legacy_flat_jump(yielded);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_const(Value::Bool(false));
                 self.emit_u16(Op::STRUCT_SET, done_key);
@@ -280,9 +289,9 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_SET, current_key);
                 self.emit(Op::DROP);
                 self.emit_generator_yield_value(value_slot);
-                let resume_done = self.emit_jump(Op::BR);
+                let resume_done = self.emit_legacy_flat_jump(Op::BR);
 
-                self.patch_jump(need_start);
+                self.patch_legacy_flat_jump(need_start);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit(Op::GEN_NEXT);
                 let has_more_slot = self.define_local("__php_gen_has_more");
@@ -297,7 +306,7 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, has_more_slot);
                 { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
-                let start_no_more = self.emit_jump(Op::BR_IF_FALSE);
+                let start_no_more = self.emit_legacy_flat_jump(Op::BR_IF_FALSE);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_const(Value::Bool(false));
@@ -308,9 +317,9 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_SET, current_key);
                 self.emit(Op::DROP);
                 self.emit_generator_yield_value(start_value_slot);
-                let start_done = self.emit_jump(Op::BR);
+                let start_done = self.emit_legacy_flat_jump(Op::BR);
 
-                self.patch_jump(start_no_more);
+                self.patch_legacy_flat_jump(start_no_more);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_const(Value::Bool(true));
                 self.emit_u16(Op::STRUCT_SET, done_key);
@@ -325,25 +334,25 @@ impl Compiler {
                 self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, start_value_slot);
 
-                self.patch_jump(done_already);
-                self.patch_jump(handled);
-                self.patch_jump(resume_done);
-                self.patch_jump(start_done);
+                self.patch_legacy_flat_jump(done_already);
+                self.patch_legacy_flat_jump(handled);
+                self.patch_legacy_flat_jump(resume_done);
+                self.patch_legacy_flat_jump(start_done);
             }
             "throw" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_u16(Op::STRUCT_GET, started_key);
                 { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
-                let need_start = self.emit_jump(Op::BR_IF_FALSE);
+                let need_start = self.emit_legacy_flat_jump(Op::BR_IF_FALSE);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_u16(Op::STRUCT_GET, done_key);
                 { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
-                let can_resume = self.emit_jump(Op::BR_IF_FALSE);
+                let can_resume = self.emit_legacy_flat_jump(Op::BR_IF_FALSE);
                 self.emit_const(Value::Bool(false));
-                let done_already = self.emit_jump(Op::BR);
+                let done_already = self.emit_legacy_flat_jump(Op::BR);
 
-                self.patch_jump(can_resume);
+                self.patch_legacy_flat_jump(can_resume);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.compile_expr(&arg_exprs[0])?;
                 self.emit_generator_control_packet_from_stack("throw");
@@ -354,7 +363,7 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 let is_done_idx = self.import("ecma:value", "isGeneratorDone");
                 self.emit_host_call(is_done_idx, 1);
-                let yielded = self.emit_jump(Op::BR_IF_FALSE);
+                let yielded = self.emit_legacy_flat_jump(Op::BR_IF_FALSE);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_const(Value::Bool(true));
@@ -369,9 +378,9 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_SET, current_key);
                 self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, value_slot);
-                let handled = self.emit_jump(Op::BR);
+                let handled = self.emit_legacy_flat_jump(Op::BR);
 
-                self.patch_jump(yielded);
+                self.patch_legacy_flat_jump(yielded);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_const(Value::Bool(false));
                 self.emit_u16(Op::STRUCT_SET, done_key);
@@ -381,9 +390,9 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_SET, current_key);
                 self.emit(Op::DROP);
                 self.emit_generator_yield_value(value_slot);
-                let resume_done = self.emit_jump(Op::BR);
+                let resume_done = self.emit_legacy_flat_jump(Op::BR);
 
-                self.patch_jump(need_start);
+                self.patch_legacy_flat_jump(need_start);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit(Op::GEN_NEXT);
                 let has_more_slot = self.define_local("__php_gen_throw_has_more");
@@ -398,7 +407,7 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, has_more_slot);
                 { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); };
-                let start_no_more = self.emit_jump(Op::BR_IF_FALSE);
+                let start_no_more = self.emit_legacy_flat_jump(Op::BR_IF_FALSE);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.compile_expr(&arg_exprs[0])?;
@@ -410,7 +419,7 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 let is_done_idx = self.import("ecma:value", "isGeneratorDone");
                 self.emit_host_call(is_done_idx, 1);
-                let start_yielded = self.emit_jump(Op::BR_IF_FALSE);
+                let start_yielded = self.emit_legacy_flat_jump(Op::BR_IF_FALSE);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_const(Value::Bool(true));
@@ -425,9 +434,9 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_SET, current_key);
                 self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, start_resume_slot);
-                let start_handled = self.emit_jump(Op::BR);
+                let start_handled = self.emit_legacy_flat_jump(Op::BR);
 
-                self.patch_jump(start_yielded);
+                self.patch_legacy_flat_jump(start_yielded);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_const(Value::Bool(false));
                 self.emit_u16(Op::STRUCT_SET, done_key);
@@ -437,9 +446,9 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_SET, current_key);
                 self.emit(Op::DROP);
                 self.emit_generator_yield_value(start_resume_slot);
-                let start_resume_done = self.emit_jump(Op::BR);
+                let start_resume_done = self.emit_legacy_flat_jump(Op::BR);
 
-                self.patch_jump(start_no_more);
+                self.patch_legacy_flat_jump(start_no_more);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_const(Value::Bool(true));
                 self.emit_u16(Op::STRUCT_SET, done_key);
@@ -454,11 +463,11 @@ impl Compiler {
                 self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, start_value_slot);
 
-                self.patch_jump(done_already);
-                self.patch_jump(handled);
-                self.patch_jump(resume_done);
-                self.patch_jump(start_handled);
-                self.patch_jump(start_resume_done);
+                self.patch_legacy_flat_jump(done_already);
+                self.patch_legacy_flat_jump(handled);
+                self.patch_legacy_flat_jump(resume_done);
+                self.patch_legacy_flat_jump(start_handled);
+                self.patch_legacy_flat_jump(start_resume_done);
             }
             _ => unreachable!(),
         }

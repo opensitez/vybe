@@ -88,6 +88,27 @@ pub fn register(vm: &mut VM) {
         }
         this
     }));
+
+    // Error.prototype.toString() — §20.5.3.4
+    // "name: message" (omit ": message" if message is empty; omit name if "Error")
+    vm.register_host_fn("ecma:error", "toString", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        if let Some(Value::Object(obj)) = args.first() {
+            let o = obj.lock().unwrap();
+            let name = o.properties.get("name")
+                .map(|v| format!("{}", v))
+                .unwrap_or_else(|| "Error".to_string());
+            let message = o.properties.get("message")
+                .map(|v| format!("{}", v))
+                .unwrap_or_default();
+            let result = if message.is_empty() {
+                name
+            } else {
+                format!("{}: {}", name, message)
+            };
+            return Value::String(Arc::from(result.as_str()));
+        }
+        Value::String(Arc::from("Error"))
+    }));
 }
 
 fn stamp_error_object(obj: &mut Object, kind: &str, message: &str, cause: Option<Value>) {

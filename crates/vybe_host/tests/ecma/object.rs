@@ -74,9 +74,11 @@ fn has_reflects_presence_after_set_and_delete() {
 }
 
 #[test]
-fn delete_returns_false_for_non_existent_key() {
+fn delete_returns_true_for_non_existent_key() {
+    // ECMA-262 §13.5.1: delete returns true for non-existent OR configurable
+    // properties; only non-configurable properties return false.
     let o = invoke("new", vec![]);
-    assert_eq!(invoke("delete", vec![o, s("nope")]), Value::Bool(false));
+    assert_eq!(invoke("delete", vec![o, s("nope")]), Value::Bool(true));
 }
 
 #[test]

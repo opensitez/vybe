@@ -31,12 +31,13 @@ fn bi(n: i64) -> Value { Value::I64(n) }
 
 #[test]
 fn bigint_coerces_i32_to_i64() {
-    assert_eq!(invoke("BigInt", vec![Value::I32(7)]), Value::I64(7));
+    // BigInt() constructor returns Value::BigInt (not I64) per §21.2.1.1
+    assert_eq!(invoke("BigInt", vec![Value::I32(7)]), Value::BigInt(7));
 }
 
 #[test]
 fn bigint_of_zero_stays_zero() {
-    assert_eq!(invoke("BigInt", vec![Value::I32(0)]), Value::I64(0));
+    assert_eq!(invoke("BigInt", vec![Value::I32(0)]), Value::BigInt(0));
 }
 
 // ── Division truncates toward zero, not floor ────────────────────────────────

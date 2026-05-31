@@ -414,3 +414,350 @@ fn unicode_sets_flag_v_sets_unicode_sets_to_true() {
 
 #[allow(dead_code)]
 fn _force_object_use(_: Object) {}
+
+// ── Unicode property escapes — ECMA-262 §22.2.2.9 ────────────────────────────
+//
+// Tests cover all three spec tables:
+//   • table-binary-unicode-properties.html       (u flag, \p{Name})
+//   • table-nonbinary-unicode-properties.html    (u flag, \p{Name=Value})
+//   • table-binary-unicode-properties-of-strings.html (v flag, \p{Name})
+
+fn matches_u(pattern: &str, input: &str) -> bool {
+    let re = invoke("newWithFlags", vec![s(pattern), s("u")]);
+    invoke("test", vec![re, s(input)]).as_i32() != 0
+}
+
+fn matches_v(pattern: &str, input: &str) -> bool {
+    let re = invoke("newWithFlags", vec![s(pattern), s("v")]);
+    invoke("test", vec![re, s(input)]).as_i32() != 0
+}
+
+// ── Binary properties — ASCII / ASCII_Hex_Digit ───────────────────────────────
+
+#[test]
+fn binary_ascii_matches_basic_latin() {
+    assert!(matches_u(r"\p{ASCII}", "A"));
+    assert!(matches_u(r"\p{ASCII}", "z"));
+    assert!(matches_u(r"\p{ASCII}", "0"));
+}
+
+#[test]
+fn binary_ascii_rejects_non_ascii() {
+    assert!(!matches_u(r"\p{ASCII}", "é"));
+    assert!(!matches_u(r"\p{ASCII}", "😀"));
+    assert!(!matches_u(r"\p{ASCII}", "日"));
+}
+
+#[test]
+fn binary_ascii_hex_digit_matches_hex_chars() {
+    // §22.2.2.9: AHex alias
+    assert!(matches_u(r"\p{ASCII_Hex_Digit}", "A"));
+    assert!(matches_u(r"\p{ASCII_Hex_Digit}", "f"));
+    assert!(matches_u(r"\p{ASCII_Hex_Digit}", "9"));
+    assert!(matches_u(r"\p{AHex}", "B")); // canonical alias
+}
+
+#[test]
+fn binary_ascii_hex_digit_rejects_non_hex() {
+    assert!(!matches_u(r"\p{ASCII_Hex_Digit}", "G"));
+    assert!(!matches_u(r"\p{ASCII_Hex_Digit}", "z"));
+}
+
+// ── Binary properties — Alpha / Alphabetic ───────────────────────────────────
+
+#[test]
+fn binary_alpha_matches_letters() {
+    assert!(matches_u(r"\p{Alpha}", "a"));
+    assert!(matches_u(r"\p{Alpha}", "Z"));
+    assert!(matches_u(r"\p{Alpha}", "é")); // Latin extended
+    assert!(matches_u(r"\p{Alpha}", "α")); // Greek
+    assert!(matches_u(r"\p{Alphabetic}", "a")); // canonical alias
+}
+
+#[test]
+fn binary_alpha_rejects_digits_and_punctuation() {
+    assert!(!matches_u(r"\p{Alpha}", "1"));
+    assert!(!matches_u(r"\p{Alpha}", "!"));
+    assert!(!matches_u(r"\p{Alpha}", " "));
+}
+
+// ── Binary properties — Uppercase / Lowercase ────────────────────────────────
+
+#[test]
+fn binary_uppercase_matches_uppercase_letters() {
+    assert!(matches_u(r"\p{Uppercase}", "A"));
+    assert!(matches_u(r"\p{Uppercase}", "É"));
+    assert!(matches_u(r"\p{Upper}", "Z")); // alias
+}
+
+#[test]
+fn binary_lowercase_matches_lowercase_letters() {
+    assert!(matches_u(r"\p{Lowercase}", "a"));
+    assert!(matches_u(r"\p{Lowercase}", "é"));
+    assert!(matches_u(r"\p{Lower}", "z")); // alias
+}
+
+#[test]
+fn binary_uppercase_and_lowercase_are_disjoint_for_ascii() {
+    assert!(!matches_u(r"\p{Uppercase}", "a"));
+    assert!(!matches_u(r"\p{Lowercase}", "A"));
+}
+
+// ── Binary properties — White_Space ──────────────────────────────────────────
+
+#[test]
+fn binary_white_space_matches_whitespace_chars() {
+    assert!(matches_u(r"\p{White_Space}", " "));
+    assert!(matches_u(r"\p{White_Space}", "\t"));
+    assert!(matches_u(r"\p{White_Space}", "\n"));
+    assert!(matches_u(r"\p{space}", "  ")); // alias
+}
+
+#[test]
+fn binary_white_space_rejects_non_whitespace() {
+    assert!(!matches_u(r"\p{White_Space}", "a"));
+    assert!(!matches_u(r"\p{White_Space}", "1"));
+}
+
+// ── Binary properties — Emoji / Extended_Pictographic ────────────────────────
+
+#[test]
+fn binary_emoji_matches_emoji_chars() {
+    assert!(matches_u(r"\p{Emoji}", "😀"));
+    assert!(matches_u(r"\p{Emoji}", "❤"));
+}
+
+#[test]
+fn binary_emoji_rejects_plain_ascii() {
+    assert!(!matches_u(r"\p{Emoji}", "a"));
+    assert!(!matches_u(r"\p{Emoji}", "!"));  // punctuation has Emoji=No (digits are Emoji=Yes for keycaps)
+}
+
+#[test]
+fn binary_extended_pictographic_matches_pictographs() {
+    assert!(matches_u(r"\p{Extended_Pictographic}", "😀"));
+    assert!(matches_u(r"\p{ExtPict}", "🎉")); // alias
+}
+
+// ── Binary properties — ID_Start / ID_Continue ───────────────────────────────
+
+#[test]
+fn binary_id_start_matches_identifier_start_chars() {
+    // §22.2.2.9: ID_Start covers letters and underscore-like chars
+    assert!(matches_u(r"\p{ID_Start}", "a"));
+    assert!(matches_u(r"\p{ID_Start}", "Z"));
+    assert!(matches_u(r"\p{ID_Start}", "α"));
+}
+
+#[test]
+fn binary_id_start_rejects_digits_and_space() {
+    assert!(!matches_u(r"\p{ID_Start}", "1"));
+    assert!(!matches_u(r"\p{ID_Start}", " "));
+}
+
+#[test]
+fn binary_id_continue_includes_digits_after_start() {
+    assert!(matches_u(r"\p{ID_Continue}", "a"));
+    assert!(matches_u(r"\p{ID_Continue}", "1")); // digits are valid mid-identifier
+    assert!(matches_u(r"\p{XIDC}", "a")); // alias
+    assert!(matches_u(r"\p{XIDS}", "a")); // XID_Start alias
+}
+
+// ── Binary properties — Math / Dash / Diacritic ──────────────────────────────
+
+#[test]
+fn binary_math_matches_math_symbols() {
+    assert!(matches_u(r"\p{Math}", "+"));
+    assert!(matches_u(r"\p{Math}", "="));
+    assert!(matches_u(r"\p{Math}", "×"));
+}
+
+#[test]
+fn binary_dash_matches_hyphen_and_dashes() {
+    assert!(matches_u(r"\p{Dash}", "-"));
+    assert!(matches_u(r"\p{Dash}", "—")); // em dash
+}
+
+#[test]
+fn binary_diacritic_matches_combining_marks() {
+    // Combining acute accent (U+0301) has Diacritic=Yes
+    assert!(matches_u(r"\p{Diacritic}", "\u{0301}"));
+    assert!(matches_u(r"\p{Dia}", "\u{0300}")); // alias
+}
+
+// ── Binary properties — Pattern_White_Space / Pattern_Syntax ─────────────────
+
+#[test]
+fn binary_pattern_white_space_matches_spec_whitespace() {
+    assert!(matches_u(r"\p{Pattern_White_Space}", " "));
+    assert!(matches_u(r"\p{Pat_WS}", "\t")); // alias
+}
+
+#[test]
+fn binary_pattern_syntax_matches_syntax_chars() {
+    assert!(matches_u(r"\p{Pattern_Syntax}", "!"));
+    assert!(matches_u(r"\p{Pat_Syn}", "{")); // alias
+}
+
+// ── Binary properties — Bidi_Control ─────────────────────────────────────────
+
+#[test]
+fn binary_bidi_control_matches_bidi_format_chars() {
+    // U+200F RIGHT-TO-LEFT MARK has Bidi_Control=Yes
+    assert!(matches_u(r"\p{Bidi_Control}", "\u{200F}"));
+    assert!(matches_u(r"\p{Bidi_C}", "\u{200E}")); // alias — LRM
+}
+
+// ── Non-binary properties: General_Category ──────────────────────────────────
+
+#[test]
+fn general_category_lu_matches_uppercase_letters() {
+    assert!(matches_u(r"\p{General_Category=Lu}", "A"));
+    assert!(matches_u(r"\p{gc=Lu}", "É")); // alias
+}
+
+#[test]
+fn general_category_ll_matches_lowercase_letters() {
+    assert!(matches_u(r"\p{General_Category=Ll}", "a"));
+    assert!(matches_u(r"\p{gc=Ll}", "é"));
+}
+
+#[test]
+fn general_category_nd_matches_decimal_digits() {
+    // Nd = Decimal Number
+    assert!(matches_u(r"\p{General_Category=Nd}", "0"));
+    assert!(matches_u(r"\p{gc=Nd}", "9"));
+    assert!(!matches_u(r"\p{gc=Nd}", "a"));
+}
+
+#[test]
+fn general_category_z_matches_separator_category() {
+    // Zs = Space_Separator
+    assert!(matches_u(r"\p{gc=Zs}", " "));
+    // P = Punctuation (supercat)
+    assert!(matches_u(r"\p{gc=P}", "."));
+}
+
+// ── Non-binary properties: Script ────────────────────────────────────────────
+
+#[test]
+fn script_latin_matches_latin_letters() {
+    assert!(matches_u(r"\p{Script=Latin}", "a"));
+    assert!(matches_u(r"\p{Script=Latin}", "é"));
+    assert!(matches_u(r"\p{sc=Latin}", "Z")); // alias
+}
+
+#[test]
+fn script_latin_rejects_non_latin() {
+    assert!(!matches_u(r"\p{Script=Latin}", "α")); // Greek
+    assert!(!matches_u(r"\p{Script=Latin}", "あ")); // Hiragana
+}
+
+#[test]
+fn script_greek_matches_greek_letters() {
+    assert!(matches_u(r"\p{Script=Greek}", "α"));
+    assert!(matches_u(r"\p{Script=Greek}", "Ω"));
+    assert!(!matches_u(r"\p{Script=Greek}", "a"));
+}
+
+#[test]
+fn script_hiragana_matches_hiragana() {
+    assert!(matches_u(r"\p{Script=Hiragana}", "あ"));
+    assert!(matches_u(r"\p{sc=Hiragana}", "の"));
+    assert!(!matches_u(r"\p{Script=Hiragana}", "a"));
+}
+
+#[test]
+fn script_cyrillic_matches_cyrillic() {
+    assert!(matches_u(r"\p{Script=Cyrillic}", "а")); // Cyrillic а
+    assert!(!matches_u(r"\p{Script=Cyrillic}", "a")); // Latin a
+}
+
+#[test]
+fn script_han_matches_cjk_ideographs() {
+    assert!(matches_u(r"\p{Script=Han}", "日"));
+    assert!(matches_u(r"\p{sc=Han}", "中"));
+}
+
+// ── Non-binary properties: Script_Extensions ─────────────────────────────────
+
+#[test]
+fn script_extensions_matches_chars_used_in_multiple_scripts() {
+    // U+0300 COMBINING GRAVE ACCENT is used in many scripts (Latin, Greek…)
+    assert!(matches_u(r"\p{Script_Extensions=Latin}", "\u{0300}"));
+    assert!(matches_u(r"\p{scx=Greek}", "\u{0300}"));
+}
+
+// ── String binary properties (v flag) ────────────────────────────────────────
+
+#[test]
+fn string_property_rgi_emoji_matches_emoji() {
+    assert!(matches_v(r"\p{RGI_Emoji}", "😀"));
+    assert!(matches_v(r"\p{RGI_Emoji}", "❤️"));
+}
+
+#[test]
+fn string_property_rgi_emoji_rejects_ascii() {
+    assert!(!matches_v(r"\p{RGI_Emoji}", "a"));
+}
+
+#[test]
+fn string_property_basic_emoji_matches_single_emoji() {
+    assert!(matches_v(r"\p{Basic_Emoji}", "😀"));
+}
+
+#[test]
+fn string_property_emoji_keycap_sequence_matches_keycaps() {
+    // Keycap sequences: digit + U+FE0F + U+20E3
+    assert!(matches_v(r"\p{Emoji_Keycap_Sequence}", "1️⃣"));
+}
+
+// ── Property negation \P{} ────────────────────────────────────────────────────
+
+#[test]
+fn negated_property_ascii_rejects_ascii_chars() {
+    assert!(!matches_u(r"\P{ASCII}", "A"));
+    assert!(matches_u(r"\P{ASCII}", "é"));
+    assert!(matches_u(r"\P{ASCII}", "😀"));
+}
+
+#[test]
+fn negated_property_uppercase_matches_lowercase() {
+    assert!(matches_u(r"\P{Uppercase}", "a"));
+    assert!(!matches_u(r"\P{Uppercase}", "A"));
+}
+
+// ── Properties in character classes ─────────────────────────────────────────
+
+#[test]
+fn property_in_character_class_with_other_chars() {
+    // [a-z\p{Uppercase}] matches lowercase or uppercase
+    assert!(matches_u(r"[a-z\p{Uppercase}]", "A"));
+    assert!(matches_u(r"[a-z\p{Uppercase}]", "z"));
+    assert!(!matches_u(r"[a-z\p{Uppercase}]", "1"));
+}
+
+#[test]
+fn negated_property_in_character_class() {
+    // [\P{ASCII}] matches non-ASCII only
+    assert!(matches_u(r"[\P{ASCII}]", "é"));
+    assert!(!matches_u(r"[\P{ASCII}]", "a"));
+}
+
+// ── v-flag set operations with properties ────────────────────────────────────
+
+#[test]
+fn v_flag_union_of_properties_with_set_syntax() {
+    // [\p{Alpha}&&\p{ASCII}] = ASCII letters (intersection)
+    assert!(matches_v(r"[\p{Alpha}&&\p{ASCII}]", "a"));
+    assert!(!matches_v(r"[\p{Alpha}&&\p{ASCII}]", "é")); // Alpha but not ASCII
+    assert!(!matches_v(r"[\p{Alpha}&&\p{ASCII}]", "1")); // ASCII but not Alpha
+}
+
+#[test]
+fn v_flag_difference_of_properties() {
+    // [\p{ASCII}--\p{Alpha}] = ASCII non-letters (digits, punct, etc.)
+    assert!(matches_v(r"[\p{ASCII}--\p{Alpha}]", "1"));
+    assert!(matches_v(r"[\p{ASCII}--\p{Alpha}]", "!"));
+    assert!(!matches_v(r"[\p{ASCII}--\p{Alpha}]", "a")); // is Alpha
+}

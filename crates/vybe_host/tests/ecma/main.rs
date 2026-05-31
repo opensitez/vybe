@@ -3,6 +3,7 @@ mod arraybuffer;
 mod atomics;
 mod bigint;
 mod boolean;
+mod fixedarray;
 mod dataview;
 mod date;
 mod error;

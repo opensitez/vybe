@@ -374,3 +374,48 @@ fn to_locale_time_string_returns_non_empty_string() {
         other => panic!("expected string, got {:?}", other),
     }
 }
+
+// ── UTC getter/setter methods (§21.4.4.x) ────────────────────────────────────
+
+#[test]
+fn get_utc_date_returns_day_of_month() {
+    // 2024-03-15 = year 2024, month 2 (0-indexed), day 15
+    let d = invoke("new", vec![Value::I32(2024), Value::I32(2), Value::I32(15)]);
+    assert_eq!(invoke("getUTCDate", vec![d]).as_i32(), 15);
+}
+
+#[test]
+fn get_utc_day_returns_valid_weekday() {
+    let d = invoke("new", vec![Value::I32(2024), Value::I32(2), Value::I32(15)]);
+    let day = invoke("getUTCDay", vec![d]).as_i32();
+    assert!((0..7).contains(&day));
+}
+
+#[test]
+fn get_utc_milliseconds_returns_ms_component() {
+    // Construct date with known ms offset via timestamp
+    let ms = invoke("parse", vec![Value::String(Arc::from("2024-01-01T00:00:00.250Z"))]);
+    let d = invoke("new", vec![ms]);
+    assert_eq!(invoke("getUTCMilliseconds", vec![d]).as_i32(), 250);
+}
+
+#[test]
+fn get_utc_minutes_returns_minute_component() {
+    let ms = invoke("parse", vec![Value::String(Arc::from("2024-01-01T12:34:00Z"))]);
+    let d = invoke("new", vec![ms]);
+    assert_eq!(invoke("getUTCMinutes", vec![d]).as_i32(), 34);
+}
+
+#[test]
+fn get_utc_seconds_returns_second_component() {
+    let ms = invoke("parse", vec![Value::String(Arc::from("2024-01-01T00:00:42Z"))]);
+    let d = invoke("new", vec![ms]);
+    assert_eq!(invoke("getUTCSeconds", vec![d]).as_i32(), 42);
+}
+
+#[test]
+fn set_utc_milliseconds_updates_ms_field() {
+    let d = invoke("new", vec![Value::F64(0.0)]); // epoch, 0ms
+    invoke("setUTCMilliseconds", vec![d.clone(), Value::I32(750)]);
+    assert_eq!(invoke("getUTCMilliseconds", vec![d]).as_i32(), 750);
+}

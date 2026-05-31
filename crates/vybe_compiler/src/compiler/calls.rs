@@ -1288,6 +1288,24 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, result_slot as u16);
     }
 
+    fn finish_member_index_call_path(
+        &mut self,
+        callee: &Expression,
+        arg_exprs: &[&Expression],
+        fn_tmp: u16,
+        line: u32,
+    ) -> Result<(), String> {
+        self.chunk().emit_else(line);
+        self.emit_u16(Op::LOCAL_GET, fn_tmp);
+        for arg in arg_exprs {
+            self.compile_array_index_operand_for_owner(callee, arg)?;
+            let line = self.line;
+            common::collections::emit_get(&mut self.chunks, self.current, line);
+        }
+        self.chunk().emit_end(line);
+        Ok(())
+    }
+
     fn emit_call_ref_with_bound_js_this_arg_slots(&mut self, callee_slot: u16, js_this_slot: u16, arg_slots: &[u16]) {
         let result_slot = self.define_local("__call_runtime_result");
         self.emit_dispatch_and_store_from_arg_slots(callee_slot, None, Some(js_this_slot), arg_slots, result_slot);
@@ -5483,7 +5501,7 @@ impl Compiler {
                     self.finish_php_generator_method_dispatch(result_slot);
                     return Ok(());
                 }
-                let primitive_tostring_done = if self.profile.namespaces.use_dotnet
+                let primitive_tostring_if = if self.profile.namespaces.use_dotnet
                     && arg_exprs.is_empty()
                     && field.eq_ignore_ascii_case("ToString")
                 {
@@ -5512,14 +5530,13 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, primitive_slot);
                     let line = self.line;
-                    self.chunk().emit_if(line);
+                    self.chunk().emit_if_value(line);
                     let tostring_global = self.str_const("__vybe_tostring");
                     self.emit_u16(Op::GLOBAL_GET, tostring_global);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     self.emit_u8(Op::CALL_REF, 1);
-                    let done = self.emit_jump(Op::BR);
-                    self.chunk().emit_end(line);
-                    Some(done)
+                    self.chunk().emit_else(line);
+                    Some(line)
                 } else {
                     None
                 };
@@ -5662,8 +5679,8 @@ impl Compiler {
                         self.chunk().emit_end(line);
                     }
                 }
-                if let Some(done) = primitive_tostring_done {
-                    self.patch_jump(done);
+                if let Some(line) = primitive_tostring_if {
+                    self.chunk().emit_end(line);
                 }
                 self.finish_php_generator_method_dispatch(result_slot);
                 return Ok(());
@@ -5765,22 +5782,15 @@ impl Compiler {
                     return Ok(());
                 }
             }
-            let member_index_done = if self.profile.parens_for_index && !arg_exprs.is_empty() {
+            let member_index_if = if self.profile.parens_for_index && !arg_exprs.is_empty() {
                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
                 self.emit(Op::REF_TYPEOF);
                 self.emit_const(Value::String(Arc::from("function")));
                 { let line = self.line; crate::emitter::ops::emit_dyn_eq(self.chunk(), line); };
-                let use_call = self.emit_jump(Op::BR_IF_TRUE);
-
-                self.emit_u16(Op::LOCAL_GET, fn_tmp);
-                for arg in &arg_exprs {
-                    self.compile_array_index_operand_for_owner(callee, arg)?;
-                    let line = self.line;
-                    common::collections::emit_get(&mut self.chunks, self.current, line);
-                }
-                let done = self.emit_jump(Op::BR);
-                self.patch_jump(use_call);
-                Some(done)
+                let line = self.line;
+                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                self.chunk().emit_if_value(line);
+                Some(line)
             } else {
                 None
             };
@@ -5802,8 +5812,8 @@ impl Compiler {
                             for a in &arg_exprs { self.compile_expr(a)?; }
                             self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
                         }
-                        if let Some(done) = member_index_done {
-                            self.patch_jump(done);
+                        if let Some(line) = member_index_if {
+                            self.finish_member_index_call_path(callee, &arg_exprs, fn_tmp, line)?;
                         }
                         return Ok(());
                     }
@@ -5814,8 +5824,8 @@ impl Compiler {
                         .is_some_and(|overload| overload.signature.has_rest)
                     {
                         self.emit_variadic_array_call_from_local(fn_tmp, &args[0].value)?;
-                        if let Some(done) = member_index_done {
-                            self.patch_jump(done);
+                        if let Some(line) = member_index_if {
+                            self.finish_member_index_call_path(callee, &arg_exprs, fn_tmp, line)?;
                         }
                         return Ok(());
                     }
@@ -5887,12 +5897,12 @@ impl Compiler {
                     self.emit_const(Value::F64(0.0));
                     common::collections::emit_get(&mut self.chunks, self.current, self.line);
                 }
-                if let Some(done) = member_index_done {
-                    self.patch_jump(done);
+                if let Some(line) = member_index_if {
+                    self.finish_member_index_call_path(callee, &arg_exprs, fn_tmp, line)?;
                 }
                 return Ok(());
             }
-            let primitive_tostring_done = if self.profile.namespaces.use_dotnet
+            let primitive_tostring_if = if self.profile.namespaces.use_dotnet
                 && arg_exprs.is_empty()
                 && field.eq_ignore_ascii_case("ToString")
             {
@@ -5921,18 +5931,14 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, primitive_slot);
                 let line = self.line;
-                self.chunk().emit_if(line);
+                self.chunk().emit_if_value(line);
                 let tostring_global = self.str_const("__vybe_tostring");
                 self.emit_u16(Op::GLOBAL_GET, tostring_global);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_u8(Op::CALL_REF, 1);
-                let done = self.emit_jump(Op::BR);
-                self.chunk().emit_end(line);
-                Some(done)
+                self.chunk().emit_else(line);
+                Some(line)
             } else {
-                if let Some(done) = member_index_done {
-                    self.patch_jump(done);
-                }
                 None
             };
             if self.profile.namespaces.use_dotnet
@@ -6179,11 +6185,11 @@ impl Compiler {
                     }
                 }
             }
-            if let Some(done) = member_index_done {
-                self.patch_jump(done);
+            if let Some(line) = primitive_tostring_if {
+                self.chunk().emit_end(line);
             }
-            if let Some(done) = primitive_tostring_done {
-                self.patch_jump(done);
+            if let Some(line) = member_index_if {
+                self.finish_member_index_call_path(callee, &arg_exprs, fn_tmp, line)?;
             }
             return Ok(());
         }

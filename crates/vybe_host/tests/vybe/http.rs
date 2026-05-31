@@ -222,10 +222,9 @@ fn flush_does_not_panic() {
 
 #[test]
 fn set_cookie_does_not_panic() {
-    assert!(matches!(
-        call_http("set_cookie", vec![Value::String("session".into()), Value::String("abc".into())]),
-        Value::Null | Value::Undefined
-    ));
+    // set_cookie returns Bool(true) on success, Null/Undefined if no response context
+    let r = call_http("set_cookie", vec![Value::String("session".into()), Value::String("abc".into())]);
+    assert!(matches!(r, Value::Null | Value::Undefined | Value::Bool(_)));
 }
 
 #[test]

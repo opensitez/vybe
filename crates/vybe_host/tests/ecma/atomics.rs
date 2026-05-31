@@ -178,3 +178,32 @@ fn notify_returns_integer_count_of_agents_woken() {
     // In a single-threaded test, no agents are waiting.
     assert!(matches!(count, Value::I32(_)));
 }
+
+// ── Atomics.waitAsync (§25.4.13) ─────────────────────────────────────────────
+
+#[test]
+fn wait_async_returns_object_with_async_flag() {
+    // Atomics.waitAsync returns { async: bool, value: string }
+    // In single-threaded context, the result is synchronous.
+    let ta = shared_int32(4);
+    let result = invoke("waitAsync", vec![ta, Value::I32(0), Value::I32(0)]);
+    assert!(matches!(result, Value::Object(_)), "waitAsync must return an object");
+    if let Value::Object(obj) = result {
+        let o = obj.lock().unwrap();
+        assert!(o.properties.contains_key("async"), "result must have 'async' property");
+        assert!(o.properties.contains_key("value"), "result must have 'value' property");
+    }
+}
+
+#[test]
+fn wait_async_not_equal_when_value_differs() {
+    let ta = shared_int32(4);
+    // Index 0 holds 0; waiting for 99 → "not-equal"
+    let result = invoke("waitAsync", vec![ta, Value::I32(0), Value::I32(99)]);
+    if let Value::Object(obj) = result {
+        let o = obj.lock().unwrap();
+        if let Some(v) = o.properties.get("value") {
+            assert_eq!(format!("{}", v), "not-equal");
+        }
+    }
+}

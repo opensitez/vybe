@@ -195,6 +195,27 @@ pub fn register(vm: &mut VM) {
         Value::String(Arc::from("ok"))
     }));
 
+    // Atomics.waitAsync(typedArray, index, value[, timeout]) — §25.4.13
+    // Returns a Promise-like object. In single-threaded Vybe, the condition is
+    // checked synchronously: if the current value equals `value`, returns a
+    // resolved Promise object with value "ok"; otherwise returns one with "not-equal".
+    // No actual async wait occurs (no shared memory across threads in this context).
+    vm.register_host_fn("ecma:atomics", "waitAsync", Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        let idx = args.get(1).map(|v| v.as_i32() as usize).unwrap_or(0);
+        let expected = args.get(2).map(|v| v.as_i32()).unwrap_or(0);
+        let actual = if is_magic_int32(args, 0) {
+            if let Some(Value::Object(obj)) = args.first() { magic_load_i32(obj, idx) } else { 0 }
+        } else if let Some((buf, off, bpe)) = typed_array_buffer(args, 0) {
+            atomic_load(&buf, off, idx, bpe) as i32
+        } else { 0 };
+        let result_str = if actual != expected { "not-equal" } else { "ok" };
+        // Return { async: true, value: Promise<result_str> } — simplified as an object
+        let mut obj = vybe_bytecode::value::Object::new();
+        obj.properties.insert("async".into(), Value::Bool(true));
+        obj.properties.insert("value".into(), Value::String(Arc::from(result_str)));
+        Value::Object(Arc::new(std::sync::Mutex::new(obj)))
+    }));
+
     vm.register_host_fn("ecma:atomics", "notify", Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
         Value::I32(0)
     }));
