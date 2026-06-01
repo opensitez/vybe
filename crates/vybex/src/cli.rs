@@ -366,6 +366,9 @@ pub fn run() {
         vybe_host::setup_namespaces(&mut vm);
     }
 
+    // WAST script runtime — call_indirect and try/catch are WASM VM-level
+    // constructs; the WAST walker routes them through these host stubs which
+    // the vybex runner provides so WAT/WAST example files can run end-to-end.
     // Programmatic-mode server primitive: scripts can call
     // `vybe:http/server.listen(addr, handler)` to become a long-lived
     // HTTP server (Node/Flask/Sinatra style).

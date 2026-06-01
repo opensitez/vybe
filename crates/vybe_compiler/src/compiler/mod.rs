@@ -12053,32 +12053,70 @@ impl Compiler {
                 }
                 self.emit(Op::NULL);
             }
-            // Direct WASM opcode names
-            "f64_abs" => { self.compile_expr(args[0])?; self.emit(Op::F64_ABS); }
-            "f64_floor" => { self.compile_expr(args[0])?; self.emit(Op::F64_FLOOR); }
-            "f64_ceil" => { self.compile_expr(args[0])?; self.emit(Op::F64_CEIL); }
-            "f64_sqrt" => { self.compile_expr(args[0])?; self.emit(Op::F64_SQRT); }
-            "f64_trunc" => { self.compile_expr(args[0])?; self.emit(Op::F64_TRUNC); }
-            "f64_nearest" => { self.compile_expr(args[0])?; self.emit(Op::F64_NEAREST); }
-            "f64_min" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::F64_MIN); } }
-            "f64_max" => { if args.len() >= 2 { self.compile_expr(args[0])?; self.compile_expr(args[1])?; self.emit(Op::F64_MAX); } }
+            // Direct WASM opcode names.
+            // Args may be absent in plain WAT form (operands already on stack);
+            // compile whatever is provided, then emit the opcode unconditionally.
+            "f64_abs"     => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64_ABS); }
+            "f64_floor"   => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64_FLOOR); }
+            "f64_ceil"    => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64_CEIL); }
+            "f64_sqrt"    => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64_SQRT); }
+            "f64_trunc"   => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64_TRUNC); }
+            "f64_nearest" => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64_NEAREST); }
+            "f64_min"     => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64_MIN); }
+            "f64_max"     => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64_MAX); }
             "i32_from_f64" | "to_int" => {
-                self.compile_expr(args[0])?;
+                for a in args { self.compile_expr(a)?; }
                 let line = self.line;
                 common::convert::emit_to_int(self.chunk(), line);
             }
-            "f64_from_i32" => { self.compile_expr(args[0])?; self.emit(Op::F64_FROM_I32); }
-            "dyn_to_bool" => { self.compile_expr(args[0])?; { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); }; }
-            "ref_is_null" => { self.compile_expr(args[0])?; self.emit(Op::REF_IS_NULL); }
-            "ref_is_array" => { self.compile_expr(args[0])?; self.emit(Op::REF_IS_ARRAY); }
-            "ref_typeof" => { self.compile_expr(args[0])?; self.emit(Op::REF_TYPEOF); }
-            "str_length" => { self.compile_expr(args[0])?; self.emit(Op::STR_LENGTH); }
-            "str_to_upper" => { self.compile_expr(args[0])?; self.emit(Op::STR_TO_UPPER); }
-            "str_to_lower" => { self.compile_expr(args[0])?; self.emit(Op::STR_TO_LOWER); }
-            "str_trim" => { self.compile_expr(args[0])?; self.emit(Op::STR_TRIM); }
-            "str_trim_start" => { self.compile_expr(args[0])?; self.emit(Op::STR_TRIM_START); }
-            "str_trim_end" => { self.compile_expr(args[0])?; self.emit(Op::STR_TRIM_END); }
-            "str_reverse" => { self.compile_expr(args[0])?; self.emit(Op::STR_REVERSE); }
+            "f64_from_i32"  => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64_FROM_I32); }
+            "dyn_to_bool"   => { for a in args { self.compile_expr(a)?; } { let line = self.line; crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line); } }
+            "ref_is_null"   => { for a in args { self.compile_expr(a)?; } self.emit(Op::REF_IS_NULL); }
+            "ref_is_array"  => { for a in args { self.compile_expr(a)?; } self.emit(Op::REF_IS_ARRAY); }
+            "ref_typeof"    => { for a in args { self.compile_expr(a)?; } self.emit(Op::REF_TYPEOF); }
+            "str_length"    => { for a in args { self.compile_expr(a)?; } self.emit(Op::STR_LENGTH); }
+            "str_to_upper"  => { for a in args { self.compile_expr(a)?; } self.emit(Op::STR_TO_UPPER); }
+            "str_to_lower"  => { for a in args { self.compile_expr(a)?; } self.emit(Op::STR_TO_LOWER); }
+            "str_trim"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::STR_TRIM); }
+            "str_trim_start"=> { for a in args { self.compile_expr(a)?; } self.emit(Op::STR_TRIM_START); }
+            "str_trim_end"  => { for a in args { self.compile_expr(a)?; } self.emit(Op::STR_TRIM_END); }
+            "str_reverse"   => { for a in args { self.compile_expr(a)?; } self.emit(Op::STR_REVERSE); }
+            // SIMD v128 ops — args may be absent in plain WAT form
+            "i8x16_splat"    => { for a in args { self.compile_expr(a)?; } self.emit(Op::I8X16_SPLAT); }
+            "i16x8_splat"    => { for a in args { self.compile_expr(a)?; } self.emit(Op::I16X8_SPLAT); }
+            "i32x4_splat"    => { for a in args { self.compile_expr(a)?; } self.emit(Op::I32X4_SPLAT); }
+            "i64x2_splat"    => { for a in args { self.compile_expr(a)?; } self.emit(Op::I64X2_SPLAT); }
+            "f32x4_splat"    => { for a in args { self.compile_expr(a)?; } self.emit(Op::F32X4_SPLAT); }
+            "f64x2_splat"    => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64X2_SPLAT); }
+            "v128_not"       => { for a in args { self.compile_expr(a)?; } self.emit(Op::V128_NOT); }
+            "v128_and"       => { for a in args { self.compile_expr(a)?; } self.emit(Op::V128_AND); }
+            "v128_andnot"    => { for a in args { self.compile_expr(a)?; } self.emit(Op::V128_ANDNOT); }
+            "v128_or"        => { for a in args { self.compile_expr(a)?; } self.emit(Op::V128_OR); }
+            "v128_xor"       => { for a in args { self.compile_expr(a)?; } self.emit(Op::V128_XOR); }
+            "v128_bitselect" => { for a in args { self.compile_expr(a)?; } self.emit(Op::V128_BITSELECT); }
+            "v128_any_true"  => { for a in args { self.compile_expr(a)?; } self.emit(Op::V128_ANY_TRUE); }
+            "i8x16_add"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::I8X16_ADD); }
+            "i16x8_add"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::I16X8_ADD); }
+            "i32x4_add"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::I32X4_ADD); }
+            "i64x2_add"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::I64X2_ADD); }
+            "i8x16_sub"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::I8X16_SUB); }
+            "i16x8_sub"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::I16X8_SUB); }
+            "i32x4_sub"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::I32X4_SUB); }
+            "i64x2_sub"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::I64X2_SUB); }
+            "i32x4_mul"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::I32X4_MUL); }
+            "i64x2_mul"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::I64X2_MUL); }
+            "f32x4_add"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::F32X4_ADD); }
+            "f64x2_add"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64X2_ADD); }
+            "f32x4_sub"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::F32X4_SUB); }
+            "f64x2_sub"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64X2_SUB); }
+            "f32x4_mul"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::F32X4_MUL); }
+            "f64x2_mul"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64X2_MUL); }
+            "f32x4_div"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::F32X4_DIV); }
+            "f64x2_div"      => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64X2_DIV); }
+            "f32x4_sqrt"     => { for a in args { self.compile_expr(a)?; } self.emit(Op::F32X4_SQRT); }
+            "f64x2_sqrt"     => { for a in args { self.compile_expr(a)?; } self.emit(Op::F64X2_SQRT); }
+            "i8x16_shuffle"  => { for a in args { self.compile_expr(a)?; } self.emit(Op::I8X16_SHUFFLE); }
+            "i8x16_swizzle"  => { for a in args { self.compile_expr(a)?; } self.emit(Op::I8X16_SWIZZLE); }
             "str_last_index_of" => {
                 if args.len() >= 2 {
                     self.compile_expr(args[0])?;

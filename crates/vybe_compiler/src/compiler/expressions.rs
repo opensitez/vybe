@@ -389,17 +389,21 @@ impl Compiler {
         let resume_slot = self.define_local("__yield_resume");
         self.emit_u16(Op::LOCAL_SET, resume_slot); self.emit(Op::DROP);
 
+        let result_slot = self.define_local("__yield_resume_value");
+        self.emit_u16(Op::LOCAL_GET, resume_slot);
+        self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
+
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         self.emit(Op::REF_IS_OBJECT);
         let line = self.line;
         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if_value(line);
+        self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         let marker_key = self.str_const("__vybe_generator_control");
         self.emit_u16(Op::STRUCT_GET, marker_key);
         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if_value(line);
+        self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         let op_key = self.str_const("op");
@@ -427,12 +431,11 @@ impl Compiler {
         self.chunk().emit_end(line);
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         self.emit_u16(Op::STRUCT_GET, value_key);
-        self.chunk().emit_else(line);
-        self.emit_u16(Op::LOCAL_GET, resume_slot);
+        self.emit_u16(Op::LOCAL_SET, result_slot); self.emit(Op::DROP);
+
         self.chunk().emit_end(line);
-        self.chunk().emit_else(line);
-        self.emit_u16(Op::LOCAL_GET, resume_slot);
         self.chunk().emit_end(line);
+        self.emit_u16(Op::LOCAL_GET, result_slot);
         Ok(())
     }
 
