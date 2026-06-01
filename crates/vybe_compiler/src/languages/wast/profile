@@ -33,6 +33,34 @@ string_indexing  = "zero_based"
 
 [builtins]
 
+# ── Standard WASI output imports ─────────────────────────────────────────────
+# WAT modules that import (import "wasi:cli" "log" (func $log ...)) generate
+# call-to-Ident("log") in the AST. These profile entries resolve them to the
+# real wasi:cli host functions without any custom dispatch.
+
+log   = { emit = "host:wasi:cli:log",   min_args = 1, max_args = 255 }
+logf  = { emit = "host:wasi:cli:log",   min_args = 1, max_args = 255 }
+
+# ── vybe:gui imports ──────────────────────────────────────────────────────────
+# WAT modules import these by local name; the profile resolves them to the
+# vybe:gui host functions. String arguments are passed as any Value — the
+# host functions format them via format!("{v}").
+
+newForm              = { emit = "host:vybe:gui:newForm",              min_args = 0, max_args = 1   }
+new_Button           = { emit = "host:vybe:gui:new_Button",           min_args = 0, max_args = 0   }
+new_Label            = { emit = "host:vybe:gui:new_Label",            min_args = 0, max_args = 0   }
+new_TextBox          = { emit = "host:vybe:gui:new_TextBox",          min_args = 0, max_args = 0   }
+new_CheckBox         = { emit = "host:vybe:gui:new_CheckBox",         min_args = 0, max_args = 0   }
+new_GroupBox         = { emit = "host:vybe:gui:new_GroupBox",         min_args = 0, max_args = 0   }
+new_Panel            = { emit = "host:vybe:gui:new_Panel",            min_args = 0, max_args = 0   }
+controlSetProperty   = { emit = "host:vybe:gui:controlSetProperty",   min_args = 3, max_args = 3   }
+controlGetProperty   = { emit = "host:vybe:gui:controlGetProperty",   min_args = 2, max_args = 2   }
+controlsAdd          = { emit = "host:vybe:gui:controlsAdd",          min_args = 2, max_args = 2   }
+onEvent              = { emit = "host:vybe:gui:onEvent",              min_args = 3, max_args = 3   }
+showForm             = { emit = "host:vybe:gui:showForm",             min_args = 1, max_args = 1   }
+runApplication       = { emit = "host:vybe:gui:runApplication",       min_args = 1, max_args = 1   }
+addHandler           = { emit = "host:vybe:gui:addHandler",           min_args = 2, max_args = 3   }
+
 # ── WAST script commands ──────────────────────────────────────────────────────
 
 __wast_assert_return     = { emit = "host:vybe:wast:assert_return",     min_args = 1, max_args = 255 }
@@ -170,3 +198,45 @@ i64_store32  = { emit = "host:wasi:memory:i64_store32", min_args = 2, max_args =
 # ── call_indirect ─────────────────────────────────────────────────────────────
 
 call_indirect = { emit = "host:vybe:wast:call_indirect", min_args = 1, max_args = 255 }
+
+# ── SIMD ops (v128 prefix 0xFD) ───────────────────────────────────────────────
+
+i8x16_splat  = { emit = "opcode:i8x16_splat",  min_args = 1, max_args = 1 }
+i16x8_splat  = { emit = "opcode:i16x8_splat",  min_args = 1, max_args = 1 }
+i32x4_splat  = { emit = "opcode:i32x4_splat",  min_args = 1, max_args = 1 }
+i64x2_splat  = { emit = "opcode:i64x2_splat",  min_args = 1, max_args = 1 }
+f32x4_splat  = { emit = "opcode:f32x4_splat",  min_args = 1, max_args = 1 }
+f64x2_splat  = { emit = "opcode:f64x2_splat",  min_args = 1, max_args = 1 }
+
+v128_not     = { emit = "opcode:v128_not",     min_args = 1, max_args = 1 }
+v128_and     = { emit = "opcode:v128_and",     min_args = 2, max_args = 2 }
+v128_andnot  = { emit = "opcode:v128_andnot",  min_args = 2, max_args = 2 }
+v128_or      = { emit = "opcode:v128_or",      min_args = 2, max_args = 2 }
+v128_xor     = { emit = "opcode:v128_xor",     min_args = 2, max_args = 2 }
+v128_bitselect = { emit = "opcode:v128_bitselect", min_args = 3, max_args = 3 }
+v128_any_true  = { emit = "opcode:v128_any_true",  min_args = 1, max_args = 1 }
+
+i8x16_add    = { emit = "opcode:i8x16_add",   min_args = 2, max_args = 2 }
+i16x8_add    = { emit = "opcode:i16x8_add",   min_args = 2, max_args = 2 }
+i32x4_add    = { emit = "opcode:i32x4_add",   min_args = 2, max_args = 2 }
+i64x2_add    = { emit = "opcode:i64x2_add",   min_args = 2, max_args = 2 }
+i8x16_sub    = { emit = "opcode:i8x16_sub",   min_args = 2, max_args = 2 }
+i16x8_sub    = { emit = "opcode:i16x8_sub",   min_args = 2, max_args = 2 }
+i32x4_sub    = { emit = "opcode:i32x4_sub",   min_args = 2, max_args = 2 }
+i64x2_sub    = { emit = "opcode:i64x2_sub",   min_args = 2, max_args = 2 }
+i32x4_mul    = { emit = "opcode:i32x4_mul",   min_args = 2, max_args = 2 }
+i64x2_mul    = { emit = "opcode:i64x2_mul",   min_args = 2, max_args = 2 }
+
+f32x4_add    = { emit = "opcode:f32x4_add",   min_args = 2, max_args = 2 }
+f64x2_add    = { emit = "opcode:f64x2_add",   min_args = 2, max_args = 2 }
+f32x4_sub    = { emit = "opcode:f32x4_sub",   min_args = 2, max_args = 2 }
+f64x2_sub    = { emit = "opcode:f64x2_sub",   min_args = 2, max_args = 2 }
+f32x4_mul    = { emit = "opcode:f32x4_mul",   min_args = 2, max_args = 2 }
+f64x2_mul    = { emit = "opcode:f64x2_mul",   min_args = 2, max_args = 2 }
+f32x4_div    = { emit = "opcode:f32x4_div",   min_args = 2, max_args = 2 }
+f64x2_div    = { emit = "opcode:f64x2_div",   min_args = 2, max_args = 2 }
+f32x4_sqrt   = { emit = "opcode:f32x4_sqrt",  min_args = 1, max_args = 1 }
+f64x2_sqrt   = { emit = "opcode:f64x2_sqrt",  min_args = 1, max_args = 1 }
+
+i8x16_shuffle  = { emit = "opcode:i8x16_shuffle", min_args = 2, max_args = 2 }
+i8x16_swizzle  = { emit = "opcode:i8x16_swizzle", min_args = 2, max_args = 2 }

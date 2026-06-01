@@ -202,6 +202,8 @@ instr_name = @{
   | "f64.promote_f32" | "f64.reinterpret_i64"
     // ── Reference types ───────────────────────────────────────────────────
   | "ref.null" | "ref.is_null" | "ref.func"
+    // ── wasm:js-string builtins (merged proposal) ─────────────────────────
+  | "string.const"
     // ── SIMD v128 (abbreviated) ───────────────────────────────────────────
   | "v128.const"
   | "v128.not" | "v128.and" | "v128.andnot" | "v128.or" | "v128.xor"
