@@ -26,16 +26,19 @@ fn tag_import() {
 
 #[test]
 fn throw_with_tag() {
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module
   (tag $e (param i32))
   (func (export "f") i32.const 42 throw $e))
-"#);
+"#,
+    );
 }
 
 #[test]
 fn try_catch_plain() {
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module
   (tag $e (param i32))
   (func (export "f") (result i32)
@@ -44,12 +47,14 @@ fn try_catch_plain() {
     catch $e
       ;; e value is on stack
     end))
-"#);
+"#,
+    );
 }
 
 #[test]
 fn try_catch_all() {
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module
   (func (export "f")
     try
@@ -57,12 +62,14 @@ fn try_catch_all() {
     catch_all
       nop
     end))
-"#);
+"#,
+    );
 }
 
 #[test]
 fn try_delegate() {
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module
   (tag $e)
   (func (export "f")
@@ -71,12 +78,14 @@ fn try_delegate() {
         nop
       delegate $b
     end))
-"#);
+"#,
+    );
 }
 
 #[test]
 fn rethrow_in_catch() {
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module
   (tag $e)
   (func (export "f")
@@ -85,29 +94,34 @@ fn rethrow_in_catch() {
     catch $e
       rethrow 0
     end))
-"#);
+"#,
+    );
 }
 
 // ── Tail calls ────────────────────────────────────────────────────────────────
 
 #[test]
 fn return_call_direct() {
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module
   (func $f (param i32) (result i32) local.get 0)
   (func (export "g") (param i32) (result i32) local.get 0 return_call $f))
-"#);
+"#,
+    );
 }
 
 #[test]
 fn return_call_indirect_basic() {
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module
   (type $t (func (param i32) (result i32)))
   (table 1 funcref)
   (func (export "f") (param i32 i32) (result i32)
     local.get 0 local.get 1 return_call_indirect (type $t)))
-"#);
+"#,
+    );
 }
 
 // ── Reference types ───────────────────────────────────────────────────────────
@@ -144,49 +158,63 @@ fn table_externref_type() {
 
 #[test]
 fn table_get_set() {
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module
   (table $t 10 funcref)
   (func (param i32) (result funcref) local.get 0 table.get $t)
   (func (param i32 funcref) local.get 0 local.get 1 table.set $t))
-"#);
+"#,
+    );
 }
 
 #[test]
 fn table_grow_size_fill() {
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module
   (table $t 1 funcref)
   (func (result i32) ref.null funcref i32.const 1 table.grow $t)
   (func (result i32) table.size $t))
-"#);
+"#,
+    );
 }
 
 // ── Bulk memory ───────────────────────────────────────────────────────────────
 
 #[test]
 fn memory_copy_instr() {
-    parse_ok("(module (memory 1) (func (param i32 i32 i32) local.get 0 local.get 1 local.get 2 memory.copy))");
+    parse_ok(
+        "(module (memory 1) (func (param i32 i32 i32) local.get 0 local.get 1 local.get 2 memory.copy))",
+    );
 }
 
 #[test]
 fn memory_fill_instr() {
-    parse_ok("(module (memory 1) (func (param i32 i32 i32) local.get 0 local.get 1 local.get 2 memory.fill))");
+    parse_ok(
+        "(module (memory 1) (func (param i32 i32 i32) local.get 0 local.get 1 local.get 2 memory.fill))",
+    );
 }
 
 #[test]
 fn memory_init_instr() {
-    parse_ok(r#"(module (memory 1) (data $d "hello") (func (param i32 i32 i32) local.get 0 local.get 1 local.get 2 memory.init $d))"#);
+    parse_ok(
+        r#"(module (memory 1) (data $d "hello") (func (param i32 i32 i32) local.get 0 local.get 1 local.get 2 memory.init $d))"#,
+    );
 }
 
 #[test]
 fn table_copy_instr() {
-    parse_ok("(module (table 10 funcref) (func (param i32 i32 i32) local.get 0 local.get 1 local.get 2 table.copy))");
+    parse_ok(
+        "(module (table 10 funcref) (func (param i32 i32 i32) local.get 0 local.get 1 local.get 2 table.copy))",
+    );
 }
 
 #[test]
 fn table_init_instr() {
-    parse_ok("(module (table 10 funcref) (elem $e func) (func (param i32 i32 i32) local.get 0 local.get 1 local.get 2 table.init $e))");
+    parse_ok(
+        "(module (table 10 funcref) (elem $e func) (func (param i32 i32 i32) local.get 0 local.get 1 local.get 2 table.init $e))",
+    );
 }
 
 // ── Multi-value ───────────────────────────────────────────────────────────────
@@ -250,24 +278,29 @@ fn v128_any_true() {
 
 #[test]
 fn i8x16_shuffle() {
-    parse_ok("(module (func (param v128 v128) (result v128) local.get 0 local.get 1 i8x16.shuffle 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15))");
+    parse_ok(
+        "(module (func (param v128 v128) (result v128) local.get 0 local.get 1 i8x16.shuffle 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15))",
+    );
 }
 
 // ── Named modules in WAST ─────────────────────────────────────────────────────
 
 #[test]
 fn named_module_invoke() {
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module $m1 (func (export "f") (result i32) i32.const 1))
 (module $m2 (func (export "f") (result i32) i32.const 2))
 (assert_return (invoke $m1 "f") (i32.const 1))
 (assert_return (invoke $m2 "f") (i32.const 2))
-"#);
+"#,
+    );
 }
 
 #[test]
 fn register_and_import() {
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module $lib
   (func (export "add") (param i32 i32) (result i32) local.get 0 local.get 1 i32.add))
 (register "lib" $lib)
@@ -277,15 +310,18 @@ fn register_and_import() {
     local.get 0 local.get 1 call $add
     local.get 0 local.get 1 call $add
     i32.add))
-"#);
+"#,
+    );
 }
 
 // ── assert_suspension (threads proposal) ─────────────────────────────────────
 
 #[test]
 fn assert_suspension_parses() {
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module (func (export "f")))
 (assert_suspension (invoke "f") "suspended")
-"#);
+"#,
+    );
 }

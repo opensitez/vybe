@@ -1,11 +1,20 @@
 /// Tests for WAT module structure — types, imports, exports, globals, memory, tables
-use super::helpers::{parse_ok, compile_ok};
+use super::helpers::{compile_ok, parse_ok};
 
 // ── Empty module ──────────────────────────────────────────────────────────────
 
-#[test] fn empty_module()          { parse_ok("(module)"); }
-#[test] fn named_module()          { parse_ok("(module $m)"); }
-#[test] fn empty_module_compiles() { compile_ok("(module)"); }
+#[test]
+fn empty_module() {
+    parse_ok("(module)");
+}
+#[test]
+fn named_module() {
+    parse_ok("(module $m)");
+}
+#[test]
+fn empty_module_compiles() {
+    compile_ok("(module)");
+}
 
 // ── Type definitions ──────────────────────────────────────────────────────────
 
@@ -43,12 +52,16 @@ fn func_with_params_result() {
 
 #[test]
 fn func_named() {
-    parse_ok("(module (func $add (param $a i32) (param $b i32) (result i32) local.get $a local.get $b i32.add))");
+    parse_ok(
+        "(module (func $add (param $a i32) (param $b i32) (result i32) local.get $a local.get $b i32.add))",
+    );
 }
 
 #[test]
 fn func_with_locals() {
-    parse_ok("(module (func (param i32) (result i32) (local i32) local.get 0 local.set 1 local.get 1))");
+    parse_ok(
+        "(module (func (param i32) (result i32) (local i32) local.get 0 local.set 1 local.get 1))",
+    );
 }
 
 #[test]
@@ -68,19 +81,25 @@ fn func_with_type_ref() {
 
 #[test]
 fn func_compiles() {
-    compile_ok("(module (func $add (param $a i32) (param $b i32) (result i32) local.get $a local.get $b i32.add))");
+    compile_ok(
+        "(module (func $add (param $a i32) (param $b i32) (result i32) local.get $a local.get $b i32.add))",
+    );
 }
 
 // ── Inline exports ────────────────────────────────────────────────────────────
 
 #[test]
 fn func_inline_export() {
-    parse_ok(r#"(module (func (export "add") (param i32 i32) (result i32) local.get 0 local.get 1 i32.add))"#);
+    parse_ok(
+        r#"(module (func (export "add") (param i32 i32) (result i32) local.get 0 local.get 1 i32.add))"#,
+    );
 }
 
 #[test]
 fn func_multiple_inline_exports() {
-    parse_ok(r#"(module (func (export "add") (export "sum") (param i32 i32) (result i32) local.get 0 local.get 1 i32.add))"#);
+    parse_ok(
+        r#"(module (func (export "add") (export "sum") (param i32 i32) (result i32) local.get 0 local.get 1 i32.add))"#,
+    );
 }
 
 // ── Explicit exports ──────────────────────────────────────────────────────────

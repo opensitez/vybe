@@ -1,5 +1,5 @@
 /// Tests for WAT folded (S-expression) instruction syntax
-use super::helpers::{parse_ok, compile_ok};
+use super::helpers::{compile_ok, parse_ok};
 
 // ── Basic folded instructions ─────────────────────────────────────────────────
 
@@ -52,12 +52,16 @@ fn folded_mul() {
 
 #[test]
 fn folded_div_s() {
-    parse_ok("(module (func (param i32 i32) (result i32) (i32.div_s (local.get 0) (local.get 1))))");
+    parse_ok(
+        "(module (func (param i32 i32) (result i32) (i32.div_s (local.get 0) (local.get 1))))",
+    );
 }
 
 #[test]
 fn folded_rem_u() {
-    parse_ok("(module (func (param i32 i32) (result i32) (i32.rem_u (local.get 0) (local.get 1))))");
+    parse_ok(
+        "(module (func (param i32 i32) (result i32) (i32.rem_u (local.get 0) (local.get 1))))",
+    );
 }
 
 #[test]
@@ -91,7 +95,9 @@ fn folded_i32_eqz() {
 
 #[test]
 fn folded_call() {
-    parse_ok("(module (func $f (param i32) (result i32) (local.get 0)) (func (result i32) (call $f (i32.const 5))))");
+    parse_ok(
+        "(module (func $f (param i32) (result i32) (local.get 0)) (func (result i32) (call $f (i32.const 5))))",
+    );
 }
 
 #[test]
@@ -106,7 +112,9 @@ fn folded_drop() {
 
 #[test]
 fn folded_select() {
-    parse_ok("(module (func (param i32 i32 i32) (result i32) (select (local.get 0) (local.get 1) (local.get 2))))");
+    parse_ok(
+        "(module (func (param i32 i32 i32) (result i32) (select (local.get 0) (local.get 1) (local.get 2))))",
+    );
 }
 
 #[test]
@@ -123,23 +131,29 @@ fn folded_br_if() {
 
 #[test]
 fn folded_three_levels() {
-    parse_ok("(module (func (param i32 i32 i32) (result i32) (i32.add (i32.mul (local.get 0) (local.get 1)) (local.get 2))))");
+    parse_ok(
+        "(module (func (param i32 i32 i32) (result i32) (i32.add (i32.mul (local.get 0) (local.get 1)) (local.get 2))))",
+    );
 }
 
 #[test]
 fn folded_four_levels() {
-    parse_ok("(module (func (param i32) (result i32) (i32.add (i32.mul (i32.add (local.get 0) (i32.const 1)) (i32.const 2)) (i32.const 3))))");
+    parse_ok(
+        "(module (func (param i32) (result i32) (i32.add (i32.mul (i32.add (local.get 0) (i32.const 1)) (i32.const 2)) (i32.const 3))))",
+    );
 }
 
 #[test]
 fn folded_mixed_with_plain() {
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module
   (func (param $a i32) (param $b i32) (result i32)
     (i32.add (local.get $a) (local.get $b))
     local.get $a
     i32.add))
-"#);
+"#,
+    );
 }
 
 // ── Folded memory ─────────────────────────────────────────────────────────────
@@ -180,23 +194,27 @@ fn folded_i32_wrap_i64() {
 
 #[test]
 fn compile_folded_factorial() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 (module
   (func $fact (export "fact") (param $n i32) (result i32)
     (if (result i32) (i32.le_s (local.get $n) (i32.const 1))
       (then (i32.const 1))
       (else (i32.mul (local.get $n)
                      (call $fact (i32.sub (local.get $n) (i32.const 1))))))))
-"#);
+"#,
+    );
 }
 
 #[test]
 fn compile_folded_min() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 (module
   (func $min (export "min") (param $a i32) (param $b i32) (result i32)
     (if (result i32) (i32.lt_s (local.get $a) (local.get $b))
       (then (local.get $a))
       (else (local.get $b)))))
-"#);
+"#,
+    );
 }

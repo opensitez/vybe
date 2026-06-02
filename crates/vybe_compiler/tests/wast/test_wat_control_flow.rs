@@ -1,5 +1,5 @@
 /// Tests for WAT structured control flow — block, loop, if/else, br, br_if, br_table
-use super::helpers::{parse_ok, compile_ok};
+use super::helpers::{compile_ok, parse_ok};
 
 // ── block ─────────────────────────────────────────────────────────────────────
 
@@ -42,7 +42,9 @@ fn loop_with_label() {
 
 #[test]
 fn loop_with_br_continue() {
-    parse_ok("(module (func (param i32) (local i32) (loop $l local.get 0 local.get 1 i32.add local.set 1 local.get 0 i32.const 1 i32.sub local.tee 0 br_if $l)))");
+    parse_ok(
+        "(module (func (param i32) (local i32) (loop $l local.get 0 local.get 1 i32.add local.set 1 local.get 0 i32.const 1 i32.sub local.tee 0 br_if $l)))",
+    );
 }
 
 #[test]
@@ -59,7 +61,9 @@ fn if_no_else_plain() {
 
 #[test]
 fn if_else_plain() {
-    parse_ok("(module (func (param i32) (result i32) local.get 0 if (result i32) i32.const 1 else i32.const 0 end))");
+    parse_ok(
+        "(module (func (param i32) (result i32) local.get 0 if (result i32) i32.const 1 else i32.const 0 end))",
+    );
 }
 
 #[test]
@@ -74,12 +78,15 @@ fn if_folded_no_else() {
 
 #[test]
 fn if_folded_with_else() {
-    parse_ok("(module (func (param i32) (result i32) (if (result i32) (local.get 0) (then (i32.const 1)) (else (i32.const 0)))))");
+    parse_ok(
+        "(module (func (param i32) (result i32) (if (result i32) (local.get 0) (then (i32.const 1)) (else (i32.const 0)))))",
+    );
 }
 
 #[test]
 fn if_folded_nested() {
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module
   (func (param i32) (result i32)
     (if (result i32) (local.get 0)
@@ -88,18 +95,21 @@ fn if_folded_nested() {
           (then (i32.const 10))
           (else (i32.const 20))))
       (else (i32.const 0)))))
-"#);
+"#,
+    );
 }
 
 #[test]
 fn if_compiles() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 (module
   (func $abs (export "abs") (param $x i32) (result i32)
     (if (result i32) (i32.lt_s (local.get $x) (i32.const 0))
       (then (i32.sub (i32.const 0) (local.get $x)))
       (else (local.get $x)))))
-"#);
+"#,
+    );
 }
 
 // ── br / br_if / br_table ─────────────────────────────────────────────────────
@@ -126,7 +136,9 @@ fn br_table_simple() {
 
 #[test]
 fn br_table_default() {
-    parse_ok("(module (func (param i32) (block $a (block $b (block $c local.get 0 br_table $a $b $c)))))");
+    parse_ok(
+        "(module (func (param i32) (block $a (block $b (block $c local.get 0 br_table $a $b $c)))))",
+    );
 }
 
 // ── return ────────────────────────────────────────────────────────────────────
@@ -143,7 +155,8 @@ fn return_value() {
 
 #[test]
 fn early_return_in_if() {
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module
   (func (export "f") (param i32) (result i32)
     local.get 0
@@ -152,47 +165,57 @@ fn early_return_in_if() {
       return
     end
     i32.const 0))
-"#);
+"#,
+    );
 }
 
 // ── return_call / return_call_indirect (tail calls) ───────────────────────────
 
 #[test]
 fn return_call() {
-    parse_ok("(module (func $f (param i32) (result i32) local.get 0) (func (param i32) (result i32) local.get 0 return_call $f))");
+    parse_ok(
+        "(module (func $f (param i32) (result i32) local.get 0) (func (param i32) (result i32) local.get 0 return_call $f))",
+    );
 }
 
 #[test]
 fn return_call_indirect() {
-    parse_ok("(module (type $t (func (param i32) (result i32))) (table 1 funcref) (func (param i32 i32) (result i32) local.get 0 local.get 1 return_call_indirect (type $t)))");
+    parse_ok(
+        "(module (type $t (func (param i32) (result i32))) (table 1 funcref) (func (param i32 i32) (result i32) local.get 0 local.get 1 return_call_indirect (type $t)))",
+    );
 }
 
 // ── Exceptions proposal ───────────────────────────────────────────────────────
 
 #[test]
 fn try_catch_folded() {
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module
   (tag $e (param i32))
   (func (export "f")
     (try
       (nop)
       (catch $e drop))))
-"#);
+"#,
+    );
 }
 
 #[test]
 fn throw_instr() {
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module
   (tag $e (param i32))
   (func (export "f") i32.const 42 throw $e))
-"#);
+"#,
+    );
 }
 
 #[test]
 fn rethrow_instr() {
-    parse_ok(r#"
+    parse_ok(
+        r#"
 (module
   (tag $e)
   (func (export "f")
@@ -201,14 +224,16 @@ fn rethrow_instr() {
     catch $e
       rethrow 0
     end))
-"#);
+"#,
+    );
 }
 
 // ── Compile checks ────────────────────────────────────────────────────────────
 
 #[test]
 fn compile_loop_sum() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 (module
   (func $sum (export "sum") (param $n i32) (result i32)
     (local $acc i32)
@@ -233,16 +258,19 @@ fn compile_loop_sum() {
         local.set $i
         br $continue))
     local.get $acc))
-"#);
+"#,
+    );
 }
 
 #[test]
 fn compile_max_func() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 (module
   (func $max (export "max") (param $a i32) (param $b i32) (result i32)
     (if (result i32) (i32.gt_s (local.get $a) (local.get $b))
       (then (local.get $a))
       (else (local.get $b)))))
-"#);
+"#,
+    );
 }
