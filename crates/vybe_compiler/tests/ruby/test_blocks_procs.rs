@@ -13,9 +13,7 @@ fn block_given_check() {
 
 #[test]
 fn block_yield_return_value_used() {
-    compile_ok(
-        "def transform(x)\n  yield x\nend\nresult = transform(5) { |n| n * 3 }\n",
-    );
+    compile_ok("def transform(x)\n  yield x\nend\nresult = transform(5) { |n| n * 3 }\n");
 }
 
 // ── block closing over outer variable ────────────────────────────────────────
@@ -50,9 +48,7 @@ fn explicit_block_call() {
 
 #[test]
 fn block_forwarding_to_another_method() {
-    compile_ok(
-        "def outer(&block)\n  inner(&block)\nend\ndef inner\n  yield 1\nend\n",
-    );
+    compile_ok("def outer(&block)\n  inner(&block)\nend\ndef inner\n  yield 1\nend\n");
 }
 
 // ── Proc.new from explicit block ──────────────────────────────────────────────
@@ -87,9 +83,7 @@ fn lambda_stabby_multi_param() {
 
 #[test]
 fn lambda_vs_proc_return_behavior() {
-    compile_ok(
-        "def test_lambda\n  f = lambda { return 1 }\n  f.call\n  2\nend\n",
-    );
+    compile_ok("def test_lambda\n  f = lambda { return 1 }\n  f.call\n  2\nend\n");
 }
 
 // ── lambda arity enforcement ──────────────────────────────────────────────────
@@ -110,9 +104,7 @@ fn curry_partial_application() {
 
 #[test]
 fn curry_apply_remaining_args() {
-    compile_ok(
-        "add = ->(a, b) { a + b }\nadd5 = add.curry.(5)\nresult = add5.(3)\n",
-    );
+    compile_ok("add = ->(a, b) { a + b }\nadd5 = add.curry.(5)\nresult = add5.(3)\n");
 }
 
 // ── arity of proc/lambda ──────────────────────────────────────────────────────
@@ -126,18 +118,14 @@ fn proc_arity_method() {
 
 #[test]
 fn proc_call_three_syntaxes() {
-    compile_ok(
-        "f = ->(x) { x * 2 }\na = f.call(3)\nb = f.(3)\nc = f[3]\n",
-    );
+    compile_ok("f = ->(x) { x * 2 }\na = f.call(3)\nb = f.(3)\nc = f[3]\n");
 }
 
 // ── &method(:name) — method reference as proc ────────────────────────────────
 
 #[test]
 fn method_ref_as_proc() {
-    compile_ok(
-        "def double(x)\n  x * 2\nend\nresult = [1, 2, 3].map(&method(:double))\n",
-    );
+    compile_ok("def double(x)\n  x * 2\nend\nresult = [1, 2, 3].map(&method(:double))\n");
 }
 
 // ── &:symbol — symbol to proc ────────────────────────────────────────────────
@@ -151,9 +139,7 @@ fn symbol_to_proc() {
 
 #[test]
 fn tap_chain_side_effect() {
-    compile_ok(
-        "result = [1, 2, 3].tap { |a| puts a.length }.map { |x| x * 2 }\n",
-    );
+    compile_ok("result = [1, 2, 3].tap { |a| puts a.length }.map { |x| x * 2 }\n");
 }
 
 // ── then / yield_self — pipe value through block ─────────────────────────────
@@ -174,18 +160,14 @@ fn itself_returns_receiver() {
 
 #[test]
 fn closure_retains_value_after_scope() {
-    compile_ok(
-        "def make_adder(n)\n  ->(x) { x + n }\nend\nadd10 = make_adder(10)\n",
-    );
+    compile_ok("def make_adder(n)\n  ->(x) { x + n }\nend\nadd10 = make_adder(10)\n");
 }
 
 // ── multiple yield calls in one method ───────────────────────────────────────
 
 #[test]
 fn multiple_yield_calls() {
-    compile_ok(
-        "def three_times\n  yield 1\n  yield 2\n  yield 3\nend\n",
-    );
+    compile_ok("def three_times\n  yield 1\n  yield 2\n  yield 3\nend\n");
 }
 
 // ── yield with multiple values ────────────────────────────────────────────────
@@ -199,45 +181,35 @@ fn yield_multiple_values() {
 
 #[test]
 fn block_next_skip_value() {
-    compile_ok(
-        "result = [1, 2, 3, 4].map { |x| next 0 if x.even?; x }\n",
-    );
+    compile_ok("result = [1, 2, 3, 4].map { |x| next 0 if x.even?; x }\n");
 }
 
 // ── block with break to exit and return value ─────────────────────────────────
 
 #[test]
 fn block_break_with_return_value() {
-    compile_ok(
-        "result = [1, 2, 3, 4].each { |x| break x if x > 2 }\n",
-    );
+    compile_ok("result = [1, 2, 3, 4].each { |x| break x if x > 2 }\n");
 }
 
 // ── each_with_object ──────────────────────────────────────────────────────────
 
 #[test]
 fn each_with_object_accumulator() {
-    compile_ok(
-        "result = [1, 2, 3].each_with_object([]) { |x, acc| acc.push(x * 2) }\n",
-    );
+    compile_ok("result = [1, 2, 3].each_with_object([]) { |x, acc| acc.push(x * 2) }\n");
 }
 
 // ── recursive proc via variable capture ──────────────────────────────────────
 
 #[test]
 fn recursive_proc_via_capture() {
-    compile_ok(
-        "fib = nil\nfib = ->(n) { n < 2 ? n : fib.(n - 1) + fib.(n - 2) }\n",
-    );
+    compile_ok("fib = nil\nfib = ->(n) { n < 2 ? n : fib.(n - 1) + fib.(n - 2) }\n");
 }
 
 // ── memoization using closure ─────────────────────────────────────────────────
 
 #[test]
 fn memoization_via_closure() {
-    compile_ok(
-        "cache = {}\nmemo = ->(n) { cache[n] ||= n * n }\n",
-    );
+    compile_ok("cache = {}\nmemo = ->(n) { cache[n] ||= n * n }\n");
 }
 
 // ── lazy enumerator ───────────────────────────────────────────────────────────
@@ -251,36 +223,28 @@ fn lazy_enumerator_creation() {
 
 #[test]
 fn lazy_map_first_n() {
-    compile_ok(
-        "result = (1..Float::INFINITY).lazy.map { |x| x * 2 }.first(5)\n",
-    );
+    compile_ok("result = (1..Float::INFINITY).lazy.map { |x| x * 2 }.first(5)\n");
 }
 
 // ── Enumerator.new custom enumerator ─────────────────────────────────────────
 
 #[test]
 fn enumerator_new_custom() {
-    compile_ok(
-        "e = Enumerator.new { |y| y << 1; y << 2; y << 3 }\n",
-    );
+    compile_ok("e = Enumerator.new { |y| y << 1; y << 2; y << 3 }\n");
 }
 
 // ── Enumerator::Lazy chained operations ───────────────────────────────────────
 
 #[test]
 fn enumerator_lazy_chained() {
-    compile_ok(
-        "result = [1, 2, 3, 4, 5].lazy.select { |x| x.odd? }.map { |x| x * 10 }.first(2)\n",
-    );
+    compile_ok("result = [1, 2, 3, 4, 5].lazy.select { |x| x.odd? }.map { |x| x * 10 }.first(2)\n");
 }
 
 // ── Object#freeze and block side effects ──────────────────────────────────────
 
 #[test]
 fn freeze_object_then_use_in_block() {
-    compile_ok(
-        "s = 'hello'.freeze\nresult = [s].map { |x| x.length }\n",
-    );
+    compile_ok("s = 'hello'.freeze\nresult = [s].map { |x| x.length }\n");
 }
 
 // ── Proc composition with >> ──────────────────────────────────────────────────
@@ -305,9 +269,7 @@ fn proc_compose_left() {
 
 #[test]
 fn method_object_call_syntax() {
-    compile_ok(
-        "def square(x)\n  x * x\nend\nm = method(:square)\nresult = m.(5)\n",
-    );
+    compile_ok("def square(x)\n  x * x\nend\nm = method(:square)\nresult = m.(5)\n");
 }
 
 // ── respond_to? checking for method existence ────────────────────────────────
@@ -348,10 +310,7 @@ fn proc_shorthand_runtime() {
 
 #[test]
 fn closure_captures_value_runtime() {
-    assert_eq!(
-        run_ruby_one("n = 7\nf = -> { n * 2 }\nputs f.()\n"),
-        "14"
-    );
+    assert_eq!(run_ruby_one("n = 7\nf = -> { n * 2 }\nputs f.()\n"), "14");
 }
 
 // ── runtime: each_with_object builds array ───────────────────────────────────

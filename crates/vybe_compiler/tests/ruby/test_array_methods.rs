@@ -1,4 +1,4 @@
-use super::helpers::{run_ruby, run_ruby_one, compile_ok};
+use super::helpers::{compile_ok, run_ruby, run_ruby_one};
 
 // ── each_with_index ───────────────────────────────────────────────────────────
 
@@ -29,7 +29,10 @@ fn arr_flat_map_one_level() {
 
 #[test]
 fn arr_flat_map_runtime() {
-    assert_eq!(run_ruby_one("puts [[1, 2], [3]].flat_map { |a| a }.length\n"), "3");
+    assert_eq!(
+        run_ruby_one("puts [[1, 2], [3]].flat_map { |a| a }.length\n"),
+        "3"
+    );
 }
 
 // ── zip ───────────────────────────────────────────────────────────────────────
@@ -103,7 +106,10 @@ fn arr_find_index_of_match() {
 
 #[test]
 fn arr_find_index_runtime() {
-    assert_eq!(run_ruby_one("puts [10, 20, 30].find_index { |n| n == 20 }\n"), "1");
+    assert_eq!(
+        run_ruby_one("puts [10, 20, 30].find_index { |n| n == 20 }\n"),
+        "1"
+    );
 }
 
 // ── count with block ──────────────────────────────────────────────────────────
@@ -115,7 +121,10 @@ fn arr_count_with_block() {
 
 #[test]
 fn arr_count_block_runtime() {
-    assert_eq!(run_ruby_one("puts [1, 2, 3, 4].count { |n| n.even? }\n"), "2");
+    assert_eq!(
+        run_ruby_one("puts [1, 2, 3, 4].count { |n| n.even? }\n"),
+        "2"
+    );
 }
 
 // ── any? ──────────────────────────────────────────────────────────────────────
@@ -139,7 +148,10 @@ fn arr_all_predicate() {
 
 #[test]
 fn arr_all_runtime() {
-    assert_eq!(run_ruby_one("puts [2, 4, 6].all? { |n| n.even? }\n"), "true");
+    assert_eq!(
+        run_ruby_one("puts [2, 4, 6].all? { |n| n.even? }\n"),
+        "true"
+    );
 }
 
 // ── none? ─────────────────────────────────────────────────────────────────────
@@ -151,7 +163,10 @@ fn arr_none_predicate() {
 
 #[test]
 fn arr_none_runtime() {
-    assert_eq!(run_ruby_one("puts [1, 3, 5].none? { |n| n.even? }\n"), "true");
+    assert_eq!(
+        run_ruby_one("puts [1, 3, 5].none? { |n| n.even? }\n"),
+        "true"
+    );
 }
 
 // ── one? ──────────────────────────────────────────────────────────────────────
@@ -289,7 +304,10 @@ fn arr_intersection_operator() {
 
 #[test]
 fn arr_intersection_runtime() {
-    assert_eq!(run_ruby_one("puts ([1, 2, 3, 4] & [2, 4, 6]).length\n"), "2");
+    assert_eq!(
+        run_ruby_one("puts ([1, 2, 3, 4] & [2, 4, 6]).length\n"),
+        "2"
+    );
 }
 
 // ── | union ───────────────────────────────────────────────────────────────────
@@ -408,7 +426,10 @@ fn arr_inject_with_initial_value() {
 
 #[test]
 fn arr_inject_initial_runtime() {
-    assert_eq!(run_ruby_one("puts [1, 2, 3].inject(10) { |sum, n| sum + n }\n"), "16");
+    assert_eq!(
+        run_ruby_one("puts [1, 2, 3].inject(10) { |sum, n| sum + n }\n"),
+        "16"
+    );
 }
 
 // ── chunk ─────────────────────────────────────────────────────────────────────

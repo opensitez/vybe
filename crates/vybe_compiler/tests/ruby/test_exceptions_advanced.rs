@@ -2,9 +2,7 @@ use super::helpers::{compile_ok, run_ruby, run_ruby_one};
 
 #[test]
 fn custom_exception_class() {
-    compile_ok(
-        "class MyError < StandardError\nend\n",
-    );
+    compile_ok("class MyError < StandardError\nend\n");
 }
 
 #[test]
@@ -23,9 +21,8 @@ fn rescue_specific_class() {
 
 #[test]
 fn rescue_capture_exception_object() {
-    let out = run_ruby(
-        "begin\n  raise 'something went wrong'\nrescue => e\n  puts 'caught'\nend\n",
-    );
+    let out =
+        run_ruby("begin\n  raise 'something went wrong'\nrescue => e\n  puts 'caught'\nend\n");
     assert_eq!(out, vec!["caught"]);
 }
 
@@ -39,9 +36,7 @@ fn rescue_exception_message() {
 
 #[test]
 fn rescue_exception_class_name() {
-    let out = run_ruby(
-        "begin\n  raise RuntimeError, 'oops'\nrescue => e\n  puts e.class\nend\n",
-    );
+    let out = run_ruby("begin\n  raise RuntimeError, 'oops'\nrescue => e\n  puts e.class\nend\n");
     assert_eq!(out, vec!["RuntimeError"]);
 }
 
@@ -69,9 +64,7 @@ fn ensure_runs_on_exception() {
 
 #[test]
 fn ensure_runs_on_normal_flow() {
-    let out = run_ruby(
-        "begin\n  x = 1 + 1\nensure\n  puts 'cleanup'\nend\n",
-    );
+    let out = run_ruby("begin\n  x = 1 + 1\nensure\n  puts 'cleanup'\nend\n");
     assert_eq!(out, vec!["cleanup"]);
 }
 
@@ -84,16 +77,12 @@ fn retry_inside_rescue() {
 
 #[test]
 fn raise_reraise_current() {
-    compile_ok(
-        "def risky\n  raise 'original'\nrescue => e\n  raise\nend\nrisky rescue nil\n",
-    );
+    compile_ok("def risky\n  raise 'original'\nrescue => e\n  raise\nend\nrisky rescue nil\n");
 }
 
 #[test]
 fn raise_with_new_message() {
-    let out = run_ruby(
-        "begin\n  raise 'custom message'\nrescue => e\n  puts e.message\nend\n",
-    );
+    let out = run_ruby("begin\n  raise 'custom message'\nrescue => e\n  puts e.message\nend\n");
     assert_eq!(out, vec!["custom message"]);
 }
 
@@ -107,9 +96,8 @@ fn raise_explicit_class_and_msg() {
 
 #[test]
 fn begin_rescue_else_no_exception() {
-    let out = run_ruby(
-        "begin\n  x = 1 + 1\nrescue\n  puts 'error'\nelse\n  puts 'no error'\nend\n",
-    );
+    let out =
+        run_ruby("begin\n  x = 1 + 1\nrescue\n  puts 'error'\nelse\n  puts 'no error'\nend\n");
     assert_eq!(out, vec!["no error"]);
 }
 
@@ -145,24 +133,18 @@ fn throw_catch_flow_control() {
 
 #[test]
 fn catch_returns_throw_value() {
-    let out = run_ruby(
-        "result = catch(:stop) do\n  throw :stop, 42\nend\nputs result\n",
-    );
+    let out = run_ruby("result = catch(:stop) do\n  throw :stop, 42\nend\nputs result\n");
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn abort_with_message_compiles() {
-    compile_ok(
-        "def maybe_abort(x)\n  abort('fatal error') if x < 0\n  x\nend\n",
-    );
+    compile_ok("def maybe_abort(x)\n  abort('fatal error') if x < 0\n  x\nend\n");
 }
 
 #[test]
 fn at_exit_register_compiles() {
-    compile_ok(
-        "at_exit { puts 'cleanup on exit' }\n",
-    );
+    compile_ok("at_exit { puts 'cleanup on exit' }\n");
 }
 
 #[test]
@@ -175,9 +157,7 @@ fn rescue_standard_error_catches_runtime() {
 
 #[test]
 fn rescue_exception_catches_all() {
-    compile_ok(
-        "begin\n  raise 'anything'\nrescue Exception\n  puts 'caught all'\nend\n",
-    );
+    compile_ok("begin\n  raise 'anything'\nrescue Exception\n  puts 'caught all'\nend\n");
 }
 
 #[test]
@@ -186,4 +166,3 @@ fn custom_exception_with_attributes() {
         "class HttpError < StandardError\n  attr_reader :code\n  def initialize(msg, code)\n    super(msg)\n    @code = code\n  end\nend\nbegin\n  raise HttpError.new('not found', 404)\nrescue HttpError => e\n  puts e.code\nend\n",
     );
 }
-

@@ -58,25 +58,19 @@ fn class_method_calls_instance_via_new() {
 
 #[test]
 fn instance_class_method_returns_name() {
-    let out = run_ruby(
-        "class Cat\nend\nc = Cat.new\nputs c.class\n",
-    );
+    let out = run_ruby("class Cat\nend\nc = Cat.new\nputs c.class\n");
     assert_eq!(out, vec!["Cat"]);
 }
 
 #[test]
 fn is_a_check_on_instance() {
-    let out = run_ruby(
-        "class Dog\nend\nd = Dog.new\nputs d.is_a?(Dog)\n",
-    );
+    let out = run_ruby("class Dog\nend\nd = Dog.new\nputs d.is_a?(Dog)\n");
     assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn kind_of_alias_check() {
-    let out = run_ruby(
-        "class Cat\nend\nc = Cat.new\nputs c.kind_of?(Cat)\n",
-    );
+    let out = run_ruby("class Cat\nend\nc = Cat.new\nputs c.kind_of?(Cat)\n");
     assert_eq!(out, vec!["true"]);
 }
 
@@ -90,17 +84,13 @@ fn instance_of_exact_check() {
 
 #[test]
 fn nil_check_on_instance_and_nil() {
-    let out = run_ruby(
-        "class Foo\nend\nf = Foo.new\nputs f.nil?\nputs nil.nil?\n",
-    );
+    let out = run_ruby("class Foo\nend\nf = Foo.new\nputs f.nil?\nputs nil.nil?\n");
     assert_eq!(out, vec!["false", "true"]);
 }
 
 #[test]
 fn frozen_check_unfrozen() {
-    compile_ok(
-        "class Box\n  attr_accessor :value\nend\nb = Box.new\nb.frozen?\n",
-    );
+    compile_ok("class Box\n  attr_accessor :value\nend\nb = Box.new\nb.frozen?\n");
 }
 
 #[test]
@@ -126,9 +116,7 @@ fn clone_copies_frozen_state() {
 
 #[test]
 fn object_id_returns_integer() {
-    compile_ok(
-        "class Widget\nend\nw = Widget.new\nid = w.object_id\n",
-    );
+    compile_ok("class Widget\nend\nw = Widget.new\nid = w.object_id\n");
 }
 
 #[test]
@@ -212,9 +200,7 @@ fn class_eval_add_method() {
 
 #[test]
 fn singleton_method_on_object() {
-    compile_ok(
-        "obj = Object.new\ndef obj.greet\n  'hello from singleton'\nend\nobj.greet\n",
-    );
+    compile_ok("obj = Object.new\ndef obj.greet\n  'hello from singleton'\nend\nobj.greet\n");
 }
 
 #[test]
@@ -232,4 +218,3 @@ fn multi_level_inheritance_super() {
     );
     assert_eq!(out, vec!["ABC"]);
 }
-

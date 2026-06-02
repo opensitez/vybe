@@ -7,7 +7,8 @@ use super::helpers::run_ruby;
 
 #[test]
 fn two_value_return_and_destructure() {
-    let out = run_ruby(r##"
+    let out = run_ruby(
+        r##"
 def swap(a, b)
     return b, a
 end
@@ -15,13 +16,15 @@ end
 x, y = swap(1, 2)
 puts x
 puts y
-"##);
+"##,
+    );
     assert_eq!(out, vec!["2", "1"]);
 }
 
 #[test]
 fn three_value_return_and_destructure() {
-    let out = run_ruby(r##"
+    let out = run_ruby(
+        r##"
 def rgb
     return 10, 20, 30
 end
@@ -30,7 +33,8 @@ r, g, b = rgb()
 puts r
 puts g
 puts b
-"##);
+"##,
+    );
     assert_eq!(out, vec!["10", "20", "30"]);
 }
 
@@ -39,7 +43,8 @@ fn multi_value_function_used_as_array_repacks() {
     // Non-destructure callers keep Ruby's native semantics — the N
     // multi-value returns are re-packed into an array so `r[0]`/`r[1]`
     // work as expected.
-    let out = run_ruby(r#"
+    let out = run_ruby(
+        r#"
 def pair
     return 10, 20
 end
@@ -47,6 +52,7 @@ end
 r = pair()
 puts r[0]
 puts r[1]
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "20"]);
 }

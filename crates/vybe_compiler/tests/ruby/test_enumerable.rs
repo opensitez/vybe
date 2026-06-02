@@ -1,4 +1,4 @@
-use super::helpers::{run_ruby, run_ruby_one, compile_ok};
+use super::helpers::{compile_ok, run_ruby, run_ruby_one};
 
 // ── reduce / inject ─────────────────────────────────────────────────────────
 
@@ -270,7 +270,9 @@ fn custom_class_enumerable() {
 #[test]
 fn reduce_block_runtime() {
     assert_eq!(
-        run_ruby_one("[1, 2, 3, 4].reduce(0) { |sum, n| sum + n }\nputs [1, 2, 3, 4].reduce(0) { |sum, n| sum + n }\n"),
+        run_ruby_one(
+            "[1, 2, 3, 4].reduce(0) { |sum, n| sum + n }\nputs [1, 2, 3, 4].reduce(0) { |sum, n| sum + n }\n"
+        ),
         "10"
     );
 }
@@ -291,8 +293,5 @@ fn count_with_block_runtime() {
 
 #[test]
 fn find_runtime() {
-    assert_eq!(
-        run_ruby_one("puts [1, 2, 3, 4].find { |n| n > 2 }\n"),
-        "3"
-    );
+    assert_eq!(run_ruby_one("puts [1, 2, 3, 4].find { |n| n > 2 }\n"), "3");
 }

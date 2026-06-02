@@ -1,4 +1,4 @@
-use super::helpers::{run_ruby, run_ruby_one, compile_ok};
+use super::helpers::{compile_ok, run_ruby, run_ruby_one};
 
 // ── chomp ────────────────────────────────────────────────────────────────────
 
@@ -389,24 +389,28 @@ fn str_end_with_multiple_args() {
 
 #[test]
 fn str_strip_vs_lstrip_vs_rstrip() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 s = "  hello  "
 a = s.strip
 b = s.lstrip
 c = s.rstrip
-"#);
+"#,
+    );
 }
 
 // ── Heredoc ───────────────────────────────────────────────────────────────────
 
 #[test]
 fn str_squiggly_heredoc() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 x = <<~HEREDOC
   hello
   world
 HEREDOC
-"#);
+"#,
+    );
 }
 
 // ── %w[] word array literal ───────────────────────────────────────────────────
@@ -449,5 +453,8 @@ fn str_shovel_append() {
 
 #[test]
 fn str_shovel_runtime() {
-    assert_eq!(run_ruby_one("s = 'hello'\ns << ' world'\nputs s\n"), "hello world");
+    assert_eq!(
+        run_ruby_one("s = 'hello'\ns << ' world'\nputs s\n"),
+        "hello world"
+    );
 }

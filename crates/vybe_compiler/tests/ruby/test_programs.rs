@@ -1,10 +1,11 @@
-use super::helpers::{run_ruby, run_ruby_one, compile_ok};
+use super::helpers::{compile_ok, run_ruby, run_ruby_one};
 
 // ── FizzBuzz ────────────────────────────────────────────────────────────────
 
 #[test]
 fn fizzbuzz_compile() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 for i in 1..15
   if i % 15 == 0
     puts "FizzBuzz"
@@ -16,12 +17,14 @@ for i in 1..15
     puts i
   end
 end
-"#);
+"#,
+    );
 }
 
 #[test]
 fn fizzbuzz_runtime() {
-    let out = run_ruby(r#"
+    let out = run_ruby(
+        r#"
 for i in 1..15
   if i % 15 == 0
     puts "FizzBuzz"
@@ -33,18 +36,23 @@ for i in 1..15
     puts i
   end
 end
-"#);
-    assert_eq!(out, vec![
-        "1", "2", "Fizz", "4", "Buzz", "Fizz", "7", "8", "Fizz", "Buzz",
-        "11", "Fizz", "13", "14", "FizzBuzz"
-    ]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec![
+            "1", "2", "Fizz", "4", "Buzz", "Fizz", "7", "8", "Fizz", "Buzz", "11", "Fizz", "13",
+            "14", "FizzBuzz"
+        ]
+    );
 }
 
 // ── Fibonacci ───────────────────────────────────────────────────────────────
 
 #[test]
 fn fibonacci_compile() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 def fib(n)
   if n <= 1
     return n
@@ -52,12 +60,14 @@ def fib(n)
   fib(n - 1) + fib(n - 2)
 end
 puts fib(10)
-"#);
+"#,
+    );
 }
 
 #[test]
 fn fibonacci_runtime() {
-    let out = run_ruby(r#"
+    let out = run_ruby(
+        r#"
 def fib(n)
   if n <= 1
     return n
@@ -65,7 +75,8 @@ def fib(n)
   fib(n - 1) + fib(n - 2)
 end
 puts fib(10)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["55"]);
 }
 
@@ -73,7 +84,8 @@ puts fib(10)
 
 #[test]
 fn factorial_runtime() {
-    let out = run_ruby(r#"
+    let out = run_ruby(
+        r#"
 def factorial(n)
   if n <= 1
     return 1
@@ -81,7 +93,8 @@ def factorial(n)
   n * factorial(n - 1)
 end
 puts factorial(10)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3628800"]);
 }
 
@@ -89,7 +102,8 @@ puts factorial(10)
 
 #[test]
 fn class_program_compile() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 class Calculator
   def initialize(value)
     @value = value
@@ -108,12 +122,14 @@ c = Calculator.new(0)
 c.add(5)
 c.add(3)
 puts c.result
-"#);
+"#,
+    );
 }
 
 #[test]
 fn class_program_runtime() {
-    let out = run_ruby(r#"
+    let out = run_ruby(
+        r#"
 class Calculator
   def initialize(value)
     @value = value
@@ -132,7 +148,8 @@ c = Calculator.new(0)
 c.add(5)
 c.add(3)
 puts c.result
-"#);
+"#,
+    );
     assert_eq!(out, vec!["8"]);
 }
 
@@ -140,22 +157,26 @@ puts c.result
 
 #[test]
 fn array_processing_compile() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 numbers = [5, 3, 8, 1, 9, 2]
 sorted = numbers.sort
 puts sorted.first
 puts sorted.last
-"#);
+"#,
+    );
 }
 
 #[test]
 fn array_processing_runtime() {
-    let out = run_ruby(r#"
+    let out = run_ruby(
+        r#"
 numbers = [5, 3, 8, 1, 9, 2]
 sorted = numbers.sort
 puts sorted.first
 puts sorted.last
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "9"]);
 }
 
@@ -163,11 +184,13 @@ puts sorted.last
 
 #[test]
 fn string_program_runtime() {
-    let out = run_ruby(r#"
+    let out = run_ruby(
+        r#"
 sentence = "hello world ruby"
 words = sentence.split(" ")
 puts words.join("-")
-"#);
+"#,
+    );
     assert_eq!(out, vec!["hello-world-ruby"]);
 }
 
@@ -175,7 +198,8 @@ puts words.join("-")
 
 #[test]
 fn inheritance_program_runtime() {
-    let out = run_ruby(r#"
+    let out = run_ruby(
+        r#"
 class Shape
   def initialize(name)
     @name = name
@@ -196,6 +220,7 @@ end
 c = Circle.new(5)
 c.describe
 puts c.area
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Circle", "78.5"]);
 }

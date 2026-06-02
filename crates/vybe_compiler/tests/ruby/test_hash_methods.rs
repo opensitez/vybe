@@ -1,4 +1,4 @@
-use super::helpers::{run_ruby, run_ruby_one, compile_ok};
+use super::helpers::{compile_ok, run_ruby, run_ruby_one};
 
 // ── Iteration ───────────────────────────────────────────────────────────────
 
@@ -51,7 +51,9 @@ fn hash_transform_values() {
 
 #[test]
 fn hash_filter_map() {
-    compile_ok("h = {'a' => 1, 'b' => 2, 'c' => 3}\nx = h.filter_map { |k, v| [k, v * 2] if v > 1 }\n");
+    compile_ok(
+        "h = {'a' => 1, 'b' => 2, 'c' => 3}\nx = h.filter_map { |k, v| [k, v * 2] if v > 1 }\n",
+    );
 }
 
 // ── Predicates ──────────────────────────────────────────────────────────────
@@ -196,7 +198,9 @@ fn hash_compact() {
 
 #[test]
 fn hash_merge_with_block() {
-    compile_ok("h1 = {'a' => 1}\nh2 = {'a' => 2}\nx = h1.merge(h2) { |key, old, new_v| old + new_v }\n");
+    compile_ok(
+        "h1 = {'a' => 1}\nh2 = {'a' => 2}\nx = h1.merge(h2) { |key, old, new_v| old + new_v }\n",
+    );
 }
 
 #[test]
@@ -253,7 +257,10 @@ fn hash_each_runtime() {
 
 #[test]
 fn hash_count_runtime() {
-    assert_eq!(run_ruby_one("h = {'a' => 1, 'b' => 2, 'c' => 3}\nputs h.count\n"), "3");
+    assert_eq!(
+        run_ruby_one("h = {'a' => 1, 'b' => 2, 'c' => 3}\nputs h.count\n"),
+        "3"
+    );
 }
 
 #[test]
@@ -263,5 +270,8 @@ fn hash_empty_q_runtime() {
 
 #[test]
 fn hash_length_runtime() {
-    assert_eq!(run_ruby_one("h = {'x' => 1, 'y' => 2}\nputs h.length\n"), "2");
+    assert_eq!(
+        run_ruby_one("h = {'x' => 1, 'y' => 2}\nputs h.length\n"),
+        "2"
+    );
 }
