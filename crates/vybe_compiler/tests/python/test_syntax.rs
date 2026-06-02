@@ -117,7 +117,9 @@ fn global_statement() {
 
 #[test]
 fn nonlocal_statement() {
-    compile_ok("def outer():\n    x = 10\n    def inner():\n        nonlocal x\n        x = 20\n    inner()\n");
+    compile_ok(
+        "def outer():\n    x = 10\n    def inner():\n        nonlocal x\n        x = 20\n    inner()\n",
+    );
 }
 
 #[test]
@@ -180,7 +182,8 @@ fn call_double_star_unpack() {
 
 #[test]
 fn multiple_return_values() {
-    let out = run_python("def swap(a, b):\n    return b, a\nx, y = swap(1, 2)\nprint(x)\nprint(y)\n");
+    let out =
+        run_python("def swap(a, b):\n    return b, a\nx, y = swap(1, 2)\nprint(x)\nprint(y)\n");
     assert_eq!(out[0], "2");
     assert_eq!(out[1], "1");
 }
@@ -192,7 +195,10 @@ fn lambda_runtime() {
 
 #[test]
 fn lambda_multi_arg() {
-    assert_eq!(run_python_one("add = lambda a, b: a + b\nprint(add(3, 4))\n"), "7");
+    assert_eq!(
+        run_python_one("add = lambda a, b: a + b\nprint(add(3, 4))\n"),
+        "7"
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -201,7 +207,9 @@ fn lambda_multi_arg() {
 
 #[test]
 fn generator_basic_runtime() {
-    let out = run_python("def gen():\n    yield 1\n    yield 2\n    yield 3\nfor v in gen():\n    print(v)\n");
+    let out = run_python(
+        "def gen():\n    yield 1\n    yield 2\n    yield 3\nfor v in gen():\n    print(v)\n",
+    );
     assert_eq!(out, vec!["1", "2", "3"]);
 }
 

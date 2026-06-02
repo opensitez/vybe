@@ -27,7 +27,10 @@ fn escape_single_quote() {
 
 #[test]
 fn escape_double_quote() {
-    assert_eq!(run_python_one("print(\"he said \\\"hi\\\"\")\n"), "he said \"hi\"");
+    assert_eq!(
+        run_python_one("print(\"he said \\\"hi\\\"\")\n"),
+        "he said \"hi\""
+    );
 }
 
 #[test]
@@ -118,7 +121,10 @@ fn triple_single_multiline() {
 
 #[test]
 fn fstring_basic_runtime() {
-    assert_eq!(run_python_one("name = 'world'\nprint(f'hello {name}')\n"), "hello world");
+    assert_eq!(
+        run_python_one("name = 'world'\nprint(f'hello {name}')\n"),
+        "hello world"
+    );
 }
 
 #[test]
@@ -128,7 +134,10 @@ fn fstring_expression() {
 
 #[test]
 fn fstring_multiple_exprs() {
-    assert_eq!(run_python_one("a = 1\nb = 2\nprint(f'{a} + {b} = {a + b}')\n"), "1 + 2 = 3");
+    assert_eq!(
+        run_python_one("a = 1\nb = 2\nprint(f'{a} + {b} = {a + b}')\n"),
+        "1 + 2 = 3"
+    );
 }
 
 #[test]
@@ -138,7 +147,10 @@ fn fstring_escaped_braces() {
 
 #[test]
 fn fstring_nested_quotes() {
-    assert_eq!(run_python_one("d = {'key': 'val'}\nprint(f\"{d['key']}\")\n"), "val");
+    assert_eq!(
+        run_python_one("d = {'key': 'val'}\nprint(f\"{d['key']}\")\n"),
+        "val"
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -162,7 +174,10 @@ fn str_strip() {
 
 #[test]
 fn str_replace_runtime() {
-    assert_eq!(run_python_one("print('hello'.replace('l', 'r'))\n"), "herro");
+    assert_eq!(
+        run_python_one("print('hello'.replace('l', 'r'))\n"),
+        "herro"
+    );
 }
 
 #[test]
@@ -188,7 +203,10 @@ fn str_split_runtime() {
 
 #[test]
 fn str_join_runtime() {
-    assert_eq!(run_python_one("print(', '.join(['a', 'b', 'c']))\n"), "a, b, c");
+    assert_eq!(
+        run_python_one("print(', '.join(['a', 'b', 'c']))\n"),
+        "a, b, c"
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

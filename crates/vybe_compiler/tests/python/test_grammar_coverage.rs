@@ -126,7 +126,9 @@ fn fstring_triple_single() {
 
 #[test]
 fn match_as_pattern() {
-    compile_ok("match [1, 2]:\n    case [x, y] as point:\n        print(point)\n    case _:\n        pass\n");
+    compile_ok(
+        "match [1, 2]:\n    case [x, y] as point:\n        print(point)\n    case _:\n        pass\n",
+    );
 }
 
 #[test]
@@ -145,7 +147,9 @@ fn match_as_singleton() {
 
 #[test]
 fn match_class_keyword_pattern() {
-    compile_ok("class Point:\n    x = 0\n    y = 0\nmatch p:\n    case Point(x=1, y=2):\n        print('origin-ish')\n    case _:\n        pass\n");
+    compile_ok(
+        "class Point:\n    x = 0\n    y = 0\nmatch p:\n    case Point(x=1, y=2):\n        print('origin-ish')\n    case _:\n        pass\n",
+    );
 }
 
 #[test]
@@ -171,7 +175,9 @@ fn case_as_variable_name() {
 
 #[test]
 fn match_case_as_function_names() {
-    let out = run_python("def match(x):\n    return x + 1\ndef case(x):\n    return x * 2\nprint(match(5))\nprint(case(3))\n");
+    let out = run_python(
+        "def match(x):\n    return x + 1\ndef case(x):\n    return x * 2\nprint(match(5))\nprint(case(3))\n",
+    );
     assert_eq!(out[0], "6");
     assert_eq!(out[1], "6");
 }

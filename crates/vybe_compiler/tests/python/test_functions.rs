@@ -1,4 +1,4 @@
-use super::helpers::{run_python, run_python_one, compile_ok};
+use super::helpers::{compile_ok, run_python, run_python_one};
 
 #[test]
 fn simple_function() {
@@ -47,38 +47,61 @@ fn dict_comp() {
 
 // Generators (yield)
 
-#[test] fn yield_basic() { compile_ok("def gen():\n    yield 1\n    yield 2\n    yield 3\n"); }
-#[test] fn yield_no_value() { compile_ok("def gen():\n    yield\n"); }
-#[test] fn yield_in_loop() { compile_ok("def count_up(n):\n    i = 0\n    while i < n:\n        yield i\n        i += 1\n"); }
-#[test] fn yield_from() { compile_ok("def chain(a, b):\n    yield from a\n    yield from b\n"); }
+#[test]
+fn yield_basic() {
+    compile_ok("def gen():\n    yield 1\n    yield 2\n    yield 3\n");
+}
+#[test]
+fn yield_no_value() {
+    compile_ok("def gen():\n    yield\n");
+}
+#[test]
+fn yield_in_loop() {
+    compile_ok("def count_up(n):\n    i = 0\n    while i < n:\n        yield i\n        i += 1\n");
+}
+#[test]
+fn yield_from() {
+    compile_ok("def chain(a, b):\n    yield from a\n    yield from b\n");
+}
 
 // Runtime function tests
 
 #[test]
 fn function_call_runtime() {
-    let out = run_python("def greet(name):\n    print(\"Hello, \" + name + \"!\")\ngreet(\"Python\")\n");
+    let out =
+        run_python("def greet(name):\n    print(\"Hello, \" + name + \"!\")\ngreet(\"Python\")\n");
     assert_eq!(out, vec!["Hello, Python!"]);
 }
 
 #[test]
 fn function_return_runtime() {
-    assert_eq!(run_python_one("def add(a, b):\n    return a + b\nprint(add(3, 4))\n"), "7");
+    assert_eq!(
+        run_python_one("def add(a, b):\n    return a + b\nprint(add(3, 4))\n"),
+        "7"
+    );
 }
 
 #[test]
 fn nested_function_runtime() {
-    assert_eq!(run_python_one("def outer():\n    def inner():\n        return 42\n    return inner()\nprint(outer())\n"), "42");
+    assert_eq!(
+        run_python_one(
+            "def outer():\n    def inner():\n        return 42\n    return inner()\nprint(outer())\n"
+        ),
+        "42"
+    );
 }
 
 #[test]
 fn recursive_function_runtime() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 def fib(n):
     if n <= 1:
         return n
     return fib(n - 1) + fib(n - 2)
 print(fib(10))
-"#);
+"#,
+    );
     assert_eq!(out, vec!["55"]);
 }
 

@@ -102,17 +102,26 @@ fn bool_not_false() {
 
 #[test]
 fn ternary_true_branch() {
-    assert_eq!(run_python_one("x = 'yes' if True else 'no'\nprint(x)\n"), "yes");
+    assert_eq!(
+        run_python_one("x = 'yes' if True else 'no'\nprint(x)\n"),
+        "yes"
+    );
 }
 
 #[test]
 fn ternary_false_branch() {
-    assert_eq!(run_python_one("x = 'yes' if False else 'no'\nprint(x)\n"), "no");
+    assert_eq!(
+        run_python_one("x = 'yes' if False else 'no'\nprint(x)\n"),
+        "no"
+    );
 }
 
 #[test]
 fn ternary_with_expression() {
-    assert_eq!(run_python_one("n = 7\nresult = 'even' if n % 2 == 0 else 'odd'\nprint(result)\n"), "odd");
+    assert_eq!(
+        run_python_one("n = 7\nresult = 'even' if n % 2 == 0 else 'odd'\nprint(result)\n"),
+        "odd"
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

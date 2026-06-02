@@ -16,17 +16,20 @@ fn try_except_with_name() {
 
 #[test]
 fn typed_except_single() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 try:
     x = int("abc")
 except ValueError:
     print("bad value")
-"#);
+"#,
+    );
 }
 
 #[test]
 fn typed_except_multiple() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 try:
     x = 1 / 0
 except ValueError:
@@ -35,12 +38,14 @@ except TypeError:
     print("type error")
 except ZeroDivisionError:
     print("division by zero")
-"#);
+"#,
+    );
 }
 
 #[test]
 fn typed_except_with_names() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 try:
     result = dangerous_operation()
 except ValueError as ve:
@@ -49,50 +54,58 @@ except TypeError as te:
     print("TypeError:", te)
 except Exception as e:
     print("Other:", e)
-"#);
+"#,
+    );
 }
 
 #[test]
 fn typed_except_with_catch_all() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 try:
     x = 1
 except ValueError:
     print("value error")
 except:
     print("catch all")
-"#);
+"#,
+    );
 }
 
 // Try/except/else/finally
 
 #[test]
 fn try_except_else() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 try:
     x = 1
 except:
     print("error")
 else:
     print("no error")
-"#);
+"#,
+    );
 }
 
 #[test]
 fn try_except_finally() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 try:
     f = open("file.txt")
 except:
     print("error")
 finally:
     print("cleanup")
-"#);
+"#,
+    );
 }
 
 #[test]
 fn try_except_else_finally() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 try:
     x = 1
 except ValueError:
@@ -101,7 +114,8 @@ else:
     print("success")
 finally:
     print("done")
-"#);
+"#,
+    );
 }
 
 // Raise
@@ -118,19 +132,22 @@ fn raise_with_message() {
 
 #[test]
 fn raise_from() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 try:
     x = 1 / 0
 except ZeroDivisionError as e:
     raise ValueError("invalid") from e
-"#);
+"#,
+    );
 }
 
 // Nested try/except
 
 #[test]
 fn nested_try() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 try:
     try:
         x = 1 / 0
@@ -139,5 +156,6 @@ try:
         raise ValueError("converted")
 except ValueError:
     print("outer")
-"#);
+"#,
+    );
 }

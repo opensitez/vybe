@@ -1,4 +1,4 @@
-use super::helpers::{run_python, compile_ok};
+use super::helpers::{compile_ok, run_python};
 
 #[test]
 fn if_simple() {
@@ -22,7 +22,9 @@ fn while_loop() {
 
 #[test]
 fn while_with_continue() {
-    compile_ok("i = 0\nwhile i < 10:\n    i += 1\n    if i == 5:\n        continue\n    print(i)\n");
+    compile_ok(
+        "i = 0\nwhile i < 10:\n    i += 1\n    if i == 5:\n        continue\n    print(i)\n",
+    );
 }
 
 #[test]
@@ -70,7 +72,9 @@ fn if_else_runtime() {
 
 #[test]
 fn if_elif_else_runtime() {
-    let out = run_python("x = 5\nif x > 10:\n    print(\"big\")\nelif x > 3:\n    print(\"medium\")\nelse:\n    print(\"small\")\n");
+    let out = run_python(
+        "x = 5\nif x > 10:\n    print(\"big\")\nelif x > 3:\n    print(\"medium\")\nelse:\n    print(\"small\")\n",
+    );
     assert_eq!(out, vec!["medium"]);
 }
 
@@ -107,7 +111,9 @@ fn for_else_no_break() {
 
 #[test]
 fn for_else_with_break() {
-    compile_ok("for x in [1, 2, 3]:\n    if x == 2:\n        break\nelse:\n    print('unreachable')\n");
+    compile_ok(
+        "for x in [1, 2, 3]:\n    if x == 2:\n        break\nelse:\n    print('unreachable')\n",
+    );
 }
 
 #[test]

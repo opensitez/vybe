@@ -12,59 +12,69 @@ use crate::helpers::run_python;
 
 #[test]
 fn loop_norec() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 for i in range(3):
     print(i)
-"#);
-    assert_eq!(out, vec!["0","1","2"]);
+"#,
+    );
+    assert_eq!(out, vec!["0", "1", "2"]);
 }
 
 #[test]
 fn loop_norec_call() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 def g(n):
     return n + 1
 for i in range(3):
     print(g(i))
-"#);
-    assert_eq!(out, vec!["1","2","3"]);
+"#,
+    );
+    assert_eq!(out, vec!["1", "2", "3"]);
 }
 
 #[test]
 fn loop_rec_call() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 def f(n):
     if n <= 0:
         return n
     return f(n - 1)
 for i in range(3):
     print(f(i))
-"#);
-    assert_eq!(out, vec!["0","0","0"]);
+"#,
+    );
+    assert_eq!(out, vec!["0", "0", "0"]);
 }
 
 #[test]
 fn loop_call_with_if_early_return() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 def h(n):
     if n <= 0:
         return n
     return n + 100
 for i in range(3):
     print(h(i))
-"#);
-    assert_eq!(out, vec!["0","101","102"]);
+"#,
+    );
+    assert_eq!(out, vec!["0", "101", "102"]);
 }
 
 #[test]
 fn loop_call_two_paths_returning() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 def k(n):
     if n <= 0:
         return n
     return n
 for i in range(3):
     print(k(i))
-"#);
-    assert_eq!(out, vec!["0","1","2"]);
+"#,
+    );
+    assert_eq!(out, vec!["0", "1", "2"]);
 }

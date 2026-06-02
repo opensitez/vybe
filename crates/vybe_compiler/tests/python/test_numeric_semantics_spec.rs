@@ -35,12 +35,19 @@ runtime_case!(floor_div_negative_runtime, "print(-7 // 2)\n", "-4");
 runtime_case!(modulo_negative_runtime, "print(-7 % 2)\n", "1");
 runtime_case!(pow_negative_exponent_runtime, "print(2 ** -1)\n", "0.5");
 runtime_case!(divmod_negative_runtime, "print(divmod(-7, 3)[0])\n", "-3");
-runtime_case!(bool_is_int_runtime, "print(isinstance(True, int))\n", "true");
+runtime_case!(
+    bool_is_int_runtime,
+    "print(isinstance(True, int))\n",
+    "true"
+);
 runtime_case!(int_base_two_runtime, "print(int('1010', 2))\n", "10");
 runtime_case!(int_base_sixteen_runtime, "print(int('FF', 16))\n", "255");
 compile_case!(float_from_scientific_compile, "x = float('1e6')\n");
 compile_case!(complex_constructor_compile, "z = complex(3, 4)\n");
-compile_case!(complex_real_imag_compile, "z = 3 + 4j\na = z.real\nb = z.imag\n");
+compile_case!(
+    complex_real_imag_compile,
+    "z = 3 + 4j\na = z.real\nb = z.imag\n"
+);
 compile_case!(unary_plus_literal_compile, "x = +42\n");
 compile_case!(unary_minus_hex_compile, "x = -0x10\n");
 runtime_case!(bitshift_large_literal_runtime, "print(1 << 10)\n", "1024");

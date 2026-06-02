@@ -26,17 +26,23 @@ fn bare_raise_reraise() {
 
 #[test]
 fn except_hierarchy() {
-    compile_ok("try:\n    pass\nexcept ValueError:\n    pass\nexcept Exception:\n    pass\nexcept:\n    pass\n");
+    compile_ok(
+        "try:\n    pass\nexcept ValueError:\n    pass\nexcept Exception:\n    pass\nexcept:\n    pass\n",
+    );
 }
 
 #[test]
 fn raise_from() {
-    compile_ok("try:\n    pass\nexcept Exception as e:\n    raise RuntimeError('wrapped') from e\n");
+    compile_ok(
+        "try:\n    pass\nexcept Exception as e:\n    raise RuntimeError('wrapped') from e\n",
+    );
 }
 
 #[test]
 fn nested_try_except() {
-    compile_ok("try:\n    try:\n        risky()\n    except ValueError:\n        pass\nexcept Exception:\n    pass\n");
+    compile_ok(
+        "try:\n    try:\n        risky()\n    except ValueError:\n        pass\nexcept Exception:\n    pass\n",
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -45,13 +51,17 @@ fn nested_try_except() {
 
 #[test]
 fn for_else_no_break() {
-    let out = run_python("for x in [1, 2, 3]:\n    if x == 5:\n        break\nelse:\n    print('no five')\n");
+    let out = run_python(
+        "for x in [1, 2, 3]:\n    if x == 5:\n        break\nelse:\n    print('no five')\n",
+    );
     assert_eq!(out[0], "no five");
 }
 
 #[test]
 fn for_else_with_break() {
-    let out = run_python("for x in [1, 2, 3]:\n    if x == 2:\n        break\nelse:\n    print('no break')\nprint('done')\n");
+    let out = run_python(
+        "for x in [1, 2, 3]:\n    if x == 2:\n        break\nelse:\n    print('no break')\nprint('done')\n",
+    );
     assert_eq!(out[0], "done");
 }
 
@@ -63,7 +73,8 @@ fn while_else_no_break() {
 
 #[test]
 fn nested_loops_break_continue() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 for i in range(3):
     for j in range(3):
         if j == 1:
@@ -71,7 +82,8 @@ for i in range(3):
         if i == 2:
             break
         print(i, j)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0 0", "0 2", "1 0", "1 2"]);
 }
 

@@ -26,7 +26,10 @@ fn list_negative_index() {
 
 #[test]
 fn list_append_runtime() {
-    assert_eq!(run_python_one("x = [1, 2, 3]\nx.append(4)\nprint(len(x))\n"), "4");
+    assert_eq!(
+        run_python_one("x = [1, 2, 3]\nx.append(4)\nprint(len(x))\n"),
+        "4"
+    );
 }
 
 #[test]
@@ -84,7 +87,10 @@ fn dict_empty() {
 
 #[test]
 fn dict_set_key() {
-    assert_eq!(run_python_one("d = {}\nd['key'] = 'value'\nprint(d['key'])\n"), "value");
+    assert_eq!(
+        run_python_one("d = {}\nd['key'] = 'value'\nprint(d['key'])\n"),
+        "value"
+    );
 }
 
 #[test]
@@ -169,7 +175,10 @@ fn chained_assignment() {
 
 #[test]
 fn subscript_assignment() {
-    assert_eq!(run_python_one("x = [0, 0, 0]\nx[1] = 42\nprint(x[1])\n"), "42");
+    assert_eq!(
+        run_python_one("x = [0, 0, 0]\nx[1] = 42\nprint(x[1])\n"),
+        "42"
+    );
 }
 
 #[test]
