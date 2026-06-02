@@ -1,12 +1,13 @@
 #![allow(dead_code)]
 
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::{VM, Value, HostContext};
+use vybe_bytecode::{HostContext, VM, Value};
 
 fn compile_chunks(src: &str) -> Result<Vec<vybe_bytecode::Chunk>, String> {
     let module = vybe_compiler::languages::go::parse(src)?;
-    let profile = vybe_compiler::profile::parse_profile(vybe_compiler::languages::go::profile_source())
-        .map_err(|e| format!("profile parse failed: {}", e))?;
+    let profile =
+        vybe_compiler::profile::parse_profile(vybe_compiler::languages::go::profile_source())
+            .map_err(|e| format!("profile parse failed: {}", e))?;
     vybe_compiler::compiler::Compiler::with_profile(profile).compile(&module)
 }
 
@@ -39,11 +40,15 @@ pub fn run_prints(src: &str) -> Vec<String> {
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();
     vybe_host::register_all(&mut vm);
-    vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-        let s: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
-        out.lock().unwrap().push(s.join(" "));
-        Value::Null
-    }));
+    vm.register_host_fn(
+        "wasi:cli",
+        "log",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let s: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
+            out.lock().unwrap().push(s.join(" "));
+            Value::Null
+        }),
+    );
     vybe_host::setup_namespaces(&mut vm);
     vm.run(chunks).expect("run failed");
     let result = output.lock().unwrap().clone();
