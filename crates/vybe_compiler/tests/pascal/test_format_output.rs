@@ -243,7 +243,10 @@ begin
 end.
 "#;
     let out = run_pascal(src);
-    assert_eq!(out, vec!["item_001", "item_002", "item_003", "item_004", "item_005"]);
+    assert_eq!(
+        out,
+        vec!["item_001", "item_002", "item_003", "item_004", "item_005"]
+    );
 }
 
 #[test]

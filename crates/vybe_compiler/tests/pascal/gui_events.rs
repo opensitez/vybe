@@ -4,7 +4,8 @@ use super::helpers::run_pascal_gui;
 
 #[test]
 fn button_onclick_registered() {
-    let (_vm, gui, _) = run_pascal_gui(r#"
+    let (_vm, gui, _) = run_pascal_gui(
+        r#"
 program Test;
 uses Forms, StdCtrls;
 type TForm1 = class(TForm)
@@ -17,14 +18,20 @@ begin inherited Create(AOwner); btn1 := TButton.Create(Self); btn1.Name := 'btn1
 procedure TForm1.btn1Click(Sender: TObject); begin WriteLn('clicked'); end;
 var f: TForm1;
 begin f := TForm1.Create(nil); end.
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert!(g.event_handlers.contains_key("btn1.click"), "Expected Click handler, got keys: {:?}", g.event_keys());
+    assert!(
+        g.event_handlers.contains_key("btn1.click"),
+        "Expected Click handler, got keys: {:?}",
+        g.event_keys()
+    );
 }
 
 #[test]
 fn two_buttons_different_onclick() {
-    let (_vm, gui, _) = run_pascal_gui(r#"
+    let (_vm, gui, _) = run_pascal_gui(
+        r#"
 program Test;
 uses Forms, StdCtrls;
 type TForm1 = class(TForm)
@@ -39,7 +46,8 @@ procedure TForm1.btn1Click(Sender: TObject); begin end;
 procedure TForm1.btn2Click(Sender: TObject); begin end;
 var f: TForm1;
 begin f := TForm1.Create(nil); end.
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
     assert!(g.event_handlers.contains_key("btn1.click"));
     assert!(g.event_handlers.contains_key("btn2.click"));
@@ -47,7 +55,8 @@ begin f := TForm1.Create(nil); end.
 
 #[test]
 fn edit_onchange_registered() {
-    let (_vm, gui, _) = run_pascal_gui(r#"
+    let (_vm, gui, _) = run_pascal_gui(
+        r#"
 program Test;
 uses Forms, StdCtrls;
 type TForm1 = class(TForm)
@@ -60,14 +69,16 @@ begin inherited Create(AOwner); txt1 := TEdit.Create(Self); txt1.Name := 'txt1';
 procedure TForm1.txt1Change(Sender: TObject); begin end;
 var f: TForm1;
 begin f := TForm1.Create(nil); end.
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
     assert!(g.event_handlers.contains_key("txt1.change"));
 }
 
 #[test]
 fn checkbox_onclick_registered() {
-    let (_vm, gui, _) = run_pascal_gui(r#"
+    let (_vm, gui, _) = run_pascal_gui(
+        r#"
 program Test;
 uses Forms, StdCtrls;
 type TForm1 = class(TForm)
@@ -80,14 +91,16 @@ begin inherited Create(AOwner); chk1 := TCheckBox.Create(Self); chk1.Name := 'ch
 procedure TForm1.chk1Click(Sender: TObject); begin end;
 var f: TForm1;
 begin f := TForm1.Create(nil); end.
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
     assert!(g.event_handlers.contains_key("chk1.click"));
 }
 
 #[test]
 fn combobox_onchange_registered() {
-    let (_vm, gui, _) = run_pascal_gui(r#"
+    let (_vm, gui, _) = run_pascal_gui(
+        r#"
 program Test;
 uses Forms, StdCtrls;
 type TForm1 = class(TForm)
@@ -100,14 +113,16 @@ begin inherited Create(AOwner); cbo1 := TComboBox.Create(Self); cbo1.Name := 'cb
 procedure TForm1.cbo1Change(Sender: TObject); begin end;
 var f: TForm1;
 begin f := TForm1.Create(nil); end.
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
     assert!(g.event_handlers.contains_key("cbo1.change"));
 }
 
 #[test]
 fn form_oncreate_registered() {
-    let (_vm, gui, _) = run_pascal_gui(r#"
+    let (_vm, gui, _) = run_pascal_gui(
+        r#"
 program Test;
 uses Forms;
 type TForm1 = class(TForm)
@@ -119,14 +134,16 @@ begin inherited Create(AOwner); OnCreate := FormCreate; end;
 procedure TForm1.FormCreate(Sender: TObject); begin end;
 var f: TForm1;
 begin f := TForm1.Create(nil); end.
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
     assert!(g.event_handlers.contains_key("form1.create"));
 }
 
 #[test]
 fn timer_ontimer_registered() {
-    let (_vm, gui, _) = run_pascal_gui(r#"
+    let (_vm, gui, _) = run_pascal_gui(
+        r#"
 program Test;
 uses Forms, ExtCtrls;
 type TForm1 = class(TForm)
@@ -139,14 +156,16 @@ begin inherited Create(AOwner); tmr1 := TTimer.Create(Self); tmr1.Name := 'tmr1'
 procedure TForm1.tmr1Timer(Sender: TObject); begin end;
 var f: TForm1;
 begin f := TForm1.Create(nil); end.
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
     assert!(g.event_handlers.contains_key("tmr1.timer"));
 }
 
 #[test]
 fn form_onclose_registered() {
-    let (_vm, gui, _) = run_pascal_gui(r#"
+    let (_vm, gui, _) = run_pascal_gui(
+        r#"
 program Test;
 uses Forms;
 type TForm1 = class(TForm)
@@ -158,14 +177,16 @@ begin inherited Create(AOwner); OnClose := FormClose; end;
 procedure TForm1.FormClose(Sender: TObject; var Action: TCloseAction); begin end;
 var f: TForm1;
 begin f := TForm1.Create(nil); end.
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
     assert!(g.event_handlers.contains_key("form1.close"));
 }
 
 #[test]
 fn handler_is_callable_value() {
-    let (_vm, gui, _) = run_pascal_gui(r#"
+    let (_vm, gui, _) = run_pascal_gui(
+        r#"
 program Test;
 uses Forms, StdCtrls;
 type TForm1 = class(TForm)
@@ -178,17 +199,22 @@ begin inherited Create(AOwner); btn1 := TButton.Create(Self); btn1.Name := 'btn1
 procedure TForm1.btn1Click(Sender: TObject); begin end;
 var f: TForm1;
 begin f := TForm1.Create(nil); end.
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
     let handler = g.get_event_handler("btn1", "Click");
     assert!(handler.is_some());
     let h = handler.unwrap();
-    assert!(!matches!(h, vybe_bytecode::Value::Null), "Handler should not be Null");
+    assert!(
+        !matches!(h, vybe_bytecode::Value::Null),
+        "Handler should not be Null"
+    );
 }
 
 #[test]
 fn handler_references_form_field() {
-    let (_vm, gui, _) = run_pascal_gui(r#"
+    let (_vm, gui, _) = run_pascal_gui(
+        r#"
 program Test;
 uses Forms, StdCtrls;
 type TForm1 = class(TForm)
@@ -202,7 +228,8 @@ begin inherited Create(AOwner); FCounter := 0; btn1 := TButton.Create(Self); btn
 procedure TForm1.btn1Click(Sender: TObject); begin FCounter := FCounter + 1; end;
 var f: TForm1;
 begin f := TForm1.Create(nil); end.
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
     assert!(g.event_handlers.contains_key("btn1.click"));
 }

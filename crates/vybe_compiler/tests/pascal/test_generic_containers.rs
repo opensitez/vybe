@@ -1,15 +1,17 @@
 /// Tests for generic container simulations in Pascal/Delphi:
 /// Generic pair operations, generic stack/queue patterns,
 /// generic search and transform functions.
-
 use super::helpers::run_pascal;
 
 // ===================================================================
 // GENERIC PAIR OPERATIONS
 // ===================================================================
 
-#[test] fn generic_pair_swap() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn generic_pair_swap() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TPair<T> = class
   public
@@ -33,11 +35,17 @@ begin
   WriteLn(p.First);
   WriteLn(p.Second);
   p.Free;
-end."#), &["20", "10"]);
+end."#
+        ),
+        &["20", "10"]
+    );
 }
 
-#[test] fn generic_pair_string() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn generic_pair_string() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TPair<T> = class
   public
@@ -51,15 +59,21 @@ begin
   p.Second := 'world';
   WriteLn(p.First + ' ' + p.Second);
   p.Free;
-end."#), &["hello world"]);
+end."#
+        ),
+        &["hello world"]
+    );
 }
 
 // ===================================================================
 // GENERIC STACK SIMULATION
 // ===================================================================
 
-#[test] fn generic_stack_push_pop() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn generic_stack_push_pop() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TStack<T> = class
   private
@@ -106,11 +120,17 @@ begin
   WriteLn(s.Pop);
   WriteLn(s.Count);
   s.Free;
-end."#), &["3", "3", "3", "2"]);
+end."#
+        ),
+        &["3", "3", "3", "2"]
+    );
 }
 
-#[test] fn generic_stack_string() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn generic_stack_string() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TStack<T> = class
   private
@@ -140,15 +160,21 @@ begin
   WriteLn(s.Pop);
   WriteLn(s.Pop);
   s.Free;
-end."#), &["third", "second"]);
+end."#
+        ),
+        &["third", "second"]
+    );
 }
 
 // ===================================================================
 // GENERIC QUEUE SIMULATION
 // ===================================================================
 
-#[test] fn generic_queue_enqueue_dequeue() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn generic_queue_enqueue_dequeue() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TQueue<T> = class
   private
@@ -192,15 +218,21 @@ begin
   WriteLn(q.Dequeue);
   WriteLn(q.IsEmpty);
   q.Free;
-end."#), &["10", "20", "false"]);
+end."#
+        ),
+        &["10", "20", "false"]
+    );
 }
 
 // ===================================================================
 // GENERIC FUNCTION
 // ===================================================================
 
-#[test] fn generic_max_function() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn generic_max_function() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 function GenMax<T>(a, b: T): T;
 begin
   if a > b then Result := a else Result := b;
@@ -208,11 +240,17 @@ end;
 begin
   WriteLn(GenMax<Integer>(3, 7));
   WriteLn(GenMax<Integer>(10, 5));
-end."#), &["7", "10"]);
+end."#
+        ),
+        &["7", "10"]
+    );
 }
 
-#[test] fn generic_swap_function() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn generic_swap_function() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 procedure GenSwap<T>(var a, b: T);
 var tmp: T;
 begin
@@ -227,15 +265,21 @@ begin
   GenSwap<Integer>(x, y);
   WriteLn(x);
   WriteLn(y);
-end."#), &["200", "100"]);
+end."#
+        ),
+        &["200", "100"]
+    );
 }
 
 // ===================================================================
 // GENERIC CONTAINER WITH FIND
 // ===================================================================
 
-#[test] fn generic_list_contains() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn generic_list_contains() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TList<T> = class
   private
@@ -271,15 +315,21 @@ begin
   WriteLn(lst.Contains(20));
   WriteLn(lst.Contains(99));
   lst.Free;
-end."#), &["true", "false"]);
+end."#
+        ),
+        &["true", "false"]
+    );
 }
 
 // ===================================================================
 // GENERIC PAIR COMPARISON
 // ===================================================================
 
-#[test] fn generic_pair_equal() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn generic_pair_equal() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TPair<T> = class
   public
@@ -300,15 +350,21 @@ begin
   p.B := 6;
   WriteLn(p.Equal);
   p.Free;
-end."#), &["true", "false"]);
+end."#
+        ),
+        &["true", "false"]
+    );
 }
 
 // ===================================================================
 // GENERIC CLASS WITH COUNT
 // ===================================================================
 
-#[test] fn generic_bag_count() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn generic_bag_count() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TBag<T> = class
   private
@@ -342,15 +398,21 @@ begin
   WriteLn(bag.Count);
   WriteLn(bag.ItemAt(1));
   bag.Free;
-end."#), &["3", "banana"]);
+end."#
+        ),
+        &["3", "banana"]
+    );
 }
 
 // ===================================================================
 // GENERIC PAIR USED IN FUNCTION
 // ===================================================================
 
-#[test] fn generic_pair_as_function_return() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn generic_pair_as_function_return() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TIntPair = class
   public
@@ -378,15 +440,21 @@ begin
   WriteLn(mm.First);
   WriteLn(mm.Second);
   mm.Free;
-end."#), &["1", "9"]);
+end."#
+        ),
+        &["1", "9"]
+    );
 }
 
 // ===================================================================
 // GENERIC FUNCTION WITH STRING
 // ===================================================================
 
-#[test] fn generic_function_identity() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn generic_function_identity() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 function Identity<T>(value: T): T;
 begin
   Result := value;
@@ -395,15 +463,21 @@ begin
   WriteLn(Identity<Integer>(42));
   WriteLn(Identity<String>('hello'));
   WriteLn(Identity<Boolean>(True));
-end."#), &["42", "hello", "true"]);
+end."#
+        ),
+        &["42", "hello", "true"]
+    );
 }
 
 // ===================================================================
 // GENERIC CLASS INHERITANCE
 // ===================================================================
 
-#[test] fn generic_base_class() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn generic_base_class() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TContainer<T> = class
   protected
@@ -437,15 +511,21 @@ begin
   WriteLn(box.IsZero);
   WriteLn(box.GetValue);
   box.Free;
-end."#), &["true", "false", "5"]);
+end."#
+        ),
+        &["true", "false", "5"]
+    );
 }
 
 // ===================================================================
 // GENERIC MAP/TRANSFORM
 // ===================================================================
 
-#[test] fn generic_transform_array() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn generic_transform_array() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TTransformer = class
     class function DoubleAll(arr: array of Integer): TArray<Integer>;
@@ -465,15 +545,21 @@ begin
   output := TTransformer.DoubleAll(input);
   for i := 0 to Length(output) - 1 do
     WriteLn(output[i]);
-end."#), &["2", "4", "6"]);
+end."#
+        ),
+        &["2", "4", "6"]
+    );
 }
 
 // ===================================================================
 // GENERIC PAIR IN LIST
 // ===================================================================
 
-#[test] fn generic_key_value_pair() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn generic_key_value_pair() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TKeyValue<K, V> = class
   public
@@ -500,5 +586,8 @@ begin
   kv := TKeyValue<Integer, String>.Create(2, 'two');
   WriteLn(kv.ToString);
   kv.Free;
-end."#), &["1=one", "2=two"]);
+end."#
+        ),
+        &["1=one", "2=two"]
+    );
 }

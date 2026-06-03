@@ -1,14 +1,16 @@
 /// Tests for advanced Pascal class features: multi-level inheritance,
 /// class variables, destructors, method patterns, polymorphism.
-
 use super::helpers::run_pascal;
 
 // ===================================================================
 // MULTI-LEVEL INHERITANCE
 // ===================================================================
 
-#[test] fn inheritance_three_levels() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn inheritance_three_levels() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TAnimal = class
     public function Kind: String; virtual;
@@ -26,11 +28,17 @@ var d: TDog;
 begin
   d := TDog.Create;
   WriteLn(d.Kind());
-end."#), &["Dog"]);
+end."#
+        ),
+        &["Dog"]
+    );
 }
 
-#[test] fn inherited_field_access() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn inherited_field_access() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TBase = class
     public FX: Integer;
@@ -51,11 +59,17 @@ begin
   c := TChild.Create(10, 20);
   WriteLn(c.FX);
   WriteLn(c.FY);
-end."#), &["10", "20"]);
+end."#
+        ),
+        &["10", "20"]
+    );
 }
 
-#[test] fn inherited_method_from_grandparent() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn inherited_method_from_grandparent() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TBase = class
     public function Hello: String;
@@ -69,15 +83,21 @@ var obj: TLeaf;
 begin
   obj := TLeaf.Create;
   WriteLn(obj.Hello());
-end."#), &["hi"]);
+end."#
+        ),
+        &["hi"]
+    );
 }
 
 // ===================================================================
 // CONSTRUCTOR WITH INHERITED CALL
 // ===================================================================
 
-#[test] fn constructor_inherited_create() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn constructor_inherited_create() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TShape = class
     public FColor: String;
@@ -98,15 +118,21 @@ begin
   c := TCircle.Create('red', 5);
   WriteLn(c.FColor);
   WriteLn(c.FRadius);
-end."#), &["red", "5"]);
+end."#
+        ),
+        &["red", "5"]
+    );
 }
 
 // ===================================================================
 // CLASS METHODS CALLING EACH OTHER
 // ===================================================================
 
-#[test] fn method_calls_method() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn method_calls_method() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type TCalc = class
   public
     FVal: Integer;
@@ -121,15 +147,21 @@ var c: TCalc;
 begin
   c := TCalc.Create(5);
   WriteLn(c.Quadruple());
-end."#), &["20"]);
+end."#
+        ),
+        &["20"]
+    );
 }
 
 // ===================================================================
 // CONSTRUCTOR WITHOUT PARAMS (ZERO-ARG)
 // ===================================================================
 
-#[test] fn zero_arg_constructor_no_parens() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn zero_arg_constructor_no_parens() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type TFoo = class
   public FVal: Integer;
   constructor Create;
@@ -139,15 +171,21 @@ var f: TFoo;
 begin
   f := TFoo.Create;
   WriteLn(f.FVal);
-end."#), &["42"]);
+end."#
+        ),
+        &["42"]
+    );
 }
 
 // ===================================================================
 // MULTIPLE CLASSES IN ONE PROGRAM
 // ===================================================================
 
-#[test] fn multiple_classes() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn multiple_classes() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TPoint = class
     public FX, FY: Integer;
@@ -167,15 +205,21 @@ begin
   r := TRect.Create(10, 5);
   WriteLn(p.FX + p.FY);
   WriteLn(r.Area());
-end."#), &["7", "50"]);
+end."#
+        ),
+        &["7", "50"]
+    );
 }
 
 // ===================================================================
 // CLASS WITH PROCEDURE (SUB) AND FUNCTION
 // ===================================================================
 
-#[test] fn class_procedure_and_function() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn class_procedure_and_function() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type TCounter = class
   public
     FCount: Integer;
@@ -193,15 +237,21 @@ begin
   c.Increment;
   c.Increment;
   WriteLn(c.GetCount());
-end."#), &["3"]);
+end."#
+        ),
+        &["3"]
+    );
 }
 
 // ===================================================================
 // IS / AS WITH CLASSES
 // ===================================================================
 
-#[test] fn is_operator_inheritance() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn is_operator_inheritance() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TBase = class end;
   TChild = class(TBase) end;
@@ -209,15 +259,21 @@ var b: TBase;
 begin
   b := TChild.Create;
   if b is TChild then WriteLn('yes') else WriteLn('no');
-end."#), &["yes"]);
+end."#
+        ),
+        &["yes"]
+    );
 }
 
 // ===================================================================
 // CLASS FIELDS MULTIPLE ON ONE LINE
 // ===================================================================
 
-#[test] fn fields_same_type() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn fields_same_type() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type TPoint = class
   public FX, FY, FZ: Integer;
   constructor Create(X, Y, Z: Integer);
@@ -228,15 +284,21 @@ var p: TPoint;
 begin
   p := TPoint.Create(1, 2, 3);
   WriteLn(p.FX + p.FY + p.FZ);
-end."#), &["6"]);
+end."#
+        ),
+        &["6"]
+    );
 }
 
 // ===================================================================
 // CLASS WITH STRING OPERATIONS
 // ===================================================================
 
-#[test] fn class_string_methods() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn class_string_methods() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type TPerson = class
   public
     FFirst, FLast: String;
@@ -252,15 +314,21 @@ begin
   p := TPerson.Create('John', 'Doe');
   WriteLn(p.FullName());
   WriteLn(p.Initials());
-end."#), &["John Doe", "JD"]);
+end."#
+        ),
+        &["John Doe", "JD"]
+    );
 }
 
 // ===================================================================
 // CLASS ARRAY ITERATION
 // ===================================================================
 
-#[test] fn iterate_class_array() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn iterate_class_array() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type TVal = class
   public FN: Integer;
   constructor Create(N: Integer);
@@ -270,5 +338,8 @@ var items: array of TVal; i: Integer;
 begin
   items := [TVal.Create(10), TVal.Create(20), TVal.Create(30)];
   for i := 0 to High(items) do WriteLn(items[i].FN);
-end."#), &["10", "20", "30"]);
+end."#
+        ),
+        &["10", "20", "30"]
+    );
 }

@@ -1,15 +1,17 @@
 /// Tests for advanced exception handling in Pascal/Delphi:
 /// re-raise patterns, exception message access, exception class hierarchy,
 /// multiple on-clauses, exception in loops, nested exception handlers.
-
 use super::helpers::run_pascal;
 
 // ===================================================================
 // RE-RAISE (bare RAISE in except block)
 // ===================================================================
 
-#[test] fn reraise_caught_by_outer() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn reraise_caught_by_outer() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 begin
   try
     try
@@ -25,15 +27,21 @@ begin
     on E: Exception do
       WriteLn('outer caught: ' + E.Message);
   end;
-end."#), &["inner caught: inner error", "outer caught: inner error"]);
+end."#
+        ),
+        &["inner caught: inner error", "outer caught: inner error"]
+    );
 }
 
 // ===================================================================
 // EXCEPTION MESSAGE PROPERTY
 // ===================================================================
 
-#[test] fn exception_message_access() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn exception_message_access() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 begin
   try
     raise Exception.Create('something went wrong');
@@ -41,11 +49,17 @@ begin
     on E: Exception do
       WriteLn(E.Message);
   end;
-end."#), &["something went wrong"]);
+end."#
+        ),
+        &["something went wrong"]
+    );
 }
 
-#[test] fn exception_message_in_function() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn exception_message_in_function() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 function SafeDivide(a, b: Integer): Integer;
 begin
   if b = 0 then
@@ -60,15 +74,21 @@ begin
     on E: Exception do
       WriteLn('Error: ' + E.Message);
   end;
-end."#), &["5", "Error: division by zero"]);
+end."#
+        ),
+        &["5", "Error: division by zero"]
+    );
 }
 
 // ===================================================================
 // MULTIPLE ON-CLAUSES (EXCEPTION CLASS HIERARCHY)
 // ===================================================================
 
-#[test] fn multiple_on_clauses_order() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn multiple_on_clauses_order() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   EMyError = class(Exception);
   ESpecificError = class(EMyError);
@@ -80,11 +100,17 @@ begin
     on E: EMyError do WriteLn('my error handler');
     on E: Exception do WriteLn('base handler');
   end;
-end."#), &["specific handler"]);
+end."#
+        ),
+        &["specific handler"]
+    );
 }
 
-#[test] fn exception_base_catches_derived() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn exception_base_catches_derived() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   EDerivedError = class(Exception);
 begin
@@ -94,15 +120,21 @@ begin
     on E: Exception do
       WriteLn('caught: ' + E.Message);
   end;
-end."#), &["caught: derived"]);
+end."#
+        ),
+        &["caught: derived"]
+    );
 }
 
 // ===================================================================
 // EXCEPTION IN LOOPS
 // ===================================================================
 
-#[test] fn exception_continues_loop() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn exception_continues_loop() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var i: Integer;
 begin
   for i := 1 to 3 do
@@ -114,11 +146,17 @@ begin
       on E: Exception do WriteLn('skip');
     end;
   end;
-end."#), &["1", "skip", "3"]);
+end."#
+        ),
+        &["1", "skip", "3"]
+    );
 }
 
-#[test] fn exception_counter_in_loop() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn exception_counter_in_loop() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var i, errCount: Integer;
 begin
   errCount := 0;
@@ -131,15 +169,21 @@ begin
     end;
   end;
   WriteLn(errCount);
-end."#), &["3"]);
+end."#
+        ),
+        &["3"]
+    );
 }
 
 // ===================================================================
 // TRY-FINALLY ORDERING
 // ===================================================================
 
-#[test] fn finally_before_except_outer() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn finally_before_except_outer() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 begin
   try
     try
@@ -150,11 +194,17 @@ begin
   except
     WriteLn('except runs');
   end;
-end."#), &["finally runs", "except runs"]);
+end."#
+        ),
+        &["finally runs", "except runs"]
+    );
 }
 
-#[test] fn finally_always_runs_on_exit() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn finally_always_runs_on_exit() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 procedure DoWork;
 begin
   try
@@ -167,15 +217,21 @@ end;
 begin
   DoWork;
   WriteLn('done');
-end."#), &["working", "cleanup", "done"]);
+end."#
+        ),
+        &["working", "cleanup", "done"]
+    );
 }
 
 // ===================================================================
 // CUSTOM EXCEPTION WITH EXTRA DATA
 // ===================================================================
 
-#[test] fn custom_exception_with_code() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn custom_exception_with_code() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TAppError = class(Exception)
   public
@@ -194,11 +250,17 @@ begin
     on E: TAppError do
       WriteLn(IntToStr(E.Code) + ': ' + E.Message);
   end;
-end."#), &["404: not found"]);
+end."#
+        ),
+        &["404: not found"]
+    );
 }
 
-#[test] fn exception_with_classname() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn exception_with_classname() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   EValidationError = class(Exception);
 begin
@@ -210,15 +272,21 @@ begin
     on E: Exception do
       WriteLn('Generic: ' + E.Message);
   end;
-end."#), &["Validation: invalid input"]);
+end."#
+        ),
+        &["Validation: invalid input"]
+    );
 }
 
 // ===================================================================
 // EXCEPTION IN NESTED PROCEDURE
 // ===================================================================
 
-#[test] fn exception_propagates_from_nested() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn exception_propagates_from_nested() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 procedure Inner;
 begin
   raise Exception.Create('from inner');
@@ -234,15 +302,21 @@ begin
     on E: Exception do
       WriteLn('caught: ' + E.Message);
   end;
-end."#), &["caught: from inner"]);
+end."#
+        ),
+        &["caught: from inner"]
+    );
 }
 
 // ===================================================================
 // EXCEPTION WITH TRY-FINALLY AND RESOURCE
 // ===================================================================
 
-#[test] fn resource_cleanup_on_exception() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn resource_cleanup_on_exception() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var acquired: Boolean;
 begin
   acquired := False;
@@ -256,15 +330,21 @@ begin
   end;
   if acquired then
     WriteLn('cleanup needed: ' + BoolToStr(acquired, True));
-end."#), &["acquired", "handled: fail", "cleanup needed: True"]);
+end."#
+        ),
+        &["acquired", "handled: fail", "cleanup needed: True"]
+    );
 }
 
 // ===================================================================
 // EXCEPTION CLASS HIERARCHY
 // ===================================================================
 
-#[test] fn three_level_exception_hierarchy() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn three_level_exception_hierarchy() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   ELevel1 = class(Exception);
   ELevel2 = class(ELevel1);
@@ -276,15 +356,21 @@ begin
     on E: ELevel1 do
       WriteLn('caught at level 1: ' + E.Message);
   end;
-end."#), &["caught at level 1: deep"]);
+end."#
+        ),
+        &["caught at level 1: deep"]
+    );
 }
 
 // ===================================================================
 // EXCEPTION MESSAGE FORMATTING
 // ===================================================================
 
-#[test] fn exception_formatted_message() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn exception_formatted_message() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 procedure CheckRange(val, lo, hi: Integer);
 begin
   if (val < lo) or (val > hi) then
@@ -298,15 +384,21 @@ begin
     on E: Exception do
       WriteLn(E.Message);
   end;
-end."#), &["Value 50 out of range [1..10]"]);
+end."#
+        ),
+        &["Value 50 out of range [1..10]"]
+    );
 }
 
 // ===================================================================
 // MULTIPLE EXCEPTIONS IN SEQUENCE
 // ===================================================================
 
-#[test] fn multiple_separate_exceptions() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn multiple_separate_exceptions() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var i: Integer;
     total: Integer;
 begin
@@ -324,15 +416,21 @@ begin
     end;
   end;
   WriteLn(total);
-end."#), &["206"]);
+end."#
+        ),
+        &["206"]
+    );
 }
 
 // ===================================================================
 // EXCEPTION WITH ELSE CLAUSE
 // ===================================================================
 
-#[test] fn try_except_no_raise_runs_normally() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn try_except_no_raise_runs_normally() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 function TryParse(s: String): Integer;
 begin
   try
@@ -344,15 +442,21 @@ end;
 begin
   WriteLn(TryParse('42'));
   WriteLn(TryParse('bad'));
-end."#), &["42", "-1"]);
+end."#
+        ),
+        &["42", "-1"]
+    );
 }
 
 // ===================================================================
 // FINALLY WITH EXCEPTION SWALLOWED
 // ===================================================================
 
-#[test] fn finally_with_swallowed_exception() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn finally_with_swallowed_exception() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var log: String;
 begin
   log := '';
@@ -367,5 +471,8 @@ begin
     log := log + 'finally';
   end;
   WriteLn(log);
-end."#), &["try except finally"]);
+end."#
+        ),
+        &["try except finally"]
+    );
 }

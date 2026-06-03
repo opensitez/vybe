@@ -1,15 +1,17 @@
 /// Tests for abstract data type implementations using classes in Pascal/Delphi:
 /// Stack, Queue, and Deque built on top of dynamic arrays, linked list nodes,
 /// and priority queue patterns — going beyond what test_data_structures.rs covers.
-
 use super::helpers::run_pascal;
 
 // ===================================================================
 // INTEGER STACK CLASS
 // ===================================================================
 
-#[test] fn int_stack_lifo_order() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn int_stack_lifo_order() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TIntStack = class
   private
@@ -63,11 +65,17 @@ begin
   WriteLn(s.Pop);
   WriteLn(s.IsEmpty);
   s.Free;
-end."#), &["3", "15", "15", "10", "false"]);
+end."#
+        ),
+        &["3", "15", "15", "10", "false"]
+    );
 }
 
-#[test] fn stack_reverse_sequence() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn stack_reverse_sequence() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TIntStack = class
   private
@@ -109,15 +117,21 @@ begin
     Write(IntToStr(s.Pop) + ' ');
   WriteLn('');
   s.Free;
-end."#), &["5 4 3 2 1 "]);
+end."#
+        ),
+        &["5 4 3 2 1 "]
+    );
 }
 
 // ===================================================================
 // INTEGER QUEUE CLASS
 // ===================================================================
 
-#[test] fn int_queue_fifo_order() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn int_queue_fifo_order() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TIntQueue = class
   private
@@ -173,11 +187,17 @@ begin
   WriteLn(q.Dequeue);
   WriteLn(q.Size);
   q.Free;
-end."#), &["3", "100", "100", "200", "1"]);
+end."#
+        ),
+        &["3", "100", "100", "200", "1"]
+    );
 }
 
-#[test] fn queue_bfs_pattern() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn queue_bfs_pattern() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TIntQueue = class
   private
@@ -223,15 +243,21 @@ begin
     total := total + q.Dequeue;
   WriteLn(total);
   q.Free;
-end."#), &["15"]);
+end."#
+        ),
+        &["15"]
+    );
 }
 
 // ===================================================================
 // DEQUE (DOUBLE-ENDED QUEUE) CLASS
 // ===================================================================
 
-#[test] fn deque_push_front_back() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn deque_push_front_back() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TDeque = class
   private
@@ -292,15 +318,21 @@ begin
   WriteLn(d.PopFront);
   WriteLn(d.PopBack);
   d.Free;
-end."#), &["3", "1", "3"]);
+end."#
+        ),
+        &["3", "1", "3"]
+    );
 }
 
 // ===================================================================
 // LINKED LIST NODE
 // ===================================================================
 
-#[test] fn linked_list_build() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn linked_list_build() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TNode = class
   public
@@ -328,11 +360,17 @@ begin
     curr := curr.Next;
   end;
   WriteLn(sum);
-end."#), &["6"]);
+end."#
+        ),
+        &["6"]
+    );
 }
 
-#[test] fn linked_list_length() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn linked_list_length() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TNode = class
   public
@@ -360,15 +398,21 @@ begin
   head.Next.Next.Value := 30;
   head.Next.Next.Next := nil;
   WriteLn(ListLength(head));
-end."#), &["3"]);
+end."#
+        ),
+        &["3"]
+    );
 }
 
 // ===================================================================
 // PRIORITY QUEUE (min-heap simulation)
 // ===================================================================
 
-#[test] fn priority_queue_simple() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn priority_queue_simple() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TPriorityQueue = class
   private
@@ -422,15 +466,21 @@ begin
   WriteLn(pq.ExtractMin);
   WriteLn(pq.ExtractMin);
   pq.Free;
-end."#), &["10", "20", "30"]);
+end."#
+        ),
+        &["10", "20", "30"]
+    );
 }
 
 // ===================================================================
 // CIRCULAR BUFFER
 // ===================================================================
 
-#[test] fn circular_buffer_wrap() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn circular_buffer_wrap() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TCircBuf = class
   private
@@ -480,15 +530,21 @@ begin
   WriteLn(cb.Count);
   WriteLn(cb.Pop);
   cb.Free;
-end."#), &["1", "3", "2"]);
+end."#
+        ),
+        &["1", "3", "2"]
+    );
 }
 
 // ===================================================================
 // STRING STACK
 // ===================================================================
 
-#[test] fn string_stack_operations() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn string_stack_operations() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TStrStack = class
   private
@@ -535,15 +591,21 @@ begin
   WriteLn(ss.Pop);
   WriteLn(ss.Pop);
   ss.Free;
-end."#), &["third", "third", "second"]);
+end."#
+        ),
+        &["third", "third", "second"]
+    );
 }
 
 // ===================================================================
 // ASSOCIATIVE MAP SIMULATION (key-value pairs array)
 // ===================================================================
 
-#[test] fn simple_map_lookup() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn simple_map_lookup() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TMapEntry = record
     Key: String;
@@ -593,15 +655,21 @@ begin
   m.Put('b', 99);
   WriteLn(m.Get('b', 0));
   m.Free;
-end."#), &["2", "-1", "99"]);
+end."#
+        ),
+        &["2", "-1", "99"]
+    );
 }
 
 // ===================================================================
 // MULTISET (bag with counts)
 // ===================================================================
 
-#[test] fn multiset_add_count() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn multiset_add_count() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TMultiSet = class
   private
@@ -650,5 +718,8 @@ begin
   WriteLn(ms.CountOf('banana'));
   WriteLn(ms.CountOf('grape'));
   ms.Free;
-end."#), &["3", "1", "0"]);
+end."#
+        ),
+        &["3", "1", "0"]
+    );
 }

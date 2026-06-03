@@ -1,15 +1,17 @@
 /// Tests for sorting algorithms and search patterns in Pascal/Delphi
 /// that go beyond test_programs_extended.rs (which already has bubble sort,
 /// selection sort, binary search, linear search).
-
 use super::helpers::run_pascal;
 
 // ===================================================================
 // INSERTION SORT
 // ===================================================================
 
-#[test] fn insertion_sort_basic() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn insertion_sort_basic() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var arr: array of Integer;
     i, j, key: Integer;
 begin
@@ -29,11 +31,17 @@ begin
   for i := 0 to 4 do
     Write(IntToStr(arr[i]) + ' ');
   WriteLn('');
-end."#), &["1 2 3 4 5 "]);
+end."#
+        ),
+        &["1 2 3 4 5 "]
+    );
 }
 
-#[test] fn insertion_sort_strings() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn insertion_sort_strings() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var arr: array of String;
     i, j: Integer;
     key: String;
@@ -53,15 +61,21 @@ begin
   end;
   for i := 0 to 3 do
     WriteLn(arr[i]);
-end."#), &["alpha", "bravo", "charlie", "delta"]);
+end."#
+        ),
+        &["alpha", "bravo", "charlie", "delta"]
+    );
 }
 
 // ===================================================================
 // SHELL SORT
 // ===================================================================
 
-#[test] fn shell_sort_basic() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn shell_sort_basic() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var arr: array of Integer;
     n, gap, i, j, tmp: Integer;
 begin
@@ -87,15 +101,21 @@ begin
   for i := 0 to n - 1 do
     Write(IntToStr(arr[i]) + ' ');
   WriteLn('');
-end."#), &["11 12 22 25 34 64 "]);
+end."#
+        ),
+        &["11 12 22 25 34 64 "]
+    );
 }
 
 // ===================================================================
 // COUNTING SORT
 // ===================================================================
 
-#[test] fn counting_sort_small_range() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn counting_sort_small_range() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var arr: array of Integer;
     counts: array[0..9] of Integer;
     i, j, idx: Integer;
@@ -115,15 +135,21 @@ begin
   for i := 0 to 6 do
     Write(IntToStr(arr[i]) + ' ');
   WriteLn('');
-end."#), &["1 2 2 3 3 4 8 "]);
+end."#
+        ),
+        &["1 2 2 3 3 4 8 "]
+    );
 }
 
 // ===================================================================
 // ARRAY MINIMUM AND MAXIMUM
 // ===================================================================
 
-#[test] fn find_min_max_in_array() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn find_min_max_in_array() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var arr: array of Integer;
     mn, mx, i: Integer;
 begin
@@ -138,11 +164,17 @@ begin
   end;
   WriteLn(mn);
   WriteLn(mx);
-end."#), &["1", "9"]);
+end."#
+        ),
+        &["1", "9"]
+    );
 }
 
-#[test] fn find_second_largest() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn find_second_largest() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var arr: array of Integer;
     first, second, i: Integer;
 begin
@@ -161,15 +193,21 @@ begin
       second := arr[i];
   end;
   WriteLn(second);
-end."#), &["7"]);
+end."#
+        ),
+        &["7"]
+    );
 }
 
 // ===================================================================
 // PRIME SIEVE (SIEVE OF ERATOSTHENES)
 // ===================================================================
 
-#[test] fn prime_sieve_count() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn prime_sieve_count() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var sieve: array[2..30] of Boolean;
     i, j, count: Integer;
 begin
@@ -192,11 +230,17 @@ begin
   for i := 2 to 30 do
     if sieve[i] then Inc(count);
   WriteLn(count);
-end."#), &["10"]);
+end."#
+        ),
+        &["10"]
+    );
 }
 
-#[test] fn prime_sieve_list() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn prime_sieve_list() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var sieve: array[2..20] of Boolean;
     i, j: Integer;
 begin
@@ -218,11 +262,17 @@ begin
   for i := 2 to 20 do
     if sieve[i] then Write(IntToStr(i) + ' ');
   WriteLn('');
-end."#), &["2 3 5 7 11 13 17 19 "]);
+end."#
+        ),
+        &["2 3 5 7 11 13 17 19 "]
+    );
 }
 
-#[test] fn fixed_array_nonzero_lower_bound_keeps_declared_length() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn fixed_array_nonzero_lower_bound_keeps_declared_length() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var arr: array[2..4] of Integer;
     i: Integer;
 begin
@@ -231,11 +281,17 @@ begin
   WriteLn(Length(arr));
   WriteLn(arr[2]);
   WriteLn(arr[4]);
-end."#), &["3", "20", "40"]);
+end."#
+        ),
+        &["3", "20", "40"]
+    );
 }
 
-#[test] fn multidim_nonzero_lower_bounds_element_and_iteration() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn multidim_nonzero_lower_bounds_element_and_iteration() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var grid: array[1..2, 3..4] of Integer;
     row, col, total: Integer;
 begin
@@ -249,15 +305,21 @@ begin
   WriteLn(grid[1, 3]);
   WriteLn(grid[2, 4]);
   WriteLn(total);
-end."#), &["103", "204", "614"]);
+end."#
+        ),
+        &["103", "204", "614"]
+    );
 }
 
 // ===================================================================
 // TWO POINTER TECHNIQUE
 // ===================================================================
 
-#[test] fn two_sum_sorted_array() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn two_sum_sorted_array() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var arr: array of Integer;
     lo, hi, target: Integer;
     found: Boolean;
@@ -283,15 +345,21 @@ begin
       Dec(hi);
   end;
   if not found then WriteLn('not found');
-end."#), &["3", "7"]);
+end."#
+        ),
+        &["3", "7"]
+    );
 }
 
 // ===================================================================
 // FREQUENCY COUNT
 // ===================================================================
 
-#[test] fn frequency_of_elements() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn frequency_of_elements() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var data: array of Integer;
     freq: array[1..5] of Integer;
     i: Integer;
@@ -305,15 +373,21 @@ begin
       Inc(freq[data[i]]);
   for i := 1 to 5 do
     WriteLn(IntToStr(i) + ':' + IntToStr(freq[i]));
-end."#), &["1:2", "2:3", "3:2", "4:0", "5:1"]);
+end."#
+        ),
+        &["1:2", "2:3", "3:2", "4:0", "5:1"]
+    );
 }
 
 // ===================================================================
 // MERGE TWO SORTED ARRAYS
 // ===================================================================
 
-#[test] fn merge_sorted_arrays() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn merge_sorted_arrays() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var a, b, c: array of Integer;
     i, j, k: Integer;
 begin
@@ -338,15 +412,21 @@ begin
   for i := 0 to 5 do
     Write(IntToStr(c[i]) + ' ');
   WriteLn('');
-end."#), &["1 2 3 4 5 6 "]);
+end."#
+        ),
+        &["1 2 3 4 5 6 "]
+    );
 }
 
 // ===================================================================
 // ARRAY ROTATION
 // ===================================================================
 
-#[test] fn rotate_array_left() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn rotate_array_left() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var arr: array of Integer;
     first, i: Integer;
 begin
@@ -359,15 +439,21 @@ begin
   for i := 0 to 4 do
     Write(IntToStr(arr[i]) + ' ');
   WriteLn('');
-end."#), &["2 3 4 5 1 "]);
+end."#
+        ),
+        &["2 3 4 5 1 "]
+    );
 }
 
 // ===================================================================
 // RUNNING SUM (PREFIX SUM)
 // ===================================================================
 
-#[test] fn prefix_sum_array() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn prefix_sum_array() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var arr, prefix: array of Integer;
     i: Integer;
 begin
@@ -380,15 +466,21 @@ begin
   for i := 0 to 4 do
     Write(IntToStr(prefix[i]) + ' ');
   WriteLn('');
-end."#), &["1 3 6 10 15 "]);
+end."#
+        ),
+        &["1 3 6 10 15 "]
+    );
 }
 
 // ===================================================================
 // DUTCH FLAG PARTITION
 // ===================================================================
 
-#[test] fn partition_around_pivot() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn partition_around_pivot() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var arr: array of Integer;
     i, j, pivot, tmp: Integer;
 begin
@@ -404,15 +496,21 @@ begin
     end;
   WriteLn(arr[0] <= pivot);
   WriteLn(arr[5] >= pivot);
-end."#), &["true", "true"]);
+end."#
+        ),
+        &["true", "true"]
+    );
 }
 
 // ===================================================================
 // LONGEST INCREASING SUBSEQUENCE LENGTH
 // ===================================================================
 
-#[test] fn lis_length() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn lis_length() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var arr: array of Integer;
     dp: array of Integer;
     i, j, best: Integer;
@@ -431,15 +529,21 @@ begin
   for i := 0 to 5 do
     if dp[i] > best then best := dp[i];
   WriteLn(best);
-end."#), &["4"]);
+end."#
+        ),
+        &["4"]
+    );
 }
 
 // ===================================================================
 // MATRIX TRANSPOSE
 // ===================================================================
 
-#[test] fn matrix_transpose() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn matrix_transpose() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var mat: array[0..1, 0..2] of Integer;
     trans: array[0..2, 0..1] of Integer;
     i, j: Integer;
@@ -451,5 +555,8 @@ begin
       trans[j, i] := mat[i, j];
   for i := 0 to 2 do
     WriteLn(IntToStr(trans[i, 0]) + ' ' + IntToStr(trans[i, 1]));
-end."#), &["1 4", "2 5", "3 6"]);
+end."#
+        ),
+        &["1 4", "2 5", "3 6"]
+    );
 }

@@ -1,15 +1,17 @@
 /// Tests for nested and advanced record patterns in Pascal/Delphi:
 /// Records containing other records, records with methods operating
 /// on nested data, arrays of records, and record copying semantics.
-
 use super::helpers::run_pascal;
 
 // ===================================================================
 // NESTED RECORDS
 // ===================================================================
 
-#[test] fn nested_record_access() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn nested_record_access() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TAddress = record
     Street: String;
@@ -28,11 +30,17 @@ begin
   p.Address.City := 'Springfield';
   WriteLn(p.Name);
   WriteLn(p.Address.City);
-end."#), &["Alice", "Springfield"]);
+end."#
+        ),
+        &["Alice", "Springfield"]
+    );
 }
 
-#[test] fn nested_record_function() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn nested_record_function() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TPoint = record
     X: Integer;
@@ -53,11 +61,17 @@ begin
   r.BottomRight.X := 110;
   r.BottomRight.Y := 70;
   WriteLn(RectWidth(r));
-end."#), &["100"]);
+end."#
+        ),
+        &["100"]
+    );
 }
 
-#[test] fn record_copy_semantics() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn record_copy_semantics() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TPoint = record
     X: Integer;
@@ -71,15 +85,21 @@ begin
   b.X := 99;
   WriteLn(a.X);
   WriteLn(b.X);
-end."#), &["5", "99"]);
+end."#
+        ),
+        &["5", "99"]
+    );
 }
 
 // ===================================================================
 // ARRAY OF RECORDS
 // ===================================================================
 
-#[test] fn array_of_records_iterate() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn array_of_records_iterate() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TStudent = record
     Name: String;
@@ -93,11 +113,17 @@ begin
   students[3].Name := 'Carol'; students[3].Score := 88;
   for i := 1 to 3 do
     WriteLn(students[i].Name + ': ' + IntToStr(students[i].Score));
-end."#), &["Alice: 95", "Bob: 80", "Carol: 88"]);
+end."#
+        ),
+        &["Alice: 95", "Bob: 80", "Carol: 88"]
+    );
 }
 
-#[test] fn array_of_records_max() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn array_of_records_max() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TItem = record
     Value: Integer;
@@ -114,11 +140,17 @@ begin
     if items[i].Value > maxVal then
       maxVal := items[i].Value;
   WriteLn(maxVal);
-end."#), &["40"]);
+end."#
+        ),
+        &["40"]
+    );
 }
 
-#[test] fn array_of_records_sum() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn array_of_records_sum() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TMeasure = record
     Value: Real;
@@ -134,15 +166,21 @@ begin
   for i := 1 to 3 do
     total := total + data[i].Value;
   WriteLn(total);
-end."#), &["7"]);
+end."#
+        ),
+        &["7"]
+    );
 }
 
 // ===================================================================
 // RECORD WITH MULTIPLE METHODS
 // ===================================================================
 
-#[test] fn record_method_chain() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn record_method_chain() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TCounter = record
     Value: Integer;
@@ -170,11 +208,17 @@ begin
   c.Increment;
   c.Decrement;
   WriteLn(c.Get);
-end."#), &["2"]);
+end."#
+        ),
+        &["2"]
+    );
 }
 
-#[test] fn record_predicate_method() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn record_predicate_method() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TRange = record
     Lo: Integer;
@@ -191,15 +235,21 @@ begin
   r.Hi := 20;
   WriteLn(r.Contains(15));
   WriteLn(r.Contains(25));
-end."#), &["true", "false"]);
+end."#
+        ),
+        &["true", "false"]
+    );
 }
 
 // ===================================================================
 // RECORD WITH CONSTRUCTOR AND METHOD
 // ===================================================================
 
-#[test] fn record_constructor_use() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn record_constructor_use() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TVector = record
     X, Y: Real;
@@ -219,11 +269,17 @@ var v: TVector;
 begin
   v := TVector.Create(3.0, 4.0);
   WriteLn(v.Length);
-end."#), &["5"]);
+end."#
+        ),
+        &["5"]
+    );
 }
 
-#[test] fn record_string_format_method() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn record_string_format_method() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TPoint = record
     X, Y: Integer;
@@ -238,15 +294,21 @@ begin
   p.X := 3;
   p.Y := 7;
   WriteLn(p.ToString);
-end."#), &["(3, 7)"]);
+end."#
+        ),
+        &["(3, 7)"]
+    );
 }
 
 // ===================================================================
 // RECORD IN FUNCTION RESULT
 // ===================================================================
 
-#[test] fn record_as_function_result() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn record_as_function_result() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TMinMax = record
     Min: Integer;
@@ -264,15 +326,21 @@ begin
   mm := FindMinMax(5, 2, 8);
   WriteLn(mm.Min);
   WriteLn(mm.Max);
-end."#), &["2", "8"]);
+end."#
+        ),
+        &["2", "8"]
+    );
 }
 
 // ===================================================================
 // RECORD EQUALITY COMPARISON VIA FIELDS
 // ===================================================================
 
-#[test] fn record_field_equality() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn record_field_equality() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TCoord = record
     X, Y: Integer;
@@ -289,15 +357,21 @@ begin
   WriteLn(a.Equals(b));
   b.Y := 3;
   WriteLn(a.Equals(b));
-end."#), &["true", "false"]);
+end."#
+        ),
+        &["true", "false"]
+    );
 }
 
 // ===================================================================
 // RECORD ACCUMULATION
 // ===================================================================
 
-#[test] fn record_stats_accumulation() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn record_stats_accumulation() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TStats = record
     Count: Integer;
@@ -320,15 +394,21 @@ begin
     s.Sum := s.Sum + i;
   end;
   WriteLn(s.Average);
-end."#), &["3"]);
+end."#
+        ),
+        &["3"]
+    );
 }
 
 // ===================================================================
 // MULTI-LEVEL RECORD PASSING
 // ===================================================================
 
-#[test] fn record_passed_by_var() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn record_passed_by_var() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TBox = record
     Width: Integer;
@@ -346,11 +426,17 @@ begin
   Scale(box, 4);
   WriteLn(box.Width);
   WriteLn(box.Height);
-end."#), &["20", "12"]);
+end."#
+        ),
+        &["20", "12"]
+    );
 }
 
-#[test] fn record_swap_values() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn record_swap_values() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TPair = record
     First: Integer;
@@ -371,15 +457,21 @@ begin
   p.Swap;
   WriteLn(p.First);
   WriteLn(p.Second);
-end."#), &["200", "100"]);
+end."#
+        ),
+        &["200", "100"]
+    );
 }
 
 // ===================================================================
 // RECORD HELPER PATTERN
 // ===================================================================
 
-#[test] fn record_distance_calculation() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn record_distance_calculation() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TPoint = record
     X, Y: Real;
@@ -397,11 +489,17 @@ begin
   p1.X := 0.0; p1.Y := 0.0;
   p2.X := 3.0; p2.Y := 4.0;
   WriteLn(p1.DistanceTo(p2));
-end."#), &["5"]);
+end."#
+        ),
+        &["5"]
+    );
 }
 
-#[test] fn record_default_value_method() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn record_default_value_method() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TConfig = record
     Timeout: Integer;
@@ -418,5 +516,8 @@ begin
   cfg.SetDefaults;
   WriteLn(cfg.Timeout);
   WriteLn(cfg.MaxRetries);
-end."#), &["30", "3"]);
+end."#
+        ),
+        &["30", "3"]
+    );
 }

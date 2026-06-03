@@ -2,134 +2,220 @@
 /// CompareStr, CompareText, SameText, SameStr, AnsiUpperCase,
 /// AnsiLowerCase, StringOfChar variations, Trim edge cases,
 /// string reversal, splitting, joining patterns.
-
 use super::helpers::run_pascal;
 
 // ===================================================================
 // COMPARESTR / COMPARETEXT
 // ===================================================================
 
-#[test] fn comparestr_equal() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn comparestr_equal() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 begin
   WriteLn(CompareStr('hello', 'hello') = 0);
-end."#), &["true"]);
+end."#
+        ),
+        &["true"]
+    );
 }
 
-#[test] fn comparestr_less() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn comparestr_less() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 begin
   WriteLn(CompareStr('abc', 'abd') < 0);
-end."#), &["true"]);
+end."#
+        ),
+        &["true"]
+    );
 }
 
-#[test] fn comparestr_greater() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn comparestr_greater() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 begin
   WriteLn(CompareStr('z', 'a') > 0);
-end."#), &["true"]);
+end."#
+        ),
+        &["true"]
+    );
 }
 
-#[test] fn comparetext_case_insensitive() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn comparetext_case_insensitive() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 begin
   WriteLn(CompareText('Hello', 'hello') = 0);
-end."#), &["true"]);
+end."#
+        ),
+        &["true"]
+    );
 }
 
-#[test] fn sametext_basic() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn sametext_basic() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 begin
   WriteLn(SameText('ABC', 'abc'));
   WriteLn(SameText('abc', 'xyz'));
-end."#), &["true", "false"]);
+end."#
+        ),
+        &["true", "false"]
+    );
 }
 
-#[test] fn samestr_case_sensitive() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn samestr_case_sensitive() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 begin
   WriteLn(SameStr('Hello', 'Hello'));
   WriteLn(SameStr('Hello', 'hello'));
-end."#), &["true", "false"]);
+end."#
+        ),
+        &["true", "false"]
+    );
 }
 
 // ===================================================================
 // ANSI UPPER/LOWERCASE
 // ===================================================================
 
-#[test] fn ansiuppercase_basic() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn ansiuppercase_basic() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 begin
   WriteLn(AnsiUpperCase('hello world'));
-end."#), &["HELLO WORLD"]);
+end."#
+        ),
+        &["HELLO WORLD"]
+    );
 }
 
-#[test] fn ansilowercase_basic() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn ansilowercase_basic() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 begin
   WriteLn(AnsiLowerCase('HELLO WORLD'));
-end."#), &["hello world"]);
+end."#
+        ),
+        &["hello world"]
+    );
 }
 
 // ===================================================================
 // STRINGOFCHAR VARIATIONS
 // ===================================================================
 
-#[test] fn stringofchar_dash() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn stringofchar_dash() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 begin
   WriteLn(StringOfChar('-', 10));
-end."#), &["----------"]);
+end."#
+        ),
+        &["----------"]
+    );
 }
 
-#[test] fn stringofchar_zero() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn stringofchar_zero() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 begin
   WriteLn(Length(StringOfChar('x', 0)));
-end."#), &["0"]);
+end."#
+        ),
+        &["0"]
+    );
 }
 
-#[test] fn stringofchar_separator() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn stringofchar_separator() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var sep: String;
 begin
   sep := StringOfChar('=', 20);
   WriteLn(Length(sep));
-end."#), &["20"]);
+end."#
+        ),
+        &["20"]
+    );
 }
 
 // ===================================================================
 // TRIM EDGE CASES
 // ===================================================================
 
-#[test] fn trim_only_spaces() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn trim_only_spaces() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 begin
   WriteLn(Length(Trim('     ')));
-end."#), &["0"]);
+end."#
+        ),
+        &["0"]
+    );
 }
 
-#[test] fn trim_no_spaces() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn trim_no_spaces() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 begin
   WriteLn(Trim('hello'));
-end."#), &["hello"]);
+end."#
+        ),
+        &["hello"]
+    );
 }
 
-#[test] fn trimleft_right() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn trimleft_right() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 begin
   WriteLn(TrimLeft('  hello  '));
   WriteLn(TrimRight('  hello  '));
-end."#), &["hello  ", "  hello"]);
+end."#
+        ),
+        &["hello  ", "  hello"]
+    );
 }
 
 // ===================================================================
 // STRING REVERSAL
 // ===================================================================
 
-#[test] fn reverse_string_function() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn reverse_string_function() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 function Reverse(s: String): String;
 var i: Integer;
 begin
@@ -140,15 +226,21 @@ end;
 begin
   WriteLn(Reverse('pascal'));
   WriteLn(Reverse(''));
-end."#), &["lacsap", ""]);
+end."#
+        ),
+        &["lacsap", ""]
+    );
 }
 
 // ===================================================================
 // STRING SPLITTING PATTERN
 // ===================================================================
 
-#[test] fn split_by_comma_count() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn split_by_comma_count() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 function CountParts(s, delim: String): Integer;
 var i: Integer;
 begin
@@ -158,11 +250,17 @@ begin
 end;
 begin
   WriteLn(CountParts('a,b,c,d', ','));
-end."#), &["4"]);
+end."#
+        ),
+        &["4"]
+    );
 }
 
-#[test] fn extract_first_word() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn extract_first_word() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 function FirstWord(s: String): String;
 var p: Integer;
 begin
@@ -173,15 +271,21 @@ end;
 begin
   WriteLn(FirstWord('hello world'));
   WriteLn(FirstWord('single'));
-end."#), &["hello", "single"]);
+end."#
+        ),
+        &["hello", "single"]
+    );
 }
 
 // ===================================================================
 // STRING JOINING PATTERN
 // ===================================================================
 
-#[test] fn join_with_separator() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn join_with_separator() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var parts: array[1..3] of String;
     result: String;
     i: Integer;
@@ -196,15 +300,21 @@ begin
     result := result + parts[i];
   end;
   WriteLn(result);
-end."#), &["one, two, three"]);
+end."#
+        ),
+        &["one, two, three"]
+    );
 }
 
 // ===================================================================
 // STRING PAD / ALIGN PATTERN
 // ===================================================================
 
-#[test] fn pad_left_pattern() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn pad_left_pattern() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 function PadLeft(s: String; width: Integer; ch: Char): String;
 begin
   while Length(s) < width do
@@ -214,11 +324,17 @@ end;
 begin
   WriteLn(PadLeft('42', 5, '0'));
   WriteLn(PadLeft('hello', 5, ' '));
-end."#), &["00042", "hello"]);
+end."#
+        ),
+        &["00042", "hello"]
+    );
 }
 
-#[test] fn pad_right_pattern() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn pad_right_pattern() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 function PadRight(s: String; width: Integer; ch: Char): String;
 begin
   while Length(s) < width do
@@ -227,15 +343,21 @@ begin
 end;
 begin
   WriteLn(PadRight('hi', 5, '.'));
-end."#), &["hi..."]);
+end."#
+        ),
+        &["hi..."]
+    );
 }
 
 // ===================================================================
 // STRING CONTAINS PATTERN
 // ===================================================================
 
-#[test] fn string_count_char() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn string_count_char() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 function CountChar(s: String; c: Char): Integer;
 var i: Integer;
 begin
@@ -245,5 +367,8 @@ begin
 end;
 begin
   WriteLn(CountChar('mississippi', 's'));
-end."#), &["4"]);
+end."#
+        ),
+        &["4"]
+    );
 }

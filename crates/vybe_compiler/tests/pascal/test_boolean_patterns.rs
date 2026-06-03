@@ -1,37 +1,51 @@
 /// Tests for complex boolean logic and patterns in Pascal/Delphi:
 /// De Morgan's laws, boolean accumulators in loops, truth tables,
 /// short-circuit patterns, boolean functions as conditions.
-
 use super::helpers::run_pascal;
 
 // ===================================================================
 // DE MORGAN'S LAWS
 // ===================================================================
 
-#[test] fn demorgan_not_and() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn demorgan_not_and() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var a, b: Boolean;
 begin
   a := True;
   b := False;
   WriteLn(not (a and b));
   WriteLn((not a) or (not b));
-end."#), &["true", "true"]);
+end."#
+        ),
+        &["true", "true"]
+    );
 }
 
-#[test] fn demorgan_not_or() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn demorgan_not_or() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var a, b: Boolean;
 begin
   a := False;
   b := False;
   WriteLn(not (a or b));
   WriteLn((not a) and (not b));
-end."#), &["true", "true"]);
+end."#
+        ),
+        &["true", "true"]
+    );
 }
 
-#[test] fn demorgan_all_cases() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn demorgan_all_cases() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var a, b: Boolean;
 begin
   a := True; b := True;
@@ -42,15 +56,21 @@ begin
   WriteLn(not (a and b) = ((not a) or (not b)));
   a := False; b := False;
   WriteLn(not (a and b) = ((not a) or (not b)));
-end."#), &["true", "true", "true", "true"]);
+end."#
+        ),
+        &["true", "true", "true", "true"]
+    );
 }
 
 // ===================================================================
 // BOOLEAN ACCUMULATION
 // ===================================================================
 
-#[test] fn all_positive_check() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn all_positive_check() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var arr: array of Integer;
     allPos: Boolean;
     i: Integer;
@@ -66,11 +86,17 @@ begin
   for i := 0 to 3 do
     if arr[i] <= 0 then allPos := False;
   WriteLn(allPos);
-end."#), &["true", "false"]);
+end."#
+        ),
+        &["true", "false"]
+    );
 }
 
-#[test] fn any_negative_check() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn any_negative_check() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var arr: array of Integer;
     anyNeg: Boolean;
     i: Integer;
@@ -81,11 +107,17 @@ begin
   for i := 0 to 3 do
     if arr[i] < 0 then anyNeg := True;
   WriteLn(anyNeg);
-end."#), &["true"]);
+end."#
+        ),
+        &["true"]
+    );
 }
 
-#[test] fn boolean_accumulate_with_early_exit() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn boolean_accumulate_with_early_exit() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var arr: array of Integer;
     found: Boolean;
     i: Integer;
@@ -102,26 +134,38 @@ begin
     end;
   end;
   WriteLn(found);
-end."#), &["true"]);
+end."#
+        ),
+        &["true"]
+    );
 }
 
 // ===================================================================
 // COMPOUND BOOLEAN EXPRESSIONS
 // ===================================================================
 
-#[test] fn three_way_and() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn three_way_and() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var x, y, z: Integer;
 begin
   x := 5; y := 10; z := 15;
   WriteLn((x < y) and (y < z) and (x < z));
   z := 3;
   WriteLn((x < y) and (y < z) and (x < z));
-end."#), &["true", "false"]);
+end."#
+        ),
+        &["true", "false"]
+    );
 }
 
-#[test] fn nested_boolean_condition() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn nested_boolean_condition() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 function InRectangle(x, y, x1, y1, x2, y2: Integer): Boolean;
 begin
   Result := (x >= x1) and (x <= x2) and (y >= y1) and (y <= y2);
@@ -129,25 +173,37 @@ end;
 begin
   WriteLn(InRectangle(5, 5, 0, 0, 10, 10));
   WriteLn(InRectangle(15, 5, 0, 0, 10, 10));
-end."#), &["true", "false"]);
+end."#
+        ),
+        &["true", "false"]
+    );
 }
 
 // ===================================================================
 // BOOLEAN XOR LOGIC
 // ===================================================================
 
-#[test] fn boolean_xor_truth_table() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn boolean_xor_truth_table() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 begin
   WriteLn(False xor False);
   WriteLn(False xor True);
   WriteLn(True xor False);
   WriteLn(True xor True);
-end."#), &["false", "true", "true", "false"]);
+end."#
+        ),
+        &["false", "true", "true", "false"]
+    );
 }
 
-#[test] fn parity_check() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn parity_check() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var arr: array of Boolean;
     parity: Boolean;
     i: Integer;
@@ -158,15 +214,21 @@ begin
   for i := 0 to 3 do
     parity := parity xor arr[i];
   WriteLn(parity);
-end."#), &["true"]);
+end."#
+        ),
+        &["true"]
+    );
 }
 
 // ===================================================================
 // SHORT-CIRCUIT IN LOOPS
 // ===================================================================
 
-#[test] fn short_circuit_prevents_nil_deref() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn short_circuit_prevents_nil_deref() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TNode = class
   public
@@ -189,11 +251,17 @@ begin
     curr := curr.Next;
   end;
   WriteLn(count);
-end."#), &["2"]);
+end."#
+        ),
+        &["2"]
+    );
 }
 
-#[test] fn short_circuit_guard() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn short_circuit_guard() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 function SafeDiv(a, b: Integer): Integer;
 begin
   if (b <> 0) and (a mod b = 0) then
@@ -205,15 +273,21 @@ begin
   WriteLn(SafeDiv(10, 2));
   WriteLn(SafeDiv(10, 3));
   WriteLn(SafeDiv(0, 0));
-end."#), &["5", "-1", "-1"]);
+end."#
+        ),
+        &["5", "-1", "-1"]
+    );
 }
 
 // ===================================================================
 // BOOLEAN FUNCTION COMPOSITION
 // ===================================================================
 
-#[test] fn boolean_and_function_results() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn boolean_and_function_results() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 function IsEven(n: Integer): Boolean;
 begin
   Result := n mod 2 = 0;
@@ -230,11 +304,17 @@ begin
   WriteLn(IsEvenAndPositive(4));
   WriteLn(IsEvenAndPositive(-4));
   WriteLn(IsEvenAndPositive(3));
-end."#), &["true", "false", "false"]);
+end."#
+        ),
+        &["true", "false", "false"]
+    );
 }
 
-#[test] fn boolean_or_of_conditions() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn boolean_or_of_conditions() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 function IsBoundary(n, size: Integer): Boolean;
 begin
   Result := (n = 0) or (n = size - 1);
@@ -243,15 +323,21 @@ begin
   WriteLn(IsBoundary(0, 10));
   WriteLn(IsBoundary(9, 10));
   WriteLn(IsBoundary(5, 10));
-end."#), &["true", "true", "false"]);
+end."#
+        ),
+        &["true", "true", "false"]
+    );
 }
 
 // ===================================================================
 // BOOLEAN ARRAY OPERATIONS
 // ===================================================================
 
-#[test] fn count_true_in_bool_array() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn count_true_in_bool_array() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var flags: array of Boolean;
     i, cnt: Integer;
 begin
@@ -262,11 +348,17 @@ begin
   for i := 0 to 5 do
     if flags[i] then Inc(cnt);
   WriteLn(cnt);
-end."#), &["4"]);
+end."#
+        ),
+        &["4"]
+    );
 }
 
-#[test] fn negate_bool_array() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn negate_bool_array() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var flags: array of Boolean;
     i: Integer;
 begin
@@ -276,15 +368,21 @@ begin
     flags[i] := not flags[i];
   for i := 0 to 2 do
     WriteLn(flags[i]);
-end."#), &["false", "true", "false"]);
+end."#
+        ),
+        &["false", "true", "false"]
+    );
 }
 
 // ===================================================================
 // IMPLICATION PATTERNS
 // ===================================================================
 
-#[test] fn logical_implication() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn logical_implication() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 function Implies(p, q: Boolean): Boolean;
 begin
   Result := (not p) or q;
@@ -294,15 +392,21 @@ begin
   WriteLn(Implies(True, False));
   WriteLn(Implies(False, True));
   WriteLn(Implies(False, False));
-end."#), &["true", "false", "true", "true"]);
+end."#
+        ),
+        &["true", "false", "true", "true"]
+    );
 }
 
 // ===================================================================
 // BOOLEAN FLAGS PATTERN
 // ===================================================================
 
-#[test] fn state_flags_pattern() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn state_flags_pattern() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var isRunning, isPaused, isDone: Boolean;
 begin
   isRunning := True;
@@ -314,15 +418,21 @@ begin
   isPaused := False;
   isDone := True;
   WriteLn(isRunning and not isPaused and not isDone);
-end."#), &["true", "false", "false"]);
+end."#
+        ),
+        &["true", "false", "false"]
+    );
 }
 
 // ===================================================================
 // BOOLEAN IN RECORD
 // ===================================================================
 
-#[test] fn boolean_fields_in_record() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn boolean_fields_in_record() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TPermission = record
     CanRead: Boolean;
@@ -346,5 +456,8 @@ begin
   p.CanDelete := False;
   WriteLn(p.CanModify);
   WriteLn(p.FullAccess);
-end."#), &["true", "false"]);
+end."#
+        ),
+        &["true", "false"]
+    );
 }

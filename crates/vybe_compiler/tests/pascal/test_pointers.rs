@@ -1,7 +1,10 @@
 use super::helpers::run_pascal;
 
-#[test] fn pointer_basic() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn pointer_basic() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var
   x: Integer;
   p: ^Integer;
@@ -9,11 +12,17 @@ begin
   x := 10;
   p := @x;
   WriteLn(p^);
-end."#), &["10"]);
+end."#
+        ),
+        &["10"]
+    );
 }
 
-#[test] fn pointer_modify() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn pointer_modify() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var
   x: Integer;
   p: ^Integer;
@@ -22,11 +31,17 @@ begin
   p := @x;
   p^ := 20;
   WriteLn(x);
-end."#), &["20"]);
+end."#
+        ),
+        &["20"]
+    );
 }
 
-#[test] fn pointer_return_from_function() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn pointer_return_from_function() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 function MakePtr: ^Integer;
 var
   x: Integer;
@@ -40,11 +55,17 @@ var
 begin
   p := MakePtr();
   WriteLn(p^);
-end."#), &["42"]);
+end."#
+        ),
+        &["42"]
+    );
 }
 
-#[test] fn pointer_pass_to_procedure() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn pointer_pass_to_procedure() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 procedure SetValue(p: ^Integer; value: Integer);
 begin
   p^ := value;
@@ -58,11 +79,17 @@ begin
   p := @x;
   SetValue(p, 33);
   WriteLn(x);
-end."#), &["33"]);
+end."#
+        ),
+        &["33"]
+    );
 }
 
-#[test] fn pointer_to_record_field_access() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn pointer_to_record_field_access() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TPoint = record
     X: Integer;
@@ -78,11 +105,17 @@ begin
   p := @point;
   p^.X := 11;
   WriteLn(p^.X + p^.Y);
-end."#), &["20"]);
+end."#
+        ),
+        &["20"]
+    );
 }
 
-#[test] fn pointer_to_array_index_access() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn pointer_to_array_index_access() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TIntArray = array[0..2] of Integer;
 
@@ -96,11 +129,17 @@ begin
   p := @values;
   p^[1] := 10;
   WriteLn(values[0] + values[1] + values[2]);
-end."#), &["14"]);
+end."#
+        ),
+        &["14"]
+    );
 }
 
-#[test] fn pointer_to_pointer() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn pointer_to_pointer() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var
   x: Integer;
   p: ^Integer;
@@ -111,11 +150,17 @@ begin
   pp := @p;
   pp^^ := 27;
   WriteLn(x);
-end."#), &["27"]);
+end."#
+        ),
+        &["27"]
+    );
 }
 
-#[test] fn pointer_equality() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn pointer_equality() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var
   x: Integer;
   y: Integer;
@@ -130,11 +175,17 @@ begin
   p3 := @y;
   WriteLn(p1 = p2);
   WriteLn(p1 = p3);
-end."#), &["true", "false"]);
+end."#
+        ),
+        &["true", "false"]
+    );
 }
 
-#[test] fn pointer_inequality() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn pointer_inequality() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var
   x: Integer;
   y: Integer;
@@ -146,11 +197,17 @@ begin
   p1 := @x;
   p2 := @y;
   WriteLn(p1 <> p2);
-end."#), &["true"]);
+end."#
+        ),
+        &["true"]
+    );
 }
 
-#[test] fn pointer_to_string() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn pointer_to_string() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var
   s: String;
   p: ^String;
@@ -159,11 +216,17 @@ begin
   p := @s;
   p^ := 'world';
   WriteLn(s);
-end."#), &["world"]);
+end."#
+        ),
+        &["world"]
+    );
 }
 
-#[test] fn pointer_to_boolean() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn pointer_to_boolean() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var
   b: Boolean;
   p: ^Boolean;
@@ -172,11 +235,17 @@ begin
   p := @b;
   p^ := true;
   WriteLn(b);
-end."#), &["true"]);
+end."#
+        ),
+        &["true"]
+    );
 }
 
-#[test] fn pointer_nil_compare() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn pointer_nil_compare() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var
   x: Integer;
   p1: ^Integer;
@@ -187,11 +256,17 @@ begin
   p2 := @x;
   WriteLn(p1 = nil);
   WriteLn(p2 = nil);
-end."#), &["true", "false"]);
+end."#
+        ),
+        &["true", "false"]
+    );
 }
 
-#[test] fn pointer_nil_reassignment() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn pointer_nil_reassignment() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var
   x: Integer;
   p: ^Integer;
@@ -200,11 +275,17 @@ begin
   p := @x;
   p := nil;
   WriteLn(p = nil);
-end."#), &["true"]);
+end."#
+        ),
+        &["true"]
+    );
 }
 
-#[test] fn pointer_passthrough_call_layers() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn pointer_passthrough_call_layers() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 function Identity(p: ^Integer): ^Integer;
 begin
   Result := p;
@@ -223,5 +304,8 @@ begin
   p := Bounce(@x);
   p^ := 42;
   WriteLn(x);
-end."#), &["42"]);
+end."#
+        ),
+        &["42"]
+    );
 }

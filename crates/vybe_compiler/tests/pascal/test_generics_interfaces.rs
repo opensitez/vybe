@@ -1,14 +1,16 @@
 /// Generics, interfaces, operator overloading, class helpers,
 /// and other modern Object Pascal / Delphi features.
-
 use super::helpers::run_pascal;
 
 // ===================================================================
 // GENERICS — BASIC
 // ===================================================================
 
-#[test] fn generic_class_basic() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn generic_class_basic() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TBox<T> = class
   public
@@ -30,11 +32,17 @@ begin
   strBox := TBox<String>.Create('hello');
   WriteLn(intBox.GetValue());
   WriteLn(strBox.GetValue());
-end."#), &["42", "hello"]);
+end."#
+        ),
+        &["42", "hello"]
+    );
 }
 
-#[test] fn generic_class_pair() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn generic_class_pair() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TPair<TKey, TValue> = class
   public
@@ -51,11 +59,17 @@ begin
   p := TPair<String, Integer>.Create('age', 30);
   WriteLn(p.FKey);
   WriteLn(p.FValue);
-end."#), &["age", "30"]);
+end."#
+        ),
+        &["age", "30"]
+    );
 }
 
-#[test] fn generic_function() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn generic_function() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 function Max<T>(a, b: T): T;
 begin
   if a > b then Result := a else Result := b;
@@ -63,15 +77,21 @@ end;
 begin
   WriteLn(Max<Integer>(3, 7));
   WriteLn(Max<String>('alpha', 'beta'));
-end."#), &["7", "beta"]);
+end."#
+        ),
+        &["7", "beta"]
+    );
 }
 
 // ===================================================================
 // INTERFACES
 // ===================================================================
 
-#[test] fn interface_basic_impl() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn interface_basic_impl() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   IGreeter = interface
     function Greet(name: String): String;
@@ -89,11 +109,17 @@ var g: IGreeter;
 begin
   g := TFormalGreeter.Create;
   WriteLn(g.Greet('Alice'));
-end."#), &["Good day, Alice"]);
+end."#
+        ),
+        &["Good day, Alice"]
+    );
 }
 
-#[test] fn interface_multiple_implementations() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn interface_multiple_implementations() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   IShape = interface
     function Area: Real;
@@ -122,15 +148,21 @@ begin
   WriteLn(s.Area());
   s := TCircle.Create(1);
   WriteLn(s.Area());
-end."#), &["25", "3.14"]);
+end."#
+        ),
+        &["25", "3.14"]
+    );
 }
 
 // ===================================================================
 // OPERATOR OVERLOADING
 // ===================================================================
 
-#[test] fn operator_overload_add() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn operator_overload_add() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TVector = record
     X: Real;
@@ -151,11 +183,17 @@ begin
   c := a + b;
   WriteLn(c.X);
   WriteLn(c.Y);
-end."#), &["4", "6"]);
+end."#
+        ),
+        &["4", "6"]
+    );
 }
 
-#[test] fn operator_overload_equal() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn operator_overload_equal() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TPoint = record
     X: Integer;
@@ -175,11 +213,17 @@ begin
   if a = b then WriteLn('equal') else WriteLn('not equal');
   b.X := 3;
   if a = b then WriteLn('equal') else WriteLn('not equal');
-end."#), &["equal", "not equal"]);
+end."#
+        ),
+        &["equal", "not equal"]
+    );
 }
 
-#[test] fn operator_overload_implicit() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn operator_overload_implicit() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TWrapper = record
     FValue: Integer;
@@ -199,15 +243,21 @@ begin
   w := 42;
   s := w;
   WriteLn(s);
-end."#), &["42"]);
+end."#
+        ),
+        &["42"]
+    );
 }
 
 // ===================================================================
 // CLASS HELPERS
 // ===================================================================
 
-#[test] fn class_helper_basic() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn class_helper_basic() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TFoo = class
   public
@@ -226,15 +276,21 @@ var f: TFoo;
 begin
   f := TFoo.Create(21);
   WriteLn(f.Doubled());
-end."#), &["42"]);
+end."#
+        ),
+        &["42"]
+    );
 }
 
 // ===================================================================
 // RECORD HELPERS
 // ===================================================================
 
-#[test] fn record_helper_for_integer() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn record_helper_for_integer() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TIntHelper = record helper for Integer
     function IsEven: Boolean;
@@ -249,11 +305,17 @@ begin
   WriteLn(n.IsEven());
   n := 7;
   WriteLn(n.IsEven());
-end."#), &["true", "false"]);
+end."#
+        ),
+        &["true", "false"]
+    );
 }
 
-#[test] fn string_helper() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn string_helper() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TStringHelper = record helper for String
     function Reverse: String;
@@ -271,37 +333,55 @@ var s: String;
 begin
   s := 'hello';
   WriteLn(s.Reverse());
-end."#), &["olleh"]);
+end."#
+        ),
+        &["olleh"]
+    );
 }
 
 // ===================================================================
 // INLINE VARIABLES (Delphi 10.3+)
 // ===================================================================
 
-#[test] fn inline_var_in_begin() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn inline_var_in_begin() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 begin
   var x: Integer := 42;
   WriteLn(x);
-end."#), &["42"]);
+end."#
+        ),
+        &["42"]
+    );
 }
 
-#[test] fn inline_var_in_for() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn inline_var_in_for() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 begin
   var sum: Integer := 0;
   for var i: Integer := 1 to 10 do
     sum := sum + i;
   WriteLn(sum);
-end."#), &["55"]);
+end."#
+        ),
+        &["55"]
+    );
 }
 
 // ===================================================================
 // MULTI-INTERFACE
 // ===================================================================
 
-#[test] fn class_implements_two_interfaces() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn class_implements_two_interfaces() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   INameable = interface
     function GetName: String;
@@ -332,5 +412,8 @@ begin
   describable := pet;
   WriteLn(nameable.GetName());
   WriteLn(describable.Describe());
-end."#), &["Rex", "Rex the dog"]);
+end."#
+        ),
+        &["Rex", "Rex the dog"]
+    );
 }

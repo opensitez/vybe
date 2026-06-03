@@ -1,15 +1,17 @@
 /// Common Object Pascal idioms and patterns that Delphi/FPC developers
 /// use daily: properties, with statement, nested functions, Write vs WriteLn,
 /// Assigned checks, nil handling, chained field access, common algorithms.
-
 use super::helpers::run_pascal;
 
 // ===================================================================
 // PROPERTIES — READ/WRITE
 // ===================================================================
 
-#[test] fn property_read_write_basic() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn property_read_write_basic() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TPerson = class
   private
@@ -28,11 +30,17 @@ begin
   WriteLn(p.Name);
   p.Name := 'Bob';
   WriteLn(p.Name);
-end."#), &["Alice", "Bob"]);
+end."#
+        ),
+        &["Alice", "Bob"]
+    );
 }
 
-#[test] fn property_with_getter_setter() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn property_with_getter_setter() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TTemperature = class
   private
@@ -56,11 +64,17 @@ begin
   t := TTemperature.Create;
   t.Celsius := 100;
   WriteLn(t.Fahrenheit);
-end."#), &["212"]);
+end."#
+        ),
+        &["212"]
+    );
 }
 
-#[test] fn property_readonly() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn property_readonly() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TCounter = class
   private
@@ -81,15 +95,21 @@ begin
   c.Increment;
   c.Increment;
   WriteLn(c.Count);
-end."#), &["3"]);
+end."#
+        ),
+        &["3"]
+    );
 }
 
 // ===================================================================
 // ASSIGNED CHECKS
 // ===================================================================
 
-#[test] fn assigned_check_on_object() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn assigned_check_on_object() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type TFoo = class
   public constructor Create;
 end;
@@ -101,11 +121,17 @@ begin
   if not Assigned(f) then WriteLn('nil');
   f := TFoo.Create;
   if Assigned(f) then WriteLn('assigned');
-end."#), &["nil", "assigned"]);
+end."#
+        ),
+        &["nil", "assigned"]
+    );
 }
 
-#[test] fn assigned_check_before_method_call() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn assigned_check_before_method_call() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type TLogger = class
   public
     constructor Create;
@@ -120,15 +146,21 @@ begin
   if Assigned(logger) then logger.Log('should not print');
   logger := TLogger.Create;
   if Assigned(logger) then logger.Log('hello');
-end."#), &["hello"]);
+end."#
+        ),
+        &["hello"]
+    );
 }
 
 // ===================================================================
 // CHAINED FIELD ACCESS
 // ===================================================================
 
-#[test] fn chained_field_access() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn chained_field_access() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TAddress = class
   public
@@ -150,11 +182,17 @@ var p: TPerson;
 begin
   p := TPerson.Create('Alice', 'Paris');
   WriteLn(p.FName + ' lives in ' + p.FAddress.FCity);
-end."#), &["Alice lives in Paris"]);
+end."#
+        ),
+        &["Alice lives in Paris"]
+    );
 }
 
-#[test] fn deep_chained_access() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn deep_chained_access() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TC = class
   public FVal: Integer; constructor Create(v: Integer);
@@ -174,15 +212,21 @@ var a: TA;
 begin
   a := TA.Create(42);
   WriteLn(a.FB.FC.FVal);
-end."#), &["42"]);
+end."#
+        ),
+        &["42"]
+    );
 }
 
 // ===================================================================
 // COMMON PASCAL PATTERNS
 // ===================================================================
 
-#[test] fn swap_idiom() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn swap_idiom() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 procedure Swap(var a, b: Integer);
 var t: Integer;
 begin t := a; a := b; b := t; end;
@@ -192,11 +236,17 @@ begin
   x := 1; y := 2;
   Swap(x, y);
   WriteLn(x); WriteLn(y);
-end."#), &["2", "1"]);
+end."#
+        ),
+        &["2", "1"]
+    );
 }
 
-#[test] fn accumulator_pattern() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn accumulator_pattern() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 function Sum(arr: array of Integer): Integer;
 var n: Integer;
 begin
@@ -205,11 +255,17 @@ begin
 end;
 begin
   WriteLn(Sum([1, 2, 3, 4, 5]));
-end."#), &["15"]);
+end."#
+        ),
+        &["15"]
+    );
 }
 
-#[test] fn guard_clause_pattern() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn guard_clause_pattern() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 function Describe(n: Integer): String;
 begin
   if n < 0 then begin Result := 'negative'; Exit; end;
@@ -220,11 +276,17 @@ begin
   WriteLn(Describe(-5));
   WriteLn(Describe(0));
   WriteLn(Describe(10));
-end."#), &["negative", "zero", "positive"]);
+end."#
+        ),
+        &["negative", "zero", "positive"]
+    );
 }
 
-#[test] fn builder_pattern() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn builder_pattern() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TBuilder = class
   public
@@ -247,37 +309,55 @@ var b: TBuilder;
 begin
   b := TBuilder.Create;
   WriteLn(b.AddPart('A').AddPart('B').AddPart('C').Build());
-end."#), &["[A, B, C]"]);
+end."#
+        ),
+        &["[A, B, C]"]
+    );
 }
 
 // ===================================================================
 // WRITE VS WRITELN
 // ===================================================================
 
-#[test] fn write_no_newline() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn write_no_newline() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 begin
   Write('Hello ');
   Write('World');
   WriteLn;
-end."#), &["Hello World"]);
+end."#
+        ),
+        &["Hello World"]
+    );
 }
 
-#[test] fn write_then_writeln() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn write_then_writeln() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var i: Integer;
 begin
   for i := 1 to 5 do Write(IntToStr(i) + ' ');
   WriteLn;
-end."#), &["1 2 3 4 5 "]);
+end."#
+        ),
+        &["1 2 3 4 5 "]
+    );
 }
 
 // ===================================================================
 // NESTED FUNCTION PATTERNS
 // ===================================================================
 
-#[test] fn nested_helper_function() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn nested_helper_function() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 function ProcessList(arr: array of Integer): String;
   function FormatItem(n: Integer): String;
   begin
@@ -295,15 +375,21 @@ begin
 end;
 begin
   WriteLn(ProcessList([1, 2, 3, 4]));
-end."#), &["1(odd), 2(even), 3(odd), 4(even)"]);
+end."#
+        ),
+        &["1(odd), 2(even), 3(odd), 4(even)"]
+    );
 }
 
 // ===================================================================
 // DEFAULT INITIALIZED VARIABLES
 // ===================================================================
 
-#[test] fn default_init_local_vars() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn default_init_local_vars() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var i: Integer;
 var s: String;
 var b: Boolean;
@@ -313,15 +399,21 @@ begin
   WriteLn(Length(s));
   WriteLn(b);
   WriteLn(r);
-end."#), &["0", "0", "false", "0"]);
+end."#
+        ),
+        &["0", "0", "false", "0"]
+    );
 }
 
 // ===================================================================
 // MULTI-RETURN VIA VAR PARAMS
 // ===================================================================
 
-#[test] fn multi_return_via_var() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn multi_return_via_var() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 procedure DivMod(a, b: Integer; var quotient, remainder: Integer);
 begin
   quotient := a div b;
@@ -333,15 +425,21 @@ begin
   DivMod(17, 5, q, r);
   WriteLn(q);
   WriteLn(r);
-end."#), &["3", "2"]);
+end."#
+        ),
+        &["3", "2"]
+    );
 }
 
 // ===================================================================
 // BOOLEAN EXPRESSION PATTERNS
 // ===================================================================
 
-#[test] fn boolean_function_in_condition() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn boolean_function_in_condition() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 function InRange(val, lo, hi: Integer): Boolean;
 begin
   Result := (val >= lo) and (val <= hi);
@@ -349,15 +447,21 @@ end;
 begin
   if InRange(5, 1, 10) then WriteLn('in range');
   if not InRange(15, 1, 10) then WriteLn('out of range');
-end."#), &["in range", "out of range"]);
+end."#
+        ),
+        &["in range", "out of range"]
+    );
 }
 
 // ===================================================================
 // CASE STATEMENT PATTERNS
 // ===================================================================
 
-#[test] fn case_with_string() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn case_with_string() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var cmd: String;
 begin
   cmd := 'hello';
@@ -367,11 +471,17 @@ begin
   else
     WriteLn('unknown');
   end;
-end."#), &["greeting"]);
+end."#
+        ),
+        &["greeting"]
+    );
 }
 
-#[test] fn case_with_begin_end_blocks() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn case_with_begin_end_blocks() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 var x: Integer;
 begin
   x := 2;
@@ -388,15 +498,21 @@ begin
       WriteLn('three');
     end;
   end;
-end."#), &["two", "dos"]);
+end."#
+        ),
+        &["two", "dos"]
+    );
 }
 
 // ===================================================================
 // ITERATOR / VISITOR PATTERN
 // ===================================================================
 
-#[test] fn visitor_pattern() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn visitor_pattern() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TNode = class
   public
@@ -417,5 +533,8 @@ begin
     [TNode.Create(1), TNode.Create(2), TNode.Create(3)],
     procedure(n: TNode) begin WriteLn(n.FValue * 10); end
   );
-end."#), &["10", "20", "30"]);
+end."#
+        ),
+        &["10", "20", "30"]
+    );
 }

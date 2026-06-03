@@ -1,15 +1,17 @@
 /// Object-Oriented Pascal patterns: virtual/abstract, destructors, class methods,
 /// method overloading, visibility, polymorphism through base-type variables.
 /// Written from standard Object Pascal / Delphi conventions.
-
 use super::helpers::run_pascal;
 
 // ===================================================================
 // DESTRUCTORS
 // ===================================================================
 
-#[test] fn destructor_basic() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn destructor_basic() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TFoo = class
   public
@@ -32,11 +34,17 @@ var f: TFoo;
 begin
   f := TFoo.Create;
   f.Free;
-end."#), &["created", "destroyed"]);
+end."#
+        ),
+        &["created", "destroyed"]
+    );
 }
 
-#[test] fn destructor_child_calls_inherited() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn destructor_child_calls_inherited() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TBase = class
   public
@@ -58,16 +66,27 @@ var c: TChild;
 begin
   c := TChild.Create;
   c.Free;
-end."#), &["base create", "child create", "child destroy", "base destroy"]);
+end."#
+        ),
+        &[
+            "base create",
+            "child create",
+            "child destroy",
+            "base destroy"
+        ]
+    );
 }
 
 // ===================================================================
 // VIRTUAL / OVERRIDE POLYMORPHISM
 // ===================================================================
 
-#[test] fn virtual_method_dispatch() {
+#[test]
+fn virtual_method_dispatch() {
     // The fundamental OOP pattern: base-type variable, child behavior
-    assert_eq!(run_pascal(r#"program T;
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TShape = class
   public
@@ -100,12 +119,18 @@ var s: TShape;
 begin
   s := TSquare.Create(5);
   WriteLn(s.Area());
-end."#), &["25"]);
+end."#
+        ),
+        &["25"]
+    );
 }
 
-#[test] fn polymorphic_array() {
+#[test]
+fn polymorphic_array() {
     // Array of base type holding different children
-    assert_eq!(run_pascal(r#"program T;
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TAnimal = class
   public
@@ -136,15 +161,21 @@ begin
   animals := [TDog.Create, TCat.Create, TDog.Create];
   for a in animals do
     WriteLn(a.Sound());
-end."#), &["Woof", "Meow", "Woof"]);
+end."#
+        ),
+        &["Woof", "Meow", "Woof"]
+    );
 }
 
 // ===================================================================
 // ABSTRACT METHODS
 // ===================================================================
 
-#[test] fn abstract_method() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn abstract_method() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TBase = class
   public
@@ -165,15 +196,21 @@ var obj: TBase;
 begin
   obj := TConcrete.Create;
   WriteLn(obj.Describe());
-end."#), &["I am concrete"]);
+end."#
+        ),
+        &["I am concrete"]
+    );
 }
 
 // ===================================================================
 // CLASS METHODS (STATIC)
 // ===================================================================
 
-#[test] fn class_function() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn class_function() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TMath = class
   public
@@ -187,11 +224,17 @@ end;
 
 begin
   WriteLn(TMath.Add(3, 4));
-end."#), &["7"]);
+end."#
+        ),
+        &["7"]
+    );
 }
 
-#[test] fn class_procedure() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn class_procedure() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TLogger = class
   public
@@ -205,15 +248,21 @@ end;
 
 begin
   TLogger.Log('hello');
-end."#), &["LOG: hello"]);
+end."#
+        ),
+        &["LOG: hello"]
+    );
 }
 
 // ===================================================================
 // METHOD OVERLOADING
 // ===================================================================
 
-#[test] fn method_overload_different_param_count() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn method_overload_different_param_count() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TCalc = class
   public
@@ -231,11 +280,17 @@ begin
   c := TCalc.Create;
   WriteLn(c.Add(5));
   WriteLn(c.Add(3, 4));
-end."#), &["15", "7"]);
+end."#
+        ),
+        &["15", "7"]
+    );
 }
 
-#[test] fn standalone_overload() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn standalone_overload() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 function Double(x: Integer): Integer; overload;
 begin Result := x * 2; end;
 
@@ -245,15 +300,21 @@ begin Result := x + x; end;
 begin
   WriteLn(Double(5));
   WriteLn(Double('ab'));
-end."#), &["10", "abab"]);
+end."#
+        ),
+        &["10", "abab"]
+    );
 }
 
 // ===================================================================
 // PROTECTED VISIBILITY
 // ===================================================================
 
-#[test] fn protected_field_accessible_in_child() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn protected_field_accessible_in_child() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TBase = class
   protected
@@ -275,15 +336,21 @@ var c: TChild;
 begin
   c := TChild.Create(42);
   WriteLn(c.GetSecret());
-end."#), &["42"]);
+end."#
+        ),
+        &["42"]
+    );
 }
 
 // ===================================================================
 // CONSTRUCTOR OVERLOADING
 // ===================================================================
 
-#[test] fn constructor_overload() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn constructor_overload() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TPoint = class
   public
@@ -304,15 +371,21 @@ begin
   b := TPoint.Create(10, 20);
   WriteLn(a.FX); WriteLn(a.FY);
   WriteLn(b.FX); WriteLn(b.FY);
-end."#), &["0", "0", "10", "20"]);
+end."#
+        ),
+        &["0", "0", "10", "20"]
+    );
 }
 
 // ===================================================================
 // METHOD CALLING ANOTHER METHOD ON SELF
 // ===================================================================
 
-#[test] fn method_calls_other_method() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn method_calls_other_method() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TFormatter = class
   public
@@ -331,15 +404,21 @@ var f: TFormatter;
 begin
   f := TFormatter.Create;
   WriteLn(f.FormatName('alice'));
-end."#), &["[ALICE]"]);
+end."#
+        ),
+        &["[ALICE]"]
+    );
 }
 
 // ===================================================================
 // is OPERATOR WITH INHERITANCE CHAIN
 // ===================================================================
 
-#[test] fn is_operator_inheritance_chain() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn is_operator_inheritance_chain() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TGrandparent = class
   public constructor Create;
@@ -361,15 +440,21 @@ begin
   if c is TChild then WriteLn('is child');
   if c is TParent then WriteLn('is parent');
   if c is TGrandparent then WriteLn('is grandparent');
-end."#), &["is child", "is parent", "is grandparent"]);
+end."#
+        ),
+        &["is child", "is parent", "is grandparent"]
+    );
 }
 
 // ===================================================================
 // SELF REFERENCE PASSING
 // ===================================================================
 
-#[test] fn self_reference() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn self_reference() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TNode = class
   public
@@ -385,15 +470,21 @@ var n: TNode;
 begin
   n := TNode.Create(42);
   WriteLn(n.GetSelf().FValue);
-end."#), &["42"]);
+end."#
+        ),
+        &["42"]
+    );
 }
 
 // ===================================================================
 // OBJECT COMPOSITION
 // ===================================================================
 
-#[test] fn composition_pattern() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn composition_pattern() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TEngine = class
   public
@@ -420,15 +511,21 @@ var car: TCar;
 begin
   car := TCar.Create('Sedan', 200);
   WriteLn(car.Info());
-end."#), &["Sedan with 200hp"]);
+end."#
+        ),
+        &["Sedan with 200hp"]
+    );
 }
 
 // ===================================================================
 // FACTORY PATTERN WITH CLASS FUNCTION
 // ===================================================================
 
-#[test] fn factory_class_method() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn factory_class_method() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TShape = class
   public
@@ -448,5 +545,8 @@ begin
   WriteLn(s.FKind);
   s := TShape.Square;
   WriteLn(s.FKind);
-end."#), &["circle", "square"]);
+end."#
+        ),
+        &["circle", "square"]
+    );
 }

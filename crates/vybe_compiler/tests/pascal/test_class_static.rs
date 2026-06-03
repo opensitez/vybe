@@ -1,15 +1,17 @@
 /// Tests for class-level (static) members in Pascal/Delphi:
 /// class function, class procedure, class const, class var,
 /// and class-wide behavior shared across all instances.
-
 use super::helpers::run_pascal;
 
 // ===================================================================
 // CLASS FUNCTION (static method returning value)
 // ===================================================================
 
-#[test] fn class_function_basic() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn class_function_basic() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TMath = class
     class function Square(n: Integer): Integer;
@@ -26,11 +28,17 @@ end;
 begin
   WriteLn(TMath.Square(5));
   WriteLn(TMath.Cube(3));
-end."#), &["25", "27"]);
+end."#
+        ),
+        &["25", "27"]
+    );
 }
 
-#[test] fn class_function_min_max() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn class_function_min_max() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TUtil = class
     class function ClampValue(v, lo, hi: Integer): Integer;
@@ -45,11 +53,17 @@ begin
   WriteLn(TUtil.ClampValue(5, 1, 10));
   WriteLn(TUtil.ClampValue(-5, 1, 10));
   WriteLn(TUtil.ClampValue(15, 1, 10));
-end."#), &["5", "1", "10"]);
+end."#
+        ),
+        &["5", "1", "10"]
+    );
 }
 
-#[test] fn class_function_returns_string() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn class_function_returns_string() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TFormatter = class
     class function Repeat(s: String; n: Integer): String;
@@ -63,15 +77,21 @@ begin
 end;
 begin
   WriteLn(TFormatter.Repeat('ab', 3));
-end."#), &["ababab"]);
+end."#
+        ),
+        &["ababab"]
+    );
 }
 
 // ===================================================================
 // CLASS PROCEDURE (static void method)
 // ===================================================================
 
-#[test] fn class_procedure_basic() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn class_procedure_basic() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TLogger = class
     class procedure Log(msg: String);
@@ -89,11 +109,17 @@ begin
   TLogger.Log('started');
   TLogger.Warn('low memory');
   TLogger.Log('finished');
-end."#), &["[LOG] started", "[WARN] low memory", "[LOG] finished"]);
+end."#
+        ),
+        &["[LOG] started", "[WARN] low memory", "[LOG] finished"]
+    );
 }
 
-#[test] fn class_procedure_prints_array() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn class_procedure_prints_array() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TPrinter = class
     class procedure PrintRange(lo, hi: Integer);
@@ -106,15 +132,21 @@ begin
 end;
 begin
   TPrinter.PrintRange(3, 5);
-end."#), &["3", "4", "5"]);
+end."#
+        ),
+        &["3", "4", "5"]
+    );
 }
 
 // ===================================================================
 // CLASS CONST
 // ===================================================================
 
-#[test] fn class_const_usage() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn class_const_usage() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TCircle = class
   const
@@ -134,11 +166,17 @@ begin
   WriteLn(c.Area > 78.0);
   WriteLn(c.Area < 79.0);
   c.Free;
-end."#), &["true", "true"]);
+end."#
+        ),
+        &["true", "true"]
+    );
 }
 
-#[test] fn class_const_in_class_function() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn class_const_in_class_function() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TLimits = class
   const
@@ -155,15 +193,21 @@ begin
   WriteLn(TLimits.IsValidCount(50));
   WriteLn(TLimits.IsValidCount(0));
   WriteLn(TLimits.IsValidCount(101));
-end."#), &["true", "false", "false"]);
+end."#
+        ),
+        &["true", "false", "false"]
+    );
 }
 
 // ===================================================================
 // CLASS WITH FACTORY CLASS FUNCTION
 // ===================================================================
 
-#[test] fn factory_via_class_function() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn factory_via_class_function() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TPoint = class
   public
@@ -189,15 +233,21 @@ begin
   WriteLn(p.X);
   WriteLn(p.Y);
   p.Free;
-end."#), &["0", "0"]);
+end."#
+        ),
+        &["0", "0"]
+    );
 }
 
 // ===================================================================
 // CLASS FUNCTION FOR PARSING / CONVERSION
 // ===================================================================
 
-#[test] fn class_function_parse_int() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn class_function_parse_int() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TParser = class
     class function TryInt(s: String; var n: Integer): Boolean;
@@ -218,15 +268,21 @@ begin
   WriteLn(n);
   WriteLn(TParser.TryInt('bad', n));
   WriteLn(n);
-end."#), &["true", "42", "false", "0"]);
+end."#
+        ),
+        &["true", "42", "false", "0"]
+    );
 }
 
 // ===================================================================
 // INHERITED CLASS WITH CLASS FUNCTION
 // ===================================================================
 
-#[test] fn class_function_in_derived() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn class_function_in_derived() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TAnimal = class
     class function Species: String; virtual;
@@ -245,15 +301,21 @@ end;
 begin
   WriteLn(TAnimal.Species);
   WriteLn(TDog.Species);
-end."#), &["Animal", "Dog"]);
+end."#
+        ),
+        &["Animal", "Dog"]
+    );
 }
 
 // ===================================================================
 // CLASS FUNCTION COMBINED WITH INSTANCE METHODS
 // ===================================================================
 
-#[test] fn class_and_instance_methods_together() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn class_and_instance_methods_together() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TCounter = class
   private
@@ -284,15 +346,21 @@ begin
   c.Increment;
   WriteLn(c.Value);
   c.Free;
-end."#), &["3"]);
+end."#
+        ),
+        &["3"]
+    );
 }
 
 // ===================================================================
 // MULTIPLE CLASS FUNCTIONS, COMPOSITION
 // ===================================================================
 
-#[test] fn class_functions_compose() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn class_functions_compose() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TStringUtil = class
     class function Reversed(s: String): String;
@@ -312,15 +380,21 @@ end;
 begin
   WriteLn(TStringUtil.IsPalindrome('racecar'));
   WriteLn(TStringUtil.IsPalindrome('hello'));
-end."#), &["true", "false"]);
+end."#
+        ),
+        &["true", "false"]
+    );
 }
 
 // ===================================================================
 // CLASS PROCEDURE WITH SIDE EFFECTS VIA VAR
 // ===================================================================
 
-#[test] fn class_procedure_output_param() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn class_procedure_output_param() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TCalc = class
     class procedure Divide(a, b: Integer; var q, r: Integer);
@@ -335,15 +409,21 @@ begin
   TCalc.Divide(17, 5, q, r);
   WriteLn(q);
   WriteLn(r);
-end."#), &["3", "2"]);
+end."#
+        ),
+        &["3", "2"]
+    );
 }
 
 // ===================================================================
 // CLASS FUNCTION RECURSIVE
 // ===================================================================
 
-#[test] fn class_function_recursive() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn class_function_recursive() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TFib = class
     class function Compute(n: Integer): Integer;
@@ -357,15 +437,21 @@ begin
   WriteLn(TFib.Compute(0));
   WriteLn(TFib.Compute(1));
   WriteLn(TFib.Compute(7));
-end."#), &["0", "1", "13"]);
+end."#
+        ),
+        &["0", "1", "13"]
+    );
 }
 
 // ===================================================================
 // CLASS CONST ACCESS FROM OUTSIDE CLASS
 // ===================================================================
 
-#[test] fn class_const_access_external() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn class_const_access_external() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TConfig = class
   const
@@ -375,15 +461,21 @@ type
 begin
   WriteLn(TConfig.Version);
   WriteLn(TConfig.MaxConnections);
-end."#), &["1.0.0", "10"]);
+end."#
+        ),
+        &["1.0.0", "10"]
+    );
 }
 
 // ===================================================================
 // CLASS FUNCTION AND INSTANCE INTERPLAY
 // ===================================================================
 
-#[test] fn singleton_via_class_function() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn singleton_via_class_function() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TApp = class
   private
@@ -406,15 +498,21 @@ begin
   app := TApp.CreateNamed('MyApp');
   WriteLn(app.GetName);
   app.Free;
-end."#), &["MyApp"]);
+end."#
+        ),
+        &["MyApp"]
+    );
 }
 
 // ===================================================================
 // CLASS FUNCTION RETURNS BOOLEAN PREDICATE
 // ===================================================================
 
-#[test] fn class_function_predicate() {
-    assert_eq!(run_pascal(r#"program T;
+#[test]
+fn class_function_predicate() {
+    assert_eq!(
+        run_pascal(
+            r#"program T;
 type
   TValidator = class
     class function IsEmail(s: String): Boolean;
@@ -433,5 +531,8 @@ begin
   WriteLn(TValidator.IsEmail('notanemail'));
   WriteLn(TValidator.IsPositive(5));
   WriteLn(TValidator.IsPositive(-1));
-end."#), &["true", "false", "true", "false"]);
+end."#
+        ),
+        &["true", "false", "true", "false"]
+    );
 }
