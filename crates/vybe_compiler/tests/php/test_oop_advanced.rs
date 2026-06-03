@@ -3,7 +3,9 @@ use super::helpers::{compile_ok, run_prints};
 // ── Late static binding ──────────────────────────────────────────
 #[test]
 fn late_static_binding_basic() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Base {
     protected static string $type = "base";
     public static function getType(): string {
@@ -15,12 +17,17 @@ class Child extends Base {
 }
 echo Base::getType();
 echo Child::getType();
-"#), &["base", "child"]);
+"#
+        ),
+        &["base", "child"]
+    );
 }
 
 #[test]
 fn late_static_binding_new_static() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Animal {
     public string $name;
     public function __construct(string $name) {
@@ -39,12 +46,17 @@ $d = Dog::create("Buddy");
 echo $a->type();
 echo $d->type();
 echo $d->name;
-"#), &["animal", "dog", "Buddy"]);
+"#
+        ),
+        &["animal", "dog", "Buddy"]
+    );
 }
 
 #[test]
 fn late_static_binding_constant() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Shape {
     const NAME = "shape";
     public static function describe(): string {
@@ -56,12 +68,17 @@ class Circle extends Shape {
 }
 echo Shape::describe();
 echo Circle::describe();
-"#), &["shape", "circle"]);
+"#
+        ),
+        &["shape", "circle"]
+    );
 }
 
 #[test]
 fn late_static_binding_self_vs_static() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Base {
     public static function selfClass(): string { return self::class; }
     public static function staticClass(): string { return static::class; }
@@ -71,12 +88,17 @@ echo Base::selfClass();
 echo Child::selfClass();
 echo Base::staticClass();
 echo Child::staticClass();
-"#), &["Base", "Base", "Base", "Child"]);
+"#
+        ),
+        &["Base", "Base", "Base", "Child"]
+    );
 }
 
 #[test]
 fn late_static_binding_factory_chain() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Vehicle {
     protected string $color = "white";
     public static function make(): static {
@@ -96,25 +118,35 @@ $v = Vehicle::make()->paint("red");
 $c = Car::make()->paint("blue");
 echo $v->describe();
 echo $c->describe();
-"#), &["Vehicle:red", "Car:blue"]);
+"#
+        ),
+        &["Vehicle:red", "Car:blue"]
+    );
 }
 
 // ── Anonymous classes ────────────────────────────────────────────
 #[test]
 fn anonymous_class_basic() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 $obj = new class {
     public function greet(): string {
         return "hello from anonymous";
     }
 };
 echo $obj->greet();
-"#), &["hello from anonymous"]);
+"#
+        ),
+        &["hello from anonymous"]
+    );
 }
 
 #[test]
 fn anonymous_class_with_constructor() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 $obj = new class("world") {
     public function __construct(private string $name) {}
     public function greet(): string {
@@ -122,12 +154,17 @@ $obj = new class("world") {
     }
 };
 echo $obj->greet();
-"#), &["hello world"]);
+"#
+        ),
+        &["hello world"]
+    );
 }
 
 #[test]
 fn anonymous_class_implements_interface() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface Printable {
     public function toString(): string;
 }
@@ -137,12 +174,17 @@ $obj = new class implements Printable {
     }
 };
 echo $obj->toString();
-"#), &["I am printable"]);
+"#
+        ),
+        &["I am printable"]
+    );
 }
 
 #[test]
 fn anonymous_class_extends() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Logger {
     public function log(string $msg): void {
         echo "LOG: $msg";
@@ -154,12 +196,17 @@ $obj = new class extends Logger {
     }
 };
 $obj->info("started");
-"#), &["LOG: INFO: started"]);
+"#
+        ),
+        &["LOG: INFO: started"]
+    );
 }
 
 #[test]
 fn anonymous_class_counter_state() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function makeCounter(int $start = 0): object {
     return new class($start) {
         private int $value;
@@ -173,13 +220,18 @@ $c->inc();
 $c->inc();
 $c->inc();
 echo $c->get();
-"#), &["13"]);
+"#
+        ),
+        &["13"]
+    );
 }
 
 // ── Trait conflict resolution ────────────────────────────────────
 #[test]
 fn trait_insteadof() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 trait A {
     public function hello(): string { return "A"; }
 }
@@ -193,12 +245,17 @@ class C {
 }
 $c = new C();
 echo $c->hello();
-"#), &["A"]);
+"#
+        ),
+        &["A"]
+    );
 }
 
 #[test]
 fn trait_alias_as() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 trait Greeter {
     public function hello(): string { return "hello"; }
 }
@@ -210,12 +267,17 @@ class MyClass {
 $obj = new MyClass();
 echo $obj->greet();
 echo $obj->hello();
-"#), &["hello", "hello"]);
+"#
+        ),
+        &["hello", "hello"]
+    );
 }
 
 #[test]
 fn trait_insteadof_with_alias() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 trait X {
     public function speak(): string { return "X speaks"; }
 }
@@ -231,13 +293,18 @@ class Z {
 $z = new Z();
 echo $z->speak();
 echo $z->ySpeak();
-"#), &["X speaks", "Y speaks"]);
+"#
+        ),
+        &["X speaks", "Y speaks"]
+    );
 }
 
 // ── Abstract methods in traits ───────────────────────────────────
 #[test]
 fn trait_abstract_method() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 trait Validatable {
     abstract protected function validate(): bool;
     public function isValid(): string {
@@ -255,13 +322,18 @@ $e1 = new Email("user@example.com");
 $e2 = new Email("invalid");
 echo $e1->isValid();
 echo $e2->isValid();
-"#), &["valid", "invalid"]);
+"#
+        ),
+        &["valid", "invalid"]
+    );
 }
 
 // ── Trait with constants (PHP 8.2) ───────────────────────────────
 #[test]
 fn trait_with_constants() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 trait HasVersion {
     const VERSION = "1.0";
     public function getVersion(): string {
@@ -273,13 +345,18 @@ class App {
 }
 $app = new App();
 echo $app->getVersion();
-"#), &["1.0"]);
+"#
+        ),
+        &["1.0"]
+    );
 }
 
 // ── Interface constants and default methods ──────────────────────
 #[test]
 fn interface_with_constants() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface Status {
     const ACTIVE = 1;
     const INACTIVE = 0;
@@ -292,13 +369,18 @@ class User implements Status {
 $u = new User();
 echo $u->getStatus();
 echo User::INACTIVE;
-"#), &["1", "0"]);
+"#
+        ),
+        &["1", "0"]
+    );
 }
 
 // ── Multiple interface implementation ────────────────────────────
 #[test]
 fn multiple_interfaces() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface Readable {
     public function read(): string;
 }
@@ -314,13 +396,18 @@ $f = new File();
 $f->write("hello");
 $f->write(" world");
 echo $f->read();
-"#), &["hello world"]);
+"#
+        ),
+        &["hello world"]
+    );
 }
 
 // ── Abstract class with concrete methods ─────────────────────────
 #[test]
 fn abstract_template_method() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 abstract class Report {
     abstract protected function getData(): array;
     public function generate(): string {
@@ -335,13 +422,18 @@ class SalesReport extends Report {
 }
 $r = new SalesReport();
 echo $r->generate();
-"#), &["Q1: 100, Q2: 200, Q3: 150"]);
+"#
+        ),
+        &["Q1: 100, Q2: 200, Q3: 150"]
+    );
 }
 
 // ── Covariant return types ───────────────────────────────────────
 #[test]
 fn covariant_return() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Collection {
     protected array $items;
     public function __construct(array $items) { $this->items = $items; }
@@ -354,13 +446,18 @@ class TypedCollection extends Collection {
 }
 $c = new TypedCollection(["hello", "world"]);
 echo $c->first();
-"#), &["hello"]);
+"#
+        ),
+        &["hello"]
+    );
 }
 
 // ── Property hooks / accessors pattern ───────────────────────────
 #[test]
 fn getter_setter_pattern() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Temperature {
     private float $celsius;
     public function __construct(float $celsius) {
@@ -375,13 +472,18 @@ class Temperature {
 $t = new Temperature(100);
 echo $t->getCelsius();
 echo $t->getFahrenheit();
-"#), &["100", "212"]);
+"#
+        ),
+        &["100", "212"]
+    );
 }
 
 // ── Enum implementing interface ──────────────────────────────────
 #[test]
 fn enum_implements_interface() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface HasLabel {
     public function label(): string;
 }
@@ -395,13 +497,18 @@ enum Color: string implements HasLabel {
 }
 echo Color::Red->label();
 echo Color::Green->value;
-"#), &["RED", "green"]);
+"#
+        ),
+        &["RED", "green"]
+    );
 }
 
 // ── Enum from / tryFrom ──────────────────────────────────────────
 #[test]
 fn enum_from_tryfrom() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 enum Suit: string {
     case Hearts = "H";
     case Diamonds = "D";
@@ -412,13 +519,18 @@ $s = Suit::from("H");
 echo $s->name;
 $t = Suit::tryFrom("X");
 echo $t === null ? "null" : $t->name;
-"#), &["Hearts", "null"]);
+"#
+        ),
+        &["Hearts", "null"]
+    );
 }
 
 // ── Readonly constructor promotion ───────────────────────────────
 #[test]
 fn readonly_promotion_combo() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Point {
     public function __construct(
         public readonly float $x,
@@ -436,13 +548,18 @@ class Point {
 $a = new Point(0, 0, 0);
 $b = new Point(3, 4, 0);
 echo $a->distanceTo($b);
-"#), &["5"]);
+"#
+        ),
+        &["5"]
+    );
 }
 
 // ── Intersection types ───────────────────────────────────────────
 #[test]
 fn intersection_type_param() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface Countable2 {
     public function count(): int;
 }
@@ -460,13 +577,18 @@ function describe(Countable2&Stringable2 $obj): void {
     echo $obj;
 }
 describe(new Items(["a", "b", "c"]));
-"#), &["3", "a,b,c"]);
+"#
+        ),
+        &["3", "a,b,c"]
+    );
 }
 
 // ── Named arguments ──────────────────────────────────────────────
 #[test]
 fn named_args_skip_defaults() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function createTag(string $tag, string $content, string $class = "", string $id = ""): string {
     $attrs = "";
     if ($class) $attrs .= " class=\"$class\"";
@@ -475,13 +597,21 @@ function createTag(string $tag, string $content, string $class = "", string $id 
 }
 echo createTag("div", "hello", id: "main");
 echo createTag(tag: "span", content: "world", class: "bold");
-"#), &["<div id=\"main\">hello</div>", "<span class=\"bold\">world</span>"]);
+"#
+        ),
+        &[
+            "<div id=\"main\">hello</div>",
+            "<span class=\"bold\">world</span>"
+        ]
+    );
 }
 
 // ── Stringable interface ─────────────────────────────────────────
 #[test]
 fn stringable_interface() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Money implements Stringable {
     public function __construct(private int $cents) {}
     public function __toString(): string {
@@ -493,13 +623,18 @@ function display(Stringable $item): void {
 }
 display(new Money(1299));
 display(new Money(50));
-"#), &["$12.99", "$0.50"]);
+"#
+        ),
+        &["$12.99", "$0.50"]
+    );
 }
 
 // ── Object cloning ───────────────────────────────────────────────
 #[test]
 fn object_clone_shallow() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Config {
     public string $env = "prod";
     public int $timeout = 30;
@@ -510,12 +645,17 @@ $b->env = "dev";
 echo $a->env;
 echo $b->env;
 echo $a->timeout;
-"#), &["prod", "dev", "30"]);
+"#
+        ),
+        &["prod", "dev", "30"]
+    );
 }
 
 #[test]
 fn clone_deep_copy_with_magic() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Address {
     public function __construct(public string $city) {}
 }
@@ -534,13 +674,18 @@ $bob->name = "Bob";
 $bob->address->city = "London";
 echo $alice->name . ":" . $alice->address->city;
 echo $bob->name . ":" . $bob->address->city;
-"#), &["Alice:Paris", "Bob:London"]);
+"#
+        ),
+        &["Alice:Paris", "Bob:London"]
+    );
 }
 
 // ── Object identity ──────────────────────────────────────────────
 #[test]
 fn object_identity_vs_equality() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Box {
     public function __construct(public int $value) {}
 }
@@ -550,13 +695,18 @@ $c = new Box(5);
 echo ($a === $b) ? "same" : "different";
 echo ($a === $c) ? "same" : "different";
 echo ($a == $c) ? "equal" : "not equal";
-"#), &["same", "different", "equal"]);
+"#
+        ),
+        &["same", "different", "equal"]
+    );
 }
 
 // ── Fluent builder pattern ───────────────────────────────────────
 #[test]
 fn fluent_builder_returns_this() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class QueryBuilder {
     private string $table = "";
     private array $conditions = [];
@@ -592,13 +742,17 @@ $q = (new QueryBuilder())
     ->limit(10)
     ->build();
 echo $q;
-"#), &["SELECT * FROM users WHERE active=1 AND age>18 LIMIT 10"]);
+"#
+        ),
+        &["SELECT * FROM users WHERE active=1 AND age>18 LIMIT 10"]
+    );
 }
 
 // ── Final class / method ─────────────────────────────────────────
 #[test]
 fn final_class_compile_ok() {
-    compile_ok(r#"<?php
+    compile_ok(
+        r#"<?php
 final class Singleton {
     private static ?self $instance = null;
     private function __construct(public readonly string $id) {}
@@ -611,12 +765,14 @@ final class Singleton {
 }
 $s = Singleton::getInstance();
 echo $s->id;
-"#);
+"#,
+    );
 }
 
 #[test]
 fn final_method_in_hierarchy() {
-    compile_ok(r#"<?php
+    compile_ok(
+        r#"<?php
 class Base {
     final public function identity(): string {
         return static::class;
@@ -632,13 +788,16 @@ class Child extends Base {
 }
 $c = new Child();
 echo $c->greeting();
-"#);
+"#,
+    );
 }
 
 // ── Multiple levels of inheritance + parent chain ───────────────
 #[test]
 fn three_level_parent_construct_chain() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class A {
     protected string $log = "";
     public function __construct() {
@@ -660,13 +819,18 @@ class C extends B {
 }
 $c = new C();
 echo $c->getLog();
-"#), &["ABC"]);
+"#
+        ),
+        &["ABC"]
+    );
 }
 
 // ── Static property shared across instances ──────────────────────
 #[test]
 fn static_accumulator_across_instances() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Counter {
     private static int $total = 0;
     private int $id;
@@ -684,13 +848,18 @@ echo $a->getId();
 echo $b->getId();
 echo $c->getId();
 echo Counter::getTotal();
-"#), &["1", "2", "3", "3"]);
+"#
+        ),
+        &["1", "2", "3", "3"]
+    );
 }
 
 // ── Static property inheritance ──────────────────────────────────
 #[test]
 fn static_property_per_subclass() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Registry {
     protected static array $items = [];
     public static function add(string $item): void {
@@ -711,13 +880,18 @@ FruitRegistry::add("banana");
 VegRegistry::add("carrot");
 echo implode(",", FruitRegistry::all());
 echo implode(",", VegRegistry::all());
-"#), &["apple,banana", "carrot"]);
+"#
+        ),
+        &["apple,banana", "carrot"]
+    );
 }
 
 // ── Class constants with expressions ────────────────────────────
 #[test]
 fn class_constant_expression() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Config {
     const BASE = 10;
     const DOUBLE = self::BASE * 2;
@@ -726,13 +900,18 @@ class Config {
 echo Config::BASE;
 echo Config::DOUBLE;
 echo Config::LABEL;
-"#), &["10", "20", "max:20"]);
+"#
+        ),
+        &["10", "20", "max:20"]
+    );
 }
 
 // ── Object cast to array ─────────────────────────────────────────
 #[test]
 fn object_cast_to_array() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Point {
     public function __construct(
         public int $x,
@@ -743,13 +922,18 @@ $p = new Point(3, 4);
 $arr = (array) $p;
 echo $arr["x"];
 echo $arr["y"];
-"#), &["3", "4"]);
+"#
+        ),
+        &["3", "4"]
+    );
 }
 
 // ── get_class / is_a ────────────────────────────────────────────
 #[test]
 fn get_class_and_is_a() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Animal {}
 class Dog extends Animal {}
 $d = new Dog();
@@ -757,13 +941,18 @@ echo get_class($d);
 echo is_a($d, "Dog") ? "yes" : "no";
 echo is_a($d, "Animal") ? "yes" : "no";
 echo is_a($d, "Cat") ? "yes" : "no";
-"#), &["Dog", "yes", "yes", "no"]);
+"#
+        ),
+        &["Dog", "yes", "yes", "no"]
+    );
 }
 
 // ── method_exists / property_exists ─────────────────────────────
 #[test]
 fn method_exists_and_property_exists() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Widget {
     public string $name = "btn";
     private int $id = 1;
@@ -774,13 +963,18 @@ echo method_exists($w, "render") ? "yes" : "no";
 echo method_exists($w, "missing") ? "yes" : "no";
 echo property_exists($w, "name") ? "yes" : "no";
 echo property_exists($w, "id") ? "yes" : "no";
-"#), &["yes", "no", "yes", "yes"]);
+"#
+        ),
+        &["yes", "no", "yes", "yes"]
+    );
 }
 
 // ── Union types ──────────────────────────────────────────────────
 #[test]
 fn union_type_property() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Response {
     public int|string $code;
     public function __construct(int|string $code) {
@@ -796,13 +990,18 @@ $r3 = new Response(500);
 echo $r1->isOk() ? "ok" : "fail";
 echo $r2->isOk() ? "ok" : "fail";
 echo $r3->isOk() ? "ok" : "fail";
-"#), &["ok", "ok", "fail"]);
+"#
+        ),
+        &["ok", "ok", "fail"]
+    );
 }
 
 // ── Nullable types ────────────────────────────────────────────────
 #[test]
 fn nullable_type_method_params() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class User {
     public function __construct(
         public string $name,
@@ -816,13 +1015,18 @@ $u1 = new User("Alice", "alice@example.com");
 $u2 = new User("Bob");
 echo $u1->contact();
 echo $u2->contact();
-"#), &["alice@example.com", "no email"]);
+"#
+        ),
+        &["alice@example.com", "no email"]
+    );
 }
 
 // ── Immutable value object pattern ───────────────────────────────
 #[test]
 fn immutable_value_object_wither() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Money {
     public function __construct(
         public readonly int $amount,
@@ -844,13 +1048,18 @@ $m3 = $m2->withCurrency("EUR");
 echo $m1;
 echo $m2;
 echo $m3;
-"#), &["100 USD", "200 USD", "200 EUR"]);
+"#
+        ),
+        &["100 USD", "200 USD", "200 EUR"]
+    );
 }
 
 // ── Class defined inside function (closure-like encapsulation) ───
 #[test]
 fn class_defined_inside_function() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function makeNode(int $value): object {
     class Node {
         public ?Node $next = null;
@@ -860,13 +1069,18 @@ function makeNode(int $value): object {
 }
 $n = makeNode(42);
 echo $n->value;
-"#), &["42"]);
+"#
+        ),
+        &["42"]
+    );
 }
 
 // ── new static() vs new self() ────────────────────────────────────
 #[test]
 fn new_self_vs_new_static_in_clone_method() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Base {
     protected string $tag;
     public function __construct(string $tag) { $this->tag = $tag; }
@@ -880,13 +1094,18 @@ $a = $s->cloneSelf();
 $b = $s->cloneStatic();
 echo get_class($a) . ":" . $a->getTag();
 echo get_class($b) . ":" . $b->getTag();
-"#), &["Base:base-copy", "Sub:sub-copy"]);
+"#
+        ),
+        &["Base:base-copy", "Sub:sub-copy"]
+    );
 }
 
 // ── Method with splat args ────────────────────────────────────────
 #[test]
 fn variadic_method_collect_args() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Formatter {
     public function format(string $tpl, mixed ...$args): string {
         return vsprintf($tpl, $args);
@@ -895,13 +1114,18 @@ class Formatter {
 $f = new Formatter();
 echo $f->format("%s is %d years old", "Alice", 30);
 echo $f->format("%.2f + %.2f = %.2f", 1.1, 2.2, 3.3);
-"#), &["Alice is 30 years old", "1.10 + 2.20 = 3.30"]);
+"#
+        ),
+        &["Alice is 30 years old", "1.10 + 2.20 = 3.30"]
+    );
 }
 
 // ── Variadic method override in child ────────────────────────────
 #[test]
 fn variadic_override_in_child_class() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Base {
     public function combine(string ...$parts): string {
         return implode("-", $parts);
@@ -915,13 +1139,18 @@ class Child extends Base {
 }
 $c = new Child();
 echo $c->combine("foo", "bar", "baz");
-"#), &["FOO-BAR-BAZ"]);
+"#
+        ),
+        &["FOO-BAR-BAZ"]
+    );
 }
 
 // ── Object iteration via Iterator interface ───────────────────────
 #[test]
 fn object_implements_iterator() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class NumberRange implements Iterator {
     private int $current;
     public function __construct(
@@ -942,13 +1171,18 @@ foreach ($range as $k => $v) {
     $vals[] = "$k:$v";
 }
 echo implode(",", $vals);
-"#), &["0:1,1:2,2:3,3:4,4:5"]);
+"#
+        ),
+        &["0:1,1:2,2:3,3:4,4:5"]
+    );
 }
 
 // ── Object in array_map ──────────────────────────────────────────
 #[test]
 fn objects_in_array_map() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Item {
     public function __construct(public string $name, public float $price) {}
     public function discounted(float $pct): self {
@@ -963,13 +1197,18 @@ $items = [
 $discounted = array_map(fn($i) => $i->discounted(0.1), $items);
 $totals = array_map(fn($i) => $i->price, $discounted);
 echo number_format(array_sum($totals), 2);
-"#), &["31.50"]);
+"#
+        ),
+        &["31.50"]
+    );
 }
 
 // ── Named constructor / static factory returning subtype ─────────
 #[test]
 fn named_constructor_static_factory() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Color {
     private function __construct(
         private int $r,
@@ -995,13 +1234,18 @@ $c1 = Color::fromHex('#ff8000');
 $c2 = Color::fromRgb(0, 128, 255);
 echo $c1;
 echo $c2;
-"#), &["rgb(255,128,0)", "rgb(0,128,255)"]);
+"#
+        ),
+        &["rgb(255,128,0)", "rgb(0,128,255)"]
+    );
 }
 
 // ── Interface extending multiple interfaces ───────────────────────
 #[test]
 fn interface_extends_multiple() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface Serializable2 {
     public function serialize(): string;
 }
@@ -1022,13 +1266,18 @@ $s = $r->serialize();
 $r2 = JsonRecord::deserialize($s);
 echo $s;
 echo $r2->data["key"];
-"#), &["{\"key\":\"value\"}", "value"]);
+"#
+        ),
+        &["{\"key\":\"value\"}", "value"]
+    );
 }
 
 // ── Recursive method calling parent and child ────────────────────
 #[test]
 fn recursive_method_with_inheritance() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class TreeNode {
     public ?TreeNode $left = null;
     public ?TreeNode $right = null;
@@ -1055,13 +1304,18 @@ foreach ([3, 7, 1, 4, 6, 8] as $v) {
     $tree->insert($v);
 }
 echo implode(",", $tree->inorder());
-"#), &["1,3,4,5,6,7,8"]);
+"#
+        ),
+        &["1,3,4,5,6,7,8"]
+    );
 }
 
 // ── Cloning with array property deep copy ────────────────────────
 #[test]
 fn clone_deep_copy_array_property() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class ShoppingCart {
     private array $items = [];
     public function add(string $item): void {
@@ -1083,13 +1337,17 @@ $cart2->add("cherry");
 echo $cart1->count();
 echo $cart2->count();
 echo implode(",", $cart1->items());
-"#), &["2", "3", "apple,banana"]);
+"#
+        ),
+        &["2", "3", "apple,banana"]
+    );
 }
 
 // ── Interface without constructor ─────────────────────────────────
 #[test]
 fn interface_has_no_constructor() {
-    compile_ok(r#"<?php
+    compile_ok(
+        r#"<?php
 interface Shape {
     public function area(): float;
     public function perimeter(): float;
@@ -1102,13 +1360,16 @@ class Rect implements Shape {
 $r = new Rect(3.0, 4.0);
 echo $r->area();
 echo $r->perimeter();
-"#);
+"#,
+    );
 }
 
 // ── Mixed type in method signature ───────────────────────────────
 #[test]
 fn mixed_type_in_method_signature() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Converter {
     public function toInt(mixed $value): int {
         return (int) $value;
@@ -1124,13 +1385,18 @@ $c = new Converter();
 echo $c->toInt("42");
 echo $c->toBool(0) ? "true" : "false";
 echo $c->toStr(3.14);
-"#), &["42", "false", "3.14"]);
+"#
+        ),
+        &["42", "false", "3.14"]
+    );
 }
 
 // ── Abstract class with multiple abstract methods ─────────────────
 #[test]
 fn abstract_class_multiple_abstract_methods() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 abstract class Serializer {
     abstract protected function encode(array $data): string;
     abstract protected function decode(string $raw): array;
@@ -1146,5 +1412,8 @@ $s = new JsonSerializer();
 $result = $s->roundtrip(["x" => 1, "y" => 2]);
 echo $result["x"];
 echo $result["y"];
-"#), &["1", "2"]);
+"#
+        ),
+        &["1", "2"]
+    );
 }

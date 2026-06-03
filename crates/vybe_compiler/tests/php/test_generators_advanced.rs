@@ -3,7 +3,9 @@ use super::helpers::{compile_ok, run_prints};
 // ── Generator send() ─────────────────────────────────────────────
 #[test]
 fn generator_send_basic() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function accumulator() {
     $total = 0;
     while (true) {
@@ -17,12 +19,17 @@ $gen->current();  // start
 $gen->send(10);
 $gen->send(20);
 echo $gen->send(30);
-"#), &["60"]);
+"#
+        ),
+        &["60"]
+    );
 }
 
 #[test]
 fn generator_send_echo_each() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function logger() {
     while (true) {
         $msg = yield;
@@ -34,13 +41,18 @@ $log = logger();
 $log->current();
 $log->send("hello");
 $log->send("world");
-"#), &["HELLO", "WORLD"]);
+"#
+        ),
+        &["HELLO", "WORLD"]
+    );
 }
 
 // ── Generator getReturn() ────────────────────────────────────────
 #[test]
 fn generator_return_value() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function sumGenerator(array $numbers) {
     $sum = 0;
     foreach ($numbers as $n) {
@@ -54,13 +66,18 @@ foreach ($gen as $val) {
     // consume all yielded values
 }
 echo $gen->getReturn();
-"#), &["15"]);
+"#
+        ),
+        &["15"]
+    );
 }
 
 // ── yield from delegation ────────────────────────────────────────
 #[test]
 fn yield_from_array() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function inner() {
     yield 1;
     yield 2;
@@ -76,12 +93,17 @@ foreach (outer() as $v) {
     $result[] = $v;
 }
 echo implode(",", $result);
-"#), &["0,1,2,3,4"]);
+"#
+        ),
+        &["0,1,2,3,4"]
+    );
 }
 
 #[test]
 fn yield_from_nested() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function leaves(array $tree) {
     foreach ($tree as $item) {
         if (is_array($item)) {
@@ -97,13 +119,18 @@ foreach (leaves($tree) as $leaf) {
     $flat[] = $leaf;
 }
 echo implode(",", $flat);
-"#), &["1,2,3,4,5,6"]);
+"#
+        ),
+        &["1,2,3,4,5,6"]
+    );
 }
 
 // ── Generator pipelines ──────────────────────────────────────────
 #[test]
 fn generator_pipeline_map_filter() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function rangeGen(int $start, int $end) {
     for ($i = $start; $i <= $end; $i++) {
         yield $i;
@@ -127,13 +154,18 @@ foreach ($doubled as $v) {
     $result[] = $v;
 }
 echo implode(",", $result);
-"#), &["4,8,12,16,20"]);
+"#
+        ),
+        &["4,8,12,16,20"]
+    );
 }
 
 // ── Generator with keys ──────────────────────────────────────────
 #[test]
 fn generator_key_value_pairs() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function csvRows(string $csv) {
     $lines = explode("\n", trim($csv));
     $headers = str_getcsv(array_shift($lines));
@@ -146,12 +178,17 @@ $csv = "name,age\nAlice,30\nBob,25";
 foreach (csvRows($csv) as $idx => $row) {
     echo "$idx: {$row['name']} is {$row['age']}";
 }
-"#), &["0: Alice is 30", "1: Bob is 25"]);
+"#
+        ),
+        &["0: Alice is 30", "1: Bob is 25"]
+    );
 }
 
 #[test]
 fn generator_yields_map_values() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function csvRows(string $csv) {
     $lines = explode("\n", trim($csv));
     $headers = str_getcsv(array_shift($lines));
@@ -164,13 +201,18 @@ $csv = "name,age\nAlice,30\nBob,25";
 foreach (csvRows($csv) as $row) {
     echo "{$row['name']} is {$row['age']}";
 }
-"#), &["Alice is 30", "Bob is 25"]);
+"#
+        ),
+        &["Alice is 30", "Bob is 25"]
+    );
 }
 
 // ── Generator valid/rewind ───────────────────────────────────────
 #[test]
 fn generator_valid_check() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function countdown(int $from) {
     for ($i = $from; $i > 0; $i--) {
         yield $i;
@@ -182,13 +224,18 @@ $gen->next();
 $gen->next();
 $gen->next();
 echo $gen->valid() ? "valid" : "done";
-"#), &["valid", "done"]);
+"#
+        ),
+        &["valid", "done"]
+    );
 }
 
 // ── Generator as lazy infinite sequence ──────────────────────────
 #[test]
 fn generator_fibonacci_lazy() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function fibonacci() {
     $a = 0;
     $b = 1;
@@ -204,13 +251,18 @@ for ($i = 0; $i < 8; $i++) {
     $fib->next();
 }
 echo implode(",", $result);
-"#), &["0,1,1,2,3,5,8,13"]);
+"#
+        ),
+        &["0,1,1,2,3,5,8,13"]
+    );
 }
 
 // ── Generator take helper ────────────────────────────────────────
 #[test]
 fn generator_take_n() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function naturals() {
     $n = 1;
     while (true) {
@@ -226,13 +278,18 @@ function take(Generator $gen, int $n): array {
     return $result;
 }
 echo implode(",", take(naturals(), 5));
-"#), &["1,2,3,4,5"]);
+"#
+        ),
+        &["1,2,3,4,5"]
+    );
 }
 
 // ── yield from return value ──────────────────────────────────────
 #[test]
 fn yield_from_captures_return() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function inner() {
     yield "a";
     yield "b";
@@ -245,13 +302,18 @@ function outer() {
 foreach (outer() as $v) {
     echo $v;
 }
-"#), &["a", "b", "done"]);
+"#
+        ),
+        &["a", "b", "done"]
+    );
 }
 
 // ── Generator with exception handling ────────────────────────────
 #[test]
 fn generator_throw() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function safeGenerator() {
     try {
         yield 1;
@@ -266,12 +328,17 @@ echo $gen->current();
 $gen->next();
 echo $gen->current();
 $gen->throw(new Exception("stop"));
-"#), &["1", "2", "caught: stop"]);
+"#
+        ),
+        &["1", "2", "caught: stop"]
+    );
 }
 
 #[test]
 fn generator_throw_before_first_yield() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function handled() {
     try {
         yield "ready";
@@ -282,12 +349,17 @@ function handled() {
 }
 $gen = handled();
 echo $gen->throw(new Exception("stop"));
-"#), &["caught", "handled"]);
+"#
+        ),
+        &["caught", "handled"]
+    );
 }
 
 #[test]
 fn generator_variadic_throw_before_first_yield() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function handled($head, ...$rest) {
     try {
         yield count($rest);
@@ -298,13 +370,18 @@ function handled($head, ...$rest) {
 }
 $gen = handled('a', 'b', 'c');
 echo $gen->throw(new Exception('stop'));
-"#), &["b,c", "stop"]);
+"#
+        ),
+        &["b,c", "stop"]
+    );
 }
 
 // ── Coroutine pattern ────────────────────────────────────────────
 #[test]
 fn coroutine_echo_back() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function echoBack() {
     $received = [];
     while (true) {
@@ -320,13 +397,18 @@ $co->send("hello");
 $co->send("world");
 $co->send("done");
 echo $co->getReturn();
-"#), &["hello,world"]);
+"#
+        ),
+        &["hello,world"]
+    );
 }
 
 // ── Generator with finally ───────────────────────────────────────
 #[test]
 fn generator_finally_cleanup() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function resource() {
     echo "open";
     try {
@@ -341,13 +423,17 @@ echo $gen->current();
 $gen->next();
 echo $gen->current();
 $gen = null; // drop triggers finally
-"#), &["open", "1", "2", "close"]);
+"#
+        ),
+        &["open", "1", "2", "close"]
+    );
 }
 
 // ── Generator as return type hint ────────────────────────────────
 #[test]
 fn generator_return_type_hint() {
-    compile_ok(r#"<?php
+    compile_ok(
+        r#"<?php
 function counter(int $start, int $end): Generator {
     for ($i = $start; $i <= $end; $i++) {
         yield $i;
@@ -357,13 +443,16 @@ $g = counter(1, 3);
 foreach ($g as $v) {
     echo $v;
 }
-"#);
+"#,
+    );
 }
 
 // ── yield from plain array delegation ───────────────────────────
 #[test]
 fn yield_from_plain_array_delegation() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function fromArray(array $items) {
     yield from $items;
 }
@@ -372,13 +461,18 @@ foreach (fromArray([10, 20, 30]) as $v) {
     $result[] = $v;
 }
 echo implode(",", $result);
-"#), &["10,20,30"]);
+"#
+        ),
+        &["10,20,30"]
+    );
 }
 
 // ── Prime number sieve generator ─────────────────────────────────
 #[test]
 fn generator_prime_sieve() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function primes(int $limit) {
     $sieve = array_fill(2, $limit - 1, true);
     for ($i = 2; $i <= $limit; $i++) {
@@ -394,13 +488,18 @@ foreach (primes(30) as $p) {
     $result[] = $p;
 }
 echo implode(",", $result);
-"#), &["2,3,5,7,11,13,17,19,23,29"]);
+"#
+        ),
+        &["2,3,5,7,11,13,17,19,23,29"]
+    );
 }
 
 // ── Lazy range generator ─────────────────────────────────────────
 #[test]
 fn lazy_range_generator_memory_efficient() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function lazyRange(float $start, float $end, float $step = 1.0) {
     for ($i = $start; $i <= $end; $i += $step) {
         yield $i;
@@ -411,13 +510,18 @@ foreach (lazyRange(0, 1, 0.25) as $v) {
     $result[] = $v;
 }
 echo implode(",", $result);
-"#), &["0,0.25,0.5,0.75,1"]);
+"#
+        ),
+        &["0,0.25,0.5,0.75,1"]
+    );
 }
 
 // ── Generator converted to array ─────────────────────────────────
 #[test]
 fn generator_to_array_via_iterator_to_array() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function squares(int $n) {
     for ($i = 1; $i <= $n; $i++) {
         yield $i => $i * $i;
@@ -425,13 +529,18 @@ function squares(int $n) {
 }
 $arr = iterator_to_array(squares(5));
 echo implode(",", $arr);
-"#), &["1,4,9,16,25"]);
+"#
+        ),
+        &["1,4,9,16,25"]
+    );
 }
 
 // ── Generator can't rewind ────────────────────────────────────────
 #[test]
 fn generator_rewind_no_op_after_start() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function once() {
     yield "first";
     yield "second";
@@ -447,13 +556,18 @@ try {
 } catch (Exception $e) {
     echo "rewind-error";
 }
-"#), &["first", "second", "rewind-error"]);
+"#
+        ),
+        &["first", "second", "rewind-error"]
+    );
 }
 
 // ── Nested generators ────────────────────────────────────────────
 #[test]
 fn nested_generator_delegation() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function level3() {
     yield "c";
     yield "d";
@@ -473,13 +587,18 @@ foreach (level1() as $v) {
     $result[] = $v;
 }
 echo implode("", $result);
-"#), &["abcdef"]);
+"#
+        ),
+        &["abcdef"]
+    );
 }
 
 // ── Generator in recursive function ──────────────────────────────
 #[test]
 fn generator_in_recursive_function() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function permutations(array $items): Generator {
     if (count($items) <= 1) {
         yield $items;
@@ -498,13 +617,18 @@ foreach (permutations([1, 2, 3]) as $perm) {
     $count++;
 }
 echo $count; // 3! = 6
-"#), &["6"]);
+"#
+        ),
+        &["6"]
+    );
 }
 
 // ── Generator yielding objects ────────────────────────────────────
 #[test]
 fn generator_yields_objects() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Point {
     public function __construct(public int $x, public int $y) {}
 }
@@ -518,13 +642,18 @@ foreach (points([[1,2],[3,4],[5,6]]) as $p) {
     $result[] = "({$p->x},{$p->y})";
 }
 echo implode(" ", $result);
-"#), &["(1,2) (3,4) (5,6)"]);
+"#
+        ),
+        &["(1,2) (3,4) (5,6)"]
+    );
 }
 
 // ── Generator with complex state machine ─────────────────────────
 #[test]
 fn generator_state_machine_lexer() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function tokenize(string $input) {
     $len = strlen($input);
     $i = 0;
@@ -550,13 +679,18 @@ foreach (tokenize("12 + 34 * 5") as [$type, $val]) {
     $tokens[] = "$type:$val";
 }
 echo implode("|", $tokens);
-"#), &["NUM:12|OP:+|NUM:34|OP:*|NUM:5"]);
+"#
+        ),
+        &["NUM:12|OP:+|NUM:34|OP:*|NUM:5"]
+    );
 }
 
 // ── send() return value is yield expression value ────────────────
 #[test]
 fn send_return_is_yield_expression_value() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function doubler() {
     while (true) {
         $input = yield;
@@ -569,13 +703,18 @@ $g->current(); // prime
 echo $g->send(5);  // yields 10
 $g->next();        // advance to next yield
 echo $g->send(7);  // yields 14
-"#), &["10", "14"]);
+"#
+        ),
+        &["10", "14"]
+    );
 }
 
 // ── Generator tracking external state via use ────────────────────
 #[test]
 fn generator_tracks_external_state() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function makeTracker(array &$log) {
     return (function() use (&$log) {
         $log[] = "started";
@@ -591,26 +730,36 @@ foreach ($gen as $v) {
     // consume
 }
 echo implode(",", $log);
-"#), &["started,middle,ended"]);
+"#
+        ),
+        &["started,middle,ended"]
+    );
 }
 
 // ── Generator producing no values ────────────────────────────────
 #[test]
 fn generator_empty_produces_no_values() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function empty_gen() {
     return;
     yield; // unreachable but makes it a generator
 }
 $g = empty_gen();
 echo $g->valid() ? "has values" : "empty";
-"#), &["empty"]);
+"#
+        ),
+        &["empty"]
+    );
 }
 
 // ── Generator with default parameter ─────────────────────────────
 #[test]
 fn generator_with_default_parameter() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function counter(int $start = 0, int $step = 1) {
     $n = $start;
     while (true) {
@@ -625,13 +774,18 @@ for ($i = 0; $i < 4; $i++) {
     $g->next();
 }
 echo implode(",", $result);
-"#), &["10,15,20,25"]);
+"#
+        ),
+        &["10,15,20,25"]
+    );
 }
 
 // ── yield null explicitly ────────────────────────────────────────
 #[test]
 fn generator_yield_null_explicitly() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function nulls(int $count) {
     for ($i = 0; $i < $count; $i++) {
         yield null;
@@ -643,13 +797,18 @@ foreach (nulls(3) as $v) {
     $c++;
 }
 echo $c;
-"#), &["null", "null", "null", "3"]);
+"#
+        ),
+        &["null", "null", "null", "3"]
+    );
 }
 
 // ── Zip two generators together ──────────────────────────────────
 #[test]
 fn zip_two_generators() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function zipGens(Generator $a, Generator $b) {
     while ($a->valid() && $b->valid()) {
         yield [$a->current(), $b->current()];
@@ -668,13 +827,18 @@ foreach (zipGens(letters(), numbers()) as [$l, $n]) {
     $result[] = "$l$n";
 }
 echo implode(",", $result);
-"#), &["a1,b2,c3"]);
+"#
+        ),
+        &["a1,b2,c3"]
+    );
 }
 
 // ── Generator while valid() + send() ────────────────────────────
 #[test]
 fn generator_while_valid_with_send() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function multiplier() {
     $factor = yield "ready";
     while (true) {
@@ -690,13 +854,18 @@ $g->next();    // advance to inner yield
 echo $g->send(5);   // yields 15
 $g->next();
 echo $g->send(7);   // yields 21
-"#), &["15", "21"]);
+"#
+        ),
+        &["15", "21"]
+    );
 }
 
 // ── Generator lazy evaluation vs array eager ─────────────────────
 #[test]
 fn generator_lazy_vs_eager_evaluation() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 $calls_gen = 0;
 $calls_arr = 0;
 function lazyDoubles(array $items, int &$counter) {
@@ -721,13 +890,18 @@ echo $calls_gen;     // only 2 calls made
 $arr = eagerDoubles($data, $calls_arr);
 echo $calls_arr;     // all 5 evaluated upfront
 echo implode(",", $taken);
-"#), &["2", "5", "2,4"]);
+"#
+        ),
+        &["2", "5", "2,4"]
+    );
 }
 
 // ── yield in match expression ─────────────────────────────────────
 #[test]
 fn yield_in_match_expression() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function classifyNumbers(array $nums) {
     foreach ($nums as $n) {
         yield match(true) {
@@ -742,13 +916,18 @@ foreach (classifyNumbers([-2, 0, 3, -1, 5]) as $label) {
     $result[] = $label;
 }
 echo implode(",", $result);
-"#), &["neg,zero,pos,neg,pos"]);
+"#
+        ),
+        &["neg,zero,pos,neg,pos"]
+    );
 }
 
 // ── yield after complex expression ───────────────────────────────
 #[test]
 fn yield_after_complex_expression() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function transformedRange(int $n) {
     for ($i = 1; $i <= $n; $i++) {
         yield $i % 2 === 0
@@ -762,13 +941,18 @@ foreach (transformedRange(6) as $v) {
 }
 echo implode(",", $result);
 // i=1 odd: 1*2+1=3, i=2 even: 4, i=3 odd: 7, i=4 even: 16, i=5 odd: 11, i=6 even: 36
-"#), &["3,4,7,16,11,36"]);
+"#
+        ),
+        &["3,4,7,16,11,36"]
+    );
 }
 
 // ── Generator infinite loop broken by consumer ───────────────────
 #[test]
 fn generator_infinite_loop_broken_by_consumer() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function incrementsForever(int $start = 0) {
     $n = $start;
     while (true) {
@@ -782,7 +966,10 @@ foreach ($g as $v) {
     if ($v >= 5) break;
 }
 echo implode(",", $result);
-"#), &["1,2,3,4,5"]);
+"#
+        ),
+        &["1,2,3,4,5"]
+    );
 }
 
 // ── Generator composition pipeline via yield from ─────────────────
@@ -790,7 +977,9 @@ echo implode(",", $result);
 fn generator_composition_chained_pipeline() {
     let result = std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
-        .spawn(|| run_prints(r#"<?php
+        .spawn(|| {
+            run_prints(
+                r#"<?php
 function source(array $items) {
     yield from $items;
 }
@@ -807,14 +996,21 @@ function asStrings($gen) {
 }
 $pipeline = asStrings(onlyOdd(squared(source([1, 2, 3, 4, 5]))));
 echo implode(",", iterator_to_array($pipeline, false));
-"#)).unwrap().join().unwrap();
+"#,
+            )
+        })
+        .unwrap()
+        .join()
+        .unwrap();
     assert_eq!(result, &["1,9,25"]);
 }
 
 // ── Multiple generators running interleaved via manual dispatch ──
 #[test]
 fn multiple_generators_interleaved_round_robin() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function taskA() { yield "A1"; yield "A2"; yield "A3"; }
 function taskB() { yield "B1"; yield "B2"; }
 $gens = [taskA(), taskB()];
@@ -831,13 +1027,18 @@ while ($alive) {
     }
 }
 echo implode(",", $output);
-"#), &["A1,B1,A2,B2,A3"]);
+"#
+        ),
+        &["A1,B1,A2,B2,A3"]
+    );
 }
 
 // ── Generator preserving reference between yields ────────────────
 #[test]
 fn generator_preserves_reference_between_yields() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function buildString() {
     $parts = [];
     while (true) {
@@ -851,13 +1052,17 @@ $g->current(); // start with empty
 $g->send("foo");
 $g->send("bar");
 echo $g->send("baz");
-"#), &["foobarbaz"]);
+"#
+        ),
+        &["foobarbaz"]
+    );
 }
 
 // ── Generator return type in interface method ────────────────────
 #[test]
 fn generator_return_type_in_interface() {
-    compile_ok(r#"<?php
+    compile_ok(
+        r#"<?php
 interface Iterable2 {
     public function items(): Generator;
 }
@@ -874,13 +1079,16 @@ $list = new NumberList([10, 20, 30]);
 foreach ($list->items() as $v) {
     echo $v;
 }
-"#);
+"#,
+    );
 }
 
 // ── iterator_to_array with preserve_keys false ───────────────────
 #[test]
 fn iterator_to_array_no_preserve_keys() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function words() {
     yield 5 => "apple";
     yield 3 => "banana";
@@ -888,5 +1096,8 @@ function words() {
 }
 $arr = iterator_to_array(words(), false);
 echo implode(",", $arr);
-"#), &["apple,banana,cherry"]);
+"#
+        ),
+        &["apple,banana,cherry"]
+    );
 }

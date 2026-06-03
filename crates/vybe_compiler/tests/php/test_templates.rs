@@ -41,10 +41,8 @@ fn webroot_example_compiles() {
 
 #[test]
 fn bundled_ixr_xml_declarations_compile() {
-    let temp_root = std::env::temp_dir().join(format!(
-        "vybex_php_ixr_bundle_{}",
-        uuid::Uuid::new_v4()
-    ));
+    let temp_root =
+        std::env::temp_dir().join(format!("vybex_php_ixr_bundle_{}", uuid::Uuid::new_v4()));
     let ixr_dir = temp_root.join("IXR");
     fs::create_dir_all(&ixr_dir).expect("create IXR dir");
 

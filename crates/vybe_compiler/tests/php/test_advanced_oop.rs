@@ -2,8 +2,11 @@ use super::helpers::run_prints;
 
 // ── Method chaining and fluent interfaces ─────────────────────
 
-#[test] fn fluent_validation_chain() {
-    assert_eq!(run_prints(r#"<?php
+#[test]
+fn fluent_validation_chain() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Validator {
     private array $errors = [];
     private mixed $value;
@@ -16,22 +19,34 @@ class Validator {
 $v = new Validator('hi');
 $v->required()->minLength(5);
 echo $v->isValid() ? 'valid' : implode(',', $v->errors());
-"#), vec!["min:5"]);
+"#
+        ),
+        vec!["min:5"]
+    );
 }
 
 // ── Object serialization ──────────────────────────────────────
 
-#[test] fn serialize_and_unserialize_object() {
-    assert_eq!(run_prints(r#"<?php
+#[test]
+fn serialize_and_unserialize_object() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Point { public function __construct(public int $x, public int $y) {} }
 $p = new Point(3, 4);
 $s = serialize($p);
 $p2 = unserialize($s);
 echo $p2->x . ',' . $p2->y;
-"#), vec!["3,4"]);
+"#
+        ),
+        vec!["3,4"]
+    );
 }
-#[test] fn serialize_sleep_wakeup() {
-    assert_eq!(run_prints(r#"<?php
+#[test]
+fn serialize_sleep_wakeup() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Conn {
     public string $host = 'localhost';
     private mixed $resource = null;
@@ -42,13 +57,19 @@ class Conn {
 $c = new Conn;
 $c2 = unserialize(serialize($c));
 echo $c2->host . ':' . $c2->status();
-"#), vec!["localhost:reconnected"]);
+"#
+        ),
+        vec!["localhost:reconnected"]
+    );
 }
 
 // ── Abstract class patterns ───────────────────────────────────
 
-#[test] fn template_method_pattern() {
-    assert_eq!(run_prints(r#"<?php
+#[test]
+fn template_method_pattern() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
 abstract class DataProcessor {
     final public function process(array $data): array {
         $data = $this->filter($data);
@@ -64,13 +85,19 @@ class EvenDoubler extends DataProcessor {
     protected function transform(array $d): array { return array_map(fn($n) => $n * 2, $d); }
 }
 echo implode(',', (new EvenDoubler)->process([1,2,3,4,5,6]));
-"#), vec!["4,8,12"]);
+"#
+        ),
+        vec!["4,8,12"]
+    );
 }
 
 // ── Interface segregation ─────────────────────────────────────
 
-#[test] fn segregated_interfaces() {
-    assert_eq!(run_prints(r#"<?php
+#[test]
+fn segregated_interfaces() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface Readable { public function read(): string; }
 interface Writable { public function write(string $data): void; }
 interface ReadWrite extends Readable, Writable {}
@@ -83,13 +110,19 @@ $b = new Buffer;
 $b->write('hello');
 $b->write(' world');
 echo $b->read();
-"#), vec!["hello world"]);
+"#
+        ),
+        vec!["hello world"]
+    );
 }
 
 // ── Mixin simulation with traits ──────────────────────────────
 
-#[test] fn mixin_via_trait() {
-    assert_eq!(run_prints(r#"<?php
+#[test]
+fn mixin_via_trait() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
 trait HasUuid {
     private string $uuid;
     public function initUuid(): void { $this->uuid = sprintf('%08x-%04x-%04x', 1, 2, 3); }
@@ -98,13 +131,19 @@ trait HasUuid {
 class Entity { use HasUuid; }
 $e = new Entity; $e->initUuid();
 echo str_contains($e->getUuid(), '-') ? 'has-uuid' : 'no';
-"#), vec!["has-uuid"]);
+"#
+        ),
+        vec!["has-uuid"]
+    );
 }
 
 // ── Polymorphism ──────────────────────────────────────────────
 
-#[test] fn polymorphic_method_dispatch() {
-    assert_eq!(run_prints(r#"<?php
+#[test]
+fn polymorphic_method_dispatch() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
 abstract class Shape {
     abstract public function area(): float;
     public function describe(): string { return get_class($this) . ':' . $this->area(); }
@@ -113,13 +152,19 @@ class Rect extends Shape { public function __construct(private float $w, private
 class Triangle extends Shape { public function __construct(private float $b, private float $h) {} public function area(): float { return 0.5 * $this->b * $this->h; } }
 $shapes = [new Rect(4,3), new Triangle(6,4)];
 echo implode(',', array_map(fn($s) => $s->describe(), $shapes));
-"#), vec!["Rect:12,Triangle:12"]);
+"#
+        ),
+        vec!["Rect:12,Triangle:12"]
+    );
 }
 
 // ── Object graph traversal ────────────────────────────────────
 
-#[test] fn tree_node_recursive() {
-    assert_eq!(run_prints(r#"<?php
+#[test]
+fn tree_node_recursive() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class TreeNode {
     public array $children = [];
     public function __construct(public int $value) {}
@@ -134,13 +179,19 @@ $right = new TreeNode(3);
 $right->add(new TreeNode(4));
 $root->add($right);
 echo $root->sum();
-"#), vec!["10"]);
+"#
+        ),
+        vec!["10"]
+    );
 }
 
 // ── Interface with static factory ────────────────────────────
 
-#[test] fn named_constructor_via_interface() {
-    assert_eq!(run_prints(r#"<?php
+#[test]
+fn named_constructor_via_interface() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface HasNamedConstructors {
     public static function empty(): static;
 }
@@ -150,13 +201,19 @@ class Collection implements HasNamedConstructors {
     public function count(): int { return count($this->items); }
 }
 echo Collection::empty()->count();
-"#), vec!["0"]);
+"#
+        ),
+        vec!["0"]
+    );
 }
 
 // ── Property hooks / accessors via magic ─────────────────────
 
-#[test] fn computed_property_via_getter() {
-    assert_eq!(run_prints(r#"<?php
+#[test]
+fn computed_property_via_getter() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Circle {
     public function __construct(public float $radius) {}
     public function __get(string $name): mixed {
@@ -169,13 +226,19 @@ class Circle {
 }
 $c = new Circle(5.0);
 echo round($c->area, 2) . ',' . round($c->circumference, 2);
-"#), vec!["78.54,31.42"]);
+"#
+        ),
+        vec!["78.54,31.42"]
+    );
 }
 
 // ── Variance in generics simulation ──────────────────────────
 
-#[test] fn covariant_container_pattern() {
-    assert_eq!(run_prints(r#"<?php
+#[test]
+fn covariant_container_pattern() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Box {
     public function __construct(private mixed $value) {}
     public function get(): mixed { return $this->value; }
@@ -183,5 +246,8 @@ class Box {
 }
 $result = (new Box(5))->map(fn($n) => $n * 2)->map(fn($n) => "value:$n")->get();
 echo $result;
-"#), vec!["value:10"]);
+"#
+        ),
+        vec!["value:10"]
+    );
 }

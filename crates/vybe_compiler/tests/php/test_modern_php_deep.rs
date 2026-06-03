@@ -4,7 +4,9 @@ use super::helpers::{compile_ok, run_prints};
 
 #[test]
 fn match_with_complex_arms() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function classify(int $score): string {
     return match(true) {
         $score >= 90 => "A",
@@ -17,12 +19,17 @@ function classify(int $score): string {
 echo classify(95);
 echo classify(82);
 echo classify(55);
-"#), &["A", "B", "F"]);
+"#
+        ),
+        &["A", "B", "F"]
+    );
 }
 
 #[test]
 fn match_multiple_conditions() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function httpStatus(int $code): string {
     return match($code) {
         200, 201 => "success",
@@ -37,12 +44,23 @@ echo httpStatus(301);
 echo httpStatus(404);
 echo httpStatus(503);
 echo httpStatus(418);
-"#), &["success", "redirect", "not found", "server error", "unknown"]);
+"#
+        ),
+        &[
+            "success",
+            "redirect",
+            "not found",
+            "server error",
+            "unknown"
+        ]
+    );
 }
 
 #[test]
 fn match_no_default_throws() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 try {
     $x = 5;
     $result = match($x) {
@@ -52,12 +70,17 @@ try {
 } catch (\UnhandledMatchError $e) {
     echo "unhandled";
 }
-"#), &["unhandled"]);
+"#
+        ),
+        &["unhandled"]
+    );
 }
 
 #[test]
 fn match_strict_comparison_no_coercion() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 $val = "0";
 $result = match($val) {
     0   => "int zero",
@@ -65,12 +88,17 @@ $result = match($val) {
     default => "other",
 };
 echo $result;
-"#), &["string zero"]);
+"#
+        ),
+        &["string zero"]
+    );
 }
 
 #[test]
 fn match_returning_complex_value() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function getConfig(string $env): array {
     return match($env) {
         "dev"  => ["debug" => true,  "log" => "verbose"],
@@ -82,44 +110,64 @@ $cfg = getConfig("dev");
 echo $cfg["log"];
 $cfg2 = getConfig("prod");
 echo $cfg2["debug"] ? "debug" : "no-debug";
-"#), &["verbose", "no-debug"]);
+"#
+        ),
+        &["verbose", "no-debug"]
+    );
 }
 
 #[test]
 fn match_as_function_argument() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function repeat(string $s, int $n): string { return str_repeat($s, $n); }
 $x = 3;
 echo repeat(match($x) { 1 => "a", 2 => "b", 3 => "c", default => "?" }, 4);
-"#), &["cccc"]);
+"#
+        ),
+        &["cccc"]
+    );
 }
 
 // ── Named arguments ──────────────────────────────────────────────
 
 #[test]
 fn named_args_in_user_function() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function greet(string $name, string $greeting = "Hello"): string {
     return "$greeting, $name!";
 }
 echo greet(name: "Alice");
 echo greet(name: "Bob", greeting: "Hi");
-"#), &["Hello, Alice!", "Hi, Bob!"]);
+"#
+        ),
+        &["Hello, Alice!", "Hi, Bob!"]
+    );
 }
 
 #[test]
 fn named_args_skipping_defaults() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function create(string $type, string $color = "black", int $size = 10): string {
     return "$color $type (size $size)";
 }
 echo create(type: "circle", size: 20);
-"#), &["black circle (size 20)"]);
+"#
+        ),
+        &["black circle (size 20)"]
+    );
 }
 
 #[test]
 fn named_args_in_constructor() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Config {
     public function __construct(
         public string $host = "localhost",
@@ -131,53 +179,75 @@ $c = new Config(port: 5432, db: "mydb");
 echo $c->host;
 echo $c->port;
 echo $c->db;
-"#), &["localhost", "5432", "mydb"]);
+"#
+        ),
+        &["localhost", "5432", "mydb"]
+    );
 }
 
 #[test]
 fn named_args_mixed_with_positional() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function slice(array $arr, int $offset, ?int $length = null, bool $preserve = false): array {
     return array_slice($arr, $offset, $length, $preserve);
 }
 $a = [1, 2, 3, 4, 5];
 $r = slice($a, 1, length: 3);
 echo implode(",", $r);
-"#), &["2,3,4"]);
+"#
+        ),
+        &["2,3,4"]
+    );
 }
 
 #[test]
 fn named_args_in_builtin() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 echo implode(separator: ", ", array: ["a", "b", "c"]);
 echo str_pad(string: "42", length: 5, pad_string: "0", pad_type: STR_PAD_LEFT);
-"#), &["a, b, c", "00042"]);
+"#
+        ),
+        &["a, b, c", "00042"]
+    );
 }
 
 #[test]
 fn named_args_with_spread() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function formatDate(int $year, int $month, int $day): string {
     return sprintf("%04d-%02d-%02d", $year, $month, $day);
 }
 $params = ["month" => 6, "day" => 15, "year" => 2024];
 echo formatDate(...$params);
-"#), &["2024-06-15"]);
+"#
+        ),
+        &["2024-06-15"]
+    );
 }
 
 #[test]
 fn named_args_in_arrow_function() {
-    compile_ok(r#"<?php
+    compile_ok(
+        r#"<?php
 $pad = fn(string $s, int $len) => str_pad(string: $s, length: $len, pad_string: "-", pad_type: STR_PAD_BOTH);
 echo $pad("hi", 8);
-"#);
+"#,
+    );
 }
 
 // ── Nullsafe operator ─────────────────────────────────────────────
 
 #[test]
 fn nullsafe_chain_returning_null() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class User {
     public ?string $email;
     public function __construct(?string $email) { $this->email = $email; }
@@ -186,12 +256,17 @@ class User {
 $u = new User(null);
 $result = $u?->getEmail() ?? "no email";
 echo $result;
-"#), &["no email"]);
+"#
+        ),
+        &["no email"]
+    );
 }
 
 #[test]
 fn nullsafe_chain_succeeding() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Address {
     public function __construct(public string $city) {}
     public function getCity(): string { return $this->city; }
@@ -202,12 +277,17 @@ class User {
 }
 $u = new User(new Address("Paris"));
 echo $u?->address?->getCity() ?? "unknown";
-"#), &["Paris"]);
+"#
+        ),
+        &["Paris"]
+    );
 }
 
 #[test]
 fn nullsafe_deep_chain() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Country {
     public function __construct(public string $name) {}
 }
@@ -229,12 +309,17 @@ $u3 = new User(null);
 echo $u1?->address?->country?->name ?? "unknown";
 echo $u2?->address?->country?->name ?? "unknown";
 echo $u3?->address?->country?->name ?? "unknown";
-"#), &["USA", "unknown", "unknown"]);
+"#
+        ),
+        &["USA", "unknown", "unknown"]
+    );
 }
 
 #[test]
 fn nullsafe_with_method_call_chain() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Repo {
     public function find(int $id): ?string {
         return $id === 1 ? "found" : null;
@@ -243,12 +328,17 @@ class Repo {
 $repo = new Repo();
 echo strlen($repo->find(1) ?? "");
 echo $repo->find(99) ?? "not found";
-"#), &["5", "not found"]);
+"#
+        ),
+        &["5", "not found"]
+    );
 }
 
 #[test]
 fn nullsafe_mixed_with_regular() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Tree {
     public ?Tree $left  = null;
     public ?Tree $right = null;
@@ -258,12 +348,17 @@ $root = new Tree(1);
 $root->left = new Tree(2);
 echo $root->left?->value;
 echo $root->right?->value ?? "null";
-"#), &["2", "null"]);
+"#
+        ),
+        &["2", "null"]
+    );
 }
 
 #[test]
 fn nullsafe_combined_with_null_coalescing() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Config {
     private array $data;
     public function __construct(array $data) { $this->data = $data; }
@@ -275,14 +370,19 @@ class Config {
 $cfg = new Config(["db" => ["host" => "localhost"]]);
 echo $cfg->get("db")?->value("host") ?? "default";
 echo $cfg->get("missing")?->value("host") ?? "default";
-"#), &["localhost", "default"]);
+"#
+        ),
+        &["localhost", "default"]
+    );
 }
 
 // ── Union types ───────────────────────────────────────────────────
 
 #[test]
 fn union_types_function() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function stringify(int|float|string $val): string {
     if (is_int($val)) return "int:$val";
     if (is_float($val)) return "float:$val";
@@ -291,12 +391,17 @@ function stringify(int|float|string $val): string {
 echo stringify(42);
 echo stringify(3.14);
 echo stringify("hello");
-"#), &["int:42", "float:3.14", "str:hello"]);
+"#
+        ),
+        &["int:42", "float:3.14", "str:hello"]
+    );
 }
 
 #[test]
 fn union_type_in_property() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Variant {
     public int|string $value;
     public function __construct(int|string $v) { $this->value = $v; }
@@ -306,25 +411,35 @@ $a = new Variant(42);
 $b = new Variant("hello");
 echo $a->type();
 echo $b->type();
-"#), &["int", "string"]);
+"#
+        ),
+        &["int", "string"]
+    );
 }
 
 #[test]
 fn nullable_type_function() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function greet(?string $name): string {
     return $name !== null ? "Hello, $name" : "Hello, stranger";
 }
 echo greet("Alice");
 echo greet(null);
-"#), &["Hello, Alice", "Hello, stranger"]);
+"#
+        ),
+        &["Hello, Alice", "Hello, stranger"]
+    );
 }
 
 // ── Readonly properties ───────────────────────────────────────────
 
 #[test]
 fn readonly_property_in_constructor() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class ImmutablePoint {
     public readonly float $x;
     public readonly float $y;
@@ -340,12 +455,17 @@ $a = new ImmutablePoint(0, 0);
 $b = new ImmutablePoint(3, 4);
 echo $b->x;
 echo $a->distanceTo($b);
-"#), &["3", "5"]);
+"#
+        ),
+        &["3", "5"]
+    );
 }
 
 #[test]
 fn readonly_via_constructor_promotion() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Money {
     public function __construct(
         public readonly int    $amount,
@@ -359,12 +479,17 @@ $m = new Money(100, "USD");
 echo $m->amount;
 echo $m->currency;
 echo $m->format();
-"#), &["100", "USD", "100 USD"]);
+"#
+        ),
+        &["100", "USD", "100 USD"]
+    );
 }
 
 #[test]
 fn readonly_class_deep() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 readonly class Coordinate {
     public function __construct(
         public float $lat,
@@ -378,14 +503,19 @@ $a = new Coordinate(0, 0);
 $b = new Coordinate(3, 4);
 echo $b->lat;
 echo $a->distanceTo($b);
-"#), &["3", "5"]);
+"#
+        ),
+        &["3", "5"]
+    );
 }
 
 // ── Fibers ────────────────────────────────────────────────────────
 
 #[test]
 fn fiber_basic_start_suspend() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 $fiber = new Fiber(function() {
     echo "start";
     Fiber::suspend();
@@ -394,12 +524,17 @@ $fiber = new Fiber(function() {
 $fiber->start();
 echo "between";
 $fiber->resume();
-"#), &["start", "between", "end"]);
+"#
+        ),
+        &["start", "between", "end"]
+    );
 }
 
 #[test]
 fn fiber_passing_value_to_suspend() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 $fiber = new Fiber(function(): string {
     $a = Fiber::suspend("first");
     $b = Fiber::suspend("second");
@@ -409,12 +544,17 @@ echo $fiber->start();
 echo $fiber->resume("hello");
 echo $fiber->resume("world");
 echo $fiber->getReturn();
-"#), &["first", "second", "result: hello + world"]);
+"#
+        ),
+        &["first", "second", "result: hello + world"]
+    );
 }
 
 #[test]
 fn fiber_getting_value_from_resume() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 $fiber = new Fiber(function(): void {
     $val = Fiber::suspend("waiting");
     echo "got: $val";
@@ -422,12 +562,17 @@ $fiber = new Fiber(function(): void {
 $suspended = $fiber->start();
 echo $suspended;
 $fiber->resume("ping");
-"#), &["waiting", "got: ping"]);
+"#
+        ),
+        &["waiting", "got: ping"]
+    );
 }
 
 #[test]
 fn fiber_terminated_state_check() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 $fiber = new Fiber(function(): void {
     Fiber::suspend();
 });
@@ -436,14 +581,19 @@ echo $fiber->isSuspended() ? "suspended" : "not suspended";
 echo $fiber->isTerminated() ? "terminated" : "not terminated";
 $fiber->resume();
 echo $fiber->isTerminated() ? "terminated" : "not terminated";
-"#), &["suspended", "not terminated", "terminated"]);
+"#
+        ),
+        &["suspended", "not terminated", "terminated"]
+    );
 }
 
 // ── Enums ─────────────────────────────────────────────────────────
 
 #[test]
 fn enum_cases_iteration() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 enum Direction {
     case North;
     case South;
@@ -454,12 +604,17 @@ $cases = Direction::cases();
 echo count($cases);
 echo $cases[0]->name;
 echo $cases[3]->name;
-"#), &["4", "North", "West"]);
+"#
+        ),
+        &["4", "North", "West"]
+    );
 }
 
 #[test]
 fn backed_enum_from_try_from() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 enum Status: string {
     case Active   = "active";
     case Inactive = "inactive";
@@ -469,12 +624,17 @@ $s = Status::from("active");
 echo $s->name;
 $t = Status::tryFrom("unknown");
 echo $t === null ? "null" : $t->name;
-"#), &["Active", "null"]);
+"#
+        ),
+        &["Active", "null"]
+    );
 }
 
 #[test]
 fn enum_implements_interface() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface HasSymbol {
     public function symbol(): string;
 }
@@ -493,12 +653,17 @@ enum Currency: string implements HasSymbol {
 echo Currency::USD->symbol();
 echo Currency::EUR->symbol();
 echo Currency::GBP->value;
-"#), &["$", "€", "gbp"]);
+"#
+        ),
+        &["$", "€", "gbp"]
+    );
 }
 
 #[test]
 fn enum_with_trait() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 trait HasLabel {
     public function label(): string {
         return ucfirst(strtolower($this->name));
@@ -512,12 +677,17 @@ enum Color {
 }
 echo Color::Red->label();
 echo Color::Green->label();
-"#), &["Red", "Green"]);
+"#
+        ),
+        &["Red", "Green"]
+    );
 }
 
 #[test]
 fn enum_used_in_match() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 enum Suit: string {
     case Hearts   = "H";
     case Diamonds = "D";
@@ -532,12 +702,17 @@ function color(Suit $s): string {
 }
 echo color(Suit::Hearts);
 echo color(Suit::Spades);
-"#), &["red", "black"]);
+"#
+        ),
+        &["red", "black"]
+    );
 }
 
 #[test]
 fn enum_used_as_array_key_via_value() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 enum Role: string {
     case Admin = "admin";
     case User  = "user";
@@ -551,12 +726,17 @@ $permissions = [
 $role = Role::User;
 echo count($permissions[$role->value]);
 echo $permissions[Role::Guest->value][0];
-"#), &["2", "read"]);
+"#
+        ),
+        &["2", "read"]
+    );
 }
 
 #[test]
 fn enum_constant() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 enum Permission: int {
     case Read    = 1;
     case Write   = 2;
@@ -567,12 +747,16 @@ echo Permission::Read->value;
 echo Permission::ALL;
 $perms = Permission::Read->value | Permission::Write->value;
 echo $perms;
-"#), &["1", "7", "3"]);
+"#
+        ),
+        &["1", "7", "3"]
+    );
 }
 
 #[test]
 fn enum_in_type_hint() {
-    compile_ok(r#"<?php
+    compile_ok(
+        r#"<?php
 enum Season { case Spring; case Summer; case Autumn; case Winter; }
 function describe(Season $s): string {
     return match($s) {
@@ -583,23 +767,31 @@ function describe(Season $s): string {
     };
 }
 echo describe(Season::Winter);
-"#);
+"#,
+    );
 }
 
 // ── First-class callable syntax ───────────────────────────────────
 
 #[test]
 fn first_class_callable_builtin() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 $fn = strlen(...);
 echo $fn("hello");
 echo $fn("hi");
-"#), &["5", "2"]);
+"#
+        ),
+        &["5", "2"]
+    );
 }
 
 #[test]
 fn first_class_callable_instance_method() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Formatter {
     public function upper(string $s): string {
         return strtoupper($s);
@@ -608,35 +800,49 @@ class Formatter {
 $f = new Formatter();
 $fn = $f->upper(...);
 echo $fn("hello");
-"#), &["HELLO"]);
+"#
+        ),
+        &["HELLO"]
+    );
 }
 
 #[test]
 fn first_class_callable_static_method() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Math {
     public static function double(int $x): int { return $x * 2; }
 }
 $fn = Math::double(...);
 echo $fn(5);
 echo $fn(21);
-"#), &["10", "42"]);
+"#
+        ),
+        &["10", "42"]
+    );
 }
 
 #[test]
 fn first_class_callable_in_array_map() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 $words = ["hello", "world", "php"];
 $result = array_map(strtoupper(...), $words);
 echo implode(",", $result);
-"#), &["HELLO,WORLD,PHP"]);
+"#
+        ),
+        &["HELLO,WORLD,PHP"]
+    );
 }
 
 // ── Intersection types ────────────────────────────────────────────
 
 #[test]
 fn intersection_type_in_param() {
-    compile_ok(r#"<?php
+    compile_ok(
+        r#"<?php
 interface Countable2 { public function size(): int; }
 interface Iterable2  { public function items(): array; }
 class Bag implements Countable2, Iterable2 {
@@ -649,14 +855,17 @@ function process(Countable2&Iterable2 $obj): string {
     return "size=" . $obj->size() . ",items=" . count($obj->items());
 }
 echo process(new Bag([1, 2, 3]));
-"#);
+"#,
+    );
 }
 
 // ── Never return type ─────────────────────────────────────────────
 
 #[test]
 fn never_return_type() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function fail(string $msg): never {
     throw new RuntimeException($msg);
 }
@@ -665,14 +874,19 @@ try {
 } catch (RuntimeException $e) {
     echo $e->getMessage();
 }
-"#), &["fatal error"]);
+"#
+        ),
+        &["fatal error"]
+    );
 }
 
 // ── PHP 8.2 Features ─────────────────────────────────────────────
 
 #[test]
 fn dnf_type_hint() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface Loggable {
     public function toLog(): string;
 }
@@ -685,14 +899,19 @@ function process((Loggable&Stringable)|string $input): string {
     return $input->toLog();
 }
 echo process("hello");
-"#), &["str:hello"]);
+"#
+        ),
+        &["str:hello"]
+    );
 }
 
 // ── PHP 8.3 Features ─────────────────────────────────────────────
 
 #[test]
 fn typed_class_constants() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Config {
     const int    MAX_SIZE    = 1024;
     const string DEFAULT_ENV = "production";
@@ -701,12 +920,17 @@ class Config {
 }
 echo Config::MAX_SIZE;
 echo Config::DEFAULT_ENV;
-"#), &["1024", "production"]);
+"#
+        ),
+        &["1024", "production"]
+    );
 }
 
 #[test]
 fn dynamic_class_constant_fetch() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class HttpStatus {
     const OK        = 200;
     const NOT_FOUND = 404;
@@ -714,14 +938,18 @@ class HttpStatus {
 }
 $const = "NOT_FOUND";
 echo HttpStatus::{$const};
-"#), &["404"]);
+"#
+        ),
+        &["404"]
+    );
 }
 
 // ── PHP 8.4 Features ─────────────────────────────────────────────
 
 #[test]
 fn property_hook_structural() {
-    compile_ok(r#"<?php
+    compile_ok(
+        r#"<?php
 class Temperature {
     public float $celsius {
         get { return $this->celsius; }
@@ -734,12 +962,14 @@ class Temperature {
 $t = new Temperature();
 $t->celsius = 100.0;
 echo $t->fahrenheit;
-"#);
+"#,
+    );
 }
 
 #[test]
 fn asymmetric_visibility_structural() {
-    compile_ok(r#"<?php
+    compile_ok(
+        r#"<?php
 class Counter {
     public private(set) int $count = 0;
     public function increment(): void { $this->count++; }
@@ -748,14 +978,17 @@ $c = new Counter();
 $c->increment();
 $c->increment();
 echo $c->count;
-"#);
+"#,
+    );
 }
 
 // ── Closure advanced ─────────────────────────────────────────────
 
 #[test]
 fn closure_bind_to_object() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Counter {
     private int $count = 0;
 }
@@ -766,24 +999,34 @@ $increment = Closure::bind(function() {
 echo $increment();
 echo $increment();
 echo $increment();
-"#), &["1", "2", "3"]);
+"#
+        ),
+        &["1", "2", "3"]
+    );
 }
 
 #[test]
 fn closure_from_callable() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function double(int $x): int { return $x * 2; }
 $fn = Closure::fromCallable('double');
 echo $fn(5);
 echo $fn(21);
-"#), &["10", "42"]);
+"#
+        ),
+        &["10", "42"]
+    );
 }
 
 // ── Arrow functions deep ──────────────────────────────────────────
 
 #[test]
 fn arrow_fn_complex_expressions() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 $add     = fn(int $a, int $b): int => $a + $b;
 $compose = fn(callable $f, callable $g) => fn($x) => $f($g($x));
 $double  = fn($x) => $x * 2;
@@ -791,14 +1034,19 @@ $inc     = fn($x) => $x + 1;
 $doubleInc = $compose($double, $inc);
 echo $add(3, 4);
 echo $doubleInc(5);
-"#), &["7", "12"]);
+"#
+        ),
+        &["7", "12"]
+    );
 }
 
 // ── Spread operator ───────────────────────────────────────────────
 
 #[test]
 fn spread_in_various_contexts() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function sum(int ...$nums): int {
     return array_sum($nums);
 }
@@ -809,14 +1057,19 @@ $a = [1, 2, 3];
 $b = [4, 5, 6];
 $merged = [...$a, ...$b];
 echo implode(",", $merged);
-"#), &["6", "15", "1,2,3,4,5,6"]);
+"#
+        ),
+        &["6", "15", "1,2,3,4,5,6"]
+    );
 }
 
 // ── Mixed type hint ───────────────────────────────────────────────
 
 #[test]
 fn mixed_type_hint() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 function display(mixed $value): string {
     return match(gettype($value)) {
         "integer" => "int:$value",
@@ -830,14 +1083,19 @@ echo display(42);
 echo display("hello");
 echo display([1, 2, 3]);
 echo display(null);
-"#), &["int:42", "str:hello", "arr:3", "null"]);
+"#
+        ),
+        &["int:42", "str:hello", "arr:3", "null"]
+    );
 }
 
 // ── Enum constant expressions ─────────────────────────────────────
 
 #[test]
 fn enum_constant_expressions() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 enum Permission: int {
     case Read    = 1;
     case Write   = 2;
@@ -847,14 +1105,19 @@ $perms = Permission::Read->value | Permission::Write->value;
 echo $perms;
 echo ($perms & Permission::Read->value)    ? "can read"  : "no read";
 echo ($perms & Permission::Execute->value) ? "can exec"  : "no exec";
-"#), &["3", "can read", "no exec"]);
+"#
+        ),
+        &["3", "can read", "no exec"]
+    );
 }
 
 // ── Fiber scheduler pattern ───────────────────────────────────────
 
 #[test]
 fn fiber_scheduler_round_robin() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 $fibers = [];
 for ($i = 1; $i <= 3; $i++) {
     $n = $i;
@@ -866,6 +1129,15 @@ for ($i = 1; $i <= 3; $i++) {
 }
 foreach ($fibers as $f) { $f->start(); }
 foreach ($fibers as $f) { $f->resume(); }
-"#), &["task1 start", "task2 start", "task3 start", "task1 end", "task2 end", "task3 end"]);
+"#
+        ),
+        &[
+            "task1 start",
+            "task2 start",
+            "task3 start",
+            "task1 end",
+            "task2 end",
+            "task3 end"
+        ]
+    );
 }
-

@@ -9,35 +9,42 @@ use super::helpers::compile_ok;
 // ── Component compilation ───────────────────────────────────
 #[test]
 fn compile_component_basic() {
-    compile_ok(r#"<?php
+    compile_ok(
+        r#"<?php
 function greet($name) {
     return 'Hello ' . $name;
 }
 echo greet('World');
-"#);
+"#,
+    );
 }
 
 #[test]
 fn compile_component_with_class() {
-    compile_ok(r#"<?php
+    compile_ok(
+        r#"<?php
 class Calculator {
     public function add($a, $b) { return $a + $b; }
     public function sub($a, $b) { return $a - $b; }
 }
-"#);
+"#,
+    );
 }
 
 #[test]
 fn compile_component_exports_functions() {
-    compile_ok(r#"<?php
+    compile_ok(
+        r#"<?php
 function add($a, $b) { return $a + $b; }
 function multiply($a, $b) { return $a * $b; }
-"#);
+"#,
+    );
 }
 
 #[test]
 fn compile_component_with_traits_and_interfaces() {
-    compile_ok(r#"<?php
+    compile_ok(
+        r#"<?php
 interface Printable {
     public function toString(): string;
 }
@@ -50,7 +57,8 @@ class Item implements Printable {
     public function __construct($name) { $this->name = $name; }
     public function toString(): string { return $this->name; }
 }
-"#);
+"#,
+    );
 }
 
 // ── Cross-language exception compatibility ──────────────────
@@ -60,25 +68,31 @@ fn canonical_exception_names() {
     assert_eq!(canonical_exception_name("RuntimeException"), "RuntimeError");
     assert_eq!(canonical_exception_name("ValueError"), "ValueError");
     assert_eq!(canonical_exception_name("TypeError"), "TypeError");
-    assert_eq!(canonical_exception_name("IndexOutOfRangeException"), "IndexError");
+    assert_eq!(
+        canonical_exception_name("IndexOutOfRangeException"),
+        "IndexError"
+    );
     assert_eq!(canonical_exception_name("Exception"), "Exception");
     assert_eq!(canonical_exception_name("Error"), "Exception");
 }
 
 #[test]
 fn exception_cross_compat() {
-    compile_ok(r#"<?php
+    compile_ok(
+        r#"<?php
 try {
     throw new RuntimeException('something broke');
 } catch (RuntimeException $e) {
     echo $e;
 }
-"#);
+"#,
+    );
 }
 
 #[test]
 fn multi_catch_types() {
-    compile_ok(r#"<?php
+    compile_ok(
+        r#"<?php
 try {
     throw new Exception('oops');
 } catch (TypeError | ValueError $e) {
@@ -86,5 +100,6 @@ try {
 } catch (Exception $e) {
     echo 'generic';
 }
-"#);
+"#,
+    );
 }

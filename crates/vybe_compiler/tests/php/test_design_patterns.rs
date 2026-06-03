@@ -2,8 +2,11 @@ use super::helpers::run_prints;
 
 // ── Builder pattern ───────────────────────────────────────────
 
-#[test] fn builder_fluent_interface() {
-    assert_eq!(run_prints(r#"<?php
+#[test]
+fn builder_fluent_interface() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class QueryBuilder {
     private string $table = '';
     private array $conditions = [];
@@ -19,13 +22,19 @@ class QueryBuilder {
     }
 }
 echo (new QueryBuilder)->from('users')->where('age>18')->where('active=1')->limit(10)->build();
-"#), vec!["SELECT * FROM users WHERE age>18 AND active=1 LIMIT 10"]);
+"#
+        ),
+        vec!["SELECT * FROM users WHERE age>18 AND active=1 LIMIT 10"]
+    );
 }
 
 // ── Observer pattern ──────────────────────────────────────────
 
-#[test] fn observer_pattern() {
-    assert_eq!(run_prints(r#"<?php
+#[test]
+fn observer_pattern() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface Observer { public function update(string $event, mixed $data): void; }
 class EventEmitter {
     private array $observers = [];
@@ -44,13 +53,19 @@ $emitter->subscribe('login', $logger);
 $emitter->emit('login', 'Alice');
 $emitter->emit('login', 'Bob');
 echo implode(',', $logger->log);
-"#), vec!["login:Alice,login:Bob"]);
+"#
+        ),
+        vec!["login:Alice,login:Bob"]
+    );
 }
 
 // ── Strategy pattern ──────────────────────────────────────────
 
-#[test] fn strategy_pattern() {
-    assert_eq!(run_prints(r#"<?php
+#[test]
+fn strategy_pattern() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface SortStrategy { public function sort(array &$data): void; }
 class BubbleSort implements SortStrategy {
     public function sort(array &$data): void { sort($data); }
@@ -60,13 +75,19 @@ class Sorter {
     public function sort(array $data): array { $this->strategy->sort($data); return $data; }
 }
 echo implode(',', (new Sorter(new BubbleSort))->sort([3,1,2]));
-"#), vec!["1,2,3"]);
+"#
+        ),
+        vec!["1,2,3"]
+    );
 }
 
 // ── Decorator pattern ─────────────────────────────────────────
 
-#[test] fn decorator_pattern() {
-    assert_eq!(run_prints(r#"<?php
+#[test]
+fn decorator_pattern() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface TextProcessor { public function process(string $t): string; }
 class BaseProcessor implements TextProcessor { public function process(string $t): string { return $t; } }
 class TrimDecorator implements TextProcessor {
@@ -79,13 +100,19 @@ class UpperDecorator implements TextProcessor {
 }
 $proc = new UpperDecorator(new TrimDecorator(new BaseProcessor));
 echo $proc->process('  hello world  ');
-"#), vec!["HELLO WORLD"]);
+"#
+        ),
+        vec!["HELLO WORLD"]
+    );
 }
 
 // ── Factory method pattern ────────────────────────────────────
 
-#[test] fn factory_method() {
-    assert_eq!(run_prints(r#"<?php
+#[test]
+fn factory_method() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
 abstract class Notification {
     abstract public function send(string $msg): string;
     public static function create(string $type): self {
@@ -99,13 +126,19 @@ abstract class Notification {
 class EmailNotification extends Notification { public function send(string $m): string { return "email:$m"; } }
 class SmsNotification extends Notification { public function send(string $m): string { return "sms:$m"; } }
 echo Notification::create('email')->send('hello') . ',' . Notification::create('sms')->send('hi');
-"#), vec!["email:hello,sms:hi"]);
+"#
+        ),
+        vec!["email:hello,sms:hi"]
+    );
 }
 
 // ── Proxy pattern ─────────────────────────────────────────────
 
-#[test] fn proxy_pattern_lazy_load() {
-    assert_eq!(run_prints(r#"<?php
+#[test]
+fn proxy_pattern_lazy_load() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface DataStore { public function get(string $key): mixed; }
 class RealStore implements DataStore {
     private array $data = ['name' => 'Alice'];
@@ -123,13 +156,19 @@ class CachedProxy implements DataStore {
 $proxy = new CachedProxy;
 echo $proxy->get('name') . ',';
 echo $proxy->get('name');
-"#), vec!["fetched,Alice,Alice"]);
+"#
+        ),
+        vec!["fetched,Alice,Alice"]
+    );
 }
 
 // ── Value object pattern ──────────────────────────────────────
 
-#[test] fn value_object_immutability() {
-    assert_eq!(run_prints(r#"<?php
+#[test]
+fn value_object_immutability() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
 final class Money {
     public function __construct(private readonly int $amount, private readonly string $currency) {}
     public function add(Money $other): self {
@@ -141,13 +180,19 @@ final class Money {
 $a = new Money(100, 'USD');
 $b = new Money(50, 'USD');
 echo $a->add($b);
-"#), vec!["150 USD"]);
+"#
+        ),
+        vec!["150 USD"]
+    );
 }
 
 // ── Command pattern ───────────────────────────────────────────
 
-#[test] fn command_pattern_undo() {
-    assert_eq!(run_prints(r#"<?php
+#[test]
+fn command_pattern_undo() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface Command { public function execute(): void; public function undo(): void; }
 class Stack {
     private array $stack = [];
@@ -168,13 +213,19 @@ $stack->execute(new PushCommand($list, 3));
 echo implode(',', $list) . ',';
 $stack->undo();
 echo implode(',', $list);
-"#), vec!["1,2,3,1,2"]);
+"#
+        ),
+        vec!["1,2,3,1,2"]
+    );
 }
 
 // ── Repository pattern ────────────────────────────────────────
 
-#[test] fn repository_pattern() {
-    assert_eq!(run_prints(r#"<?php
+#[test]
+fn repository_pattern() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class User { public function __construct(public readonly int $id, public readonly string $name) {} }
 class UserRepository {
     private array $store = [];
@@ -186,5 +237,8 @@ $repo = new UserRepository;
 $repo->save(new User(1, 'Alice'));
 $repo->save(new User(2, 'Bob'));
 echo $repo->find(2)?->name . ':' . count($repo->findAll());
-"#), vec!["Bob:2"]);
+"#
+        ),
+        vec!["Bob:2"]
+    );
 }

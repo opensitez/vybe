@@ -2,8 +2,10 @@ use super::helpers::compile_ok;
 
 // ── Iterator interface ────────────────────────────────────────
 
-#[test] fn iterator_basic() {
-    compile_ok(r#"<?php
+#[test]
+fn iterator_basic() {
+    compile_ok(
+        r#"<?php
 class NumberRange implements Iterator {
     private int $current;
     public function __construct(
@@ -18,11 +20,14 @@ class NumberRange implements Iterator {
 }
 $range = new NumberRange(1, 5);
 foreach ($range as $k => $v) { echo "$k:$v "; }
-"#);
+"#,
+    );
 }
 
-#[test] fn iterator_reusable() {
-    compile_ok(r#"<?php
+#[test]
+fn iterator_reusable() {
+    compile_ok(
+        r#"<?php
 class Letters implements Iterator {
     private int $pos = 0;
     private array $letters = ['a', 'b', 'c'];
@@ -35,11 +40,14 @@ class Letters implements Iterator {
 $it = new Letters();
 foreach ($it as $v) { echo $v; }
 foreach ($it as $v) { echo $v; }
-"#);
+"#,
+    );
 }
 
-#[test] fn iterator_manual_control() {
-    compile_ok(r#"<?php
+#[test]
+fn iterator_manual_control() {
+    compile_ok(
+        r#"<?php
 class Counter implements Iterator {
     private int $i = 0;
     public function __construct(private int $max) {}
@@ -55,11 +63,14 @@ while ($c->valid()) {
     echo $c->current() . ' ';
     $c->next();
 }
-"#);
+"#,
+    );
 }
 
-#[test] fn iterator_infinite_with_limit() {
-    compile_ok(r#"<?php
+#[test]
+fn iterator_infinite_with_limit() {
+    compile_ok(
+        r#"<?php
 class Fibonacci implements Iterator {
     private int $a = 0, $b = 1, $step = 0;
     public function current(): int  { return $this->a; }
@@ -73,13 +84,16 @@ $result = [];
 $fib->rewind();
 for ($i = 0; $i < 8; $i++) { $result[] = $fib->current(); $fib->next(); }
 echo implode(',', $result);
-"#);
+"#,
+    );
 }
 
 // ── IteratorAggregate ─────────────────────────────────────────
 
-#[test] fn iterator_aggregate_basic() {
-    compile_ok(r#"<?php
+#[test]
+fn iterator_aggregate_basic() {
+    compile_ok(
+        r#"<?php
 class Collection implements IteratorAggregate {
     private array $items = [];
     public function add(mixed $item): void { $this->items[] = $item; }
@@ -88,11 +102,14 @@ class Collection implements IteratorAggregate {
 $c = new Collection();
 $c->add('a'); $c->add('b'); $c->add('c');
 foreach ($c as $item) { echo $item; }
-"#);
+"#,
+    );
 }
 
-#[test] fn iterator_aggregate_wrapped() {
-    compile_ok(r#"<?php
+#[test]
+fn iterator_aggregate_wrapped() {
+    compile_ok(
+        r#"<?php
 class FilteredCollection implements IteratorAggregate {
     public function __construct(private array $items, private callable $filter) {}
     public function getIterator(): ArrayIterator {
@@ -101,13 +118,16 @@ class FilteredCollection implements IteratorAggregate {
 }
 $evens = new FilteredCollection([1, 2, 3, 4, 5, 6], fn($n) => $n % 2 === 0);
 foreach ($evens as $v) { echo $v . ' '; }
-"#);
+"#,
+    );
 }
 
 // ── ArrayAccess interface ─────────────────────────────────────
 
-#[test] fn array_access_basic() {
-    compile_ok(r#"<?php
+#[test]
+fn array_access_basic() {
+    compile_ok(
+        r#"<?php
 class TypedCollection implements ArrayAccess {
     private array $data = [];
     public function offsetExists(mixed $offset): bool { return isset($this->data[$offset]); }
@@ -123,11 +143,14 @@ $c[] = 'first';
 $c[] = 'second';
 $c['named'] = 'third';
 echo $c[0] . ',' . $c['named'];
-"#);
+"#,
+    );
 }
 
-#[test] fn array_access_exists_unset() {
-    compile_ok(r#"<?php
+#[test]
+fn array_access_exists_unset() {
+    compile_ok(
+        r#"<?php
 class Registry implements ArrayAccess {
     private array $store = [];
     public function offsetExists(mixed $k): bool  { return array_key_exists($k, $this->store); }
@@ -140,13 +163,16 @@ $r['key'] = 'value';
 echo isset($r['key']) ? 'exists' : 'missing';
 unset($r['key']);
 echo isset($r['key']) ? 'exists' : 'missing';
-"#);
+"#,
+    );
 }
 
 // ── Countable interface ───────────────────────────────────────
 
-#[test] fn countable_basic() {
-    compile_ok(r#"<?php
+#[test]
+fn countable_basic() {
+    compile_ok(
+        r#"<?php
 class WordList implements Countable {
     private array $words = [];
     public function add(string $w): void { $this->words[] = $w; }
@@ -155,11 +181,14 @@ class WordList implements Countable {
 $wl = new WordList();
 $wl->add('hello'); $wl->add('world');
 echo count($wl);
-"#);
+"#,
+    );
 }
 
-#[test] fn countable_with_array_access() {
-    compile_ok(r#"<?php
+#[test]
+fn countable_with_array_access() {
+    compile_ok(
+        r#"<?php
 class DataSet implements ArrayAccess, Countable {
     private array $rows = [];
     public function offsetExists(mixed $k): bool  { return isset($this->rows[$k]); }
@@ -171,13 +200,16 @@ class DataSet implements ArrayAccess, Countable {
 $ds = new DataSet();
 $ds[] = ['id' => 1]; $ds[] = ['id' => 2]; $ds[] = ['id' => 3];
 echo count($ds);
-"#);
+"#,
+    );
 }
 
 // ── JsonSerializable ──────────────────────────────────────────
 
-#[test] fn json_serializable_basic() {
-    compile_ok(r#"<?php
+#[test]
+fn json_serializable_basic() {
+    compile_ok(
+        r#"<?php
 class Money implements JsonSerializable {
     public function __construct(private int $cents, private string $currency = 'USD') {}
     public function jsonSerialize(): array {
@@ -186,11 +218,14 @@ class Money implements JsonSerializable {
 }
 $m = new Money(1999, 'EUR');
 echo json_encode($m);
-"#);
+"#,
+    );
 }
 
-#[test] fn json_serializable_nested() {
-    compile_ok(r#"<?php
+#[test]
+fn json_serializable_nested() {
+    compile_ok(
+        r#"<?php
 class Address implements JsonSerializable {
     public function __construct(public string $city, public string $country) {}
     public function jsonSerialize(): array { return ['city' => $this->city, 'country' => $this->country]; }
@@ -203,13 +238,16 @@ class Person implements JsonSerializable {
 }
 $p = new Person('Alice', new Address('Paris', 'FR'));
 echo json_encode($p);
-"#);
+"#,
+    );
 }
 
 // ── Stringable interface ──────────────────────────────────────
 
-#[test] fn stringable_basic() {
-    compile_ok(r#"<?php
+#[test]
+fn stringable_basic() {
+    compile_ok(
+        r#"<?php
 class Version implements Stringable {
     public function __construct(
         private int $major,
@@ -220,13 +258,16 @@ class Version implements Stringable {
 }
 function printVersion(Stringable $v): void { echo (string)$v; }
 printVersion(new Version(1, 2, 3));
-"#);
+"#,
+    );
 }
 
 // ── RecursiveIterator ─────────────────────────────────────────
 
-#[test] fn recursive_array_iterator() {
-    compile_ok(r#"<?php
+#[test]
+fn recursive_array_iterator() {
+    compile_ok(
+        r#"<?php
 $tree = ['a', ['b', 'c'], ['d', ['e', 'f']]];
 $it = new RecursiveIteratorIterator(
     new RecursiveArrayIterator($tree)
@@ -234,11 +275,14 @@ $it = new RecursiveIteratorIterator(
 $leaves = [];
 foreach ($it as $leaf) { $leaves[] = $leaf; }
 echo implode(',', $leaves);
-"#);
+"#,
+    );
 }
 
-#[test] fn recursive_directory_iterator_stub() {
-    compile_ok(r#"<?php
+#[test]
+fn recursive_directory_iterator_stub() {
+    compile_ok(
+        r#"<?php
 // RecursiveDirectoryIterator usage pattern
 class TreeNode implements RecursiveIterator {
     private int $pos = 0;
@@ -255,13 +299,16 @@ $tree = new TreeNode(['a', 'b', 'c']);
 $items = [];
 foreach ($tree as $item) { if (!is_array($item)) $items[] = $item; }
 echo implode(',', $items);
-"#);
+"#,
+    );
 }
 
 // ── AppendIterator ────────────────────────────────────────────
 
-#[test] fn append_iterator() {
-    compile_ok(r#"<?php
+#[test]
+fn append_iterator() {
+    compile_ok(
+        r#"<?php
 $it1 = new ArrayIterator([1, 2, 3]);
 $it2 = new ArrayIterator([4, 5, 6]);
 $combined = new AppendIterator();
@@ -270,47 +317,60 @@ $combined->append($it2);
 $result = [];
 foreach ($combined as $v) { $result[] = $v; }
 echo implode(',', $result);
-"#);
+"#,
+    );
 }
 
 // ── CallbackFilterIterator ────────────────────────────────────
 
-#[test] fn callback_filter_iterator() {
-    compile_ok(r#"<?php
+#[test]
+fn callback_filter_iterator() {
+    compile_ok(
+        r#"<?php
 $it = new ArrayIterator(range(1, 10));
 $evens = new CallbackFilterIterator($it, fn($v) => $v % 2 === 0);
 $result = [];
 foreach ($evens as $v) { $result[] = $v; }
 echo implode(',', $result);
-"#);
+"#,
+    );
 }
 
 // ── LimitIterator ─────────────────────────────────────────────
 
-#[test] fn limit_iterator() {
-    compile_ok(r#"<?php
+#[test]
+fn limit_iterator() {
+    compile_ok(
+        r#"<?php
 $it = new ArrayIterator(range(0, 99));
 $slice = new LimitIterator($it, 5, 5);
 $result = [];
 foreach ($slice as $v) { $result[] = $v; }
 echo implode(',', $result);
-"#);
+"#,
+    );
 }
 
 // ── iterator_to_array ─────────────────────────────────────────
 
-#[test] fn iterator_to_array_basic() {
-    compile_ok(r#"<?php
+#[test]
+fn iterator_to_array_basic() {
+    compile_ok(
+        r#"<?php
 $it = new ArrayIterator([3, 1, 4, 1, 5, 9]);
 $arr = iterator_to_array($it, false);
 sort($arr);
 echo implode(',', $arr);
-"#);
+"#,
+    );
 }
 
-#[test] fn iterator_count() {
-    compile_ok(r#"<?php
+#[test]
+fn iterator_count() {
+    compile_ok(
+        r#"<?php
 $it = new ArrayIterator([10, 20, 30, 40, 50]);
 echo iterator_count($it);
-"#);
+"#,
+    );
 }

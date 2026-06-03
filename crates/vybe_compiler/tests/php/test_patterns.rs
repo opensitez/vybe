@@ -4,7 +4,9 @@ use super::helpers::{compile_ok, run_prints};
 
 #[test]
 fn singleton_same_instance() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Config {
     private static $instance = null;
     public $data = [];
@@ -23,14 +25,19 @@ $a->set('env', 'prod');
 $b = Config::getInstance();
 echo $b->get('env');
 echo ($a === $b) ? 'same' : 'different';
-"#), vec!["prod", "same"]);
+"#
+        ),
+        vec!["prod", "same"]
+    );
 }
 
 // ── Factory method ───────────────────────────────────────────────
 
 #[test]
 fn factory_method_pattern() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 abstract class Transport {
     abstract public function getType(): string;
 }
@@ -52,14 +59,19 @@ class SeaLogistics extends Logistics {
 }
 echo (new RoadLogistics())->plan();
 echo (new SeaLogistics())->plan();
-"#), vec!["truck", "ship"]);
+"#
+        ),
+        vec!["truck", "ship"]
+    );
 }
 
 // ── Abstract factory ─────────────────────────────────────────────
 
 #[test]
 fn abstract_factory_pattern() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface Button { public function render(): string; }
 interface Checkbox { public function check(): string; }
 class WinButton implements Button { public function render(): string { return 'win-button'; } }
@@ -84,14 +96,19 @@ function buildUI(GUIFactory $f) {
 }
 buildUI(new WinFactory());
 buildUI(new MacFactory());
-"#), vec!["win-button", "win-check", "mac-button", "mac-check"]);
+"#
+        ),
+        vec!["win-button", "win-check", "mac-button", "mac-check"]
+    );
 }
 
 // ── Builder ──────────────────────────────────────────────────────
 
 #[test]
 fn builder_fluent_build() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Pizza {
     public $size = '';
     public $toppings = [];
@@ -114,14 +131,19 @@ $p = (new PizzaBuilder())
 echo $p->size;
 echo $p->crust;
 echo implode(',', $p->toppings);
-"#), vec!["large", "thin", "mozzarella,pepperoni"]);
+"#
+        ),
+        vec!["large", "thin", "mozzarella,pepperoni"]
+    );
 }
 
 // ── Prototype ────────────────────────────────────────────────────
 
 #[test]
 fn prototype_clone_variation() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Shape {
     public $color;
     public $x;
@@ -143,14 +165,19 @@ $s2 = $s1->move(5, 10);
 echo $s1->x . ',' . $s1->y;
 echo $s2->x . ',' . $s2->y;
 echo $s2->color;
-"#), vec!["0,0", "5,10", "red"]);
+"#
+        ),
+        vec!["0,0", "5,10", "red"]
+    );
 }
 
 // ── Adapter ──────────────────────────────────────────────────────
 
 #[test]
 fn adapter_wraps_incompatible_interface() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class LegacyPrinter {
     public function printText(string $text): void { echo 'Legacy: ' . $text; }
 }
@@ -164,14 +191,19 @@ class PrinterAdapter implements ModernPrinter {
 }
 function usePrinter(ModernPrinter $p, string $text): void { $p->print($text); }
 usePrinter(new PrinterAdapter(new LegacyPrinter()), 'hello');
-"#), vec!["Legacy: hello"]);
+"#
+        ),
+        vec!["Legacy: hello"]
+    );
 }
 
 // ── Decorator ────────────────────────────────────────────────────
 
 #[test]
 fn decorator_wraps_same_interface() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface Logger {
     public function log(string $msg): void;
 }
@@ -191,14 +223,19 @@ class PrefixDecorator implements Logger {
 }
 $log = new PrefixDecorator(new TimestampDecorator(new ConsoleLogger()), 'APP');
 $log->log('started');
-"#), vec!["APP: [ts] started"]);
+"#
+        ),
+        vec!["APP: [ts] started"]
+    );
 }
 
 // ── Composite ────────────────────────────────────────────────────
 
 #[test]
 fn composite_tree_sum() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface Component {
     public function price(): int;
 }
@@ -221,14 +258,19 @@ $inner->add(new Leaf(5));
 $inner->add(new Leaf(15));
 $box->add($inner);
 echo $box->price();
-"#), vec!["30"]);
+"#
+        ),
+        vec!["30"]
+    );
 }
 
 // ── Facade ───────────────────────────────────────────────────────
 
 #[test]
 fn facade_simple_interface() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class VideoDecoder {
     public function decode(string $f): string { return 'decoded:' . $f; }
 }
@@ -249,14 +291,19 @@ class VideoFacade {
     }
 }
 echo (new VideoFacade())->process('movie.mp4');
-"#), vec!["decoded:movie.mp4|mixed:movie.mp4"]);
+"#
+        ),
+        vec!["decoded:movie.mp4|mixed:movie.mp4"]
+    );
 }
 
 // ── Proxy ────────────────────────────────────────────────────────
 
 #[test]
 fn proxy_lazy_loading() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface ImageInterface {
     public function display(): string;
 }
@@ -282,14 +329,19 @@ class ImageProxy implements ImageInterface {
 $img = new ImageProxy('photo.jpg');
 echo 'proxy created';
 echo $img->display();
-"#), vec!["proxy created", "loaded:photo.jpg", "showing:photo.jpg"]);
+"#
+        ),
+        vec!["proxy created", "loaded:photo.jpg", "showing:photo.jpg"]
+    );
 }
 
 // ── Observer ─────────────────────────────────────────────────────
 
 #[test]
 fn observer_notifies_all() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface Observer {
     public function update(string $event, $data): void;
 }
@@ -313,14 +365,19 @@ $bus = new EventBus();
 $bus->subscribe('login', new LogObserver('A'));
 $bus->subscribe('login', new LogObserver('B'));
 $bus->emit('login', 'alice');
-"#), vec!["A:alice", "B:alice"]);
+"#
+        ),
+        vec!["A:alice", "B:alice"]
+    );
 }
 
 // ── Strategy ─────────────────────────────────────────────────────
 
 #[test]
 fn strategy_interchangeable_sorter() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface SortStrategy {
     public function sort(array $data): array;
 }
@@ -339,14 +396,19 @@ $s = new Sorter(new AscendingSort());
 echo implode(',', $s->sort([3, 1, 4, 1, 5]));
 $s2 = new Sorter(new DescendingSort());
 echo implode(',', $s2->sort([3, 1, 4, 1, 5]));
-"#), vec!["1,1,3,4,5", "5,4,3,1,1"]);
+"#
+        ),
+        vec!["1,1,3,4,5", "5,4,3,1,1"]
+    );
 }
 
 // ── Template method ──────────────────────────────────────────────
 
 #[test]
 fn template_method_skeleton() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 abstract class DataExporter {
     final public function export(): string {
         $data = $this->fetchData();
@@ -367,14 +429,19 @@ class JsonExporter extends DataExporter {
 }
 echo (new CsvExporter())->export();
 echo (new JsonExporter())->export();
-"#), vec!["OUT:1,2,3", "OUT:{\"a\":1}"]);
+"#
+        ),
+        vec!["OUT:1,2,3", "OUT:{\"a\":1}"]
+    );
 }
 
 // ── Command ──────────────────────────────────────────────────────
 
 #[test]
 fn command_undo_support() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class TextEditor {
     public $text = '';
     public function append(string $s): void { $this->text .= $s; }
@@ -402,14 +469,19 @@ $history[] = $c2;
 echo $editor->text;
 array_pop($history)->undo();
 echo $editor->text;
-"#), vec!["Hello World", "Hello"]);
+"#
+        ),
+        vec!["Hello World", "Hello"]
+    );
 }
 
 // ── Iterator ─────────────────────────────────────────────────────
 
 #[test]
 fn custom_iterator_traversal() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class NumberRange implements Iterator {
     private $current;
     public function __construct(private int $start, private int $end) {
@@ -423,14 +495,19 @@ class NumberRange implements Iterator {
 }
 $range = new NumberRange(1, 5);
 foreach ($range as $n) { echo $n; }
-"#), vec!["1", "2", "3", "4", "5"]);
+"#
+        ),
+        vec!["1", "2", "3", "4", "5"]
+    );
 }
 
 // ── State machine ────────────────────────────────────────────────
 
 #[test]
 fn state_machine_transitions() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface TrafficState {
     public function next(): TrafficState;
     public function color(): string;
@@ -452,14 +529,19 @@ for ($i = 0; $i < 4; $i++) {
     echo $state->color();
     $state = $state->next();
 }
-"#), vec!["red", "green", "yellow", "red"]);
+"#
+        ),
+        vec!["red", "green", "yellow", "red"]
+    );
 }
 
 // ── Chain of responsibility ──────────────────────────────────────
 
 #[test]
 fn chain_of_responsibility_passes_along() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 abstract class Handler {
     private $next = null;
     public function setNext(Handler $h): Handler { $this->next = $h; return $h; }
@@ -490,14 +572,19 @@ $small->setNext($medium)->setNext($large);
 echo $small->handle(5);
 echo $small->handle(50);
 echo $small->handle(500);
-"#), vec!["small:5", "medium:50", "large:500"]);
+"#
+        ),
+        vec!["small:5", "medium:50", "large:500"]
+    );
 }
 
 // ── Mediator ─────────────────────────────────────────────────────
 
 #[test]
 fn mediator_centralized_communication() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class ChatRoom {
     private $log = [];
     public function send(string $from, string $to, string $msg): void {
@@ -515,14 +602,19 @@ $bob = new User('Bob', $room);
 $alice->send('Bob', 'hi');
 $bob->send('Alice', 'hello');
 foreach ($room->getLog() as $entry) { echo $entry; }
-"#), vec!["Alice->Bob:hi", "Bob->Alice:hello"]);
+"#
+        ),
+        vec!["Alice->Bob:hi", "Bob->Alice:hello"]
+    );
 }
 
 // ── Memento ──────────────────────────────────────────────────────
 
 #[test]
 fn memento_capture_restore() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class EditorMemento {
     public function __construct(public readonly string $content) {}
 }
@@ -538,14 +630,19 @@ $e->content = 'version2';
 echo $e->content;
 $e->restore($snap);
 echo $e->content;
-"#), vec!["version2", "version1"]);
+"#
+        ),
+        vec!["version2", "version1"]
+    );
 }
 
 // ── Visitor ──────────────────────────────────────────────────────
 
 #[test]
 fn visitor_double_dispatch() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface Visitor {
     public function visitCircle(Circle $c): string;
     public function visitRect(Rect $r): string;
@@ -568,14 +665,19 @@ class AreaVisitor implements Visitor {
 $v = new AreaVisitor();
 echo (new Circle(2.0))->accept($v);
 echo (new Rect(3.0, 4.0))->accept($v);
-"#), vec!["12.57", "12"]);
+"#
+        ),
+        vec!["12.57", "12"]
+    );
 }
 
 // ── Repository ───────────────────────────────────────────────────
 
 #[test]
 fn repository_abstracts_storage() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class User {
     public function __construct(public int $id, public string $name) {}
 }
@@ -590,14 +692,19 @@ $repo->save(new User(1, 'Alice'));
 $repo->save(new User(2, 'Bob'));
 echo $repo->find(1)->name;
 echo count($repo->findAll());
-"#), vec!["Alice", "2"]);
+"#
+        ),
+        vec!["Alice", "2"]
+    );
 }
 
 // ── Service locator ──────────────────────────────────────────────
 
 #[test]
 fn service_locator_resolves_by_name() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class ServiceLocator {
     private static $services = [];
     public static function register(string $name, $service): void { self::$services[$name] = $service; }
@@ -609,14 +716,19 @@ class Mailer {
 ServiceLocator::register('mailer', new Mailer());
 $m = ServiceLocator::get('mailer');
 $m->send('hello');
-"#), vec!["mail:hello"]);
+"#
+        ),
+        vec!["mail:hello"]
+    );
 }
 
 // ── Dependency injection ─────────────────────────────────────────
 
 #[test]
 fn dependency_injection_constructor() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface Storage {
     public function write(string $key, string $val): void;
     public function read(string $key): ?string;
@@ -635,14 +747,19 @@ $cache = new Cache(new MemoryStorage());
 $cache->put('key1', 'value1');
 echo $cache->get('key1');
 echo $cache->get('missing') ?? 'null';
-"#), vec!["value1", "null"]);
+"#
+        ),
+        vec!["value1", "null"]
+    );
 }
 
 // ── Event dispatcher ─────────────────────────────────────────────
 
 #[test]
 fn event_dispatcher_emit_subscribe() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Dispatcher {
     private $handlers = [];
     public function on(string $event, callable $fn): void { $this->handlers[$event][] = $fn; }
@@ -654,14 +771,19 @@ $d = new Dispatcher();
 $d->on('data', fn($v) => print("got:$v\n"));
 $d->on('data', fn($v) => print("also:$v\n"));
 $d->emit('data', 42);
-"#), vec!["got:42", "also:42"]);
+"#
+        ),
+        vec!["got:42", "also:42"]
+    );
 }
 
 // ── Pipeline ─────────────────────────────────────────────────────
 
 #[test]
 fn pipeline_chain_callables() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Pipeline {
     private $stages = [];
     public function pipe(callable $fn): self { $this->stages[] = $fn; return $this; }
@@ -675,14 +797,19 @@ $result = (new Pipeline())
     ->pipe(fn($s) => str_replace(' ', '_', $s))
     ->process('  hello world  ');
 echo $result;
-"#), vec!["HELLO_WORLD"]);
+"#
+        ),
+        vec!["HELLO_WORLD"]
+    );
 }
 
 // ── Specification pattern ────────────────────────────────────────
 
 #[test]
 fn specification_combinable_rules() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface Specification {
     public function isSatisfiedBy($candidate): bool;
 }
@@ -705,14 +832,19 @@ $users = [
 ];
 $count = count(array_filter($users, fn($u) => $spec->isSatisfiedBy($u)));
 echo $count;
-"#), vec!["1"]);
+"#
+        ),
+        vec!["1"]
+    );
 }
 
 // ── Value object ─────────────────────────────────────────────────
 
 #[test]
 fn value_object_equality_by_value() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 final class Money {
     public function __construct(private int $amount, private string $currency) {}
     public function equals(Money $other): bool {
@@ -730,14 +862,19 @@ $c = new Money(50, 'USD');
 echo $a->equals($b) ? 'equal' : 'diff';
 echo $a->equals($c) ? 'equal' : 'diff';
 echo $a->add($c);
-"#), vec!["equal", "diff", "150 USD"]);
+"#
+        ),
+        vec!["equal", "diff", "150 USD"]
+    );
 }
 
 // ── DTO ──────────────────────────────────────────────────────────
 
 #[test]
 fn dto_plain_data_carrier() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class UserDTO {
     public function __construct(
         public readonly int $id,
@@ -751,14 +888,19 @@ class UserDTO {
 $dto = new UserDTO(1, 'Alice', 'alice@example.com');
 echo $dto->name;
 echo $dto->toArray()['email'];
-"#), vec!["Alice", "alice@example.com"]);
+"#
+        ),
+        vec!["Alice", "alice@example.com"]
+    );
 }
 
 // ── Null object ──────────────────────────────────────────────────
 
 #[test]
 fn null_object_avoids_null_checks() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface Logger {
     public function log(string $msg): void;
 }
@@ -774,14 +916,19 @@ function processData(array $data, Logger $logger): int {
 }
 echo processData([1, 2, 3], new ConsoleLogger());
 echo processData([1, 2], new NullLogger());
-"#), vec!["processing", "3", "2"]);
+"#
+        ),
+        vec!["processing", "3", "2"]
+    );
 }
 
 // ── Flyweight ────────────────────────────────────────────────────
 
 #[test]
 fn flyweight_shared_state() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class TreeType {
     public function __construct(public string $name, public string $color) {}
     public function draw(int $x, int $y): string { return "{$this->name}@{$x},{$y}"; }
@@ -803,14 +950,19 @@ $t3 = TreeFactory::get('pine', 'dark-green');
 echo ($t1 === $t2) ? 'shared' : 'different';
 echo TreeFactory::count();
 echo $t1->draw(1, 2);
-"#), vec!["shared", "2", "oak@1,2"]);
+"#
+        ),
+        vec!["shared", "2", "oak@1,2"]
+    );
 }
 
 // ── Registry ─────────────────────────────────────────────────────
 
 #[test]
 fn registry_global_named_objects() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Registry {
     private static $instances = [];
     public static function set(string $key, $obj): void { self::$instances[$key] = $obj; }
@@ -821,14 +973,19 @@ Registry::set('db', (object)['host' => 'localhost']);
 echo Registry::has('db') ? 'found' : 'missing';
 echo Registry::get('db')->host;
 echo Registry::has('cache') ? 'found' : 'missing';
-"#), vec!["found", "localhost", "missing"]);
+"#
+        ),
+        vec!["found", "localhost", "missing"]
+    );
 }
 
 // ── Multiton ─────────────────────────────────────────────────────
 
 #[test]
 fn multiton_named_singletons() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Connection {
     private static $pool = [];
     private function __construct(public string $name) {}
@@ -845,14 +1002,19 @@ $c = Connection::getInstance('replica');
 echo ($a === $b) ? 'same' : 'diff';
 echo ($a === $c) ? 'same' : 'diff';
 echo $c->name;
-"#), vec!["same", "diff", "replica"]);
+"#
+        ),
+        vec!["same", "diff", "replica"]
+    );
 }
 
 // ── Result type ──────────────────────────────────────────────────
 
 #[test]
 fn result_type_ok_err() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Result {
     private function __construct(private bool $ok, private $value, private string $error = '') {}
     public static function ok($value): self { return new self(true, $value); }
@@ -871,14 +1033,19 @@ echo $r1->unwrap();
 $r2 = divide(5, 0);
 echo $r2->isOk() ? 'ok' : 'err';
 echo $r2->error();
-"#), vec!["ok", "5", "err", "division by zero"]);
+"#
+        ),
+        vec!["ok", "5", "err", "division by zero"]
+    );
 }
 
 // ── Option/Maybe monad ───────────────────────────────────────────
 
 #[test]
 fn option_maybe_some_none() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class Option {
     private function __construct(private bool $hasValue, private $value = null) {}
     public static function some($v): self { return new self(true, $v); }
@@ -896,14 +1063,19 @@ echo $opt->isSome() ? 'some' : 'none';
 echo $opt->get();
 $empty = Option::none()->map(fn($x) => $x * 2);
 echo $empty->getOrElse(99);
-"#), vec!["some", "20", "99"]);
+"#
+        ),
+        vec!["some", "20", "99"]
+    );
 }
 
 // ── Event sourcing stub ──────────────────────────────────────────
 
 #[test]
 fn event_sourcing_append_only_log() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class EventStore {
     private $events = [];
     public function append(string $type, array $payload): void {
@@ -925,13 +1097,18 @@ $balance = $store->replay(function($bal, $e) {
 }, 0);
 echo $balance;
 echo $store->count();
-"#), vec!["120", "3"]);
+"#
+        ),
+        vec!["120", "3"]
+    );
 }
 
 // ── Active record skeleton ───────────────────────────────────────
 
 #[test]
-fn active_record_save_find() { compile_ok(r#"<?php
+fn active_record_save_find() {
+    compile_ok(
+        r#"<?php
 class Model {
     protected static $table = 'models';
     protected static $records = [];
@@ -955,13 +1132,17 @@ class Post extends Model {
 $p = new Post(['title' => 'Hello', 'body' => 'World']);
 $p->save();
 echo Post::find(1)->title;
-"#); }
+"#,
+    );
+}
 
 // ── Unit of work ─────────────────────────────────────────────────
 
 #[test]
 fn unit_of_work_track_commit() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class UnitOfWork {
     private $new = [];
     private $dirty = [];
@@ -986,14 +1167,19 @@ $result = $uow->commit();
 echo $result['inserted'];
 echo $result['updated'];
 echo $result['deleted'];
-"#), vec!["2", "1", "1"]);
+"#
+        ),
+        vec!["2", "1", "1"]
+    );
 }
 
 // ── Identity map ─────────────────────────────────────────────────
 
 #[test]
 fn identity_map_cache_by_id() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class IdentityMap {
     private $map = [];
     private $loads = 0;
@@ -1014,14 +1200,19 @@ $u3 = $idmap->get('user', 2, fn($id) => (object)['id' => $id, 'name' => 'Bob']);
 echo $u1->name;
 echo ($u1 === $u2) ? 'cached' : 'dup';
 echo $idmap->loads();
-"#), vec!["Alice", "cached", "2"]);
+"#
+        ),
+        vec!["Alice", "cached", "2"]
+    );
 }
 
 // ── Two-step view ────────────────────────────────────────────────
 
 #[test]
 fn two_step_view_gather_then_render() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class ViewModel {
     public array $data = [];
     public function set(string $k, $v): void { $this->data[$k] = $v; }
@@ -1045,14 +1236,23 @@ $vm = gatherData();
 echo $vm->data['title'];
 echo count($vm->data['items']);
 echo renderView($vm);
-"#), vec!["My Page", "3", "<h1>My Page</h1><ul><li>a</li><li>b</li><li>c</li></ul>"]);
+"#
+        ),
+        vec![
+            "My Page",
+            "3",
+            "<h1>My Page</h1><ul><li>a</li><li>b</li><li>c</li></ul>"
+        ]
+    );
 }
 
 // ── Interceptor ──────────────────────────────────────────────────
 
 #[test]
 fn interceptor_wrap_method_calls() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 class ServiceProxy {
     private $service;
     private $callLog = [];
@@ -1072,14 +1272,19 @@ class RealService {
 $proxy = new ServiceProxy(new RealService());
 $proxy->doWork('task1');
 echo implode(',', $proxy->getCallLog());
-"#), vec!["before:doWork", "working:task1", "after:doWork", "doWork"]);
+"#
+        ),
+        vec!["before:doWork", "working:task1", "after:doWork", "doWork"]
+    );
 }
 
 // ── CQRS command object ──────────────────────────────────────────
 
 #[test]
 fn cqrs_command_encapsulates_write() {
-    assert_eq!(run_prints(r#"<?php
+    assert_eq!(
+        run_prints(
+            r#"<?php
 interface Command {}
 class CreateUserCommand implements Command {
     public function __construct(public readonly string $name, public readonly string $email) {}
@@ -1100,5 +1305,8 @@ $bus->register(CreateUserCommand::class, function(CreateUserCommand $cmd) {
     echo 'created:' . $cmd->name . ':' . $cmd->email;
 });
 $bus->dispatch(new CreateUserCommand('Alice', 'alice@example.com'));
-"#), vec!["created:Alice:alice@example.com"]);
+"#
+        ),
+        vec!["created:Alice:alice@example.com"]
+    );
 }

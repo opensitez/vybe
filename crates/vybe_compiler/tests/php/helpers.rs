@@ -14,24 +14,37 @@
 #![allow(dead_code)]
 
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::{VM, Value, HostContext};
+use vybe_bytecode::{HostContext, VM, Value};
 
+// PHP stdout is a byte stream: echo/printf write bytes with no implicit
+// newline, so consecutive writes concatenate (`printf('hi'); echo ' 2';`
+// → "hi 2", one line). We therefore store each write verbatim as a fragment
+// and only split into lines in `finish_output`, mirroring real PHP-stdout
+// bytes rather than treating every host log call as its own line.
 fn capture_log_lines(output: &Arc<Mutex<Vec<String>>>, args: &[Value]) {
-    let joined = args.iter().map(|arg| format!("{}", arg)).collect::<Vec<_>>().join(" ");
-    let mut lines = output.lock().unwrap();
-    for segment in joined.split('\n') {
-        let line = segment.trim_end_matches('\r');
-        if line.is_empty() {
-            continue;
-        }
-        lines.push(line.to_string());
-    }
+    let joined = args
+        .iter()
+        .map(|arg| format!("{}", arg))
+        .collect::<Vec<_>>()
+        .join(" ");
+    output.lock().unwrap().push(joined);
+}
+
+fn finish_output(output: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
+    let buffered = output.lock().unwrap().concat();
+    buffered
+        .split('\n')
+        .map(|segment| segment.trim_end_matches('\r'))
+        .filter(|line| !line.is_empty())
+        .map(|line| line.to_string())
+        .collect()
 }
 
 fn compile_chunks(src: &str) -> Result<Vec<vybe_bytecode::Chunk>, String> {
     let module = vybe_compiler::languages::php::parse(src)?;
-    let profile = vybe_compiler::profile::parse_profile(vybe_compiler::languages::php::profile_source())
-        .map_err(|e| format!("profile parse failed: {}", e))?;
+    let profile =
+        vybe_compiler::profile::parse_profile(vybe_compiler::languages::php::profile_source())
+            .map_err(|e| format!("profile parse failed: {}", e))?;
     vybe_compiler::compiler::Compiler::with_profile(profile).compile(&module)
 }
 
@@ -71,14 +84,17 @@ pub fn run_prints(src: &str) -> Vec<String> {
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();
     vybe_host::register_all(&mut vm);
-    vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-        capture_log_lines(&out, args);
-        Value::Null
-    }));
+    vm.register_host_fn(
+        "wasi:cli",
+        "log",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            capture_log_lines(&out, args);
+            Value::Null
+        }),
+    );
     vybe_host::setup_namespaces(&mut vm);
     vm.run(chunks).expect("run failed");
-    let result = output.lock().unwrap().clone();
-    result
+    finish_output(&output)
 }
 
 pub fn run_prints_dynamic(src: &str, virtual_path: &str) -> Vec<String> {
@@ -86,10 +102,14 @@ pub fn run_prints_dynamic(src: &str, virtual_path: &str) -> Vec<String> {
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();
     vybe_host::register_all(&mut vm);
-    vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-        capture_log_lines(&out, args);
-        Value::Null
-    }));
+    vm.register_host_fn(
+        "wasi:cli",
+        "log",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            capture_log_lines(&out, args);
+            Value::Null
+        }),
+    );
     vybe_host::setup_namespaces(&mut vm);
 
     let language = vybe_compiler::languages::find_by_name("php").expect("php language not found");
@@ -98,7 +118,7 @@ pub fn run_prints_dynamic(src: &str, virtual_path: &str) -> Vec<String> {
         .compile_and_run_source(src, language, virtual_path)
         .expect("run failed");
 
-    output.lock().unwrap().clone()
+    finish_output(&output)
 }
 
 /// Compile + parse only — the original `parse` helper from the old
