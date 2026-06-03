@@ -2,7 +2,8 @@ use super::helpers::{run_vb, run_vb_gui};
 
 #[test]
 fn simple_form_with_button() {
-    let (_vm, gui, output) = run_vb_gui(r#"
+    let (_vm, gui, output) = run_vb_gui(
+        r#"
 Module Program
     Sub Main()
         Dim form As Object = Window.Forms.Form("My App")
@@ -13,18 +14,22 @@ Module Program
         Console.WriteLine("Form created")
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(output.lock().unwrap().clone(), vec!["Form created"]);
 
     // Form was created — check its text property
     let g = gui.lock().unwrap();
-    assert!(g.control_names.len() >= 1 || g.form.control_count() >= 0,
-        "Expected form to be created");
+    assert!(
+        g.control_names.len() >= 1 || g.form.control_count() >= 0,
+        "Expected form to be created"
+    );
 }
 
 #[test]
 fn button_properties() {
-    let (_vm, _gui, _output) = run_vb_gui(r#"
+    let (_vm, _gui, _output) = run_vb_gui(
+        r#"
 Module Program
     Sub Main()
         Dim btn As Object = Window.Forms.Button()
@@ -33,7 +38,8 @@ Module Program
         btn.height = 50
     End Sub
 End Module
-"#);
+"#,
+    );
     // Button was created (it's an object) — no side effects until Controls.Add
     // But properties are stored on the object
     // This test just verifies it compiles and runs without error
@@ -42,7 +48,8 @@ End Module
 
 #[test]
 fn form_with_controls_add() {
-    let (_vm, gui, _output) = run_vb_gui(r#"
+    let (_vm, gui, _output) = run_vb_gui(
+        r#"
 Module Program
     Sub Main()
         Dim form As Object = Window.Forms.Form("Calculator")
@@ -57,50 +64,70 @@ Module Program
         vybe.gui.controlsAdd("Calculator", btn)
     End Sub
 End Module
-"#);
+"#,
+    );
 
     // Check that the button was added as a control
     let g = gui.lock().unwrap();
-    assert!(g.form.control_count() >= 1,
-        "Expected at least 1 control, got {}", g.form.control_count());
+    assert!(
+        g.form.control_count() >= 1,
+        "Expected at least 1 control, got {}",
+        g.form.control_count()
+    );
 }
 
 #[test]
 fn calculator_example() {
-    let source = std::fs::read_to_string(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/vb/calculator.vb")
-    ).unwrap();
+    let source = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/vb/calculator.vb"
+    ))
+    .unwrap();
     let (_vm, gui, _output) = run_vb_gui(&source);
 
     let g = gui.lock().unwrap();
 
     // 1 textbox + 16 buttons = 17 controls
-    assert_eq!(g.form.control_count(), 17,
+    assert_eq!(
+        g.form.control_count(),
+        17,
         "Expected 17 controls, got {}. Control names: {:?}",
-        g.form.control_count(), g.control_names);
+        g.form.control_count(),
+        g.control_names
+    );
 
     // Should have triggered runApplication
-    assert!(g.should_run, "Expected should_run to be true (RunApplication was called)");
+    assert!(
+        g.should_run,
+        "Expected should_run to be true (RunApplication was called)"
+    );
 }
 
 #[test]
 fn contacts_example() {
-    let source = std::fs::read_to_string(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/vb/form_contacts.vb")
-    ).unwrap();
+    let source = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/vb/form_contacts.vb"
+    ))
+    .unwrap();
     let (_vm, gui, _output) = run_vb_gui(&source);
 
     let g = gui.lock().unwrap();
 
     // 4 labels + 3 textboxes + 2 buttons + 1 grid + 1 status label = 11 controls
-    assert_eq!(g.form.control_count(), 11,
+    assert_eq!(
+        g.form.control_count(),
+        11,
         "Expected 11 controls, got {}. Control names: {:?}",
-        g.form.control_count(), g.control_names);
+        g.form.control_count(),
+        g.control_names
+    );
 }
 
 #[test]
 fn multiple_controls() {
-    let (_vm, gui, output) = run_vb_gui(r#"
+    let (_vm, gui, output) = run_vb_gui(
+        r#"
 Module Program
     Sub Main()
         Dim form As Object = Window.Forms.Form("Test Form")
@@ -126,19 +153,25 @@ Module Program
         Console.WriteLine("3 controls added")
     End Sub
 End Module
-"#);
+"#,
+    );
 
     assert_eq!(output.lock().unwrap().clone(), vec!["3 controls added"]);
 
     let g = gui.lock().unwrap();
-    assert_eq!(g.form.control_count(), 3,
+    assert_eq!(
+        g.form.control_count(),
+        3,
         "Expected 3 controls, got {}. Control names: {:?}",
-        g.form.control_count(), g.control_names);
+        g.form.control_count(),
+        g.control_names
+    );
 }
 
 #[test]
 fn application_bootstrap_methods_are_supported() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Application.EnableVisualStyles()
@@ -146,6 +179,7 @@ Module Program
         Console.WriteLine("boot-ok")
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["boot-ok"]);
 }

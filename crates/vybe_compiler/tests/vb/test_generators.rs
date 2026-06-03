@@ -2,7 +2,8 @@ use super::helpers::run_vb;
 
 #[test]
 fn iterator_function_returns_continuation() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Function Count()
         Yield 1
@@ -13,14 +14,16 @@ Module Program
         Console.WriteLine(Count())
     End Sub
 End Module
-"#);
+"#,
+    );
 
     assert_eq!(out, vec!["[continuation]"]);
 }
 
 #[test]
 fn iterator_function_body_stays_lazy() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Function Loud()
         Console.WriteLine("bad")
@@ -32,7 +35,8 @@ Module Program
         Console.WriteLine("ok")
     End Sub
 End Module
-"#);
+"#,
+    );
 
     assert_eq!(out, vec!["ok"]);
 }

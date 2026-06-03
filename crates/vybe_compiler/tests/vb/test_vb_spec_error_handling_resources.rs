@@ -10,7 +10,9 @@ macro_rules! vb_full_spec {
     };
 }
 
-vb_full_spec!(error_spec_try_catch_handles_simple_exception, r#"Module M
+vb_full_spec!(
+    error_spec_try_catch_handles_simple_exception,
+    r#"Module M
     Sub Main()
         Try
             Throw New Exception("boom")
@@ -18,8 +20,12 @@ vb_full_spec!(error_spec_try_catch_handles_simple_exception, r#"Module M
             Console.WriteLine(ex.Message)
         End Try
     End Sub
-End Module"#, ["boom"]);
-vb_full_spec!(error_spec_try_catch_handles_specific_exception_type, r#"Module M
+End Module"#,
+    ["boom"]
+);
+vb_full_spec!(
+    error_spec_try_catch_handles_specific_exception_type,
+    r#"Module M
     Sub Main()
         Try
             Throw New ArgumentException("bad")
@@ -27,8 +33,12 @@ vb_full_spec!(error_spec_try_catch_handles_specific_exception_type, r#"Module M
             Console.WriteLine(ex.Message)
         End Try
     End Sub
-End Module"#, ["bad"]);
-vb_full_spec!(error_spec_try_finally_runs_finally_without_exception, r#"Module M
+End Module"#,
+    ["bad"]
+);
+vb_full_spec!(
+    error_spec_try_finally_runs_finally_without_exception,
+    r#"Module M
     Sub Main()
         Try
             Console.WriteLine("try")
@@ -36,8 +46,12 @@ vb_full_spec!(error_spec_try_finally_runs_finally_without_exception, r#"Module M
             Console.WriteLine("finally")
         End Try
     End Sub
-End Module"#, ["try", "finally"]);
-vb_full_spec!(error_spec_try_catch_finally_runs_all_paths, r#"Module M
+End Module"#,
+    ["try", "finally"]
+);
+vb_full_spec!(
+    error_spec_try_catch_finally_runs_all_paths,
+    r#"Module M
     Sub Main()
         Try
             Throw New Exception("boom")
@@ -47,8 +61,12 @@ vb_full_spec!(error_spec_try_catch_finally_runs_all_paths, r#"Module M
             Console.WriteLine("finally")
         End Try
     End Sub
-End Module"#, ["catch", "finally"]);
-vb_full_spec!(error_spec_throw_new_exception_transfers_control_to_catch, r#"Module M
+End Module"#,
+    ["catch", "finally"]
+);
+vb_full_spec!(
+    error_spec_throw_new_exception_transfers_control_to_catch,
+    r#"Module M
     Sub Main()
         Try
             Throw New Exception("x")
@@ -57,8 +75,12 @@ vb_full_spec!(error_spec_throw_new_exception_transfers_control_to_catch, r#"Modu
             Console.WriteLine("caught")
         End Try
     End Sub
-End Module"#, ["caught"]);
-vb_full_spec!(error_spec_rethrow_preserves_outer_catch_visibility, r#"Module M
+End Module"#,
+    ["caught"]
+);
+vb_full_spec!(
+    error_spec_rethrow_preserves_outer_catch_visibility,
+    r#"Module M
     Sub Main()
         Try
             Try
@@ -70,8 +92,12 @@ vb_full_spec!(error_spec_rethrow_preserves_outer_catch_visibility, r#"Module M
             Console.WriteLine(ex.Message)
         End Try
     End Sub
-End Module"#, ["x"]);
-vb_full_spec!(error_spec_nested_try_inner_catch_handles_exception, r#"Module M
+End Module"#,
+    ["x"]
+);
+vb_full_spec!(
+    error_spec_nested_try_inner_catch_handles_exception,
+    r#"Module M
     Sub Main()
         Try
             Try
@@ -83,8 +109,12 @@ vb_full_spec!(error_spec_nested_try_inner_catch_handles_exception, r#"Module M
             Console.WriteLine("outer")
         End Try
     End Sub
-End Module"#, ["caught inner"]);
-vb_full_spec!(error_spec_nested_try_outer_catch_handles_unhandled_inner_exception, r#"Module M
+End Module"#,
+    ["caught inner"]
+);
+vb_full_spec!(
+    error_spec_nested_try_outer_catch_handles_unhandled_inner_exception,
+    r#"Module M
     Sub Main()
         Try
             Try
@@ -96,8 +126,12 @@ vb_full_spec!(error_spec_nested_try_outer_catch_handles_unhandled_inner_exceptio
             Console.WriteLine("outer catch")
         End Try
     End Sub
-End Module"#, ["inner finally", "outer catch"]);
-vb_full_spec!(error_spec_exit_try_skips_remaining_try_body, r#"Module M
+End Module"#,
+    ["inner finally", "outer catch"]
+);
+vb_full_spec!(
+    error_spec_exit_try_skips_remaining_try_body,
+    r#"Module M
     Sub Main()
         Try
             Console.WriteLine("before")
@@ -107,8 +141,12 @@ vb_full_spec!(error_spec_exit_try_skips_remaining_try_body, r#"Module M
             Console.WriteLine("finally")
         End Try
     End Sub
-End Module"#, ["before", "finally"]);
-vb_full_spec!(error_spec_finally_runs_after_return_from_try_block, r#"Module M
+End Module"#,
+    ["before", "finally"]
+);
+vb_full_spec!(
+    error_spec_finally_runs_after_return_from_try_block,
+    r#"Module M
     Function Work() As Integer
         Try
             Return 7
@@ -119,8 +157,12 @@ vb_full_spec!(error_spec_finally_runs_after_return_from_try_block, r#"Module M
     Sub Main()
         Console.WriteLine(Work())
     End Sub
-End Module"#, ["finally", "7"]);
-vb_full_spec!(error_spec_finally_runs_after_return_from_catch_block, r#"Module M
+End Module"#,
+    ["finally", "7"]
+);
+vb_full_spec!(
+    error_spec_finally_runs_after_return_from_catch_block,
+    r#"Module M
     Function Work() As Integer
         Try
             Throw New Exception("x")
@@ -133,8 +175,12 @@ vb_full_spec!(error_spec_finally_runs_after_return_from_catch_block, r#"Module M
     Sub Main()
         Console.WriteLine(Work())
     End Sub
-End Module"#, ["finally", "7"]);
-vb_full_spec!(error_spec_using_disposes_resource_after_scope, r#"Class Probe
+End Module"#,
+    ["finally", "7"]
+);
+vb_full_spec!(
+    error_spec_using_disposes_resource_after_scope,
+    r#"Class Probe
     Implements IDisposable
     Public Sub Dispose() Implements IDisposable.Dispose
         Console.WriteLine("disposed")
@@ -146,8 +192,12 @@ Module M
             Console.WriteLine("body")
         End Using
     End Sub
-End Module"#, ["body", "disposed"]);
-vb_full_spec!(error_spec_using_two_resources_disposes_in_reverse_order, r#"Class Probe
+End Module"#,
+    ["body", "disposed"]
+);
+vb_full_spec!(
+    error_spec_using_two_resources_disposes_in_reverse_order,
+    r#"Class Probe
     Implements IDisposable
     Private _name As String
     Public Sub New(name As String)
@@ -163,8 +213,12 @@ Module M
             Console.WriteLine("body")
         End Using
     End Sub
-End Module"#, ["body", "second", "first"]);
-vb_full_spec!(error_spec_using_variable_is_available_inside_scope, r#"Class Probe
+End Module"#,
+    ["body", "second", "first"]
+);
+vb_full_spec!(
+    error_spec_using_variable_is_available_inside_scope,
+    r#"Class Probe
     Implements IDisposable
     Public Name As String = "open"
     Public Sub Dispose() Implements IDisposable.Dispose
@@ -176,8 +230,12 @@ Module M
             Console.WriteLine(value.Name)
         End Using
     End Sub
-End Module"#, ["open"]);
-vb_full_spec!(error_spec_synclock_allows_mutation_inside_block, r#"Module M
+End Module"#,
+    ["open"]
+);
+vb_full_spec!(
+    error_spec_synclock_allows_mutation_inside_block,
+    r#"Module M
     Sub Main()
         Dim gate As New Object()
         Dim total As Integer = 0
@@ -186,8 +244,12 @@ vb_full_spec!(error_spec_synclock_allows_mutation_inside_block, r#"Module M
         End SyncLock
         Console.WriteLine(total)
     End Sub
-End Module"#, ["3"]);
-vb_full_spec!(error_spec_synclock_can_wrap_multiple_statements, r#"Module M
+End Module"#,
+    ["3"]
+);
+vb_full_spec!(
+    error_spec_synclock_can_wrap_multiple_statements,
+    r#"Module M
     Sub Main()
         Dim gate As New Object()
         Dim total As Integer = 0
@@ -197,15 +259,23 @@ vb_full_spec!(error_spec_synclock_can_wrap_multiple_statements, r#"Module M
         End SyncLock
         Console.WriteLine(total)
     End Sub
-End Module"#, ["7"]);
-vb_full_spec!(error_spec_on_error_resume_next_skips_faulting_statement, r#"Module M
+End Module"#,
+    ["7"]
+);
+vb_full_spec!(
+    error_spec_on_error_resume_next_skips_faulting_statement,
+    r#"Module M
     Sub Main()
         On Error Resume Next
         Err.Raise(5)
         Console.WriteLine("after")
     End Sub
-End Module"#, ["after"]);
-vb_full_spec!(error_spec_on_error_goto_label_jumps_to_handler, r#"Module M
+End Module"#,
+    ["after"]
+);
+vb_full_spec!(
+    error_spec_on_error_goto_label_jumps_to_handler,
+    r#"Module M
     Sub Main()
         On Error GoTo Handler
         Err.Raise(5)
@@ -214,16 +284,24 @@ vb_full_spec!(error_spec_on_error_goto_label_jumps_to_handler, r#"Module M
 Handler:
         Console.WriteLine("handled")
     End Sub
-End Module"#, ["handled"]);
-vb_full_spec!(error_spec_on_error_goto_zero_resets_handler, r#"Module M
+End Module"#,
+    ["handled"]
+);
+vb_full_spec!(
+    error_spec_on_error_goto_zero_resets_handler,
+    r#"Module M
     Sub Main()
         On Error Resume Next
         Err.Raise(5)
         On Error GoTo 0
         Console.WriteLine("cleared")
     End Sub
-End Module"#, ["cleared"]);
-vb_full_spec!(error_spec_err_clear_resets_error_object, r#"Module M
+End Module"#,
+    ["cleared"]
+);
+vb_full_spec!(
+    error_spec_err_clear_resets_error_object,
+    r#"Module M
     Sub Main()
         On Error Resume Next
         Err.Raise(5, , "boom")
@@ -231,15 +309,23 @@ vb_full_spec!(error_spec_err_clear_resets_error_object, r#"Module M
         Err.Clear()
         Console.WriteLine(Err.Number)
     End Sub
-End Module"#, ["boom", "0"]);
-vb_full_spec!(error_spec_err_description_exposes_current_message, r#"Module M
+End Module"#,
+    ["boom", "0"]
+);
+vb_full_spec!(
+    error_spec_err_description_exposes_current_message,
+    r#"Module M
     Sub Main()
         On Error Resume Next
         Err.Raise(5, , "boom")
         Console.WriteLine(Err.Description)
     End Sub
-End Module"#, ["boom"]);
-vb_full_spec!(error_spec_catch_when_clause_matches_true_condition, r#"Module M
+End Module"#,
+    ["boom"]
+);
+vb_full_spec!(
+    error_spec_catch_when_clause_matches_true_condition,
+    r#"Module M
     Sub Main()
         Try
             Throw New Exception("boom")
@@ -247,8 +333,12 @@ vb_full_spec!(error_spec_catch_when_clause_matches_true_condition, r#"Module M
             Console.WriteLine("matched")
         End Try
     End Sub
-End Module"#, ["matched"]);
-vb_full_spec!(error_spec_catch_when_clause_skips_false_condition, r#"Module M
+End Module"#,
+    ["matched"]
+);
+vb_full_spec!(
+    error_spec_catch_when_clause_skips_false_condition,
+    r#"Module M
     Sub Main()
         Try
             Throw New Exception("boom")
@@ -258,8 +348,12 @@ vb_full_spec!(error_spec_catch_when_clause_skips_false_condition, r#"Module M
             Console.WriteLine("fallback")
         End Try
     End Sub
-End Module"#, ["fallback"]);
-vb_full_spec!(error_spec_finally_runs_after_throw_inside_catch, r#"Module M
+End Module"#,
+    ["fallback"]
+);
+vb_full_spec!(
+    error_spec_finally_runs_after_throw_inside_catch,
+    r#"Module M
     Sub Main()
         Try
             Throw New Exception("boom")
@@ -271,8 +365,12 @@ vb_full_spec!(error_spec_finally_runs_after_throw_inside_catch, r#"Module M
             End Try
         End Try
     End Sub
-End Module"#, ["finally"]);
-vb_full_spec!(error_spec_using_can_wrap_existing_expression_result, r#"Class Probe
+End Module"#,
+    ["finally"]
+);
+vb_full_spec!(
+    error_spec_using_can_wrap_existing_expression_result,
+    r#"Class Probe
     Implements IDisposable
     Public Shared Function Build() As Probe
         Return New Probe()
@@ -287,8 +385,12 @@ Module M
             Console.WriteLine("body")
         End Using
     End Sub
-End Module"#, ["body", "disposed"]);
-vb_full_spec!(error_spec_disposable_class_can_track_dispose_calls, r#"Class Probe
+End Module"#,
+    ["body", "disposed"]
+);
+vb_full_spec!(
+    error_spec_disposable_class_can_track_dispose_calls,
+    r#"Class Probe
     Implements IDisposable
     Public Shared Count As Integer
     Public Sub Dispose() Implements IDisposable.Dispose
@@ -301,8 +403,12 @@ Module M
         Using value As New Probe()
         End Using
     End Sub
-End Module"#, ["1"]);
-vb_full_spec!(error_spec_nested_using_scopes_dispose_both_resources, r#"Class Probe
+End Module"#,
+    ["1"]
+);
+vb_full_spec!(
+    error_spec_nested_using_scopes_dispose_both_resources,
+    r#"Class Probe
     Implements IDisposable
     Private _name As String
     Public Sub New(name As String)
@@ -320,8 +426,12 @@ Module M
             End Using
         End Using
     End Sub
-End Module"#, ["body", "inner", "outer"]);
-vb_full_spec!(error_spec_throw_inside_using_still_disposes_resource, r#"Class Probe
+End Module"#,
+    ["body", "inner", "outer"]
+);
+vb_full_spec!(
+    error_spec_throw_inside_using_still_disposes_resource,
+    r#"Class Probe
     Implements IDisposable
     Public Sub Dispose() Implements IDisposable.Dispose
         Console.WriteLine("disposed")
@@ -337,8 +447,12 @@ Module M
             Console.WriteLine("caught")
         End Try
     End Sub
-End Module"#, ["disposed", "caught"]);
-vb_full_spec!(error_spec_synclock_uses_reference_expression, r#"Class Holder
+End Module"#,
+    ["disposed", "caught"]
+);
+vb_full_spec!(
+    error_spec_synclock_uses_reference_expression,
+    r#"Class Holder
     Public Gate As New Object()
 End Class
 Module M
@@ -350,8 +464,12 @@ Module M
         End SyncLock
         Console.WriteLine(total)
     End Sub
-End Module"#, ["8"]);
-vb_full_spec!(error_spec_try_inside_synclock_can_catch_exception, r#"Module M
+End Module"#,
+    ["8"]
+);
+vb_full_spec!(
+    error_spec_try_inside_synclock_can_catch_exception,
+    r#"Module M
     Sub Main()
         Dim gate As New Object()
         SyncLock gate
@@ -362,8 +480,12 @@ vb_full_spec!(error_spec_try_inside_synclock_can_catch_exception, r#"Module M
             End Try
         End SyncLock
     End Sub
-End Module"#, ["caught"]);
-vb_full_spec!(error_spec_using_inside_try_can_dispose_before_catch, r#"Class Probe
+End Module"#,
+    ["caught"]
+);
+vb_full_spec!(
+    error_spec_using_inside_try_can_dispose_before_catch,
+    r#"Class Probe
     Implements IDisposable
     Public Sub Dispose() Implements IDisposable.Dispose
         Console.WriteLine("disposed")
@@ -379,8 +501,12 @@ Module M
             Console.WriteLine("caught")
         End Try
     End Sub
-End Module"#, ["disposed", "caught"]);
-vb_full_spec!(error_spec_return_from_using_preserves_return_value_and_disposes, r#"Class Probe
+End Module"#,
+    ["disposed", "caught"]
+);
+vb_full_spec!(
+    error_spec_return_from_using_preserves_return_value_and_disposes,
+    r#"Class Probe
     Implements IDisposable
     Public Sub Dispose() Implements IDisposable.Dispose
         Console.WriteLine("disposed")
@@ -395,8 +521,12 @@ Module M
     Sub Main()
         Console.WriteLine(Work())
     End Sub
-End Module"#, ["disposed", "9"]);
-vb_full_spec!(error_spec_return_from_try_finally_preserves_return_value, r#"Module M
+End Module"#,
+    ["disposed", "9"]
+);
+vb_full_spec!(
+    error_spec_return_from_try_finally_preserves_return_value,
+    r#"Module M
     Function Work() As Integer
         Try
             Return 5
@@ -407,8 +537,12 @@ vb_full_spec!(error_spec_return_from_try_finally_preserves_return_value, r#"Modu
     Sub Main()
         Console.WriteLine(Work())
     End Sub
-End Module"#, ["finally", "5"]);
-vb_full_spec!(error_spec_exit_try_enters_finally_block, r#"Module M
+End Module"#,
+    ["finally", "5"]
+);
+vb_full_spec!(
+    error_spec_exit_try_enters_finally_block,
+    r#"Module M
     Sub Main()
         Try
             Exit Try
@@ -416,8 +550,12 @@ vb_full_spec!(error_spec_exit_try_enters_finally_block, r#"Module M
             Console.WriteLine("finally")
         End Try
     End Sub
-End Module"#, ["finally"]);
-vb_full_spec!(error_spec_multiple_catch_blocks_can_select_specific_type, r#"Module M
+End Module"#,
+    ["finally"]
+);
+vb_full_spec!(
+    error_spec_multiple_catch_blocks_can_select_specific_type,
+    r#"Module M
     Sub Main()
         Try
             Throw New ArgumentException("bad")
@@ -427,8 +565,12 @@ vb_full_spec!(error_spec_multiple_catch_blocks_can_select_specific_type, r#"Modu
             Console.WriteLine("general")
         End Try
     End Sub
-End Module"#, ["arg"]);
-vb_full_spec!(error_spec_argument_exception_matches_specific_catch_block, r#"Module M
+End Module"#,
+    ["arg"]
+);
+vb_full_spec!(
+    error_spec_argument_exception_matches_specific_catch_block,
+    r#"Module M
     Sub Main()
         Try
             Throw New ArgumentException("bad")
@@ -436,8 +578,12 @@ vb_full_spec!(error_spec_argument_exception_matches_specific_catch_block, r#"Mod
             Console.WriteLine(ex.Message)
         End Try
     End Sub
-End Module"#, ["bad"]);
-vb_full_spec!(error_spec_application_exception_can_fall_back_to_general_catch, r#"Module M
+End Module"#,
+    ["bad"]
+);
+vb_full_spec!(
+    error_spec_application_exception_can_fall_back_to_general_catch,
+    r#"Module M
     Sub Main()
         Try
             Throw New ApplicationException("boom")
@@ -447,8 +593,12 @@ vb_full_spec!(error_spec_application_exception_can_fall_back_to_general_catch, r
             Console.WriteLine("general")
         End Try
     End Sub
-End Module"#, ["general"]);
-vb_full_spec!(error_spec_finally_can_mutate_local_after_catch, r#"Module M
+End Module"#,
+    ["general"]
+);
+vb_full_spec!(
+    error_spec_finally_can_mutate_local_after_catch,
+    r#"Module M
     Sub Main()
         Dim state As String = "start"
         Try
@@ -460,8 +610,12 @@ vb_full_spec!(error_spec_finally_can_mutate_local_after_catch, r#"Module M
         End Try
         Console.WriteLine(state)
     End Sub
-End Module"#, ["catch+finally"]);
-vb_full_spec!(error_spec_on_error_resume_next_allows_following_assignment, r#"Module M
+End Module"#,
+    ["catch+finally"]
+);
+vb_full_spec!(
+    error_spec_on_error_resume_next_allows_following_assignment,
+    r#"Module M
     Sub Main()
         Dim value As Integer = 1
         On Error Resume Next
@@ -469,16 +623,24 @@ vb_full_spec!(error_spec_on_error_resume_next_allows_following_assignment, r#"Mo
         value = 9
         Console.WriteLine(value)
     End Sub
-End Module"#, ["9"]);
-vb_full_spec!(error_spec_on_error_goto_minus_one_clears_exception_state, r#"Module M
+End Module"#,
+    ["9"]
+);
+vb_full_spec!(
+    error_spec_on_error_goto_minus_one_clears_exception_state,
+    r#"Module M
     Sub Main()
         On Error Resume Next
         Err.Raise(5)
         On Error GoTo -1
         Console.WriteLine("cleared")
     End Sub
-End Module"#, ["cleared"]);
-vb_full_spec!(error_spec_using_supports_interface_typed_resource, r#"Class Probe
+End Module"#,
+    ["cleared"]
+);
+vb_full_spec!(
+    error_spec_using_supports_interface_typed_resource,
+    r#"Class Probe
     Implements IDisposable
     Public Sub Dispose() Implements IDisposable.Dispose
         Console.WriteLine("disposed")
@@ -490,8 +652,12 @@ Module M
             Console.WriteLine("body")
         End Using
     End Sub
-End Module"#, ["body", "disposed"]);
-vb_full_spec!(error_spec_try_can_wrap_lambda_invocation, r#"Module M
+End Module"#,
+    ["body", "disposed"]
+);
+vb_full_spec!(
+    error_spec_try_can_wrap_lambda_invocation,
+    r#"Module M
     Sub Main()
         Dim work As Action = Sub()
             Throw New Exception("boom")
@@ -502,8 +668,12 @@ vb_full_spec!(error_spec_try_can_wrap_lambda_invocation, r#"Module M
             Console.WriteLine("caught")
         End Try
     End Sub
-End Module"#, ["caught"]);
-vb_full_spec!(error_spec_catch_can_inspect_exception_message, r#"Module M
+End Module"#,
+    ["caught"]
+);
+vb_full_spec!(
+    error_spec_catch_can_inspect_exception_message,
+    r#"Module M
     Sub Main()
         Try
             Throw New Exception("boom")
@@ -511,8 +681,12 @@ vb_full_spec!(error_spec_catch_can_inspect_exception_message, r#"Module M
             Console.WriteLine(ex.Message)
         End Try
     End Sub
-End Module"#, ["boom"]);
-vb_full_spec!(error_spec_custom_exception_class_can_be_thrown, r#"Class ProblemException
+End Module"#,
+    ["boom"]
+);
+vb_full_spec!(
+    error_spec_custom_exception_class_can_be_thrown,
+    r#"Class ProblemException
     Inherits Exception
     Public Sub New(message As String)
         MyBase.New(message)
@@ -526,8 +700,12 @@ Module M
             Console.WriteLine(ex.Message)
         End Try
     End Sub
-End Module"#, ["custom"]);
-vb_full_spec!(error_spec_catch_order_prefers_more_specific_handler, r#"Module M
+End Module"#,
+    ["custom"]
+);
+vb_full_spec!(
+    error_spec_catch_order_prefers_more_specific_handler,
+    r#"Module M
     Sub Main()
         Try
             Throw New ArgumentException("bad")
@@ -537,8 +715,12 @@ vb_full_spec!(error_spec_catch_order_prefers_more_specific_handler, r#"Module M
             Console.WriteLine("general")
         End Try
     End Sub
-End Module"#, ["specific"]);
-vb_full_spec!(error_spec_try_without_exception_skips_catch_block, r#"Module M
+End Module"#,
+    ["specific"]
+);
+vb_full_spec!(
+    error_spec_try_without_exception_skips_catch_block,
+    r#"Module M
     Sub Main()
         Try
             Console.WriteLine("ok")
@@ -546,8 +728,12 @@ vb_full_spec!(error_spec_try_without_exception_skips_catch_block, r#"Module M
             Console.WriteLine("catch")
         End Try
     End Sub
-End Module"#, ["ok"]);
-vb_full_spec!(error_spec_throw_inside_nested_try_executes_both_finally_blocks, r#"Module M
+End Module"#,
+    ["ok"]
+);
+vb_full_spec!(
+    error_spec_throw_inside_nested_try_executes_both_finally_blocks,
+    r#"Module M
     Sub Main()
         Try
             Try
@@ -561,8 +747,12 @@ vb_full_spec!(error_spec_throw_inside_nested_try_executes_both_finally_blocks, r
             Console.WriteLine("outer")
         End Try
     End Sub
-End Module"#, ["inner", "catch", "outer"]);
-vb_full_spec!(error_spec_synclock_inside_using_can_share_same_object, r#"Class Holder
+End Module"#,
+    ["inner", "catch", "outer"]
+);
+vb_full_spec!(
+    error_spec_synclock_inside_using_can_share_same_object,
+    r#"Class Holder
     Implements IDisposable
     Public Gate As New Object()
     Public Sub Dispose() Implements IDisposable.Dispose
@@ -577,4 +767,6 @@ Module M
             End SyncLock
         End Using
     End Sub
-End Module"#, ["locked", "disposed"]);
+End Module"#,
+    ["locked", "disposed"]
+);

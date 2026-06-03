@@ -10,7 +10,9 @@ macro_rules! vb_case {
     };
 }
 
-vb_case!(line_continuation_sums_three_terms_across_lines, r#"
+vb_case!(
+    line_continuation_sums_three_terms_across_lines,
+    r#"
 Module M
     Sub Main()
         Dim total As Integer = 1 + _
@@ -19,9 +21,13 @@ Module M
         Console.WriteLine(total)
     End Sub
 End Module
-"#, ["6"]);
+"#,
+    ["6"]
+);
 
-vb_case!(line_continuation_handles_negative_and_positive_terms, r#"
+vb_case!(
+    line_continuation_handles_negative_and_positive_terms,
+    r#"
 Module M
     Sub Main()
         Dim total As Integer = -5 + _
@@ -30,9 +36,13 @@ Module M
         Console.WriteLine(total)
     End Sub
 End Module
-"#, ["6"]);
+"#,
+    ["6"]
+);
 
-vb_case!(line_continuation_can_wrap_string_concatenation, r#"
+vb_case!(
+    line_continuation_can_wrap_string_concatenation,
+    r#"
 Module M
     Sub Main()
         Dim text As String = "Vy" & _
@@ -41,9 +51,13 @@ Module M
         Console.WriteLine(text)
     End Sub
 End Module
-"#, ["Vybex"]);
+"#,
+    ["Vybex"]
+);
 
-vb_case!(line_continuation_can_split_function_arguments, r#"
+vb_case!(
+    line_continuation_can_split_function_arguments,
+    r#"
 Module M
     Function Add(a As Integer, b As Integer, c As Integer) As Integer
         Return a + b + c
@@ -55,9 +69,13 @@ Module M
             5))
     End Sub
 End Module
-"#, ["9"]);
+"#,
+    ["9"]
+);
 
-vb_case!(line_continuation_can_span_parenthesized_expression, r#"
+vb_case!(
+    line_continuation_can_span_parenthesized_expression,
+    r#"
 Module M
     Sub Main()
         Dim total As Integer = (2 + _
@@ -66,9 +84,13 @@ Module M
         Console.WriteLine(total)
     End Sub
 End Module
-"#, ["20"]);
+"#,
+    ["20"]
+);
 
-vb_case!(line_continuation_can_wrap_comparison_expression, r#"
+vb_case!(
+    line_continuation_can_wrap_comparison_expression,
+    r#"
 Module M
     Sub Main()
         Dim result As Boolean = 1 + _
@@ -81,9 +103,13 @@ Module M
         End If
     End Sub
 End Module
-"#, ["match"]);
+"#,
+    ["match"]
+);
 
-vb_case!(line_continuation_can_split_assignment_from_function_call, r#"
+vb_case!(
+    line_continuation_can_split_assignment_from_function_call,
+    r#"
 Module M
     Function BuildText() As String
         Return "core"
@@ -96,9 +122,13 @@ Module M
         Console.WriteLine(text)
     End Sub
 End Module
-"#, ["core-vb"]);
+"#,
+    ["core-vb"]
+);
 
-vb_case!(line_continuation_can_chain_multiple_subtractions, r#"
+vb_case!(
+    line_continuation_can_chain_multiple_subtractions,
+    r#"
 Module M
     Sub Main()
         Dim total As Integer = 20 - _
@@ -107,4 +137,6 @@ Module M
         Console.WriteLine(total)
     End Sub
 End Module
-"#, ["13"]);
+"#,
+    ["13"]
+);

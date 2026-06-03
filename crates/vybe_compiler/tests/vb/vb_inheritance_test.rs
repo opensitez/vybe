@@ -10,7 +10,8 @@ use super::helpers::run_vb;
 // ---------------------------------------------------------------------------
 #[test]
 fn t01_base_class_field_and_method() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Animal
     Public Name As String = "Unknown"
 
@@ -21,7 +22,8 @@ End Class
 
 Dim a As New Animal()
 a.Speak()
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Unknown"]);
 }
 
@@ -30,7 +32,8 @@ a.Speak()
 // ---------------------------------------------------------------------------
 #[test]
 fn t02_inherited_field_accessible() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Animal
     Public Name As String = "Beast"
 End Class
@@ -41,7 +44,8 @@ End Class
 
 Dim d As New Dog()
 Console.WriteLine(d.Name)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Beast"]);
 }
 
@@ -50,7 +54,8 @@ Console.WriteLine(d.Name)
 // ---------------------------------------------------------------------------
 #[test]
 fn t03_inherited_method_callable() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Animal
     Public Name As String = "Cat"
 
@@ -65,7 +70,8 @@ End Class
 
 Dim c As New Cat()
 Console.WriteLine(c.GetName())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Cat"]);
 }
 
@@ -74,7 +80,8 @@ Console.WriteLine(c.GetName())
 // ---------------------------------------------------------------------------
 #[test]
 fn t04_derived_overrides_method() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Animal
     Sub Speak()
         Console.WriteLine("generic")
@@ -91,7 +98,8 @@ End Class
 
 Dim d As New Dog()
 d.Speak()
-"#);
+"#,
+    );
     assert_eq!(out, vec!["woof"]);
 }
 
@@ -100,7 +108,8 @@ d.Speak()
 // ---------------------------------------------------------------------------
 #[test]
 fn t05_mybase_new_initializes_parent_fields() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Base
     Public X As Integer = 42
 End Class
@@ -115,7 +124,8 @@ End Class
 
 Dim c As New Child()
 Console.WriteLine(c.X)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
@@ -124,7 +134,8 @@ Console.WriteLine(c.X)
 // ---------------------------------------------------------------------------
 #[test]
 fn t06_mybase_new_with_args() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Base
     Public Val As Integer
 
@@ -143,7 +154,8 @@ End Class
 
 Dim c As New Child(99)
 Console.WriteLine(c.Val)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["99"]);
 }
 
@@ -152,7 +164,8 @@ Console.WriteLine(c.Val)
 // ---------------------------------------------------------------------------
 #[test]
 fn t07_mybase_method_calls_parent_version() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Base
     Sub Greet()
         Console.WriteLine("hello from base")
@@ -170,7 +183,8 @@ End Class
 
 Dim c As New Child()
 c.Greet()
-"#);
+"#,
+    );
     assert_eq!(out, vec!["hello from base", "hello from child"]);
 }
 
@@ -179,7 +193,8 @@ c.Greet()
 // ---------------------------------------------------------------------------
 #[test]
 fn t08_three_level_inheritance() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class GrandParent
     Public A As String = "GP"
 End Class
@@ -198,7 +213,8 @@ Dim c As New Child()
 Console.WriteLine(c.A)
 Console.WriteLine(c.B)
 Console.WriteLine(c.C)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["GP", "P", "C"]);
 }
 
@@ -207,7 +223,8 @@ Console.WriteLine(c.C)
 // ---------------------------------------------------------------------------
 #[test]
 fn t09_constructor_chain_three_levels() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Level1
     Public Tag As String
 
@@ -239,8 +256,12 @@ End Class
 
 Dim x As New Level3()
 Console.WriteLine(x.Tag)
-"#);
-    assert_eq!(out, vec!["Level1.New", "Level2.New", "Level3.New", "L1-L2-L3"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec!["Level1.New", "Level2.New", "Level3.New", "L1-L2-L3"]
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -248,7 +269,8 @@ Console.WriteLine(x.Tag)
 // ---------------------------------------------------------------------------
 #[test]
 fn t10_derived_adds_new_method() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Base
     Function Hello() As String
         Hello = "hi"
@@ -266,7 +288,8 @@ End Class
 Dim c As New Child()
 Console.WriteLine(c.Hello())
 Console.WriteLine(c.World())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["hi", "world"]);
 }
 
@@ -275,7 +298,8 @@ Console.WriteLine(c.World())
 // ---------------------------------------------------------------------------
 #[test]
 fn t11_override_one_inherit_others() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Base
     Sub A()
         Console.WriteLine("base-A")
@@ -297,7 +321,8 @@ End Class
 Dim c As New Child()
 c.A()
 c.B()
-"#);
+"#,
+    );
     assert_eq!(out, vec!["child-A", "base-B"]);
 }
 
@@ -306,7 +331,8 @@ c.B()
 // ---------------------------------------------------------------------------
 #[test]
 fn t12_no_explicit_ctor_parent_auto_called() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Base
     Public Ready As String = "yes"
 
@@ -321,7 +347,8 @@ End Class
 
 Dim c As New Child()
 Console.WriteLine(c.Ready)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["base ctor", "yes"]);
 }
 
@@ -330,7 +357,8 @@ Console.WriteLine(c.Ready)
 // ---------------------------------------------------------------------------
 #[test]
 fn t13_base_field_set_in_ctor_read_from_derived() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Base
     Public Data As String
 
@@ -349,7 +377,8 @@ End Class
 
 Dim c As New Child()
 Console.WriteLine(c.GetData())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["initialized"]);
 }
 
@@ -358,7 +387,8 @@ Console.WriteLine(c.GetData())
 // ---------------------------------------------------------------------------
 #[test]
 fn t14_derived_and_base_fields_both_accessible() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Base
     Public X As Integer = 10
 End Class
@@ -371,7 +401,8 @@ End Class
 Dim c As New Child()
 Console.WriteLine(c.X)
 Console.WriteLine(c.Y)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "20"]);
 }
 
@@ -380,7 +411,8 @@ Console.WriteLine(c.Y)
 // ---------------------------------------------------------------------------
 #[test]
 fn t15_override_calls_mybase_then_adds_logic() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Base
     Function Compute() As String
         Compute = "base"
@@ -398,7 +430,8 @@ End Class
 
 Dim c As New Child()
 Console.WriteLine(c.Compute())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["base+child"]);
 }
 
@@ -407,7 +440,8 @@ Console.WriteLine(c.Compute())
 // ---------------------------------------------------------------------------
 #[test]
 fn t16_two_derived_classes_independent() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Base
     Public Val As Integer = 0
 End Class
@@ -434,7 +468,8 @@ Dim a As New ChildA()
 Dim b As New ChildB()
 Console.WriteLine(a.Val)
 Console.WriteLine(b.Val)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "2"]);
 }
 
@@ -443,7 +478,8 @@ Console.WriteLine(b.Val)
 // ---------------------------------------------------------------------------
 #[test]
 fn t17_shared_method_on_base() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class MathHelper
     Shared Function Double(x As Integer) As Integer
         Double = x * 2
@@ -451,7 +487,8 @@ Class MathHelper
 End Class
 
 Console.WriteLine(MathHelper.Double(5))
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10"]);
 }
 
@@ -460,7 +497,8 @@ Console.WriteLine(MathHelper.Double(5))
 // ---------------------------------------------------------------------------
 #[test]
 fn t18_shared_method_inherited_by_derived() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Base
     Shared Function StaticHello() As String
         StaticHello = "hello"
@@ -472,7 +510,8 @@ Class Child
 End Class
 
 Console.WriteLine(Child.StaticHello())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["hello"]);
 }
 
@@ -481,7 +520,8 @@ Console.WriteLine(Child.StaticHello())
 // ---------------------------------------------------------------------------
 #[test]
 fn t19_property_get_set_on_base() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Person
     Private _name As String = ""
 
@@ -498,7 +538,8 @@ End Class
 Dim p As New Person()
 p.Name = "Alice"
 Console.WriteLine(p.Name)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Alice"]);
 }
 
@@ -507,7 +548,8 @@ Console.WriteLine(p.Name)
 // ---------------------------------------------------------------------------
 #[test]
 fn t20_derived_accesses_base_property() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Base
     Private _val As Integer = 0
 
@@ -528,6 +570,7 @@ End Class
 Dim c As New Child()
 c.Val = 77
 Console.WriteLine(c.Val)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["77"]);
 }

@@ -10,16 +10,22 @@ macro_rules! vb_case {
     };
 }
 
-vb_case!(nameof_returns_local_variable_name, r#"
+vb_case!(
+    nameof_returns_local_variable_name,
+    r#"
 Module M
     Sub Main()
         Dim total As Integer = 5
         Console.WriteLine(NameOf(total))
     End Sub
 End Module
-"#, ["total"]);
+"#,
+    ["total"]
+);
 
-vb_case!(nameof_returns_function_name, r#"
+vb_case!(
+    nameof_returns_function_name,
+    r#"
 Module M
     Function ComputeTotal() As Integer
         Return 10
@@ -29,25 +35,37 @@ Module M
         Console.WriteLine(NameOf(ComputeTotal))
     End Sub
 End Module
-"#, ["ComputeTotal"]);
+"#,
+    ["ComputeTotal"]
+);
 
-vb_case!(nameof_returns_module_method_name, r#"
+vb_case!(
+    nameof_returns_module_method_name,
+    r#"
 Module M
     Sub Main()
         Console.WriteLine(NameOf(Main))
     End Sub
 End Module
-"#, ["Main"]);
+"#,
+    ["Main"]
+);
 
-vb_case!(nameof_returns_type_name_for_builtin_type, r#"
+vb_case!(
+    nameof_returns_type_name_for_builtin_type,
+    r#"
 Module M
     Sub Main()
         Console.WriteLine(NameOf(Integer))
     End Sub
 End Module
-"#, ["Integer"]);
+"#,
+    ["Integer"]
+);
 
-vb_case!(nameof_returns_parameter_name_inside_function, r#"
+vb_case!(
+    nameof_returns_parameter_name_inside_function,
+    r#"
 Module M
     Function ShowName(value As Integer) As String
         Return NameOf(value)
@@ -57,9 +75,13 @@ Module M
         Console.WriteLine(ShowName(5))
     End Sub
 End Module
-"#, ["value"]);
+"#,
+    ["value"]
+);
 
-vb_case!(gettype_returns_non_nothing_for_integer, r#"
+vb_case!(
+    gettype_returns_non_nothing_for_integer,
+    r#"
 Module M
     Sub Main()
         Dim t As Object = GetType(Integer)
@@ -70,9 +92,13 @@ Module M
         End If
     End Sub
 End Module
-"#, ["present"]);
+"#,
+    ["present"]
+);
 
-vb_case!(gettype_returns_non_nothing_for_string, r#"
+vb_case!(
+    gettype_returns_non_nothing_for_string,
+    r#"
 Module M
     Sub Main()
         Dim t As Object = GetType(String)
@@ -83,9 +109,13 @@ Module M
         End If
     End Sub
 End Module
-"#, ["present"]);
+"#,
+    ["present"]
+);
 
-vb_case!(gettype_returns_non_nothing_for_boolean, r#"
+vb_case!(
+    gettype_returns_non_nothing_for_boolean,
+    r#"
 Module M
     Sub Main()
         Dim t As Object = GetType(Boolean)
@@ -96,9 +126,13 @@ Module M
         End If
     End Sub
 End Module
-"#, ["present"]);
+"#,
+    ["present"]
+);
 
-vb_case!(gettype_returns_non_nothing_for_object, r#"
+vb_case!(
+    gettype_returns_non_nothing_for_object,
+    r#"
 Module M
     Sub Main()
         Dim t As Object = GetType(Object)
@@ -109,9 +143,13 @@ Module M
         End If
     End Sub
 End Module
-"#, ["present"]);
+"#,
+    ["present"]
+);
 
-vb_case!(gettype_returns_non_nothing_for_custom_class, r#"
+vb_case!(
+    gettype_returns_non_nothing_for_custom_class,
+    r#"
 Module M
     Class Greeter
     End Class
@@ -125,4 +163,6 @@ Module M
         End If
     End Sub
 End Module
-"#, ["present"]);
+"#,
+    ["present"]
+);

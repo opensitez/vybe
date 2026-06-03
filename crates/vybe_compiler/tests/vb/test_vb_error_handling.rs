@@ -6,7 +6,8 @@ use super::helpers::run_vb;
 
 #[test]
 fn try_catch_basic() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Try
@@ -16,13 +17,15 @@ Module M
         End Try
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["oops"]);
 }
 
 #[test]
 fn try_catch_no_error() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Try
@@ -32,13 +35,15 @@ Module M
         End Try
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ok"]);
 }
 
 #[test]
 fn try_finally() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Try
@@ -48,13 +53,15 @@ Module M
         End Try
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["try", "finally"]);
 }
 
 #[test]
 fn try_catch_finally() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Try
@@ -66,13 +73,15 @@ Module M
         End Try
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["caught: fail", "cleanup"]);
 }
 
 #[test]
 fn throw_and_catch() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Risky()
         Throw New Exception("danger")
@@ -85,13 +94,15 @@ Module M
         End Try
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["danger"]);
 }
 
 #[test]
 fn nested_try_catch() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Try
@@ -106,13 +117,15 @@ Module M
         End Try
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["inner: inner", "outer: rethrown"]);
 }
 
 #[test]
 fn finally_always_runs() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Try
@@ -125,13 +138,15 @@ Module M
         End Try
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["before", "caught", "always"]);
 }
 
 #[test]
 fn exception_in_function() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Function Divide(a As Integer, b As Integer) As Integer
         If b = 0 Then
@@ -148,6 +163,7 @@ Module M
         End Try
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5", "Division by zero"]);
 }

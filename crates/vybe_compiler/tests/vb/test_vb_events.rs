@@ -6,7 +6,8 @@ use super::helpers::run_vb;
 
 #[test]
 fn event_raiseevent() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Timer
     Public Event Tick()
     Public Sub Fire()
@@ -25,13 +26,15 @@ Module M
         t.Fire()
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["tick!", "tick!"]);
 }
 
 #[test]
 fn addhandler_removehandler() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Button
     Public Event Click()
     Public Sub DoClick()
@@ -52,13 +55,15 @@ Module M
         Console.WriteLine("done")
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["clicked", "done"]);
 }
 
 #[test]
 fn multiple_handlers() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Notifier
     Public Event Notify()
     Public Sub Fire()
@@ -80,6 +85,7 @@ Module M
         n.Fire()
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["h1", "h2"]);
 }

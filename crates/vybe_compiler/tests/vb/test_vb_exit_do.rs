@@ -10,7 +10,9 @@ macro_rules! vb_case {
     };
 }
 
-vb_case!(exit_do_breaks_once_increment_reaches_target, r#"
+vb_case!(
+    exit_do_breaks_once_increment_reaches_target,
+    r#"
 Module M
     Sub Main()
         Dim total As Integer = 0
@@ -21,9 +23,13 @@ Module M
         Console.WriteLine(total)
     End Sub
 End Module
-"#, ["3"]);
+"#,
+    ["3"]
+);
 
-vb_case!(exit_do_can_overshoot_threshold_before_stopping, r#"
+vb_case!(
+    exit_do_can_overshoot_threshold_before_stopping,
+    r#"
 Module M
     Sub Main()
         Dim total As Integer = 0
@@ -34,9 +40,13 @@ Module M
         Console.WriteLine(total)
     End Sub
 End Module
-"#, ["8"]);
+"#,
+    ["8"]
+);
 
-vb_case!(exit_do_can_start_from_negative_value, r#"
+vb_case!(
+    exit_do_can_start_from_negative_value,
+    r#"
 Module M
     Sub Main()
         Dim total As Integer = -2
@@ -47,9 +57,13 @@ Module M
         Console.WriteLine(total)
     End Sub
 End Module
-"#, ["4"]);
+"#,
+    ["4"]
+);
 
-vb_case!(exit_do_skips_tail_work_after_break, r#"
+vb_case!(
+    exit_do_skips_tail_work_after_break,
+    r#"
 Module M
     Sub Main()
         Dim total As Integer = 0
@@ -61,9 +75,13 @@ Module M
         Console.WriteLine(total)
     End Sub
 End Module
-"#, ["12"]);
+"#,
+    ["12"]
+);
 
-vb_case!(exit_do_can_use_separate_counter_and_total, r#"
+vb_case!(
+    exit_do_can_use_separate_counter_and_total,
+    r#"
 Module M
     Sub Main()
         Dim count As Integer = 0
@@ -76,9 +94,13 @@ Module M
         Console.WriteLine(total)
     End Sub
 End Module
-"#, ["10"]);
+"#,
+    ["10"]
+);
 
-vb_case!(exit_do_can_break_from_boolean_flag, r#"
+vb_case!(
+    exit_do_can_break_from_boolean_flag,
+    r#"
 Module M
     Sub Main()
         Dim count As Integer = 0
@@ -91,9 +113,13 @@ Module M
         Console.WriteLine(count)
     End Sub
 End Module
-"#, ["3"]);
+"#,
+    ["3"]
+);
 
-vb_case!(exit_do_can_append_text_before_breaking, r#"
+vb_case!(
+    exit_do_can_append_text_before_breaking,
+    r#"
 Module M
     Sub Main()
         Dim text As String = ""
@@ -106,9 +132,13 @@ Module M
         Console.WriteLine(text)
     End Sub
 End Module
-"#, ["123"]);
+"#,
+    ["123"]
+);
 
-vb_case!(exit_do_can_use_helper_function_for_break_decision, r#"
+vb_case!(
+    exit_do_can_use_helper_function_for_break_decision,
+    r#"
 Module M
     Function ReachedLimit(value As Integer) As Boolean
         Return value >= 5
@@ -123,9 +153,13 @@ Module M
         Console.WriteLine(total)
     End Sub
 End Module
-"#, ["6"]);
+"#,
+    ["6"]
+);
 
-vb_case!(exit_do_can_break_after_even_iteration, r#"
+vb_case!(
+    exit_do_can_break_after_even_iteration,
+    r#"
 Module M
     Sub Main()
         Dim count As Integer = 0
@@ -138,9 +172,13 @@ Module M
         Console.WriteLine(count)
     End Sub
 End Module
-"#, ["2"]);
+"#,
+    ["2"]
+);
 
-vb_case!(exit_do_leaves_accumulator_available_after_loop, r#"
+vb_case!(
+    exit_do_leaves_accumulator_available_after_loop,
+    r#"
 Module M
     Sub Main()
         Dim total As Integer = 1
@@ -151,4 +189,6 @@ Module M
         Console.WriteLine(total + 1)
     End Sub
 End Module
-"#, ["9"]);
+"#,
+    ["9"]
+);

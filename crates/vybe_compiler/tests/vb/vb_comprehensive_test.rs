@@ -11,19 +11,25 @@ fn run_vb_one(source: &str) -> String {
 #[test]
 fn math_floor_intrinsic() {
     // `Fix` truncates toward zero; `Int` floors toward negative infinity.
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Console.WriteLine(Fix(3.7))
     End Sub
 End Module
-"#), "3");
+"#
+        ),
+        "3"
+    );
 }
 
 #[test]
 fn math_abs_intrinsic() {
     // Abs() uses f64_abs opcode via function-call syntax
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Console.WriteLine(Abs(-42))
@@ -31,34 +37,42 @@ Module M
         Console.WriteLine(Abs(-7))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42", "42", "7"]);
 }
 
 #[test]
 fn math_sqrt_intrinsic() {
     // Sqr/Sqrt uses f64_sqrt opcode via function-call syntax
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Console.WriteLine(Sqr(25))
         Console.WriteLine(Sqr(144))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5", "12"]);
 }
 
 #[test]
 fn math_pow_via_exponent() {
     // 2 ^ 10 uses the pow host call, and Math.Pow uses method syntax
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Console.WriteLine(2 ^ 10)
     End Sub
 End Module
-"#), "1024");
+"#
+        ),
+        "1024"
+    );
 }
 
 // ============================================================
@@ -67,156 +81,212 @@ End Module
 
 #[test]
 fn string_len() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Console.WriteLine(Len("Hello"))
     End Sub
 End Module
-"#), "5");
+"#
+        ),
+        "5"
+    );
 }
 
 #[test]
 fn string_ucase_lcase() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Console.WriteLine(UCase("hello"))
         Console.WriteLine(LCase("WORLD"))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["HELLO", "world"]);
 }
 
 #[test]
 fn string_trim() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Console.WriteLine(Trim("  spaced  "))
     End Sub
 End Module
-"#), "spaced");
+"#
+        ),
+        "spaced"
+    );
 }
 
 #[test]
 fn string_mid_two_args() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Console.WriteLine(Mid("Hello World", 7))
     End Sub
 End Module
-"#), "World");
+"#
+        ),
+        "World"
+    );
 }
 
 #[test]
 fn string_mid_three_args() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Console.WriteLine(Mid("Hello World", 7, 3))
     End Sub
 End Module
-"#), "Wor");
+"#
+        ),
+        "Wor"
+    );
 }
 
 #[test]
 fn string_left() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Console.WriteLine(Left("Hello World", 5))
     End Sub
 End Module
-"#), "Hello");
+"#
+        ),
+        "Hello"
+    );
 }
 
 #[test]
 fn string_right() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Console.WriteLine(Right("Hello World", 5))
     End Sub
 End Module
-"#), "World");
+"#
+        ),
+        "World"
+    );
 }
 
 #[test]
 fn string_instr() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Console.WriteLine(InStr("Hello World", "World"))
         Console.WriteLine(InStr("Hello World", "xyz"))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["7", "0"]);
 }
 
 #[test]
 fn string_replace() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Console.WriteLine(Replace("Hello World", "World", "VB"))
     End Sub
 End Module
-"#), "Hello VB");
+"#
+        ),
+        "Hello VB"
+    );
 }
 
 #[test]
 fn string_split_join() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Dim parts() As String = Split("a,b,c", ",")
         Console.WriteLine(Join(parts, "-"))
     End Sub
 End Module
-"#), "a-b-c");
+"#
+        ),
+        "a-b-c"
+    );
 }
 
 #[test]
 fn string_chr_asc() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Console.WriteLine(Chr(65))
         Console.WriteLine(Asc("A"))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["A", "65"]);
 }
 
 #[test]
 fn string_space() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Console.WriteLine(">" & Space(3) & "<")
     End Sub
 End Module
-"#), ">   <");
+"#
+        ),
+        ">   <"
+    );
 }
 
 #[test]
 fn string_empty_check_via_len() {
     // String.IsNullOrEmpty has a known host-call resolution issue;
     // use Len to check empty strings instead
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Console.WriteLine(Len("") = 0)
         Console.WriteLine(Len("hello") = 0)
     End Sub
 End Module
-"#);
-    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false"]));
+"#,
+    );
+    assert_eq!(
+        out,
+        super::helpers::dotnet_expected_lines(&["true", "false"])
+    );
 }
 
 // ============================================================
@@ -225,65 +295,92 @@ End Module
 
 #[test]
 fn conversion_cint() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Console.WriteLine(CInt(3.7))
     End Sub
 End Module
-"#), "4");
+"#
+        ),
+        "4"
+    );
 }
 
 #[test]
 fn conversion_cdbl() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Console.WriteLine(CDbl("3.14") + 1)
     End Sub
 End Module
-"#), "4.140000000000001");
+"#
+        ),
+        "4.140000000000001"
+    );
 }
 
 #[test]
 fn conversion_cstr() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Console.WriteLine(CStr(42))
     End Sub
 End Module
-"#), "42");
+"#
+        ),
+        "42"
+    );
 }
 
 #[test]
 fn conversion_cbool() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Console.WriteLine(CBool(1))
         Console.WriteLine(CBool(0))
     End Sub
 End Module
-"#);
-    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false"]));
+"#,
+    );
+    assert_eq!(
+        out,
+        super::helpers::dotnet_expected_lines(&["true", "false"])
+    );
 }
 
 #[test]
 fn conversion_val() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Console.WriteLine(Val("123") + 1)
     End Sub
 End Module
-"#), "124");
+"#
+        ),
+        "124"
+    );
 }
 
 #[test]
 fn conversion_ctype() {
     // CType compiles as a pass-through cast
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Dim x As Object = 42
@@ -291,7 +388,10 @@ Module M
         Console.WriteLine(y)
     End Sub
 End Module
-"#), "42");
+"#
+        ),
+        "42"
+    );
 }
 
 // ============================================================
@@ -300,7 +400,8 @@ End Module
 
 #[test]
 fn class_with_fields_and_constructor() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Class Person
         Public Name As String
@@ -318,13 +419,16 @@ Module M
         Console.WriteLine(p.Age)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Alice", "30"]);
 }
 
 #[test]
 fn class_with_method() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Class Greeter
         Public Greeting As String
@@ -343,12 +447,16 @@ Module M
         Console.WriteLine(g.Greet("World"))
     End Sub
 End Module
-"#), "Hello World");
+"#
+        ),
+        "Hello World"
+    );
 }
 
 #[test]
 fn class_inheritance() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Class Animal
         Public Name As String
@@ -380,13 +488,16 @@ Module M
         Console.WriteLine(d.Bark())
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Animal: Rex", "Rex barks!"]);
 }
 
 #[test]
 fn class_me_reference() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Class Counter
         Public Count As Integer = 0
@@ -404,13 +515,18 @@ Module M
         Console.WriteLine(c.Count)
     End Sub
 End Module
-"#), "3");
+"#
+        ),
+        "3"
+    );
 }
 
 #[test]
 fn class_bare_method_call_resolves_to_me() {
     // Inside a class, calling a method by bare name should resolve to Me.method
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Class Calc
         Public Value As Integer = 0
@@ -431,7 +547,10 @@ Module M
         Console.WriteLine(c.Value)
     End Sub
 End Module
-"#), "10");
+"#
+        ),
+        "10"
+    );
 }
 
 // ============================================================
@@ -441,7 +560,9 @@ End Module
 #[test]
 fn class_initialize_component_pattern() {
     // Constructor calls another method — methods must be attached before ctor body runs
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Class MyForm
         Public Title As String
@@ -460,12 +581,16 @@ Module M
         Console.WriteLine(f.Title)
     End Sub
 End Module
-"#), "My Application");
+"#
+        ),
+        "My Application"
+    );
 }
 
 #[test]
 fn class_ctor_calls_multiple_methods() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Class Setup
         Public A As String
@@ -491,7 +616,8 @@ Module M
         Console.WriteLine(s.B)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["alpha", "beta"]);
 }
 
@@ -502,7 +628,8 @@ End Module
 #[test]
 fn winforms_button_creation() {
     // New System.Windows.Forms.Button() should compile and run
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim btn As New System.Windows.Forms.Button()
@@ -510,33 +637,38 @@ Module M
         Console.WriteLine("button created")
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["button created"]);
 }
 
 #[test]
 fn drawing_point_creation() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim pt As New System.Drawing.Point(10, 20)
         Console.WriteLine("point created")
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["point created"]);
 }
 
 #[test]
 fn drawing_size_creation() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim sz As New System.Drawing.Size(100, 200)
         Console.WriteLine("size created")
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["size created"]);
 }
 
@@ -548,7 +680,8 @@ End Module
 fn controls_add_compiles() {
     // Me.Controls.Add(ctrl) should compile to controlsAdd host call
     // We test that it compiles and runs without error
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim btn As New System.Windows.Forms.Button()
@@ -556,7 +689,8 @@ Module M
         Console.WriteLine("controls add test done")
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["controls add test done"]);
 }
 
@@ -568,7 +702,8 @@ End Module
 fn handles_clause_compiles() {
     // A method with Handles clause should emit onEvent during class construction.
     // We need to register a stub for vybe:gui onEvent since we don't have GUI runtime.
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Class MyForm
         Public Status As String = "idle"
@@ -586,7 +721,8 @@ Module M
         Console.WriteLine(f.Status)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["idle"]);
 }
 
@@ -596,7 +732,8 @@ End Module
 
 #[test]
 fn array_literal_and_indexing() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim arr() As Integer = {10, 20, 30}
@@ -605,26 +742,33 @@ Module M
         Console.WriteLine(arr(2))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "20", "30"]);
 }
 
 #[test]
 fn array_ubound() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Dim arr() As Integer = {10, 20, 30, 40}
         Console.WriteLine(UBound(arr))
     End Sub
 End Module
-"#), "3");
+"#
+        ),
+        "3"
+    );
 }
 
 #[test]
 fn array_read_after_create() {
     // Verify array literal creates correct values and indexing works
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim arr() As Integer = {10, 20, 30}
@@ -633,7 +777,8 @@ Module M
         Console.WriteLine(arr(2))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "20", "30"]);
 }
 
@@ -643,7 +788,9 @@ End Module
 
 #[test]
 fn select_case_numbers() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Dim x As Integer = 2
@@ -657,12 +804,17 @@ Module M
         End Select
     End Sub
 End Module
-"#), "two");
+"#
+        ),
+        "two"
+    );
 }
 
 #[test]
 fn select_case_strings() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Dim color As String = "green"
@@ -676,12 +828,17 @@ Module M
         End Select
     End Sub
 End Module
-"#), "go");
+"#
+        ),
+        "go"
+    );
 }
 
 #[test]
 fn select_case_with_else() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Dim x As Integer = 99
@@ -695,13 +852,18 @@ Module M
         End Select
     End Sub
 End Module
-"#), "other");
+"#
+        ),
+        "other"
+    );
 }
 
 #[test]
 fn select_case_comparison() {
     // Case Is > N uses comparison conditions
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Dim score As Integer = 85
@@ -716,13 +878,18 @@ Module M
         End If
     End Sub
 End Module
-"#), "B");
+"#
+        ),
+        "B"
+    );
 }
 
 #[test]
 fn select_case_multiple_values() {
     // Select Case with multiple value matches per case
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Dim day As Integer = 6
@@ -736,7 +903,10 @@ Module M
         End Select
     End Sub
 End Module
-"#), "weekend");
+"#
+        ),
+        "weekend"
+    );
 }
 
 // ============================================================
@@ -745,7 +915,8 @@ End Module
 
 #[test]
 fn for_each_array() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim fruits() As String = {"apple", "banana", "cherry"}
@@ -754,13 +925,16 @@ Module M
         Next
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["apple", "banana", "cherry"]);
 }
 
 #[test]
 fn for_each_with_accumulation() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Dim nums() As Integer = {1, 2, 3, 4, 5}
@@ -771,7 +945,10 @@ Module M
         Console.WriteLine(total)
     End Sub
 End Module
-"#), "15");
+"#
+        ),
+        "15"
+    );
 }
 
 // ============================================================
@@ -780,7 +957,9 @@ End Module
 
 #[test]
 fn module_level_sub() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub SayHello()
         Console.WriteLine("Hello from module!")
@@ -790,12 +969,17 @@ Module M
         SayHello()
     End Sub
 End Module
-"#), "Hello from module!");
+"#
+        ),
+        "Hello from module!"
+    );
 }
 
 #[test]
 fn module_level_function() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Function Square(n As Integer) As Integer
         Square = n * n
@@ -805,12 +989,16 @@ Module M
         Console.WriteLine(Square(7))
     End Sub
 End Module
-"#), "49");
+"#
+        ),
+        "49"
+    );
 }
 
 #[test]
 fn class_methods_use_me() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Class Box
         Public Width As Integer
@@ -831,7 +1019,8 @@ Module M
         Console.WriteLine(b.Area())
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["15"]);
 }
 
@@ -841,7 +1030,8 @@ End Module
 
 #[test]
 fn property_get_set_basic() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Class Temperature
         Private _celsius As Double
@@ -867,13 +1057,15 @@ Module M
         Console.WriteLine(t.Celsius)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100", "0"]);
 }
 
 #[test]
 fn property_computed() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Class Temperature
         Private _celsius As Double
@@ -899,7 +1091,8 @@ Module M
         Console.WriteLine(t.Fahrenheit)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["212", "32"]);
 }
 
@@ -909,7 +1102,8 @@ End Module
 
 #[test]
 fn try_catch_basic() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Try
@@ -920,13 +1114,15 @@ Module M
         Console.WriteLine("done")
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["caught", "done"]);
 }
 
 #[test]
 fn try_catch_no_error() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Try
@@ -937,13 +1133,15 @@ Module M
         Console.WriteLine("done")
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["no error", "done"]);
 }
 
 #[test]
 fn try_catch_with_variable() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Try
@@ -953,7 +1151,8 @@ Module M
         End Try
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["error: bad thing"]);
 }
 
@@ -963,7 +1162,9 @@ End Module
 
 #[test]
 fn string_concat_ampersand() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Dim a As String = "Hello"
@@ -972,30 +1173,43 @@ Module M
         Console.WriteLine(a & b & c)
     End Sub
 End Module
-"#), "Hello World");
+"#
+        ),
+        "Hello World"
+    );
 }
 
 #[test]
 fn string_concat_with_numbers() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Dim x As Integer = 42
         Console.WriteLine("The answer is " & CStr(x))
     End Sub
 End Module
-"#), "The answer is 42");
+"#
+        ),
+        "The answer is 42"
+    );
 }
 
 #[test]
 fn string_concat_multiple() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Console.WriteLine("a" & "b" & "c" & "d" & "e")
     End Sub
 End Module
-"#), "abcde");
+"#
+        ),
+        "abcde"
+    );
 }
 
 // ============================================================
@@ -1004,33 +1218,44 @@ End Module
 
 #[test]
 fn comparison_equal() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Console.WriteLine(5 = 5)
         Console.WriteLine(5 = 3)
     End Sub
 End Module
-"#);
-    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false"]));
+"#,
+    );
+    assert_eq!(
+        out,
+        super::helpers::dotnet_expected_lines(&["true", "false"])
+    );
 }
 
 #[test]
 fn comparison_not_equal() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Console.WriteLine(5 <> 3)
         Console.WriteLine(5 <> 5)
     End Sub
 End Module
-"#);
-    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false"]));
+"#,
+    );
+    assert_eq!(
+        out,
+        super::helpers::dotnet_expected_lines(&["true", "false"])
+    );
 }
 
 #[test]
 fn comparison_less_greater() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Console.WriteLine(3 < 5)
@@ -1041,21 +1266,30 @@ Module M
         Console.WriteLine(3 > 5)
     End Sub
 End Module
-"#);
-    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "true", "true", "true", "false", "false"]));
+"#,
+    );
+    assert_eq!(
+        out,
+        super::helpers::dotnet_expected_lines(&["true", "true", "true", "true", "false", "false"])
+    );
 }
 
 #[test]
 fn comparison_strings() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Console.WriteLine("abc" = "abc")
         Console.WriteLine("abc" <> "xyz")
     End Sub
 End Module
-"#);
-    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "true"]));
+"#,
+    );
+    assert_eq!(
+        out,
+        super::helpers::dotnet_expected_lines(&["true", "true"])
+    );
 }
 
 // ============================================================
@@ -1064,7 +1298,8 @@ End Module
 
 #[test]
 fn logical_and() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Console.WriteLine(True And True)
@@ -1072,13 +1307,18 @@ Module M
         Console.WriteLine(False And True)
     End Sub
 End Module
-"#);
-    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false", "false"]));
+"#,
+    );
+    assert_eq!(
+        out,
+        super::helpers::dotnet_expected_lines(&["true", "false", "false"])
+    );
 }
 
 #[test]
 fn logical_or() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Console.WriteLine(True Or False)
@@ -1086,27 +1326,38 @@ Module M
         Console.WriteLine(False Or True)
     End Sub
 End Module
-"#);
-    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false", "true"]));
+"#,
+    );
+    assert_eq!(
+        out,
+        super::helpers::dotnet_expected_lines(&["true", "false", "true"])
+    );
 }
 
 #[test]
 fn logical_not() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Console.WriteLine(Not True)
         Console.WriteLine(Not False)
     End Sub
 End Module
-"#);
-    assert_eq!(out, super::helpers::dotnet_expected_lines(&["false", "true"]));
+"#,
+    );
+    assert_eq!(
+        out,
+        super::helpers::dotnet_expected_lines(&["false", "true"])
+    );
 }
 
 #[test]
 fn logical_andalso_short_circuit() {
     // AndAlso should short-circuit: second part not evaluated if first is False
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Dim x As Integer = 0
@@ -1117,12 +1368,17 @@ Module M
         End If
     End Sub
 End Module
-"#), "no");
+"#
+        ),
+        "no"
+    );
 }
 
 #[test]
 fn logical_orelse_short_circuit() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         If True OrElse False Then
@@ -1132,7 +1388,10 @@ Module M
         End If
     End Sub
 End Module
-"#), "yes");
+"#
+        ),
+        "yes"
+    );
 }
 
 // ============================================================
@@ -1143,13 +1402,15 @@ End Module
 fn application_run_compiles() {
     // Application.Run compiles to runApplication host call
     // We just verify it compiles without error (no actual GUI)
-    let _out = run_vb(r#"
+    let _out = run_vb(
+        r#"
 Module M
     Sub Main()
         Console.WriteLine("before run")
     End Sub
 End Module
-"#);
+"#,
+    );
     // Application.Run would start an event loop; testing compilation is sufficient
     assert_eq!(_out, vec!["before run"]);
 }
@@ -1160,30 +1421,41 @@ End Module
 
 #[test]
 fn nested_builtin_calls() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Console.WriteLine(UCase(Left("hello world", 5)))
     End Sub
 End Module
-"#), "HELLO");
+"#
+        ),
+        "HELLO"
+    );
 }
 
 #[test]
 fn math_combined_operations() {
     // Use function-call syntax (Abs, Fix) which compiles to WASM opcodes
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Console.WriteLine(Abs(Fix(-3.7)))
     End Sub
 End Module
-"#), "3");
+"#
+        ),
+        "3"
+    );
 }
 
 #[test]
 fn multiple_class_instances() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Class Dog
         Public Name As String
@@ -1204,13 +1476,15 @@ Module M
         Console.WriteLine(b.Speak())
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Rex says Woof!", "Buddy says Woof!"]);
 }
 
 #[test]
 fn class_shared_method() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Class MathHelper
         Shared Function Add(a As Double, b As Double) As Double
@@ -1227,13 +1501,16 @@ Module M
         Console.WriteLine(MathHelper.Multiply(5, 6))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["7", "30"]);
 }
 
 #[test]
 fn recursive_function() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Function Factorial(n As Integer) As Integer
         If n <= 1 Then
@@ -1246,12 +1523,16 @@ Module M
         Console.WriteLine(Factorial(6))
     End Sub
 End Module
-"#), "720");
+"#
+        ),
+        "720"
+    );
 }
 
 #[test]
 fn for_loop_with_step() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         For i As Integer = 0 To 10 Step 3
@@ -1259,13 +1540,15 @@ Module M
         Next
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "3", "6", "9"]);
 }
 
 #[test]
 fn do_while_loop() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim i As Integer = 0
@@ -1275,13 +1558,15 @@ Module M
         Loop
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "1", "2"]);
 }
 
 #[test]
 fn do_loop_until() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim i As Integer = 0
@@ -1291,13 +1576,15 @@ Module M
         Loop Until i >= 3
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "1", "2"]);
 }
 
 #[test]
 fn if_elseif_else_chain() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim x As Integer = 5
@@ -1310,49 +1597,64 @@ Module M
         End If
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["medium"]);
 }
 
 #[test]
 fn constants() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Const PI As Double = 3.14159
         Console.WriteLine(PI)
     End Sub
 End Module
-"#), "3.14159");
+"#
+        ),
+        "3.14159"
+    );
 }
 
 #[test]
 fn integer_division_and_modulo() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Console.WriteLine(10 \ 3)
         Console.WriteLine(10 Mod 3)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3", "1"]);
 }
 
 #[test]
 fn exponent_operator() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Console.WriteLine(2 ^ 10)
     End Sub
 End Module
-"#), "1024");
+"#
+        ),
+        "1024"
+    );
 }
 
 #[test]
 fn class_tostring_method() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Class Point
         Public X As Integer
@@ -1373,12 +1675,16 @@ Module M
         Console.WriteLine(p.ToString())
     End Sub
 End Module
-"#), "(10, 20)");
+"#
+        ),
+        "(10, 20)"
+    );
 }
 
 #[test]
 fn with_statement() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Class Person
         Public Name As String
@@ -1392,48 +1698,65 @@ Module M
         Console.WriteLine(p.Name & " is " & CStr(p.Age))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Alice is 25"]);
 }
 
 #[test]
 fn string_strreverse() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Console.WriteLine(StrReverse("Hello"))
     End Sub
 End Module
-"#), "olleH");
+"#
+        ),
+        "olleH"
+    );
 }
 
 #[test]
 fn convert_tostring_via_namespace() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Console.WriteLine(Convert.ToString(42))
     End Sub
 End Module
-"#), "42");
+"#
+        ),
+        "42"
+    );
 }
 
 #[test]
 fn math_pi_via_fix() {
     // Math.PI is a property accessed via namespace, Fix uses the f64_floor opcode
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Const PI As Double = 3.14159
         Console.WriteLine(Fix(PI))
     End Sub
 End Module
-"#), "3");
+"#
+        ),
+        "3"
+    );
 }
 
 #[test]
 fn isnothing_check() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim x As Object = Nothing
@@ -1442,13 +1765,18 @@ Module M
         Console.WriteLine(IsNothing(y))
     End Sub
 End Module
-"#);
-    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false"]));
+"#,
+    );
+    assert_eq!(
+        out,
+        super::helpers::dotnet_expected_lines(&["true", "false"])
+    );
 }
 
 #[test]
 fn isnumeric_check() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Console.WriteLine(IsNumeric("123"))
@@ -1456,13 +1784,18 @@ Module M
         Console.WriteLine(IsNumeric(42))
     End Sub
 End Module
-"#);
-    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false", "true"]));
+"#,
+    );
+    assert_eq!(
+        out,
+        super::helpers::dotnet_expected_lines(&["true", "false", "true"])
+    );
 }
 
 #[test]
 fn exit_for_statement() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         For i As Integer = 1 To 10
@@ -1471,13 +1804,16 @@ Module M
         Next
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "2", "3"]);
 }
 
 #[test]
 fn function_with_return_statement() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Function MaxVal(a As Integer, b As Integer) As Integer
         If a > b Then
@@ -1490,12 +1826,16 @@ Module M
         Console.WriteLine(MaxVal(10, 20))
     End Sub
 End Module
-"#), "20");
+"#
+        ),
+        "20"
+    );
 }
 
 #[test]
 fn nested_for_loops() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim total As Integer = 0
@@ -1507,26 +1847,31 @@ Module M
         Console.WriteLine(total)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["9"]);
 }
 
 #[test]
 fn string_ltrim_rtrim() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Console.WriteLine(LTrim("  hello"))
         Console.WriteLine(RTrim("hello  "))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["hello", "hello"]);
 }
 
 #[test]
 fn boolean_expressions_in_conditions() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Dim x As Integer = 5
@@ -1538,12 +1883,17 @@ Module M
         End If
     End Sub
 End Module
-"#), "both true");
+"#
+        ),
+        "both true"
+    );
 }
 
 #[test]
 fn class_field_initializer() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Class Config
         Public MaxRetries As Integer = 5
@@ -1555,12 +1905,16 @@ Module M
         Console.WriteLine(c.Name & " " & CStr(c.MaxRetries))
     End Sub
 End Module
-"#), "default 5");
+"#
+        ),
+        "default 5"
+    );
 }
 
 #[test]
 fn compound_assignment_operators() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim x As Integer = 10
@@ -1572,13 +1926,16 @@ Module M
         Console.WriteLine(x)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["15", "12", "24"]);
 }
 
 #[test]
 fn string_concat_assignment() {
-    assert_eq!(run_vb_one(r#"
+    assert_eq!(
+        run_vb_one(
+            r#"
 Module M
     Sub Main()
         Dim s As String = "Hello"
@@ -1586,5 +1943,8 @@ Module M
         Console.WriteLine(s)
     End Sub
 End Module
-"#), "Hello World");
+"#
+        ),
+        "Hello World"
+    );
 }

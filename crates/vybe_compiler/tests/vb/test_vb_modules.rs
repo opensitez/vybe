@@ -6,7 +6,8 @@ use super::helpers::run_vb;
 
 #[test]
 fn module_sub_and_function() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Greet(name As String)
         Console.WriteLine("Hello " & name)
@@ -19,13 +20,15 @@ Module M
         Console.WriteLine(Add(3, 4))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Hello World", "7"]);
 }
 
 #[test]
 fn module_level_variables() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Dim counter As Integer = 0
     Sub Increment()
@@ -38,13 +41,15 @@ Module M
         Console.WriteLine(counter)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
 #[test]
 fn class_shared_method() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class MathUtils
     Public Shared Function Square(x As Integer) As Integer
         Return x * x
@@ -56,13 +61,15 @@ Module M
         Console.WriteLine(MathUtils.Square(5))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["25"]);
 }
 
 #[test]
 fn class_with_constructor() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Person
     Public Name As String
     Public Age As Integer
@@ -81,13 +88,15 @@ Module M
         Console.WriteLine(p.Describe())
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Alice is 30"]);
 }
 
 #[test]
 fn class_property_get_set() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Account
     Private _balance As Integer = 0
     Public Property Balance As Integer
@@ -109,13 +118,15 @@ Module M
         Console.WriteLine(a.Balance)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100", "100"]);
 }
 
 #[test]
 fn class_inheritance() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Animal
     Public Name As String
     Public Sub New(n As String)
@@ -142,13 +153,15 @@ Module M
         Console.WriteLine(d.Speak())
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Rex says Woof!"]);
 }
 
 #[test]
 fn class_me_reference() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Counter
     Public Value As Integer = 0
     Public Sub Increment()
@@ -164,13 +177,15 @@ Module M
         Console.WriteLine(c.Value)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn multiple_classes() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Point
     Public X As Integer
     Public Y As Integer
@@ -200,13 +215,15 @@ Module M
         Console.WriteLine(l.Length())
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5"]);
 }
 
 #[test]
 fn recursive_function() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Function Fib(n As Integer) As Integer
         If n <= 1 Then Return n
@@ -216,13 +233,15 @@ Module M
         Console.WriteLine(Fib(10))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["55"]);
 }
 
 #[test]
 fn pass_object_to_sub() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Box
     Public Value As Integer
 End Class
@@ -237,13 +256,15 @@ Module M
         Console.WriteLine(b.Value)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn function_multiple_return_paths() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Function Classify(x As Integer) As String
         If x > 0 Then Return "positive"
@@ -256,6 +277,7 @@ Module M
         Console.WriteLine(Classify(0))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["positive", "negative", "zero"]);
 }

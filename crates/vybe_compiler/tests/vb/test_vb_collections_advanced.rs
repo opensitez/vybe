@@ -6,7 +6,8 @@ use super::helpers::run_vb;
 
 #[test]
 fn list_basic_operations() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim items As New List(Of String)
@@ -18,13 +19,18 @@ Module M
         Console.WriteLine(items.Contains("banana"))
     End Sub
 End Module
-"#);
-    assert_eq!(out, super::helpers::dotnet_expected_lines(&["3", "banana", "true"]));
+"#,
+    );
+    assert_eq!(
+        out,
+        super::helpers::dotnet_expected_lines(&["3", "banana", "true"])
+    );
 }
 
 #[test]
 fn list_remove_and_indexof() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim nums As New List(Of Integer)
@@ -37,13 +43,15 @@ Module M
         Console.WriteLine(nums.Item(1))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "2", "30"]);
 }
 
 #[test]
 fn list_foreach() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim items As New List(Of String)
@@ -57,13 +65,15 @@ Module M
         Console.WriteLine(result)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["abc"]);
 }
 
 #[test]
 fn dictionary_basic() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim d As New Dictionary(Of String, Integer)
@@ -75,13 +85,18 @@ Module M
         Console.WriteLine(d.Count)
     End Sub
 End Module
-"#);
-    assert_eq!(out, super::helpers::dotnet_expected_lines(&["10", "true", "false", "2"]));
+"#,
+    );
+    assert_eq!(
+        out,
+        super::helpers::dotnet_expected_lines(&["10", "true", "false", "2"])
+    );
 }
 
 #[test]
 fn dictionary_remove() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim d As New Dictionary(Of String, Integer)
@@ -92,13 +107,15 @@ Module M
         Console.WriteLine(d.ContainsKey("a"))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, super::helpers::dotnet_expected_lines(&["1", "false"]));
 }
 
 #[test]
 fn queue_operations() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim q As New Queue(Of String)
@@ -111,13 +128,15 @@ Module M
         Console.WriteLine(q.Count)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3", "first", "second", "2"]);
 }
 
 #[test]
 fn stack_operations() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim s As New Stack(Of Integer)
@@ -129,13 +148,15 @@ Module M
         Console.WriteLine(s.Peek())
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3", "3", "2"]);
 }
 
 #[test]
 fn array_declaration() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim arr(4) As Integer
@@ -148,13 +169,15 @@ Module M
         Console.WriteLine(UBound(arr))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30", "4"]);
 }
 
 #[test]
 fn array_initializer() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim arr() As Integer = {5, 10, 15, 20}
@@ -165,13 +188,15 @@ Module M
         Console.WriteLine(sum)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["50"]);
 }
 
 #[test]
 fn redim_array() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim arr(2) As Integer
@@ -186,13 +211,15 @@ Module M
         Console.WriteLine(arr(4))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["4", "1", "5"]);
 }
 
 #[test]
 fn list_clear() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim items As New List(Of Integer)
@@ -204,13 +231,15 @@ Module M
         Console.WriteLine(items.Count)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3", "0"]);
 }
 
 #[test]
 fn object_in_list() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Item
     Public Name As String
     Public Sub New(n As String)
@@ -228,13 +257,15 @@ Module M
         Console.WriteLine(items.Item(1).Name)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3", "b"]);
 }
 
 #[test]
 fn arraylist_basic_methods() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Imports System.Collections
 Module M
     Sub Main()
@@ -258,13 +289,20 @@ Module M
         Console.WriteLine(al.Item(0))
     End Sub
 End Module
-"#);
-    assert_eq!(out, super::helpers::dotnet_expected_lines(&["3", "A", "C", "true", "false", "1", "2", "X", "A", "X"]));
+"#,
+    );
+    assert_eq!(
+        out,
+        super::helpers::dotnet_expected_lines(&[
+            "3", "A", "C", "true", "false", "1", "2", "X", "A", "X"
+        ])
+    );
 }
 
 #[test]
 fn arraylist_range_operations() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Imports System.Collections
 Module M
     Sub Main()
@@ -310,13 +348,18 @@ Module M
         Console.WriteLine(al.Count)
     End Sub
 End Module
-"#);
-    assert_eq!(out, vec!["7", "X", "Y", "5", "C", "3", "B", "P", "Q", "5", "6", "5"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec!["7", "X", "Y", "5", "C", "3", "B", "P", "Q", "5", "6", "5"]
+    );
 }
 
 #[test]
 fn arraylist_indexof_lastindexof() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Imports System.Collections
 Module M
     Sub Main()
@@ -333,13 +376,15 @@ Module M
         Console.WriteLine(al.LastIndexOf("B", 3))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "5", "5", "1"]);
 }
 
 #[test]
 fn arraylist_reverse_range() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Imports System.Collections
 Module M
     Sub Main()
@@ -357,13 +402,15 @@ Module M
         Console.WriteLine(rv.Item(4))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "4", "3", "2", "5"]);
 }
 
 #[test]
 fn arraylist_hof_methods() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Imports System.Collections
 Module M
     Sub Main()
@@ -400,13 +447,20 @@ Module M
         Console.WriteLine(nums2.Count)
     End Sub
 End Module
-"#);
-    assert_eq!(out, super::helpers::dotnet_expected_lines(&["2", "30", "true", "false", "true", "false", "5", "20", "2", "3"]));
+"#,
+    );
+    assert_eq!(
+        out,
+        super::helpers::dotnet_expected_lines(&[
+            "2", "30", "true", "false", "true", "false", "5", "20", "2", "3"
+        ])
+    );
 }
 
 #[test]
 fn concurrent_collections_basic() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Imports System.Collections.Concurrent
 Sub Main()
     Dim d As New ConcurrentDictionary
@@ -425,6 +479,10 @@ Sub Main()
     s.Push(20)
     Console.WriteLine(s.Count)
 End Sub
-"#);
-    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false", "2", "2"]));
+"#,
+    );
+    assert_eq!(
+        out,
+        super::helpers::dotnet_expected_lines(&["true", "false", "2", "2"])
+    );
 }

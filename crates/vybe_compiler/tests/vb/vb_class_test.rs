@@ -2,7 +2,8 @@ use super::helpers::run_vb;
 
 #[test]
 fn simple_class_with_fields() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Class Person
         Public Name As String
@@ -17,13 +18,15 @@ Module Program
         Console.WriteLine(p.Age)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Alice", "30"]);
 }
 
 #[test]
 fn class_with_constructor() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Class Person
         Public Name As String
@@ -40,13 +43,15 @@ Module Program
         Console.WriteLine(p.Name & " is " & CStr(p.Age))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Bob is 25"]);
 }
 
 #[test]
 fn class_with_method() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Class Calculator
         Public Result As Double
@@ -72,13 +77,15 @@ Module Program
         Console.WriteLine(calc.Result)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["7", "30"]);
 }
 
 #[test]
 fn class_with_field_initializer() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Class Counter
         Public Count As Integer = 0
@@ -96,13 +103,15 @@ Module Program
         Console.WriteLine(c.Count)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
 #[test]
 fn multiple_instances() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Class Dog
         Public Name As String
@@ -123,13 +132,15 @@ Module Program
         Console.WriteLine(b.Speak())
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Rex says Woof!", "Buddy says Woof!"]);
 }
 
 #[test]
 fn class_inheritance() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Class Animal
         Public Name As String
@@ -161,13 +172,15 @@ Module Program
         Console.WriteLine(d.Bark())
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Animal: Rex", "Rex barks!"]);
 }
 
 #[test]
 fn class_with_property_get_set() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Class Temperature
         Private _celsius As Double
@@ -203,13 +216,15 @@ Module Program
         Console.WriteLine(t.Celsius)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100", "212", "0"]);
 }
 
 #[test]
 fn class_shared_method() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Class MathHelper
         Shared Function Add(a As Double, b As Double) As Double
@@ -226,13 +241,15 @@ Module Program
         Console.WriteLine(MathHelper.Multiply(5, 6))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["7", "30"]);
 }
 
 #[test]
 fn class_tostring_method() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Class Point
         Public X As Integer
@@ -253,6 +270,7 @@ Module Program
         Console.WriteLine(p.ToString())
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["(10, 20)"]);
 }

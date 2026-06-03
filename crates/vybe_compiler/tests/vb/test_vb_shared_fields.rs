@@ -10,7 +10,10 @@ macro_rules! vb_shared_spec {
     };
 }
 
-vb_shared_spec!(shared_field_retains_integer_state_across_shared_calls, "VB Shared field state is not implemented correctly yet", r#"
+vb_shared_spec!(
+    shared_field_retains_integer_state_across_shared_calls,
+    "VB Shared field state is not implemented correctly yet",
+    r#"
 Class Counter
     Public Shared Total As Integer = 0
 
@@ -26,9 +29,14 @@ Module M
         Console.WriteLine(Counter.Total)
     End Sub
 End Module
-"#, ["2"]);
+"#,
+    ["2"]
+);
 
-vb_shared_spec!(shared_field_can_start_from_nonzero_seed, "VB Shared field state is not implemented correctly yet", r#"
+vb_shared_spec!(
+    shared_field_can_start_from_nonzero_seed,
+    "VB Shared field state is not implemented correctly yet",
+    r#"
 Class Counter
     Public Shared Total As Integer = 10
 
@@ -43,9 +51,14 @@ Module M
         Console.WriteLine(Counter.Total)
     End Sub
 End Module
-"#, ["15"]);
+"#,
+    ["15"]
+);
 
-vb_shared_spec!(shared_field_is_shared_across_multiple_instances, "VB Shared field state is not implemented correctly yet", r#"
+vb_shared_spec!(
+    shared_field_is_shared_across_multiple_instances,
+    "VB Shared field state is not implemented correctly yet",
+    r#"
 Class Counter
     Public Shared Total As Integer = 0
 
@@ -63,9 +76,14 @@ Module M
         Console.WriteLine(Counter.Total)
     End Sub
 End Module
-"#, ["2"]);
+"#,
+    ["2"]
+);
 
-vb_shared_spec!(shared_field_can_be_read_through_instance_reference, "VB Shared field state is not implemented correctly yet", r#"
+vb_shared_spec!(
+    shared_field_can_be_read_through_instance_reference,
+    "VB Shared field state is not implemented correctly yet",
+    r#"
 Class Counter
     Public Shared Total As Integer = 3
 End Class
@@ -76,9 +94,14 @@ Module M
         Console.WriteLine(counter.Total)
     End Sub
 End Module
-"#, ["3"]);
+"#,
+    ["3"]
+);
 
-vb_shared_spec!(shared_field_can_store_string_state, "VB Shared field state is not implemented correctly yet", r#"
+vb_shared_spec!(
+    shared_field_can_store_string_state,
+    "VB Shared field state is not implemented correctly yet",
+    r#"
 Class Registry
     Public Shared Text As String = "A"
 
@@ -94,9 +117,14 @@ Module M
         Console.WriteLine(Registry.Text)
     End Sub
 End Module
-"#, ["ABC"]);
+"#,
+    ["ABC"]
+);
 
-vb_shared_spec!(shared_field_updates_from_helper_method_are_visible_later, "VB Shared field state is not implemented correctly yet", r#"
+vb_shared_spec!(
+    shared_field_updates_from_helper_method_are_visible_later,
+    "VB Shared field state is not implemented correctly yet",
+    r#"
 Class Counter
     Public Shared Total As Integer = 1
 
@@ -112,9 +140,14 @@ Module M
         Console.WriteLine(Counter.Total)
     End Sub
 End Module
-"#, ["4"]);
+"#,
+    ["4"]
+);
 
-vb_shared_spec!(shared_fields_are_isolated_between_classes, "VB Shared field state is not implemented correctly yet", r#"
+vb_shared_spec!(
+    shared_fields_are_isolated_between_classes,
+    "VB Shared field state is not implemented correctly yet",
+    r#"
 Class LeftCounter
     Public Shared Total As Integer = 1
 End Class
@@ -129,9 +162,14 @@ Module M
         Console.WriteLine(RightCounter.Total)
     End Sub
 End Module
-"#, ["1", "9"]);
+"#,
+    ["1", "9"]
+);
 
-vb_shared_spec!(shared_field_can_be_mutated_in_loop, "VB Shared field state is not implemented correctly yet", r#"
+vb_shared_spec!(
+    shared_field_can_be_mutated_in_loop,
+    "VB Shared field state is not implemented correctly yet",
+    r#"
 Class Counter
     Public Shared Total As Integer = 0
 
@@ -148,4 +186,6 @@ Module M
         Console.WriteLine(Counter.Total)
     End Sub
 End Module
-"#, ["6"]);
+"#,
+    ["6"]
+);

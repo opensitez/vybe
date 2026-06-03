@@ -1,6 +1,5 @@
 /// Tests for VB → host function interop: objects crossing the boundary,
 /// namespace resolution, host returning objects to VB, callbacks.
-
 use super::helpers::{run_vb, run_vb_vm};
 use std::sync::Arc;
 use vybe_bytecode::Value;
@@ -11,19 +10,22 @@ use vybe_bytecode::Value;
 
 #[test]
 fn host_list_create_add_count() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Dim list As New List(Of String)
 list.Add("a")
 list.Add("b")
 list.Add("c")
 Console.WriteLine(list.Count)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
 #[test]
 fn host_list_iterate() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Dim list As New List(Of String)
 list.Add("x")
 list.Add("y")
@@ -32,52 +34,61 @@ For Each item In list
     total = total + 1
 Next
 Console.WriteLine(total)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn host_dictionary_create_add_access() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Dim dict As New Dictionary(Of String, String)
 dict.Add("name", "Alice")
 Console.WriteLine(dict.Item("name"))
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Alice"]);
 }
 
 #[test]
 fn host_dictionary_count() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Dim dict As New Dictionary(Of String, String)
 dict.Add("a", "1")
 dict.Add("b", "2")
 Console.WriteLine(dict.Count)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn host_queue_enqueue_dequeue() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Dim q As New Queue(Of String)
 q.Enqueue("first")
 q.Enqueue("second")
 Console.WriteLine(q.Dequeue())
 Console.WriteLine(q.Dequeue())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["first", "second"]);
 }
 
 #[test]
 fn host_stack_push_pop() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Dim s As New Stack(Of String)
 s.Push("a")
 s.Push("b")
 Console.WriteLine(s.Pop())
 Console.WriteLine(s.Pop())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["b", "a"]);
 }
 
@@ -87,7 +98,8 @@ Console.WriteLine(s.Pop())
 
 #[test]
 fn vb_class_instance_persists_in_global() {
-    let (vm, _) = run_vb_vm(r#"
+    let (vm, _) = run_vb_vm(
+        r#"
 Public Class Dog
     Dim name As String
     Public Sub New(n As String)
@@ -95,7 +107,8 @@ Public Class Dog
     End Sub
 End Class
 Dim d As New Dog("Rex")
-"#);
+"#,
+    );
     let d = vm.globals.get("d").cloned();
     assert!(d.is_some(), "Dog instance should be in globals");
     if let Some(Value::Object(obj)) = d {
@@ -109,7 +122,8 @@ Dim d As New Dog("Rex")
 
 #[test]
 fn vb_class_method_invokable_from_rust() {
-    let (mut vm, output) = run_vb_vm(r#"
+    let (mut vm, output) = run_vb_vm(
+        r#"
 Public Class Greeter
     Dim prefix As String
     Public Sub New(p As String)
@@ -120,14 +134,25 @@ Public Class Greeter
     End Sub
 End Class
 Dim g As New Greeter("Hello")
-"#);
+"#,
+    );
     let instance = vm.globals.get("g").cloned().unwrap();
     let method = if let Value::Object(obj) = &instance {
         obj.lock().unwrap().properties.get("greet").cloned()
-    } else { None }.unwrap();
+    } else {
+        None
+    }
+    .unwrap();
 
-    vm.invoke(&method, &[instance.clone(), Value::String(Arc::from("World"))]).unwrap();
-    assert_eq!(output.lock().unwrap().last().map(|s| s.as_str()), Some("Hello World"));
+    vm.invoke(
+        &method,
+        &[instance.clone(), Value::String(Arc::from("World"))],
+    )
+    .unwrap();
+    assert_eq!(
+        output.lock().unwrap().last().map(|s| s.as_str()),
+        Some("Hello World")
+    );
 }
 
 // ============================================================
@@ -172,64 +197,76 @@ fn namespace_abs_bare() {
 
 #[test]
 fn namespace_new_point() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Imports System.Drawing
 Dim p As New Point(10, 20)
 Console.WriteLine(p.x)
 Console.WriteLine(p.y)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "20"]);
 }
 
 #[test]
 fn namespace_new_size() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Imports System.Drawing
 Dim s As New Size(640, 480)
 Console.WriteLine(s.width)
 Console.WriteLine(s.height)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["640", "480"]);
 }
 
 #[test]
 fn namespace_new_font() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Imports System.Drawing
 Dim f As New Font("Arial", 12)
 Console.WriteLine(f.name)
 Console.WriteLine(f.size)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Arial", "12"]);
 }
 
 #[test]
 fn namespace_new_button() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Imports System.Windows.Forms
 Dim btn As New Button()
 Console.WriteLine(btn.__control_type)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Button"]);
 }
 
 #[test]
 fn namespace_new_textbox() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Imports System.Windows.Forms
 Dim txt As New TextBox()
 Console.WriteLine(txt.__control_type)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["TextBox"]);
 }
 
 #[test]
 fn namespace_new_label() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Imports System.Windows.Forms
 Dim lbl As New Label()
 Console.WriteLine(lbl.__control_type)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Label"]);
 }
 
@@ -293,19 +330,23 @@ fn host_string_replace() {
 
 #[test]
 fn host_string_split_join() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Dim parts() As String = Split("a,b,c", ",")
 Console.WriteLine(Join(parts, "-"))
-"#);
+"#,
+    );
     assert_eq!(out, vec!["a-b-c"]);
 }
 
 #[test]
 fn host_string_chr_asc() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Console.WriteLine(Chr(65))
 Console.WriteLine(Asc("A"))
-"#);
+"#,
+    );
     assert_eq!(out, vec!["A", "65"]);
 }
 
@@ -337,7 +378,8 @@ fn host_cbool() {
 
 #[test]
 fn invoke_vb_method_with_me() {
-    let (mut vm, output) = run_vb_vm(r#"
+    let (mut vm, output) = run_vb_vm(
+        r#"
 Public Class Counter
     Dim count As Integer
     Public Sub New()
@@ -351,14 +393,21 @@ Public Class Counter
     End Sub
 End Class
 Dim c As New Counter()
-"#);
+"#,
+    );
     let instance = vm.globals.get("c").cloned().unwrap();
     let inc = if let Value::Object(obj) = &instance {
         obj.lock().unwrap().properties.get("inc").cloned()
-    } else { None }.unwrap();
+    } else {
+        None
+    }
+    .unwrap();
     let report = if let Value::Object(obj) = &instance {
         obj.lock().unwrap().properties.get("report").cloned()
-    } else { None }.unwrap();
+    } else {
+        None
+    }
+    .unwrap();
 
     // Simulate 3 button clicks
     vm.invoke(&inc, &[instance.clone()]).unwrap();
@@ -372,7 +421,8 @@ Dim c As New Counter()
 #[test]
 fn invoke_vb_method_reads_control_property() {
     // Simulates: handler reads Me.txtName.Text
-    let (mut vm, output) = run_vb_vm(r#"
+    let (mut vm, output) = run_vb_vm(
+        r#"
 Public Class Form1
     Dim txtName As Object
     Public Sub New()
@@ -384,19 +434,27 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let instance = vm.globals.get("f").cloned().unwrap();
     let method = if let Value::Object(obj) = &instance {
         obj.lock().unwrap().properties.get("showname").cloned()
-    } else { None }.unwrap();
+    } else {
+        None
+    }
+    .unwrap();
 
     vm.invoke(&method, &[instance.clone()]).unwrap();
-    assert_eq!(output.lock().unwrap().last().map(|s| s.as_str()), Some("Alice"));
+    assert_eq!(
+        output.lock().unwrap().last().map(|s| s.as_str()),
+        Some("Alice")
+    );
 }
 
 #[test]
 fn invoke_vb_method_modifies_field() {
-    let (mut vm, _) = run_vb_vm(r#"
+    let (mut vm, _) = run_vb_vm(
+        r#"
 Public Class State
     Dim value As String
     Public Sub New()
@@ -407,13 +465,21 @@ Public Class State
     End Sub
 End Class
 Dim s As New State()
-"#);
+"#,
+    );
     let instance = vm.globals.get("s").cloned().unwrap();
     let update = if let Value::Object(obj) = &instance {
         obj.lock().unwrap().properties.get("update").cloned()
-    } else { None }.unwrap();
+    } else {
+        None
+    }
+    .unwrap();
 
-    vm.invoke(&update, &[instance.clone(), Value::String(Arc::from("changed"))]).unwrap();
+    vm.invoke(
+        &update,
+        &[instance.clone(), Value::String(Arc::from("changed"))],
+    )
+    .unwrap();
 
     // Check the field was modified
     if let Value::Object(obj) = &instance {

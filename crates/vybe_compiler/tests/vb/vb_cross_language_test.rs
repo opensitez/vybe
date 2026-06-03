@@ -2,7 +2,6 @@
 ///
 /// These tests require compiling two languages into the same VM with different
 /// profiles, which is not yet supported in the vybex unified pipeline.
-
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::{VM, Value};
 
@@ -11,11 +10,17 @@ fn setup_vm() -> (VM, Arc<Mutex<Vec<String>>>) {
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();
     vybe_host::register_all(&mut vm);
-    vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
-        let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
-        out.lock().unwrap().push(parts.join(" "));
-        Value::Null
-    }));
+    vm.register_host_fn(
+        "wasi:cli",
+        "log",
+        Box::new(
+            move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+                let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
+                out.lock().unwrap().push(parts.join(" "));
+                Value::Null
+            },
+        ),
+    );
     vybe_host::setup_namespaces(&mut vm);
     (vm, output)
 }
@@ -41,12 +46,15 @@ fn js_class_used_from_vb_is_not_supported_yet() {
     let js_module = vybe_compiler::languages::js::parse(js_code).expect("JS parse failed");
     let js_profile = load_js_profile();
     let js_chunks = vybe_compiler::compiler::Compiler::with_profile(js_profile)
-        .compile(&js_module).expect("JS compile failed");
+        .compile(&js_module)
+        .expect("JS compile failed");
     vm.run(js_chunks).expect("JS runtime error");
 
     // Verify JS class is in globals
-    assert!(vm.globals.contains_key("Counter") || vm.globals.contains_key("counter"),
-        "JS Counter class should be in globals");
+    assert!(
+        vm.globals.contains_key("Counter") || vm.globals.contains_key("counter"),
+        "JS Counter class should be in globals"
+    );
 
     // Step 2: Compile and run VB that uses the JS class
     let vb_code = r#"
@@ -59,7 +67,8 @@ Console.WriteLine(c.get())
     let vb_module = vybe_compiler::languages::vb::parse(vb_code).expect("VB parse failed");
     let vb_profile = super::helpers::load_vb_profile();
     let vb_chunks = vybe_compiler::compiler::Compiler::with_profile(vb_profile)
-        .compile(&vb_module).expect("VB compile failed");
+        .compile(&vb_module)
+        .expect("VB compile failed");
     let err = vm.run(vb_chunks).expect_err(
         "JS class instances are not yet consumable from VB in the unified multi-profile pipeline",
     );
@@ -89,12 +98,15 @@ End Class
     let vb_module = vybe_compiler::languages::vb::parse(vb_code).expect("VB parse failed");
     let vb_profile = super::helpers::load_vb_profile();
     let vb_chunks = vybe_compiler::compiler::Compiler::with_profile(vb_profile)
-        .compile(&vb_module).expect("VB compile failed");
+        .compile(&vb_module)
+        .expect("VB compile failed");
     vm.run(vb_chunks).expect("VB runtime error");
 
     // Verify VB class is in globals
-    assert!(vm.globals.contains_key("greeter"),
-        "VB Greeter class should be in globals");
+    assert!(
+        vm.globals.contains_key("greeter"),
+        "VB Greeter class should be in globals"
+    );
 
     // Step 2: Compile and run JS that uses the VB class
     let js_code = r#"
@@ -104,7 +116,8 @@ End Class
     let js_module = vybe_compiler::languages::js::parse(js_code).expect("JS parse failed");
     let js_profile = load_js_profile();
     let js_chunks = vybe_compiler::compiler::Compiler::with_profile(js_profile)
-        .compile(&js_module).expect("JS compile failed");
+        .compile(&js_module)
+        .expect("JS compile failed");
     let err = vm.run(js_chunks).expect_err(
         "VB class imports are not yet consumable from JS in the unified multi-profile pipeline",
     );
@@ -125,7 +138,8 @@ fn shared_global_between_languages() {
     let js_module = vybe_compiler::languages::js::parse(js_code).expect("parse");
     let js_profile = load_js_profile();
     let js_chunks = vybe_compiler::compiler::Compiler::with_profile(js_profile)
-        .compile(&js_module).expect("compile");
+        .compile(&js_module)
+        .expect("compile");
     vm.run(js_chunks).expect("run");
 
     // VB calls the JS function (VB lowercases names — matches JS)
@@ -133,7 +147,8 @@ fn shared_global_between_languages() {
     let vb_module = vybe_compiler::languages::vb::parse(vb_code).expect("parse");
     let vb_profile = super::helpers::load_vb_profile();
     let vb_chunks = vybe_compiler::compiler::Compiler::with_profile(vb_profile)
-        .compile(&vb_module).expect("compile");
+        .compile(&vb_module)
+        .expect("compile");
     vm.run(vb_chunks).expect("run");
 
     assert_eq!(output.lock().unwrap().as_slice(), &["42"]);
@@ -149,7 +164,8 @@ fn js_function_called_from_vb() {
     let js_module = vybe_compiler::languages::js::parse(js_code).expect("parse");
     let js_profile = load_js_profile();
     let js_chunks = vybe_compiler::compiler::Compiler::with_profile(js_profile)
-        .compile(&js_module).expect("compile");
+        .compile(&js_module)
+        .expect("compile");
     vm.run(js_chunks).expect("run");
 
     // VB calls it
@@ -157,7 +173,8 @@ fn js_function_called_from_vb() {
     let vb_module = vybe_compiler::languages::vb::parse(vb_code).expect("parse");
     let vb_profile = super::helpers::load_vb_profile();
     let vb_chunks = vybe_compiler::compiler::Compiler::with_profile(vb_profile)
-        .compile(&vb_module).expect("compile");
+        .compile(&vb_module)
+        .expect("compile");
     vm.run(vb_chunks).expect("run");
 
     assert_eq!(output.lock().unwrap().as_slice(), &["42"]);
@@ -165,8 +182,8 @@ fn js_function_called_from_vb() {
 
 /// Minimal JS profile for cross-language tests.
 fn load_js_profile() -> vybe_compiler::profile::LanguageProfile {
-    use vybe_compiler::profile::*;
     use std::collections::HashMap;
+    use vybe_compiler::profile::*;
 
     LanguageProfile {
         name: "js".into(),
@@ -195,7 +212,14 @@ fn load_js_profile() -> vybe_compiler::profile::LanguageProfile {
         uses_normalize_class: false,
         builtins: {
             let mut b = HashMap::new();
-            b.insert("console.log".into(), BuiltinDef { emit: BuiltinEmit::Print, min_args: 0, max_args: 255 });
+            b.insert(
+                "console.log".into(),
+                BuiltinDef {
+                    emit: BuiltinEmit::Print,
+                    min_args: 0,
+                    max_args: 255,
+                },
+            );
             b
         },
         intrinsics: HashMap::new(),

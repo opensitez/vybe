@@ -26,7 +26,8 @@ use vybe_host::gui_state::GuiState;
 /// A01. Button click handler reads TextBox.Text field (Me.txtInput.Text).
 #[test]
 fn a01_handler_reads_textbox_text() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Dim txtInput As New TextBox()
@@ -41,17 +42,25 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
     // The handler should compile and register; txtInput should be added
-    assert!(g.control_names.contains(&"txtinput".to_string()), "Expected txtInput control");
-    assert!(g.event_handlers.contains_key("btngo.click"), "Expected Click handler registered for btngo");
+    assert!(
+        g.control_names.contains(&"txtinput".to_string()),
+        "Expected txtInput control"
+    );
+    assert!(
+        g.event_handlers.contains_key("btngo.click"),
+        "Expected Click handler registered for btngo"
+    );
 }
 
 /// A02. Button click handler writes to Label.Text (Me.lblOutput.Text = "result").
 #[test]
 fn a02_handler_writes_label_text() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Dim lblOutput As New Label()
@@ -67,17 +76,28 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert!(g.control_names.contains(&"lbloutput".to_string()), "Expected lblOutput control");
-    assert!(g.control_names.contains(&"btngo".to_string()), "Expected btnGo control");
-    assert!(g.event_handlers.contains_key("btngo.click"), "Expected Click handler on btngo");
+    assert!(
+        g.control_names.contains(&"lbloutput".to_string()),
+        "Expected lblOutput control"
+    );
+    assert!(
+        g.control_names.contains(&"btngo".to_string()),
+        "Expected btnGo control"
+    );
+    assert!(
+        g.event_handlers.contains_key("btngo.click"),
+        "Expected Click handler on btngo"
+    );
 }
 
 /// A03. Handler concatenates text from two TextBoxes.
 #[test]
 fn a03_handler_concatenates_two_textboxes() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Dim txt1 As New TextBox()
@@ -96,7 +116,8 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
     assert_eq!(g.control_names.len(), 3, "Expected 3 controls added");
 }
@@ -104,7 +125,8 @@ Dim f As New Form1()
 /// A04. Handler toggles CheckBox.Checked via Me reference.
 #[test]
 fn a04_handler_toggles_checkbox() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Dim chk As New CheckBox()
@@ -118,15 +140,20 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert!(g.control_names.contains(&"chk".to_string()), "Expected chk control");
+    assert!(
+        g.control_names.contains(&"chk".to_string()),
+        "Expected chk control"
+    );
 }
 
 /// A05. Handler reads one control, computes, writes to another.
 #[test]
 fn a05_handler_reads_computes_writes() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Dim txtNum As New TextBox()
@@ -143,7 +170,8 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
     assert_eq!(g.control_names.len(), 2, "Expected 2 controls");
 }
@@ -151,7 +179,8 @@ Dim f As New Form1()
 /// A06. Handler accesses form-level Dim field AND control property.
 #[test]
 fn a06_handler_accesses_field_and_control() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Dim prefix As String = "Value: "
@@ -168,7 +197,8 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
     assert!(g.control_names.contains(&"txtinput".to_string()));
     assert!(g.control_names.contains(&"lbloutput".to_string()));
@@ -181,7 +211,8 @@ Dim f As New Form1()
 /// B07. Dim counter field incremented by handler, read shows updated value.
 #[test]
 fn b07_counter_field_incremented() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Public Class Form1
     Dim counter As Integer = 0
     Public Sub New()
@@ -198,14 +229,16 @@ f.Increment()
 f.Increment()
 f.Increment()
 Console.WriteLine(f.GetCount())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
 /// B08. Handler appends to string field -- multiple invocations accumulate.
 #[test]
 fn b08_string_field_accumulates() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Public Class Form1
     Dim log As String = ""
     Public Sub New()
@@ -222,14 +255,16 @@ f.AppendLog("a")
 f.AppendLog("b")
 f.AppendLog("c")
 Console.WriteLine(f.GetLog())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["a;b;c;"]);
 }
 
 /// B09. Boolean flag toggled by handler.
 #[test]
 fn b09_boolean_flag_toggled() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Public Class Form1
     Dim isActive As Boolean = False
     Public Sub New()
@@ -247,14 +282,19 @@ f.Toggle()
 Console.WriteLine(f.GetActive())
 f.Toggle()
 Console.WriteLine(f.GetActive())
-"#);
-    assert_eq!(out, super::helpers::dotnet_expected_lines(&["false", "true", "false"]));
+"#,
+    );
+    assert_eq!(
+        out,
+        super::helpers::dotnet_expected_lines(&["false", "true", "false"])
+    );
 }
 
 /// B10. Handler stores value in field, another handler reads it.
 #[test]
 fn b10_cross_method_field_access() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Public Class Form1
     Dim savedValue As String = ""
     Public Sub New()
@@ -269,14 +309,16 @@ End Class
 Dim f As New Form1()
 f.Save("important data")
 Console.WriteLine(f.Load())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["important data"]);
 }
 
 /// B11. Form with undo pattern: store previous value in field before update.
 #[test]
 fn b11_undo_pattern() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Public Class Form1
     Dim currentValue As String = "initial"
     Dim previousValue As String = ""
@@ -299,7 +341,8 @@ f.SetValue("third")
 Console.WriteLine(f.GetValue())
 f.Undo()
 Console.WriteLine(f.GetValue())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["third", "second"]);
 }
 
@@ -310,7 +353,8 @@ Console.WriteLine(f.GetValue())
 /// C12. Panel with Button inside -- Controls.Add on Panel, not Form.
 #[test]
 fn c12_panel_with_button_inside() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Public Sub New()
@@ -323,16 +367,24 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert!(g.control_names.contains(&"pnl1".to_string()), "Expected pnl1 control");
-    assert!(g.control_names.contains(&"btninner".to_string()), "Expected btnInner control");
+    assert!(
+        g.control_names.contains(&"pnl1".to_string()),
+        "Expected pnl1 control"
+    );
+    assert!(
+        g.control_names.contains(&"btninner".to_string()),
+        "Expected btnInner control"
+    );
 }
 
 /// C13. GroupBox with RadioButtons inside.
 #[test]
 fn c13_groupbox_with_radiobuttons() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Public Sub New()
@@ -351,17 +403,28 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert!(g.control_names.contains(&"grpoptions".to_string()), "Expected grpOptions");
-    assert!(g.control_names.contains(&"rboption1".to_string()), "Expected rbOption1");
-    assert!(g.control_names.contains(&"rboption2".to_string()), "Expected rbOption2");
+    assert!(
+        g.control_names.contains(&"grpoptions".to_string()),
+        "Expected grpOptions"
+    );
+    assert!(
+        g.control_names.contains(&"rboption1".to_string()),
+        "Expected rbOption1"
+    );
+    assert!(
+        g.control_names.contains(&"rboption2".to_string()),
+        "Expected rbOption2"
+    );
 }
 
 /// C14. Panel position + child control position (should be relative).
 #[test]
 fn c14_panel_child_position() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Imports System.Drawing
 Public Class Form1
@@ -377,17 +440,25 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
     // Panel and child should both be registered
-    assert!(g.control_names.contains(&"pnl1".to_string()), "Expected pnl1 control");
-    assert!(g.control_names.contains(&"btnchild".to_string()), "Expected btnChild control");
+    assert!(
+        g.control_names.contains(&"pnl1".to_string()),
+        "Expected pnl1 control"
+    );
+    assert!(
+        g.control_names.contains(&"btnchild".to_string()),
+        "Expected btnChild control"
+    );
 }
 
 /// C15. Multiple panels each with own controls.
 #[test]
 fn c15_multiple_panels_with_controls() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Public Sub New()
@@ -406,15 +477,21 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert_eq!(g.control_names.len(), 4, "Expected 4 controls (2 panels + 2 buttons)");
+    assert_eq!(
+        g.control_names.len(),
+        4,
+        "Expected 4 controls (2 panels + 2 buttons)"
+    );
 }
 
 /// C16. Nested: Panel inside GroupBox inside Form.
 #[test]
 fn c16_nested_panel_in_groupbox() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Public Sub New()
@@ -430,11 +507,21 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert!(g.control_names.contains(&"grp1".to_string()), "Expected grp1");
-    assert!(g.control_names.contains(&"pnlinner".to_string()), "Expected pnlInner");
-    assert!(g.control_names.contains(&"lbldeep".to_string()), "Expected lblDeep");
+    assert!(
+        g.control_names.contains(&"grp1".to_string()),
+        "Expected grp1"
+    );
+    assert!(
+        g.control_names.contains(&"pnlinner".to_string()),
+        "Expected pnlInner"
+    );
+    assert!(
+        g.control_names.contains(&"lbldeep".to_string()),
+        "Expected lblDeep"
+    );
 }
 
 // ============================================================
@@ -444,7 +531,8 @@ Dim f As New Form1()
 /// D17. Handler creates New Button(), sets properties, adds to form.
 #[test]
 fn d17_handler_creates_button() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Public Sub New()
@@ -458,15 +546,20 @@ Public Class Form1
 End Class
 Dim f As New Form1()
 f.AddButton()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert!(g.control_names.contains(&"btndynamic".to_string()), "Expected btnDynamic control");
+    assert!(
+        g.control_names.contains(&"btndynamic".to_string()),
+        "Expected btnDynamic control"
+    );
 }
 
 /// D18. Handler creates control based on runtime condition.
 #[test]
 fn d18_handler_conditional_create() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Public Sub New()
@@ -485,15 +578,20 @@ Public Class Form1
 End Class
 Dim f As New Form1()
 f.AddControl(True)
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert!(g.control_names.contains(&"btncond".to_string()), "Expected btnCond control");
+    assert!(
+        g.control_names.contains(&"btncond".to_string()),
+        "Expected btnCond control"
+    );
 }
 
 /// D19. Handler creates multiple controls in loop.
 #[test]
 fn d19_handler_creates_controls_in_loop() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Public Sub New()
@@ -509,15 +607,21 @@ Public Class Form1
 End Class
 Dim f As New Form1()
 f.AddButtons(3)
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert_eq!(g.control_names.len(), 3, "Expected 3 dynamically created buttons");
+    assert_eq!(
+        g.control_names.len(),
+        3,
+        "Expected 3 dynamically created buttons"
+    );
 }
 
 /// D20. Handler creates TextBox and wires it with AddHandler.
 #[test]
 fn d20_handler_creates_and_wires() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Public Sub New()
@@ -534,9 +638,13 @@ Public Class Form1
 End Class
 Dim f As New Form1()
 f.AddWiredTextBox()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert!(g.control_names.contains(&"txtdynamic".to_string()), "Expected txtDynamic control");
+    assert!(
+        g.control_names.contains(&"txtdynamic".to_string()),
+        "Expected txtDynamic control"
+    );
 }
 
 // ============================================================
@@ -546,7 +654,8 @@ f.AddWiredTextBox()
 /// E21. Two Partial Class declarations -- fields from both accessible.
 #[test]
 fn e21_partial_class_fields_merged() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Partial Public Class Form1
     Dim name As String = "hello"
 End Class
@@ -560,14 +669,16 @@ Partial Public Class Form1
 End Class
 Dim f As New Form1()
 f.ShowBoth()
-"#);
+"#,
+    );
     assert_eq!(out, vec!["hello 42"]);
 }
 
 /// E22. Partial: one has InitializeComponent, other has event handlers.
 #[test]
 fn e22_partial_init_and_handlers() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Partial Public Class Form1
     Dim btnOk As New Button()
@@ -585,15 +696,20 @@ Partial Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert!(g.control_names.contains(&"btnok".to_string()), "Expected btnOk control");
+    assert!(
+        g.control_names.contains(&"btnok".to_string()),
+        "Expected btnOk control"
+    );
 }
 
 /// E23. Partial: constructor in designer part, methods in user part.
 #[test]
 fn e23_partial_constructor_in_designer() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Partial Public Class Form1
     Dim title As String = "My Form"
     Public Sub New()
@@ -606,14 +722,16 @@ Partial Public Class Form1
 End Class
 Dim f As New Form1()
 Console.WriteLine(f.GetTitle())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["My Form"]);
 }
 
 /// E24. Partial: field declared in designer, used in user method.
 #[test]
 fn e24_partial_field_cross_access() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Partial Public Class Form1
     Dim status As String = "ready"
 End Class
@@ -626,14 +744,16 @@ Partial Public Class Form1
 End Class
 Dim f As New Form1()
 Console.WriteLine(f.GetStatus())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ready"]);
 }
 
 /// E25. Designer Friend WithEvents declarations parsed as fields.
 #[test]
 fn e25_friend_withevents_as_fields() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Friend WithEvents btnSave As Button
@@ -648,9 +768,13 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert!(g.control_names.contains(&"btnsave".to_string()), "Expected btnSave control");
+    assert!(
+        g.control_names.contains(&"btnsave".to_string()),
+        "Expected btnSave control"
+    );
 }
 
 // ============================================================
@@ -660,7 +784,8 @@ Dim f As New Form1()
 /// F26. New Timer() -- __control_type is "Timer".
 #[test]
 fn f26_new_timer_control_type() {
-    let (_vm, _gui, _) = run_vb_gui(r#"
+    let (_vm, _gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Public Sub New()
@@ -669,14 +794,16 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     // If we get here without error, the Timer() constructor compiled correctly
 }
 
 /// F27. Timer with Interval property set.
 #[test]
 fn f27_timer_interval_property() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Dim tmr As New Timer()
@@ -686,7 +813,8 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     // Timer properties are mirrored into GuiState by the canvas/property
     // setters; we just verify the program compiles and runs without
     // panicking. (Asserting on the actual mirrored Interval value
@@ -697,7 +825,8 @@ Dim f As New Form1()
 /// F28. Timer.Tick Handles clause.
 #[test]
 fn f28_timer_tick_handles() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Dim tmr As New Timer()
@@ -710,10 +839,13 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert!(g.event_handlers.contains_key("tmr.tick") || g.event_handlers.contains_key("tmr1.tick"),
-        "Expected Tick handler registered for timer");
+    assert!(
+        g.event_handlers.contains_key("tmr.tick") || g.event_handlers.contains_key("tmr1.tick"),
+        "Expected Tick handler registered for timer"
+    );
 }
 
 // ============================================================
@@ -724,7 +856,8 @@ Dim f As New Form1()
 #[test]
 
 fn g29_combobox_items_add() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Dim cbo As New ComboBox()
@@ -737,16 +870,21 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert!(g.control_names.contains(&"cbocolors".to_string()), "Expected cboColors control");
+    assert!(
+        g.control_names.contains(&"cbocolors".to_string()),
+        "Expected cboColors control"
+    );
 }
 
 /// G30. ListBox.Items.Add -- adds items.
 #[test]
 
 fn g30_listbox_items_add() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Dim lst As New ListBox()
@@ -758,15 +896,20 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert!(g.control_names.contains(&"lstnames".to_string()), "Expected lstNames control");
+    assert!(
+        g.control_names.contains(&"lstnames".to_string()),
+        "Expected lstNames control"
+    );
 }
 
 /// G31. ComboBox SelectedIndexChanged handler.
 #[test]
 fn g31_combobox_selectedindexchanged_handler() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Dim cbo As New ComboBox()
@@ -779,17 +922,21 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert!(g.event_handlers.contains_key("cbo.selectedindexchanged"),
-        "Expected SelectedIndexChanged handler on cbo");
+    assert!(
+        g.event_handlers.contains_key("cbo.selectedindexchanged"),
+        "Expected SelectedIndexChanged handler on cbo"
+    );
 }
 
 /// G32. ListBox with multiple items added.
 #[test]
 
 fn g32_listbox_multiple_items() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Dim lst As New ListBox()
@@ -804,9 +951,13 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert!(g.control_names.contains(&"lstitems".to_string()), "Expected lstItems control");
+    assert!(
+        g.control_names.contains(&"lstitems".to_string()),
+        "Expected lstItems control"
+    );
 }
 
 // ============================================================
@@ -816,7 +967,8 @@ Dim f As New Form1()
 /// H33. Control with Anchor property set.
 #[test]
 fn h33_control_anchor_property() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Public Sub New()
@@ -827,15 +979,20 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert!(g.control_names.contains(&"txtanchored".to_string()), "Expected txtAnchored control");
+    assert!(
+        g.control_names.contains(&"txtanchored".to_string()),
+        "Expected txtAnchored control"
+    );
 }
 
 /// H34. Control with Dock property set.
 #[test]
 fn h34_control_dock_property() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Public Sub New()
@@ -846,15 +1003,20 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert!(g.control_names.contains(&"pnldocked".to_string()), "Expected pnlDocked control");
+    assert!(
+        g.control_names.contains(&"pnldocked".to_string()),
+        "Expected pnlDocked control"
+    );
 }
 
 /// H35. Multiple controls with different Anchor values.
 #[test]
 fn h35_multiple_anchors() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Public Sub New()
@@ -869,7 +1031,8 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
     assert_eq!(g.control_names.len(), 2, "Expected 2 controls");
 }
@@ -881,7 +1044,8 @@ Dim f As New Form1()
 /// I36. Handler receives sender parameter -- can reference it.
 #[test]
 fn i36_handler_sender_parameter() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Dim btn As New Button()
@@ -895,15 +1059,20 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert!(g.event_handlers.contains_key("btn.click"), "Expected Click handler on btn");
+    assert!(
+        g.event_handlers.contains_key("btn.click"),
+        "Expected Click handler on btn"
+    );
 }
 
 /// I37. Handler receives e parameter.
 #[test]
 fn i37_handler_e_parameter() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Dim btn As New Button()
@@ -917,15 +1086,20 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert!(g.event_handlers.contains_key("btn.click"), "Expected Click handler on btn");
+    assert!(
+        g.event_handlers.contains_key("btn.click"),
+        "Expected Click handler on btn"
+    );
 }
 
 /// I38. Handler with sender As Object, e As EventArgs -- compiles.
 #[test]
 fn i38_handler_standard_signature_compiles() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Dim btn As New Button()
@@ -938,16 +1112,24 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert!(g.control_names.contains(&"btn1".to_string()), "Expected btn1 control");
-    assert!(g.event_handlers.contains_key("btn.click"), "Expected Click handler on btn");
+    assert!(
+        g.control_names.contains(&"btn1".to_string()),
+        "Expected btn1 control"
+    );
+    assert!(
+        g.event_handlers.contains_key("btn.click"),
+        "Expected Click handler on btn"
+    );
 }
 
 /// I39. Handler ignores parameters (common pattern) -- works fine.
 #[test]
 fn i39_handler_ignores_parameters() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Dim btn As New Button()
@@ -961,10 +1143,17 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert!(g.control_names.contains(&"btn1".to_string()), "Expected btn1 control");
-    assert!(g.event_handlers.contains_key("btn.click"), "Expected Click handler on btn");
+    assert!(
+        g.control_names.contains(&"btn1".to_string()),
+        "Expected btn1 control"
+    );
+    assert!(
+        g.event_handlers.contains_key("btn.click"),
+        "Expected Click handler on btn"
+    );
 }
 
 // ============================================================
@@ -974,7 +1163,8 @@ Dim f As New Form1()
 /// J40. Two form classes defined -- both instantiable.
 #[test]
 fn j40_two_form_classes() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Public Class Form1
     Dim title As String = "Form One"
     Public Sub New()
@@ -995,14 +1185,16 @@ Dim f1 As New Form1()
 Dim f2 As New Form2()
 Console.WriteLine(f1.GetTitle())
 Console.WriteLine(f2.GetTitle())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Form One", "Form Two"]);
 }
 
 /// J41. Form1 field holds reference to Form2 instance.
 #[test]
 fn j41_form_holds_reference_to_other() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Public Class Form2
     Dim msg As String = "from form2"
     Public Sub New()
@@ -1022,14 +1214,16 @@ Public Class Form1
 End Class
 Dim f As New Form1()
 Console.WriteLine(f.GetChildMsg())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["from form2"]);
 }
 
 /// J42. Application.Run starts one form, other exists.
 #[test]
 fn j42_application_run_one_form() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Public Sub New()
@@ -1042,7 +1236,8 @@ End Class
 Dim f1 As New Form1()
 Dim f2 As New Form2()
 Application.Run(f1)
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
     assert!(g.should_run, "Expected should_run after Application.Run");
 }
@@ -1054,7 +1249,8 @@ Application.Run(f1)
 /// K43. New TabControl() created.
 #[test]
 fn k43_new_tabcontrol() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Public Sub New()
@@ -1064,15 +1260,20 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert!(g.control_names.contains(&"tabs1".to_string()), "Expected tabs1 control");
+    assert!(
+        g.control_names.contains(&"tabs1".to_string()),
+        "Expected tabs1 control"
+    );
 }
 
 /// K44. New TabPage() created with Text.
 #[test]
 fn k44_new_tabpage_with_text() {
-    let (_vm, _gui, _) = run_vb_gui(r#"
+    let (_vm, _gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Public Sub New()
@@ -1082,7 +1283,8 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     // Compiles without error
 }
 
@@ -1090,7 +1292,8 @@ Dim f As New Form1()
 #[test]
 
 fn k45_tabcontrol_with_tabpages() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Public Class Form1
     Public Sub New()
@@ -1108,7 +1311,11 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
     let g = gui.lock().unwrap();
-    assert!(g.control_names.contains(&"tabs1".to_string()), "Expected tabs1 control");
+    assert!(
+        g.control_names.contains(&"tabs1".to_string()),
+        "Expected tabs1 control"
+    );
 }

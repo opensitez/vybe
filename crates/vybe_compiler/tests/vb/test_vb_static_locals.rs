@@ -10,7 +10,9 @@ macro_rules! vb_case {
     };
 }
 
-vb_case!(static_local_counter_retains_value_across_calls, r#"
+vb_case!(
+    static_local_counter_retains_value_across_calls,
+    r#"
 Module M
     Function Counter() As Integer
         Static total As Integer = 0
@@ -24,9 +26,13 @@ Module M
         Console.WriteLine(Counter())
     End Sub
 End Module
-"#, ["1", "2", "3"]);
+"#,
+    ["1", "2", "3"]
+);
 
-vb_case!(static_local_counter_handles_negative_step, r#"
+vb_case!(
+    static_local_counter_handles_negative_step,
+    r#"
 Module M
     Function Counter() As Integer
         Static total As Integer = 10
@@ -39,9 +45,13 @@ Module M
         Console.WriteLine(Counter())
     End Sub
 End Module
-"#, ["8", "6"]);
+"#,
+    ["8", "6"]
+);
 
-vb_case!(static_local_counter_handles_zero_step, r#"
+vb_case!(
+    static_local_counter_handles_zero_step,
+    r#"
 Module M
     Function Counter() As Integer
         Static total As Integer = 5
@@ -54,9 +64,13 @@ Module M
         Console.WriteLine(Counter())
     End Sub
 End Module
-"#, ["5", "5"]);
+"#,
+    ["5", "5"]
+);
 
-vb_case!(static_local_string_accumulates_suffixes, r#"
+vb_case!(
+    static_local_string_accumulates_suffixes,
+    r#"
 Module M
     Function AppendNext(piece As String) As String
         Static text As String = ""
@@ -70,9 +84,13 @@ Module M
         Console.WriteLine(AppendNext("C"))
     End Sub
 End Module
-"#, ["A", "AB", "ABC"]);
+"#,
+    ["A", "AB", "ABC"]
+);
 
-vb_case!(static_local_boolean_toggle_flips_each_call, r#"
+vb_case!(
+    static_local_boolean_toggle_flips_each_call,
+    r#"
 Module M
     Function Toggle() As Boolean
         Static current As Boolean = False
@@ -86,9 +104,13 @@ Module M
         Console.WriteLine(Toggle())
     End Sub
 End Module
-"#, ["true", "false", "true"]);
+"#,
+    ["true", "false", "true"]
+);
 
-vb_case!(static_local_is_isolated_per_function, r#"
+vb_case!(
+    static_local_is_isolated_per_function,
+    r#"
 Module M
     Function LeftCounter() As Integer
         Static total As Integer = 0
@@ -109,9 +131,13 @@ Module M
         Console.WriteLine(RightCounter())
     End Sub
 End Module
-"#, ["1", "15", "2", "20"]);
+"#,
+    ["1", "15", "2", "20"]
+);
 
-vb_case!(static_local_multiple_values_can_coexist_in_one_function, r#"
+vb_case!(
+    static_local_multiple_values_can_coexist_in_one_function,
+    r#"
 Module M
     Function Snapshot() As String
         Static count As Integer = 0
@@ -126,9 +152,13 @@ Module M
         Console.WriteLine(Snapshot())
     End Sub
 End Module
-"#, ["1:seed1", "2:seed12"]);
+"#,
+    ["1:seed1", "2:seed12"]
+);
 
-vb_case!(static_local_in_sub_tracks_invocation_count, r#"
+vb_case!(
+    static_local_in_sub_tracks_invocation_count,
+    r#"
 Module M
     Sub Report()
         Static callCount As Integer = 0
@@ -142,9 +172,13 @@ Module M
         Report()
     End Sub
 End Module
-"#, ["1", "2", "3"]);
+"#,
+    ["1", "2", "3"]
+);
 
-vb_case!(static_local_can_remember_last_argument, r#"
+vb_case!(
+    static_local_can_remember_last_argument,
+    r#"
 Module M
     Function Remember(value As Integer) As String
         Static previous As Integer = -1
@@ -159,9 +193,13 @@ Module M
         Console.WriteLine(Remember(2))
     End Sub
 End Module
-"#, ["-1->4", "4->9", "9->2"]);
+"#,
+    ["-1->4", "4->9", "9->2"]
+);
 
-vb_case!(static_local_can_accumulate_string_lengths, r#"
+vb_case!(
+    static_local_can_accumulate_string_lengths,
+    r#"
 Module M
     Function CountChars(text As String) As Integer
         Static total As Integer = 0
@@ -174,9 +212,13 @@ Module M
         Console.WriteLine(CountChars("there"))
     End Sub
 End Module
-"#, ["2", "7"]);
+"#,
+    ["2", "7"]
+);
 
-vb_case!(static_local_can_drive_loop_guard, r#"
+vb_case!(
+    static_local_can_drive_loop_guard,
+    r#"
 Module M
     Function NextValue() As Integer
         Static total As Integer = 0
@@ -191,9 +233,13 @@ Module M
         Console.WriteLine(NextValue())
     End Sub
 End Module
-"#, ["loop", "loop", "loop", "10"]);
+"#,
+    ["loop", "loop", "loop", "10"]
+);
 
-vb_case!(static_local_two_string_functions_do_not_share_state, r#"
+vb_case!(
+    static_local_two_string_functions_do_not_share_state,
+    r#"
 Module M
     Function LeftText(value As String) As String
         Static text As String = "L"
@@ -214,9 +260,13 @@ Module M
         Console.WriteLine(RightText("d"))
     End Sub
 End Module
-"#, ["La", "Rb", "Lac", "Rbd"]);
+"#,
+    ["La", "Rb", "Lac", "Rbd"]
+);
 
-vb_case!(static_local_can_preserve_branch_updates, r#"
+vb_case!(
+    static_local_can_preserve_branch_updates,
+    r#"
 Module M
     Function Track(flag As Boolean) As Integer
         Static total As Integer = 0
@@ -234,9 +284,13 @@ Module M
         Console.WriteLine(Track(False))
     End Sub
 End Module
-"#, ["1", "11", "12"]);
+"#,
+    ["1", "11", "12"]
+);
 
-vb_case!(static_local_can_start_from_negative_seed, r#"
+vb_case!(
+    static_local_can_start_from_negative_seed,
+    r#"
 Module M
     Function Counter() As Integer
         Static total As Integer = -5
@@ -249,9 +303,13 @@ Module M
         Console.WriteLine(Counter())
     End Sub
 End Module
-"#, ["-2", "1"]);
+"#,
+    ["-2", "1"]
+);
 
-vb_case!(static_local_can_store_boolean_and_count_together, r#"
+vb_case!(
+    static_local_can_store_boolean_and_count_together,
+    r#"
 Module M
     Function Snapshot() As String
         Static flag As Boolean = False
@@ -269,9 +327,13 @@ Module M
         Console.WriteLine(Snapshot())
     End Sub
 End Module
-"#, ["true:1", "false:1", "true:2"]);
+"#,
+    ["true:1", "false:1", "true:2"]
+);
 
-vb_case!(static_local_can_be_used_from_instance_method, r#"
+vb_case!(
+    static_local_can_be_used_from_instance_method,
+    r#"
 Class Worker
     Public Function NextId() As Integer
         Static current As Integer = 100
@@ -287,9 +349,13 @@ Module M
         Console.WriteLine(worker.NextId())
     End Sub
 End Module
-"#, ["101", "102"]);
+"#,
+    ["101", "102"]
+);
 
-vb_case!(static_local_can_be_used_from_shared_method, r#"
+vb_case!(
+    static_local_can_be_used_from_shared_method,
+    r#"
 Class Worker
     Public Shared Function NextBatch() As Integer
         Static batch As Integer = 1
@@ -305,9 +371,13 @@ Module M
         Console.WriteLine(Worker.NextBatch())
     End Sub
 End Module
-"#, ["2", "4", "8"]);
+"#,
+    ["2", "4", "8"]
+);
 
-vb_case!(static_local_can_accumulate_with_varying_arguments, r#"
+vb_case!(
+    static_local_can_accumulate_with_varying_arguments,
+    r#"
 Module M
     Function AddValue(value As Integer) As Integer
         Static total As Integer = 0
@@ -321,4 +391,6 @@ Module M
         Console.WriteLine(AddValue(-2))
     End Sub
 End Module
-"#, ["3", "10", "8"]);
+"#,
+    ["3", "10", "8"]
+);

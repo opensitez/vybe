@@ -6,7 +6,8 @@ use super::helpers::run_vb;
 
 #[test]
 fn enum_basic() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Enum Color
     Red
     Green
@@ -19,13 +20,15 @@ Module M
         Console.WriteLine(c)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn enum_with_values() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Enum Status
     Active = 1
     Inactive = 0
@@ -38,13 +41,15 @@ Module M
         Console.WriteLine(s)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn structure_basic() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Structure Point
     Public X As Integer
     Public Y As Integer
@@ -58,13 +63,15 @@ Module M
         Console.WriteLine(p.X + p.Y)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30"]);
 }
 
 #[test]
 fn interface_basic() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Interface IGreeter
     Function Greet() As String
 End Interface
@@ -82,13 +89,15 @@ Module M
         Console.WriteLine(g.Greet())
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Hello!"]);
 }
 
 #[test]
 fn cint_conversion() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim s As String = "42"
@@ -96,13 +105,15 @@ Module M
         Console.WriteLine(n + 8)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["50"]);
 }
 
 #[test]
 fn cstr_conversion() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim n As Integer = 100
@@ -110,13 +121,15 @@ Module M
         Console.WriteLine(s & " items")
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100 items"]);
 }
 
 #[test]
 fn isnothing_check() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim s As String = Nothing
@@ -125,13 +138,18 @@ Module M
         Console.WriteLine(IsNothing(s))
     End Sub
 End Module
-"#);
-    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false"]));
+"#,
+    );
+    assert_eq!(
+        out,
+        super::helpers::dotnet_expected_lines(&["true", "false"])
+    );
 }
 
 #[test]
 fn type_integer_operations() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim a As Integer = 10
@@ -143,13 +161,15 @@ Module M
         Console.WriteLine(a Mod b)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["13", "7", "30", "3", "1"]);
 }
 
 #[test]
 fn type_double_operations() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim a As Double = 10.5
@@ -157,13 +177,15 @@ Module M
         Console.WriteLine(a + b)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["13.7"]);
 }
 
 #[test]
 fn type_boolean() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim t As Boolean = True
@@ -175,26 +197,33 @@ Module M
         Console.WriteLine(Not t)
     End Sub
 End Module
-"#);
-    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false", "false", "true", "false"]));
+"#,
+    );
+    assert_eq!(
+        out,
+        super::helpers::dotnet_expected_lines(&["true", "false", "false", "true", "false"])
+    );
 }
 
 #[test]
 fn constant_declaration() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Const PI As Double = 3.14159
     Sub Main()
         Console.WriteLine(PI)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3.14159"]);
 }
 
 #[test]
 fn nothing_assignment() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class MyClass
     Public Value As Integer = 42
 End Class
@@ -207,6 +236,7 @@ Module M
         Console.WriteLine(IsNothing(obj))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, super::helpers::dotnet_expected_lines(&["42", "true"]));
 }

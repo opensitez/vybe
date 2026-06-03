@@ -10,7 +10,9 @@ macro_rules! vb_case {
     };
 }
 
-vb_case!(option_explicit_on_allows_basic_program_structure, r#"
+vb_case!(
+    option_explicit_on_allows_basic_program_structure,
+    r#"
 Option Explicit On
 Module M
     Sub Main()
@@ -19,9 +21,13 @@ Module M
         Console.WriteLine(total)
     End Sub
 End Module
-"#, ["2"]);
+"#,
+    ["2"]
+);
 
-vb_case!(option_explicit_off_allows_basic_program_structure, r#"
+vb_case!(
+    option_explicit_off_allows_basic_program_structure,
+    r#"
 Option Explicit Off
 Module M
     Sub Main()
@@ -30,9 +36,13 @@ Module M
         Console.WriteLine(total)
     End Sub
 End Module
-"#, ["5"]);
+"#,
+    ["5"]
+);
 
-vb_case!(option_strict_on_allows_typed_arithmetic, r#"
+vb_case!(
+    option_strict_on_allows_typed_arithmetic,
+    r#"
 Option Strict On
 Module M
     Sub Main()
@@ -41,9 +51,13 @@ Module M
         Console.WriteLine(left + right)
     End Sub
 End Module
-"#, ["9"]);
+"#,
+    ["9"]
+);
 
-vb_case!(option_strict_off_allows_typed_arithmetic, r#"
+vb_case!(
+    option_strict_off_allows_typed_arithmetic,
+    r#"
 Option Strict Off
 Module M
     Sub Main()
@@ -52,9 +66,13 @@ Module M
         Console.WriteLine(left - right)
     End Sub
 End Module
-"#, ["5"]);
+"#,
+    ["5"]
+);
 
-vb_case!(option_infer_on_preserves_local_inference_surface, r#"
+vb_case!(
+    option_infer_on_preserves_local_inference_surface,
+    r#"
 Option Infer On
 Module M
     Sub Main()
@@ -62,9 +80,13 @@ Module M
         Console.WriteLine(total + 1)
     End Sub
 End Module
-"#, ["7"]);
+"#,
+    ["7"]
+);
 
-vb_case!(option_infer_off_with_explicit_type_remains_supported, r#"
+vb_case!(
+    option_infer_off_with_explicit_type_remains_supported,
+    r#"
 Option Infer Off
 Module M
     Sub Main()
@@ -72,9 +94,13 @@ Module M
         Console.WriteLine(total + 2)
     End Sub
 End Module
-"#, ["10"]);
+"#,
+    ["10"]
+);
 
-vb_case!(option_directives_can_be_combined_in_pairs, r#"
+vb_case!(
+    option_directives_can_be_combined_in_pairs,
+    r#"
 Option Explicit On
 Option Strict On
 Module M
@@ -83,9 +109,13 @@ Module M
         Console.WriteLine(total * 4)
     End Sub
 End Module
-"#, ["12"]);
+"#,
+    ["12"]
+);
 
-vb_case!(option_directives_can_be_combined_across_all_three_settings, r#"
+vb_case!(
+    option_directives_can_be_combined_across_all_three_settings,
+    r#"
 Option Explicit On
 Option Strict On
 Option Infer On
@@ -95,4 +125,6 @@ Module M
         Console.WriteLine(total + 3)
     End Sub
 End Module
-"#, ["12"]);
+"#,
+    ["12"]
+);

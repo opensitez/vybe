@@ -6,114 +6,132 @@ use super::helpers::run_vb;
 
 #[test]
 fn builtin_left() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(Left("Hello World", 5))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Hello"]);
 }
 
 #[test]
 fn builtin_right() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(Right("Hello World", 5))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["World"]);
 }
 
 #[test]
 fn builtin_mid() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(Mid("Hello World", 7))
         Console.WriteLine(Mid("Hello World", 7, 3))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["World", "Wor"]);
 }
 
 #[test]
 fn builtin_instr() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(InStr("Hello World", "World"))
         Console.WriteLine(InStr("Hello World", "xyz"))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["7", "0"]);
 }
 
 #[test]
 fn builtin_replace() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(Replace("Hello World", "World", "VB"))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Hello VB"]);
 }
 
 #[test]
 fn builtin_split_join() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Dim parts() As String = Split("a,b,c", ",")
         Console.WriteLine(Join(parts, "-"))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["a-b-c"]);
 }
 
 #[test]
 fn builtin_ltrim_rtrim() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(LTrim("  hello"))
         Console.WriteLine(RTrim("hello  "))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["hello", "hello"]);
 }
 
 #[test]
 fn builtin_asc_chr() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(Asc("A"))
         Console.WriteLine(Chr(65))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["65", "A"]);
 }
 
 #[test]
 fn builtin_space() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(">" & Space(3) & "<")
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec![">   <"]);
 }
 
@@ -123,43 +141,50 @@ End Module
 
 #[test]
 fn builtin_cstr() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(CStr(42))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn builtin_cint() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(CInt(3.7))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["4"]);
 }
 
 #[test]
 fn builtin_val() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(Val("123") + 1)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["124"]);
 }
 
 #[test]
 fn builtin_isnothing() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Dim x As Object = Nothing
@@ -168,13 +193,18 @@ Module Program
         Console.WriteLine(IsNothing(y))
     End Sub
 End Module
-"#);
-    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false"]));
+"#,
+    );
+    assert_eq!(
+        out,
+        super::helpers::dotnet_expected_lines(&["true", "false"])
+    );
 }
 
 #[test]
 fn builtin_isnumeric() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(IsNumeric("123"))
@@ -182,8 +212,12 @@ Module Program
         Console.WriteLine(IsNumeric(42))
     End Sub
 End Module
-"#);
-    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "false", "true"]));
+"#,
+    );
+    assert_eq!(
+        out,
+        super::helpers::dotnet_expected_lines(&["true", "false", "true"])
+    );
 }
 
 // ============================================================
@@ -192,14 +226,16 @@ End Module
 
 #[test]
 fn builtin_ubound() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Dim arr() As Integer = {10, 20, 30}
         Console.WriteLine(UBound(arr))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
@@ -209,7 +245,8 @@ End Module
 
 #[test]
 fn select_case_basic() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Dim x As Integer = 2
@@ -223,13 +260,15 @@ Module Program
         End Select
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["two"]);
 }
 
 #[test]
 fn select_case_else() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Dim x As Integer = 99
@@ -243,13 +282,15 @@ Module Program
         End Select
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["other"]);
 }
 
 #[test]
 fn select_case_string() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Dim color As String = "red"
@@ -263,7 +304,8 @@ Module Program
         End Select
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["fire"]);
 }
 
@@ -273,7 +315,8 @@ End Module
 
 #[test]
 fn math_methods() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(Math.Abs(-7))
@@ -283,7 +326,8 @@ Module Program
         Console.WriteLine(Math.Max(3, 7))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["7", "4", "256", "3", "7"]);
 }
 
@@ -293,7 +337,8 @@ End Module
 
 #[test]
 fn foreach_loop() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Dim items() As String = {"apple", "banana", "cherry"}
@@ -302,7 +347,8 @@ Module Program
         Next
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["apple", "banana", "cherry"]);
 }
 
@@ -312,13 +358,15 @@ End Module
 
 #[test]
 fn nested_builtin_calls() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(UCase(Left("hello world", 5)))
         Console.WriteLine(Len(Trim("  hi  ")))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["HELLO", "2"]);
 }

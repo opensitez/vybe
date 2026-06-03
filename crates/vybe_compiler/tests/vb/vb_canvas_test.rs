@@ -34,28 +34,38 @@ fn drain_recording(
 /// a Graphics directly + calling FillRectangle reaches the recording.
 #[test]
 fn graphics_fillrectangle_reaches_default_recording() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Drawing
 Dim g As New Graphics()
 Dim b As New SolidBrush(Color.Blue)
 g.FillRectangle(b, 10, 20, 30, 40)
-"#);
+"#,
+    );
 
     // Direct `New Graphics()` stamps __control_name = "graphics" so
     // the recording lands under that key.
     let cmds = drain_recording(&gui, "graphics");
-    assert!(!cmds.is_empty(), "expected at least one drawing command, got none");
+    assert!(
+        !cmds.is_empty(),
+        "expected at least one drawing command, got none"
+    );
 
     // The Body for FillRectangle issues:
     //   canvasSetFillColor(this, r, g, b, a)
     //   canvasFillRect(this, x, y, w, h)
     let has_fill_color = cmds.iter().any(|c| matches!(c, DrawCmd::SetFillColor(_)));
-    let has_fill_rect = cmds.iter().any(|c|
+    let has_fill_rect = cmds.iter().any(|c| {
         matches!(c, DrawCmd::FillRect { x, y, w, h, .. }
             if (*x - 10.0).abs() < 0.01 && (*y - 20.0).abs() < 0.01
-            && (*w - 30.0).abs() < 0.01 && (*h - 40.0).abs() < 0.01));
+            && (*w - 30.0).abs() < 0.01 && (*h - 40.0).abs() < 0.01)
+    });
     assert!(has_fill_color, "expected SetFillColor in {:?}", cmds);
-    assert!(has_fill_rect, "expected FillRect(10, 20, 30, 40) in {:?}", cmds);
+    assert!(
+        has_fill_rect,
+        "expected FillRect(10, 20, 30, 40) in {:?}",
+        cmds
+    );
 }
 
 /// Smoke test: extended Graphics methods — DrawArc, DrawPie, FillPie,
@@ -68,7 +78,8 @@ g.FillRectangle(b, 10, 20, 30, 40)
 /// emit.
 #[test]
 fn graphics_extended_methods_record_correctly() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Drawing
 Dim g As New Graphics()
 Dim p As New Pen(Color.Red, 2)
@@ -95,73 +106,109 @@ g.ResetTransform()
 g.SetClip(0, 0, 200, 200)
 g.FillRectangle(b, 5, 5, 10, 10)
 g.ResetClip()
-"#);
+"#,
+    );
 
     let cmds = drain_recording(&gui, "graphics");
     assert!(!cmds.is_empty(), "expected recorded commands");
 
     // DrawArc → BeginPath + Arc + Stroke
     let has_arc = cmds.iter().any(|c| matches!(c, DrawCmd::Arc { .. }));
-    assert!(has_arc, "expected DrawCmd::Arc from DrawArc, got {:?}", cmds);
+    assert!(
+        has_arc,
+        "expected DrawCmd::Arc from DrawArc, got {:?}",
+        cmds
+    );
 
     // DrawBezier → BezierCurveTo
-    let has_bezier = cmds.iter().any(|c|
+    let has_bezier = cmds.iter().any(|c| {
         matches!(c, DrawCmd::BezierCurveTo { x, y, .. }
-            if (*x - 150.0).abs() < 0.01 && (*y - 0.0).abs() < 0.01));
-    assert!(has_bezier, "expected DrawCmd::BezierCurveTo from DrawBezier");
+            if (*x - 150.0).abs() < 0.01 && (*y - 0.0).abs() < 0.01)
+    });
+    assert!(
+        has_bezier,
+        "expected DrawCmd::BezierCurveTo from DrawBezier"
+    );
 
     // Save / Restore
-    assert!(cmds.iter().any(|c| matches!(c, DrawCmd::Save)),    "expected Save");
-    assert!(cmds.iter().any(|c| matches!(c, DrawCmd::Restore)), "expected Restore");
+    assert!(
+        cmds.iter().any(|c| matches!(c, DrawCmd::Save)),
+        "expected Save"
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(c, DrawCmd::Restore)),
+        "expected Restore"
+    );
 
     // TranslateTransform → Translate(50, 50)
-    let has_translate = cmds.iter().any(|c|
+    let has_translate = cmds.iter().any(|c| {
         matches!(c, DrawCmd::Translate(x, y)
-            if (*x - 50.0).abs() < 0.01 && (*y - 50.0).abs() < 0.01));
+            if (*x - 50.0).abs() < 0.01 && (*y - 50.0).abs() < 0.01)
+    });
     assert!(has_translate, "expected Translate(50, 50)");
 
     // RotateTransform(45 deg) → Rotate(45° in radians)
-    let has_rotate = cmds.iter().any(|c|
+    let has_rotate = cmds.iter().any(|c| {
         matches!(c, DrawCmd::Rotate(rad)
-            if (*rad - 45.0_f32.to_radians()).abs() < 0.01));
+            if (*rad - 45.0_f32.to_radians()).abs() < 0.01)
+    });
     assert!(has_rotate, "expected Rotate(~0.785)");
 
     // ScaleTransform → Scale(2, 2)
-    let has_scale = cmds.iter().any(|c|
+    let has_scale = cmds.iter().any(|c| {
         matches!(c, DrawCmd::Scale(sx, sy)
-            if (*sx - 2.0).abs() < 0.01 && (*sy - 2.0).abs() < 0.01));
+            if (*sx - 2.0).abs() < 0.01 && (*sy - 2.0).abs() < 0.01)
+    });
     assert!(has_scale, "expected Scale(2, 2)");
 
     // ResetTransform
-    assert!(cmds.iter().any(|c| matches!(c, DrawCmd::ResetTransform)),
-        "expected ResetTransform");
+    assert!(
+        cmds.iter().any(|c| matches!(c, DrawCmd::ResetTransform)),
+        "expected ResetTransform"
+    );
 
     // SetClip → BeginPath + Rect + Clip
-    assert!(cmds.iter().any(|c| matches!(c, DrawCmd::Clip)),     "expected Clip");
-    assert!(cmds.iter().any(|c| matches!(c, DrawCmd::ResetClip)), "expected ResetClip");
+    assert!(
+        cmds.iter().any(|c| matches!(c, DrawCmd::Clip)),
+        "expected Clip"
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(c, DrawCmd::ResetClip)),
+        "expected ResetClip"
+    );
 }
 
 /// Smoke test: `Graphics.DrawString` produces a SetFillColor + SetFont
 /// + FillText sequence.
 #[test]
 fn graphics_drawstring_records_text() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Drawing
 Dim g As New Graphics()
 Dim f As New Font("Arial", 16)
 Dim b As New SolidBrush(Color.Black)
 g.DrawString("Hello", f, b, 50, 80)
-"#);
+"#,
+    );
 
     let cmds = drain_recording(&gui, "graphics");
-    assert!(cmds.iter().any(|c| matches!(c, DrawCmd::SetFont(_))),
-        "expected SetFont in {:?}", cmds);
-    let has_text = cmds.iter().any(|c|
+    assert!(
+        cmds.iter().any(|c| matches!(c, DrawCmd::SetFont(_))),
+        "expected SetFont in {:?}",
+        cmds
+    );
+    let has_text = cmds.iter().any(|c| {
         matches!(c, DrawCmd::FillText { text, x, y }
             if text == "Hello"
             && (*x - 50.0).abs() < 0.01
-            && (*y - 80.0).abs() < 0.01));
-    assert!(has_text, "expected FillText(\"Hello\", 50, 80) in {:?}", cmds);
+            && (*y - 80.0).abs() < 0.01)
+    });
+    assert!(
+        has_text,
+        "expected FillText(\"Hello\", 50, 80) in {:?}",
+        cmds
+    );
 }
 
 /// Smoke test 2: `PictureBox` (the canonical user-facing path).
@@ -169,7 +216,8 @@ g.DrawString("Hello", f, b, 50, 80)
 /// issued through `pb.CreateGraphics().DrawLine(...)`.
 #[test]
 fn picturebox_drawline_reaches_widget_recording() {
-    let (_vm, gui, _) = run_vb_gui(r#"
+    let (_vm, gui, _) = run_vb_gui(
+        r#"
 Imports System.Windows.Forms
 Imports System.Drawing
 Public Class Form1
@@ -183,7 +231,8 @@ Public Class Form1
     End Sub
 End Class
 Dim f As New Form1()
-"#);
+"#,
+    );
 
     // The PictureBox widget is registered with name "art" via the
     // host's add_widget. CreateGraphics returns a Graphics handle
@@ -230,12 +279,14 @@ Dim f As New Form1()
     for (name, _) in &all_recordings {
         let cmds = drain_recording(&gui, name);
         let has_stroke = cmds.iter().any(|c| matches!(c, DrawCmd::Stroke));
-        let has_move = cmds.iter().any(|c|
+        let has_move = cmds.iter().any(|c| {
             matches!(c, DrawCmd::MoveTo(x, y)
-                if (*x - 10.0).abs() < 0.01 && (*y - 20.0).abs() < 0.01));
-        let has_line = cmds.iter().any(|c|
+                if (*x - 10.0).abs() < 0.01 && (*y - 20.0).abs() < 0.01)
+        });
+        let has_line = cmds.iter().any(|c| {
             matches!(c, DrawCmd::LineTo(x, y)
-                if (*x - 100.0).abs() < 0.01 && (*y - 200.0).abs() < 0.01));
+                if (*x - 100.0).abs() < 0.01 && (*y - 200.0).abs() < 0.01)
+        });
         if has_stroke && has_move && has_line {
             found_drawline = true;
             break;

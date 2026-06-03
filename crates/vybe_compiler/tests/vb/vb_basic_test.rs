@@ -6,31 +6,36 @@ use super::helpers::run_vb;
 
 #[test]
 fn hello_world() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine("Hello, World!")
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Hello, World!"]);
 }
 
 #[test]
 fn print_number() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(42)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn print_multiple_values() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine("one")
@@ -38,7 +43,8 @@ Module Program
         Console.WriteLine("three")
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["one", "two", "three"]);
 }
 
@@ -48,7 +54,8 @@ End Module
 
 #[test]
 fn dim_and_assign() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Dim x As Integer = 10
@@ -56,26 +63,30 @@ Module Program
         Console.WriteLine(x + y)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30"]);
 }
 
 #[test]
 fn string_variable() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Dim name As String = "Alice"
         Console.WriteLine("Hello " & name)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Hello Alice"]);
 }
 
 #[test]
 fn variable_reassign() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Dim x As Integer = 5
@@ -83,7 +94,8 @@ Module Program
         Console.WriteLine(x)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["15"]);
 }
 
@@ -93,7 +105,8 @@ End Module
 
 #[test]
 fn arithmetic_operations() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(10 + 3)
@@ -102,43 +115,50 @@ Module Program
         Console.WriteLine(10 / 4)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["13", "7", "30", "2.5"]);
 }
 
 #[test]
 fn integer_division() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(10 \ 3)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
 #[test]
 fn modulo_operation() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(10 Mod 3)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn exponent_operation() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(2 ^ 10)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1024"]);
 }
 
@@ -148,7 +168,8 @@ End Module
 
 #[test]
 fn if_then() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Dim x As Integer = 10
@@ -157,13 +178,15 @@ Module Program
         End If
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["big"]);
 }
 
 #[test]
 fn if_else() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Dim x As Integer = 3
@@ -174,13 +197,15 @@ Module Program
         End If
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["small"]);
 }
 
 #[test]
 fn if_elseif_else() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Dim x As Integer = 5
@@ -193,7 +218,8 @@ Module Program
         End If
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["medium"]);
 }
 
@@ -203,7 +229,8 @@ End Module
 
 #[test]
 fn for_loop() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Dim total As Integer = 0
@@ -213,13 +240,15 @@ Module Program
         Console.WriteLine(total)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["15"]);
 }
 
 #[test]
 fn for_loop_with_step() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         For i As Integer = 0 To 10 Step 2
@@ -227,7 +256,8 @@ Module Program
         Next
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "2", "4", "6", "8", "10"]);
 }
 
@@ -237,7 +267,8 @@ End Module
 
 #[test]
 fn while_loop() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Dim i As Integer = 0
@@ -247,7 +278,8 @@ Module Program
         End While
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "1", "2", "3", "4"]);
 }
 
@@ -257,7 +289,8 @@ End Module
 
 #[test]
 fn do_while_loop() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Dim i As Integer = 0
@@ -267,13 +300,15 @@ Module Program
         Loop
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "1", "2"]);
 }
 
 #[test]
 fn do_loop_until() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Dim i As Integer = 0
@@ -283,7 +318,8 @@ Module Program
         Loop Until i >= 3
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "1", "2"]);
 }
 
@@ -293,7 +329,8 @@ End Module
 
 #[test]
 fn sub_call() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Greet(name As String)
         Console.WriteLine("Hello " & name)
@@ -303,13 +340,15 @@ Module Program
         Greet("World")
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Hello World"]);
 }
 
 #[test]
 fn function_return() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Function Add(a As Integer, b As Integer) As Integer
         Add = a + b
@@ -319,13 +358,15 @@ Module Program
         Console.WriteLine(Add(3, 4))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["7"]);
 }
 
 #[test]
 fn function_with_return_statement() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Function Max(a As Integer, b As Integer) As Integer
         If a > b Then
@@ -338,13 +379,15 @@ Module Program
         Console.WriteLine(Max(10, 20))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["20"]);
 }
 
 #[test]
 fn recursive_function() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Function Factorial(n As Integer) As Integer
         If n <= 1 Then
@@ -357,7 +400,8 @@ Module Program
         Console.WriteLine(Factorial(5))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["120"]);
 }
 
@@ -367,7 +411,8 @@ End Module
 
 #[test]
 fn boolean_operations() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(True And False)
@@ -375,8 +420,12 @@ Module Program
         Console.WriteLine(Not True)
     End Sub
 End Module
-"#);
-    assert_eq!(out, super::helpers::dotnet_expected_lines(&["false", "true", "false"]));
+"#,
+    );
+    assert_eq!(
+        out,
+        super::helpers::dotnet_expected_lines(&["false", "true", "false"])
+    );
 }
 
 // ============================================================
@@ -385,7 +434,8 @@ End Module
 
 #[test]
 fn string_concat() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Dim a As String = "Hello"
@@ -393,7 +443,8 @@ Module Program
         Console.WriteLine(a & b)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Hello World"]);
 }
 
@@ -403,51 +454,59 @@ End Module
 
 #[test]
 fn builtin_ucase_lcase() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(UCase("hello"))
         Console.WriteLine(LCase("WORLD"))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["HELLO", "world"]);
 }
 
 #[test]
 fn builtin_len() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(Len("hello"))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5"]);
 }
 
 #[test]
 fn builtin_trim() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(Trim("  hello  "))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["hello"]);
 }
 
 #[test]
 fn builtin_math() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(Abs(-5))
         Console.WriteLine(Math.Floor(3.7))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5", "3"]);
 }
 
@@ -457,7 +516,8 @@ End Module
 
 #[test]
 fn try_catch() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Try
@@ -468,7 +528,8 @@ Module Program
         Console.WriteLine("done")
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["caught", "done"]);
 }
 
@@ -478,7 +539,8 @@ End Module
 
 #[test]
 fn comparison_operators() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Console.WriteLine(5 = 5)
@@ -489,8 +551,12 @@ Module Program
         Console.WriteLine(5 >= 5)
     End Sub
 End Module
-"#);
-    assert_eq!(out, super::helpers::dotnet_expected_lines(&["true", "true", "true", "true", "true", "true"]));
+"#,
+    );
+    assert_eq!(
+        out,
+        super::helpers::dotnet_expected_lines(&["true", "true", "true", "true", "true", "true"])
+    );
 }
 
 // ============================================================
@@ -499,7 +565,8 @@ End Module
 
 #[test]
 fn nested_calls() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Function Double(n As Integer) As Integer
         Double = n * 2
@@ -513,7 +580,8 @@ Module Program
         Console.WriteLine(Double(AddOne(4)))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10"]);
 }
 
@@ -523,13 +591,15 @@ End Module
 
 #[test]
 fn constants() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module Program
     Sub Main()
         Const PI As Double = 3.14
         Console.WriteLine(PI)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3.14"]);
 }

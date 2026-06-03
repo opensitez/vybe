@@ -7,7 +7,8 @@ use super::helpers::run_vb;
 
 #[test]
 fn select_case_basic() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim x As Integer = 2
@@ -23,13 +24,15 @@ Module M
         End Select
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["two"]);
 }
 
 #[test]
 fn select_case_string() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim color As String = "red"
@@ -43,13 +46,15 @@ Module M
         End Select
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["R"]);
 }
 
 #[test]
 fn select_case_else() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim x As Integer = 99
@@ -61,13 +66,15 @@ Module M
         End Select
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["default"]);
 }
 
 #[test]
 fn if_elseif_chain() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim score As Integer = 75
@@ -82,26 +89,30 @@ Module M
         End If
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["C"]);
 }
 
 #[test]
 fn single_line_if() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim x As Integer = 5
         If x > 3 Then Console.WriteLine("big") Else Console.WriteLine("small")
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["big"]);
 }
 
 #[test]
 fn for_loop_basic() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim sum As Integer = 0
@@ -111,13 +122,15 @@ Module M
         Console.WriteLine(sum)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["15"]);
 }
 
 #[test]
 fn for_loop_step() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim sum As Integer = 0
@@ -127,13 +140,15 @@ Module M
         Console.WriteLine(sum)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30"]);
 }
 
 #[test]
 fn for_loop_negative_step() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         For i As Integer = 5 To 1 Step -1
@@ -141,13 +156,15 @@ Module M
         Next
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5", "4", "3", "2", "1"]);
 }
 
 #[test]
 fn while_loop() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim i As Integer = 0
@@ -157,13 +174,15 @@ Module M
         End While
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "1", "2"]);
 }
 
 #[test]
 fn do_while_loop() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim i As Integer = 0
@@ -173,13 +192,15 @@ Module M
         Loop
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "1", "2"]);
 }
 
 #[test]
 fn do_loop_until() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim i As Integer = 0
@@ -189,13 +210,15 @@ Module M
         Console.WriteLine(i)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
 #[test]
 fn for_each_array() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim arr() As Integer = {10, 20, 30}
@@ -206,13 +229,15 @@ Module M
         Console.WriteLine(sum)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["60"]);
 }
 
 #[test]
 fn exit_for() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         For i As Integer = 1 To 100
@@ -221,13 +246,15 @@ Module M
         Next
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "2", "3"]);
 }
 
 #[test]
 fn exit_while() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim i As Integer = 0
@@ -238,13 +265,15 @@ Module M
         Console.WriteLine(i)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
 #[test]
 fn continue_for() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim sum As Integer = 0
@@ -255,13 +284,15 @@ Module M
         Console.WriteLine(sum)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30"]);
 }
 
 #[test]
 fn nested_loops() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Main()
         Dim count As Integer = 0
@@ -273,13 +304,15 @@ Module M
         Console.WriteLine(count)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["9"]);
 }
 
 #[test]
 fn with_block() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Class Person
     Public Name As String
     Public Age As Integer
@@ -296,13 +329,15 @@ Module M
         Console.WriteLine(p.Age)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Alice", "30"]);
 }
 
 #[test]
 fn exit_sub() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Sub Process(x As Integer)
         If x < 0 Then Exit Sub
@@ -314,13 +349,15 @@ Module M
         Process(10)
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5", "10"]);
 }
 
 #[test]
 fn exit_function() {
-    let out = run_vb(r#"
+    let out = run_vb(
+        r#"
 Module M
     Function SafeDiv(a As Integer, b As Integer) As Integer
         If b = 0 Then
@@ -334,6 +371,7 @@ Module M
         Console.WriteLine(SafeDiv(10, 0))
     End Sub
 End Module
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5", "-1"]);
 }
