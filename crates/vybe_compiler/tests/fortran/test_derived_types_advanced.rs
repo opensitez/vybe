@@ -4,7 +4,8 @@ use super::helpers::{compile_ok, run_prints};
 
 #[test]
 fn type_constructor_positional() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 program test
     type :: Point
         real :: x, y
@@ -13,13 +14,15 @@ program test
     p = Point(3.0, 4.0)
     print *, p%x
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
 #[test]
 fn type_constructor_keyword() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 program test
     type :: Color
         integer :: r, g, b
@@ -28,13 +31,15 @@ program test
     red = Color(r=255, g=0, b=0)
     print *, red%r
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["255"]);
 }
 
 #[test]
 fn type_default_init() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     type :: Config
         integer :: timeout = 30
@@ -44,14 +49,16 @@ program test
     type(Config) :: cfg
     print *, cfg%timeout
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Nested derived types ──────────────────────────────────────
 
 #[test]
 fn nested_type() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     type :: Point
         real :: x, y
@@ -66,12 +73,14 @@ program test
     c%radius = 5.0
     print *, c%radius
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn nested_type_three_deep() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     type :: Coord
         real :: val
@@ -86,14 +95,16 @@ program test
     s%start%x%val = 1.0
     print *, s%start%x%val
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Type-bound procedures ─────────────────────────────────────
 
 #[test]
 fn type_bound_subroutine() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 program test
     type :: Counter
         integer :: n = 0
@@ -116,13 +127,15 @@ contains
         v = self%n
     end function get
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn module_type_bound_subroutine() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 module counters
     implicit none
 
@@ -153,13 +166,15 @@ program test
     call c%inc()
     print *, c%get()
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn subroutine_populates_derived_type_out_param() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 program test
     type :: Counter
         integer :: n = 0
@@ -173,13 +188,15 @@ contains
         counter%n = 7
     end subroutine fill
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["7"]);
 }
 
 #[test]
 fn assumed_shape_intrinsics_populate_derived_type_out_param() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 program test
     type :: Stats
         integer :: n = 0
@@ -201,13 +218,15 @@ contains
         result%hi = maxval(data)
     end subroutine fill
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3", "1", "3"]);
 }
 
 #[test]
 fn type_bound_function() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     type :: Vector
         real :: x, y
@@ -225,12 +244,14 @@ contains
         m = sqrt(self%x**2 + self%y**2)
     end function magnitude
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn type_bound_final() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     type :: Resource
         integer :: id
@@ -243,14 +264,16 @@ contains
         self%id = 0
     end subroutine cleanup
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Polymorphism / CLASS ──────────────────────────────────────
 
 #[test]
 fn class_polymorphic_arg() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     type :: Animal
         character(len=20) :: name
@@ -268,22 +291,26 @@ contains
         print *, trim(a%name)
     end subroutine describe
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn class_unlimited_polymorphic() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     class(*), pointer :: p => null()
     print *, "ok"
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn select_type_basic() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     type :: Base
         integer :: id = 0
@@ -300,14 +327,16 @@ program test
         print *, "base"
     end select
 end program test
-"#);
+"#,
+    );
 }
 
 // ── SEQUENCE attribute ─────────────────────────────────────────
 
 #[test]
 fn sequence_type() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     type :: Packed
         sequence
@@ -321,14 +350,16 @@ program test
     p%c = .true.
     print *, p%a
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Array of derived types ────────────────────────────────────
 
 #[test]
 fn array_of_types() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     type :: Point
         real :: x, y
@@ -341,12 +372,14 @@ program test
     end do
     print *, pts(2)%x
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn allocatable_type_array() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 program test
     type :: Node
         integer :: value
@@ -359,7 +392,8 @@ program test
     print *, nodes(5)%value
     deallocate(nodes)
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, ["42", "9"]);
 }
 
@@ -367,7 +401,8 @@ end program test
 
 #[test]
 fn type_assignment() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     type :: Box
         integer :: width, height
@@ -378,14 +413,16 @@ program test
     b = a
     print *, b%width
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Type in module, used in program ──────────────────────────
 
 #[test]
 fn module_type_export_use() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 module shapes
     implicit none
     type :: Rectangle
@@ -406,12 +443,14 @@ program test
     rect%height = 3.0
     print *, area(rect)
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn tbp_with_print_method_name() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 module swe_types
     implicit none
     type :: grid_t
@@ -439,13 +478,15 @@ program test_weather
     call grid%init(10, 20)
     call grid%print()
 end program test_weather
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "20"]);
 }
 
 #[test]
 fn nested_derived_types_with_tbp() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 module swe_types
     implicit none
     type :: field2d
@@ -477,14 +518,16 @@ program test
     print *, state%h%name
     print *, state%u%name
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["4", "depth", "u-vel"]);
 }
 
 #[test]
 fn weather_model_grid_print_tbp() {
     // Direct reproduction of the weather model's grid_t with print TBP
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 module swe_types
     implicit none
     integer, parameter :: dp = kind(1.0d0)
@@ -527,14 +570,16 @@ program test_weather
     call grid%print()
     print *, "after print"
 end program test_weather
-"#);
+"#,
+    );
     assert_eq!(out, vec!["before print", "10", "10", "after print"]);
 }
 
 #[test]
 fn weather_model_full_types() {
     // More complete weather model structure
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 module swe_types
     implicit none
     integer, parameter :: dp = kind(1.0d0)
@@ -606,7 +651,8 @@ program test_weather
     call grid%print()
     print *, state%h%name
 end program test_weather
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "10", "depth"]);
 }
 
@@ -618,7 +664,8 @@ end program test_weather
 fn tbp_call_after_allocatable_field_init() {
     // grid_t has allocatable array fields; grid_init allocates them;
     // then the TBP `print` must still be callable.
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 module swe_types
     implicit none
     integer, parameter :: dp = kind(1.0d0)
@@ -660,7 +707,8 @@ program test
     call grid%init(4, 4, 1000.0d0, 1000.0d0)
     call grid%print()
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["4", "4"]);
 }
 
@@ -668,7 +716,8 @@ end program test
 fn tbp_call_across_multiple_use_modules() {
     // swe_numerics re-uses swe_types; program uses both.
     // Tests that TBP bindings survive multi-module compilation.
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 module swe_types
     implicit none
     integer, parameter :: dp = kind(1.0d0)
@@ -721,7 +770,8 @@ program test
     call grid%init(8, 8, 2000.0d0, 2000.0d0)
     call grid%print()
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["8"]);
 }
 
@@ -729,7 +779,8 @@ end program test
 fn weather_model_full_reproduction() {
     // Full weather model setup: three modules, allocatable fields,
     // array constructors, logical restart path, then grid%print().
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 module swe_types
     implicit none
     integer, parameter :: dp = kind(1.0d0)
@@ -838,15 +889,20 @@ program weather_model
     call grid%print()
     print *, "Done"
 end program weather_model
-"#);
-    assert_eq!(out, vec!["Initialized vortex", "Header", "Grid: 4 x 4", "Done"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec!["Initialized vortex", "Header", "Grid: 4 x 4", "Done"]
+    );
 }
 
 #[test]
 fn tbp_call_after_nested_do_loop_data_write() {
     // The weather model crashes after nested do-loops write into field2d%data(i,j).
     // Test that grid%print() TBP works after that pattern.
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 module swe_types
     implicit none
     integer, parameter :: dp = kind(1.0d0)
@@ -946,7 +1002,8 @@ program test
     call grid%print()
     print *, "print done"
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["vortex done", "4", "4", "print done"]);
 }
 
@@ -955,7 +1012,8 @@ fn tbp_call_with_swe_io_module() {
     // Three-module structure like weather_model.f90 (swe_types + swe_numerics + swe_io).
     // grid%print() must work after read_restart returns ok=.false. on a
     // deterministic negative path.
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 module swe_types
     implicit none
     integer, parameter :: dp = kind(1.0d0)
@@ -1108,8 +1166,18 @@ program test
     call grid%print()
     print *, "after print"
 end program test
-"#);
-    assert_eq!(out, vec!["ERROR: restart grid mismatch", "no restart", "before print", "4", "after print"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec![
+            "ERROR: restart grid mismatch",
+            "no restart",
+            "before print",
+            "4",
+            "after print"
+        ]
+    );
 }
 
 #[test]
@@ -1118,7 +1186,8 @@ fn tbp_call_after_restart_grid_mismatch() {
     // "ERROR: restart grid mismatch", then later traps on grid%print().
     // Keep a direct field read before the TBP call so the failure tells us
     // whether the whole object or just the method binding was corrupted.
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 module swe_types
     implicit none
     integer, parameter :: dp = kind(1.0d0)
@@ -1259,6 +1328,17 @@ program test
     call grid%print()
     print *, "after print"
 end program test
-"#);
-    assert_eq!(out, vec!["ERROR: restart grid mismatch", "mismatch", "4", "4", "4", "after print"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec![
+            "ERROR: restart grid mismatch",
+            "mismatch",
+            "4",
+            "4",
+            "4",
+            "after print"
+        ]
+    );
 }

@@ -6,7 +6,8 @@ use super::helpers::compile_ok;
 
 #[test]
 fn derived_type_basic() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     type :: Point
         real :: x
@@ -17,12 +18,14 @@ program test
     p%y = 4.0
     print *, p%x + p%y
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn derived_type_with_methods() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     type :: Counter
         integer :: value = 0
@@ -37,12 +40,14 @@ contains
         self%value = self%value + 1
     end subroutine increment
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn module_basic() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 module constants
     real, parameter :: PI = 3.14159
     real, parameter :: E = 2.71828
@@ -52,12 +57,14 @@ program test
     use constants
     print *, PI
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn module_with_function() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 module math_utils
     implicit none
 contains
@@ -72,12 +79,14 @@ program test
     use math_utils
     print *, square(5.0)
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn integer_types() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     integer :: a = 10
     real :: b = 3.14
@@ -89,12 +98,14 @@ program test
     print *, d
     print *, e
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn array_declaration() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     integer, dimension(5) :: arr
     integer :: i
@@ -103,12 +114,14 @@ program test
     end do
     print *, arr(3)
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn allocatable_array() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     integer, allocatable :: arr(:)
     allocate(arr(10))
@@ -116,12 +129,14 @@ program test
     print *, arr(1)
     deallocate(arr)
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn derived_type_extends() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     type :: Shape
         real :: area
@@ -133,12 +148,14 @@ program test
     c%radius = 5.0
     print *, c%radius
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn use_only() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 module mymod
     integer :: x = 10
     integer :: y = 20
@@ -148,12 +165,14 @@ program test
     use mymod, only: x
     print *, x
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn interface_basic() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     interface
         function add(a, b) result(res)
@@ -163,12 +182,14 @@ program test
     end interface
     print *, "ok"
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn derived_type_procedure_component_decl() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     implicit none
     abstract interface
@@ -184,5 +205,6 @@ program test
 
     print *, "ok"
 end program test
-"#);
+"#,
+    );
 }

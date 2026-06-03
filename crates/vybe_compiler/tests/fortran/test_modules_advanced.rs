@@ -4,7 +4,8 @@ use super::helpers::{compile_ok, run_prints};
 
 #[test]
 fn module_private_public() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 module mymod
     implicit none
     private
@@ -21,12 +22,14 @@ program test
     use mymod
     print *, get_value()
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn module_public_vars() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 module config
     implicit none
     integer, public :: max_size = 100
@@ -37,12 +40,14 @@ program test
     use config
     print *, max_size
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn module_use_rename() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 module mathlib
     implicit none
 contains
@@ -57,12 +62,14 @@ program test
     use mathlib, sq => square
     print *, sq(5)
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn module_multiple_use() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 module constants
     real, parameter :: PI = 3.14159
 end module constants
@@ -82,14 +89,16 @@ program test
     use helpers
     print *, double(PI)
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Module with derived types ─────────────────────────────────
 
 #[test]
 fn module_exports_type() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 module geometry
     implicit none
     type :: Vector2D
@@ -110,13 +119,15 @@ program test
     v%y = 4.0
     print *, length(v)
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5"]);
 }
 
 #[test]
 fn module_type_with_procedure() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 module animals
     implicit none
     type :: Dog
@@ -137,7 +148,8 @@ program test
     d%name = 'Rex'
     call d%speak()
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Woof! I am Rex"]);
 }
 
@@ -145,7 +157,8 @@ end program test
 
 #[test]
 fn module_save_variable() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 module counter_mod
     implicit none
     integer, save :: count = 0
@@ -166,14 +179,16 @@ program test
     call increment()
     print *, get_count()
 end program test
-"#);
+"#,
+    );
 }
 
 // ── USE, ONLY with multiple items ─────────────────────────────
 
 #[test]
 fn use_only_multiple() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 module stuff
     integer :: a = 1, b = 2, c = 3
 end module stuff
@@ -182,14 +197,16 @@ program test
     use stuff, only: a, c
     print *, a + c
 end program test
-"#);
+"#,
+    );
 }
 
 // ── INTERFACE blocks ──────────────────────────────────────────
 
 #[test]
 fn interface_explicit() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     interface
         function square(x) result(r)
@@ -199,12 +216,14 @@ program test
     end interface
     print *, "ok"
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn interface_operator() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 module vectors
     implicit none
     type :: Vec
@@ -230,13 +249,15 @@ program test
     v3 = v1 + v2
     print *, v3%x
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["4"]);
 }
 
 #[test]
 fn interface_assignment() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 module conv
     implicit none
     interface assignment(=)
@@ -253,14 +274,16 @@ end module conv
 program test
     print *, "ok"
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Operator overloading ─────────────────────────────────────
 
 #[test]
 fn operator_plus_type() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 module complex_mod
     implicit none
     type :: MyComplex
@@ -286,13 +309,15 @@ program test
     c = a + b
     print *, c%re
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["4"]);
 }
 
 #[test]
 fn operator_multiply() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 module vec_mod
     implicit none
     type :: Vec3
@@ -317,7 +342,8 @@ program test
     r = 2.0 * v
     print *, r%x
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
@@ -325,7 +351,8 @@ end program test
 
 #[test]
 fn generic_interface() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 module generic_mod
     implicit none
     interface my_abs
@@ -349,7 +376,8 @@ program test
     print *, my_abs(-5)
     print *, int(my_abs(-3.14))
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5", "3"]);
 }
 
@@ -357,7 +385,8 @@ end program test
 
 #[test]
 fn associate_basic() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     type :: Point
         real :: x, y
@@ -369,29 +398,34 @@ program test
         print *, sqrt(xx*xx + yy*yy)
     end associate
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn associate_array_elem() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     integer :: a(5) = [10, 20, 30, 40, 50]
     associate(mid => a(3))
         print *, mid
     end associate
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn associate_expr() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     real :: x = 3.0, y = 4.0
     associate(hyp => sqrt(x*x + y*y))
         print *, hyp
     end associate
 end program test
-"#);
+"#,
+    );
 }

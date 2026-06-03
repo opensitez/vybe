@@ -7,32 +7,44 @@ use vybe_compiler::ast::StmtKind;
 
 #[test]
 fn subroutine_empty() {
-    compile_ok("program t\ncall greet()\ncontains\nsubroutine greet()\nprint *, \"hi\"\nend subroutine greet\nend program t\n");
+    compile_ok(
+        "program t\ncall greet()\ncontains\nsubroutine greet()\nprint *, \"hi\"\nend subroutine greet\nend program t\n",
+    );
 }
 
 #[test]
 fn subroutine_with_arg() {
-    compile_ok("program t\ncall say(\"hello\")\ncontains\nsubroutine say(msg)\ncharacter(len=*), intent(in) :: msg\nprint *, msg\nend subroutine say\nend program t\n");
+    compile_ok(
+        "program t\ncall say(\"hello\")\ncontains\nsubroutine say(msg)\ncharacter(len=*), intent(in) :: msg\nprint *, msg\nend subroutine say\nend program t\n",
+    );
 }
 
 #[test]
 fn function_returns_value() {
-    compile_ok("program t\nprint *, double(5)\ncontains\nfunction double(x) result(res)\ninteger, intent(in) :: x\ninteger :: res\nres = x * 2\nend function double\nend program t\n");
+    compile_ok(
+        "program t\nprint *, double(5)\ncontains\nfunction double(x) result(res)\ninteger, intent(in) :: x\ninteger :: res\nres = x * 2\nend function double\nend program t\n",
+    );
 }
 
 #[test]
 fn function_with_type_prefix() {
-    compile_ok("program t\nprint *, add(3, 4)\ncontains\ninteger function add(a, b)\ninteger, intent(in) :: a, b\nadd = a + b\nend function add\nend program t\n");
+    compile_ok(
+        "program t\nprint *, add(3, 4)\ncontains\ninteger function add(a, b)\ninteger, intent(in) :: a, b\nadd = a + b\nend function add\nend program t\n",
+    );
 }
 
 #[test]
 fn multiple_contains() {
-    compile_ok("program t\ncontains\nsubroutine a()\nprint *, \"a\"\nend subroutine a\nsubroutine b()\nprint *, \"b\"\nend subroutine b\nend program t\n");
+    compile_ok(
+        "program t\ncontains\nsubroutine a()\nprint *, \"a\"\nend subroutine a\nsubroutine b()\nprint *, \"b\"\nend subroutine b\nend program t\n",
+    );
 }
 
 #[test]
 fn recursive_factorial() {
-    compile_ok("program t\nprint *, fact(5)\ncontains\nrecursive function fact(n) result(r)\ninteger, intent(in) :: n\ninteger :: r\nif (n <= 1) then\nr = 1\nelse\nr = n * fact(n - 1)\nend if\nend function fact\nend program t\n");
+    compile_ok(
+        "program t\nprint *, fact(5)\ncontains\nrecursive function fact(n) result(r)\ninteger, intent(in) :: n\ninteger :: r\nif (n <= 1) then\nr = 1\nelse\nr = n * fact(n - 1)\nend if\nend function fact\nend program t\n",
+    );
 }
 
 #[test]
@@ -43,13 +55,19 @@ fn procedure_dummy_param_is_stamped_callable() {
         .body
         .iter()
         .find_map(|statement| match &statement.kind {
-            StmtKind::ModuleDecl { members, .. } => members.iter().find_map(|member| match member {
-                vybe_compiler::ast::ClassMember::Method(stmt) => match &stmt.kind {
-                    StmtKind::FunctionDecl { name, params, .. } if name.eq_ignore_ascii_case("step") => Some(params),
+            StmtKind::ModuleDecl { members, .. } => {
+                members.iter().find_map(|member| match member {
+                    vybe_compiler::ast::ClassMember::Method(stmt) => match &stmt.kind {
+                        StmtKind::FunctionDecl { name, params, .. }
+                            if name.eq_ignore_ascii_case("step") =>
+                        {
+                            Some(params)
+                        }
+                        _ => None,
+                    },
                     _ => None,
-                },
-                _ => None,
-            }),
+                })
+            }
             _ => None,
         })
         .expect("missing step params");
@@ -124,7 +142,10 @@ fn array_field_assignment_is_lowered_to_element_loop() {
         })
         .expect("missing rk4_step body");
 
-    assert!(lowered, "expected state%y array assignment to lower into a loop");
+    assert!(
+        lowered,
+        "expected state%y array assignment to lower into a loop"
+    );
 }
 
 #[test]
@@ -147,7 +168,10 @@ fn derived_type_array_literal_assignment_is_lowered_to_element_loop() {
         matches!(&statement.kind, StmtKind::Block(stmts) if stmts.iter().any(|inner| matches!(inner.kind, StmtKind::For { .. })))
     });
 
-    assert!(lowered, "expected derived-type array literal assignment to lower into a loop");
+    assert!(
+        lowered,
+        "expected derived-type array literal assignment to lower into a loop"
+    );
 }
 
 #[test]
@@ -157,7 +181,12 @@ fn derived_type_allocatable_array_field_supports_rk4_array_math() {
     );
 
     assert_eq!(out[0], "0.01");
-    assert!(out[1..].iter().all(|line| !line.contains("NaN") && !line.contains(',')), "expected scalar allocatable field elements after RK4 step, got {out:?}");
+    assert!(
+        out[1..]
+            .iter()
+            .all(|line| !line.contains("NaN") && !line.contains(',')),
+        "expected scalar allocatable field elements after RK4 step, got {out:?}"
+    );
 }
 
 #[test]

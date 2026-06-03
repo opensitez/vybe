@@ -54,7 +54,8 @@ fn print_multiple_values() {
 
 #[test]
 fn print_multiple_lines() {
-    let out = run_prints("program t\nprint *, \"a\"\nprint *, \"b\"\nprint *, \"c\"\nend program t\n");
+    let out =
+        run_prints("program t\nprint *, \"a\"\nprint *, \"b\"\nprint *, \"c\"\nend program t\n");
     assert_eq!(out, vec!["a", "b", "c"]);
 }
 

@@ -43,19 +43,23 @@ fn logical_false() {
 #[test]
 fn character_init() {
     // Fortran fixed-length characters pad shorter literals with trailing blanks.
-    let out = run_prints("program t\ncharacter(len=10) :: s = \"hello\"\nprint *, s\nend program t\n");
+    let out =
+        run_prints("program t\ncharacter(len=10) :: s = \"hello\"\nprint *, s\nend program t\n");
     assert_eq!(out, vec!["hello     "]);
 }
 
 #[test]
 fn character_assign() {
-    let out = run_prints("program t\ncharacter(len=20) :: s\ns = \"world\"\nprint *, s\nend program t\n");
+    let out =
+        run_prints("program t\ncharacter(len=20) :: s\ns = \"world\"\nprint *, s\nend program t\n");
     assert_eq!(out, vec!["world"]);
 }
 
 #[test]
 fn multiple_same_type() {
-    let out = run_prints("program t\ninteger :: a = 1, b = 2, c = 3\nprint *, a + b + c\nend program t\n");
+    let out = run_prints(
+        "program t\ninteger :: a = 1, b = 2, c = 3\nprint *, a + b + c\nend program t\n",
+    );
     assert_eq!(out, vec!["6"]);
 }
 
@@ -67,7 +71,8 @@ fn parameter_constant() {
 
 #[test]
 fn parameter_real() {
-    let out = run_prints("program t\nreal, parameter :: PI = 3.14159\nprint *, PI\nend program t\n");
+    let out =
+        run_prints("program t\nreal, parameter :: PI = 3.14159\nprint *, PI\nend program t\n");
     assert_eq!(out, vec!["3.14159"]);
 }
 

@@ -293,38 +293,44 @@ fn epsilon_real() {
 
 #[test]
 fn random_number() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     real :: r
     call random_number(r)
     print *, r >= 0.0 .and. r < 1.0
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn random_seed() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     integer :: seed(1) = [42]
     call random_seed(put=seed)
     print *, "ok"
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Date and time ─────────────────────────────────────────────
 
 #[test]
 fn date_and_time() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     character(len=8) :: d
     character(len=10) :: t
     call date_and_time(date=d, time=t)
     print *, "got date"
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Merge ────────────────────────────────────────────────────

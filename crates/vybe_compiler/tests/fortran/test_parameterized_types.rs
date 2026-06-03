@@ -2,8 +2,10 @@ use super::helpers::compile_ok;
 
 // ── Length parameterized derived types (LEN parameter) ───────
 
-#[test] fn pdt_len_basic() {
-    compile_ok(r#"
+#[test]
+fn pdt_len_basic() {
+    compile_ok(
+        r#"
 program test
     type :: FixedVec(n)
         integer, len :: n
@@ -14,11 +16,14 @@ program test
     v%data(1) = 1.0
     print *, v%data(1)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn pdt_len_string() {
-    compile_ok(r#"
+#[test]
+fn pdt_len_string() {
+    compile_ok(
+        r#"
 program test
     type :: BoundedStr(maxlen)
         integer, len :: maxlen
@@ -28,11 +33,14 @@ program test
     s%value = 'hello'
     print *, trim(s%value)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn pdt_len_parameter() {
-    compile_ok(r#"
+#[test]
+fn pdt_len_parameter() {
+    compile_ok(
+        r#"
 program test
     type :: Matrix(m, n)
         integer, len :: m, n
@@ -43,11 +51,14 @@ program test
     mat%data(2,2) = 99.0
     print *, mat%data(2,2)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn pdt_len_in_subroutine() {
-    compile_ok(r#"
+#[test]
+fn pdt_len_in_subroutine() {
+    compile_ok(
+        r#"
 program test
     type :: Vec(n)
         integer, len :: n
@@ -62,11 +73,14 @@ contains
         print *, v%data(1)
     end subroutine show_first
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn pdt_len_assumed_star() {
-    compile_ok(r#"
+#[test]
+fn pdt_len_assumed_star() {
+    compile_ok(
+        r#"
 program test
     type :: Buf(n)
         integer, len :: n
@@ -82,13 +96,16 @@ contains
         print *, size(x%items)
     end subroutine process
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Kind parameterized derived types (KIND parameter) ─────────
 
-#[test] fn pdt_kind_basic() {
-    compile_ok(r#"
+#[test]
+fn pdt_kind_basic() {
+    compile_ok(
+        r#"
 program test
     type :: TypedNum(k)
         integer, kind :: k
@@ -101,11 +118,14 @@ program test
     print *, f%value
     print *, d%value
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn pdt_kind_complex() {
-    compile_ok(r#"
+#[test]
+fn pdt_kind_complex() {
+    compile_ok(
+        r#"
 program test
     type :: TypedComplex(k)
         integer, kind :: k
@@ -115,11 +135,14 @@ program test
     c%value = (1.0_4, 2.0_4)
     print *, real(c%value)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn pdt_kind_integer() {
-    compile_ok(r#"
+#[test]
+fn pdt_kind_integer() {
+    compile_ok(
+        r#"
 program test
     type :: TypedInt(k)
         integer, kind :: k
@@ -129,13 +152,16 @@ program test
     big%value = 1000000000_8
     print *, big%value
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Both LEN and KIND parameters ──────────────────────────────
 
-#[test] fn pdt_len_and_kind() {
-    compile_ok(r#"
+#[test]
+fn pdt_len_and_kind() {
+    compile_ok(
+        r#"
 program test
     type :: Precision(k, n)
         integer, kind :: k
@@ -147,13 +173,16 @@ program test
     p%data(3) = 3.14159265_8
     print *, p%data(3)
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Default parameter values ───────────────────────────────────
 
-#[test] fn pdt_default_len() {
-    compile_ok(r#"
+#[test]
+fn pdt_default_len() {
+    compile_ok(
+        r#"
 program test
     type :: DefaultVec(n)
         integer, len :: n = 10
@@ -163,11 +192,14 @@ program test
     v%data = 0.0
     print *, size(v%data)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn pdt_default_kind() {
-    compile_ok(r#"
+#[test]
+fn pdt_default_kind() {
+    compile_ok(
+        r#"
 program test
     type :: DefaultReal(k)
         integer, kind :: k = 4
@@ -177,13 +209,16 @@ program test
     r%x = 1.0
     print *, r%x
 end program test
-"#);
+"#,
+    );
 }
 
 // ── PDT arrays ────────────────────────────────────────────────
 
-#[test] fn pdt_array_of_pdt() {
-    compile_ok(r#"
+#[test]
+fn pdt_array_of_pdt() {
+    compile_ok(
+        r#"
 program test
     type :: Pair(k)
         integer, kind :: k
@@ -197,13 +232,16 @@ program test
     end do
     print *, pairs(2)%x
 end program test
-"#);
+"#,
+    );
 }
 
 // ── PDT allocatable ───────────────────────────────────────────
 
-#[test] fn pdt_deferred_len() {
-    compile_ok(r#"
+#[test]
+fn pdt_deferred_len() {
+    compile_ok(
+        r#"
 program test
     type :: DynVec(n)
         integer, len :: n
@@ -216,11 +254,14 @@ program test
     print *, v%data(5)
     deallocate(v)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn pdt_allocatable_component() {
-    compile_ok(r#"
+#[test]
+fn pdt_allocatable_component() {
+    compile_ok(
+        r#"
 program test
     type :: DynMat(m, n)
         integer, len :: m, n
@@ -233,13 +274,16 @@ program test
     print *, mat%data(2,3)
     deallocate(mat%data)
 end program test
-"#);
+"#,
+    );
 }
 
 // ── PDT in modules ────────────────────────────────────────────
 
-#[test] fn pdt_in_module() {
-    compile_ok(r#"
+#[test]
+fn pdt_in_module() {
+    compile_ok(
+        r#"
 module pdt_mod
     implicit none
     type :: Tensor(rank, k)
@@ -260,13 +304,16 @@ program test
     call zero(v)
     print *, v%components(1)
 end program test
-"#);
+"#,
+    );
 }
 
 // ── PDT inquiry functions ─────────────────────────────────────
 
-#[test] fn pdt_len_inquiry() {
-    compile_ok(r#"
+#[test]
+fn pdt_len_inquiry() {
+    compile_ok(
+        r#"
 program test
     type :: Str(n)
         integer, len :: n
@@ -276,11 +323,14 @@ program test
     t%s = 'hello'
     print *, t%n
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn pdt_kind_inquiry() {
-    compile_ok(r#"
+#[test]
+fn pdt_kind_inquiry() {
+    compile_ok(
+        r#"
 program test
     type :: Num(k)
         integer, kind :: k
@@ -290,5 +340,6 @@ program test
     x%v = 1.0_8
     print *, x%k
 end program test
-"#);
+"#,
+    );
 }

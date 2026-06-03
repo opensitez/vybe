@@ -6,7 +6,8 @@ use super::helpers::{compile_ok, run_prints};
 
 #[test]
 fn fizzbuzz() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program fizzbuzz
     integer :: i
     do i = 1, 15
@@ -21,12 +22,14 @@ program fizzbuzz
         end if
     end do
 end program fizzbuzz
-"#);
+"#,
+    );
 }
 
 #[test]
 fn sum_of_squares() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 program test
     integer :: i, total
     total = 0
@@ -35,13 +38,15 @@ program test
     end do
     print *, total
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["385"]);
 }
 
 #[test]
 fn fibonacci() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program fib
     integer :: n, a, b, temp, i
     n = 10
@@ -54,25 +59,29 @@ program fib
     end do
     print *, a
 end program fib
-"#);
+"#,
+    );
 }
 
 #[test]
 fn temperature_conversion() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 program test
     real :: celsius, fahrenheit
     celsius = 100.0
     fahrenheit = celsius * 9.0 / 5.0 + 32.0
     print *, fahrenheit
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["212"]);
 }
 
 #[test]
 fn quadratic_formula() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program quadratic
     real :: a, b, c, discriminant, x1, x2
     a = 1.0
@@ -86,12 +95,14 @@ program quadratic
         print *, x2
     end if
 end program quadratic
-"#);
+"#,
+    );
 }
 
 #[test]
 fn simple_statistics() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program stats
     integer :: i, n
     real :: sum, mean
@@ -103,22 +114,26 @@ program stats
     mean = sum / real(n)
     print *, "Mean:", mean
 end program stats
-"#);
+"#,
+    );
 }
 
 #[test]
 fn power_function() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 program test
     print *, 2 ** 8
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["256"]);
 }
 
 #[test]
 fn countdown() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program countdown
     integer :: i
     do i = 10, 1, -1
@@ -126,12 +141,14 @@ program countdown
     end do
     print *, "Launch!"
 end program countdown
-"#);
+"#,
+    );
 }
 
 #[test]
 fn accumulator_pattern() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 program test
     integer :: i, sum, product
     sum = 0
@@ -143,6 +160,7 @@ program test
     print *, sum
     print *, product
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["15", "120"]);
 }

@@ -2,8 +2,10 @@ use super::helpers::compile_ok;
 
 // ── WHERE with ELSEWHERE ──────────────────────────────────────
 
-#[test] fn where_else_basic() {
-    compile_ok(r#"
+#[test]
+fn where_else_basic() {
+    compile_ok(
+        r#"
 program test
     integer :: a(5) = [1, 2, 3, 4, 5]
     integer :: b(5)
@@ -15,11 +17,14 @@ program test
     print *, b(1)
     print *, b(5)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn where_else_real() {
-    compile_ok(r#"
+#[test]
+fn where_else_real() {
+    compile_ok(
+        r#"
 program test
     real :: x(6) = [-2., -1., 0., 1., 2., 3.]
     real :: y(6)
@@ -31,11 +36,14 @@ program test
     print *, y(1)
     print *, y(4)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn where_else_set_zero() {
-    compile_ok(r#"
+#[test]
+fn where_else_set_zero() {
+    compile_ok(
+        r#"
 program test
     integer :: a(6) = [10, -2, 5, -8, 3, -1]
     where (a < 0)
@@ -46,13 +54,16 @@ program test
     print *, a(2)
     print *, a(1)
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Multiple ELSEWHERE clauses ────────────────────────────────
 
-#[test] fn where_multi_elsewhere() {
-    compile_ok(r#"
+#[test]
+fn where_multi_elsewhere() {
+    compile_ok(
+        r#"
 program test
     integer :: a(6) = [1, 5, 10, 50, 100, 500]
     character(len=6) :: b(6)
@@ -67,11 +78,14 @@ program test
     print *, trim(b(3))
     print *, trim(b(5))
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn where_three_elsewhere_clauses() {
-    compile_ok(r#"
+#[test]
+fn where_three_elsewhere_clauses() {
+    compile_ok(
+        r#"
 program test
     real :: t(6) = [-10., -1., 0., 1., 10., 100.]
     integer :: cat(6)
@@ -89,13 +103,16 @@ program test
     print *, cat(4)
     print *, cat(6)
 end program test
-"#);
+"#,
+    );
 }
 
 // ── WHERE on 2D arrays ────────────────────────────────────────
 
-#[test] fn where_2d_basic() {
-    compile_ok(r#"
+#[test]
+fn where_2d_basic() {
+    compile_ok(
+        r#"
 program test
     integer :: m(3,3) = reshape([1,2,3,4,5,6,7,8,9],[3,3])
     where (m > 5)
@@ -104,11 +121,14 @@ program test
     print *, m(1,1)
     print *, m(3,3)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn where_2d_else() {
-    compile_ok(r#"
+#[test]
+fn where_2d_else() {
+    compile_ok(
+        r#"
 program test
     real :: m(4,4) = reshape([(real(i), i=1,16)],[4,4])
     real :: result(4,4)
@@ -120,13 +140,16 @@ program test
     print *, result(1,1)
     print *, result(4,4)
 end program test
-"#);
+"#,
+    );
 }
 
 // ── WHERE with function call in mask ─────────────────────────
 
-#[test] fn where_mask_with_mod() {
-    compile_ok(r#"
+#[test]
+fn where_mask_with_mod() {
+    compile_ok(
+        r#"
 program test
     integer :: a(10) = [(i, i=1,10)]
     integer :: b(10)
@@ -138,11 +161,14 @@ program test
     print *, b(6)
     print *, b(1)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn where_mask_with_abs() {
-    compile_ok(r#"
+#[test]
+fn where_mask_with_abs() {
+    compile_ok(
+        r#"
 program test
     real :: a(6) = [-3., 2., -1., 4., -5., 0.]
     real :: b(6)
@@ -153,13 +179,16 @@ program test
     print *, b(1)
     print *, b(2)
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Nested WHERE ──────────────────────────────────────────────
 
-#[test] fn nested_where() {
-    compile_ok(r#"
+#[test]
+fn nested_where() {
+    compile_ok(
+        r#"
 program test
     integer :: a(6) = [1, 10, 2, 20, 3, 30]
     integer :: b(6) = 0
@@ -176,11 +205,14 @@ program test
     print *, b(2)
     print *, b(4)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn nested_where_2d() {
-    compile_ok(r#"
+#[test]
+fn nested_where_2d() {
+    compile_ok(
+        r#"
 program test
     real :: m(4,4) = reshape([(real(i-8), i=1,16)],[4,4])
     real :: result(4,4)
@@ -194,13 +226,16 @@ program test
     end where
     print *, result(1,1)
 end program test
-"#);
+"#,
+    );
 }
 
 // ── WHERE in subroutine ───────────────────────────────────────
 
-#[test] fn where_in_subroutine() {
-    compile_ok(r#"
+#[test]
+fn where_in_subroutine() {
+    compile_ok(
+        r#"
 program test
     integer :: a(5) = [3, -1, 5, -2, 4]
     call clamp_negatives(a)
@@ -214,11 +249,14 @@ contains
         end where
     end subroutine clamp_negatives
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn where_in_module_function() {
-    compile_ok(r#"
+#[test]
+fn where_in_module_function() {
+    compile_ok(
+        r#"
 module where_mod
     implicit none
 contains
@@ -240,59 +278,77 @@ program test
     print *, p(2)
     print *, p(1)
 end program test
-"#);
+"#,
+    );
 }
 
 // ── STORAGE_SIZE intrinsic ────────────────────────────────────
 
-#[test] fn storage_size_integer() {
-    compile_ok(r#"
+#[test]
+fn storage_size_integer() {
+    compile_ok(
+        r#"
 program test
     integer :: x = 0
     print *, storage_size(x)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn storage_size_real() {
-    compile_ok(r#"
+#[test]
+fn storage_size_real() {
+    compile_ok(
+        r#"
 program test
     real :: x = 0.0
     print *, storage_size(x)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn storage_size_double() {
-    compile_ok(r#"
+#[test]
+fn storage_size_double() {
+    compile_ok(
+        r#"
 program test
     real(kind=8) :: x = 0.0d0
     print *, storage_size(x)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn storage_size_logical() {
-    compile_ok(r#"
+#[test]
+fn storage_size_logical() {
+    compile_ok(
+        r#"
 program test
     logical :: b = .false.
     print *, storage_size(b)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn storage_size_complex() {
-    compile_ok(r#"
+#[test]
+fn storage_size_complex() {
+    compile_ok(
+        r#"
 program test
     complex :: c = (0., 0.)
     real :: r = 0.
     print *, storage_size(c) == 2 * storage_size(r)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn storage_size_derived_type() {
-    compile_ok(r#"
+#[test]
+fn storage_size_derived_type() {
+    compile_ok(
+        r#"
 program test
     type :: Pair
         integer :: x, y
@@ -300,21 +356,27 @@ program test
     type(Pair) :: p
     print *, storage_size(p)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn storage_size_int8() {
-    compile_ok(r#"
+#[test]
+fn storage_size_int8() {
+    compile_ok(
+        r#"
 program test
     integer(kind=8) :: big = 0_8
     integer(kind=4) :: small = 0_4
     print *, storage_size(big) > storage_size(small)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn storage_size_with_kind() {
-    compile_ok(r#"
+#[test]
+fn storage_size_with_kind() {
+    compile_ok(
+        r#"
 program test
     use iso_fortran_env
     integer :: x = 0
@@ -322,72 +384,94 @@ program test
     n = storage_size(x, kind=int64)
     print *, n
 end program test
-"#);
+"#,
+    );
 }
 
 // ── BIT_SIZE intrinsic ────────────────────────────────────────
 
-#[test] fn bit_size_int4() {
-    compile_ok(r#"
+#[test]
+fn bit_size_int4() {
+    compile_ok(
+        r#"
 program test
     integer :: x = 0
     print *, bit_size(x)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn bit_size_int8() {
-    compile_ok(r#"
+#[test]
+fn bit_size_int8() {
+    compile_ok(
+        r#"
 program test
     integer(kind=8) :: x = 0_8
     print *, bit_size(x)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn bit_size_int2() {
-    compile_ok(r#"
+#[test]
+fn bit_size_int2() {
+    compile_ok(
+        r#"
 program test
     integer(kind=2) :: x = 0_2
     print *, bit_size(x)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn bit_size_int1() {
-    compile_ok(r#"
+#[test]
+fn bit_size_int1() {
+    compile_ok(
+        r#"
 program test
     integer(kind=1) :: x = 0_1
     print *, bit_size(x)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn bit_size_vs_storage_size() {
-    compile_ok(r#"
+#[test]
+fn bit_size_vs_storage_size() {
+    compile_ok(
+        r#"
 program test
     integer :: x = 0
     print *, bit_size(x) == storage_size(x)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn bit_size_array() {
-    compile_ok(r#"
+#[test]
+fn bit_size_array() {
+    compile_ok(
+        r#"
 program test
     integer :: a(10)
     print *, bit_size(a(1))
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn bit_size_in_expression() {
-    compile_ok(r#"
+#[test]
+fn bit_size_in_expression() {
+    compile_ok(
+        r#"
 program test
     integer :: x = 1
     integer :: half_bits
     half_bits = bit_size(x) / 2
     print *, half_bits
 end program test
-"#);
+"#,
+    );
 }

@@ -2,8 +2,10 @@ use super::helpers::compile_ok;
 
 // ── Multiple submodules for the same parent ───────────────────
 
-#[test] fn two_submodules_same_parent() {
-    compile_ok(r#"
+#[test]
+fn two_submodules_same_parent() {
+    compile_ok(
+        r#"
 module math_iface
     implicit none
     interface
@@ -43,11 +45,14 @@ program test
     print *, add(10, 5)
     print *, sub(10, 5)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn three_submodules_same_parent() {
-    compile_ok(r#"
+#[test]
+fn three_submodules_same_parent() {
+    compile_ok(
+        r#"
 module ops_iface
     implicit none
     interface
@@ -99,13 +104,16 @@ program test
     print *, div(20, 4)
     print *, modulo_op(17, 5)
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Nested submodule (grandchild) ─────────────────────────────
 
-#[test] fn nested_submodule_grandchild() {
-    compile_ok(r#"
+#[test]
+fn nested_submodule_grandchild() {
+    compile_ok(
+        r#"
 module base_mod
     implicit none
     interface
@@ -146,13 +154,16 @@ program test
     use base_mod
     print *, compute(5)
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Submodule using parent module types ───────────────────────
 
-#[test] fn submodule_uses_parent_type() {
-    compile_ok(r#"
+#[test]
+fn submodule_uses_parent_type() {
+    compile_ok(
+        r#"
 module geometry_iface
     implicit none
     type :: Point
@@ -183,13 +194,16 @@ program test
     p2 = Point(3.0, 4.0)
     print *, distance(p1, p2)
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Submodule with private module variables ───────────────────
 
-#[test] fn submodule_private_state() {
-    compile_ok(r#"
+#[test]
+fn submodule_private_state() {
+    compile_ok(
+        r#"
 module counter_iface
     implicit none
     interface
@@ -222,13 +236,16 @@ program test
     call increment()
     print *, get_count()
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Submodule with multiple procedures + helpers ──────────────
 
-#[test] fn submodule_with_internal_helpers() {
-    compile_ok(r#"
+#[test]
+fn submodule_with_internal_helpers() {
+    compile_ok(
+        r#"
 module stats_iface
     implicit none
     interface
@@ -267,13 +284,16 @@ program test
     print *, mean(data)
     print *, variance(data)
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Submodule with subroutine and function ────────────────────
 
-#[test] fn submodule_mixed_sub_and_func() {
-    compile_ok(r#"
+#[test]
+fn submodule_mixed_sub_and_func() {
+    compile_ok(
+        r#"
 module io_iface
     implicit none
     interface
@@ -311,13 +331,16 @@ program test
     real :: v(3) = [4.0, 5.0, 6.0]
     print *, dot(u, v)
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Submodule with DEFAULT ACCESSIBILITY ─────────────────────
 
-#[test] fn submodule_with_protected_parent_var() {
-    compile_ok(r#"
+#[test]
+fn submodule_with_protected_parent_var() {
+    compile_ok(
+        r#"
 module cfg_iface
     implicit none
     integer, protected :: max_size = 100
@@ -343,13 +366,16 @@ program test
     call set_max(200)
     print *, max_size
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Submodule USE of parent exported generic ──────────────────
 
-#[test] fn submodule_with_generic_interface() {
-    compile_ok(r#"
+#[test]
+fn submodule_with_generic_interface() {
+    compile_ok(
+        r#"
 module generic_iface
     implicit none
     interface norm
@@ -385,5 +411,6 @@ program test
     real :: v(3) = [3.0, 4.0, 0.0]
     print *, norm(v)
 end program test
-"#);
+"#,
+    );
 }

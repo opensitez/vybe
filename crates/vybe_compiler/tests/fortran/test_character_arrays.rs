@@ -2,27 +2,35 @@ use super::helpers::compile_ok;
 
 // ── Declaration ───────────────────────────────────────────────
 
-#[test] fn char_array_decl() {
-    compile_ok(r#"
+#[test]
+fn char_array_decl() {
+    compile_ok(
+        r#"
 program test
     character(len=10) :: names(5)
     names(1) = 'Alice'
     print *, trim(names(1))
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn char_array_fixed_len() {
-    compile_ok(r#"
+#[test]
+fn char_array_fixed_len() {
+    compile_ok(
+        r#"
 program test
     character(len=1) :: letters(5) = ['a', 'b', 'c', 'd', 'e']
     print *, letters(3)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn char_array_len20() {
-    compile_ok(r#"
+#[test]
+fn char_array_len20() {
+    compile_ok(
+        r#"
 program test
     character(len=20) :: words(4)
     words(1) = 'Fortran'
@@ -31,23 +39,29 @@ program test
     words(4) = 'relevant'
     print *, trim(words(1)), ' ', trim(words(2))
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Initialization ────────────────────────────────────────────
 
-#[test] fn char_array_data_init() {
-    compile_ok(r#"
+#[test]
+fn char_array_data_init() {
+    compile_ok(
+        r#"
 program test
     character(len=5) :: fruits(3)
     data fruits /'apple', 'mango', 'grape'/
     print *, trim(fruits(2))
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn char_array_loop_init() {
-    compile_ok(r#"
+#[test]
+fn char_array_loop_init() {
+    compile_ok(
+        r#"
 program test
     character(len=5) :: a(3)
     integer :: i
@@ -58,24 +72,30 @@ program test
         print *, trim(a(i))
     end do
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn char_array_param_init() {
-    compile_ok(r#"
+#[test]
+fn char_array_param_init() {
+    compile_ok(
+        r#"
 program test
     character(len=3), parameter :: days(7) = &
         ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
     print *, days(1)
     print *, days(5)
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Element access and modification ──────────────────────────
 
-#[test] fn char_array_element_assign() {
-    compile_ok(r#"
+#[test]
+fn char_array_element_assign() {
+    compile_ok(
+        r#"
 program test
     character(len=10) :: arr(3)
     arr(1) = 'hello'
@@ -84,34 +104,43 @@ program test
     arr(2) = 'fortran'
     print *, trim(arr(2))
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn char_array_substring_element() {
-    compile_ok(r#"
+#[test]
+fn char_array_substring_element() {
+    compile_ok(
+        r#"
 program test
     character(len=10) :: arr(3)
     arr(1) = 'Hello World'
     print *, arr(1)(1:5)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn char_array_substring_assign() {
-    compile_ok(r#"
+#[test]
+fn char_array_substring_assign() {
+    compile_ok(
+        r#"
 program test
     character(len=10) :: arr(2)
     arr(1) = 'XXXXXXXXXX'
     arr(1)(1:5) = 'Hello'
     print *, trim(arr(1))
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Intrinsics on array elements ──────────────────────────────
 
-#[test] fn char_array_trim() {
-    compile_ok(r#"
+#[test]
+fn char_array_trim() {
+    compile_ok(
+        r#"
 program test
     character(len=20) :: arr(3)
     arr(1) = 'hello     '
@@ -120,11 +149,14 @@ program test
     print *, len_trim(arr(1))
     print *, len_trim(arr(2))
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn char_array_adjustl() {
-    compile_ok(r#"
+#[test]
+fn char_array_adjustl() {
+    compile_ok(
+        r#"
 program test
     character(len=10) :: arr(2)
     arr(1) = '   hi'
@@ -132,11 +164,14 @@ program test
     print *, trim(adjustl(arr(1)))
     print *, trim(adjustl(arr(2)))
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn char_array_index() {
-    compile_ok(r#"
+#[test]
+fn char_array_index() {
+    compile_ok(
+        r#"
 program test
     character(len=20) :: arr(3)
     arr(1) = 'hello world'
@@ -145,47 +180,59 @@ program test
     print *, index(arr(1), 'world')
     print *, index(arr(3), 'xyz')
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn char_array_len() {
-    compile_ok(r#"
+#[test]
+fn char_array_len() {
+    compile_ok(
+        r#"
 program test
     character(len=15) :: arr(3)
     arr(1) = 'short'
     print *, len(arr(1))
     print *, len_trim(arr(1))
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Comparison of array elements ─────────────────────────────
 
-#[test] fn char_array_compare_elements() {
-    compile_ok(r#"
+#[test]
+fn char_array_compare_elements() {
+    compile_ok(
+        r#"
 program test
     character(len=5) :: arr(3) = ['apple', 'mango', 'grape']
     print *, arr(1) < arr(2)
     print *, arr(2) > arr(3)
     print *, arr(1) == arr(1)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn char_array_lge_llt() {
-    compile_ok(r#"
+#[test]
+fn char_array_lge_llt() {
+    compile_ok(
+        r#"
 program test
     character(len=5) :: arr(2) = ['abc  ', 'xyz  ']
     print *, llt(arr(1), arr(2))
     print *, lge(arr(2), arr(1))
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Char array in derived type ────────────────────────────────
 
-#[test] fn char_array_in_type() {
-    compile_ok(r#"
+#[test]
+fn char_array_in_type() {
+    compile_ok(
+        r#"
 program test
     type :: Person
         character(len=20) :: name
@@ -200,11 +247,14 @@ program test
     print *, trim(p%name)
     print *, trim(p%labels(2))
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn array_of_types_with_char() {
-    compile_ok(r#"
+#[test]
+fn array_of_types_with_char() {
+    compile_ok(
+        r#"
 program test
     type :: Tag
         character(len=20) :: name
@@ -219,13 +269,16 @@ program test
     tags(3)%value = 3
     print *, trim(tags(2)%name)
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Char array subroutine/function arguments ──────────────────
 
-#[test] fn char_array_subroutine_arg() {
-    compile_ok(r#"
+#[test]
+fn char_array_subroutine_arg() {
+    compile_ok(
+        r#"
 program test
     character(len=10) :: names(4)
     names = ['Alice     ', 'Bob       ', 'Charlie   ', 'Diana     ']
@@ -239,11 +292,14 @@ contains
         end do
     end subroutine print_names
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn char_array_function_result() {
-    compile_ok(r#"
+#[test]
+fn char_array_function_result() {
+    compile_ok(
+        r#"
 program test
     character(len=5) :: words(3)
     integer :: longest
@@ -260,13 +316,16 @@ contains
         end do
     end function find_longest
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Allocatable char arrays ───────────────────────────────────
 
-#[test] fn char_array_allocatable() {
-    compile_ok(r#"
+#[test]
+fn char_array_allocatable() {
+    compile_ok(
+        r#"
 program test
     character(len=20), allocatable :: arr(:)
     allocate(arr(5))
@@ -276,11 +335,14 @@ program test
     print *, trim(arr(5))
     deallocate(arr)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn char_array_allocatable_2d() {
-    compile_ok(r#"
+#[test]
+fn char_array_allocatable_2d() {
+    compile_ok(
+        r#"
 program test
     character(len=10), allocatable :: grid(:,:)
     allocate(grid(3,3))
@@ -289,13 +351,16 @@ program test
     print *, trim(grid(1,1))
     deallocate(grid)
 end program test
-"#);
+"#,
+    );
 }
 
 // ── WHERE on char arrays ──────────────────────────────────────
 
-#[test] fn where_on_char_array() {
-    compile_ok(r#"
+#[test]
+fn where_on_char_array() {
+    compile_ok(
+        r#"
 program test
     character(len=5) :: src(4) = ['apple', 'mango', 'grape', 'pear ']
     character(len=5) :: dst(4)
@@ -306,13 +371,16 @@ program test
     print *, trim(dst(1))
     print *, trim(dst(2))
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Sorting a char array (simple bubble sort) ─────────────────
 
-#[test] fn char_array_sort_bubble() {
-    compile_ok(r#"
+#[test]
+fn char_array_sort_bubble() {
+    compile_ok(
+        r#"
 program test
     character(len=5) :: arr(4) = ['delta', 'alpha', 'gamma', 'beta ']
     character(len=5) :: tmp
@@ -329,5 +397,6 @@ program test
     print *, trim(arr(1))
     print *, trim(arr(4))
 end program test
-"#);
+"#,
+    );
 }

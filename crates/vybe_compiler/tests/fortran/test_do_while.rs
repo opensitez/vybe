@@ -2,8 +2,10 @@ use super::helpers::compile_ok;
 
 // ── DO WHILE basic ────────────────────────────────────────────
 
-#[test] fn do_while_basic() {
-    compile_ok(r#"
+#[test]
+fn do_while_basic() {
+    compile_ok(
+        r#"
 program test
     integer :: n = 0
     do while (n < 5)
@@ -11,11 +13,14 @@ program test
     end do
     print *, n
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn do_while_count_down() {
-    compile_ok(r#"
+#[test]
+fn do_while_count_down() {
+    compile_ok(
+        r#"
 program test
     integer :: n = 10
     do while (n > 0)
@@ -23,11 +28,14 @@ program test
     end do
     print *, n
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn do_while_accumulate() {
-    compile_ok(r#"
+#[test]
+fn do_while_accumulate() {
+    compile_ok(
+        r#"
 program test
     integer :: i = 1, s = 0
     do while (i <= 10)
@@ -36,21 +44,27 @@ program test
     end do
     print *, s
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn do_while_inline_body() {
-    compile_ok(r#"
+#[test]
+fn do_while_inline_body() {
+    compile_ok(
+        r#"
 program test
     integer :: i = 0
     do while (i < 3); i = i + 1; end do
     print *, i
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn do_while_condition_false_initially() {
-    compile_ok(r#"
+#[test]
+fn do_while_condition_false_initially() {
+    compile_ok(
+        r#"
 program test
     integer :: n = 10
     do while (n < 5)
@@ -58,11 +72,14 @@ program test
     end do
     print *, n
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn do_while_with_logical_var() {
-    compile_ok(r#"
+#[test]
+fn do_while_with_logical_var() {
+    compile_ok(
+        r#"
 program test
     integer :: n = 0
     logical :: keep_going
@@ -73,11 +90,14 @@ program test
     end do
     print *, n
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn do_while_real_condition() {
-    compile_ok(r#"
+#[test]
+fn do_while_real_condition() {
+    compile_ok(
+        r#"
 program test
     real :: x = 1.0
     integer :: count = 0
@@ -87,13 +107,16 @@ program test
     end do
     print *, count
 end program test
-"#);
+"#,
+    );
 }
 
 // ── DO WHILE with EXIT ────────────────────────────────────────
 
-#[test] fn do_while_with_exit() {
-    compile_ok(r#"
+#[test]
+fn do_while_with_exit() {
+    compile_ok(
+        r#"
 program test
     integer :: n = 0
     do while (.true.)
@@ -102,11 +125,14 @@ program test
     end do
     print *, n
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn do_while_exit_on_condition() {
-    compile_ok(r#"
+#[test]
+fn do_while_exit_on_condition() {
+    compile_ok(
+        r#"
 program test
     integer :: i = 0, s = 0
     do while (i < 100)
@@ -116,13 +142,16 @@ program test
     end do
     print *, s > 50
 end program test
-"#);
+"#,
+    );
 }
 
 // ── DO WHILE with CYCLE ───────────────────────────────────────
 
-#[test] fn do_while_with_cycle() {
-    compile_ok(r#"
+#[test]
+fn do_while_with_cycle() {
+    compile_ok(
+        r#"
 program test
     integer :: i = 0, s = 0
     do while (i < 10)
@@ -132,11 +161,14 @@ program test
     end do
     print *, s
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn do_while_cycle_skip_zero() {
-    compile_ok(r#"
+#[test]
+fn do_while_cycle_skip_zero() {
+    compile_ok(
+        r#"
 program test
     integer :: i = -3, count = 0
     do while (i <= 3)
@@ -146,13 +178,16 @@ program test
     end do
     print *, count
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Nested DO WHILE ───────────────────────────────────────────
 
-#[test] fn nested_do_while() {
-    compile_ok(r#"
+#[test]
+fn nested_do_while() {
+    compile_ok(
+        r#"
 program test
     integer :: i = 1, j, s
     s = 0
@@ -166,11 +201,14 @@ program test
     end do
     print *, s
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn nested_do_while_with_exit() {
-    compile_ok(r#"
+#[test]
+fn nested_do_while_with_exit() {
+    compile_ok(
+        r#"
 program test
     integer :: i = 0, j, count
     count = 0
@@ -185,13 +223,16 @@ program test
     end do
     print *, count
 end program test
-"#);
+"#,
+    );
 }
 
 // ── DO WHILE with complex logical condition ───────────────────
 
-#[test] fn do_while_and_condition() {
-    compile_ok(r#"
+#[test]
+fn do_while_and_condition() {
+    compile_ok(
+        r#"
 program test
     integer :: x = 0, y = 10
     do while (x < 5 .and. y > 5)
@@ -201,11 +242,14 @@ program test
     print *, x
     print *, y
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn do_while_or_condition() {
-    compile_ok(r#"
+#[test]
+fn do_while_or_condition() {
+    compile_ok(
+        r#"
 program test
     integer :: a = 0, b = 0
     do while (a < 3 .or. b < 3)
@@ -215,11 +259,14 @@ program test
     print *, a
     print *, b
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn do_while_not_condition() {
-    compile_ok(r#"
+#[test]
+fn do_while_not_condition() {
+    compile_ok(
+        r#"
 program test
     integer :: n = 0
     logical :: done
@@ -230,13 +277,16 @@ program test
     end do
     print *, n
 end program test
-"#);
+"#,
+    );
 }
 
 // ── DO WHILE reading data ─────────────────────────────────────
 
-#[test] fn do_while_read_until_eof() {
-    compile_ok(r#"
+#[test]
+fn do_while_read_until_eof() {
+    compile_ok(
+        r#"
 program test
     integer :: n, ios, s
     s = 0
@@ -247,13 +297,16 @@ program test
     end do
     print *, s
 end program test
-"#);
+"#,
+    );
 }
 
 // ── DO WHILE in subroutine ────────────────────────────────────
 
-#[test] fn do_while_in_subroutine() {
-    compile_ok(r#"
+#[test]
+fn do_while_in_subroutine() {
+    compile_ok(
+        r#"
 program test
     integer :: result
     call compute(result)
@@ -269,11 +322,14 @@ contains
         end do
     end subroutine compute
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn do_while_factorial() {
-    compile_ok(r#"
+#[test]
+fn do_while_factorial() {
+    compile_ok(
+        r#"
 program test
     integer :: n = 5, f = 1
     do while (n > 1)
@@ -282,11 +338,14 @@ program test
     end do
     print *, f
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn do_while_fibonacci() {
-    compile_ok(r#"
+#[test]
+fn do_while_fibonacci() {
+    compile_ok(
+        r#"
 program test
     integer :: a = 0, b = 1, tmp, count = 0
     do while (b < 100)
@@ -297,11 +356,14 @@ program test
     end do
     print *, b
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn do_while_newton_sqrt() {
-    compile_ok(r#"
+#[test]
+fn do_while_newton_sqrt() {
+    compile_ok(
+        r#"
 program test
     real :: x = 2.0, g = 1.0, prev
     do while (.true.)
@@ -311,13 +373,16 @@ program test
     end do
     print *, abs(g * g - x) < 0.001
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Named DO WHILE (covered in test_named_loops but exercised here) ──
 
-#[test] fn do_while_two_variables() {
-    compile_ok(r#"
+#[test]
+fn do_while_two_variables() {
+    compile_ok(
+        r#"
 program test
     integer :: m = 1, n = 256
     integer :: steps = 0
@@ -327,5 +392,6 @@ program test
     end do
     print *, steps
 end program test
-"#);
+"#,
+    );
 }

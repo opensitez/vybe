@@ -24,24 +24,28 @@ fn integer_kind_1() {
 
 #[test]
 fn int32_param() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     integer, parameter :: int32 = 4
     integer(kind=int32) :: x = 2147483647
     print *, x
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn int64_param() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     integer, parameter :: int64 = 8
     integer(kind=int64) :: big = 100000000000_8
     print *, big
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Real kinds ───────────────────────────────────────────────
@@ -58,35 +62,45 @@ fn real_kind_8() {
 
 #[test]
 fn real_kind_16() {
-    compile_ok("program t\n  real(kind=16) :: q = 3.14159265358979_16\n  print *, q\nend program t\n");
+    compile_ok(
+        "program t\n  real(kind=16) :: q = 3.14159265358979_16\n  print *, q\nend program t\n",
+    );
 }
 
 #[test]
 fn real64_param() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     integer, parameter :: real64 = 8
     real(kind=real64) :: x = 1.0_8
     print *, x
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Double precision ─────────────────────────────────────────
 
 #[test]
 fn double_precision_assign() {
-    compile_ok("program t\n  double precision :: d\n  d = 3.141592653589793\n  print *, d\nend program t\n");
+    compile_ok(
+        "program t\n  double precision :: d\n  d = 3.141592653589793\n  print *, d\nend program t\n",
+    );
 }
 
 #[test]
 fn double_precision_arithmetic() {
-    compile_ok("program t\n  double precision :: a = 1.0, b = 3.0, c\n  c = a / b\n  print *, c\nend program t\n");
+    compile_ok(
+        "program t\n  double precision :: a = 1.0, b = 3.0, c\n  c = a / b\n  print *, c\nend program t\n",
+    );
 }
 
 #[test]
 fn double_precision_parameter() {
-    compile_ok("program t\n  double precision, parameter :: PI = 3.141592653589793\n  print *, PI\nend program t\n");
+    compile_ok(
+        "program t\n  double precision, parameter :: PI = 3.141592653589793\n  print *, PI\nend program t\n",
+    );
 }
 
 // ── Kind literals ─────────────────────────────────────────────
@@ -113,7 +127,9 @@ fn double_literal_exponent() {
 
 #[test]
 fn kind_intrinsic_double_literal_runtime() {
-    let out = run_prints("program t\n  integer, parameter :: dp = kind(1.0d0)\n  print *, dp\nend program t\n");
+    let out = run_prints(
+        "program t\n  integer, parameter :: dp = kind(1.0d0)\n  print *, dp\nend program t\n",
+    );
     assert_eq!(out, vec!["8"]);
 }
 
@@ -121,31 +137,36 @@ fn kind_intrinsic_double_literal_runtime() {
 
 #[test]
 fn selected_int_kind_9() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     integer, parameter :: k = selected_int_kind(9)
     integer(kind=k) :: n = 999999999
     print *, n
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn selected_real_kind_15() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     integer, parameter :: k = selected_real_kind(15, 307)
     real(kind=k) :: x = 1.23456789012345_k
     print *, x
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Kind in derived types ─────────────────────────────────────
 
 #[test]
 fn kind_in_derived_type() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     integer, parameter :: wp = 8
     type :: HighPrec
@@ -155,14 +176,16 @@ program test
     h%value = 1.23456789012345_wp
     print *, h%value
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Kind in function signatures ───────────────────────────────
 
 #[test]
 fn kind_in_function() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     integer, parameter :: dp = 8
     print *, dp_add(1.0_dp, 2.0_dp)
@@ -174,27 +197,32 @@ contains
         res = a + b
     end function dp_add
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Kind with arrays ──────────────────────────────────────────
 
 #[test]
 fn kind_array() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     integer(kind=8) :: a(3) = [1_8, 2_8, 3_8]
     print *, a(1)
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn kind_real_array() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     real(kind=8) :: v(3) = [1.0_8, 2.0_8, 3.0_8]
     print *, v(1)
 end program test
-"#);
+"#,
+    );
 }

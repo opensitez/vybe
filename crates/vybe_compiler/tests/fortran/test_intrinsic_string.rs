@@ -7,7 +7,9 @@ use super::helpers::run_prints;
 #[test]
 fn len_string() {
     // Fortran `len(s)` returns the declared length, not the stored content length.
-    let out = run_prints("program t\ncharacter(len=10) :: s = \"hello\"\nprint *, len(s)\nend program t\n");
+    let out = run_prints(
+        "program t\ncharacter(len=10) :: s = \"hello\"\nprint *, len(s)\nend program t\n",
+    );
     assert_eq!(out, vec!["10"]);
 }
 
@@ -20,7 +22,9 @@ fn trim_string() {
 
 #[test]
 fn len_trim_string() {
-    let out = run_prints("program t\ncharacter(len=20) :: s = \"hello\"\nprint *, len_trim(s)\nend program t\n");
+    let out = run_prints(
+        "program t\ncharacter(len=20) :: s = \"hello\"\nprint *, len_trim(s)\nend program t\n",
+    );
     assert_eq!(out, vec!["5"]);
 }
 

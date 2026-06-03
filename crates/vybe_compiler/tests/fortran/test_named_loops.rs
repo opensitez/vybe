@@ -2,8 +2,10 @@ use super::helpers::compile_ok;
 
 // ── Basic named DO loop ───────────────────────────────────────
 
-#[test] fn named_do_basic() {
-    compile_ok(r#"
+#[test]
+fn named_do_basic() {
+    compile_ok(
+        r#"
 program test
     integer :: i, s
     s = 0
@@ -12,11 +14,14 @@ program test
     end do outer
     print *, s
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn named_do_while() {
-    compile_ok(r#"
+#[test]
+fn named_do_while() {
+    compile_ok(
+        r#"
 program test
     integer :: n = 0
     counting: do while (n < 5)
@@ -24,11 +29,14 @@ program test
     end do counting
     print *, n
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn named_do_nested_both() {
-    compile_ok(r#"
+#[test]
+fn named_do_nested_both() {
+    compile_ok(
+        r#"
 program test
     integer :: i, j, s
     s = 0
@@ -39,13 +47,16 @@ program test
     end do outer
     print *, s
 end program test
-"#);
+"#,
+    );
 }
 
 // ── EXIT with loop name ───────────────────────────────────────
 
-#[test] fn exit_named_outer() {
-    compile_ok(r#"
+#[test]
+fn exit_named_outer() {
+    compile_ok(
+        r#"
 program test
     integer :: i, j
     outer: do i = 1, 5
@@ -56,11 +67,14 @@ program test
     print *, i
     print *, j
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn exit_named_inner() {
-    compile_ok(r#"
+#[test]
+fn exit_named_inner() {
+    compile_ok(
+        r#"
 program test
     integer :: i, j, count
     count = 0
@@ -72,11 +86,14 @@ program test
     end do outer
     print *, count
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn exit_outer_from_deep_nest() {
-    compile_ok(r#"
+#[test]
+fn exit_outer_from_deep_nest() {
+    compile_ok(
+        r#"
 program test
     integer :: i, j, k
     outer: do i = 1, 10
@@ -88,11 +105,14 @@ program test
     end do outer
     print *, i, j, k
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn exit_named_vs_unnamed() {
-    compile_ok(r#"
+#[test]
+fn exit_named_vs_unnamed() {
+    compile_ok(
+        r#"
 program test
     integer :: i, j
     named: do i = 1, 5
@@ -103,13 +123,16 @@ program test
     end do named
     print *, 'done'
 end program test
-"#);
+"#,
+    );
 }
 
 // ── CYCLE with loop name ──────────────────────────────────────
 
-#[test] fn cycle_named_outer() {
-    compile_ok(r#"
+#[test]
+fn cycle_named_outer() {
+    compile_ok(
+        r#"
 program test
     integer :: i, j, count
     count = 0
@@ -121,11 +144,14 @@ program test
     end do outer
     print *, count
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn cycle_named_inner() {
-    compile_ok(r#"
+#[test]
+fn cycle_named_inner() {
+    compile_ok(
+        r#"
 program test
     integer :: i, j, count
     count = 0
@@ -137,11 +163,14 @@ program test
     end do outer
     print *, count
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn cycle_outer_skip_rest_of_inner() {
-    compile_ok(r#"
+#[test]
+fn cycle_outer_skip_rest_of_inner() {
+    compile_ok(
+        r#"
 program test
     integer :: i, j
     outer: do i = 1, 3
@@ -151,11 +180,14 @@ program test
         end do inner
     end do outer
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn cycle_preserves_state() {
-    compile_ok(r#"
+#[test]
+fn cycle_preserves_state() {
+    compile_ok(
+        r#"
 program test
     integer :: i, j, sum_j
     sum_j = 0
@@ -167,13 +199,16 @@ program test
     end do outer
     print *, sum_j
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Three-level named loops ───────────────────────────────────
 
-#[test] fn three_level_exit_outer() {
-    compile_ok(r#"
+#[test]
+fn three_level_exit_outer() {
+    compile_ok(
+        r#"
 program test
     integer :: i, j, k
     found: do i = 1, 10
@@ -185,11 +220,14 @@ program test
     end do found
     print *, i * j * k
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn three_level_cycle_middle() {
-    compile_ok(r#"
+#[test]
+fn three_level_cycle_middle() {
+    compile_ok(
+        r#"
 program test
     integer :: i, j, k, count
     count = 0
@@ -203,11 +241,14 @@ program test
     end do outer
     print *, count
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn three_level_exit_middle() {
-    compile_ok(r#"
+#[test]
+fn three_level_exit_middle() {
+    compile_ok(
+        r#"
 program test
     integer :: i, j, k, count
     count = 0
@@ -221,13 +262,16 @@ program test
     end do outer
     print *, count
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Named DO CONCURRENT ───────────────────────────────────────
 
-#[test] fn named_do_concurrent() {
-    compile_ok(r#"
+#[test]
+fn named_do_concurrent() {
+    compile_ok(
+        r#"
 program test
     integer :: a(10)
     fill: do concurrent (i = 1:10)
@@ -235,13 +279,16 @@ program test
     end do fill
     print *, a(5)
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Named loops with subroutine calls inside ─────────────────
 
-#[test] fn named_loop_with_call() {
-    compile_ok(r#"
+#[test]
+fn named_loop_with_call() {
+    compile_ok(
+        r#"
 program test
     integer :: i, total
     total = 0
@@ -257,13 +304,16 @@ contains
         acc = acc + n
     end subroutine add
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Edge cases ────────────────────────────────────────────────
 
-#[test] fn named_loop_zero_iterations() {
-    compile_ok(r#"
+#[test]
+fn named_loop_zero_iterations() {
+    compile_ok(
+        r#"
 program test
     integer :: i
     nothing: do i = 5, 1
@@ -271,11 +321,14 @@ program test
     end do nothing
     print *, 'done'
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn exit_at_start_of_loop() {
-    compile_ok(r#"
+#[test]
+fn exit_at_start_of_loop() {
+    compile_ok(
+        r#"
 program test
     integer :: i
     quick: do i = 1, 100
@@ -283,11 +336,14 @@ program test
     end do quick
     print *, i
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn nested_exit_and_cycle_mix() {
-    compile_ok(r#"
+#[test]
+fn nested_exit_and_cycle_mix() {
+    compile_ok(
+        r#"
 program test
     integer :: i, j, s
     s = 0
@@ -301,5 +357,6 @@ program test
     end do outer
     print *, s
 end program test
-"#);
+"#,
+    );
 }

@@ -6,81 +6,96 @@ use super::helpers::{compile_ok, run_prints};
 
 #[test]
 fn abs_function() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 program test
     print *, abs(-42)
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn sqrt_function() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 program test
     print *, sqrt(25.0)
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5"]);
 }
 
 #[test]
 fn mod_function() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 program test
     print *, mod(17, 5)
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn min_max_functions() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 program test
     print *, min(3, 7)
     print *, max(3, 7)
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3", "7"]);
 }
 
 #[test]
 fn sum_array_runtime() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 program test
     integer :: a(4) = [1, 2, 3, 4]
     print *, sum(a)
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10"]);
 }
 
 #[test]
 fn minval_maxval_array_runtime() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 program test
     integer :: a(4) = [7, 3, 9, 4]
     print *, minval(a)
     print *, maxval(a)
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3", "9"]);
 }
 
 #[test]
 fn nint_runtime() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 program test
     print *, nint(2.6)
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
 #[test]
 fn trig_functions() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     real :: x
     x = sin(1.0)
@@ -88,47 +103,55 @@ program test
     x = tan(1.0)
     print *, x
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn exp_log_functions() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     real :: x
     x = exp(1.0)
     x = log(2.718)
     print *, x
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn len_trim_function() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 program test
     character(len=20) :: s
     s = "hello"
     print *, len(s)
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5"]);
 }
 
 #[test]
 fn trim_function() {
     // Fortran `trim` only strips trailing blanks, leaves leading intact.
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 program test
     print *, trim("  hello  ")
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["  hello"]);
 }
 
 #[test]
 fn int_real_conversion() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     integer :: n
     real :: x
@@ -137,5 +160,6 @@ program test
     print *, n
     print *, x
 end program test
-"#);
+"#,
+    );
 }

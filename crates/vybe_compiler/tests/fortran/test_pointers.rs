@@ -2,32 +2,72 @@ use super::helpers::{compile_ok, run_prints};
 
 // ── Pointer declarations ──────────────────────────────────────
 
-#[test] fn pointer_integer() { compile_ok("program t\n  integer, pointer :: p => null()\n  print *, associated(p)\nend program t\n"); }
-#[test] fn pointer_real() { compile_ok("program t\n  real, pointer :: p => null()\n  print *, associated(p)\nend program t\n"); }
-#[test] fn pointer_char() { compile_ok("program t\n  character(len=10), pointer :: p => null()\n  print *, associated(p)\nend program t\n"); }
-#[test] fn pointer_logical() { compile_ok("program t\n  logical, pointer :: p => null()\n  print *, associated(p)\nend program t\n"); }
+#[test]
+fn pointer_integer() {
+    compile_ok(
+        "program t\n  integer, pointer :: p => null()\n  print *, associated(p)\nend program t\n",
+    );
+}
+#[test]
+fn pointer_real() {
+    compile_ok(
+        "program t\n  real, pointer :: p => null()\n  print *, associated(p)\nend program t\n",
+    );
+}
+#[test]
+fn pointer_char() {
+    compile_ok(
+        "program t\n  character(len=10), pointer :: p => null()\n  print *, associated(p)\nend program t\n",
+    );
+}
+#[test]
+fn pointer_logical() {
+    compile_ok(
+        "program t\n  logical, pointer :: p => null()\n  print *, associated(p)\nend program t\n",
+    );
+}
 
 // ── TARGET attribute ──────────────────────────────────────────
 
-#[test] fn target_integer() { compile_ok("program t\n  integer, target :: x = 42\n  integer, pointer :: p\n  p => x\n  print *, p\nend program t\n"); }
-#[test] fn target_real() { compile_ok("program t\n  real, target :: x = 3.14\n  real, pointer :: p\n  p => x\n  print *, p\nend program t\n"); }
-#[test] fn target_array() { compile_ok("program t\n  integer, target :: a(5) = [1,2,3,4,5]\n  integer, pointer :: p(:)\n  p => a\n  print *, p(1)\nend program t\n"); }
+#[test]
+fn target_integer() {
+    compile_ok(
+        "program t\n  integer, target :: x = 42\n  integer, pointer :: p\n  p => x\n  print *, p\nend program t\n",
+    );
+}
+#[test]
+fn target_real() {
+    compile_ok(
+        "program t\n  real, target :: x = 3.14\n  real, pointer :: p\n  p => x\n  print *, p\nend program t\n",
+    );
+}
+#[test]
+fn target_array() {
+    compile_ok(
+        "program t\n  integer, target :: a(5) = [1,2,3,4,5]\n  integer, pointer :: p(:)\n  p => a\n  print *, p(1)\nend program t\n",
+    );
+}
 
 // ── Pointer association ───────────────────────────────────────
 
-#[test] fn pointer_associate() {
-    compile_ok(r#"
+#[test]
+fn pointer_associate() {
+    compile_ok(
+        r#"
 program test
     integer, target :: x = 10
     integer, pointer :: p
     p => x
     print *, p
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn pointer_deref_modify() {
-    compile_ok(r#"
+#[test]
+fn pointer_deref_modify() {
+    compile_ok(
+        r#"
 program test
     integer, target :: x = 10
     integer, pointer :: p
@@ -35,11 +75,14 @@ program test
     p = 99
     print *, x
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn pointer_reassociate() {
-    compile_ok(r#"
+#[test]
+fn pointer_reassociate() {
+    compile_ok(
+        r#"
 program test
     integer, target :: a = 1, b = 2
     integer, pointer :: p
@@ -47,33 +90,42 @@ program test
     p => b
     print *, p
 end program test
-"#);
+"#,
+    );
 }
 
 // ── ASSOCIATED intrinsic ──────────────────────────────────────
 
-#[test] fn associated_null() {
-    compile_ok(r#"
+#[test]
+fn associated_null() {
+    compile_ok(
+        r#"
 program test
     integer, pointer :: p => null()
     print *, associated(p)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn associated_after_target() {
-    compile_ok(r#"
+#[test]
+fn associated_after_target() {
+    compile_ok(
+        r#"
 program test
     integer, target :: x = 5
     integer, pointer :: p
     p => x
     print *, associated(p)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn associated_with_target() {
-    compile_ok(r#"
+#[test]
+fn associated_with_target() {
+    compile_ok(
+        r#"
 program test
     integer, target :: x = 1, y = 2
     integer, pointer :: p
@@ -81,13 +133,16 @@ program test
     print *, associated(p, x)
     print *, associated(p, y)
 end program test
-"#);
+"#,
+    );
 }
 
 // ── NULLIFY ───────────────────────────────────────────────────
 
-#[test] fn nullify_basic() {
-    compile_ok(r#"
+#[test]
+fn nullify_basic() {
+    compile_ok(
+        r#"
 program test
     integer, pointer :: p => null()
     integer, target :: x = 5
@@ -95,11 +150,14 @@ program test
     nullify(p)
     print *, associated(p)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn nullify_multiple() {
-    compile_ok(r#"
+#[test]
+fn nullify_multiple() {
+    compile_ok(
+        r#"
 program test
     integer, pointer :: p => null(), q => null()
     integer, target :: x = 1, y = 2
@@ -108,35 +166,44 @@ program test
     nullify(p, q)
     print *, associated(p)
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Pointer arrays ────────────────────────────────────────────
 
-#[test] fn pointer_array_1d() {
-    compile_ok(r#"
+#[test]
+fn pointer_array_1d() {
+    compile_ok(
+        r#"
 program test
     integer, target :: a(5) = [10, 20, 30, 40, 50]
     integer, pointer :: p(:)
     p => a
     print *, p(3)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn pointer_array_slice() {
-    compile_ok(r#"
+#[test]
+fn pointer_array_slice() {
+    compile_ok(
+        r#"
 program test
     integer, target :: a(6) = [1, 2, 3, 4, 5, 6]
     integer, pointer :: p(:)
     p => a(2:5)
     print *, p(1)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn pointer_array_2d() {
-    compile_ok(r#"
+#[test]
+fn pointer_array_2d() {
+    compile_ok(
+        r#"
 program test
     integer, target :: m(3,3)
     integer, pointer :: p(:,:)
@@ -145,13 +212,16 @@ program test
     p => m
     print *, p(2,2)
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Pointer in derived type ───────────────────────────────────
 
-#[test] fn pointer_field() {
-    compile_ok(r#"
+#[test]
+fn pointer_field() {
+    compile_ok(
+        r#"
 program test
     type :: Node
         integer :: value
@@ -161,11 +231,14 @@ program test
     n%value = 1
     print *, n%value
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn linked_list_two_nodes() {
-    compile_ok(r#"
+#[test]
+fn linked_list_two_nodes() {
+    compile_ok(
+        r#"
 program test
     type :: Node
         integer :: value
@@ -177,12 +250,14 @@ program test
     n1%next => n2
     print *, n1%next%value
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn pointer_dummy_allocation_preserves_null_entry() {
-        let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 module m
     implicit none
 
@@ -214,14 +289,17 @@ program test
         print *, head%value
     end if
 end program test
-"#);
-        assert_eq!(out, vec!["true", "5"]);
+"#,
+    );
+    assert_eq!(out, vec!["true", "5"]);
 }
 
 // ── Allocatable with pointer-like semantics ───────────────────
 
-#[test] fn allocatable_scalar() {
-    compile_ok(r#"
+#[test]
+fn allocatable_scalar() {
+    compile_ok(
+        r#"
 program test
     integer, allocatable :: x
     allocate(x)
@@ -229,11 +307,14 @@ program test
     print *, x
     deallocate(x)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn allocatable_real_scalar() {
-    compile_ok(r#"
+#[test]
+fn allocatable_real_scalar() {
+    compile_ok(
+        r#"
 program test
     real, allocatable :: r
     allocate(r)
@@ -241,11 +322,14 @@ program test
     print *, r
     deallocate(r)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn allocatable_in_type() {
-    let out = run_prints(r#"
+#[test]
+fn allocatable_in_type() {
+    let out = run_prints(
+        r#"
 program test
     type :: DynList
         integer, allocatable :: items(:)
@@ -259,12 +343,15 @@ program test
     print *, list%count
     deallocate(list%items)
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, ["100", "1"]);
 }
 
-#[test] fn allocatable_2d_in_type_runtime() {
-    let out = run_prints(r#"
+#[test]
+fn allocatable_2d_in_type_runtime() {
+    let out = run_prints(
+        r#"
 program test
     type :: NeighborGrid
         integer, allocatable :: cells(:,:)
@@ -278,14 +365,17 @@ program test
     print *, grid%cells(2,3)
     deallocate(grid%cells)
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, ["5", "8"]);
 }
 
 // ── SOURCE= and MOLD= in ALLOCATE (Fortran 2003) ─────────────
 
-#[test] fn allocate_source() {
-    compile_ok(r#"
+#[test]
+fn allocate_source() {
+    compile_ok(
+        r#"
 program test
     integer, allocatable :: a(:), b(:)
     a = [1, 2, 3, 4, 5]
@@ -293,11 +383,14 @@ program test
     print *, b(1)
     deallocate(a, b)
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn allocate_mold() {
-    compile_ok(r#"
+#[test]
+fn allocate_mold() {
+    compile_ok(
+        r#"
 program test
     integer, allocatable :: a(:), b(:)
     allocate(a(5))
@@ -305,13 +398,16 @@ program test
     print *, size(b)
     deallocate(a, b)
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Procedure pointers (Fortran 2003) ────────────────────────
 
-#[test] fn procedure_pointer_basic() {
-    compile_ok(r#"
+#[test]
+fn procedure_pointer_basic() {
+    compile_ok(
+        r#"
 program test
     procedure(int_fn), pointer :: fp => null()
     fp => double_it
@@ -327,11 +423,14 @@ contains
         integer :: r
     end function int_fn
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn procedure_pointer_swap() {
-    compile_ok(r#"
+#[test]
+fn procedure_pointer_swap() {
+    compile_ok(
+        r#"
 program test
     abstract interface
         function unary(x) result(r)
@@ -356,5 +455,6 @@ contains
         r = x * 3
     end function triple_it
 end program test
-"#);
+"#,
+    );
 }

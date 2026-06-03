@@ -2,8 +2,10 @@ use super::helpers::compile_ok;
 
 // ── Range selectors ───────────────────────────────────────────
 
-#[test] fn case_range_low() {
-    compile_ok(r#"
+#[test]
+fn case_range_low() {
+    compile_ok(
+        r#"
 program test
     integer :: n = 3
     select case (n)
@@ -13,11 +15,14 @@ program test
         print *, 'high'
     end select
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn case_range_high() {
-    compile_ok(r#"
+#[test]
+fn case_range_high() {
+    compile_ok(
+        r#"
 program test
     integer :: n = 8
     select case (n)
@@ -27,11 +32,14 @@ program test
         print *, 'high'
     end select
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn case_open_upper() {
-    compile_ok(r#"
+#[test]
+fn case_open_upper() {
+    compile_ok(
+        r#"
 program test
     integer :: n = 100
     select case (n)
@@ -41,11 +49,14 @@ program test
         print *, 'positive'
     end select
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn case_open_lower() {
-    compile_ok(r#"
+#[test]
+fn case_open_lower() {
+    compile_ok(
+        r#"
 program test
     integer :: n = -5
     select case (n)
@@ -55,11 +66,14 @@ program test
         print *, 'positive'
     end select
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn case_open_both_ends() {
-    compile_ok(r#"
+#[test]
+fn case_open_both_ends() {
+    compile_ok(
+        r#"
 program test
     integer :: n = 50
     select case (n)
@@ -71,11 +85,14 @@ program test
         print *, 'triple digit or more'
     end select
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn case_range_boundary_exact() {
-    compile_ok(r#"
+#[test]
+fn case_range_boundary_exact() {
+    compile_ok(
+        r#"
 program test
     integer :: n
     do n = 4, 6
@@ -89,13 +106,16 @@ program test
         end select
     end do
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Multiple values in one case ───────────────────────────────
 
-#[test] fn case_multiple_values() {
-    compile_ok(r#"
+#[test]
+fn case_multiple_values() {
+    compile_ok(
+        r#"
 program test
     integer :: n = 3
     select case (n)
@@ -105,11 +125,14 @@ program test
         print *, 'even'
     end select
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn case_mix_values_and_range() {
-    compile_ok(r#"
+#[test]
+fn case_mix_values_and_range() {
+    compile_ok(
+        r#"
 program test
     integer :: n = 0
     select case (n)
@@ -121,11 +144,14 @@ program test
         print *, 'large'
     end select
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn case_multiple_values_some_match() {
-    compile_ok(r#"
+#[test]
+fn case_multiple_values_some_match() {
+    compile_ok(
+        r#"
 program test
     integer :: i
     do i = 1, 6
@@ -137,13 +163,16 @@ program test
         end select
     end do
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Character SELECT CASE ─────────────────────────────────────
 
-#[test] fn case_char_exact() {
-    compile_ok(r#"
+#[test]
+fn case_char_exact() {
+    compile_ok(
+        r#"
 program test
     character :: c = 'b'
     select case (c)
@@ -155,11 +184,14 @@ program test
         print *, 'c'
     end select
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn case_char_range() {
-    compile_ok(r#"
+#[test]
+fn case_char_range() {
+    compile_ok(
+        r#"
 program test
     character :: c = 'm'
     select case (c)
@@ -169,11 +201,14 @@ program test
         print *, 'second half'
     end select
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn case_char_open_range() {
-    compile_ok(r#"
+#[test]
+fn case_char_open_range() {
+    compile_ok(
+        r#"
 program test
     character :: c = 'Z'
     select case (c)
@@ -185,11 +220,14 @@ program test
         print *, 'other'
     end select
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn case_char_multiple_values() {
-    compile_ok(r#"
+#[test]
+fn case_char_multiple_values() {
+    compile_ok(
+        r#"
 program test
     character :: c = 'e'
     select case (c)
@@ -199,11 +237,14 @@ program test
         print *, 'consonant'
     end select
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn case_char_string() {
-    compile_ok(r#"
+#[test]
+fn case_char_string() {
+    compile_ok(
+        r#"
 program test
     character(len=3) :: s = 'foo'
     select case (s)
@@ -217,13 +258,16 @@ program test
         print *, 'other'
     end select
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Nested SELECT CASE ────────────────────────────────────────
 
-#[test] fn nested_select_case() {
-    compile_ok(r#"
+#[test]
+fn nested_select_case() {
+    compile_ok(
+        r#"
 program test
     integer :: i = 2, j = 3
     select case (i)
@@ -240,11 +284,14 @@ program test
         print *, 'other'
     end select
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn nested_select_in_loop() {
-    compile_ok(r#"
+#[test]
+fn nested_select_in_loop() {
+    compile_ok(
+        r#"
 program test
     integer :: i, j
     do i = 1, 3
@@ -263,13 +310,16 @@ program test
         end select
     end do
 end program test
-"#);
+"#,
+    );
 }
 
 // ── SELECT CASE on expression ─────────────────────────────────
 
-#[test] fn case_on_expression() {
-    compile_ok(r#"
+#[test]
+fn case_on_expression() {
+    compile_ok(
+        r#"
 program test
     integer :: x = 5, y = 3
     select case (x + y)
@@ -281,11 +331,14 @@ program test
         print *, 'large sum'
     end select
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn case_on_function_result() {
-    compile_ok(r#"
+#[test]
+fn case_on_function_result() {
+    compile_ok(
+        r#"
 program test
     integer :: a(5) = [1, 2, 3, 4, 5]
     select case (sum(a))
@@ -297,11 +350,14 @@ program test
         print *, 'large'
     end select
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn case_on_mod_result() {
-    compile_ok(r#"
+#[test]
+fn case_on_mod_result() {
+    compile_ok(
+        r#"
 program test
     integer :: i
     do i = 1, 6
@@ -315,13 +371,16 @@ program test
         end select
     end do
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Default only / fallthrough patterns ───────────────────────
 
-#[test] fn case_default_only() {
-    compile_ok(r#"
+#[test]
+fn case_default_only() {
+    compile_ok(
+        r#"
 program test
     integer :: n = 42
     select case (n)
@@ -329,11 +388,14 @@ program test
         print *, 'default'
     end select
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn case_no_match_no_default() {
-    compile_ok(r#"
+#[test]
+fn case_no_match_no_default() {
+    compile_ok(
+        r#"
 program test
     integer :: n = 99
     select case (n)
@@ -344,11 +406,14 @@ program test
     end select
     print *, 'after select'
 end program test
-"#);
+"#,
+    );
 }
 
-#[test] fn case_large_range_integers() {
-    compile_ok(r#"
+#[test]
+fn case_large_range_integers() {
+    compile_ok(
+        r#"
 program test
     integer :: n = 5000
     select case (n)
@@ -360,13 +425,16 @@ program test
         print *, 'ten-thousands+'
     end select
 end program test
-"#);
+"#,
+    );
 }
 
 // ── Logical SELECT CASE via integer conversion ────────────────
 
-#[test] fn case_from_logical_merge() {
-    compile_ok(r#"
+#[test]
+fn case_from_logical_merge() {
+    compile_ok(
+        r#"
 program test
     logical :: flag = .true.
     select case (merge(1, 0, flag))
@@ -376,5 +444,6 @@ program test
         print *, 'true'
     end select
 end program test
-"#);
+"#,
+    );
 }

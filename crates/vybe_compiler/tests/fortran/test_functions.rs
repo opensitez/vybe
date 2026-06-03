@@ -6,7 +6,8 @@ use super::helpers::{compile_ok, run_prints};
 
 #[test]
 fn subroutine_basic() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     call greet()
 contains
@@ -14,12 +15,14 @@ contains
         print *, "Hello"
     end subroutine greet
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn function_basic() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     integer :: result
     result = square(5)
@@ -31,12 +34,14 @@ contains
         res = x * x
     end function square
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn subroutine_with_args() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 program test
     integer :: a, b, c
     a = 3
@@ -50,13 +55,15 @@ contains
         result = x + y
     end subroutine add_nums
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, ["7"]);
 }
 
 #[test]
 fn function_with_return_type() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     print *, cube(3)
 contains
@@ -65,12 +72,14 @@ contains
         cube = n * n * n
     end function cube
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn function_name_result_runtime() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 program test
     print *, cube(3)
 contains
@@ -79,13 +88,15 @@ contains
         cube = n * n * n
     end function cube
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, ["27"]);
 }
 
 #[test]
 fn recursive_function() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     print *, factorial(5)
 contains
@@ -99,12 +110,14 @@ contains
         end if
     end function factorial
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn multiple_functions() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     print *, add(3, 4)
     print *, multiply(3, 4)
@@ -120,5 +133,6 @@ contains
         res = a * b
     end function multiply
 end program test
-"#);
+"#,
+    );
 }

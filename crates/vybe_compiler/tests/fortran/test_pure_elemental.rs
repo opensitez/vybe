@@ -4,7 +4,8 @@ use super::helpers::{compile_ok, run_prints};
 
 #[test]
 fn pure_function_basic() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     print *, square(5)
 contains
@@ -14,12 +15,14 @@ contains
         res = x * x
     end function square
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn pure_function_real() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     print *, hyp(3.0, 4.0)
 contains
@@ -29,12 +32,14 @@ contains
         c = sqrt(a*a + b*b)
     end function hyp
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn pure_subroutine() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     integer :: x = 5
     call double_it(x)
@@ -45,12 +50,14 @@ contains
         n = n * 2
     end subroutine double_it
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn pure_in_module() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 module math_pure
     implicit none
 contains
@@ -65,14 +72,16 @@ program test
     use math_pure
     print *, add(3, 4)
 end program test
-"#);
+"#,
+    );
 }
 
 // ── ELEMENTAL functions ───────────────────────────────────────
 
 #[test]
 fn elemental_function_basic() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     integer :: a(3) = [1, 2, 3]
     integer :: b(3)
@@ -85,12 +94,14 @@ contains
         res = x * 2
     end function double_elem
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn elemental_on_scalar() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     print *, cube(3)
 contains
@@ -100,12 +111,14 @@ contains
         res = x * x * x
     end function cube
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn elemental_real() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     real :: a(4) = [1.0, 4.0, 9.0, 16.0]
     real :: b(4)
@@ -118,12 +131,14 @@ contains
         r = sqrt(x)
     end function root
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn elemental_subroutine() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     integer :: a(3) = [1, 2, 3]
     call negate(a)
@@ -134,14 +149,16 @@ contains
         x = -x
     end subroutine negate
 end program test
-"#);
+"#,
+    );
 }
 
 // ── RECURSIVE functions (more cases) ─────────────────────────
 
 #[test]
 fn recursive_power() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     print *, power(2, 8)
 contains
@@ -155,12 +172,14 @@ contains
         end if
     end function power
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn recursive_gcd() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     print *, gcd(48, 18)
 contains
@@ -174,12 +193,14 @@ contains
         end if
     end function gcd
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn recursive_ackermann() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     print *, ack(2, 3)
 contains
@@ -195,12 +216,14 @@ contains
         end if
     end function ack
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn recursive_sum() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     print *, rsum(10)
 contains
@@ -214,14 +237,16 @@ contains
         end if
     end function rsum
 end program test
-"#);
+"#,
+    );
 }
 
 // ── OPTIONAL arguments ────────────────────────────────────────
 
 #[test]
 fn optional_basic() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     call greet('Alice')
     call greet('Bob', 'Dr.')
@@ -236,12 +261,14 @@ contains
         end if
     end subroutine greet
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn optional_integer() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     print *, with_default(5)
     print *, with_default(5, 10)
@@ -257,12 +284,14 @@ contains
         end if
     end function with_default
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn optional_present_check() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     call maybe(3)
 contains
@@ -275,12 +304,14 @@ contains
         print *, total
     end subroutine maybe
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn optional_present_check_runtime() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 program test
     call maybe(3)
     call maybe(3, 4)
@@ -294,7 +325,8 @@ contains
         print *, total
     end subroutine maybe
 end program test
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3", "7"]);
 }
 
@@ -302,7 +334,8 @@ end program test
 
 #[test]
 fn intent_in_multiple() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     print *, add3(1, 2, 3)
 contains
@@ -312,12 +345,14 @@ contains
         res = a + b + c
     end function add3
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn intent_out_scalar() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     integer :: x
     call set_value(x)
@@ -328,12 +363,14 @@ contains
         n = 42
     end subroutine set_value
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn intent_inout_double() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     integer :: x = 5
     call double_it(x)
@@ -344,14 +381,16 @@ contains
         n = n * 2
     end subroutine double_it
 end program test
-"#);
+"#,
+    );
 }
 
 // ── CONTAINS in program ───────────────────────────────────────
 
 #[test]
 fn contains_multiple_funcs() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     print *, add(3, 4)
     print *, mul(3, 4)
@@ -368,12 +407,14 @@ contains
         r = a * b
     end function mul
 end program test
-"#);
+"#,
+    );
 }
 
 #[test]
 fn contains_subroutine_calls_function() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 program test
     call run()
 contains
@@ -387,5 +428,6 @@ contains
         print *, compute(4)
     end subroutine run
 end program test
-"#);
+"#,
+    );
 }
