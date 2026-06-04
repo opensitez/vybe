@@ -84,19 +84,19 @@ decodeURI               = { emit = "host:ecma:string:decodeURI",             min
 
 # ── Math — host calls ───────────────────────────────────────────────────────
 
-"Math.pow"          = { emit = "stdlib:pow",      min_args = 2, max_args = 2 }
-"Math.sin"          = { emit = "stdlib:sin",      min_args = 1, max_args = 1 }
-"Math.cos"          = { emit = "stdlib:cos",      min_args = 1, max_args = 1 }
-"Math.tan"          = { emit = "stdlib:tan",      min_args = 1, max_args = 1 }
-"Math.asin"         = { emit = "stdlib:asin",     min_args = 1, max_args = 1 }
-"Math.acos"         = { emit = "stdlib:acos",     min_args = 1, max_args = 1 }
-"Math.atan"         = { emit = "stdlib:atan",     min_args = 1, max_args = 1 }
-"Math.atan2"        = { emit = "stdlib:atan2",    min_args = 2, max_args = 2 }
-"Math.log"          = { emit = "stdlib:log",      min_args = 1, max_args = 1 }
+"Math.pow"          = { emit = "host:ecma:math:pow",      min_args = 2, max_args = 2 }
+"Math.sin"          = { emit = "host:ecma:math:sin",      min_args = 1, max_args = 1 }
+"Math.cos"          = { emit = "host:ecma:math:cos",      min_args = 1, max_args = 1 }
+"Math.tan"          = { emit = "host:ecma:math:tan",      min_args = 1, max_args = 1 }
+"Math.asin"         = { emit = "host:ecma:math:asin",     min_args = 1, max_args = 1 }
+"Math.acos"         = { emit = "host:ecma:math:acos",     min_args = 1, max_args = 1 }
+"Math.atan"         = { emit = "host:ecma:math:atan",     min_args = 1, max_args = 1 }
+"Math.atan2"        = { emit = "host:ecma:math:atan2",    min_args = 2, max_args = 2 }
+"Math.log"          = { emit = "host:ecma:math:log",      min_args = 1, max_args = 1 }
 "Math.log2"         = { emit = "host:ecma:math:log2",     min_args = 1, max_args = 1 }
-"Math.log10"        = { emit = "stdlib:log10",    min_args = 1, max_args = 1 }
-"Math.exp"          = { emit = "stdlib:exp",      min_args = 1, max_args = 1 }
-"Math.sign"         = { emit = "stdlib:sign",     min_args = 1, max_args = 1 }
+"Math.log10"        = { emit = "host:ecma:math:log10",    min_args = 1, max_args = 1 }
+"Math.exp"          = { emit = "host:ecma:math:exp",      min_args = 1, max_args = 1 }
+"Math.sign"         = { emit = "host:ecma:math:sign",     min_args = 1, max_args = 1 }
 "Math.random"       = { emit = "host:ecma:math:random",  min_args = 0, max_args = 0 }
 "Math.hypot"        = { emit = "host:ecma:math:hypot",    min_args = 2, max_args = 2 }
 "Math.cbrt"         = { emit = "host:ecma:math:cbrt",     min_args = 1, max_args = 1 }
@@ -105,9 +105,9 @@ decodeURI               = { emit = "host:ecma:string:decodeURI",             min
 "Math.imul"         = { emit = "host:ecma:math:imul",     min_args = 2, max_args = 2 }
 "Math.expm1"        = { emit = "host:ecma:math:expm1",    min_args = 1, max_args = 1 }
 "Math.log1p"        = { emit = "host:ecma:math:log1p",    min_args = 1, max_args = 1 }
-"Math.sinh"         = { emit = "stdlib:sinh",              min_args = 1, max_args = 1 }
-"Math.cosh"         = { emit = "stdlib:cosh",              min_args = 1, max_args = 1 }
-"Math.tanh"         = { emit = "stdlib:tanh",              min_args = 1, max_args = 1 }
+"Math.sinh"         = { emit = "host:ecma:math:sinh",              min_args = 1, max_args = 1 }
+"Math.cosh"         = { emit = "host:ecma:math:cosh",              min_args = 1, max_args = 1 }
+"Math.tanh"         = { emit = "host:ecma:math:tanh",              min_args = 1, max_args = 1 }
 
 # ── Number static methods ────────────────────────────────────────────────────
 

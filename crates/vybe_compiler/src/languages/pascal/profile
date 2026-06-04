@@ -101,17 +101,17 @@ leftstr       = { emit = "intrinsic:leftstr",              min_args = 2, max_arg
 rightstr      = { emit = "intrinsic:rightstr",             min_args = 2, max_args = 2 }
 comparestr    = { emit = "host:ecma:string:localeCompare",       min_args = 2, max_args = 2 }
 comparetext   = { emit = "host:ecma:string:localeCompare",       min_args = 2, max_args = 2 }
-delete        = { emit = "stdlib:str_remove_range",        min_args = 3, max_args = 3 }
-insert        = { emit = "stdlib:str_insert",              min_args = 3, max_args = 3 }
+delete        = { emit = "common:pascal.str_remove_range", min_args = 3, max_args = 3 }
+insert        = { emit = "common:pascal.str_insert",       min_args = 3, max_args = 3 }
 
 # ── Type conversion ─────────────────────────────────────────────────────────
 
-inttostr      = { emit = "stdlib:tostring",     min_args = 1, max_args = 1 }
-floattostr    = { emit = "stdlib:tostring",     min_args = 1, max_args = 1 }
+inttostr      = { emit = "common:pascal.tostring", min_args = 1, max_args = 1 }
+floattostr    = { emit = "common:pascal.tostring", min_args = 1, max_args = 1 }
 strtoint      = { emit = "host:ecma:number:parseInt",     min_args = 1, max_args = 1 }
 strtointdef   = { emit = "host:ecma:number:parseInt",     min_args = 1, max_args = 2 }
 strtofloat    = { emit = "host:ecma:number:parseFloat",   min_args = 1, max_args = 1 }
-booltostr     = { emit = "stdlib:tostring",     min_args = 1, max_args = 1 }
+booltostr     = { emit = "common:pascal.tostring", min_args = 1, max_args = 1 }
 strtobool     = { emit = "opcode:dyn_to_bool",             min_args = 1, max_args = 1 }
 
 # ── Ordinal / increment / decrement ─────────────────────────────────────────
@@ -133,7 +133,7 @@ typename      = { emit = "intrinsic:classname",            min_args = 1, max_arg
 # ── Array operations ─────────────────────────────────────────────────────────
 
 append        = { emit = "host:ecma:array:push",           min_args = 2, max_args = 2 }
-sort          = { emit = "stdlib:sort_in_place",          min_args = 1, max_args = 1 }
+sort          = { emit = "common:pascal.sort_in_place",   min_args = 1, max_args = 1 }
 reverse       = { emit = "host:ecma:array:reverse",        min_args = 1, max_args = 1 }
 
 # ── Object lifecycle ─────────────────────────────────────────────────────────
@@ -198,7 +198,7 @@ rightstr = "dup, str_length, swap, to_int, f64_sub, swap, to_int, str_substring"
 # Pascal doesn't have significant value methods — most operations are
 # free functions. But TStringList etc. may use some.
 free          = { emit = "noop",                           min_args = 0, max_args = 0 }
-tostring      = { emit = "stdlib:tostring",     min_args = 0, max_args = 0 }
+tostring      = { emit = "common:pascal.tostring", min_args = 0, max_args = 0 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACE CONSTANTS — identifier-level constants (no function call)

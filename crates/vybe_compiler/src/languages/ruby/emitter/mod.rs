@@ -15,3 +15,4 @@
 //! `dispatch` function in this module.
 
 pub mod dispatch;
+pub mod runtime_adapter;

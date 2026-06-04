@@ -57,7 +57,7 @@ uses_normalize_class = false
 "strings.Compare" = { emit = "opcode:str_compare",             min_args = 2, max_args = 2 }
 "strings.Split"   = { emit = "common:strings.split",            min_args = 2, max_args = 2 }
 "strings.Join"    = { emit = "common:collections.join",         min_args = 2, max_args = 2 }
-"__go_regex_split_pat_first" = { emit = "stdlib:regex_split_pat_first", min_args = 2, max_args = 2 }
+"__go_regex_split_pat_first" = { emit = "common:go.regex_split_pat_first", min_args = 2, max_args = 2 }
 
 # ── Math functions ───────────────────────────────────────────────────────────
 

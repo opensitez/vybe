@@ -647,7 +647,7 @@ pub fn emit_dyn_eq_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
 
 pub fn emit_dyn_ne_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
     emit_dyn_eq_into(imports, code, line); // i32
-    code.emit_op(Op::I32_EQZ, line);      // negate: 1 if not-equal, i32
+    code.emit_op(Op::I32_EQZ, line); // negate: 1 if not-equal, i32
 }
 
 fn emit_dyn_cmp_into(imports: &mut Chunk, code: &mut Chunk, line: u32, op: CmpOp) {

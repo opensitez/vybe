@@ -35,7 +35,7 @@ fn emit_import_call(
 }
 
 /// Two-chunk variant for callers that have the imports chunk and the
-/// code chunk as separate owned objects (notably stdlib.rs, where
+/// code chunk as separate owned objects (notably runtime helper builders, where
 /// `build_*` functions build a fresh local Chunk and later append it
 /// to the program's chunks vec).
 ///
@@ -308,13 +308,13 @@ pub fn emit_set(chunks: &mut [Chunk], current: usize, line: u32) {
 
 /// Array slice. Stack: [array, start, end] → [array] via `ecma:array.slice`.
 /// For polymorphic (string OR array) slicing, prefer the
-/// `__vybe_slice` stdlib func-ref path.
+/// `__vybe_slice` runtime-helper func-ref path.
 pub fn emit_slice(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_import_call(chunks, current, "ecma:array", "slice", 3, line);
 }
 
 /// Push the __vybe_slice func ref. Use BEFORE compiling the object/start/end.
-/// Pure WASM — bundle wires `__vybe_slice` to `build_slice` stdlib chunk,
+/// Pure WASM — bundle wires `__vybe_slice` to `build_slice` runtime helper,
 /// which dispatches at runtime to either `str_substring` or `array_slice`
 /// depending on the operand type. Works uniformly across every language whose
 /// surface syntax is `obj[start..end]`.
@@ -390,7 +390,7 @@ pub fn emit_fill(chunks: &mut [Chunk], current: usize, line: u32) {
 /// `__vybe_sort_in_place` helper so language-level compare semantics
 /// stay aligned across collection surfaces.
 pub fn emit_sort(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_stdlib_call(chunks, current, "__vybe_sort_in_place", 1, line);
+    emit_runtime_helper_call(chunks, current, "__vybe_sort_in_place", 1, line);
 }
 
 /// Array lastIndexOf. Stack: [array, value] → [i32] via `ecma:array.lastIndexOf`.
@@ -539,32 +539,32 @@ pub fn emit_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32) {
 /// InsertRange. Stack: [array, index, src_array] → [null].
 /// Calls __vybe_array_insert_range stdlib (func below args via local reorder).
 pub fn emit_insert_range(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_stdlib_call(chunks, current, "__vybe_array_insert_range", 3, line);
+    emit_runtime_helper_call(chunks, current, "__vybe_array_insert_range", 3, line);
 }
 
 /// SetRange. Stack: [array, index, src_array] → [null].
 pub fn emit_set_range(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_stdlib_call(chunks, current, "__vybe_array_set_range", 3, line);
+    emit_runtime_helper_call(chunks, current, "__vybe_array_set_range", 3, line);
 }
 
 /// BinarySearch. Stack: [array, value] → [i32].
 pub fn emit_binary_search(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_stdlib_call(chunks, current, "__vybe_array_binary_search", 2, line);
+    emit_runtime_helper_call(chunks, current, "__vybe_array_binary_search", 2, line);
 }
 
 /// ReverseRange. Stack: [array, index, count] → [null].
 pub fn emit_reverse_range(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_stdlib_call(chunks, current, "__vybe_array_reverse_range", 3, line);
+    emit_runtime_helper_call(chunks, current, "__vybe_array_reverse_range", 3, line);
 }
 
 /// Remove by value. Stack: [array, value] → [bool].
 pub fn emit_remove_value(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_stdlib_call(chunks, current, "__vybe_array_remove_value", 2, line);
+    emit_runtime_helper_call(chunks, current, "__vybe_array_remove_value", 2, line);
 }
 
 /// Insert at index. Stack: [array, index, value] → [null].
 pub fn emit_insert_at(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_stdlib_call(chunks, current, "__vybe_array_insert", 3, line);
+    emit_runtime_helper_call(chunks, current, "__vybe_array_insert", 3, line);
 }
 
 /// Clear array. Stack: [array] → [null].
@@ -581,14 +581,14 @@ pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Generic stash-and-call: pop `argc` values into scratch locals,
 /// GLOBAL_GET the polyfill func by name, push the args back in order,
 /// CALL_REF. Replaces the legacy `vybe:array.*` host-import path with
-/// a direct call into the bundled `__vybe_*` stdlib chunk — keeps
+/// a direct call into the bundled `__vybe_*` runtime helper — keeps
 /// emitted bytecode free of the `vybe:*` namespace.
 ///
 /// Slots are appended at `chunks[current].local_count`; locals grow
 /// monotonically per call site (no reuse across calls) which trades
 /// a few extra Null slots per frame for not requiring Compiler-level
 /// scope tracking from this helper.
-pub fn emit_stdlib_call(
+pub fn emit_runtime_helper_call(
     chunks: &mut [Chunk],
     current: usize,
     global: &'static str,
@@ -669,7 +669,7 @@ pub fn emit_array_pair(chunks: &mut [Chunk], current: usize, line: u32) {
 // ── Two-chunk `_into` variants ─────────────────────────────────
 //
 // For callers that hold the imports chunk and the code chunk as
-// separate owned objects — stdlib.rs is the main consumer (its
+// separate owned objects — runtime helper builders are the main consumers (their
 // `build_*` functions build a fresh local Chunk and return it).
 // Each one mirrors the slice-based API above.
 
@@ -819,12 +819,12 @@ pub fn emit_array_pair_into(imports: &mut Chunk, code: &mut Chunk, line: u32) {
 /// range(stop) or range(start, stop) or range(start, stop, step).
 /// Stack: [args...] → [array]
 ///
-/// Routes through the bundled `__vybe_range` stdlib chunk — same
+/// Routes through the bundled `__vybe_range` runtime helper — same
 /// polyfill the host's `vybe:array.range` alias resolves to, just
 /// called directly via GLOBAL_GET + CALL_REF instead of paying the
 /// CALL_IMPORT indirection through a legacy `vybe:*` host name.
 pub fn emit_range(chunks: &mut [Chunk], current: usize, arg_count: u8, line: u32) {
-    emit_stdlib_call(chunks, current, "__vybe_range", arg_count, line);
+    emit_runtime_helper_call(chunks, current, "__vybe_range", arg_count, line);
 }
 
 /// Target-aware range — inline loop on pure WASM (saves a chunk call),
@@ -884,7 +884,7 @@ pub fn emit_range_targeted(
 
             chunk.emit_op_u16(Op::LOCAL_GET, result_local, line);
         } else {
-            emit_stdlib_call(chunks, current, "__vybe_range", arg_count, line);
+            emit_runtime_helper_call(chunks, current, "__vybe_range", arg_count, line);
         }
     }
 }
@@ -894,7 +894,7 @@ pub fn emit_range_targeted(
 /// pattern as `emit_sorted_push_func` but consolidated for callers
 /// that already have the arg on the stack.
 pub fn emit_sorted(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_stdlib_call(chunks, current, "__vybe_sorted", 1, line);
+    emit_runtime_helper_call(chunks, current, "__vybe_sorted", 1, line);
 }
 
 /// Push the __vybe_sorted func ref. Use BEFORE compiling arg.
@@ -910,30 +910,30 @@ pub fn emit_sorted_invoke(chunk: &mut Chunk, line: u32) {
 
 /// reversed(iterable). Stack: [array] → [reversed_array]
 pub fn emit_reversed(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_stdlib_call(chunks, current, "__vybe_reversed", 1, line);
+    emit_runtime_helper_call(chunks, current, "__vybe_reversed", 1, line);
 }
 
 /// enumerate(iterable). Stack: [array] → [array_of_pairs]
 pub fn emit_enumerate(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_stdlib_call(chunks, current, "__vybe_enumerate", 1, line);
+    emit_runtime_helper_call(chunks, current, "__vybe_enumerate", 1, line);
 }
 
 /// zip(a, b). Stack: [a, b] → [pairs]
 pub fn emit_zip(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_stdlib_call(chunks, current, "__vybe_zip", 2, line);
+    emit_runtime_helper_call(chunks, current, "__vybe_zip", 2, line);
 }
 
 /// sum(array). Stack: [array] → [number]
 pub fn emit_sum(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_stdlib_call(chunks, current, "__vybe_sum", 1, line);
+    emit_runtime_helper_call(chunks, current, "__vybe_sum", 1, line);
 }
 
 /// Python min(iterable). Stack: [array] → [value]
 pub fn emit_pymin(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_stdlib_call(chunks, current, "__vybe_min", 1, line);
+    emit_runtime_helper_call(chunks, current, "__vybe_min", 1, line);
 }
 
 /// Python max(iterable). Stack: [array] → [value]
 pub fn emit_pymax(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_stdlib_call(chunks, current, "__vybe_max", 1, line);
+    emit_runtime_helper_call(chunks, current, "__vybe_max", 1, line);
 }

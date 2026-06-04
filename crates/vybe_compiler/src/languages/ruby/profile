@@ -48,7 +48,7 @@ warn            = { emit = "print",                         min_args = 1, max_ar
 
 "Integer"       = { emit = "intrinsic:cint",        min_args = 1, max_args = 2 }
 "Float"         = { emit = "host:ecma:number:Number",        min_args = 1, max_args = 1 }
-"String"        = { emit = "stdlib:tostring",                min_args = 1, max_args = 1 }
+"String"        = { emit = "common:ruby.tostring",                min_args = 1, max_args = 1 }
 "Array"         = { emit = "host:ecma:array:from",           min_args = 1, max_args = 1 }
 
 # ── Math (WASM opcodes) ─────────────────────────────────────────────────────
@@ -110,41 +110,41 @@ rindex          = { emit = "opcode:str_last_index_of",      min_args = 1, max_ar
 capitalize      = { emit = "intrinsic:capitalize",   min_args = 0, max_args = 0 }
 reverse         = { emit = "opcode:str_reverse",            min_args = 0, max_args = 0 }
 chars           = { emit = "intrinsic:chars",        min_args = 0, max_args = 0 }
-bytes           = { emit = "stdlib:to_bytes",     min_args = 0, max_args = 0 }
+bytes           = { emit = "common:ruby.bytes",     min_args = 0, max_args = 0 }
 center          = { emit = "intrinsic:center",       min_args = 1, max_args = 2 }
 ljust           = { emit = "opcode:str_pad_end",            min_args = 1, max_args = 2 }
 rjust           = { emit = "opcode:str_pad_start",          min_args = 1, max_args = 2 }
-to_s            = { emit = "stdlib:tostring",               min_args = 0, max_args = 0 }
-to_str          = { emit = "stdlib:tostring",               min_args = 0, max_args = 0 }
+to_s            = { emit = "common:ruby.tostring",               min_args = 0, max_args = 0 }
+to_str          = { emit = "common:ruby.tostring",               min_args = 0, max_args = 0 }
 to_i            = { emit = "intrinsic:cint",        min_args = 0, max_args = 0 }
 to_f            = { emit = "host:ecma:number:Number",        min_args = 0, max_args = 0 }
 to_a            = { emit = "host:ecma:array:from",          min_args = 0, max_args = 0 }
-to_sym          = { emit = "stdlib:tostring",               min_args = 0, max_args = 0 }
-inspect         = { emit = "stdlib:tostring",               min_args = 0, max_args = 0 }
+to_sym          = { emit = "common:ruby.tostring",               min_args = 0, max_args = 0 }
+inspect         = { emit = "common:ruby.tostring",               min_args = 0, max_args = 0 }
 freeze          = { emit = "noop_receiver",                 min_args = 0, max_args = 0 }
 "frozen?"       = { emit = "noop_receiver",                 min_args = 0, max_args = 0 }
 dup             = { emit = "host:ecma:array:slice",          min_args = 0, max_args = 0 }
 clone           = { emit = "host:ecma:array:slice",          min_args = 0, max_args = 0 }
 "nil?"          = { emit = "opcode:ref_is_null",            min_args = 0, max_args = 0 }
-"is_a?"         = { emit = "stdlib:instanceof",             min_args = 1, max_args = 1 }
+"is_a?"         = { emit = "common:ruby.instanceof",             min_args = 1, max_args = 1 }
 class           = { emit = "opcode:ref_typeof",             min_args = 0, max_args = 0 }
 "respond_to?"   = { emit = "host:ecma:object:hasOwn",       min_args = 1, max_args = 1 }
 send            = { emit = "host:ecma:value:invokeMethod", min_args = 1, max_args = 255 }
 tap             = { emit = "noop_receiver",                 min_args = 0, max_args = 0 }
 "eql?"          = { emit = "opcode:dyn_eq",                 min_args = 1, max_args = 1 }
 "equal?"        = { emit = "opcode:dyn_eq",                 min_args = 1, max_args = 1 }
-hash            = { emit = "stdlib:hash",        min_args = 0, max_args = 0 }
-object_id       = { emit = "stdlib:id",          min_args = 0, max_args = 0 }
-encoding        = { emit = "stdlib:encoding",              min_args = 0, max_args = 0 }
+hash            = { emit = "common:ruby.hash",        min_args = 0, max_args = 0 }
+object_id       = { emit = "common:ruby.id",          min_args = 0, max_args = 0 }
+encoding        = { emit = "common:ruby.encoding",              min_args = 0, max_args = 0 }
 "valid_encoding?" = { emit = "noop_receiver",               min_args = 0, max_args = 0 }
-encode          = { emit = "stdlib:tostring",               min_args = 0, max_args = 1 }
+encode          = { emit = "common:ruby.tostring",               min_args = 0, max_args = 1 }
 tr              = { emit = "host:ecma:string:tr",           min_args = 2, max_args = 2 }
 scan            = { emit = "host:ecma:regexp:matchAll",     min_args = 1, max_args = 1 }
 "match"         = { emit = "host:ecma:regexp:search",       min_args = 1, max_args = 1 }
 "match?"        = { emit = "host:ecma:regexp:search",       min_args = 1, max_args = 1 }
 chr             = { emit = "opcode:str_from_char_code",     min_args = 0, max_args = 0 }
 ord             = { emit = "intrinsic:asc",                 min_args = 0, max_args = 0 }
-hex             = { emit = "stdlib:pyhex",                  min_args = 0, max_args = 0 }
+hex             = { emit = "common:ruby.hex",                  min_args = 0, max_args = 0 }
 casecmp         = { emit = "opcode:str_compare",            min_args = 1, max_args = 1 }
 
 # ── Array instance methods (common:collections.* / opcode:array_*) ───────────
@@ -157,23 +157,23 @@ unshift         = { emit = "intrinsic:array_unshift",       min_args = 1, max_ar
 prepend         = { emit = "intrinsic:array_unshift",       min_args = 1, max_args = 255 }
 # first/last normalized to Index(expr, 0/-1) in walker — pure bytecode
 flatten         = { emit = "host:ecma:array:flatten",       min_args = 0, max_args = 1 }
-compact         = { emit = "stdlib:compact",                min_args = 0, max_args = 0 }
-uniq            = { emit = "stdlib:uniq",                   min_args = 0, max_args = 0 }
+compact         = { emit = "common:ruby.compact",                min_args = 0, max_args = 0 }
+uniq            = { emit = "common:ruby.uniq",                   min_args = 0, max_args = 0 }
 min             = { emit = "host:ecma:math:minOf",           min_args = 0, max_args = 0 }
 max             = { emit = "host:ecma:math:maxOf",           min_args = 0, max_args = 0 }
 "min_by"        = { emit = "host:ecma:math:minOf",           min_args = 0, max_args = 0 }
 "max_by"        = { emit = "host:ecma:math:maxOf",           min_args = 0, max_args = 0 }
-minmax          = { emit = "stdlib:minmax",                 min_args = 0, max_args = 0 }
+minmax          = { emit = "common:ruby.minmax",                 min_args = 0, max_args = 0 }
 sum             = { emit = "host:ecma:math:sumPrecise",           min_args = 0, max_args = 1 }
 count           = { emit = "str_length",                    min_args = 0, max_args = 1 }
-"empty?"        = { emit = "stdlib:isempty",                min_args = 0, max_args = 0 }
+"empty?"        = { emit = "common:ruby.isempty",                min_args = 0, max_args = 0 }
 concat          = { emit = "common:collections.concat",           min_args = 1, max_args = 255 }
 fill            = { emit = "common:collections.fill",             min_args = 1, max_args = 3 }
-sample          = { emit = "stdlib:rand_choice",            min_args = 0, max_args = 1 }
-shuffle         = { emit = "stdlib:rand_shuffle",           min_args = 0, max_args = 0 }
+sample          = { emit = "common:ruby.sample",            min_args = 0, max_args = 1 }
+shuffle         = { emit = "common:ruby.shuffle",           min_args = 0, max_args = 0 }
 take            = { emit = "common:collections.slice",      min_args = 1, max_args = 1 }
-rotate          = { emit = "stdlib:rotate",                 min_args = 0, max_args = 1 }
-zip             = { emit = "stdlib:zip",                    min_args = 1, max_args = 255 }
+rotate          = { emit = "common:ruby.rotate",                 min_args = 0, max_args = 1 }
+zip             = { emit = "common:ruby.zip",                    min_args = 1, max_args = 255 }
 dig             = { emit = "common:ruby.dig",              min_args = 1, max_args = 255 }
 lazy            = { emit = "noop_receiver",                 min_args = 0, max_args = 0 }
 slice           = { emit = "common:collections.slice",      min_args = 1, max_args = 2 }
@@ -184,14 +184,14 @@ keys            = { emit = "common:dict.keys",              min_args = 0, max_ar
 values          = { emit = "common:dict.values",            min_args = 0, max_args = 0 }
 "has_key?"      = { emit = "common:dict.has",               min_args = 1, max_args = 1 }
 "key?"          = { emit = "common:dict.has",               min_args = 1, max_args = 1 }
-"has_value?"    = { emit = "stdlib:has_value",             min_args = 1, max_args = 1 }
-"value?"        = { emit = "stdlib:has_value",             min_args = 1, max_args = 1 }
+"has_value?"    = { emit = "common:ruby.has_value",             min_args = 1, max_args = 1 }
+"value?"        = { emit = "common:ruby.has_value",             min_args = 1, max_args = 1 }
 merge           = { emit = "host:ecma:object:assign",       min_args = 1, max_args = 255 }
 delete          = { emit = "host:ecma:object:delete",       min_args = 1, max_args = 1 }
 fetch           = { emit = "common:dict.get_dynamic",       min_args = 1, max_args = 2 }
-"transform_values" = { emit = "stdlib:transform_values",   min_args = 0, max_args = 1 }
-"transform_keys"   = { emit = "stdlib:transform_keys",    min_args = 0, max_args = 1 }
-invert          = { emit = "stdlib:invert",                min_args = 0, max_args = 0 }
+"transform_values" = { emit = "common:ruby.transform_values",   min_args = 0, max_args = 1 }
+"transform_keys"   = { emit = "common:ruby.transform_keys",    min_args = 0, max_args = 1 }
+invert          = { emit = "common:ruby.invert",                min_args = 0, max_args = 0 }
 to_h            = { emit = "common:dict.new",               min_args = 0, max_args = 0 }
 
 # ── Numeric instance methods (opcode:f64_*) ──────────────────────────────────

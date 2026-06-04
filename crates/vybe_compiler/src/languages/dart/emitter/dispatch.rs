@@ -26,6 +26,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.print" => {
             crate::emitter::dart::string_adapter::emit_dart_print(chunks, current, argc, line)
         }
+        "dart.to_string" => {
+            crate::emitter::dart::string_adapter::emit_dart_to_string(chunks, current, line)
+        }
 
         // ── Ruby `obj.dig(k1, k2, ..., kN)` — variadic property walk.
         // Returns `obj[k1]?[k2]?...[kN]`, or `nil` if any link is null.

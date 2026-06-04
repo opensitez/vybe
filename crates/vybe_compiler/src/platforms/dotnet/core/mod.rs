@@ -18,6 +18,7 @@ pub mod parse_adapter;
 pub mod process_adapter;
 pub mod random_adapter;
 pub mod regex_adapter;
+pub mod runtime_adapter;
 pub mod sockets_adapter;
 pub mod stopwatch_adapter;
 pub mod stream_io_adapter;

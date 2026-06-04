@@ -1,8 +1,8 @@
-//! WASM Standard Library — pure bytecode implementations of common functions.
+//! Runtime helper bytecode.
 //!
-//! These are compiled to Chunk objects that get linked into every program.
-//! On Vybe VM, the compiler can skip these and use host calls instead (faster).
-//! On any other WASM runtime, these provide the same functionality portably.
+//! These helpers are portable bytecode fallbacks for shared runtime-facing
+//! operations. They are linked only when compiled code references their
+//! `__vybe_*` global, so they are not a bundled language standard library.
 //!
 //! Functions:
 //!   range(start, stop, step) → array
@@ -30,7 +30,7 @@ use vybe_bytecode::{Chunk, Value};
 //
 // `build_polyfill(source, language, export_name)` compiles a snippet
 // of source code in any registered language and extracts a single
-// named export as a stdlib Chunk. The result slots into `MAPPINGS` in
+// named export as a helper Chunk. The result slots into `MAPPINGS` in
 // `bundle.rs` exactly the same as a hand-built `build_pow`-style chunk.
 //
 // The mechanism: dispatch the source through the appropriate language
@@ -59,7 +59,7 @@ use vybe_bytecode::{Chunk, Value};
 /// file (e.g. `php_arrays.js` with ~20 exports) bundles many helpers.
 ///
 /// Compilation is cached process-wide by source-pointer + language —
-/// `finalize_with_stdlib` runs on every test compile, but the polyfill
+/// runtime helper finalization runs on every test compile, but the polyfill
 /// bytecode is identical across runs (only the import indices need
 /// per-call remapping). Caching cuts per-test polyfill compile cost
 /// from ~10s to negligible. The cache holds Vec<Chunk> values which
@@ -161,7 +161,7 @@ pub(crate) fn build_polyfill(
     let profile = crate::profile::parse_profile((lang.profile_source)())
         .unwrap_or_else(|e| panic!("polyfill build: profile {:?} parse failed: {}", language, e));
     // Recursion guard so the inner compile pipeline skips its own
-    // `finalize_with_stdlib` step — that would call back here and
+    // runtime-helper finalization step — that would call back here and
     // recurse forever. Re-entrancy on the same thread is the only
     // failure mode and vybex build-time compilation is single-threaded.
     let polyfill_chunks = with_polyfill_guard(|| {
@@ -248,7 +248,7 @@ thread_local! {
     static IN_POLYFILL_BUILD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-pub fn is_compiling_polyfill() -> bool {
+pub fn is_compiling_runtime_helper() -> bool {
     IN_POLYFILL_BUILD.with(|c| c.get())
 }
 
@@ -259,12 +259,12 @@ fn with_polyfill_guard<R>(f: impl FnOnce() -> R) -> R {
     result
 }
 
-/// Build all stdlib chunks. Each chunk registers any `ecma:array.*`
+/// Build all runtime helper chunks. Each chunk registers any `ecma:array.*`
 /// imports on the passed `imports` chunk (= user program's
 /// `chunks[0]`, the module-level imports section per WASM semantics).
-/// Returns the stdlib chunks + their export names, in matching order;
+/// Returns the helper chunks + their export names, in matching order;
 /// caller appends the chunks to its own vec.
-pub fn build_stdlib(imports: &mut Chunk) -> StdLib {
+pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     let mut chunks = Vec::new();
     let mut exports = Vec::new();
 
@@ -533,15 +533,161 @@ pub fn build_stdlib(imports: &mut Chunk) -> StdLib {
     chunks.push(build_regex_match_all_pat_first(imports));
     exports.push("__stdlib_regex_match_all_pat_first");
 
-    StdLib { chunks, exports }
+    RuntimeHelpers { chunks, exports }
 }
 
-pub struct StdLib {
+/// Build only the requested helper chunks. `requested` must contain
+/// helper export names such as `__stdlib_range`, not `__vybe_*` globals.
+pub fn build_runtime_helpers_for_exports(
+    imports: &mut Chunk,
+    requested: &[&'static str],
+) -> RuntimeHelpers {
+    let mut chunks = Vec::new();
+    let mut exports = Vec::new();
+
+    for &name in requested {
+        let chunk = build_runtime_helper_export(imports, name)
+            .unwrap_or_else(|| panic!("unknown runtime helper export requested: {}", name));
+        chunks.push(chunk);
+        exports.push(name);
+    }
+
+    RuntimeHelpers { chunks, exports }
+}
+
+fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk> {
+    let chunk = match name {
+        "__stdlib_range" => build_range(imports),
+        "__stdlib_sorted" => build_sorted(imports),
+        "__stdlib_sort_in_place" => build_sort_in_place(imports),
+        "__stdlib_sort_with_comparator" => build_sort_with_comparator(imports),
+        "__stdlib_sort_by_key" => build_sort_by_key(imports),
+        "__stdlib_reversed" => build_reversed(imports),
+        "__stdlib_enumerate" => build_enumerate(imports),
+        "__stdlib_zip" => build_zip(imports),
+        "__stdlib_sum" => build_sum(imports),
+        "__stdlib_min" => build_min(imports),
+        "__stdlib_max" => build_max(imports),
+        "__stdlib_pyany" => build_pyany(imports),
+        "__stdlib_pyall" => build_pyall(imports),
+        "__stdlib_compact" => build_compact(imports),
+        "__stdlib_uniq" => build_uniq(imports),
+        "__stdlib_minmax" => build_minmax(imports),
+        "__stdlib_isempty" => build_isempty(imports),
+        "__stdlib_pymap" => build_pymap(imports),
+        "__stdlib_pyfilter" => build_pyfilter(imports),
+        "__stdlib_pyiter" => build_pyiter(imports),
+        "__stdlib_pynext" => build_pynext(imports),
+        "__stdlib_rand_choice" => build_rand_choice(imports),
+        "__stdlib_rand_shuffle" => build_rand_shuffle(imports),
+        "__stdlib_rand_sample" => build_rand_sample(imports),
+        "__stdlib_rotate" => build_rotate(imports),
+        "__stdlib_array_copy" => build_array_copy(imports),
+        "__stdlib_pow" => build_pow(imports),
+        "__stdlib_sin" => build_sin(imports),
+        "__stdlib_cos" => build_cos(imports),
+        "__stdlib_tan" => build_tan(imports),
+        "__stdlib_asin" => build_asin(imports),
+        "__stdlib_acos" => build_acos(imports),
+        "__stdlib_atan" => build_atan(imports),
+        "__stdlib_atan2" => build_atan2(imports),
+        "__stdlib_log" => build_log(imports),
+        "__stdlib_log10" => build_log10(imports),
+        "__stdlib_exp" => build_exp(imports),
+        "__stdlib_sinh" => build_sinh(imports),
+        "__stdlib_cosh" => build_cosh(imports),
+        "__stdlib_tanh" => build_tanh(imports),
+        "__stdlib_sign" => build_sign(imports),
+        "__stdlib_clamp" => build_clamp(imports),
+        "__stdlib_tostring" => build_to_string(imports),
+        "__stdlib_string_is_null_or_empty" => build_string_is_null_or_empty(imports),
+        "__stdlib_string_is_null_or_whitespace" => build_string_is_null_or_whitespace(imports),
+        "__stdlib_str_insert" => build_str_insert(imports),
+        "__stdlib_str_remove_start" => build_str_remove_start(imports),
+        "__stdlib_str_remove_range" => build_str_remove_range(imports),
+        "__stdlib_pascal_set_include" => build_pascal_set_include(imports),
+        "__stdlib_pascal_set_exclude" => build_pascal_set_exclude(imports),
+        "__stdlib_pascal_set_union" => build_pascal_set_union(imports),
+        "__stdlib_pascal_set_intersection" => build_pascal_set_intersection(imports),
+        "__stdlib_pascal_set_difference" => build_pascal_set_difference(imports),
+        "__stdlib_pascal_set_contains" => build_pascal_set_contains(imports),
+        "__stdlib_pascal_write" => build_pascal_write(imports),
+        "__stdlib_pascal_writeln" => build_pascal_writeln(imports),
+        "__stdlib_pascal_str_insert" => build_pascal_str_insert(imports),
+        "__stdlib_pascal_str_remove_range" => build_pascal_str_remove_range(imports),
+        "__stdlib_count" => build_str_count(imports),
+        "__stdlib_isnumeric" => build_is_numeric(imports),
+        "__stdlib_val" => build_val(imports),
+        "__stdlib_cchar" => build_cchar(imports),
+        "__stdlib_iif" => build_iif(imports),
+        "__stdlib_rgb" => build_rgb(imports),
+        "__stdlib_qbcolor" => build_qbcolor(imports),
+        "__stdlib_isobject" => build_isobject(imports),
+        "__stdlib_isdate" => build_isdate(imports),
+        "__stdlib_vartype" => build_vartype(imports),
+        "__stdlib_newline" => build_newline(imports),
+        "__stdlib_encoding" => build_encoding(imports),
+        "__stdlib_dict_values_from_entries" => build_dict_values_from_entries(imports),
+        "__stdlib_has_value" => build_has_value(imports),
+        "__stdlib_invert" => build_invert(imports),
+        "__stdlib_setdefault" => build_setdefault(imports),
+        "__stdlib_to_bytes" => build_to_bytes(imports),
+        "__stdlib_id" => build_id(imports),
+        "__stdlib_hash" => build_hash(imports),
+        "__stdlib_vb_format" => build_vb_format(imports),
+        "__stdlib_dotnet_numeric_format" => build_dotnet_numeric_format(imports),
+        "__stdlib_transform_values" => build_transform_values(imports),
+        "__stdlib_transform_keys" => build_transform_keys(imports),
+        "__stdlib_format_map" => build_format_map(imports),
+        "__stdlib_pyhex" => build_pyradix(imports, "__stdlib_pyhex", "0x", 16),
+        "__stdlib_pyoct" => build_pyradix(imports, "__stdlib_pyoct", "0o", 8),
+        "__stdlib_pybin" => build_pyradix(imports, "__stdlib_pybin", "0b", 2),
+        "__stdlib_isinf" => build_isinf(imports),
+        "__stdlib_callable" => build_callable(imports),
+        "__stdlib_splice" => build_splice(imports),
+        "__stdlib_floor" => build_floor(imports),
+        "__stdlib_slice" => build_slice(imports),
+        "__stdlib_keys" => build_keys(imports),
+        "__stdlib_hasproperty" => build_has_property(imports),
+        "__stdlib_assign" => build_assign(imports),
+        "__stdlib_instanceof" => build_instance_of(imports),
+        "__stdlib_js_get_method" => build_js_get_method(imports),
+        "__stdlib_js_instanceof" => build_js_instance_of(imports),
+        "__stdlib_deleteproperty" => build_delete_property(imports),
+        "__stdlib_from" => build_array_from(imports),
+        "__stdlib_redim" => build_redim(imports),
+        "__stdlib_slicestep" => build_slice_step(imports),
+        "__stdlib_dynmul" => build_dyn_mul(imports),
+        "__stdlib_concat" => build_concat(imports),
+        "__stdlib_string_raw" => build_string_raw(imports),
+        "__stdlib_drain_generator" => build_drain_generator(imports),
+        "__stdlib_fmod" => build_fmod(imports),
+        "__stdlib_array_insert" => build_array_insert(imports),
+        "__stdlib_array_remove_at" => build_array_remove_at(imports),
+        "__stdlib_array_remove_value" => build_array_remove_value(imports),
+        "__stdlib_array_insert_range" => build_array_insert_range(imports),
+        "__stdlib_array_set_range" => build_array_set_range(imports),
+        "__stdlib_array_binary_search" => build_array_binary_search(imports),
+        "__stdlib_array_reverse_range" => build_array_reverse_range(imports),
+        "__stdlib_array_last_index_of" => build_array_last_index_of(imports),
+        "__stdlib_sprintf" => crate::emitter::sprintf::build_sprintf(imports),
+        "__stdlib_generator_next" => build_generator_next(imports),
+        "__stdlib_generator_self" => build_generator_self(),
+        "__stdlib_iter_drain" => build_iter_drain(imports),
+        "__stdlib_regex_replace_pat_first" => build_regex_replace_pat_first(imports),
+        "__stdlib_regex_split_pat_first" => build_regex_split_pat_first(imports),
+        "__stdlib_regex_match_all_pat_first" => build_regex_match_all_pat_first(imports),
+        _ => return None,
+    };
+    Some(chunk)
+}
+
+pub struct RuntimeHelpers {
     pub chunks: Vec<Chunk>,
     pub exports: Vec<&'static str>,
 }
 
-impl StdLib {
+impl RuntimeHelpers {
     pub fn get(&self, name: &str) -> Option<usize> {
         self.exports.iter().position(|&n| n == name)
     }

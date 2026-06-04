@@ -32,8 +32,8 @@ pub mod loops;
 pub mod math;
 pub mod ops;
 pub mod references;
+pub mod runtime_helpers;
 pub mod sprintf;
-pub mod stdlib;
 pub mod strings;
 pub mod target;
 pub mod threading;
@@ -48,7 +48,7 @@ pub use crate::languages::python::emitter as python;
 pub use crate::languages::ruby::emitter as ruby;
 pub use crate::languages::vb::emitter as vb;
 
-pub use stdlib::StdLib;
+pub use runtime_helpers::RuntimeHelpers;
 pub use target::Target;
 pub use type_registry::CompileTimeTypes;
 

@@ -1,20 +1,21 @@
-//! Bundle stdlib into compiled output.
+//! Link runtime helper chunks into compiled output.
 //!
-//! Appends stdlib chunks to program. Emits a preamble in the script chunk
+//! Appends helper chunks to program. Emits a preamble in the script chunk
 //! that creates function refs and stores them in globals (`__vybe_*`).
 //!
 //! Call sites do: `global_get "__vybe_range"` + `call_ref 3`
 //!
 //! On Vybe VM, `register_all` overwrites these globals with host fn objects.
-//! On any other runtime, the globals hold the bundled stdlib function refs.
+//! On any other runtime, the globals hold the bundled helper function refs.
 //! One binary, works everywhere, no unresolvable imports.
 
-use crate::emitter::stdlib::build_stdlib;
+use crate::emitter::runtime_helpers::build_runtime_helpers;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
-/// Mapping from stdlib chunk name to the global name used at call sites.
+/// Mapping from helper chunk name to the global name used at call sites.
 const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_range", "__vybe_range"),
     ("__stdlib_sorted", "__vybe_sorted"),
@@ -178,17 +179,17 @@ const MAPPINGS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Emit the stdlib preamble at the START of a script chunk.
+/// Emit the runtime-helper preamble at the START of a script chunk.
 /// This must be called BEFORE any user code is emitted.
 ///
-/// The preamble emits, for each stdlib function:
+/// The preamble emits, for each helper function:
 ///   `if globals[name] is null { globals[name] = ref_func(stdlib_chunk) }`
 ///
 /// This is the polyfill pattern: if the host (Vybe VM) has already populated
 /// `__vybe_*` globals with optimized native fns BEFORE running the script,
 /// the preamble leaves those alone. On non-Vybe runtimes the globals start
-/// null and the preamble installs the bundled stdlib bytecode chunks.
-pub fn emit_stdlib_preamble(script: &mut Chunk, stdlib_base: usize) {
+/// null and the preamble installs the bundled helper bytecode chunks.
+pub fn emit_runtime_helper_preamble(script: &mut Chunk, stdlib_base: usize) {
     for (i, &(_chunk_name, global_name)) in MAPPINGS.iter().enumerate() {
         let ci = stdlib_base + i;
         let name_c = script.add_constant(Value::String(Arc::from(global_name)));
@@ -211,16 +212,16 @@ pub fn emit_stdlib_preamble(script: &mut Chunk, stdlib_base: usize) {
     }
 }
 
-/// Append stdlib chunks to program chunks. Call AFTER compilation is done.
-pub fn append_stdlib_chunks(program_chunks: &mut Vec<Chunk>) {
-    let stdlib = {
+/// Append every runtime helper chunk to program chunks. Call AFTER compilation is done.
+pub fn append_runtime_helper_chunks(program_chunks: &mut Vec<Chunk>) {
+    let helpers = {
         let (first, _rest) = program_chunks.split_at_mut(1);
-        build_stdlib(&mut first[0])
+        build_runtime_helpers(&mut first[0])
     };
-    program_chunks.extend(stdlib.chunks);
+    program_chunks.extend(helpers.chunks);
 }
 
-/// Emit a call to a stdlib/vybe function.
+/// Emit a call to a runtime-helper/vybe function.
 /// IMPORTANT: push the function ref FIRST (via global_get), then push args, then call_ref.
 /// The call convention is: [func_ref, arg0, arg1, ...] on stack.
 ///
@@ -240,34 +241,41 @@ pub fn emit_call_invoke(chunk: &mut Chunk, argc: u8, line: u32) {
     chunk.emit_op_u8(Op::CALL_REF, argc, line);
 }
 
-/// Append stdlib chunks to a compiled program and register them as global_inits.
+/// Append referenced runtime helper chunks and register them as global_inits.
 /// Call this at the END of compilation, after all user chunks are finalized.
 /// The script chunk (chunks[0]) gets global_inits with RefFunc entries.
-pub fn finalize_with_stdlib(chunks: &mut Vec<Chunk>) {
+pub fn finalize_with_runtime_helpers(chunks: &mut Vec<Chunk>) {
     use vybe_bytecode::chunk::{ConstExpr, GlobalInit};
 
-    let stdlib_base = chunks.len();
-    // Build stdlib chunks with their imports registered on `chunks[0]`
+    let mut requested = referenced_helper_exports(chunks);
+    add_helper_dependencies(&mut requested);
+    if requested.is_empty() {
+        return;
+    }
+
+    let helper_base = chunks.len();
+    // Build helper chunks with their imports registered on `chunks[0]`
     // (the module-level imports section — single per WASM module).
-    // Same dependency surface as user code → stdlib becomes a true
+    // Same dependency surface as user code → helpers become true
     // cross-runtime polyfill: on Vybe the chunks are swapped for
     // native handlers; on v8 their `ecma:array.*` imports resolve
     // to native `Array.prototype.*`; on wasmtime the Phase-C polyfill
     // supplies the imports.
-    let stdlib = {
+    let helpers = {
         let (first, _rest) = chunks.split_at_mut(1);
-        crate::emitter::stdlib::build_stdlib(&mut first[0])
+        let exports = ordered_helper_exports(&requested);
+        crate::emitter::runtime_helpers::build_runtime_helpers_for_exports(&mut first[0], &exports)
     };
 
-    for (i, &(chunk_name, global_name)) in MAPPINGS.iter().enumerate() {
-        if stdlib.exports.iter().any(|&n| n == chunk_name) {
+    for (i, &chunk_name) in helpers.exports.iter().enumerate() {
+        if let Some(global_name) = helper_global_for_export(chunk_name) {
             chunks[0].global_inits.push(GlobalInit {
                 name: global_name.to_string(),
-                init: ConstExpr::RefFunc(stdlib_base + i),
+                init: ConstExpr::RefFunc(helper_base + i),
             });
         }
     }
-    chunks.extend(stdlib.chunks);
+    chunks.extend(helpers.chunks);
 }
 
 /// Convenience: emit func_ref push + args already on stack + call_ref.
@@ -283,4 +291,63 @@ pub fn emit_call(chunk: &mut Chunk, global_name: &str, argc: u8, line: u32) {
     let name_c = chunk.add_constant(Value::String(Arc::from(global_name)));
     chunk.emit_op_u16(Op::GLOBAL_GET, name_c, line);
     chunk.emit_op_u8(Op::CALL_REF, argc, line);
+}
+
+fn referenced_helper_exports(chunks: &[Chunk]) -> BTreeSet<&'static str> {
+    let mut exports = BTreeSet::new();
+    for chunk in chunks {
+        for constant in &chunk.constants {
+            if let Value::String(name) = constant {
+                if let Some(export) = helper_export_for_global(name.as_ref()) {
+                    exports.insert(export);
+                }
+            }
+        }
+    }
+    exports
+}
+
+fn add_helper_dependencies(exports: &mut BTreeSet<&'static str>) {
+    loop {
+        let before = exports.len();
+        for export in exports.clone() {
+            for dep in helper_export_dependencies(export) {
+                exports.insert(dep);
+            }
+        }
+        if exports.len() == before {
+            break;
+        }
+    }
+}
+
+fn helper_export_dependencies(export: &str) -> &'static [&'static str] {
+    match export {
+        "__stdlib_minmax" => &["__stdlib_min", "__stdlib_max"],
+        "__stdlib_pynext" => &["__stdlib_iter_drain"],
+        "__stdlib_rand_sample" => &["__stdlib_rand_shuffle"],
+        "__stdlib_rotate" => &["__stdlib_fmod"],
+        _ => &[],
+    }
+}
+
+fn ordered_helper_exports(exports: &BTreeSet<&'static str>) -> Vec<&'static str> {
+    MAPPINGS
+        .iter()
+        .filter_map(|&(chunk_name, _global_name)| {
+            exports.contains(chunk_name).then_some(chunk_name)
+        })
+        .collect()
+}
+
+fn helper_export_for_global(global_name: &str) -> Option<&'static str> {
+    MAPPINGS.iter().find_map(|&(chunk_name, mapped_global)| {
+        (mapped_global == global_name).then_some(chunk_name)
+    })
+}
+
+fn helper_global_for_export(export: &str) -> Option<&'static str> {
+    MAPPINGS
+        .iter()
+        .find_map(|&(chunk_name, global_name)| (chunk_name == export).then_some(global_name))
 }

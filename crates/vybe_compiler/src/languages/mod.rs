@@ -68,7 +68,7 @@ pub fn all() -> Vec<Language> {
             name: "pascal",
             parse: pascal::parse,
             profile_source: pascal::profile_source,
-            emit_dispatch: None,
+            emit_dispatch: Some(pascal::emitter::dispatch::dispatch),
         },
         Language {
             name: "csharp",
@@ -116,7 +116,7 @@ pub fn all() -> Vec<Language> {
             name: "go",
             parse: go::parse,
             profile_source: go::profile_source,
-            emit_dispatch: None,
+            emit_dispatch: Some(go::emitter::dispatch::dispatch),
         },
         Language {
             name: "wast",
@@ -134,7 +134,11 @@ pub fn all() -> Vec<Language> {
 /// genuinely-shared prefixes (collections, dict, strings, ...) which the
 /// central dispatcher owns directly.
 pub fn emit_dispatch_for(prefix: &str) -> Option<EmitDispatch> {
-    if let Some(d) = all().into_iter().find(|l| l.name == prefix).and_then(|l| l.emit_dispatch) {
+    if let Some(d) = all()
+        .into_iter()
+        .find(|l| l.name == prefix)
+        .and_then(|l| l.emit_dispatch)
+    {
         return Some(d);
     }
     crate::emitter::platform_emit_dispatch(prefix)

@@ -89,7 +89,7 @@ pub fn emit_canonical(op: CanonicalOp, chunks: &mut [Chunk], current: usize, lin
         // accessed inside a nested function chunk.
         CanonicalOp::Len => collections::emit_array_length(&mut chunks[current], line),
         CanonicalOp::Str => {
-            // __vybe_tostring is populated by bundle::finalize_with_stdlib.
+            // __vybe_tostring is populated by bundle::finalize_with_runtime_helpers.
             strings::emit_to_string(&mut chunks[current], line);
         }
         CanonicalOp::Upper => strings::emit_to_upper(&mut chunks[current], line),

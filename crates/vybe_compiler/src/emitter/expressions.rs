@@ -35,7 +35,7 @@ pub fn emit_i32_not(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::I32_XOR, line);
 }
 
-/// Emit f64 modulo via stdlib function `__vybe_fmod`.
+/// Emit f64 modulo via the ECMA math fmod import.
 /// Pure bytecode implementation: a % b = a - trunc(a/b) * b.
 /// Host can override with native fmod for performance.
 /// `import_idx` is the resolved import index for `ecma:math:fmod`.

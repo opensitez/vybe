@@ -92,11 +92,11 @@ fn emit_drain_loop(cont_slot: u16, result_slot: u16, val_slot: u16, chunk: &mut 
     chunk.emit_op_u16(Op::LOCAL_GET, val_slot, line); // restore has_more to TOS
     // Stack: [value, has_more]
 
-    chunk.emit_op(Op::I32_EQZ, line);    // 1 if done (has_more==0)
-    chunk.emit_if(line);                 // if done {
-    chunk.emit_op(Op::DROP, line);       //   drop dangling value (was below has_more)
-    chunk.emit_br(2, line);              //   br 2 → exit outer block
-    chunk.emit_end(line);                // } end if
+    chunk.emit_op(Op::I32_EQZ, line); // 1 if done (has_more==0)
+    chunk.emit_if(line); // if done {
+    chunk.emit_op(Op::DROP, line); //   drop dangling value (was below has_more)
+    chunk.emit_br(2, line); //   br 2 → exit outer block
+    chunk.emit_end(line); // } end if
     // Stack: [value]  — only reached when has_more=1
 
     chunk.emit_op_u16(Op::LOCAL_SET, val_slot, line); // val_slot = yielded value
@@ -105,19 +105,19 @@ fn emit_drain_loop(cont_slot: u16, result_slot: u16, val_slot: u16, chunk: &mut 
     // result[result.length] = val  (ARRAY_SET auto-extends via Object::set)
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
-    chunk.emit_op(Op::ARRAY_LENGTH, line);               // i32 length = next index
+    chunk.emit_op(Op::ARRAY_LENGTH, line); // i32 length = next index
     chunk.emit_op_u16(Op::LOCAL_GET, val_slot, line);
-    chunk.emit_op(Op::ARRAY_SET, line);                  // pushes val back
-    chunk.emit_op(Op::DROP, line);                       // drop it (stack must be clean for br 0)
+    chunk.emit_op(Op::ARRAY_SET, line); // pushes val back
+    chunk.emit_op(Op::DROP, line); // drop it (stack must be clean for br 0)
 
-    chunk.emit_br(0, line);              // restart loop
+    chunk.emit_br(0, line); // restart loop
     chunk.emit_end(line);
     chunk.patch_loop(loop_p);
     chunk.emit_end(line);
     chunk.patch_block(block_p);
 }
 
-/// Two-chunk variant for stdlib.rs `build_*` functions.
+/// Two-chunk variant for runtime helper builder functions.
 /// `imports` is unused (no host imports needed) but kept for API symmetry.
 /// Called as a arity-1 function; `code.local_count` must be 1 on entry (arg 0
 /// is the continuation, already in local slot 0 by the VM's calling convention).

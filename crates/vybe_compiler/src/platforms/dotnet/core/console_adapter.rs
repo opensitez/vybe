@@ -27,7 +27,7 @@ use vybe_bytecode::{Chunk, Value};
 pub fn emit_console_writeline(chunks: &mut [Chunk], current: usize, line: u32) {
     let log_idx = chunks[0].add_import("wasi:cli", "log");
     let chunk = &mut chunks[current];
-    // `__vybe_tostring` (stdlib chunk wired by `bundle::finalize_with_stdlib`)
+    // `__vybe_tostring` (runtime helper wired by `bundle::finalize_with_runtime_helpers`)
     // dispatches to user-defined `ToString` / `tostring` methods first,
     // falling back to ECMA `String(value)` for primitives. Without this,
     // `Console.WriteLine(person)` would print `[object]` even when the

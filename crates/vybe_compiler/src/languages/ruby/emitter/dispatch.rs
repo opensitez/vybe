@@ -9,15 +9,12 @@ use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
 /// Route a `ruby.<op>` name to its emitter. Returns `true` if handled.
-pub fn dispatch(
-    name: &str,
-    chunks: &mut Vec<Chunk>,
-    current: usize,
-    argc: u8,
-    line: u32,
-) -> bool {
+pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
     match name {
         "ruby.dig" => emit_dig(&mut chunks[current], argc, line),
+        name if crate::emitter::ruby::runtime_adapter::emit_helper(
+            name, chunks, current, argc, line,
+        ) => {}
         _ => return false,
     }
     true

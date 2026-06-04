@@ -106,32 +106,44 @@ pub fn emit_array_clear(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 /// `Array.Copy(src, dst, count)` — copy first `count` elements from
-/// `src` to `dst`. Lowers to `__vybe_array_copy` stdlib chunk
+/// `src` to `dst`. Lowers to `__vybe_array_copy` runtime helper
 /// (already bundled).
 ///
 /// Stack on entry: `[src, dst, count]` ; Stack on exit: `[null]`
 pub fn emit_array_copy(chunks: &mut [Chunk], current: usize, line: u32) {
-    crate::emitter::collections::emit_stdlib_call(chunks, current, "__vybe_array_copy", 3, line);
+    crate::emitter::collections::emit_runtime_helper_call(
+        chunks,
+        current,
+        "__vybe_array_copy",
+        3,
+        line,
+    );
     // Stdlib chunk returns null; leave it on stack.
 }
 
 /// `Array.Resize(arr, newSize)` — extend or truncate `arr` to
-/// `newSize` elements. Lowers to `__vybe_redim` stdlib chunk.
+/// `newSize` elements. Lowers to `__vybe_redim` runtime helper.
 ///
 /// Stack on entry: `[arr, newSize]` ; Stack on exit: `[arr]` (the
-/// stdlib helper returns the resized array; .NET `Array.Resize`
+/// runtime helper returns the resized array; .NET `Array.Resize`
 /// signature is by-ref but the bytecode propagates the value).
 pub fn emit_array_resize(chunks: &mut [Chunk], current: usize, line: u32) {
-    crate::emitter::collections::emit_stdlib_call(chunks, current, "__vybe_redim", 2, line);
+    crate::emitter::collections::emit_runtime_helper_call(chunks, current, "__vybe_redim", 2, line);
 }
 
 /// `Array.Sort(arr)` — in-place sort. Lowers to `__vybe_sort_in_place`
-/// stdlib chunk.
+/// runtime helper.
 ///
 /// Stack on entry: `[arr]` ; Stack on exit: `[null]` (sort is void in
-/// .NET; the stdlib chunk returns the array but we drop it).
+/// .NET; the runtime helper returns the array but we drop it).
 pub fn emit_array_sort(chunks: &mut [Chunk], current: usize, line: u32) {
-    crate::emitter::collections::emit_stdlib_call(chunks, current, "__vybe_sort_in_place", 1, line);
+    crate::emitter::collections::emit_runtime_helper_call(
+        chunks,
+        current,
+        "__vybe_sort_in_place",
+        1,
+        line,
+    );
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op(Op::NULL, line);
 }

@@ -49,16 +49,16 @@ str             = { emit = "host:ecma:string:String",        min_args = 1, max_a
 bool            = { emit = "opcode:dyn_to_bool",            min_args = 1, max_args = 1 }
 chr             = { emit = "opcode:str_from_char_code",     min_args = 1, max_args = 1 }
 ord             = { emit = "intrinsic:asc",                  min_args = 1, max_args = 1 }
-hex             = { emit = "stdlib:pyhex",                  min_args = 1, max_args = 1 }
-oct             = { emit = "stdlib:pyoct",                  min_args = 1, max_args = 1 }
-bin             = { emit = "stdlib:pybin",                  min_args = 1, max_args = 1 }
+hex             = { emit = "common:python.hex",                  min_args = 1, max_args = 1 }
+oct             = { emit = "common:python.oct",                  min_args = 1, max_args = 1 }
+bin             = { emit = "common:python.bin",                  min_args = 1, max_args = 1 }
 repr            = { emit = "host:ecma:string:String",        min_args = 1, max_args = 1 }
-bytes           = { emit = "stdlib:to_bytes",     min_args = 0, max_args = 3 }
+bytes           = { emit = "common:python.bytes",     min_args = 0, max_args = 3 }
 
 # ── Collections ──────────────────────────────────────────────────────────────
 
 len             = { emit = "common:python.length",         min_args = 1, max_args = 1 }
-range           = { emit = "stdlib:range",         min_args = 1, max_args = 3 }
+range           = { emit = "common:python.range",         min_args = 1, max_args = 3 }
 list            = { emit = "host:ecma:array:from",          min_args = 0, max_args = 1 }
 tuple           = { emit = "host:ecma:array:from",          min_args = 0, max_args = 1 }
 dict            = { emit = "host:ecma:object:create",       min_args = 0, max_args = 1 }
@@ -66,17 +66,17 @@ set             = { emit = "host:ecma:set:fromIterable",    min_args = 0, max_ar
 frozenset       = { emit = "host:ecma:set:fromIterable",    min_args = 0, max_args = 1 }
 sorted          = { emit = "host:ecma:array:toSorted",        min_args = 1, max_args = 3 }
 reversed        = { emit = "host:ecma:array:reversed",      min_args = 1, max_args = 1 }
-enumerate       = { emit = "stdlib:enumerate",              min_args = 1, max_args = 2 }
-zip             = { emit = "stdlib:zip",                    min_args = 2, max_args = 255 }
-map             = { emit = "stdlib:pymap",                  min_args = 2, max_args = 255 }
-filter          = { emit = "stdlib:pyfilter",               min_args = 2, max_args = 2 }
+enumerate       = { emit = "common:python.enumerate",              min_args = 1, max_args = 2 }
+zip             = { emit = "common:python.zip",                    min_args = 2, max_args = 255 }
+map             = { emit = "common:python.map",                  min_args = 2, max_args = 255 }
+filter          = { emit = "common:python.filter",               min_args = 2, max_args = 2 }
 sum             = { emit = "host:ecma:math:sumPrecise",           min_args = 1, max_args = 2 }
 min             = { emit = "host:ecma:math:minOf",           min_args = 1, max_args = 255 }
 max             = { emit = "host:ecma:math:maxOf",           min_args = 1, max_args = 255 }
-any             = { emit = "stdlib:pyany",                  min_args = 1, max_args = 1 }
-all             = { emit = "stdlib:pyall",                  min_args = 1, max_args = 1 }
-iter            = { emit = "stdlib:pyiter",                min_args = 1, max_args = 1 }
-next            = { emit = "stdlib:pynext",                 min_args = 1, max_args = 2 }
+any             = { emit = "common:python.any",                  min_args = 1, max_args = 1 }
+all             = { emit = "common:python.all",                  min_args = 1, max_args = 1 }
+iter            = { emit = "common:python.iter",                min_args = 1, max_args = 1 }
+next            = { emit = "common:python.next",                 min_args = 1, max_args = 2 }
 
 # ── Math ─────────────────────────────────────────────────────────────────────
 
@@ -106,32 +106,32 @@ pow             = { emit = "host:ecma:math:pow",            min_args = 2, max_ar
 "math.lcm"      = { emit = "host:ecma:math:lcm",            min_args = 2, max_args = 2 }
 "math.factorial" = { emit = "host:ecma:math:factorial",     min_args = 1, max_args = 1 }
 "math.isnan"    = { emit = "host:ecma:number:isNaN",       min_args = 1, max_args = 1 }
-"math.isinf"    = { emit = "stdlib:isinf",                  min_args = 1, max_args = 1 }
+"math.isinf"    = { emit = "common:python.isinf",                  min_args = 1, max_args = 1 }
 "math.isfinite" = { emit = "host:ecma:number:isFinite",    min_args = 1, max_args = 1 }
 
 # ── Random module ────────────────────────────────────────────────────────────
 
 "random.random"    = { emit = "host:ecma:math:random",      min_args = 0, max_args = 0 }
 "random.randint"   = { emit = "host:ecma:math:randint",     min_args = 2, max_args = 2 }
-"random.choice"    = { emit = "stdlib:rand_choice",          min_args = 1, max_args = 1 }
-"random.shuffle"   = { emit = "stdlib:rand_shuffle",         min_args = 1, max_args = 1 }
+"random.choice"    = { emit = "common:python.random_choice",          min_args = 1, max_args = 1 }
+"random.shuffle"   = { emit = "common:python.random_shuffle",         min_args = 1, max_args = 1 }
 "random.uniform"   = { emit = "host:ecma:math:randUniform", min_args = 2, max_args = 2 }
 "random.seed"      = { emit = "noop",                       min_args = 0, max_args = 1 }
 "random.randrange" = { emit = "host:ecma:math:randint",     min_args = 1, max_args = 3 }
-"random.sample"    = { emit = "stdlib:rand_sample",          min_args = 2, max_args = 2 }
+"random.sample"    = { emit = "common:python.random_sample",          min_args = 2, max_args = 2 }
 
 # ── Type checking ────────────────────────────────────────────────────────────
 
 type            = { emit = "opcode:ref_typeof",              min_args = 1, max_args = 1 }
-isinstance      = { emit = "stdlib:instanceof",              min_args = 2, max_args = 2 }
-issubclass      = { emit = "stdlib:instanceof",              min_args = 2, max_args = 2 }
-callable        = { emit = "stdlib:callable",                min_args = 1, max_args = 1 }
+isinstance      = { emit = "common:python.instanceof",              min_args = 2, max_args = 2 }
+issubclass      = { emit = "common:python.instanceof",              min_args = 2, max_args = 2 }
+callable        = { emit = "common:python.callable",                min_args = 1, max_args = 1 }
 hasattr         = { emit = "host:ecma:object:hasOwn",        min_args = 2, max_args = 2 }
 getattr         = { emit = "host:ecma:object:get",          min_args = 2, max_args = 3 }
 setattr         = { emit = "host:ecma:object:set",          min_args = 3, max_args = 3 }
 delattr         = { emit = "host:ecma:object:delete",       min_args = 2, max_args = 2 }
-id              = { emit = "stdlib:id",            min_args = 1, max_args = 1 }
-hash            = { emit = "stdlib:hash",          min_args = 1, max_args = 1 }
+id              = { emit = "common:python.id",            min_args = 1, max_args = 1 }
+hash            = { emit = "common:python.hash",          min_args = 1, max_args = 1 }
 vars            = { emit = "host:ecma:object:keys",           min_args = 0, max_args = 1 }
 dir             = { emit = "host:ecma:object:keys",           min_args = 0, max_args = 1 }
 
@@ -183,9 +183,9 @@ open            = { emit = "host:wasi:filesystem:open",       min_args = 1, max_
 # calling ecma:regexp.*.
 "re.search"      = { emit = "host:ecma:regexp:exec",             min_args = 2, max_args = 3 }
 "re.match"       = { emit = "host:ecma:regexp:exec",             min_args = 2, max_args = 3 }
-"re.findall"     = { emit = "stdlib:regex_match_all_pat_first",  min_args = 2, max_args = 3 }
-"re.sub"         = { emit = "stdlib:regex_replace_pat_first",    min_args = 3, max_args = 4 }
-"re.split"       = { emit = "stdlib:regex_split_pat_first",      min_args = 2, max_args = 3 }
+"re.findall"     = { emit = "common:python.regex_findall",  min_args = 2, max_args = 3 }
+"re.sub"         = { emit = "common:python.regex_sub",    min_args = 3, max_args = 4 }
+"re.split"       = { emit = "common:python.regex_split",      min_args = 2, max_args = 3 }
 
 # ── time module ──────────────────────────────────────────────────────────────
 
@@ -230,14 +230,14 @@ center          = { emit = "intrinsic:center",         min_args = 1, max_args = 
 ljust           = { emit = "opcode:str_pad_end",              min_args = 1, max_args = 2 }
 rjust           = { emit = "opcode:str_pad_start",            min_args = 1, max_args = 2 }
 zfill           = { emit = "intrinsic:zfill",          min_args = 1, max_args = 1 }
-encode          = { emit = "stdlib:to_bytes",       min_args = 0, max_args = 1 }
+encode          = { emit = "common:python.bytes",       min_args = 0, max_args = 1 }
 isdigit         = { emit = "host:ecma:string:isdigit",        min_args = 0, max_args = 0 }
 isalpha         = { emit = "host:ecma:string:isalpha",        min_args = 0, max_args = 0 }
 isalnum         = { emit = "host:ecma:string:isalnum",        min_args = 0, max_args = 0 }
 isspace         = { emit = "host:ecma:string:isspace",        min_args = 0, max_args = 0 }
 isupper         = { emit = "host:ecma:string:isupper",        min_args = 0, max_args = 0 }
 islower         = { emit = "host:ecma:string:islower",        min_args = 0, max_args = 0 }
-format_map      = { emit = "stdlib:format_map",              min_args = 1, max_args = 1 }
+format_map      = { emit = "common:python.format_map",              min_args = 1, max_args = 1 }
 
 # List instance methods
 append          = { emit = "common:collections.push",         min_args = 1, max_args = 1 }
@@ -258,7 +258,7 @@ values          = { emit = "common:dict.values",             min_args = 0, max_a
 items           = { emit = "common:dict.items",              min_args = 0, max_args = 0 }
 get             = { emit = "common:python.get",              min_args = 1, max_args = 2 }
 update          = { emit = "common:python.update",         min_args = 1, max_args = 1 }
-setdefault      = { emit = "stdlib:setdefault",              min_args = 1, max_args = 2 }
+setdefault      = { emit = "common:python.setdefault",              min_args = 1, max_args = 2 }
 
 # Set instance methods
 add             = { emit = "common:python.add",            min_args = 1, max_args = 1 }
@@ -282,9 +282,9 @@ readlines       = { emit = "host:wasi:filesystem:readLines",  min_args = 0, max_
 close           = { emit = "host:wasi:filesystem:close",      min_args = 0, max_args = 0 }
 
 # Generic method aliases (cross-language compat)
-toString        = { emit = "stdlib:tostring",                  min_args = 0, max_args = 0 }
-__str__         = { emit = "stdlib:tostring",                  min_args = 0, max_args = 0 }
-__repr__        = { emit = "stdlib:tostring",                  min_args = 0, max_args = 0 }
+toString        = { emit = "common:python.tostring",                  min_args = 0, max_args = 0 }
+__str__         = { emit = "common:python.tostring",                  min_args = 0, max_args = 0 }
+__repr__        = { emit = "common:python.tostring",                  min_args = 0, max_args = 0 }
 __len__         = { emit = "str_length",                       min_args = 0, max_args = 0 }
 
 # ────────────────────────────────────────────────────────────────────────────

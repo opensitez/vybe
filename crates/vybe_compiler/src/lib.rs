@@ -20,7 +20,6 @@ pub mod dotnet_register;
 pub mod emitter;
 pub mod languages;
 pub mod lsp;
-pub mod php;
 pub mod platforms;
 pub mod profile;
 pub mod projects;

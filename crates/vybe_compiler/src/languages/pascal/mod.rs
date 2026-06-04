@@ -1,3 +1,4 @@
+pub mod emitter;
 pub mod normalize_class;
 mod walker;
 

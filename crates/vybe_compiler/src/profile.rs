@@ -273,10 +273,6 @@ pub enum BuiltinEmit {
     /// Dispatch to a compiler_common opcode-style emitter (args already on stack).
     /// e.g. "dict.set_dynamic", "collections.push", "strings.length"
     Common(String),
-    /// Call a stdlib function (e.g. __vybe_sorted) via global_get + call_ref.
-    /// Func ref is pushed BEFORE args.
-    /// Name is the operation, e.g. "sorted", "range", "sum", "min", "max"
-    Stdlib(String),
     /// Print (variadic)
     Print,
     /// String length
@@ -570,9 +566,6 @@ pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
             }
             _ if s.starts_with("common:") => {
                 Some(BuiltinEmit::Common(s["common:".len()..].to_string()))
-            }
-            _ if s.starts_with("stdlib:") => {
-                Some(BuiltinEmit::Stdlib(s["stdlib:".len()..].to_string()))
             }
             _ if s.starts_with("invoke:") => {
                 Some(BuiltinEmit::Invoke(s["invoke:".len()..].to_string()))

@@ -501,7 +501,15 @@ pub fn emit_store_constructor(
     local_slot: u16,
     line: u32,
 ) {
-    emit_store_constructor_with_upvalues(chunk, class_name, ctor_chunk_idx, local_slot, &[], false, line);
+    emit_store_constructor_with_upvalues(
+        chunk,
+        class_name,
+        ctor_chunk_idx,
+        local_slot,
+        &[],
+        false,
+        line,
+    );
 }
 
 /// Store a constructor function with upvalue capture. Used for closure-bound

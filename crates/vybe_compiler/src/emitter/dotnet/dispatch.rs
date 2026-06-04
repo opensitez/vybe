@@ -31,6 +31,10 @@ fn emit_choose(chunk: &mut Chunk, argc: u8, line: u32) {
 }
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
+    if crate::emitter::dotnet::core::runtime_adapter::emit_helper(name, chunks, current, argc, line)
+    {
+        return true;
+    }
     match name {
         "dotnet.dns_get_host_addresses" => {
             crate::emitter::dotnet::core::sockets_adapter::emit_dns_get_host_addresses(

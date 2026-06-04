@@ -1,3 +1,4 @@
+pub mod emitter;
 mod walker;
 
 use pest_derive::Parser;

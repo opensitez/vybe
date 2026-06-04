@@ -147,7 +147,9 @@ pub fn emit_common(
         "strings.index_of" => strings::emit_index_of(&mut chunks[current], line),
         "strings.concat" => strings::emit_concat(&mut chunks[current], 2, line),
         "sprintf.format" => crate::emitter::sprintf::emit_sprintf(chunks, current, argc, line),
-        "sprintf.format_array" => crate::emitter::sprintf::emit_sprintf_from_array(chunks, current, line),
+        "sprintf.format_array" => {
+            crate::emitter::sprintf::emit_sprintf_from_array(chunks, current, line)
+        }
 
         // ── Expression ops ──
         "expressions.undefined" => {

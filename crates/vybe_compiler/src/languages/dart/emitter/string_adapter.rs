@@ -36,6 +36,15 @@ pub fn emit_dart_print(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     chunks[current].emit(1, line);
 }
 
+/// Dart `value.toString()` — route through ECMA string coercion.
+/// Stack: [value] → [string].
+pub fn emit_dart_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
+    use vybe_bytecode::Op as VOp;
+    let to_str = chunks[0].add_import("ecma:string", "String");
+    chunks[current].emit_op_u16(VOp::CALL_IMPORT, to_str, line);
+    chunks[current].emit(1, line);
+}
+
 /// Dart `replaceFirst(pattern, replacement)` — first match only.
 /// Routed at the profile level to `host:ecma:string.replace`
 /// (ECMA-262 §22.1.3.18 replaces only the first occurrence).

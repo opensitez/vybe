@@ -66,31 +66,31 @@ multi_value_tuple_returns = true
 
 # ── Math — host calls ───────────────────────────────────────────────────────
 
-"Math.Pow"          = { emit = "stdlib:pow",      min_args = 2, max_args = 2 }
-"System.Math.Pow"   = { emit = "stdlib:pow",      min_args = 2, max_args = 2 }
-"Math.Sin"          = { emit = "stdlib:sin",      min_args = 1, max_args = 1 }
-"Math.Cos"          = { emit = "stdlib:cos",      min_args = 1, max_args = 1 }
-"Math.Tan"          = { emit = "stdlib:tan",      min_args = 1, max_args = 1 }
-"Math.Asin"         = { emit = "stdlib:asin",     min_args = 1, max_args = 1 }
-"Math.Acos"         = { emit = "stdlib:acos",     min_args = 1, max_args = 1 }
-"Math.Atan"         = { emit = "stdlib:atan",     min_args = 1, max_args = 1 }
-"Math.Atan2"        = { emit = "stdlib:atan2",    min_args = 2, max_args = 2 }
-"Math.Log"          = { emit = "stdlib:log",      min_args = 1, max_args = 1 }
-"Math.Log10"        = { emit = "stdlib:log10",    min_args = 1, max_args = 1 }
-"Math.Exp"          = { emit = "stdlib:exp",      min_args = 1, max_args = 1 }
-"Math.Sinh"         = { emit = "stdlib:sinh",     min_args = 1, max_args = 1 }
-"Math.Cosh"         = { emit = "stdlib:cosh",     min_args = 1, max_args = 1 }
-"Math.Tanh"         = { emit = "stdlib:tanh",     min_args = 1, max_args = 1 }
-"Math.Sign"         = { emit = "stdlib:sign",     min_args = 1, max_args = 1 }
-"Math.Clamp"        = { emit = "stdlib:clamp",    min_args = 3, max_args = 3 }
+"Math.Pow"          = { emit = "host:ecma:math:pow",      min_args = 2, max_args = 2 }
+"System.Math.Pow"   = { emit = "host:ecma:math:pow",      min_args = 2, max_args = 2 }
+"Math.Sin"          = { emit = "host:ecma:math:sin",      min_args = 1, max_args = 1 }
+"Math.Cos"          = { emit = "host:ecma:math:cos",      min_args = 1, max_args = 1 }
+"Math.Tan"          = { emit = "host:ecma:math:tan",      min_args = 1, max_args = 1 }
+"Math.Asin"         = { emit = "host:ecma:math:asin",     min_args = 1, max_args = 1 }
+"Math.Acos"         = { emit = "host:ecma:math:acos",     min_args = 1, max_args = 1 }
+"Math.Atan"         = { emit = "host:ecma:math:atan",     min_args = 1, max_args = 1 }
+"Math.Atan2"        = { emit = "host:ecma:math:atan2",    min_args = 2, max_args = 2 }
+"Math.Log"          = { emit = "host:ecma:math:log",      min_args = 1, max_args = 1 }
+"Math.Log10"        = { emit = "host:ecma:math:log10",    min_args = 1, max_args = 1 }
+"Math.Exp"          = { emit = "host:ecma:math:exp",      min_args = 1, max_args = 1 }
+"Math.Sinh"         = { emit = "host:ecma:math:sinh",     min_args = 1, max_args = 1 }
+"Math.Cosh"         = { emit = "host:ecma:math:cosh",     min_args = 1, max_args = 1 }
+"Math.Tanh"         = { emit = "host:ecma:math:tanh",     min_args = 1, max_args = 1 }
+"Math.Sign"         = { emit = "host:ecma:math:sign",     min_args = 1, max_args = 1 }
+"Math.Clamp"        = { emit = "host:ecma:math:clamp",    min_args = 3, max_args = 3 }
 
 # ── Type conversion ──────────────────────────────────────────────────────────
 
 "Convert.ToInt32"    = { emit = "intrinsic:cint",         min_args = 1, max_args = 1 }
 "Convert.ToDouble"   = { emit = "host:ecma:number:Number",         min_args = 1, max_args = 1 }
-"Convert.ToString"   = { emit = "stdlib:tostring",               min_args = 1, max_args = 1 }
+"Convert.ToString"   = { emit = "common:dotnet.tostring",        min_args = 1, max_args = 1 }
 "Convert.ToBoolean"  = { emit = "opcode:dyn_to_bool",             min_args = 1, max_args = 1 }
-"Convert.ToChar"     = { emit = "stdlib:cchar",                   min_args = 1, max_args = 1 }
+"Convert.ToChar"     = { emit = "common:dotnet.cchar",            min_args = 1, max_args = 1 }
 "Convert.ToByte"     = { emit = "intrinsic:cbyte",                min_args = 1, max_args = 1 }
 "Convert.ToInt64"    = { emit = "intrinsic:clng",         min_args = 1, max_args = 1 }
 "Convert.ToSingle"   = { emit = "host:ecma:number:Number",         min_args = 1, max_args = 1 }
@@ -122,13 +122,13 @@ multi_value_tuple_returns = true
 # ── String static methods ────────────────────────────────────────────────────
 
 "String.Join"         = { emit = "common:collections.join_sep_first", min_args = 2, max_args = 2 }
-"String.IsNullOrEmpty" = { emit = "stdlib:string_is_null_or_empty", min_args = 1, max_args = 1 }
-"String.IsNullOrWhiteSpace" = { emit = "stdlib:string_is_null_or_whitespace", min_args = 1, max_args = 1 }
+"String.IsNullOrEmpty" = { emit = "common:dotnet.string_is_null_or_empty", min_args = 1, max_args = 1 }
+"String.IsNullOrWhiteSpace" = { emit = "common:dotnet.string_is_null_or_whitespace", min_args = 1, max_args = 1 }
 "String.Format"       = { emit = "common:dotnet.string_format",   min_args = 1, max_args = 255 }
 "String.Concat"       = { emit = "opcode:str_concat",             min_args = 2, max_args = 255 }
 "str_repeat"          = { emit = "opcode:str_repeat",             min_args = 2, max_args = 2 }
-"string.IsNullOrEmpty" = { emit = "stdlib:string_is_null_or_empty", min_args = 1, max_args = 1 }
-"string.IsNullOrWhiteSpace" = { emit = "stdlib:string_is_null_or_whitespace", min_args = 1, max_args = 1 }
+"string.IsNullOrEmpty" = { emit = "common:dotnet.string_is_null_or_empty", min_args = 1, max_args = 1 }
+"string.IsNullOrWhiteSpace" = { emit = "common:dotnet.string_is_null_or_whitespace", min_args = 1, max_args = 1 }
 "string.Join"         = { emit = "common:collections.join_sep_first", min_args = 2, max_args = 2 }
 
 # ── Array static methods ────────────────────────────────────────────────────
@@ -160,7 +160,7 @@ multi_value_tuple_returns = true
 
 # ── Environment ──────────────────────────────────────────────────────────────
 
-"Environment.NewLine"          = { emit = "stdlib:newline",             min_args = 0, max_args = 0 }
+"Environment.NewLine"          = { emit = "common:dotnet.newline",      min_args = 0, max_args = 0 }
 "Environment.GetEnvironmentVariable" = { emit = "common:dotnet.environment_get", min_args = 1, max_args = 1 }
 
 # ── Threading ────────────────────────────────────────────────────────────────
@@ -207,12 +207,12 @@ IndexOf       = { emit = "common:strings.index_of",    min_args = 1, max_args = 
 LastIndexOf   = { emit = "opcode:str_last_index_of",   min_args = 1, max_args = 2 }
 PadLeft       = { emit = "opcode:str_pad_start",       min_args = 1, max_args = 2 }
 PadRight      = { emit = "opcode:str_pad_end",         min_args = 1, max_args = 2 }
-ToString      = { emit = "stdlib:tostring",            min_args = 0, max_args = 0 }
+ToString      = { emit = "common:dotnet.tostring",     min_args = 0, max_args = 0 }
 ToCharArray   = { emit = "opcode:str_split",           min_args = 0, max_args = 0 }
-Insert        = { emit = "stdlib:str_insert",          min_args = 2, max_args = 2 }
+Insert        = { emit = "common:dotnet.str_insert",   min_args = 2, max_args = 2 }
 Remove        = [
-    { emit = "stdlib:str_remove_start", min_args = 1, max_args = 1 },
-    { emit = "stdlib:str_remove_range", min_args = 2, max_args = 2 },
+    { emit = "common:dotnet.str_remove_start", min_args = 1, max_args = 1 },
+    { emit = "common:dotnet.str_remove_range", min_args = 2, max_args = 2 },
 ]
 
 # Array/List instance methods
@@ -224,8 +224,8 @@ Add           = [
 Clear         = { emit = "host:ecma:array:clear",      min_args = 0, max_args = 0 }
 Reverse       = { emit = "common:collections.reverse",       min_args = 0, max_args = 0 }
 Sort          = [
-    { emit = "stdlib:sort_in_place",         min_args = 0, max_args = 0 },
-    { emit = "stdlib:sort_with_comparator",  min_args = 1, max_args = 1 },
+    { emit = "common:dotnet.sort_in_place",        min_args = 0, max_args = 0 },
+    { emit = "common:dotnet.sort_with_comparator", min_args = 1, max_args = 1 },
 ]
 join          = { emit = "common:collections.join",    min_args = 1, max_args = 1 }
 # `Count` 0-arg defers to the runtime collection registry (List<T>.Count,
