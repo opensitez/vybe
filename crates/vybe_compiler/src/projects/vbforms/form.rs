@@ -56,11 +56,15 @@ impl Form {
     }
 
     pub fn get_control_by_name(&self, name: &str) -> Option<&Control> {
-        self.controls.iter().find(|c| c.name.eq_ignore_ascii_case(name))
+        self.controls
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(name))
     }
 
     pub fn get_control_by_name_mut(&mut self, name: &str) -> Option<&mut Control> {
-        self.controls.iter_mut().find(|c| c.name.eq_ignore_ascii_case(name))
+        self.controls
+            .iter_mut()
+            .find(|c| c.name.eq_ignore_ascii_case(name))
     }
 
     pub fn find_control_at(&self, x: i32, y: i32) -> Option<&Control> {
@@ -73,7 +77,11 @@ impl Form {
         self.event_bindings.push(binding);
     }
 
-    pub fn get_event_handler(&self, control_name: &str, event_type: &super::events::EventType) -> Option<&str> {
+    pub fn get_event_handler(
+        &self,
+        control_name: &str,
+        event_type: &super::events::EventType,
+    ) -> Option<&str> {
         self.event_bindings
             .iter()
             .find(|b| b.control_name == control_name && &b.event_type == event_type)
@@ -81,17 +89,21 @@ impl Form {
     }
 
     pub fn get_control_array(&self, name: &str) -> Vec<&Control> {
-        self.controls.iter()
+        self.controls
+            .iter()
             .filter(|c| c.name.eq_ignore_ascii_case(name) && c.index.is_some())
             .collect()
     }
 
     pub fn is_control_array(&self, name: &str) -> bool {
-        self.controls.iter().any(|c| c.name.eq_ignore_ascii_case(name) && c.index.is_some())
+        self.controls
+            .iter()
+            .any(|c| c.name.eq_ignore_ascii_case(name) && c.index.is_some())
     }
 
     pub fn next_array_index(&self, name: &str) -> i32 {
-        self.controls.iter()
+        self.controls
+            .iter()
             .filter(|c| c.name.eq_ignore_ascii_case(name) && c.index.is_some())
             .filter_map(|c| c.index)
             .max()

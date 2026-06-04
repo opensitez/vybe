@@ -1,9 +1,9 @@
+use super::control::{Control, ControlType};
 use super::errors::SaveResult;
+use super::events::{EventBinding, EventType};
+use super::form::Form;
 use super::project::{FormFormat, FormModule};
 use crate::projects::encoding::read_text_file;
-use super::form::Form;
-use super::control::{Control, ControlType};
-use super::events::{EventBinding, EventType};
 use std::fs;
 use std::path::Path;
 
@@ -25,7 +25,11 @@ fn last_component(name: &str) -> &str {
 pub fn load_form_vb(form_path: &Path) -> SaveResult<FormModule> {
     let user_code = read_text_file(form_path)?;
 
-    let stem = form_path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+    let stem = form_path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
     let parent = form_path.parent().unwrap_or(Path::new("."));
     let designer_path = parent.join(format!("{}.Designer.vb", stem));
 
@@ -59,7 +63,9 @@ fn parse_designer_fast(designer: &str, user_code: &str, fallback_name: &str) -> 
         let line = raw_line.trim();
 
         // Skip comments and blank lines
-        if line.is_empty() || line.starts_with('\'') { continue; }
+        if line.is_empty() || line.starts_with('\'') {
+            continue;
+        }
 
         // Detect InitializeComponent boundaries
         if !in_init {
@@ -71,10 +77,17 @@ fn parse_designer_fast(designer: &str, user_code: &str, fallback_name: &str) -> 
             if let Some(info) = parse_field_decl(line) {
                 if let Some(ct) = vbnet_type_to_control_type(last_component(&info.1)) {
                     // Only add if not already known
-                    if !controls.iter().any(|c| c.name.eq_ignore_ascii_case(&info.0)) {
+                    if !controls
+                        .iter()
+                        .any(|c| c.name.eq_ignore_ascii_case(&info.0))
+                    {
                         controls.push(CtrlInfo {
-                            name: info.0, control_type: ct,
-                            x: 0, y: 0, width: 100, height: 30,
+                            name: info.0,
+                            control_type: ct,
+                            x: 0,
+                            y: 0,
+                            width: 100,
+                            height: 30,
                             props: Vec::new(),
                         });
                     }
@@ -84,7 +97,9 @@ fn parse_designer_fast(designer: &str, user_code: &str, fallback_name: &str) -> 
         }
 
         let upper = line.to_uppercase();
-        if upper.starts_with("END SUB") { break; }
+        if upper.starts_with("END SUB") {
+            break;
+        }
 
         // Me.X = New SomeType(...)
         if let Some((field, rhs)) = parse_me_assign(line) {
@@ -94,12 +109,19 @@ fn parse_designer_fast(designer: &str, user_code: &str, fallback_name: &str) -> 
                     let short = last_component(&type_name);
                     if let Some(ct) = vbnet_type_to_control_type(short) {
                         // Update existing or insert new
-                        if let Some(c) = controls.iter_mut().find(|c| c.name.eq_ignore_ascii_case(field)) {
+                        if let Some(c) = controls
+                            .iter_mut()
+                            .find(|c| c.name.eq_ignore_ascii_case(field))
+                        {
                             c.control_type = ct;
                         } else {
                             controls.push(CtrlInfo {
-                                name: field.to_string(), control_type: ct,
-                                x: 0, y: 0, width: 100, height: 30,
+                                name: field.to_string(),
+                                control_type: ct,
+                                x: 0,
+                                y: 0,
+                                width: 100,
+                                height: 30,
                                 props: Vec::new(),
                             });
                         }
@@ -112,7 +134,10 @@ fn parse_designer_fast(designer: &str, user_code: &str, fallback_name: &str) -> 
                 // Me.Ctrl.Prop = value
                 let ctrl_name = &field[..dot];
                 let prop_name = &field[dot + 1..];
-                if let Some(c) = controls.iter_mut().find(|c| c.name.eq_ignore_ascii_case(ctrl_name)) {
+                if let Some(c) = controls
+                    .iter_mut()
+                    .find(|c| c.name.eq_ignore_ascii_case(ctrl_name))
+                {
                     apply_control_property(c, prop_name, rhs);
                 }
             }
@@ -121,16 +146,24 @@ fn parse_designer_fast(designer: &str, user_code: &str, fallback_name: &str) -> 
 
         // Me.Ctrl.DataBindings.Add("Prop", Me.Source, "Field")
         if let Some((ctrl, prop, source, field_col)) = parse_databindings_add(line) {
-            if let Some(c) = controls.iter_mut().find(|c| c.name.eq_ignore_ascii_case(ctrl)) {
-                c.props.push(("DataBindings.Source".to_string(), source.to_string()));
-                c.props.push((format!("DataBindings.{}", prop), field_col.to_string()));
+            if let Some(c) = controls
+                .iter_mut()
+                .find(|c| c.name.eq_ignore_ascii_case(ctrl))
+            {
+                c.props
+                    .push(("DataBindings.Source".to_string(), source.to_string()));
+                c.props
+                    .push((format!("DataBindings.{}", prop), field_col.to_string()));
             }
             continue;
         }
 
         // Me.Ctrl.Items.AddRange(New String() { "a", "b" })
         if let Some((ctrl, items)) = parse_items_addrange(line) {
-            if let Some(c) = controls.iter_mut().find(|c| c.name.eq_ignore_ascii_case(ctrl)) {
+            if let Some(c) = controls
+                .iter_mut()
+                .find(|c| c.name.eq_ignore_ascii_case(ctrl))
+            {
                 c.props.push(("Items".to_string(), items.join("\n")));
             }
             continue;
@@ -140,7 +173,9 @@ fn parse_designer_fast(designer: &str, user_code: &str, fallback_name: &str) -> 
         if let Some((ctrl, event, handler)) = parse_addhandler(line) {
             if let Some(et) = event_type_from_name(event) {
                 form.event_bindings.push(EventBinding::with_handler(
-                    ctrl.to_string(), et, handler.to_string(),
+                    ctrl.to_string(),
+                    et,
+                    handler.to_string(),
                 ));
             }
         }
@@ -190,7 +225,9 @@ fn parse_field_decl(line: &str) -> Option<(String, String)> {
     let before = line[..idx].trim();
     let name = before.rsplit_once(' ')?.1.trim();
     let type_name = line[idx + 4..].trim();
-    if name.is_empty() || type_name.is_empty() { return None; }
+    if name.is_empty() || type_name.is_empty() {
+        return None;
+    }
     Some((name.to_string(), type_name.to_string()))
 }
 
@@ -198,7 +235,9 @@ fn parse_field_decl(line: &str) -> Option<(String, String)> {
 /// Returns (ctrl_name, event_name, handler_name)
 fn parse_addhandler<'a>(line: &'a str) -> Option<(&'a str, &'a str, &'a str)> {
     let upper = line.to_uppercase();
-    if !upper.starts_with("ADDHANDLER ") { return None; }
+    if !upper.starts_with("ADDHANDLER ") {
+        return None;
+    }
     let rest = line["AddHandler ".len()..].trim();
     let comma = rest.find(',')?;
     let event_part = rest[..comma].trim();
@@ -242,17 +281,30 @@ fn parse_databindings_add<'a>(line: &'a str) -> Option<(&'a str, String, &'a str
     let mut cur = String::new();
     for ch in args.chars() {
         match ch {
-            '"' => { in_str = !in_str; cur.push(ch); }
-            '(' if !in_str => { depth += 1; cur.push(ch); }
-            ')' if !in_str => { depth -= 1; cur.push(ch); }
+            '"' => {
+                in_str = !in_str;
+                cur.push(ch);
+            }
+            '(' if !in_str => {
+                depth += 1;
+                cur.push(ch);
+            }
+            ')' if !in_str => {
+                depth -= 1;
+                cur.push(ch);
+            }
             ',' if !in_str && depth == 0 => {
                 parts.push(std::mem::take(&mut cur).trim().to_string());
             }
             _ => cur.push(ch),
         }
     }
-    if !cur.trim().is_empty() { parts.push(cur.trim().to_string()); }
-    if parts.len() < 3 { return None; }
+    if !cur.trim().is_empty() {
+        parts.push(cur.trim().to_string());
+    }
+    if parts.len() < 3 {
+        return None;
+    }
 
     let prop = parse_string_value(&parts[0])?;
     // source is "Me.Name" or bare "Name"
@@ -266,9 +318,9 @@ fn parse_databindings_add<'a>(line: &'a str) -> Option<(&'a str, String, &'a str
         // find source in original line for &str lifetime
         let pattern_me = format!("Me.{}", source);
         if let Some(p) = line.find(&pattern_me) {
-            &line[p + 3 .. p + pattern_me.len()]
+            &line[p + 3..p + pattern_me.len()]
         } else if let Some(p) = line.find(source) {
-            &line[p .. p + source.len()]
+            &line[p..p + source.len()]
         } else {
             return None;
         }
@@ -307,18 +359,27 @@ fn parse_items_addrange<'a>(line: &'a str) -> Option<(&'a str, Vec<String>)> {
     let mut cur = String::new();
     for ch in inner.chars() {
         match ch {
-            '"' => { in_str = !in_str; cur.push(ch); }
+            '"' => {
+                in_str = !in_str;
+                cur.push(ch);
+            }
             ',' if !in_str => {
-                if let Some(v) = parse_string_value(cur.trim()) { items.push(v); }
+                if let Some(v) = parse_string_value(cur.trim()) {
+                    items.push(v);
+                }
                 cur.clear();
             }
             _ => cur.push(ch),
         }
     }
     if !cur.trim().is_empty() {
-        if let Some(v) = parse_string_value(cur.trim()) { items.push(v); }
+        if let Some(v) = parse_string_value(cur.trim()) {
+            items.push(v);
+        }
     }
-    if items.is_empty() { return None; }
+    if items.is_empty() {
+        return None;
+    }
     Some((ctrl, items))
 }
 
@@ -326,7 +387,9 @@ fn parse_items_addrange<'a>(line: &'a str) -> Option<(&'a str, Vec<String>)> {
 fn parse_point_value(rhs: &str) -> Option<(i32, i32)> {
     let type_name = parse_new_expr(rhs)?;
     let short = last_component(type_name);
-    if !short.eq_ignore_ascii_case("Point") { return None; }
+    if !short.eq_ignore_ascii_case("Point") {
+        return None;
+    }
     parse_two_int_args(rhs)
 }
 
@@ -334,11 +397,13 @@ fn parse_point_value(rhs: &str) -> Option<(i32, i32)> {
 fn parse_size_value(rhs: &str) -> Option<(i32, i32)> {
     let type_name = parse_new_expr(rhs)?;
     let short = last_component(type_name);
-    if !short.eq_ignore_ascii_case("Size") && !short.eq_ignore_ascii_case("SizeF") { return None; }
+    if !short.eq_ignore_ascii_case("Size") && !short.eq_ignore_ascii_case("SizeF") {
+        return None;
+    }
     parse_two_int_args(rhs)
 }
 
-/// Extract two integer args from "New Type(a, b)" 
+/// Extract two integer args from "New Type(a, b)"
 fn parse_two_int_args(rhs: &str) -> Option<(i32, i32)> {
     let open = rhs.find('(')?;
     let close = rhs.rfind(')')?;
@@ -351,7 +416,10 @@ fn parse_two_int_args(rhs: &str) -> Option<(i32, i32)> {
 
 /// Parse a number, handling "6.0!" VB single-precision suffix and float truncation
 fn parse_number(s: &str) -> Option<i32> {
-    let s = s.trim_end_matches('!').trim_end_matches('F').trim_end_matches('f');
+    let s = s
+        .trim_end_matches('!')
+        .trim_end_matches('F')
+        .trim_end_matches('f');
     if let Ok(n) = s.parse::<i32>() {
         return Some(n);
     }
@@ -378,10 +446,16 @@ fn apply_control_property(c: &mut CtrlInfo, prop: &str, rhs: &str) {
     let prop_lower = prop.to_lowercase();
     match prop_lower.as_str() {
         "location" => {
-            if let Some((x, y)) = parse_point_value(rhs) { c.x = x; c.y = y; }
+            if let Some((x, y)) = parse_point_value(rhs) {
+                c.x = x;
+                c.y = y;
+            }
         }
         "size" => {
-            if let Some((w, h)) = parse_size_value(rhs) { c.width = w; c.height = h; }
+            if let Some((w, h)) = parse_size_value(rhs) {
+                c.width = w;
+                c.height = h;
+            }
         }
         "text" => {
             if let Some(s) = parse_string_value(rhs) {
@@ -428,11 +502,17 @@ fn apply_form_property_str(form: &mut Form, prop: &str, rhs: &str) {
 fn clean_value(rhs: &str) -> String {
     let s = rhs.trim();
     // String literal
-    if let Some(v) = parse_string_value(s) { return v; }
+    if let Some(v) = parse_string_value(s) {
+        return v;
+    }
     // Boolean
     let upper = s.to_uppercase();
-    if upper == "TRUE" { return "True".to_string(); }
-    if upper == "FALSE" { return "False".to_string(); }
+    if upper == "TRUE" {
+        return "True".to_string();
+    }
+    if upper == "FALSE" {
+        return "False".to_string();
+    }
     // Everything else (enums, New expressions, etc.) — store as-is
     s.to_string()
 }
@@ -446,7 +526,9 @@ fn collect_handles_from_source(source: &str, form: &mut Form) {
         if let Some(handles_pos) = upper.find(" HANDLES ") {
             // Extract handler name from "Sub X(" or "Sub X "
             let sub_name = extract_sub_name(trimmed);
-            if sub_name.is_empty() { continue; }
+            if sub_name.is_empty() {
+                continue;
+            }
 
             let handles_str = &trimmed[handles_pos + " Handles ".len()..];
             for target in handles_str.split(',') {
@@ -454,11 +536,15 @@ fn collect_handles_from_source(source: &str, form: &mut Form) {
                 if let Some(dot) = target.rfind('.') {
                     let ctrl = target[..dot].trim();
                     let event = target[dot + 1..].trim();
-                    let ctrl = ctrl.strip_prefix("Me.").or_else(|| ctrl.strip_prefix("MyBase."))
+                    let ctrl = ctrl
+                        .strip_prefix("Me.")
+                        .or_else(|| ctrl.strip_prefix("MyBase."))
                         .unwrap_or(ctrl);
                     if let Some(et) = event_type_from_name(event) {
                         form.event_bindings.push(EventBinding::with_handler(
-                            ctrl.to_string(), et, sub_name.to_string(),
+                            ctrl.to_string(),
+                            et,
+                            sub_name.to_string(),
                         ));
                     }
                 }
@@ -479,7 +565,9 @@ fn extract_sub_name(line: &str) -> &str {
     };
     let after = line[keyword..].trim();
     // Name ends at ( or space or end
-    let end = after.find(|c: char| c == '(' || c.is_whitespace()).unwrap_or(after.len());
+    let end = after
+        .find(|c: char| c == '(' || c.is_whitespace())
+        .unwrap_or(after.len());
     &after[..end]
 }
 
@@ -539,23 +627,25 @@ fn vbnet_type_to_control_type(name: &str) -> Option<ControlType> {
         "datagrid" => Some(ControlType::DataGrid),
         "usercontrol" => Some(ControlType::UserControl),
         // Data binding / ADO.NET components (WinForms classic names)
-        "bindingsource" | "bindingsourcecomponent"
-            => Some(ControlType::BindingSourceComponent),
-        "dataset"   | "datasetcomponent"    => Some(ControlType::DataSetComponent),
-        "datatable" | "datatablecomponent"  => Some(ControlType::DataTableComponent),
-        "dataadapter" | "sqldataadapter" | "oledbdataadapter"
-            | "mysqldataadapter" | "odbcdataadapter" | "dataadaptercomponent"
-            => Some(ControlType::DataAdapterComponent),
-        "dataview"          => Some(ControlType::DataView),
-        "sqlconnection"     => Some(ControlType::SqlConnection),
-        "oledbconnection"   => Some(ControlType::OleDbConnection),
+        "bindingsource" | "bindingsourcecomponent" => Some(ControlType::BindingSourceComponent),
+        "dataset" | "datasetcomponent" => Some(ControlType::DataSetComponent),
+        "datatable" | "datatablecomponent" => Some(ControlType::DataTableComponent),
+        "dataadapter"
+        | "sqldataadapter"
+        | "oledbdataadapter"
+        | "mysqldataadapter"
+        | "odbcdataadapter"
+        | "dataadaptercomponent" => Some(ControlType::DataAdapterComponent),
+        "dataview" => Some(ControlType::DataView),
+        "sqlconnection" => Some(ControlType::SqlConnection),
+        "oledbconnection" => Some(ControlType::OleDbConnection),
         // Misc non-visual
-        "helpprovider"      => Some(ControlType::HelpProvider),
-        "backgroundworker"  => Some(ControlType::BackgroundWorker),
+        "helpprovider" => Some(ControlType::HelpProvider),
+        "backgroundworker" => Some(ControlType::BackgroundWorker),
         // Print-related dialogs we missed
-        "printdocument"     => Some(ControlType::PrintDocument),
-        "printpreviewdialog"=> Some(ControlType::PrintPreviewDialog),
-        "pagesetupdialog"   => Some(ControlType::PageSetupDialog),
+        "printdocument" => Some(ControlType::PrintDocument),
+        "printpreviewdialog" => Some(ControlType::PrintPreviewDialog),
+        "pagesetupdialog" => Some(ControlType::PageSetupDialog),
         _ => None,
     }
 }
@@ -617,7 +707,11 @@ fn extract_class_name(source: &str) -> Option<String> {
 pub fn save_form_vb(form_module: &FormModule, dir: &Path) -> SaveResult<()> {
     let name = &form_module.form.name;
 
-    if let FormFormat::VbNet { designer_code, user_code } = &form_module.format {
+    if let FormFormat::VbNet {
+        designer_code,
+        user_code,
+    } = &form_module.format
+    {
         let designer_path = dir.join(format!("{}.Designer.vb", name));
         fs::write(&designer_path, designer_code)?;
 

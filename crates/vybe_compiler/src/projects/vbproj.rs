@@ -9,10 +9,10 @@
 //! from disk relative to the .vbproj location. The VB parser handles
 //! partial classes, InitializeComponent, AddHandler etc. natively.
 
-use std::path::Path;
-use quick_xml::events::Event;
-use quick_xml::Reader;
 use crate::bundle::{Bundle, EntryPoint, SourceFile};
+use quick_xml::Reader;
+use quick_xml::events::Event;
+use std::path::Path;
 
 pub fn load(path: &Path) -> Result<Bundle, String> {
     let xml = std::fs::read_to_string(path)
@@ -33,30 +33,26 @@ pub fn load(path: &Path) -> Result<Bundle, String> {
 
     loop {
         match reader.read_event() {
-            Ok(Event::Start(ref e)) => {
-                match e.name().as_ref() {
-                    b"PropertyGroup" => in_property_group = true,
-                    b"AssemblyName" if in_property_group => current_element = "AssemblyName".into(),
-                    b"StartupObject" if in_property_group => current_element = "StartupObject".into(),
-                    b"Compile" => {
-                        for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"Include" {
-                                compile_includes.push(
-                                    String::from_utf8_lossy(&attr.value).into_owned()
-                                );
-                            }
+            Ok(Event::Start(ref e)) => match e.name().as_ref() {
+                b"PropertyGroup" => in_property_group = true,
+                b"AssemblyName" if in_property_group => current_element = "AssemblyName".into(),
+                b"StartupObject" if in_property_group => current_element = "StartupObject".into(),
+                b"Compile" => {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"Include" {
+                            compile_includes
+                                .push(String::from_utf8_lossy(&attr.value).into_owned());
                         }
                     }
-                    _ => {}
                 }
-            }
+                _ => {}
+            },
             Ok(Event::Empty(ref e)) => {
                 if e.name().as_ref() == b"Compile" {
                     for attr in e.attributes().flatten() {
                         if attr.key.as_ref() == b"Include" {
-                            compile_includes.push(
-                                String::from_utf8_lossy(&attr.value).into_owned()
-                            );
+                            compile_includes
+                                .push(String::from_utf8_lossy(&attr.value).into_owned());
                         }
                     }
                 }
@@ -96,15 +92,17 @@ pub fn load(path: &Path) -> Result<Bundle, String> {
     }
 
     // Read each .vb file from disk
-    let lang = crate::languages::find_by_extension("vb")
-        .ok_or("VB language not registered")?;
+    let lang = crate::languages::find_by_extension("vb").ok_or("VB language not registered")?;
 
     let mut sources = Vec::new();
     for include in &compile_includes {
         let file_path = project_dir.join(include);
         let code = std::fs::read_to_string(&file_path)
             .map_err(|e| format!("Cannot read {}: {}", file_path.display(), e))?;
-        sources.push(SourceFile { path: file_path, code });
+        sources.push(SourceFile {
+            path: file_path,
+            code,
+        });
     }
 
     if sources.is_empty() {
@@ -113,7 +111,8 @@ pub fn load(path: &Path) -> Result<Bundle, String> {
 
     // Fallback name from file stem
     if name.is_empty() {
-        name = path.file_stem()
+        name = path
+            .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "project".into());
     }
@@ -133,5 +132,11 @@ pub fn load(path: &Path) -> Result<Bundle, String> {
         EntryPoint::Auto
     };
 
-    Ok(Bundle { name, language: lang, sources, wasm_files: vec![], entry_point })
+    Ok(Bundle {
+        name,
+        language: lang,
+        sources,
+        wasm_files: vec![],
+        entry_point,
+    })
 }

@@ -1,19 +1,19 @@
-pub mod properties;
-pub mod events;
 pub mod control;
+pub mod errors;
+pub mod events;
 pub mod form;
 pub mod project;
+pub mod properties;
 pub mod resources;
-pub mod errors;
 pub mod serialization;
 pub mod winforms;
 
-pub use properties::*;
-pub use events::*;
 pub use control::*;
+pub use errors::*;
+pub use events::*;
 pub use form::*;
 pub use project::*;
+pub use properties::*;
 pub use resources::*;
-pub use errors::*;
 pub use serialization::*;
 pub use winforms::*;

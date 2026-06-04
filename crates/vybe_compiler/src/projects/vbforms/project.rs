@@ -1,6 +1,6 @@
 use super::form::Form;
-use serde::{Deserialize, Serialize};
 use super::resources::ResourceManager;
+use serde::{Deserialize, Serialize};
 
 /// Specifies what the project starts with
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -226,7 +226,10 @@ impl Project {
     pub fn get_startup_form(&self) -> Option<&FormModule> {
         match &self.startup_object {
             StartupObject::Form(name) => self.get_form(name),
-            _ => self.startup_form.as_ref().and_then(|name| self.get_form(name)),
+            _ => self
+                .startup_form
+                .as_ref()
+                .and_then(|name| self.get_form(name)),
         }
     }
 

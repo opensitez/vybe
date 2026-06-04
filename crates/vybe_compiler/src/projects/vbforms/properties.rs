@@ -40,7 +40,7 @@ impl PropertyValue {
             _ => None,
         }
     }
-    
+
     pub fn as_string_array(&self) -> Option<&Vec<String>> {
         match self {
             PropertyValue::StringArray(arr) => Some(arr),
@@ -94,7 +94,7 @@ impl PropertyBag {
     pub fn set(&mut self, key: impl Into<String>, value: impl Into<PropertyValue>) {
         self.properties.insert(key.into(), value.into());
     }
-    
+
     pub fn set_raw(&mut self, key: impl Into<String>, value: PropertyValue) {
         self.properties.insert(key.into(), value);
     }
@@ -118,7 +118,7 @@ impl PropertyBag {
     pub fn get_double(&self, key: &str) -> Option<f64> {
         self.get(key).and_then(|v| v.as_double())
     }
-    
+
     pub fn get_string_array(&self, key: &str) -> Option<&Vec<String>> {
         self.get(key).and_then(|v| v.as_string_array())
     }

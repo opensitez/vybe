@@ -6,8 +6,8 @@
 
 use std::path::{Path, PathBuf};
 
-use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
+use quick_xml::events::{BytesStart, Event};
 
 use crate::bundle::{Bundle, EntryPoint, SourceFile};
 use crate::projects::encoding::read_text_file;

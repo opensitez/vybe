@@ -266,112 +266,108 @@ impl EventType {
     pub fn parameters(&self) -> &'static str {
         match self {
             // Mouse events use MouseEventArgs
-            EventType::MouseClick | EventType::MouseDoubleClick |
-            EventType::MouseDown | EventType::MouseUp | EventType::MouseMove |
-            EventType::MouseWheel =>
-                "sender As Object, e As MouseEventArgs",
+            EventType::MouseClick
+            | EventType::MouseDoubleClick
+            | EventType::MouseDown
+            | EventType::MouseUp
+            | EventType::MouseMove
+            | EventType::MouseWheel => "sender As Object, e As MouseEventArgs",
             // Key events
-            EventType::KeyDown | EventType::KeyUp =>
-                "sender As Object, e As KeyEventArgs",
-            EventType::KeyPress =>
-                "sender As Object, e As KeyPressEventArgs",
+            EventType::KeyDown | EventType::KeyUp => "sender As Object, e As KeyEventArgs",
+            EventType::KeyPress => "sender As Object, e As KeyPressEventArgs",
             // Form closing/closed
-            EventType::FormClosing =>
-                "sender As Object, e As FormClosingEventArgs",
-            EventType::FormClosed =>
-                "sender As Object, e As FormClosedEventArgs",
+            EventType::FormClosing => "sender As Object, e As FormClosingEventArgs",
+            EventType::FormClosed => "sender As Object, e As FormClosedEventArgs",
             // Paint
-            EventType::Paint =>
-                "sender As Object, e As PaintEventArgs",
+            EventType::Paint => "sender As Object, e As PaintEventArgs",
             // DataGridView cell painting
-            EventType::CellPainting =>
-                "sender As Object, e As DataGridViewCellPaintingEventArgs",
+            EventType::CellPainting => "sender As Object, e As DataGridViewCellPaintingEventArgs",
             // TreeView events — After* use TreeViewEventArgs
-            EventType::AfterSelect | EventType::AfterCheck |
-            EventType::AfterExpand | EventType::AfterCollapse =>
-                "sender As Object, e As TreeViewEventArgs",
+            EventType::AfterSelect
+            | EventType::AfterCheck
+            | EventType::AfterExpand
+            | EventType::AfterCollapse => "sender As Object, e As TreeViewEventArgs",
             // TreeView events — Before* use TreeViewCancelEventArgs
-            EventType::BeforeSelect | EventType::BeforeCheck |
-            EventType::BeforeExpand | EventType::BeforeCollapse =>
-                "sender As Object, e As TreeViewCancelEventArgs",
-            EventType::AfterLabelEdit | EventType::BeforeLabelEdit =>
-                "sender As Object, e As NodeLabelEditEventArgs",
-            EventType::NodeMouseClick | EventType::NodeMouseDoubleClick =>
-                "sender As Object, e As TreeNodeMouseClickEventArgs",
-            EventType::ItemDrag =>
-                "sender As Object, e As ItemDragEventArgs",
+            EventType::BeforeSelect
+            | EventType::BeforeCheck
+            | EventType::BeforeExpand
+            | EventType::BeforeCollapse => "sender As Object, e As TreeViewCancelEventArgs",
+            EventType::AfterLabelEdit | EventType::BeforeLabelEdit => {
+                "sender As Object, e As NodeLabelEditEventArgs"
+            }
+            EventType::NodeMouseClick | EventType::NodeMouseDoubleClick => {
+                "sender As Object, e As TreeNodeMouseClickEventArgs"
+            }
+            EventType::ItemDrag => "sender As Object, e As ItemDragEventArgs",
             // DataGridView events — standard cell args
-            EventType::CellClick | EventType::CellDoubleClick |
-            EventType::CellValueChanged | EventType::CellContentClick |
-            EventType::CellEndEdit | EventType::CellEnter |
-            EventType::CellLeave =>
-                "sender As Object, e As DataGridViewCellEventArgs",
-            EventType::CellBeginEdit =>
-                "sender As Object, e As DataGridViewCellCancelEventArgs",
-            EventType::CellValidating =>
-                "sender As Object, e As DataGridViewCellValidatingEventArgs",
-            EventType::CellFormatting =>
-                "sender As Object, e As DataGridViewCellFormattingEventArgs",
-            EventType::DataError =>
-                "sender As Object, e As DataGridViewDataErrorEventArgs",
-            EventType::RowEnter | EventType::RowLeave | EventType::RowValidated =>
-                "sender As Object, e As DataGridViewCellEventArgs",
-            EventType::RowValidating =>
-                "sender As Object, e As DataGridViewCellCancelEventArgs",
-            EventType::DataBindingComplete =>
-                "sender As Object, e As DataGridViewBindingCompleteEventArgs",
-            EventType::ColumnHeaderMouseClick | EventType::RowHeaderMouseClick =>
-                "sender As Object, e As DataGridViewCellMouseEventArgs",
+            EventType::CellClick
+            | EventType::CellDoubleClick
+            | EventType::CellValueChanged
+            | EventType::CellContentClick
+            | EventType::CellEndEdit
+            | EventType::CellEnter
+            | EventType::CellLeave => "sender As Object, e As DataGridViewCellEventArgs",
+            EventType::CellBeginEdit => "sender As Object, e As DataGridViewCellCancelEventArgs",
+            EventType::CellValidating => {
+                "sender As Object, e As DataGridViewCellValidatingEventArgs"
+            }
+            EventType::CellFormatting => {
+                "sender As Object, e As DataGridViewCellFormattingEventArgs"
+            }
+            EventType::DataError => "sender As Object, e As DataGridViewDataErrorEventArgs",
+            EventType::RowEnter | EventType::RowLeave | EventType::RowValidated => {
+                "sender As Object, e As DataGridViewCellEventArgs"
+            }
+            EventType::RowValidating => "sender As Object, e As DataGridViewCellCancelEventArgs",
+            EventType::DataBindingComplete => {
+                "sender As Object, e As DataGridViewBindingCompleteEventArgs"
+            }
+            EventType::ColumnHeaderMouseClick | EventType::RowHeaderMouseClick => {
+                "sender As Object, e As DataGridViewCellMouseEventArgs"
+            }
             // LinkLabel
-            EventType::LinkClicked =>
-                "sender As Object, e As LinkLabelLinkClickedEventArgs",
+            EventType::LinkClicked => "sender As Object, e As LinkLabelLinkClickedEventArgs",
             // SplitContainer
-            EventType::SplitterMoved =>
-                "sender As Object, e As SplitterEventArgs",
-            EventType::SplitterMoving =>
-                "sender As Object, e As SplitterCancelEventArgs",
+            EventType::SplitterMoved => "sender As Object, e As SplitterEventArgs",
+            EventType::SplitterMoving => "sender As Object, e As SplitterCancelEventArgs",
             // Drag events
-            EventType::DragDrop | EventType::DragEnter | EventType::DragOver =>
-                "sender As Object, e As DragEventArgs",
+            EventType::DragDrop | EventType::DragEnter | EventType::DragOver => {
+                "sender As Object, e As DragEventArgs"
+            }
             // Scroll
-            EventType::Scroll =>
-                "sender As Object, e As ScrollEventArgs",
+            EventType::Scroll => "sender As Object, e As ScrollEventArgs",
             // ListView
-            EventType::ColumnClick =>
-                "sender As Object, e As ColumnClickEventArgs",
-            EventType::ItemSelectionChanged =>
-                "sender As Object, e As ListViewItemSelectionChangedEventArgs",
+            EventType::ColumnClick => "sender As Object, e As ColumnClickEventArgs",
+            EventType::ItemSelectionChanged => {
+                "sender As Object, e As ListViewItemSelectionChangedEventArgs"
+            }
             // DrawItem/MeasureItem
-            EventType::DrawItem =>
-                "sender As Object, e As DrawItemEventArgs",
-            EventType::MeasureItem =>
-                "sender As Object, e As MeasureItemEventArgs",
+            EventType::DrawItem => "sender As Object, e As DrawItemEventArgs",
+            EventType::MeasureItem => "sender As Object, e As MeasureItemEventArgs",
             // WebBrowser
-            EventType::Navigating =>
-                "sender As Object, e As WebBrowserNavigatingEventArgs",
-            EventType::Navigated =>
-                "sender As Object, e As WebBrowserNavigatedEventArgs",
-            EventType::DocumentCompleted =>
-                "sender As Object, e As WebBrowserDocumentCompletedEventArgs",
-            EventType::ProgressChanged =>
-                "sender As Object, e As WebBrowserProgressChangedEventArgs",
+            EventType::Navigating => "sender As Object, e As WebBrowserNavigatingEventArgs",
+            EventType::Navigated => "sender As Object, e As WebBrowserNavigatedEventArgs",
+            EventType::DocumentCompleted => {
+                "sender As Object, e As WebBrowserDocumentCompletedEventArgs"
+            }
+            EventType::ProgressChanged => {
+                "sender As Object, e As WebBrowserProgressChangedEventArgs"
+            }
             // CheckedListBox / ListView
-            EventType::ItemCheck =>
-                "sender As Object, e As ItemCheckEventArgs",
+            EventType::ItemCheck => "sender As Object, e As ItemCheckEventArgs",
             // MaskedTextBox
-            EventType::MaskInputRejected =>
-                "sender As Object, e As MaskInputRejectedEventArgs",
+            EventType::MaskInputRejected => "sender As Object, e As MaskInputRejectedEventArgs",
             // Drag feedback
-            EventType::GiveFeedback =>
-                "sender As Object, e As GiveFeedbackEventArgs",
+            EventType::GiveFeedback => "sender As Object, e As GiveFeedbackEventArgs",
             // TabControl
-            EventType::Selecting | EventType::Deselecting =>
-                "sender As Object, e As TabControlCancelEventArgs",
-            EventType::Selected | EventType::Deselected =>
-                "sender As Object, e As TabControlEventArgs",
+            EventType::Selecting | EventType::Deselecting => {
+                "sender As Object, e As TabControlCancelEventArgs"
+            }
+            EventType::Selected | EventType::Deselected => {
+                "sender As Object, e As TabControlEventArgs"
+            }
             // DropDown cancel
-            EventType::DropDownOpening =>
-                "sender As Object, e As CancelEventArgs",
+            EventType::DropDownOpening => "sender As Object, e As CancelEventArgs",
             // All other events use base EventArgs
             _ => "sender As Object, e As EventArgs",
         }
@@ -507,24 +503,35 @@ impl EventType {
 
     pub fn is_applicable_to(&self, control_type: Option<super::ControlType>) -> bool {
         use super::ControlType;
-        
+
         match self {
             // Form-only events
-            EventType::Load | EventType::Unload | EventType::FormClosing | EventType::FormClosed
-            | EventType::Shown | EventType::Activated | EventType::Deactivate => control_type.is_none(),
-            
+            EventType::Load
+            | EventType::Unload
+            | EventType::FormClosing
+            | EventType::FormClosed
+            | EventType::Shown
+            | EventType::Activated
+            | EventType::Deactivate => control_type.is_none(),
+
             // Text change events
             EventType::Change | EventType::TextChanged => matches!(
                 control_type,
-                Some(ControlType::TextBox) | Some(ControlType::Label) | Some(ControlType::ComboBox)
-                    | Some(ControlType::ListBox) | Some(ControlType::RichTextBox) | Some(ControlType::MaskedTextBox)
+                Some(ControlType::TextBox)
+                    | Some(ControlType::Label)
+                    | Some(ControlType::ComboBox)
+                    | Some(ControlType::ListBox)
+                    | Some(ControlType::RichTextBox)
+                    | Some(ControlType::MaskedTextBox)
                     | None
             ),
-            
+
             // Selection events (list-based)
             EventType::SelectedIndexChanged | EventType::SelectedValueChanged => matches!(
                 control_type,
-                Some(ControlType::ComboBox) | Some(ControlType::ListBox) | Some(ControlType::TabControl)
+                Some(ControlType::ComboBox)
+                    | Some(ControlType::ListBox)
+                    | Some(ControlType::TabControl)
                     | Some(ControlType::ListView)
             ),
 
@@ -536,28 +543,42 @@ impl EventType {
 
             // Value changed — broad: NumericUpDown, TrackBar, DateTimePicker, scrollbars, etc.
             EventType::ValueChanged => true,
-            
+
             // Timer events
             EventType::Tick | EventType::Elapsed => true,
 
             // DataGridView cell events
-            EventType::CellClick | EventType::CellDoubleClick | EventType::CellValueChanged
-            | EventType::SelectionChanged | EventType::CellFormatting | EventType::CellPainting
-            | EventType::CellContentClick | EventType::CellEndEdit | EventType::CellBeginEdit
-            | EventType::CellValidating | EventType::CellEnter | EventType::CellLeave
-            | EventType::DataError | EventType::RowEnter | EventType::RowLeave
-            | EventType::RowValidating | EventType::RowValidated
-            | EventType::ColumnHeaderMouseClick | EventType::RowHeaderMouseClick
-            | EventType::CurrentCellChanged | EventType::DataBindingComplete => matches!(
-                control_type,
-                Some(ControlType::DataGridView)
-            ),
+            EventType::CellClick
+            | EventType::CellDoubleClick
+            | EventType::CellValueChanged
+            | EventType::SelectionChanged
+            | EventType::CellFormatting
+            | EventType::CellPainting
+            | EventType::CellContentClick
+            | EventType::CellEndEdit
+            | EventType::CellBeginEdit
+            | EventType::CellValidating
+            | EventType::CellEnter
+            | EventType::CellLeave
+            | EventType::DataError
+            | EventType::RowEnter
+            | EventType::RowLeave
+            | EventType::RowValidating
+            | EventType::RowValidated
+            | EventType::ColumnHeaderMouseClick
+            | EventType::RowHeaderMouseClick
+            | EventType::CurrentCellChanged
+            | EventType::DataBindingComplete => {
+                matches!(control_type, Some(ControlType::DataGridView))
+            }
 
             // LinkLabel
             EventType::LinkClicked => matches!(control_type, Some(ControlType::LinkLabel)),
 
             // SplitContainer
-            EventType::SplitterMoved | EventType::SplitterMoving => matches!(control_type, Some(ControlType::SplitContainer)),
+            EventType::SplitterMoved | EventType::SplitterMoving => {
+                matches!(control_type, Some(ControlType::SplitContainer))
+            }
 
             // DateTimePicker / MonthCalendar
             EventType::DateChanged | EventType::DateSelected => matches!(
@@ -572,10 +593,9 @@ impl EventType {
             ),
 
             // ComboBox dropdown events
-            EventType::DropDown | EventType::DropDownStyleChanged => matches!(
-                control_type,
-                Some(ControlType::ComboBox)
-            ),
+            EventType::DropDown | EventType::DropDownStyleChanged => {
+                matches!(control_type, Some(ControlType::ComboBox))
+            }
             EventType::DropDownOpening | EventType::DropDownClosed => matches!(
                 control_type,
                 Some(ControlType::ComboBox) | Some(ControlType::ToolStripMenuItem)
@@ -584,27 +604,32 @@ impl EventType {
             // Owner-draw events
             EventType::DrawItem | EventType::MeasureItem | EventType::Format => matches!(
                 control_type,
-                Some(ControlType::ComboBox) | Some(ControlType::ListBox) | Some(ControlType::ListView)
+                Some(ControlType::ComboBox)
+                    | Some(ControlType::ListBox)
+                    | Some(ControlType::ListView)
                     | Some(ControlType::TabControl)
             ),
 
             // ListView specific
-            EventType::ColumnClick | EventType::ColumnWidthChanged
-            | EventType::ItemSelectionChanged | EventType::ItemActivate => matches!(
-                control_type,
-                Some(ControlType::ListView)
-            ),
+            EventType::ColumnClick
+            | EventType::ColumnWidthChanged
+            | EventType::ItemSelectionChanged
+            | EventType::ItemActivate => matches!(control_type, Some(ControlType::ListView)),
 
             // TreeView specific
-            EventType::NodeMouseClick | EventType::NodeMouseDoubleClick
-            | EventType::AfterSelect | EventType::BeforeSelect
-            | EventType::AfterCheck | EventType::BeforeCheck
-            | EventType::AfterExpand | EventType::AfterCollapse
-            | EventType::BeforeExpand | EventType::BeforeCollapse
-            | EventType::AfterLabelEdit | EventType::BeforeLabelEdit
-            | EventType::ItemDrag => matches!(
-                control_type, Some(ControlType::TreeView)
-            ),
+            EventType::NodeMouseClick
+            | EventType::NodeMouseDoubleClick
+            | EventType::AfterSelect
+            | EventType::BeforeSelect
+            | EventType::AfterCheck
+            | EventType::BeforeCheck
+            | EventType::AfterExpand
+            | EventType::AfterCollapse
+            | EventType::BeforeExpand
+            | EventType::BeforeCollapse
+            | EventType::AfterLabelEdit
+            | EventType::BeforeLabelEdit
+            | EventType::ItemDrag => matches!(control_type, Some(ControlType::TreeView)),
 
             // ListView / CheckedListBox
             EventType::ItemCheck => matches!(
@@ -613,57 +638,91 @@ impl EventType {
             ),
 
             // MaskedTextBox
-            EventType::MaskInputRejected => matches!(control_type, Some(ControlType::MaskedTextBox)),
+            EventType::MaskInputRejected => {
+                matches!(control_type, Some(ControlType::MaskedTextBox))
+            }
 
             // WebBrowser
-            EventType::DocumentCompleted | EventType::Navigating | EventType::Navigated
+            EventType::DocumentCompleted
+            | EventType::Navigating
+            | EventType::Navigated
             | EventType::ProgressChanged => matches!(control_type, Some(ControlType::WebBrowser)),
 
             // TabControl tab events
-            EventType::SelectedIndexChanged2 | EventType::Selected | EventType::Deselected
-            | EventType::Deselecting | EventType::Selecting => matches!(
-                control_type,
-                Some(ControlType::TabControl)
-            ),
+            EventType::SelectedIndexChanged2
+            | EventType::Selected
+            | EventType::Deselected
+            | EventType::Deselecting
+            | EventType::Selecting => matches!(control_type, Some(ControlType::TabControl)),
 
             // Scroll — scrollbars, trackbars, panels, etc.
             EventType::Scroll => matches!(
                 control_type,
-                Some(ControlType::HScrollBar) | Some(ControlType::VScrollBar)
-                    | Some(ControlType::TrackBar) | Some(ControlType::Panel)
-                    | Some(ControlType::DataGridView) | Some(ControlType::RichTextBox)
-                    | Some(ControlType::TextBox) | Some(ControlType::TreeView)
-                    | Some(ControlType::ListView) | None
+                Some(ControlType::HScrollBar)
+                    | Some(ControlType::VScrollBar)
+                    | Some(ControlType::TrackBar)
+                    | Some(ControlType::Panel)
+                    | Some(ControlType::DataGridView)
+                    | Some(ControlType::RichTextBox)
+                    | Some(ControlType::TextBox)
+                    | Some(ControlType::TreeView)
+                    | Some(ControlType::ListView)
+                    | None
             ),
 
             // Click/double-click — universal
-            EventType::Click | EventType::DblClick | EventType::DoubleClick
-            | EventType::MouseClick | EventType::MouseDoubleClick => true,
-            
+            EventType::Click
+            | EventType::DblClick
+            | EventType::DoubleClick
+            | EventType::MouseClick
+            | EventType::MouseDoubleClick => true,
+
             // Keyboard events — universal
             EventType::KeyPress | EventType::KeyDown | EventType::KeyUp => true,
-            
+
             // Mouse events — universal
-            EventType::MouseDown | EventType::MouseUp | EventType::MouseMove
-            | EventType::MouseEnter | EventType::MouseLeave | EventType::MouseWheel => true,
-            
+            EventType::MouseDown
+            | EventType::MouseUp
+            | EventType::MouseMove
+            | EventType::MouseEnter
+            | EventType::MouseLeave
+            | EventType::MouseWheel => true,
+
             // Focus events — any control
-            EventType::GotFocus | EventType::LostFocus | EventType::Enter | EventType::Leave
-            | EventType::Validated | EventType::Validating => control_type.is_some(),
+            EventType::GotFocus
+            | EventType::LostFocus
+            | EventType::Enter
+            | EventType::Leave
+            | EventType::Validated
+            | EventType::Validating => control_type.is_some(),
 
             // Drag events — universal
-            EventType::DragDrop | EventType::DragEnter | EventType::DragLeave
-            | EventType::DragOver | EventType::GiveFeedback => true,
+            EventType::DragDrop
+            | EventType::DragEnter
+            | EventType::DragLeave
+            | EventType::DragOver
+            | EventType::GiveFeedback => true,
 
             // Property changed events — universal
-            EventType::EnabledChanged | EventType::VisibleChanged | EventType::BackColorChanged
-            | EventType::ForeColorChanged | EventType::FontChanged | EventType::SizeChanged
-            | EventType::LocationChanged | EventType::TabIndexChanged | EventType::DockChanged
-            | EventType::ContextMenuStripChanged | EventType::ParentChanged => true,
+            EventType::EnabledChanged
+            | EventType::VisibleChanged
+            | EventType::BackColorChanged
+            | EventType::ForeColorChanged
+            | EventType::FontChanged
+            | EventType::SizeChanged
+            | EventType::LocationChanged
+            | EventType::TabIndexChanged
+            | EventType::DockChanged
+            | EventType::ContextMenuStripChanged
+            | EventType::ParentChanged => true,
 
             // Layout/paint/lifecycle — universal
-            EventType::Resize | EventType::Paint | EventType::Move
-            | EventType::HandleCreated | EventType::HandleDestroyed | EventType::Disposed
+            EventType::Resize
+            | EventType::Paint
+            | EventType::Move
+            | EventType::HandleCreated
+            | EventType::HandleDestroyed
+            | EventType::Disposed
             | EventType::HelpRequested => true,
         }
     }
@@ -815,7 +874,11 @@ impl EventBinding {
         }
     }
 
-    pub fn with_handler(control_name: impl Into<String>, event_type: EventType, handler_name: impl Into<String>) -> Self {
+    pub fn with_handler(
+        control_name: impl Into<String>,
+        event_type: EventType,
+        handler_name: impl Into<String>,
+    ) -> Self {
         Self {
             control_name: control_name.into(),
             event_type,

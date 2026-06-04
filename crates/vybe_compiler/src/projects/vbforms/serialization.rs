@@ -1,19 +1,21 @@
-use super::project::{Project, FormModule, StartupObject};
-use super::winforms::{load_form_vb, save_form_vb};
 use super::errors::{SaveError, SaveResult};
-use super::resources::ResourceManager;
-use crate::projects::encoding::read_text_file;
 use super::form::Form;
-use std::path::Path;
-use std::fs;
+use super::project::{FormModule, Project, StartupObject};
+use super::resources::ResourceManager;
+use super::winforms::{load_form_vb, save_form_vb};
+use crate::projects::encoding::read_text_file;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
+use std::fs;
+use std::path::Path;
 
 pub fn save_project_auto(project: &Project, path: impl AsRef<Path>) -> SaveResult<()> {
     let path = path.as_ref();
     if let Some(ext) = path.extension() {
         if !ext.eq_ignore_ascii_case("vbproj") {
-            return Err(SaveError::Parse("Only .vbproj files are supported for saving".to_string()));
+            return Err(SaveError::Parse(
+                "Only .vbproj files are supported for saving".to_string(),
+            ));
         }
     }
     save_project_vbproj(project, path)
@@ -26,13 +28,22 @@ pub fn save_project_vbproj(project: &Project, path: impl AsRef<Path>) -> SaveRes
     xml.push_str("<Project Sdk=\"Microsoft.NET.Sdk\">\n");
     xml.push_str("  <PropertyGroup>\n");
     xml.push_str("    <OutputType>WinExe</OutputType>\n");
-    xml.push_str(&format!("    <RootNamespace>{}</RootNamespace>\n", project.name));
-    xml.push_str(&format!("    <AssemblyName>{}</AssemblyName>\n", project.name));
+    xml.push_str(&format!(
+        "    <RootNamespace>{}</RootNamespace>\n",
+        project.name
+    ));
+    xml.push_str(&format!(
+        "    <AssemblyName>{}</AssemblyName>\n",
+        project.name
+    ));
     xml.push_str("    <TargetFramework>net6.0-windows</TargetFramework>\n");
     xml.push_str("    <UseWindowsForms>true</UseWindowsForms>\n");
     match &project.startup_object {
         StartupObject::Form(form_name) => {
-            xml.push_str(&format!("    <StartupObject>{}.{}</StartupObject>\n", project.name, form_name));
+            xml.push_str(&format!(
+                "    <StartupObject>{}.{}</StartupObject>\n",
+                project.name, form_name
+            ));
         }
         StartupObject::SubMain => {
             xml.push_str("    <StartupObject>Sub Main</StartupObject>\n");
@@ -46,12 +57,21 @@ pub fn save_project_vbproj(project: &Project, path: impl AsRef<Path>) -> SaveRes
         xml.push_str(&format!("    <Compile Include=\"{}.vb\">\n", form_name));
         xml.push_str("      <SubType>Form</SubType>\n");
         xml.push_str("    </Compile>\n");
-        xml.push_str(&format!("    <Compile Include=\"{}.Designer.vb\">\n", form_name));
-        xml.push_str(&format!("      <DependentUpon>{}.vb</DependentUpon>\n", form_name));
+        xml.push_str(&format!(
+            "    <Compile Include=\"{}.Designer.vb\">\n",
+            form_name
+        ));
+        xml.push_str(&format!(
+            "      <DependentUpon>{}.vb</DependentUpon>\n",
+            form_name
+        ));
         xml.push_str("    </Compile>\n");
     }
     for code_file in &project.code_files {
-        xml.push_str(&format!("    <Compile Include=\"{}.vb\" />\n", code_file.name));
+        xml.push_str(&format!(
+            "    <Compile Include=\"{}.vb\" />\n",
+            code_file.name
+        ));
     }
     xml.push_str("  </ItemGroup>\n");
     xml.push_str("</Project>\n");
@@ -80,7 +100,9 @@ pub fn load_project_auto(path: impl AsRef<Path>) -> SaveResult<Project> {
             return load_project_vbproj(path);
         }
     }
-    Err(SaveError::Parse("Only .vbproj files are supported".to_string()))
+    Err(SaveError::Parse(
+        "Only .vbproj files are supported".to_string(),
+    ))
 }
 
 pub fn load_project_vbproj(path: impl AsRef<Path>) -> SaveResult<Project> {
@@ -89,7 +111,9 @@ pub fn load_project_vbproj(path: impl AsRef<Path>) -> SaveResult<Project> {
 
     let trimmed = content.trim();
     if !trimmed.starts_with('<') {
-        return Err(SaveError::Parse("File is not a valid XML .vbproj".to_string()));
+        return Err(SaveError::Parse(
+            "File is not a valid XML .vbproj".to_string(),
+        ));
     }
 
     let mut reader = Reader::from_str(&content);
@@ -123,7 +147,11 @@ pub fn load_project_vbproj(path: impl AsRef<Path>) -> SaveResult<Project> {
         match reader.read_event() {
             Ok(Event::Start(ref e)) => {
                 let name = e.name().as_ref().to_vec();
-                if name == b"AssemblyName" || name == b"StartupObject" || name == b"SubType" || name == b"DependentUpon" {
+                if name == b"AssemblyName"
+                    || name == b"StartupObject"
+                    || name == b"SubType"
+                    || name == b"DependentUpon"
+                {
                     capture_text = true;
                     current_tag = name.clone();
                 } else if name == b"Compile" {
@@ -180,7 +208,9 @@ pub fn load_project_vbproj(path: impl AsRef<Path>) -> SaveResult<Project> {
                         }
                     } else if current_tag == b"SubType" && in_compile {
                         current_subtype = txt;
-                    } else if current_tag == b"DependentUpon" && (in_compile || in_embedded_resource) {
+                    } else if current_tag == b"DependentUpon"
+                        && (in_compile || in_embedded_resource)
+                    {
                         current_dependent_upon = txt;
                     }
                 }
@@ -188,7 +218,11 @@ pub fn load_project_vbproj(path: impl AsRef<Path>) -> SaveResult<Project> {
             Ok(Event::End(ref e)) => {
                 let qname = e.name();
                 let name = qname.as_ref();
-                if name == b"AssemblyName" || name == b"StartupObject" || name == b"SubType" || name == b"DependentUpon" {
+                if name == b"AssemblyName"
+                    || name == b"StartupObject"
+                    || name == b"SubType"
+                    || name == b"DependentUpon"
+                {
                     capture_text = false;
                 } else if name == b"Compile" {
                     in_compile = false;
@@ -222,7 +256,11 @@ pub fn load_project_vbproj(path: impl AsRef<Path>) -> SaveResult<Project> {
     }
 
     if project_name.is_empty() {
-        project_name = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+        project_name = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
     }
 
     let mut project = Project::new(&project_name);
@@ -266,19 +304,32 @@ pub fn load_project_vbproj(path: impl AsRef<Path>) -> SaveResult<Project> {
 
     // SDK-style projects have no <Compile> items — auto-discover all .vb files
     if form_paths.is_empty() && module_paths.is_empty() {
-        fn collect_vb_files(dir: &Path, base: &Path, form_paths: &mut Vec<String>, module_paths: &mut Vec<String>) {
+        fn collect_vb_files(
+            dir: &Path,
+            base: &Path,
+            form_paths: &mut Vec<String>,
+            module_paths: &mut Vec<String>,
+        ) {
             if let Ok(entries) = fs::read_dir(dir) {
                 for entry in entries.flatten() {
                     let p = entry.path();
                     if p.is_dir() {
-                        let dir_name = p.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+                        let dir_name = p
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_lowercase();
                         if dir_name == "bin" || dir_name == "obj" || dir_name == ".git" {
                             continue;
                         }
                         collect_vb_files(&p, base, form_paths, module_paths);
                     } else if let Some(ext) = p.extension() {
                         if ext.eq_ignore_ascii_case("vb") {
-                            let rel = p.strip_prefix(base).unwrap_or(&p).to_string_lossy().to_string();
+                            let rel = p
+                                .strip_prefix(base)
+                                .unwrap_or(&p)
+                                .to_string_lossy()
+                                .to_string();
                             if rel.to_lowercase().ends_with(".designer.vb") {
                                 continue;
                             }
@@ -318,7 +369,11 @@ pub fn load_project_vbproj(path: impl AsRef<Path>) -> SaveResult<Project> {
                 }
             }
             Err(_e) => {
-                let stem = Path::new(rel_path).file_stem().unwrap_or_default().to_string_lossy().to_string();
+                let stem = Path::new(rel_path)
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
                 let user_code = read_text_file(&form_path).unwrap_or_default();
                 let designer_path2 = parent_dir.join(format!("{}.Designer.vb", stem));
                 let designer_code = if designer_path2.exists() {
@@ -346,14 +401,22 @@ pub fn load_project_vbproj(path: impl AsRef<Path>) -> SaveResult<Project> {
         let mod_path = parent_dir.join(&rel_path);
         if let Ok(content) = read_text_file(&mod_path) {
             let name = if rel_path.contains('/') {
-                rel_path.strip_suffix(".vb")
+                rel_path
+                    .strip_suffix(".vb")
                     .or_else(|| rel_path.strip_suffix(".VB"))
                     .unwrap_or(&rel_path)
                     .to_string()
             } else {
-                Path::new(&mod_path).file_stem().unwrap_or_default().to_string_lossy().to_string()
+                Path::new(&mod_path)
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
             };
-            project.add_code_file(super::project::CodeFile { name, code: content });
+            project.add_code_file(super::project::CodeFile {
+                name,
+                code: content,
+            });
         }
     }
 
@@ -365,12 +428,24 @@ pub fn load_project_vbproj(path: impl AsRef<Path>) -> SaveResult<Project> {
         }
         match ResourceManager::load_from_file(&resx_path) {
             Ok(mut rm) => {
-                let resx_stem = resx_path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+                let resx_stem = resx_path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
                 rm.name = resx_stem;
 
                 if let Some(dep) = dependent_upon {
-                    let dep_stem = Path::new(dep).file_stem().unwrap_or_default().to_string_lossy().to_string();
-                    if let Some(fm) = project.forms.iter_mut().find(|f| f.form.name.eq_ignore_ascii_case(&dep_stem)) {
+                    let dep_stem = Path::new(dep)
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+                    if let Some(fm) = project
+                        .forms
+                        .iter_mut()
+                        .find(|f| f.form.name.eq_ignore_ascii_case(&dep_stem))
+                    {
                         fm.resources = rm;
                     } else {
                         project.resource_files.push(rm);
@@ -396,11 +471,15 @@ pub fn load_project_vbproj(path: impl AsRef<Path>) -> SaveResult<Project> {
 
     // If startup_object is Form("X") but no form with that name was loaded, check for Sub Main
     if let StartupObject::Form(ref name) = project.startup_object {
-        let has_form = project.forms.iter().any(|f| f.form.name.eq_ignore_ascii_case(name));
+        let has_form = project
+            .forms
+            .iter()
+            .any(|f| f.form.name.eq_ignore_ascii_case(name));
         if !has_form {
-            let has_sub_main = project.code_files.iter().any(|cf| {
-                cf.code.to_uppercase().contains("SUB MAIN")
-            });
+            let has_sub_main = project
+                .code_files
+                .iter()
+                .any(|cf| cf.code.to_uppercase().contains("SUB MAIN"));
             if has_sub_main {
                 project.startup_object = StartupObject::SubMain;
                 project.startup_form = None;

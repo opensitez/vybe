@@ -7,31 +7,32 @@
 //! for the code editor — load, edit, and save `.vbproj` projects with
 //! full form designer round-trip support.
 
-mod single_file;
-mod vybe;
-mod vbproj;
-mod managed_msbuild;
 pub mod encoding;
+mod managed_msbuild;
+mod single_file;
 pub mod vbforms;
+mod vbproj;
+mod vybe;
 
-pub use vbforms::*;
 pub use encoding::read_text_file;
+pub use vbforms::*;
 
-use std::path::Path;
 use crate::bundle::Bundle;
+use std::path::Path;
 
 /// Load any supported file or project → `Bundle`.
 pub fn load(path: &Path) -> Result<Bundle, String> {
-    let ext = path.extension()
+    let ext = path
+        .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_lowercase())
         .unwrap_or_default();
 
     match ext.as_str() {
-        "vybe"   => vybe::load(path),
+        "vybe" => vybe::load(path),
         "vbproj" => vbproj::load(path),
         "csproj" | "pyproj" | "ipyproj" => managed_msbuild::load(path),
-        _        => single_file::load(path, &ext),
+        _ => single_file::load(path, &ext),
     }
 }
 

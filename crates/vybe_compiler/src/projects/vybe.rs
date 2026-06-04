@@ -14,8 +14,8 @@
 //!
 //! Language is auto-detected from the entry file extension.
 
-use std::path::Path;
 use crate::bundle::{Bundle, EntryPoint, SourceFile, WasmFile};
+use std::path::Path;
 
 pub fn load(path: &Path) -> Result<Bundle, String> {
     let content = std::fs::read_to_string(path)
@@ -27,17 +27,17 @@ pub fn load(path: &Path) -> Result<Bundle, String> {
         .map_err(|e| format!("TOML parse error in {}: {}", path.display(), e))?;
 
     // [project]
-    let project = root.get("project")
+    let project = root
+        .get("project")
         .ok_or("Missing [project] section in .vybe file")?;
 
-    let name = project.get("name")
+    let name = project
+        .get("name")
         .and_then(|v| v.as_str())
         .unwrap_or("project")
         .to_string();
 
-    let entry_str = project.get("entry")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let entry_str = project.get("entry").and_then(|v| v.as_str()).unwrap_or("");
 
     let entry_point = if entry_str.is_empty() || entry_str.eq_ignore_ascii_case("auto") {
         EntryPoint::Auto
@@ -46,10 +46,15 @@ pub fn load(path: &Path) -> Result<Bundle, String> {
     };
 
     // [sources]
-    let files: Vec<String> = root.get("sources")
+    let files: Vec<String> = root
+        .get("sources")
         .and_then(|s| s.get("files"))
         .and_then(|f| f.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
         .unwrap_or_default();
 
     // If no [sources].files, use the entry file alone
@@ -67,7 +72,8 @@ pub fn load(path: &Path) -> Result<Bundle, String> {
     let detect_from = if !entry_str.is_empty() {
         entry_str.to_string()
     } else {
-        file_list.iter()
+        file_list
+            .iter()
             .find(|f| !f.ends_with(".wasm"))
             .cloned()
             .unwrap_or_default()
@@ -80,7 +86,10 @@ pub fn load(path: &Path) -> Result<Bundle, String> {
         .to_lowercase();
 
     let lang = crate::languages::find_by_extension(&lang_ext).ok_or_else(|| {
-        format!("Cannot detect language from '{}' — unsupported extension '.{}'", detect_from, lang_ext)
+        format!(
+            "Cannot detect language from '{}' — unsupported extension '.{}'",
+            detect_from, lang_ext
+        )
     })?;
 
     // Load source files and WASM binaries
@@ -91,11 +100,17 @@ pub fn load(path: &Path) -> Result<Bundle, String> {
         if rel_path.ends_with(".wasm") {
             let data = std::fs::read(&full_path)
                 .map_err(|e| format!("Cannot read WASM '{}': {}", rel_path, e))?;
-            wasm_files.push(WasmFile { path: full_path, data });
+            wasm_files.push(WasmFile {
+                path: full_path,
+                data,
+            });
         } else {
             let code = std::fs::read_to_string(&full_path)
                 .map_err(|e| format!("Cannot read '{}': {}", rel_path, e))?;
-            sources.push(SourceFile { path: full_path, code });
+            sources.push(SourceFile {
+                path: full_path,
+                code,
+            });
         }
     }
 
@@ -103,5 +118,11 @@ pub fn load(path: &Path) -> Result<Bundle, String> {
         return Err("No compilable source files in project".into());
     }
 
-    Ok(Bundle { name, language: lang, sources, wasm_files, entry_point })
+    Ok(Bundle {
+        name,
+        language: lang,
+        sources,
+        wasm_files,
+        entry_point,
+    })
 }

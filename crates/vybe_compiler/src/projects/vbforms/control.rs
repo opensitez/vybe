@@ -12,12 +12,16 @@ pub struct Bounds {
 
 impl Bounds {
     pub fn new(x: i32, y: i32, width: i32, height: i32) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     pub fn contains(&self, x: i32, y: i32) -> bool {
-        x >= self.x && x < self.x + self.width &&
-        y >= self.y && y < self.y + self.height
+        x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
     }
 
     pub fn right(&self) -> i32 {
@@ -92,8 +96,8 @@ pub enum ControlType {
     DomainUpDown,
     PropertyGrid,
     Splitter,
-    DataGrid,           // Legacy DataGrid (pre-DataGridView)
-    UserControl,        // Custom user control (container, renders like Panel)
+    DataGrid,    // Legacy DataGrid (pre-DataGridView)
+    UserControl, // Custom user control (container, renders like Panel)
     // ToolStrip sub-components (appear inside ToolStrip/MenuStrip containers)
     ToolStripSeparator,
     ToolStripButton,
@@ -198,13 +202,15 @@ impl ControlType {
             "oledbconnection" => Some(ControlType::OleDbConnection),
             "dataview" => Some(ControlType::DataView),
             // Data-binding / ADO.NET non-visual components
-            "bindingsource" | "bindingsourcecomponent"
-                => Some(ControlType::BindingSourceComponent),
-            "dataset"   | "datasetcomponent"   => Some(ControlType::DataSetComponent),
+            "bindingsource" | "bindingsourcecomponent" => Some(ControlType::BindingSourceComponent),
+            "dataset" | "datasetcomponent" => Some(ControlType::DataSetComponent),
             "datatable" | "datatablecomponent" => Some(ControlType::DataTableComponent),
-            "dataadapter" | "sqldataadapter" | "oledbdataadapter"
-                | "mysqldataadapter" | "odbcdataadapter" | "dataadaptercomponent"
-                => Some(ControlType::DataAdapterComponent),
+            "dataadapter"
+            | "sqldataadapter"
+            | "oledbdataadapter"
+            | "mysqldataadapter"
+            | "odbcdataadapter"
+            | "dataadaptercomponent" => Some(ControlType::DataAdapterComponent),
             _ => Some(ControlType::Custom(name.to_string())),
         }
     }
@@ -291,41 +297,43 @@ impl ControlType {
 
     /// Returns true if this is a non-visual component (lives in component tray, not form surface)
     pub fn is_non_visual(&self) -> bool {
-        matches!(self,
-            ControlType::BindingSourceComponent |
-            ControlType::DataSetComponent |
-            ControlType::DataTableComponent |
-            ControlType::DataAdapterComponent |
-            ControlType::Timer |
-            ControlType::ImageList |
-            ControlType::ErrorProvider |
-            ControlType::ToolTip |
-            ControlType::OpenFileDialog |
-            ControlType::SaveFileDialog |
-            ControlType::FolderBrowserDialog |
-            ControlType::FontDialog |
-            ControlType::ColorDialog |
-            ControlType::PrintDialog |
-            ControlType::PrintDocument |
-            ControlType::NotifyIcon |
-            ControlType::PrintPreviewDialog |
-            ControlType::PageSetupDialog |
-            ControlType::HelpProvider |
-            ControlType::BackgroundWorker |
-            ControlType::SqlConnection |
-            ControlType::OleDbConnection |
-            ControlType::DataView
+        matches!(
+            self,
+            ControlType::BindingSourceComponent
+                | ControlType::DataSetComponent
+                | ControlType::DataTableComponent
+                | ControlType::DataAdapterComponent
+                | ControlType::Timer
+                | ControlType::ImageList
+                | ControlType::ErrorProvider
+                | ControlType::ToolTip
+                | ControlType::OpenFileDialog
+                | ControlType::SaveFileDialog
+                | ControlType::FolderBrowserDialog
+                | ControlType::FontDialog
+                | ControlType::ColorDialog
+                | ControlType::PrintDialog
+                | ControlType::PrintDocument
+                | ControlType::NotifyIcon
+                | ControlType::PrintPreviewDialog
+                | ControlType::PageSetupDialog
+                | ControlType::HelpProvider
+                | ControlType::BackgroundWorker
+                | ControlType::SqlConnection
+                | ControlType::OleDbConnection
+                | ControlType::DataView
         )
     }
 
     /// Returns true if this control type supports DataSource/DataMember complex binding
     /// (list/grid controls that display multiple records from a BindingSource)
     pub fn supports_complex_binding(&self) -> bool {
-        matches!(self,
-            ControlType::DataGridView |
-            ControlType::ListBox |
-            ControlType::ComboBox |
-            ControlType::BindingNavigator
+        matches!(
+            self,
+            ControlType::DataGridView
+                | ControlType::ListBox
+                | ControlType::ComboBox
+                | ControlType::BindingNavigator
         )
     }
 
@@ -549,9 +557,9 @@ impl Control {
                 // Initialize with empty list
                 properties.set_raw("List", PropertyValue::StringArray(vec![]));
                 properties.set_raw("ListValues", PropertyValue::StringArray(vec![]));
-                    properties.set_raw("ListIndex", PropertyValue::Integer(-1));
-                    properties.set_raw("Text", PropertyValue::String(String::new()));
-                    properties.set_raw("Value", PropertyValue::String(String::new()));
+                properties.set_raw("ListIndex", PropertyValue::Integer(-1));
+                properties.set_raw("Text", PropertyValue::String(String::new()));
+                properties.set_raw("Value", PropertyValue::String(String::new()));
                 // ComboBox-specific: DropDownStyle default is DropDown (1) in .NET
                 if control_type == ControlType::ComboBox {
                     properties.set_raw("DropDownStyle", PropertyValue::Integer(1));
@@ -825,16 +833,18 @@ impl Control {
     pub fn set_font(&mut self, font: impl Into<String>) {
         self.properties.set("Font", font.into());
     }
-    
+
     pub fn get_list_items(&self) -> Vec<String> {
-        self.properties.get_string_array("List")
+        self.properties
+            .get_string_array("List")
             .map(|arr| arr.clone())
             .unwrap_or_default()
     }
-    
+
     pub fn set_list_items(&mut self, items: Vec<String>) {
         use super::properties::PropertyValue;
-        self.properties.set_raw("List", PropertyValue::StringArray(items));
+        self.properties
+            .set_raw("List", PropertyValue::StringArray(items));
     }
 
     pub fn display_name(&self) -> String {

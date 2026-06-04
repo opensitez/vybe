@@ -1,10 +1,10 @@
-use quick_xml::events::{Event, BytesStart, BytesEnd, BytesText};
+use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::reader::Reader;
 use quick_xml::writer::Writer;
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::fs;
 
 /// The category/type of a resource, matching Visual Studio's resource editor tabs.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -61,7 +61,11 @@ impl ResourceItem {
         }
     }
 
-    pub fn new_file(name: impl Into<String>, file_path: impl Into<String>, resource_type: ResourceType) -> Self {
+    pub fn new_file(
+        name: impl Into<String>,
+        file_path: impl Into<String>,
+        resource_type: ResourceType,
+    ) -> Self {
         let fp: String = file_path.into();
         let mime = match &resource_type {
             ResourceType::Image => guess_image_mime(&fp),
@@ -82,11 +86,17 @@ impl ResourceItem {
 
 fn guess_image_mime(path: &str) -> Option<String> {
     let lower = path.to_lowercase();
-    if lower.ends_with(".png") { Some("image/png".into()) }
-    else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") { Some("image/jpeg".into()) }
-    else if lower.ends_with(".gif") { Some("image/gif".into()) }
-    else if lower.ends_with(".bmp") { Some("image/bmp".into()) }
-    else { None }
+    if lower.ends_with(".png") {
+        Some("image/png".into())
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        Some("image/jpeg".into())
+    } else if lower.ends_with(".gif") {
+        Some("image/gif".into())
+    } else if lower.ends_with(".bmp") {
+        Some("image/bmp".into())
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -138,8 +148,12 @@ impl ResourceManager {
                     for attr in e.attributes().flatten() {
                         match attr.key.as_ref() {
                             b"name" => name = String::from_utf8_lossy(&attr.value).into_owned(),
-                            b"type" => type_attr = String::from_utf8_lossy(&attr.value).into_owned(),
-                            b"mimetype" => mimetype_attr = String::from_utf8_lossy(&attr.value).into_owned(),
+                            b"type" => {
+                                type_attr = String::from_utf8_lossy(&attr.value).into_owned()
+                            }
+                            b"mimetype" => {
+                                mimetype_attr = String::from_utf8_lossy(&attr.value).into_owned()
+                            }
                             _ => {}
                         }
                     }
@@ -174,12 +188,22 @@ impl ResourceManager {
                             parse_file_ref_value(&value)
                         } else {
                             let rt = detect_resource_type(&type_attr, &mimetype_attr, &value);
-                            let fn_ = if matches!(rt, ResourceType::Image | ResourceType::Icon | ResourceType::Audio | ResourceType::File) {
+                            let fn_ = if matches!(
+                                rt,
+                                ResourceType::Image
+                                    | ResourceType::Icon
+                                    | ResourceType::Audio
+                                    | ResourceType::File
+                            ) {
                                 Some(value.clone())
                             } else {
                                 None
                             };
-                            let mt = if !mimetype_attr.is_empty() { Some(mimetype_attr.clone()) } else { None };
+                            let mt = if !mimetype_attr.is_empty() {
+                                Some(mimetype_attr.clone())
+                            } else {
+                                None
+                            };
                             (value.clone(), fn_, rt, mt)
                         };
 
@@ -219,7 +243,11 @@ impl ResourceManager {
     pub fn to_resx(&self) -> Result<String, Box<dyn std::error::Error>> {
         let mut writer = Writer::new_with_indent(Cursor::new(Vec::new()), b' ', 2);
 
-        writer.write_event(Event::Decl(quick_xml::events::BytesDecl::new("1.0", Some("utf-8"), None)))?;
+        writer.write_event(Event::Decl(quick_xml::events::BytesDecl::new(
+            "1.0",
+            Some("utf-8"),
+            None,
+        )))?;
 
         let root = BytesStart::new("root");
         writer.write_event(Event::Start(root.clone()))?;
@@ -369,8 +397,12 @@ fn detect_resource_type(type_attr: &str, mimetype_attr: &str, value: &str) -> Re
     }
 
     let val_lower = value.to_lowercase();
-    if val_lower.ends_with(".png") || val_lower.ends_with(".jpg") || val_lower.ends_with(".jpeg")
-        || val_lower.ends_with(".bmp") || val_lower.ends_with(".gif") {
+    if val_lower.ends_with(".png")
+        || val_lower.ends_with(".jpg")
+        || val_lower.ends_with(".jpeg")
+        || val_lower.ends_with(".bmp")
+        || val_lower.ends_with(".gif")
+    {
         return ResourceType::Image;
     }
     if val_lower.ends_with(".ico") {
@@ -379,8 +411,13 @@ fn detect_resource_type(type_attr: &str, mimetype_attr: &str, value: &str) -> Re
     if val_lower.ends_with(".wav") || val_lower.ends_with(".mp3") {
         return ResourceType::Audio;
     }
-    if val_lower.ends_with(".txt") || val_lower.ends_with(".pdf") || val_lower.ends_with(".xml")
-        || val_lower.ends_with(".json") || val_lower.ends_with(".pfx") || val_lower.ends_with(".cer") {
+    if val_lower.ends_with(".txt")
+        || val_lower.ends_with(".pdf")
+        || val_lower.ends_with(".xml")
+        || val_lower.ends_with(".json")
+        || val_lower.ends_with(".pfx")
+        || val_lower.ends_with(".cer")
+    {
         return ResourceType::File;
     }
 
