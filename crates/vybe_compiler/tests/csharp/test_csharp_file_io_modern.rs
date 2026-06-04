@@ -43,11 +43,14 @@ reader.Close();
     let wasm = compile_csharp_to_wasm(&src);
     let imports = extract_imports(&wasm);
     assert!(
-        imports.iter().any(|(module, func)| module == "node:fs" && (func == "readFileSync" || func == "writeFileSync")),
+        imports.iter().any(|(module, func)| module == "node:fs"
+            && (func == "readFileSync" || func == "writeFileSync")),
         "expected StreamReader/StreamWriter emitter path to use node:fs imports, got {imports:?}"
     );
     assert!(
-        imports.iter().all(|(module, _)| !module.starts_with("dotnet:")),
+        imports
+            .iter()
+            .all(|(module, _)| !module.starts_with("dotnet:")),
         "unexpected retired dotnet host import in {imports:?}"
     );
 

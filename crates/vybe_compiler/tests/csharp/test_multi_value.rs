@@ -8,7 +8,8 @@ use super::helpers::run_csharp;
 
 #[test]
 fn tuple_return_and_deconstruct() {
-    let out = run_csharp(r#"
+    let out = run_csharp(
+        r#"
 class Program {
     public static (int, int) Swap(int a, int b) {
         return (b, a);
@@ -20,13 +21,15 @@ class Program {
     }
 }
 Program.Run();
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2", "1"]);
 }
 
 #[test]
 fn three_value_deconstruct() {
-    let out = run_csharp(r#"
+    let out = run_csharp(
+        r#"
 class Program {
     public static (int, int, int) Rgb() {
         return (10, 20, 30);
@@ -39,6 +42,7 @@ class Program {
     }
 }
 Program.Run();
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "20", "30"]);
 }

@@ -1,19 +1,25 @@
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::{VM, Value, HostContext};
+use vybe_bytecode::{HostContext, VM, Value};
 
 /// Run C# source through vybex pipeline: pest grammar → walker → common AST → compiler → VM
 pub fn run_csharp(src: &str) -> Vec<String> {
     let module = vybe_compiler::languages::csharp::parse(src).expect("C# parse failed");
 
-    let profile = vybe_compiler::profile::parse_profile(vybe_compiler::languages::csharp::profile_source())
-        .expect("Failed to parse C# profile");
+    let profile =
+        vybe_compiler::profile::parse_profile(vybe_compiler::languages::csharp::profile_source())
+            .expect("Failed to parse C# profile");
 
     let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
-        .compile(&module).expect("C# compile failed");
+        .compile(&module)
+        .expect("C# compile failed");
 
     if std::env::var("VYBEX_DUMP_CHUNK").ok().as_deref() == Some("<script>") {
         if let Some(chunk) = chunks.first() {
-            eprintln!("\n-- chunk 0: {} --\n{}", chunk.name, vybe_bytecode::debug::disassemble(chunk));
+            eprintln!(
+                "\n-- chunk 0: {} --\n{}",
+                chunk.name,
+                vybe_bytecode::debug::disassemble(chunk)
+            );
             eprintln!("-- constants --");
             for (ci, cv) in chunk.constants.iter().enumerate() {
                 eprintln!("  [{ci}] {cv}");
@@ -25,23 +31,27 @@ pub fn run_csharp(src: &str) -> Vec<String> {
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();
     vybe_host::register_all(&mut vm);
-    vm.register_host_fn("wasi:cli", "log", Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-        let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
-        let joined = parts.join(" ");
-        let mut sink = out.lock().unwrap();
-        if joined.contains('\n') {
-            let mut lines: Vec<&str> = joined.split('\n').collect();
-            if lines.last().map(|s| s.is_empty()).unwrap_or(false) {
-                lines.pop();
+    vm.register_host_fn(
+        "wasi:cli",
+        "log",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
+            let joined = parts.join(" ");
+            let mut sink = out.lock().unwrap();
+            if joined.contains('\n') {
+                let mut lines: Vec<&str> = joined.split('\n').collect();
+                if lines.last().map(|s| s.is_empty()).unwrap_or(false) {
+                    lines.pop();
+                }
+                for line in lines {
+                    sink.push(line.to_string());
+                }
+            } else {
+                sink.push(joined);
             }
-            for line in lines {
-                sink.push(line.to_string());
-            }
-        } else {
-            sink.push(joined);
-        }
-        Value::Null
-    }));
+            Value::Null
+        }),
+    );
     vybe_host::setup_namespaces(&mut vm);
     vm.run(chunks).expect("C# run failed");
     let result = output.lock().unwrap().clone();
@@ -54,8 +64,9 @@ pub fn run_csharp_one(src: &str) -> String {
 
 pub fn compile_csharp_to_wasm(src: &str) -> Vec<u8> {
     let module = vybe_compiler::languages::csharp::parse(src).expect("C# parse failed");
-    let profile = vybe_compiler::profile::parse_profile(vybe_compiler::languages::csharp::profile_source())
-        .expect("Failed to parse C# profile");
+    let profile =
+        vybe_compiler::profile::parse_profile(vybe_compiler::languages::csharp::profile_source())
+            .expect("Failed to parse C# profile");
     let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
         .compile(&module)
         .expect("C# compile failed");
@@ -80,11 +91,15 @@ pub fn extract_imports(wasm: &[u8]) -> Vec<(String, String)> {
             for _ in 0..count {
                 let (module_len, read) = read_leb(wasm, cursor);
                 cursor += read;
-                let module = std::str::from_utf8(&wasm[cursor..cursor + module_len]).unwrap_or("").to_string();
+                let module = std::str::from_utf8(&wasm[cursor..cursor + module_len])
+                    .unwrap_or("")
+                    .to_string();
                 cursor += module_len;
                 let (name_len, read) = read_leb(wasm, cursor);
                 cursor += read;
-                let name = std::str::from_utf8(&wasm[cursor..cursor + name_len]).unwrap_or("").to_string();
+                let name = std::str::from_utf8(&wasm[cursor..cursor + name_len])
+                    .unwrap_or("")
+                    .to_string();
                 cursor += name_len;
                 let kind = wasm[cursor];
                 cursor += 1;

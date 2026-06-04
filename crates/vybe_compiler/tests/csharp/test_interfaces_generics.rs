@@ -1,15 +1,17 @@
 /// C# interfaces, generics, generic constraints, multiple interface
 /// implementation, IComparable, IEnumerable, covariance/contravariance,
 /// default interface methods.
-
 use super::helpers::run_csharp;
 
 // ===================================================================
 // INTERFACES
 // ===================================================================
 
-#[test] fn interface_basic() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn interface_basic() {
+    assert_eq!(
+        run_csharp(
+            r#"
 interface IGreeter {
     string Greet();
 }
@@ -18,11 +20,17 @@ class HelloGreeter : IGreeter {
 }
 IGreeter g = new HelloGreeter();
 Console.WriteLine(g.Greet());
-"#), &["Hello!"]);
+"#
+        ),
+        &["Hello!"]
+    );
 }
 
-#[test] fn interface_multiple_impl() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn interface_multiple_impl() {
+    assert_eq!(
+        run_csharp(
+            r#"
 interface IShape {
     double Area();
 }
@@ -38,11 +46,17 @@ IShape c = new Circle { Radius = 10 };
 IShape s = new Square { Side = 5 };
 Console.WriteLine(c.Area());
 Console.WriteLine(s.Area());
-"#), &["314", "25"]);
+"#
+        ),
+        &["314", "25"]
+    );
 }
 
-#[test] fn multiple_interfaces() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn multiple_interfaces() {
+    assert_eq!(
+        run_csharp(
+            r#"
 interface IPrintable {
     void Print();
 }
@@ -57,11 +71,17 @@ class Doc : IPrintable, ISerializable {
 var d = new Doc { Name = "test" };
 d.Print();
 Console.WriteLine(d.Serialize());
-"#), &["Printing: test", "DOC:test"]);
+"#
+        ),
+        &["Printing: test", "DOC:test"]
+    );
 }
 
-#[test] fn interface_property() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn interface_property() {
+    assert_eq!(
+        run_csharp(
+            r#"
 interface INamed {
     string Name { get; }
 }
@@ -70,11 +90,17 @@ class Person : INamed {
 }
 INamed p = new Person { Name = "Alice" };
 Console.WriteLine(p.Name);
-"#), &["Alice"]);
+"#
+        ),
+        &["Alice"]
+    );
 }
 
-#[test] fn interface_polymorphic_list() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn interface_polymorphic_list() {
+    assert_eq!(
+        run_csharp(
+            r#"
 interface IAnimal {
     string Speak();
 }
@@ -86,11 +112,17 @@ class Cat : IAnimal {
 }
 var animals = new List<IAnimal> { new Dog(), new Cat(), new Dog() };
 foreach (var a in animals) Console.WriteLine(a.Speak());
-"#), &["Woof", "Meow", "Woof"]);
+"#
+        ),
+        &["Woof", "Meow", "Woof"]
+    );
 }
 
-#[test] fn interface_is_check() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn interface_is_check() {
+    assert_eq!(
+        run_csharp(
+            r#"
 interface IFlyable { }
 class Bird : IFlyable { }
 class Fish { }
@@ -98,15 +130,21 @@ object b = new Bird();
 object f = new Fish();
 Console.WriteLine(b is IFlyable);
 Console.WriteLine(f is IFlyable);
-"#), &["True", "False"]);
+"#
+        ),
+        &["True", "False"]
+    );
 }
 
 // ===================================================================
 // GENERICS
 // ===================================================================
 
-#[test] fn generic_class() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn generic_class() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class Box<T> {
     public T Value;
     public Box(T val) { Value = val; }
@@ -115,11 +153,17 @@ var intBox = new Box<int>(42);
 var strBox = new Box<string>("hello");
 Console.WriteLine(intBox.Value);
 Console.WriteLine(strBox.Value);
-"#), &["42", "hello"]);
+"#
+        ),
+        &["42", "hello"]
+    );
 }
 
-#[test] fn generic_method() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn generic_method() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class Utils {
     public static T Max<T>(T a, T b) where T : IComparable<T> {
         return a.CompareTo(b) > 0 ? a : b;
@@ -127,11 +171,17 @@ class Utils {
 }
 Console.WriteLine(Utils.Max(3, 7));
 Console.WriteLine(Utils.Max("apple", "banana"));
-"#), &["7", "banana"]);
+"#
+        ),
+        &["7", "banana"]
+    );
 }
 
-#[test] fn generic_multiple_type_params() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn generic_multiple_type_params() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class Pair<TFirst, TSecond> {
     public TFirst First;
     public TSecond Second;
@@ -140,11 +190,17 @@ class Pair<TFirst, TSecond> {
 }
 var p = new Pair<string, int>("age", 30);
 Console.WriteLine(p);
-"#), &["age:30"]);
+"#
+        ),
+        &["age:30"]
+    );
 }
 
-#[test] fn generic_interface() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn generic_interface() {
+    assert_eq!(
+        run_csharp(
+            r#"
 interface IRepository<T> {
     void Add(T item);
     int Count();
@@ -159,11 +215,17 @@ repo.Add("a");
 repo.Add("b");
 repo.Add("c");
 Console.WriteLine(repo.Count());
-"#), &["3"]);
+"#
+        ),
+        &["3"]
+    );
 }
 
-#[test] fn generic_stack_implementation() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn generic_stack_implementation() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class MyStack<T> {
     private List<T> items = new List<T>();
     public void Push(T item) { items.Add(item); }
@@ -181,15 +243,21 @@ s.Push(30);
 Console.WriteLine(s.Pop());
 Console.WriteLine(s.Pop());
 Console.WriteLine(s.Count);
-"#), &["30", "20", "1"]);
+"#
+        ),
+        &["30", "20", "1"]
+    );
 }
 
 // ===================================================================
 // GENERIC CONSTRAINTS
 // ===================================================================
 
-#[test] fn generic_where_new() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn generic_where_new() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class Factory<T> where T : new() {
     public T Create() { return new T(); }
 }
@@ -199,11 +267,17 @@ class Item {
 var f = new Factory<Item>();
 var item = f.Create();
 Console.WriteLine(item.Name);
-"#), &["default"]);
+"#
+        ),
+        &["default"]
+    );
 }
 
-#[test] fn generic_where_class_constraint() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn generic_where_class_constraint() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class Container<T> where T : class {
     public T Value;
     public bool IsNull() { return Value == null; }
@@ -212,15 +286,21 @@ var c = new Container<string>();
 Console.WriteLine(c.IsNull());
 c.Value = "hello";
 Console.WriteLine(c.IsNull());
-"#), &["True", "False"]);
+"#
+        ),
+        &["True", "False"]
+    );
 }
 
 // ===================================================================
 // ICOMPARABLE
 // ===================================================================
 
-#[test] fn icomparable_implementation() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn icomparable_implementation() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class Temperature : IComparable<Temperature> {
     public double Degrees;
     public Temperature(double d) { Degrees = d; }
@@ -236,15 +316,21 @@ var temps = new List<Temperature> {
 };
 temps.Sort();
 foreach (var t in temps) Console.WriteLine(t);
-"#), &["0°", "37°", "100°"]);
+"#
+        ),
+        &["0°", "37°", "100°"]
+    );
 }
 
 // ===================================================================
 // IENUMERABLE / YIELD RETURN
 // ===================================================================
 
-#[test] fn yield_return_basic() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn yield_return_basic() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class Numbers {
     public static IEnumerable<int> OneToFive() {
         yield return 1;
@@ -255,11 +341,17 @@ class Numbers {
     }
 }
 foreach (var n in Numbers.OneToFive()) Console.WriteLine(n);
-"#), &["1", "2", "3", "4", "5"]);
+"#
+        ),
+        &["1", "2", "3", "4", "5"]
+    );
 }
 
-#[test] fn yield_return_with_logic() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn yield_return_with_logic() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class Gen {
     public static IEnumerable<int> EvenNumbers(int max) {
         for (int i = 0; i <= max; i++) {
@@ -268,11 +360,17 @@ class Gen {
     }
 }
 foreach (var n in Gen.EvenNumbers(10)) Console.WriteLine(n);
-"#), &["0", "2", "4", "6", "8", "10"]);
+"#
+        ),
+        &["0", "2", "4", "6", "8", "10"]
+    );
 }
 
-#[test] fn yield_return_fibonacci() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn yield_return_fibonacci() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class Fib {
     public static IEnumerable<int> Sequence(int count) {
         int a = 0, b = 1;
@@ -285,15 +383,21 @@ class Fib {
     }
 }
 foreach (var n in Fib.Sequence(8)) Console.WriteLine(n);
-"#), &["0", "1", "1", "2", "3", "5", "8", "13"]);
+"#
+        ),
+        &["0", "1", "1", "2", "3", "5", "8", "13"]
+    );
 }
 
 // ===================================================================
 // EXTENSION METHODS
 // ===================================================================
 
-#[test] fn extension_method_basic() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn extension_method_basic() {
+    assert_eq!(
+        run_csharp(
+            r#"
 static class StringExtensions {
     public static string Reverse(this string s) {
         char[] chars = s.ToCharArray();
@@ -302,11 +406,17 @@ static class StringExtensions {
     }
 }
 Console.WriteLine("hello".Reverse());
-"#), &["olleh"]);
+"#
+        ),
+        &["olleh"]
+    );
 }
 
-#[test] fn extension_method_on_int() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn extension_method_on_int() {
+    assert_eq!(
+        run_csharp(
+            r#"
 static class IntExtensions {
     public static bool IsEven(this int n) { return n % 2 == 0; }
     public static int Square(this int n) { return n * n; }
@@ -314,11 +424,17 @@ static class IntExtensions {
 Console.WriteLine(4.IsEven());
 Console.WriteLine(3.IsEven());
 Console.WriteLine(5.Square());
-"#), &["True", "False", "25"]);
+"#
+        ),
+        &["True", "False", "25"]
+    );
 }
 
-#[test] fn extension_method_on_list() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn extension_method_on_list() {
+    assert_eq!(
+        run_csharp(
+            r#"
 static class ListExtensions {
     public static string Join<T>(this List<T> list, string sep) {
         return string.Join(sep, list);
@@ -326,5 +442,8 @@ static class ListExtensions {
 }
 var nums = new List<int> { 1, 2, 3, 4, 5 };
 Console.WriteLine(nums.Join(", "));
-"#), &["1, 2, 3, 4, 5"]);
+"#
+        ),
+        &["1, 2, 3, 4, 5"]
+    );
 }

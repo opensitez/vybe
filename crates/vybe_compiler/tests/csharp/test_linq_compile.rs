@@ -2,10 +2,12 @@
 
 fn compile_ok(src: &str) {
     let module = vybe_compiler::languages::csharp::parse(src).expect("C# parse failed");
-    let profile = vybe_compiler::profile::parse_profile(vybe_compiler::languages::csharp::profile_source())
-        .expect("Failed to parse C# profile");
+    let profile =
+        vybe_compiler::profile::parse_profile(vybe_compiler::languages::csharp::profile_source())
+            .expect("Failed to parse C# profile");
     let _chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
-        .compile(&module).expect("C# compile failed");
+        .compile(&module)
+        .expect("C# compile failed");
 }
 
 fn list_setup() -> &'static str {
@@ -14,17 +16,26 @@ fn list_setup() -> &'static str {
 
 #[test]
 fn linq_where() {
-    compile_ok(&format!("{}var evens = nums.Where(x => x % 2 == 0);", list_setup()));
+    compile_ok(&format!(
+        "{}var evens = nums.Where(x => x % 2 == 0);",
+        list_setup()
+    ));
 }
 
 #[test]
 fn linq_select() {
-    compile_ok(&format!("{}var doubled = nums.Select(x => x * 2);", list_setup()));
+    compile_ok(&format!(
+        "{}var doubled = nums.Select(x => x * 2);",
+        list_setup()
+    ));
 }
 
 #[test]
 fn linq_orderby() {
-    compile_ok(&format!("{}var sorted = nums.OrderBy(x => x);", list_setup()));
+    compile_ok(&format!(
+        "{}var sorted = nums.OrderBy(x => x);",
+        list_setup()
+    ));
 }
 
 #[test]
@@ -59,7 +70,10 @@ fn linq_any_pred() {
 
 #[test]
 fn linq_all() {
-    compile_ok(&format!("{}var allPos = nums.All(x => x > 0);", list_setup()));
+    compile_ok(&format!(
+        "{}var allPos = nums.All(x => x > 0);",
+        list_setup()
+    ));
 }
 
 #[test]
@@ -109,54 +123,77 @@ fn linq_toarray() {
 
 #[test]
 fn linq_zip() {
-    compile_ok(&format!("{}var other = new List<int>();\nother.Add(10);\nother.Add(20);\nvar zipped = nums.Zip(other);", list_setup()));
+    compile_ok(&format!(
+        "{}var other = new List<int>();\nother.Add(10);\nother.Add(20);\nvar zipped = nums.Zip(other);",
+        list_setup()
+    ));
 }
 
 #[test]
 fn linq_foreach() {
-    compile_ok(&format!("{}nums.ForEach(x => Console.WriteLine(x));", list_setup()));
+    compile_ok(&format!(
+        "{}nums.ForEach(x => Console.WriteLine(x));",
+        list_setup()
+    ));
 }
 
 #[test]
 fn linq_groupby() {
-    compile_ok(&format!("{}var groups = nums.GroupBy(x => x % 2);", list_setup()));
+    compile_ok(&format!(
+        "{}var groups = nums.GroupBy(x => x % 2);",
+        list_setup()
+    ));
 }
 
 #[test]
 fn linq_selectmany() {
-    compile_ok(&format!("{}var flat = nums.SelectMany(x => x);", list_setup()));
+    compile_ok(&format!(
+        "{}var flat = nums.SelectMany(x => x);",
+        list_setup()
+    ));
 }
 
 #[test]
 fn linq_todictionary() {
-    compile_ok("var words = new List<string>();\nwords.Add(\"a\");\nwords.Add(\"bb\");\nvar dict = words.ToDictionary(w => w);");
+    compile_ok(
+        "var words = new List<string>();\nwords.Add(\"a\");\nwords.Add(\"bb\");\nvar dict = words.ToDictionary(w => w);",
+    );
 }
 
 #[test]
 fn linq_chain_where_select() {
-    compile_ok(&format!("{}var result = nums.Where(x => x > 2).Select(x => x * 10);", list_setup()));
+    compile_ok(&format!(
+        "{}var result = nums.Where(x => x > 2).Select(x => x * 10);",
+        list_setup()
+    ));
 }
 
 #[test]
 fn linq_chain_orderby_take() {
-    compile_ok(&format!("{}var result = nums.OrderBy(x => x).Take(3).ToArray();", list_setup()));
+    compile_ok(&format!(
+        "{}var result = nums.OrderBy(x => x).Take(3).ToArray();",
+        list_setup()
+    ));
 }
 
 #[test]
 fn linq_filter_map_program() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 var numbers = new List<int>();
 numbers.Add(1); numbers.Add(2); numbers.Add(3); numbers.Add(4);
 numbers.Add(5); numbers.Add(6); numbers.Add(7); numbers.Add(8);
 var evens = numbers.Where(n => n % 2 == 0);
 var squared = evens.Select(n => n * n);
 Console.WriteLine("Done");
-"#);
+"#,
+    );
 }
 
 #[test]
 fn linq_aggregate_program() {
-    compile_ok(r#"
+    compile_ok(
+        r#"
 var words = new List<string>();
 words.Add("Hello");
 words.Add("World");
@@ -164,5 +201,6 @@ var first = words.First();
 var last = words.Last();
 Console.WriteLine(first);
 Console.WriteLine(last);
-"#);
+"#,
+    );
 }

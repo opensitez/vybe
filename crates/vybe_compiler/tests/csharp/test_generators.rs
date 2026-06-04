@@ -9,7 +9,8 @@ use super::helpers::run_csharp;
 
 #[test]
 fn yield_return_emits_continuation() {
-    let out = run_csharp(r#"
+    let out = run_csharp(
+        r#"
 class Program {
     public static IEnumerable<int> Count() {
         yield return 1;
@@ -22,13 +23,15 @@ class Program {
     }
 }
 Program.Run();
-"#);
+"#,
+    );
     assert_eq!(out, vec!["[continuation]"]);
 }
 
 #[test]
 fn yield_return_body_does_not_eagerly_run() {
-    let out = run_csharp(r#"
+    let out = run_csharp(
+        r#"
 class Program {
     public static IEnumerable<int> Loud() {
         Console.WriteLine("bad: body ran without resume");
@@ -40,6 +43,7 @@ class Program {
     }
 }
 Program.Run();
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ok"]);
 }

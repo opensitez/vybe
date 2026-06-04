@@ -1,15 +1,17 @@
 /// C# OOP patterns: abstract classes, sealed, virtual/override chains,
 /// partial classes, static classes, nested classes, indexers, operator overloading,
 /// explicit interface implementation, method hiding (new keyword).
-
 use super::helpers::run_csharp;
 
 // ===================================================================
 // ABSTRACT CLASSES
 // ===================================================================
 
-#[test] fn abstract_class_basic() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn abstract_class_basic() {
+    assert_eq!(
+        run_csharp(
+            r#"
 abstract class Shape {
     public abstract double Area();
     public string Describe() { return "I am a shape"; }
@@ -22,11 +24,17 @@ class Circle : Shape {
 var c = new Circle(5);
 Console.WriteLine(c.Area());
 Console.WriteLine(c.Describe());
-"#), &["78.5", "I am a shape"]);
+"#
+        ),
+        &["78.5", "I am a shape"]
+    );
 }
 
-#[test] fn abstract_multiple_implementations() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn abstract_multiple_implementations() {
+    assert_eq!(
+        run_csharp(
+            r#"
 abstract class Vehicle {
     public abstract string Type();
 }
@@ -40,11 +48,17 @@ Vehicle v = new Car();
 Console.WriteLine(v.Type());
 v = new Truck();
 Console.WriteLine(v.Type());
-"#), &["Car", "Truck"]);
+"#
+        ),
+        &["Car", "Truck"]
+    );
 }
 
-#[test] fn abstract_with_constructor() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn abstract_with_constructor() {
+    assert_eq!(
+        run_csharp(
+            r#"
 abstract class Animal {
     protected string name;
     public Animal(string n) { name = n; }
@@ -57,30 +71,42 @@ class Dog : Animal {
 }
 var d = new Dog("Rex");
 Console.WriteLine(d.Greet());
-"#), &["Rex says Woof"]);
+"#
+        ),
+        &["Rex says Woof"]
+    );
 }
 
 // ===================================================================
 // SEALED CLASSES
 // ===================================================================
 
-#[test] fn sealed_class_basic() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn sealed_class_basic() {
+    assert_eq!(
+        run_csharp(
+            r#"
 sealed class Config {
     public string Name { get; set; }
     public Config(string n) { Name = n; }
 }
 var c = new Config("prod");
 Console.WriteLine(c.Name);
-"#), &["prod"]);
+"#
+        ),
+        &["prod"]
+    );
 }
 
 // ===================================================================
 // VIRTUAL / OVERRIDE CHAINS
 // ===================================================================
 
-#[test] fn virtual_override_three_levels() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn virtual_override_three_levels() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class A {
     public virtual string Who() { return "A"; }
 }
@@ -92,11 +118,17 @@ class C : B {
 }
 A obj = new C();
 Console.WriteLine(obj.Who());
-"#), &["C"]);
+"#
+        ),
+        &["C"]
+    );
 }
 
-#[test] fn virtual_base_call() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn virtual_base_call() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class Base {
     public virtual string Greet() { return "Hello"; }
 }
@@ -105,15 +137,21 @@ class Child : Base {
 }
 var c = new Child();
 Console.WriteLine(c.Greet());
-"#), &["Hello World"]);
+"#
+        ),
+        &["Hello World"]
+    );
 }
 
 // ===================================================================
 // METHOD HIDING (new KEYWORD)
 // ===================================================================
 
-#[test] fn method_hiding_new() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn method_hiding_new() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class Base {
     public string Speak() { return "base"; }
 }
@@ -122,41 +160,59 @@ class Child : Base {
 }
 var c = new Child();
 Console.WriteLine(c.Speak());
-"#), &["child"]);
+"#
+        ),
+        &["child"]
+    );
 }
 
 // ===================================================================
 // STATIC CLASSES
 // ===================================================================
 
-#[test] fn static_class_methods() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn static_class_methods() {
+    assert_eq!(
+        run_csharp(
+            r#"
 static class MathHelper {
     public static int Square(int x) { return x * x; }
     public static int Double(int x) { return x * 2; }
 }
 Console.WriteLine(MathHelper.Square(5));
 Console.WriteLine(MathHelper.Double(7));
-"#), &["25", "14"]);
+"#
+        ),
+        &["25", "14"]
+    );
 }
 
-#[test] fn static_class_with_constants() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn static_class_with_constants() {
+    assert_eq!(
+        run_csharp(
+            r#"
 static class Constants {
     public const double Pi = 3.14159;
     public const int MaxSize = 100;
 }
 Console.WriteLine(Constants.Pi);
 Console.WriteLine(Constants.MaxSize);
-"#), &["3.14159", "100"]);
+"#
+        ),
+        &["3.14159", "100"]
+    );
 }
 
 // ===================================================================
 // NESTED CLASSES
 // ===================================================================
 
-#[test] fn nested_class_basic() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn nested_class_basic() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class Outer {
     public class Inner {
         public string Hello() { return "inner"; }
@@ -164,15 +220,21 @@ class Outer {
 }
 var i = new Outer.Inner();
 Console.WriteLine(i.Hello());
-"#), &["inner"]);
+"#
+        ),
+        &["inner"]
+    );
 }
 
 // ===================================================================
 // INDEXERS
 // ===================================================================
 
-#[test] fn indexer_basic() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn indexer_basic() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class Sentence {
     string[] words;
     public Sentence(string[] w) { words = w; }
@@ -186,15 +248,21 @@ Console.WriteLine(s[0]);
 Console.WriteLine(s[1]);
 s[1] = "C#";
 Console.WriteLine(s[1]);
-"#), &["hello", "world", "C#"]);
+"#
+        ),
+        &["hello", "world", "C#"]
+    );
 }
 
 // ===================================================================
 // OPERATOR OVERLOADING
 // ===================================================================
 
-#[test] fn operator_overload_plus() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn operator_overload_plus() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class Vector {
     public double X { get; set; }
     public double Y { get; set; }
@@ -208,11 +276,17 @@ var b = new Vector(3, 4);
 var c = a + b;
 Console.WriteLine(c.X);
 Console.WriteLine(c.Y);
-"#), &["4", "6"]);
+"#
+        ),
+        &["4", "6"]
+    );
 }
 
-#[test] fn operator_overload_equals() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn operator_overload_equals() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class Point {
     public int X { get; set; }
     public int Y { get; set; }
@@ -229,15 +303,21 @@ var b = new Point(1, 2);
 var c = new Point(3, 4);
 Console.WriteLine(a == b);
 Console.WriteLine(a != c);
-"#), &["True", "True"]);
+"#
+        ),
+        &["True", "True"]
+    );
 }
 
 // ===================================================================
 // OBJECT COMPOSITION
 // ===================================================================
 
-#[test] fn composition_engine_car() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn composition_engine_car() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class Engine {
     public int Horsepower { get; set; }
     public Engine(int hp) { Horsepower = hp; }
@@ -253,15 +333,21 @@ class Car {
 }
 var car = new Car("Sedan", 200);
 Console.WriteLine(car.Info());
-"#), &["Sedan 200hp"]);
+"#
+        ),
+        &["Sedan 200hp"]
+    );
 }
 
 // ===================================================================
 // CONSTRUCTOR CHAINING
 // ===================================================================
 
-#[test] fn constructor_chaining_this() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn constructor_chaining_this() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class Point {
     public int X { get; set; }
     public int Y { get; set; }
@@ -272,30 +358,42 @@ var a = new Point();
 var b = new Point(5, 10);
 Console.WriteLine(a.X + "," + a.Y);
 Console.WriteLine(b.X + "," + b.Y);
-"#), &["0,0", "5,10"]);
+"#
+        ),
+        &["0,0", "5,10"]
+    );
 }
 
 // ===================================================================
 // READONLY PROPERTIES
 // ===================================================================
 
-#[test] fn readonly_auto_property() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn readonly_auto_property() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class Person {
     public string Name { get; }
     public Person(string name) { Name = name; }
 }
 var p = new Person("Alice");
 Console.WriteLine(p.Name);
-"#), &["Alice"]);
+"#
+        ),
+        &["Alice"]
+    );
 }
 
 // ===================================================================
 // EXPRESSION-BODIED MEMBERS
 // ===================================================================
 
-#[test] fn expression_bodied_method() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn expression_bodied_method() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class Calc {
     public int Square(int x) => x * x;
     public string Greet(string name) => "Hello " + name;
@@ -303,11 +401,17 @@ class Calc {
 var c = new Calc();
 Console.WriteLine(c.Square(7));
 Console.WriteLine(c.Greet("World"));
-"#), &["49", "Hello World"]);
+"#
+        ),
+        &["49", "Hello World"]
+    );
 }
 
-#[test] fn expression_bodied_property() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn expression_bodied_property() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class Circle {
     public double Radius { get; set; }
     public double Area => 3.14 * Radius * Radius;
@@ -315,15 +419,21 @@ class Circle {
 }
 var c = new Circle(5);
 Console.WriteLine(c.Area);
-"#), &["78.5"]);
+"#
+        ),
+        &["78.5"]
+    );
 }
 
 // ===================================================================
 // POLYMORPHIC COLLECTIONS
 // ===================================================================
 
-#[test] fn polymorphic_list() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn polymorphic_list() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class Animal {
     public virtual string Speak() { return "..."; }
 }
@@ -337,15 +447,21 @@ var animals = new List<Animal> { new Dog(), new Cat(), new Dog() };
 foreach (var a in animals) {
     Console.WriteLine(a.Speak());
 }
-"#), &["Woof", "Meow", "Woof"]);
+"#
+        ),
+        &["Woof", "Meow", "Woof"]
+    );
 }
 
 // ===================================================================
 // TOSTRING OVERRIDE
 // ===================================================================
 
-#[test] fn tostring_override() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn tostring_override() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class Person {
     public string Name { get; set; }
     public int Age { get; set; }
@@ -355,15 +471,21 @@ class Person {
 var p = new Person("Alice", 30);
 Console.WriteLine(p.ToString());
 Console.WriteLine(p);
-"#), &["Alice (30)", "Alice (30)"]);
+"#
+        ),
+        &["Alice (30)", "Alice (30)"]
+    );
 }
 
 // ===================================================================
 // THIS REFERENCE
 // ===================================================================
 
-#[test] fn this_reference_return() {
-    assert_eq!(run_csharp(r#"
+#[test]
+fn this_reference_return() {
+    assert_eq!(
+        run_csharp(
+            r#"
 class Builder {
     string parts = "";
     public Builder Add(string part) {
@@ -375,5 +497,8 @@ class Builder {
 }
 var b = new Builder();
 Console.WriteLine(b.Add("A").Add("B").Add("C").Build());
-"#), &["[A, B, C]"]);
+"#
+        ),
+        &["[A, B, C]"]
+    );
 }

@@ -9,23 +9,103 @@ macro_rules! csharp_case {
     };
 }
 
-csharp_case!(event_invokes_multiple_subscribers_in_registration_order, r#"using System; class Counter { public event Action Tick; public void Fire() { Tick(); } } var counter = new Counter(); counter.Tick += () => Console.WriteLine("first"); counter.Tick += () => Console.WriteLine("second"); counter.Fire();"#, ["first", "second"]);
-csharp_case!(event_remove_handler_stops_future_invocation, r#"using System; class Counter { public event Action Tick; public void Fire() { Tick(); } } var counter = new Counter(); Action handler = () => Console.WriteLine("kept"); counter.Tick += handler; counter.Tick += () => Console.WriteLine("temp"); counter.Tick -= handler; counter.Fire();"#, ["temp"]);
-csharp_case!(event_uses_named_method_handler, r#"using System; class Alarm { public event Action Triggered; public void Fire() { Triggered(); } } void OnTriggered() { Console.WriteLine("ring"); } var alarm = new Alarm(); alarm.Triggered += OnTriggered; alarm.Fire();"#, ["ring"]);
-csharp_case!(event_lambda_captures_outer_local_state, r#"using System; class Alarm { public event Action Triggered; public void Fire() { Triggered(); } } int count = 0; var alarm = new Alarm(); alarm.Triggered += () => { count++; Console.WriteLine(count); }; alarm.Fire(); alarm.Fire();"#, ["1", "2"]);
-csharp_case!(eventhandler_passes_sender_and_args_values, r#"using System; class MessageEventArgs : EventArgs { public string Text { get; set; } } class Channel { public event EventHandler<MessageEventArgs> Sent; public void Emit(string text) { Sent(this, new MessageEventArgs { Text = text }); } } var channel = new Channel(); channel.Sent += (sender, args) => Console.WriteLine(args.Text); channel.Emit("hello");"#, ["hello"]);
-csharp_case!(multicast_delegate_combines_two_named_handlers, r#"using System; void First() { Console.WriteLine("A"); } void Second() { Console.WriteLine("B"); } Action action = First; action += Second; action();"#, ["A", "B"]);
-csharp_case!(multicast_delegate_removes_last_handler_correctly, r#"using System; void First() { Console.WriteLine("A"); } void Second() { Console.WriteLine("B"); } Action action = First; action += Second; action -= Second; action();"#, ["A"]);
-csharp_case!(event_raised_from_base_class_method_reaches_subscriber, r#"using System; class BaseNotifier { public event Action Changed; protected void Raise() { Changed(); } public void Touch() { Raise(); } } class ChildNotifier : BaseNotifier { } var notifier = new ChildNotifier(); notifier.Changed += () => Console.WriteLine("changed"); notifier.Touch();"#, ["changed"]);
-csharp_case!(event_subscriber_can_be_added_after_first_fire, r#"using System; class Clock { public event Action Tick; public void Fire() { if (Tick != null) Tick(); } } var clock = new Clock(); clock.Fire(); clock.Tick += () => Console.WriteLine("later"); clock.Fire();"#, ["later"]);
-csharp_case!(event_with_two_subscribers_updates_shared_counter, r#"using System; class Hub { public event Action Ping; public void Fire() { Ping(); } } int total = 0; var hub = new Hub(); hub.Ping += () => total += 2; hub.Ping += () => total += 3; hub.Fire(); Console.WriteLine(total);"#, ["5"]);
-csharp_case!(delegate_parameter_can_be_stored_and_invoked_by_method, r#"using System; class Runner { public static void Run(Action action) { action(); } } Runner.Run(() => Console.WriteLine("go"));"#, ["go"]);
-csharp_case!(func_delegate_returns_computed_result, r#"using System; Func<int, int, int> add = (left, right) => left + right; Console.WriteLine(add(4, 5));"#, ["9"]);
-csharp_case!(predicate_delegate_filters_positive_values, r#"using System; Predicate<int> positive = value => value > 0; Console.WriteLine(positive(3)); Console.WriteLine(positive(-1));"#, ["True", "False"]);
-csharp_case!(action_delegate_array_invokes_each_entry, r#"using System; Action[] actions = { () => Console.WriteLine("one"), () => Console.WriteLine("two") }; foreach (var action in actions) action();"#, ["one", "two"]);
-csharp_case!(event_can_be_unsubscribed_with_named_handler_reference, r#"using System; class Bus { public event Action Arrived; public void Fire() { if (Arrived != null) Arrived(); } } void OnArrived() { Console.WriteLine("arrived"); } var bus = new Bus(); bus.Arrived += OnArrived; bus.Arrived -= OnArrived; bus.Fire(); Console.WriteLine("done");"#, ["done"]);
-csharp_case!(multicast_delegate_preserves_handler_order_after_removal, r#"using System; void A() { Console.WriteLine("A"); } void B() { Console.WriteLine("B"); } void C() { Console.WriteLine("C"); } Action action = A; action += B; action += C; action -= B; action();"#, ["A", "C"]);
-csharp_case!(event_subscription_inside_constructor_is_triggered_by_method, r#"using System; class Sensor { public event Action Triggered; public Sensor() { Triggered += () => Console.WriteLine("armed"); } public void Fire() { Triggered(); } } var sensor = new Sensor(); sensor.Fire();"#, ["armed"]);
-csharp_case!(generic_eventhandler_passes_integer_payload, r#"using System; class NumberEventArgs : EventArgs { public int Value { get; set; } } class Stream { public event EventHandler<NumberEventArgs> Produced; public void Emit(int value) { Produced(this, new NumberEventArgs { Value = value }); } } var stream = new Stream(); stream.Produced += (sender, args) => Console.WriteLine(args.Value * 2); stream.Emit(6);"#, ["12"]);
-csharp_case!(delegate_return_value_can_be_consumed_by_caller, r#"using System; class Calculator { public static int Compute(Func<int> getValue) { return getValue() + 1; } } Console.WriteLine(Calculator.Compute(() => 9));"#, ["10"]);
-csharp_case!(event_handler_can_append_to_string_log, r#"using System; class Emitter { public event Action Fired; public void Fire() { Fired(); } } string log = ""; var emitter = new Emitter(); emitter.Fired += () => log += "x"; emitter.Fired += () => log += "y"; emitter.Fire(); Console.WriteLine(log);"#, ["xy"]);
+csharp_case!(
+    event_invokes_multiple_subscribers_in_registration_order,
+    r#"using System; class Counter { public event Action Tick; public void Fire() { Tick(); } } var counter = new Counter(); counter.Tick += () => Console.WriteLine("first"); counter.Tick += () => Console.WriteLine("second"); counter.Fire();"#,
+    ["first", "second"]
+);
+csharp_case!(
+    event_remove_handler_stops_future_invocation,
+    r#"using System; class Counter { public event Action Tick; public void Fire() { Tick(); } } var counter = new Counter(); Action handler = () => Console.WriteLine("kept"); counter.Tick += handler; counter.Tick += () => Console.WriteLine("temp"); counter.Tick -= handler; counter.Fire();"#,
+    ["temp"]
+);
+csharp_case!(
+    event_uses_named_method_handler,
+    r#"using System; class Alarm { public event Action Triggered; public void Fire() { Triggered(); } } void OnTriggered() { Console.WriteLine("ring"); } var alarm = new Alarm(); alarm.Triggered += OnTriggered; alarm.Fire();"#,
+    ["ring"]
+);
+csharp_case!(
+    event_lambda_captures_outer_local_state,
+    r#"using System; class Alarm { public event Action Triggered; public void Fire() { Triggered(); } } int count = 0; var alarm = new Alarm(); alarm.Triggered += () => { count++; Console.WriteLine(count); }; alarm.Fire(); alarm.Fire();"#,
+    ["1", "2"]
+);
+csharp_case!(
+    eventhandler_passes_sender_and_args_values,
+    r#"using System; class MessageEventArgs : EventArgs { public string Text { get; set; } } class Channel { public event EventHandler<MessageEventArgs> Sent; public void Emit(string text) { Sent(this, new MessageEventArgs { Text = text }); } } var channel = new Channel(); channel.Sent += (sender, args) => Console.WriteLine(args.Text); channel.Emit("hello");"#,
+    ["hello"]
+);
+csharp_case!(
+    multicast_delegate_combines_two_named_handlers,
+    r#"using System; void First() { Console.WriteLine("A"); } void Second() { Console.WriteLine("B"); } Action action = First; action += Second; action();"#,
+    ["A", "B"]
+);
+csharp_case!(
+    multicast_delegate_removes_last_handler_correctly,
+    r#"using System; void First() { Console.WriteLine("A"); } void Second() { Console.WriteLine("B"); } Action action = First; action += Second; action -= Second; action();"#,
+    ["A"]
+);
+csharp_case!(
+    event_raised_from_base_class_method_reaches_subscriber,
+    r#"using System; class BaseNotifier { public event Action Changed; protected void Raise() { Changed(); } public void Touch() { Raise(); } } class ChildNotifier : BaseNotifier { } var notifier = new ChildNotifier(); notifier.Changed += () => Console.WriteLine("changed"); notifier.Touch();"#,
+    ["changed"]
+);
+csharp_case!(
+    event_subscriber_can_be_added_after_first_fire,
+    r#"using System; class Clock { public event Action Tick; public void Fire() { if (Tick != null) Tick(); } } var clock = new Clock(); clock.Fire(); clock.Tick += () => Console.WriteLine("later"); clock.Fire();"#,
+    ["later"]
+);
+csharp_case!(
+    event_with_two_subscribers_updates_shared_counter,
+    r#"using System; class Hub { public event Action Ping; public void Fire() { Ping(); } } int total = 0; var hub = new Hub(); hub.Ping += () => total += 2; hub.Ping += () => total += 3; hub.Fire(); Console.WriteLine(total);"#,
+    ["5"]
+);
+csharp_case!(
+    delegate_parameter_can_be_stored_and_invoked_by_method,
+    r#"using System; class Runner { public static void Run(Action action) { action(); } } Runner.Run(() => Console.WriteLine("go"));"#,
+    ["go"]
+);
+csharp_case!(
+    func_delegate_returns_computed_result,
+    r#"using System; Func<int, int, int> add = (left, right) => left + right; Console.WriteLine(add(4, 5));"#,
+    ["9"]
+);
+csharp_case!(
+    predicate_delegate_filters_positive_values,
+    r#"using System; Predicate<int> positive = value => value > 0; Console.WriteLine(positive(3)); Console.WriteLine(positive(-1));"#,
+    ["True", "False"]
+);
+csharp_case!(
+    action_delegate_array_invokes_each_entry,
+    r#"using System; Action[] actions = { () => Console.WriteLine("one"), () => Console.WriteLine("two") }; foreach (var action in actions) action();"#,
+    ["one", "two"]
+);
+csharp_case!(
+    event_can_be_unsubscribed_with_named_handler_reference,
+    r#"using System; class Bus { public event Action Arrived; public void Fire() { if (Arrived != null) Arrived(); } } void OnArrived() { Console.WriteLine("arrived"); } var bus = new Bus(); bus.Arrived += OnArrived; bus.Arrived -= OnArrived; bus.Fire(); Console.WriteLine("done");"#,
+    ["done"]
+);
+csharp_case!(
+    multicast_delegate_preserves_handler_order_after_removal,
+    r#"using System; void A() { Console.WriteLine("A"); } void B() { Console.WriteLine("B"); } void C() { Console.WriteLine("C"); } Action action = A; action += B; action += C; action -= B; action();"#,
+    ["A", "C"]
+);
+csharp_case!(
+    event_subscription_inside_constructor_is_triggered_by_method,
+    r#"using System; class Sensor { public event Action Triggered; public Sensor() { Triggered += () => Console.WriteLine("armed"); } public void Fire() { Triggered(); } } var sensor = new Sensor(); sensor.Fire();"#,
+    ["armed"]
+);
+csharp_case!(
+    generic_eventhandler_passes_integer_payload,
+    r#"using System; class NumberEventArgs : EventArgs { public int Value { get; set; } } class Stream { public event EventHandler<NumberEventArgs> Produced; public void Emit(int value) { Produced(this, new NumberEventArgs { Value = value }); } } var stream = new Stream(); stream.Produced += (sender, args) => Console.WriteLine(args.Value * 2); stream.Emit(6);"#,
+    ["12"]
+);
+csharp_case!(
+    delegate_return_value_can_be_consumed_by_caller,
+    r#"using System; class Calculator { public static int Compute(Func<int> getValue) { return getValue() + 1; } } Console.WriteLine(Calculator.Compute(() => 9));"#,
+    ["10"]
+);
+csharp_case!(
+    event_handler_can_append_to_string_log,
+    r#"using System; class Emitter { public event Action Fired; public void Fire() { Fired(); } } string log = ""; var emitter = new Emitter(); emitter.Fired += () => log += "x"; emitter.Fired += () => log += "y"; emitter.Fire(); Console.WriteLine(log);"#,
+    ["xy"]
+);

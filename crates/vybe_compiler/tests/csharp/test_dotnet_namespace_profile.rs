@@ -1,7 +1,8 @@
 #[test]
 fn csharp_profile_enables_dotnet_namespace_resolution() {
-    let profile = vybe_compiler::profile::parse_profile(vybe_compiler::languages::csharp::profile_source())
-        .expect("C# profile parse failed");
+    let profile =
+        vybe_compiler::profile::parse_profile(vybe_compiler::languages::csharp::profile_source())
+            .expect("C# profile parse failed");
 
     assert!(
         profile.namespaces.use_dotnet,
@@ -17,8 +18,9 @@ fn csharp_profile_enables_dotnet_namespace_resolution() {
 fn vb_and_csharp_both_use_shared_dotnet_namespace_system() {
     let vb = vybe_compiler::profile::parse_profile(vybe_compiler::languages::vb::profile_source())
         .expect("VB profile parse failed");
-    let cs = vybe_compiler::profile::parse_profile(vybe_compiler::languages::csharp::profile_source())
-        .expect("C# profile parse failed");
+    let cs =
+        vybe_compiler::profile::parse_profile(vybe_compiler::languages::csharp::profile_source())
+            .expect("C# profile parse failed");
 
     assert!(
         vb.namespaces.use_dotnet && cs.namespaces.use_dotnet,

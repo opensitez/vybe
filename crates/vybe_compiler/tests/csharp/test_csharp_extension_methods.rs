@@ -9,23 +9,103 @@ macro_rules! csharp_case {
     };
 }
 
-csharp_case!(extension_method_on_string_returns_length_label, r#"using Demo; namespace Demo { public static class TextExt { public static string Label(this string value) { return value + ":" + value.Length; } } } Console.WriteLine("abc".Label());"#, ["abc:3"]);
-csharp_case!(extension_method_on_int_can_scale_value, r#"using Demo; namespace Demo { public static class NumberExt { public static int Triple(this int value) { return value * 3; } } } Console.WriteLine(4.Triple());"#, ["12"]);
-csharp_case!(extension_method_on_array_can_sum_elements, r#"using Demo; namespace Demo { public static class ArrayExt { public static int SumAll(this int[] values) { int total = 0; foreach (var value in values) total += value; return total; } } } Console.WriteLine(new[] { 1, 2, 3 }.SumAll());"#, ["6"]);
-csharp_case!(extension_method_on_list_can_report_item_count, r#"using Demo; using System.Collections.Generic; namespace Demo { public static class ListExt { public static string Describe<T>(this List<T> values) { return "count=" + values.Count; } } } Console.WriteLine(new List<int> { 1, 2 }.Describe());"#, ["count=2"]);
-csharp_case!(generic_extension_method_returns_same_value, r#"using Demo; namespace Demo { public static class EchoExt { public static T Echo<T>(this T value) { return value; } } } Console.WriteLine("hi".Echo());"#, ["hi"]);
-csharp_case!(extension_method_can_take_extra_argument, r#"using Demo; namespace Demo { public static class TextExt { public static string Wrap(this string value, string prefix) { return prefix + value; } } } Console.WriteLine("core".Wrap("pre-"));"#, ["pre-core"]);
-csharp_case!(extension_method_can_chain_two_calls, r#"using Demo; namespace Demo { public static class TextExt { public static string AddA(this string value) { return value + "a"; } public static string AddB(this string value) { return value + "b"; } } } Console.WriteLine("x".AddA().AddB());"#, ["xab"]);
-csharp_case!(extension_method_on_interface_reference_dispatches_by_static_type, r#"using Demo; interface IName { string Name { get; } } class User : IName { public string Name => "Ada"; } namespace Demo { public static class NameExt { public static string UpperName(this IName value) { return value.Name.ToUpper(); } } } IName user = new User(); Console.WriteLine(user.UpperName());"#, ["ADA"]);
-csharp_case!(extension_method_on_nullable_int_handles_has_value, r#"using Demo; namespace Demo { public static class NullableExt { public static string Describe(this int? value) { return value.HasValue ? value.Value.ToString() : "none"; } } } int? value = 8; Console.WriteLine(value.Describe());"#, ["8"]);
-csharp_case!(extension_method_on_enum_returns_underlying_integer, r#"using Demo; enum Mode { Off = 0, On = 2 } namespace Demo { public static class ModeExt { public static int Code(this Mode mode) { return (int)mode; } } } Console.WriteLine(Mode.On.Code());"#, ["2"]);
-csharp_case!(extension_method_can_use_namespace_import_from_nested_namespace, r#"using Demo.Tools; namespace Demo.Tools { public static class TextExt { public static string Bang(this string value) { return value + "!"; } } } Console.WriteLine("go".Bang());"#, ["go!"]);
-csharp_case!(extension_method_can_be_called_as_static_method_too, r#"using Demo; namespace Demo { public static class TextExt { public static string Wrap(this string value) { return "[" + value + "]"; } } } Console.WriteLine(TextExt.Wrap("x"));"#, ["[x]"]);
-csharp_case!(extension_method_on_custom_class_can_read_field, r#"using Demo; class Item { public int Count = 5; } namespace Demo { public static class ItemExt { public static int Double(this Item item) { return item.Count * 2; } } } Console.WriteLine(new Item().Double());"#, ["10"]);
-csharp_case!(extension_method_on_object_accepts_boxed_value, r#"using Demo; namespace Demo { public static class ObjectExt { public static string Kind(this object value) { return value.GetType().Name; } } } object value = 3; Console.WriteLine(value.Kind());"#, ["Int32"]);
-csharp_case!(extension_method_can_return_tuple_value, r#"using Demo; namespace Demo { public static class TextExt { public static (string, int) Pack(this string value) { return (value, value.Length); } } } var result = "tool".Pack(); Console.WriteLine(result.Item1); Console.WriteLine(result.Item2);"#, ["tool", "4"]);
-csharp_case!(extension_method_on_array_can_join_strings, r#"using Demo; namespace Demo { public static class StringArrayExt { public static string JoinAll(this string[] values) { return string.Join(",", values); } } } Console.WriteLine(new[] { "a", "b" }.JoinAll());"#, ["a,b"]);
-csharp_case!(extension_method_on_char_can_repeat_character, r#"using Demo; namespace Demo { public static class CharExt { public static string Repeat(this char value, int count) { return new string(value, count); } } } Console.WriteLine('x'.Repeat(3));"#, ["xxx"]);
-csharp_case!(extension_method_with_generic_receiver_can_count_items, r#"using Demo; using System.Collections.Generic; namespace Demo { public static class EnumerableExt { public static int CountItems<T>(this IEnumerable<T> items) { int total = 0; foreach (var _ in items) total++; return total; } } } Console.WriteLine(new[] { 1, 2, 3 }.CountItems());"#, ["3"]);
-csharp_case!(extension_method_can_be_used_inside_local_function, r#"using Demo; namespace Demo { public static class NumberExt { public static int Inc(this int value) { return value + 1; } } } int Read() { return 9.Inc(); } Console.WriteLine(Read());"#, ["10"]);
-csharp_case!(extension_method_can_compose_with_generator_output, r#"using Demo; using System.Collections.Generic; namespace Demo { public static class NumberExt { public static IEnumerable<int> Twice(this IEnumerable<int> values) { foreach (var value in values) yield return value * 2; } } } foreach (var value in new[] { 1, 2 }.Twice()) Console.WriteLine(value);"#, ["2", "4"]);
+csharp_case!(
+    extension_method_on_string_returns_length_label,
+    r#"using Demo; namespace Demo { public static class TextExt { public static string Label(this string value) { return value + ":" + value.Length; } } } Console.WriteLine("abc".Label());"#,
+    ["abc:3"]
+);
+csharp_case!(
+    extension_method_on_int_can_scale_value,
+    r#"using Demo; namespace Demo { public static class NumberExt { public static int Triple(this int value) { return value * 3; } } } Console.WriteLine(4.Triple());"#,
+    ["12"]
+);
+csharp_case!(
+    extension_method_on_array_can_sum_elements,
+    r#"using Demo; namespace Demo { public static class ArrayExt { public static int SumAll(this int[] values) { int total = 0; foreach (var value in values) total += value; return total; } } } Console.WriteLine(new[] { 1, 2, 3 }.SumAll());"#,
+    ["6"]
+);
+csharp_case!(
+    extension_method_on_list_can_report_item_count,
+    r#"using Demo; using System.Collections.Generic; namespace Demo { public static class ListExt { public static string Describe<T>(this List<T> values) { return "count=" + values.Count; } } } Console.WriteLine(new List<int> { 1, 2 }.Describe());"#,
+    ["count=2"]
+);
+csharp_case!(
+    generic_extension_method_returns_same_value,
+    r#"using Demo; namespace Demo { public static class EchoExt { public static T Echo<T>(this T value) { return value; } } } Console.WriteLine("hi".Echo());"#,
+    ["hi"]
+);
+csharp_case!(
+    extension_method_can_take_extra_argument,
+    r#"using Demo; namespace Demo { public static class TextExt { public static string Wrap(this string value, string prefix) { return prefix + value; } } } Console.WriteLine("core".Wrap("pre-"));"#,
+    ["pre-core"]
+);
+csharp_case!(
+    extension_method_can_chain_two_calls,
+    r#"using Demo; namespace Demo { public static class TextExt { public static string AddA(this string value) { return value + "a"; } public static string AddB(this string value) { return value + "b"; } } } Console.WriteLine("x".AddA().AddB());"#,
+    ["xab"]
+);
+csharp_case!(
+    extension_method_on_interface_reference_dispatches_by_static_type,
+    r#"using Demo; interface IName { string Name { get; } } class User : IName { public string Name => "Ada"; } namespace Demo { public static class NameExt { public static string UpperName(this IName value) { return value.Name.ToUpper(); } } } IName user = new User(); Console.WriteLine(user.UpperName());"#,
+    ["ADA"]
+);
+csharp_case!(
+    extension_method_on_nullable_int_handles_has_value,
+    r#"using Demo; namespace Demo { public static class NullableExt { public static string Describe(this int? value) { return value.HasValue ? value.Value.ToString() : "none"; } } } int? value = 8; Console.WriteLine(value.Describe());"#,
+    ["8"]
+);
+csharp_case!(
+    extension_method_on_enum_returns_underlying_integer,
+    r#"using Demo; enum Mode { Off = 0, On = 2 } namespace Demo { public static class ModeExt { public static int Code(this Mode mode) { return (int)mode; } } } Console.WriteLine(Mode.On.Code());"#,
+    ["2"]
+);
+csharp_case!(
+    extension_method_can_use_namespace_import_from_nested_namespace,
+    r#"using Demo.Tools; namespace Demo.Tools { public static class TextExt { public static string Bang(this string value) { return value + "!"; } } } Console.WriteLine("go".Bang());"#,
+    ["go!"]
+);
+csharp_case!(
+    extension_method_can_be_called_as_static_method_too,
+    r#"using Demo; namespace Demo { public static class TextExt { public static string Wrap(this string value) { return "[" + value + "]"; } } } Console.WriteLine(TextExt.Wrap("x"));"#,
+    ["[x]"]
+);
+csharp_case!(
+    extension_method_on_custom_class_can_read_field,
+    r#"using Demo; class Item { public int Count = 5; } namespace Demo { public static class ItemExt { public static int Double(this Item item) { return item.Count * 2; } } } Console.WriteLine(new Item().Double());"#,
+    ["10"]
+);
+csharp_case!(
+    extension_method_on_object_accepts_boxed_value,
+    r#"using Demo; namespace Demo { public static class ObjectExt { public static string Kind(this object value) { return value.GetType().Name; } } } object value = 3; Console.WriteLine(value.Kind());"#,
+    ["Int32"]
+);
+csharp_case!(
+    extension_method_can_return_tuple_value,
+    r#"using Demo; namespace Demo { public static class TextExt { public static (string, int) Pack(this string value) { return (value, value.Length); } } } var result = "tool".Pack(); Console.WriteLine(result.Item1); Console.WriteLine(result.Item2);"#,
+    ["tool", "4"]
+);
+csharp_case!(
+    extension_method_on_array_can_join_strings,
+    r#"using Demo; namespace Demo { public static class StringArrayExt { public static string JoinAll(this string[] values) { return string.Join(",", values); } } } Console.WriteLine(new[] { "a", "b" }.JoinAll());"#,
+    ["a,b"]
+);
+csharp_case!(
+    extension_method_on_char_can_repeat_character,
+    r#"using Demo; namespace Demo { public static class CharExt { public static string Repeat(this char value, int count) { return new string(value, count); } } } Console.WriteLine('x'.Repeat(3));"#,
+    ["xxx"]
+);
+csharp_case!(
+    extension_method_with_generic_receiver_can_count_items,
+    r#"using Demo; using System.Collections.Generic; namespace Demo { public static class EnumerableExt { public static int CountItems<T>(this IEnumerable<T> items) { int total = 0; foreach (var _ in items) total++; return total; } } } Console.WriteLine(new[] { 1, 2, 3 }.CountItems());"#,
+    ["3"]
+);
+csharp_case!(
+    extension_method_can_be_used_inside_local_function,
+    r#"using Demo; namespace Demo { public static class NumberExt { public static int Inc(this int value) { return value + 1; } } } int Read() { return 9.Inc(); } Console.WriteLine(Read());"#,
+    ["10"]
+);
+csharp_case!(
+    extension_method_can_compose_with_generator_output,
+    r#"using Demo; using System.Collections.Generic; namespace Demo { public static class NumberExt { public static IEnumerable<int> Twice(this IEnumerable<int> values) { foreach (var value in values) yield return value * 2; } } } foreach (var value in new[] { 1, 2 }.Twice()) Console.WriteLine(value);"#,
+    ["2", "4"]
+);

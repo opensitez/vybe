@@ -17,10 +17,12 @@ fn math_sqrt() {
 
 #[test]
 fn math_multiple() {
-    let out = run_csharp(r#"
+    let out = run_csharp(
+        r#"
         Console.WriteLine(Math.Floor(9.7));
         Console.WriteLine(Math.Abs(-42));
         Console.WriteLine(Math.Sqrt(144));
-    "#);
+    "#,
+    );
     assert_eq!(out, vec!["9", "42", "12"]);
 }

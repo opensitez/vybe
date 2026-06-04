@@ -37,7 +37,8 @@ public partial class Form1 : System.Windows.Forms.Form
 fn csharp_designer_file_lowers_click_subscriptions_to_addhandler() {
     use vybe_compiler::ast::{ClassMember, StmtKind};
 
-    let src = include_str!("../../../../examples/csharp/cosmic_arcade_designer/MainForm.Designer.cs");
+    let src =
+        include_str!("../../../../examples/csharp/cosmic_arcade_designer/MainForm.Designer.cs");
     let module = vybe_compiler::languages::csharp::parse(src).expect("C# parse failed");
 
     let mut init_stmt_kinds = Vec::new();
@@ -56,7 +57,8 @@ fn csharp_designer_file_lowers_click_subscriptions_to_addhandler() {
 
             if name == "InitializeComponent" {
                 init_stmt_kinds = body.iter().map(|stmt| format!("{:?}", stmt.kind)).collect();
-                body.iter().any(|stmt| matches!(stmt.kind, StmtKind::AddHandler { .. }))
+                body.iter()
+                    .any(|stmt| matches!(stmt.kind, StmtKind::AddHandler { .. }))
             } else {
                 false
             }
@@ -101,7 +103,9 @@ public partial class Form1 : System.Windows.Forms.Form
             };
 
             name == "InitializeComponent"
-                && body.iter().any(|stmt| matches!(stmt.kind, StmtKind::RemoveHandler { .. }))
+                && body
+                    .iter()
+                    .any(|stmt| matches!(stmt.kind, StmtKind::RemoveHandler { .. }))
         })
     });
 
